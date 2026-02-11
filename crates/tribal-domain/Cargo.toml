@@ -1,0 +1,8 @@
+[package]
+name = "tribal-domain"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
