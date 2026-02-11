@@ -1,0 +1,11 @@
+# Build artefacts
+/target/
+
+# Environment
+.env
+
+# Private design documents
+docs/internal/
+
+# OS-specific
+.DS_Store
