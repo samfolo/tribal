@@ -1,0 +1,11 @@
+[package]
+name = "tribal-worker"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tribal-domain.workspace = true
+tribal-db.workspace = true
+tribal-inference.workspace = true
