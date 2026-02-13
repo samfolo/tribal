@@ -1,7 +1,10 @@
 use super::common::define_id;
 
-/// Unique identifier for a task.
-define_id!(TaskId, "task");
+define_id!(
+    /// Unique identifier for a task.
+    TaskId,
+    "task"
+);
 
 #[cfg(test)]
 mod tests {

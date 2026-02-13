@@ -1,7 +1,10 @@
 use super::common::define_id;
 
-/// Unique identifier for a session.
-define_id!(SessionId, "sess");
+define_id!(
+    /// Unique identifier for a session.
+    SessionId,
+    "sess"
+);
 
 #[cfg(test)]
 mod tests {

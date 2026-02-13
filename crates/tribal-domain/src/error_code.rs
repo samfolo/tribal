@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Application-level error codes aligned with Google's `google.rpc.Code`
-/// taxonomy. Serialises to lowercase snake_case strings in MCP JSON
+/// taxonomy. Serialises to lowercase `snake_case` strings in MCP JSON
 /// responses.
 ///
 /// The mapping from `McpErrorCode` to `tonic::Code` is a boundary concern
@@ -44,8 +44,7 @@ mod tests {
         for (variant, expected_json) in variants {
             let json = serde_json::to_string(&variant).expect("should serialise");
             assert_eq!(json, expected_json, "serialised form of {variant:?}");
-            let parsed: McpErrorCode =
-                serde_json::from_str(&json).expect("should deserialise");
+            let parsed: McpErrorCode = serde_json::from_str(&json).expect("should deserialise");
             assert_eq!(parsed, variant);
         }
     }

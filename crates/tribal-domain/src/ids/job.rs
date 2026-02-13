@@ -1,7 +1,10 @@
 use super::common::define_id;
 
-/// Unique identifier for a job.
-define_id!(JobId, "job");
+define_id!(
+    /// Unique identifier for a job.
+    JobId,
+    "job"
+);
 
 #[cfg(test)]
 mod tests {

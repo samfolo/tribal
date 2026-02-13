@@ -1,7 +1,10 @@
 use super::common::define_id;
 
-/// Unique identifier for a project.
-define_id!(ProjectId, "proj");
+define_id!(
+    /// Unique identifier for a project.
+    ProjectId,
+    "proj"
+);
 
 #[cfg(test)]
 mod tests {

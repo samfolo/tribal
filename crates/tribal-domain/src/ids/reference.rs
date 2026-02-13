@@ -1,7 +1,10 @@
 use super::common::define_id;
 
-/// Unique identifier for a reference.
-define_id!(ReferenceId, "ref");
+define_id!(
+    /// Unique identifier for a reference.
+    ReferenceId,
+    "ref"
+);
 
 #[cfg(test)]
 mod tests {

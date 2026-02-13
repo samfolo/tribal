@@ -1,7 +1,10 @@
 use super::common::define_id;
 
-/// Unique identifier for retrieval feedback.
-define_id!(RetrievalFeedbackId, "fb");
+define_id!(
+    /// Unique identifier for retrieval feedback.
+    RetrievalFeedbackId,
+    "fb"
+);
 
 #[cfg(test)]
 mod tests {

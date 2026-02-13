@@ -1,7 +1,10 @@
 use super::common::define_id;
 
-/// Unique identifier for a knowledge item.
-define_id!(KnowledgeItemId, "ki");
+define_id!(
+    /// Unique identifier for a knowledge item.
+    KnowledgeItemId,
+    "ki"
+);
 
 #[cfg(test)]
 mod tests {

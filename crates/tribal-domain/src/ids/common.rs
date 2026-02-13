@@ -36,11 +36,14 @@ pub enum IdParseError {
 /// - `FromStr` — parses and validates the prefix
 /// - `TryFrom<String>` — delegates to `FromStr`
 /// - `From<Type> for String` — delegates to `Display`
-/// - `Copy`, `Clone`, `Eq`, `Hash`, `Serialize`, `Deserialize`
+/// - `Copy`, `Clone`, `Eq`, `Hash`, `Serialize`, `Deserialize`, `Default`
 macro_rules! define_id {
     ($(#[$meta:meta])* $name:ident, $prefix:literal) => {
         $(#[$meta])*
-        #[derive(Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, Hash,
+            serde::Serialize, serde::Deserialize,
+        )]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(uuid::Uuid);
 
@@ -59,6 +62,12 @@ macro_rules! define_id {
 
             /// The string prefix used when displaying and parsing this ID type.
             pub const PREFIX: &'static str = $prefix;
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
         }
 
         impl std::fmt::Display for $name {
@@ -98,21 +107,16 @@ macro_rules! define_id {
                 id.to_string()
             }
         }
-
-        impl Clone for $name {
-            fn clone(&self) -> Self {
-                Self(self.0)
-            }
-        }
-
-        impl Copy for $name {}
     };
 }
+
+pub(crate) use define_id;
 
 /// Generates the standard test suite for an ID newtype produced by [`define_id!`].
 ///
 /// Covers: parse success, wrong prefix, invalid UUID, `Display`/`FromStr`
 /// roundtrip, serde roundtrip, and `Copy` semantics.
+#[cfg(test)]
 macro_rules! id_tests {
     ($type:ty, $prefix:literal) => {
         #[test]
@@ -171,7 +175,7 @@ macro_rules! id_tests {
     };
 }
 
-pub(crate) use define_id;
+#[cfg(test)]
 pub(crate) use id_tests;
 
 #[cfg(test)]
@@ -185,7 +189,10 @@ mod tests {
             input: "ki_550e8400-e29b-41d4-a716-446655440000".to_string(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("proj"), "message should contain expected prefix");
+        assert!(
+            msg.contains("proj"),
+            "message should contain expected prefix"
+        );
         assert!(msg.contains("ki_"), "message should contain the input");
     }
 
