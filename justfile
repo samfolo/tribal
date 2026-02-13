@@ -37,6 +37,7 @@ sqlx-prepare:
     cargo sqlx prepare --workspace
 
 # Full pre-push check (what CI will run)
+# TODO: add sqlx-prepare once the first migration lands
 pre-push: fmt check test
 
 # Run the MCP server locally (stdio mode)
