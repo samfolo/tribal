@@ -3,6 +3,7 @@
 //! Core domain types, ID newtypes, shared error types, and configuration
 //! structs for Tribal.
 
+mod database_config;
 mod discovery;
 mod error_code;
 mod ids;
