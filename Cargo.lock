@@ -1573,6 +1573,7 @@ name = "tribal-db"
 version = "0.1.0"
 dependencies = [
  "pgvector",
+ "serde_json",
  "sqlx",
  "thiserror",
  "tokio",
