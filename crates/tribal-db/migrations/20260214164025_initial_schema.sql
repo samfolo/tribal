@@ -25,7 +25,7 @@ CREATE TABLE principals (
 
 CREATE TABLE projects (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    git_remote      TEXT NOT NULL,
+    git_remote      TEXT NOT NULL UNIQUE,
     name            TEXT NOT NULL,
     default_branch  TEXT NOT NULL,
     project_type    TEXT,
