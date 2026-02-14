@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+
+      "WebFetch(domain:rust-lang.github.io)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:crates.io)",
+
+      "Bash(cargo build:*)",
+      "Bash(cargo deny check:*)",
+      "Bash(cargo test:*)",
+
+      "Bash(brew list:*)",
+
+      "Bash(gh api:*)",
+      "Bash(gh label:*)"
+    ]
+  }
+}
+
