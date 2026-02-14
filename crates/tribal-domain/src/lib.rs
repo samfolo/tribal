@@ -13,6 +13,7 @@ mod reference_kind;
 mod relation;
 mod task;
 
+pub use database_config::DatabaseConfig;
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use error_code::McpErrorCode;
 pub use ids::{

@@ -1540,6 +1540,8 @@ version = "0.1.0"
 dependencies = [
  "pgvector",
  "sqlx",
+ "thiserror",
+ "tracing",
  "tribal-domain",
 ]
 
