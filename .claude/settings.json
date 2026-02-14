@@ -3,9 +3,10 @@
     "allow": [
       "WebSearch",
 
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:crates.io)",
       "WebFetch(domain:rust-lang.github.io)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:crates.io)",
 
       "Bash(cargo build:*)",
       "Bash(cargo deny check:*)",
@@ -14,8 +15,9 @@
       "Bash(brew list:*)",
 
       "Bash(gh api:*)",
-      "Bash(gh label:*)"
+      "Bash(gh label:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)"
     ]
   }
 }
-
