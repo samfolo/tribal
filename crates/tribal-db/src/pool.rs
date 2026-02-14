@@ -11,7 +11,7 @@ use tribal_domain::DatabaseConfig;
 
 use crate::DbError;
 
-/// Creates a PostgreSQL connection pool with the given configuration.
+/// Creates a `PostgreSQL` connection pool with the given configuration.
 ///
 /// The pool is configured with:
 /// - `max_connections` from the caller (differs between MCP and worker pools)
