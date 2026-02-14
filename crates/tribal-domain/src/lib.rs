@@ -22,7 +22,7 @@ pub use job::{JobOutcome, JobStatus};
 pub use knowledge::{Confidence, KnowledgeKind};
 pub use reference_kind::ReferenceKind;
 pub use relation::{RelationHintType, RelationKind, RelationSuggestion};
-pub use task::{TaskStatus, TaskType};
+pub use task::{TaskErrorKind, TaskStatus, TaskType};
 
 /// Generates a serde roundtrip test for an enum with a compile-time
 /// exhaustiveness check.
