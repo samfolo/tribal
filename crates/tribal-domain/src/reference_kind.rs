@@ -17,20 +17,12 @@ pub enum ReferenceKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enum_serde_tests;
 
-    #[test]
-    fn test_reference_kind_serde_roundtrip() {
-        let variants = [
-            (ReferenceKind::FilePath, "\"file_path\""),
-            (ReferenceKind::Url, "\"url\""),
-            (ReferenceKind::Concept, "\"concept\""),
-            (ReferenceKind::Symbol, "\"symbol\""),
-        ];
-        for (variant, expected_json) in variants {
-            let json = serde_json::to_string(&variant).expect("should serialise");
-            assert_eq!(json, expected_json, "serialised form of {variant:?}");
-            let parsed: ReferenceKind = serde_json::from_str(&json).expect("should deserialise");
-            assert_eq!(parsed, variant);
-        }
-    }
+    enum_serde_tests!(test_reference_kind_serde_roundtrip, ReferenceKind {
+        ReferenceKind::FilePath => "file_path",
+        ReferenceKind::Url => "url",
+        ReferenceKind::Concept => "concept",
+        ReferenceKind::Symbol => "symbol",
+    });
 }

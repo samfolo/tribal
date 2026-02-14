@@ -48,47 +48,22 @@ pub enum RelationHintType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enum_serde_tests;
 
-    #[test]
-    fn test_relation_kind_serde_roundtrip() {
-        let variants = [
-            (RelationKind::Supports, "\"supports\""),
-            (RelationKind::Contradicts, "\"contradicts\""),
-            (RelationKind::Supersedes, "\"supersedes\""),
-            (RelationKind::DerivedFrom, "\"derived_from\""),
-        ];
-        for (variant, expected_json) in variants {
-            let json = serde_json::to_string(&variant).expect("should serialise");
-            assert_eq!(json, expected_json, "serialised form of {variant:?}");
-            let parsed: RelationKind = serde_json::from_str(&json).expect("should deserialise");
-            assert_eq!(parsed, variant);
-        }
-    }
+    enum_serde_tests!(test_relation_kind_serde_roundtrip, RelationKind {
+        RelationKind::Supports => "supports",
+        RelationKind::Contradicts => "contradicts",
+        RelationKind::Supersedes => "supersedes",
+        RelationKind::DerivedFrom => "derived_from",
+    });
 
-    #[test]
-    fn test_relation_suggestion_serde_roundtrip() {
-        let variants = [
-            (RelationSuggestion::Supports, "\"supports\""),
-            (RelationSuggestion::Contradicts, "\"contradicts\""),
-            (RelationSuggestion::Unrelated, "\"unrelated\""),
-        ];
-        for (variant, expected_json) in variants {
-            let json = serde_json::to_string(&variant).expect("should serialise");
-            assert_eq!(json, expected_json, "serialised form of {variant:?}");
-            let parsed: RelationSuggestion =
-                serde_json::from_str(&json).expect("should deserialise");
-            assert_eq!(parsed, variant);
-        }
-    }
+    enum_serde_tests!(test_relation_suggestion_serde_roundtrip, RelationSuggestion {
+        RelationSuggestion::Supports => "supports",
+        RelationSuggestion::Contradicts => "contradicts",
+        RelationSuggestion::Unrelated => "unrelated",
+    });
 
-    #[test]
-    fn test_relation_hint_type_serde_roundtrip() {
-        let variants = [(RelationHintType::DerivedFrom, "\"derived_from\"")];
-        for (variant, expected_json) in variants {
-            let json = serde_json::to_string(&variant).expect("should serialise");
-            assert_eq!(json, expected_json, "serialised form of {variant:?}");
-            let parsed: RelationHintType = serde_json::from_str(&json).expect("should deserialise");
-            assert_eq!(parsed, variant);
-        }
-    }
+    enum_serde_tests!(test_relation_hint_type_serde_roundtrip, RelationHintType {
+        RelationHintType::DerivedFrom => "derived_from",
+    });
 }

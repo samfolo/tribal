@@ -29,35 +29,18 @@ pub enum TaskStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enum_serde_tests;
 
-    #[test]
-    fn test_task_type_serde_roundtrip() {
-        let variants = [
-            (TaskType::Extraction, "\"extraction\""),
-            (TaskType::Triage, "\"triage\""),
-            (TaskType::Relation, "\"relation\""),
-        ];
-        for (variant, expected_json) in variants {
-            let json = serde_json::to_string(&variant).expect("should serialise");
-            assert_eq!(json, expected_json, "serialised form of {variant:?}");
-            let parsed: TaskType = serde_json::from_str(&json).expect("should deserialise");
-            assert_eq!(parsed, variant);
-        }
-    }
+    enum_serde_tests!(test_task_type_serde_roundtrip, TaskType {
+        TaskType::Extraction => "extraction",
+        TaskType::Triage => "triage",
+        TaskType::Relation => "relation",
+    });
 
-    #[test]
-    fn test_task_status_serde_roundtrip() {
-        let variants = [
-            (TaskStatus::Queued, "\"queued\""),
-            (TaskStatus::Claimed, "\"claimed\""),
-            (TaskStatus::Completed, "\"completed\""),
-            (TaskStatus::DeadLetter, "\"dead_letter\""),
-        ];
-        for (variant, expected_json) in variants {
-            let json = serde_json::to_string(&variant).expect("should serialise");
-            assert_eq!(json, expected_json, "serialised form of {variant:?}");
-            let parsed: TaskStatus = serde_json::from_str(&json).expect("should deserialise");
-            assert_eq!(parsed, variant);
-        }
-    }
+    enum_serde_tests!(test_task_status_serde_roundtrip, TaskStatus {
+        TaskStatus::Queued => "queued",
+        TaskStatus::Claimed => "claimed",
+        TaskStatus::Completed => "completed",
+        TaskStatus::DeadLetter => "dead_letter",
+    });
 }

@@ -29,23 +29,15 @@ pub enum McpErrorCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enum_serde_tests;
 
-    #[test]
-    fn test_mcp_error_code_serde_roundtrip() {
-        let variants = [
-            (McpErrorCode::NotFound, "\"not_found\""),
-            (McpErrorCode::Unauthenticated, "\"unauthenticated\""),
-            (McpErrorCode::PermissionDenied, "\"permission_denied\""),
-            (McpErrorCode::InvalidArgument, "\"invalid_argument\""),
-            (McpErrorCode::FailedPrecondition, "\"failed_precondition\""),
-            (McpErrorCode::ResourceExhausted, "\"resource_exhausted\""),
-            (McpErrorCode::Internal, "\"internal\""),
-        ];
-        for (variant, expected_json) in variants {
-            let json = serde_json::to_string(&variant).expect("should serialise");
-            assert_eq!(json, expected_json, "serialised form of {variant:?}");
-            let parsed: McpErrorCode = serde_json::from_str(&json).expect("should deserialise");
-            assert_eq!(parsed, variant);
-        }
-    }
+    enum_serde_tests!(test_mcp_error_code_serde_roundtrip, McpErrorCode {
+        McpErrorCode::NotFound => "not_found",
+        McpErrorCode::Unauthenticated => "unauthenticated",
+        McpErrorCode::PermissionDenied => "permission_denied",
+        McpErrorCode::InvalidArgument => "invalid_argument",
+        McpErrorCode::FailedPrecondition => "failed_precondition",
+        McpErrorCode::ResourceExhausted => "resource_exhausted",
+        McpErrorCode::Internal => "internal",
+    });
 }

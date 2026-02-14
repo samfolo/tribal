@@ -31,7 +31,7 @@ pub use task::{TaskStatus, TaskType};
 /// the embedded `match` becomes non-exhaustive and the build fails.
 #[cfg(test)]
 macro_rules! enum_serde_tests {
-    ($test_name:ident, $type:ty { $($variant:pat => $json:literal),+ $(,)? }) => {
+    ($test_name:ident, $type:ty { $($variant:path => $json:literal),+ $(,)? }) => {
         #[test]
         fn $test_name() {
             // Compile-time exhaustiveness guard: every variant must be listed.
