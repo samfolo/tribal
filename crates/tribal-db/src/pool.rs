@@ -60,3 +60,37 @@ pub async fn create_pool(
 
     Ok(pool)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bogus_config() -> DatabaseConfig {
+        serde_json::from_str(r#"{"url": "postgres://invalid:5432/nonexistent"}"#)
+            .expect("should deserialise")
+    }
+
+    async fn assert_connect_fails_with_pool_name(pool_name: &'static str) {
+        let config = bogus_config();
+        let err = create_pool(&config, pool_name, 2, 10)
+            .await
+            .expect_err("should fail with an invalid url");
+
+        match err {
+            DbError::QueryFailed { context, .. } => {
+                assert_eq!(context, format!("connecting to pool '{pool_name}'"));
+            }
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_pool_failure_maps_to_query_failed_for_mcp() {
+        assert_connect_fails_with_pool_name("mcp").await;
+    }
+
+    #[tokio::test]
+    async fn test_create_pool_failure_maps_to_query_failed_for_worker() {
+        assert_connect_fails_with_pool_name("worker").await;
+    }
+}
