@@ -3,6 +3,7 @@
 //! Core domain types, ID newtypes, shared error types, and configuration
 //! structs for Tribal.
 
+mod database_config;
 mod discovery;
 mod error_code;
 mod ids;
@@ -12,6 +13,7 @@ mod reference_kind;
 mod relation;
 mod task;
 
+pub use database_config::DatabaseConfig;
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use error_code::McpErrorCode;
 pub use ids::{
