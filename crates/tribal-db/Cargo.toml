@@ -10,3 +10,9 @@ publish.workspace = true
 tribal-domain.workspace = true
 sqlx = { workspace = true, features = ["migrate"] }
 pgvector.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }

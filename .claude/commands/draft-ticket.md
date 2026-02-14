@@ -10,7 +10,7 @@ If $ARGUMENTS is empty or missing, stop and ask which milestone issue ID to draf
 
 ## 1. Orient
 
-- Run `gh api repos/{owner}/{repo}/milestones --jq '.[] | "\(.number): \(.title) (\(.open_issues) open, \(.closed_issues) closed)"'` to list all GitHub milestones.
+- Run `gh api repos/:owner/:repo/milestones --jq '.[] | "\(.number): \(.title) (\(.open_issues) open, \(.closed_issues) closed)"'` to list all GitHub milestones.
 - Run `gh issue list --state all` to see what has already been created and completed.
 
 ## 2. Gather context
