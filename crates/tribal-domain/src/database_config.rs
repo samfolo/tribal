@@ -17,7 +17,7 @@ use serde::Deserialize;
 /// sequence based on the pool name.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct DatabaseConfig {
-    /// PostgreSQL connection URL (e.g.
+    /// `PostgreSQL` connection URL (e.g.
     /// `postgres://user:pass@localhost:5432/tribal`).  Required; no default.
     pub url: String,
 
