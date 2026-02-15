@@ -21,7 +21,7 @@ use crate::{
 /// A similar existing item found during triage semantic search.
 ///
 /// Referenced as a repeated field on [`TriageResult`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
 pub struct SimilarItem {
     /// The existing knowledge item that was found similar.
     item_id: KnowledgeItemId,
