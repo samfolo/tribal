@@ -8,19 +8,26 @@
       "WebFetch(domain:rust-lang.github.io)",
       "WebFetch(domain:raw.githubusercontent.com)",
 
+      "Bash(brew list:*)",
+
       "Bash(cargo +nightly fmt:*)",
       "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
       "Bash(cargo clippy:*)",
       "Bash(cargo deny check:*)",
       "Bash(cargo doc:*)",
       "Bash(cargo test:*)",
-
-      "Bash(brew list:*)",
+      "Bash(cargo tree:*)",
 
       "Bash(gh api:*)",
       "Bash(gh issue view:*)",
       "Bash(gh issue list:*)",
-      "Bash(gh label:*)"
+      "Bash(gh label:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr list:*)",
+
+      "Bash(grep:*)"
     ]
   }
 }
