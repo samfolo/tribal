@@ -5,7 +5,7 @@
 
 mod error;
 mod pool;
-pub mod repositories;
+mod repositories;
 
 /// Compiled migrations for the Tribal database schema.
 ///
