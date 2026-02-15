@@ -2,9 +2,10 @@
 //!
 //! Identifies which stage of the ingest pipeline produced a given record.
 //! Distinct from [`TaskType`](crate::TaskType) — `TaskType` classifies
-//! the unit of work; `PipelineStage` classifies the origin of a prompt
-//! version or token usage record, and includes `Embedding` which is not
-//! a standalone task type.
+//! the unit of work; `PipelineStage` classifies the origin of a token
+//! usage record and includes `Embedding` which is not a standalone task
+//! type. For prompt versions, use [`PromptStage`](crate::PromptStage)
+//! which excludes `Embedding`.
 
 use serde::{Deserialize, Serialize};
 
