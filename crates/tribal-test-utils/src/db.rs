@@ -8,7 +8,10 @@
 //! [`TestTransaction`] wraps an sqlx transaction that rolls back on drop,
 //! providing complete test isolation without schema separation.
 
-use std::ops::{Deref, DerefMut};
+use std::{
+    ops::{Deref, DerefMut},
+    time::Duration,
+};
 
 use sqlx::{PgConnection, PgPool, Postgres, Transaction, postgres::PgPoolOptions};
 use testcontainers::{
@@ -95,6 +98,7 @@ impl TestContext {
 
         let pool = PgPoolOptions::new()
             .max_connections(5)
+            .acquire_timeout(Duration::from_secs(5))
             .connect(&database_url)
             .await
             .map_err(|source| TestDbError::PoolCreation {
