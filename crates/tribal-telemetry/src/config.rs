@@ -72,13 +72,14 @@ impl Default for LoggingConfig {
 }
 
 /// Output format for log lines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogFormat {
     /// Structured JSON output, one object per line (JSONL).
     ///
     /// Includes level, target, span context, timestamp, and message.
     /// Suitable for log aggregation and machine parsing.
+    #[default]
     Json,
 
     /// Human-readable coloured output for terminal use.
@@ -88,28 +89,17 @@ pub enum LogFormat {
     Pretty,
 }
 
-impl Default for LogFormat {
-    fn default() -> Self {
-        Self::Json
-    }
-}
-
 /// Output destination for log lines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogOutput {
     /// Write log output to standard error.
+    #[default]
     Stderr,
 
     /// Write log output to a file specified by
     /// [`LoggingConfig::file_path`].
     File,
-}
-
-impl Default for LogOutput {
-    fn default() -> Self {
-        Self::Stderr
-    }
 }
 
 #[cfg(test)]
