@@ -23,16 +23,16 @@
 pub struct TelemetryGuard {
     /// The worker guard from `tracing_appender::non_blocking`.
     ///
-    /// Both stderr and file writers use non-blocking output, so this
-    /// is always `Some` in normal operation.
-    _worker_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+    /// Both stderr and file writers use non-blocking output.  The
+    /// field is held purely for its `Drop` implementation.
+    _worker_guard: tracing_appender::non_blocking::WorkerGuard,
 }
 
 impl TelemetryGuard {
     /// Creates a new guard wrapping the given worker guard.
     pub(crate) fn new(guard: tracing_appender::non_blocking::WorkerGuard) -> Self {
         Self {
-            _worker_guard: Some(guard),
+            _worker_guard: guard,
         }
     }
 }
