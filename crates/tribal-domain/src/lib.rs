@@ -1,4 +1,5 @@
 #![warn(clippy::pedantic)]
+#![allow(clippy::must_use_candidate)]
 #![deny(warnings)]
 //! Core domain types, ID newtypes, shared error types, and configuration
 //! structs for Tribal.

@@ -16,6 +16,7 @@ use crate::ProjectId;
 /// `name` is human-friendly and mutable. `settings` is opaque JSONB for
 /// project-specific configuration, versioned by `schema_version`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
+#[allow(clippy::struct_field_names)]
 pub struct Project {
     /// Unique identifier with `proj_` prefix.
     id: ProjectId,
