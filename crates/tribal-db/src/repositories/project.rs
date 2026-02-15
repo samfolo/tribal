@@ -11,6 +11,8 @@ use tribal_domain::{Project, ProjectId};
 
 use crate::DbError;
 
+const SCHEMA_VERSION_OVERFLOW: &str = "negative schema_version in database — data corruption";
+
 /// Input for creating a new project.
 ///
 /// Contains only caller-provided fields.  Server-generated values
@@ -129,7 +131,7 @@ impl ProjectRepository for PgProjectRepository {
                 .project_type(r.project_type)
                 .schema_version(
                     u32::try_from(r.schema_version)
-                        .expect("negative schema_version in database — data corruption"),
+                        .expect(SCHEMA_VERSION_OVERFLOW),
                 )
                 .settings(r.settings)
                 .created_at(r.created_at)
@@ -173,7 +175,7 @@ impl ProjectRepository for PgProjectRepository {
             .project_type(r.project_type)
             .schema_version(
                 u32::try_from(r.schema_version)
-                    .expect("negative schema_version in database — data corruption"),
+                    .expect(SCHEMA_VERSION_OVERFLOW),
             )
             .settings(r.settings)
             .created_at(r.created_at)
@@ -206,7 +208,7 @@ impl ProjectRepository for PgProjectRepository {
                 .project_type(r.project_type)
                 .schema_version(
                     u32::try_from(r.schema_version)
-                        .expect("negative schema_version in database — data corruption"),
+                        .expect(SCHEMA_VERSION_OVERFLOW),
                 )
                 .settings(r.settings)
                 .created_at(r.created_at)
@@ -235,7 +237,7 @@ impl ProjectRepository for PgProjectRepository {
                     .project_type(r.project_type)
                     .schema_version(
                         u32::try_from(r.schema_version)
-                            .expect("negative schema_version in database — data corruption"),
+                            .expect(SCHEMA_VERSION_OVERFLOW),
                     )
                     .settings(r.settings)
                     .created_at(r.created_at)
