@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{JobId, PromptVersionId, TaskId, TokenUsageId};
+use crate::{EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, TaskId, TokenUsageId};
 
 /// A token usage record for a single LLM or embedding call.
 ///
@@ -26,12 +26,11 @@ pub struct TokenUsage {
     task_id: Option<TaskId>,
     /// The attempt number within the task (starts at 0).
     attempt: i32,
-    /// Pipeline stage: `"extraction"`, `"triage"`, `"relation"`, or `"embedding"`.
-    stage: String,
-    /// Purpose qualifier for embedding stage: `"candidate"` or `"query"`.
-    /// Null for non-embedding stages.
+    /// Which pipeline stage produced this usage record.
+    stage: PipelineStage,
+    /// Purpose qualifier for embedding stage. `None` for non-embedding stages.
     #[builder(default)]
-    purpose: Option<String>,
+    purpose: Option<EmbeddingPurpose>,
     /// The inference provider name.
     provider: String,
     /// The model identifier.
@@ -80,13 +79,13 @@ impl TokenUsage {
     }
 
     /// Returns the pipeline stage.
-    pub fn stage(&self) -> &str {
-        &self.stage
+    pub fn stage(&self) -> PipelineStage {
+        self.stage
     }
 
-    /// Returns the purpose qualifier, if applicable.
-    pub fn purpose(&self) -> Option<&str> {
-        self.purpose.as_deref()
+    /// Returns the embedding purpose, if applicable.
+    pub fn purpose(&self) -> Option<EmbeddingPurpose> {
+        self.purpose
     }
 
     /// Returns the inference provider name.

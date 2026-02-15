@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::PromptVersionId;
+use crate::{PipelineStage, PromptVersionId};
 
 /// A content-addressed prompt version.
 ///
@@ -18,8 +18,8 @@ use crate::PromptVersionId;
 pub struct PromptVersion {
     /// Unique identifier with `pv_` prefix.
     id: PromptVersionId,
-    /// Pipeline stage: `"extraction"`, `"triage"`, or `"relation"`.
-    stage: String,
+    /// Pipeline stage this prompt version applies to.
+    stage: PipelineStage,
     /// SHA-256 hash of the prompt content (hex-encoded, 64 chars).
     content_hash: String,
     /// The full prompt content.
@@ -35,8 +35,8 @@ impl PromptVersion {
     }
 
     /// Returns the pipeline stage.
-    pub fn stage(&self) -> &str {
-        &self.stage
+    pub fn stage(&self) -> PipelineStage {
+        self.stage
     }
 
     /// Returns the content hash.
