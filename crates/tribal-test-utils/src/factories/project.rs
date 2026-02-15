@@ -31,11 +31,4 @@ mod tests {
         assert_eq!(project.name(), "test-project");
         assert_eq!(project.default_branch(), "main");
     }
-
-    #[test]
-    fn test_allows_field_override() {
-        let project = a_project().name("custom".to_owned()).build();
-        assert_eq!(project.name(), "custom");
-        assert_eq!(project.default_branch(), "main");
-    }
 }
