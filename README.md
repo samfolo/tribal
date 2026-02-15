@@ -7,7 +7,7 @@ MCP (Model Context Protocol).
 
 ## Prerequisites
 
-- [Rust](https://rustup.rs/) (stable toolchain, 1.89+)
+- [Rust](https://rustup.rs/) (stable toolchain, 1.93+)
 - [Rust nightly](https://rustup.rs/) (for rustfmt — `rustup toolchain install nightly`)
 - [Docker](https://www.docker.com/) (for local Postgres and test containers)
 - [just](https://github.com/casey/just) — `cargo install just`

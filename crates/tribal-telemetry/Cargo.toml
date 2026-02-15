@@ -8,3 +8,12 @@ publish.workspace = true
 
 [dependencies]
 tribal-domain.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+thiserror.workspace = true
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
