@@ -52,12 +52,15 @@ impl TestContext {
     /// resolution fails, migrations fail, or the connection pool cannot
     /// be created.
     pub async fn new() -> Result<Self, TestDbError> {
-        // Postgres prints "database system is ready to accept connections"
-        // twice during startup — once for the Unix socket listener and
-        // once for TCP. Waiting for the second occurrence ensures the TCP
-        // socket is ready before we attempt to connect.
+        // During startup, "database system is ready to accept connections"
+        // appears twice — once for the init-phase Unix socket and once
+        // for the final TCP listener. Waiting for the second occurrence
+        // ensures the TCP socket is ready. We check both stdout and
+        // stderr because the Docker entrypoint may route Postgres log
+        // output to either stream.
         let ready_condition = WaitFor::log(
-            LogWaitStrategy::stdout("database system is ready to accept connections").with_times(2),
+            LogWaitStrategy::stdout_or_stderr("database system is ready to accept connections")
+                .with_times(2),
         );
 
         let container = GenericImage::new("ankane/pgvector", "latest")
