@@ -10,6 +10,8 @@ publish.workspace = true
 tribal-domain.workspace = true
 tribal-db.workspace = true
 tribal-inference.workspace = true
+chrono = { workspace = true }
+serde_json = { workspace = true }
 sqlx = { workspace = true, features = ["migrate"] }
 testcontainers.workspace = true
 thiserror.workspace = true
