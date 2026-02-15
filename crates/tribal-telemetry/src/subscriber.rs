@@ -47,10 +47,27 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 ///
 /// Does not panic.  All failure modes return `Err`.
 pub fn init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
-    if INITIALISED.swap(true, Ordering::SeqCst) {
+    if INITIALISED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err(TelemetryError::SubscriberAlreadyInitialised);
     }
 
+    match try_init_subscriber(config) {
+        Ok(guard) => Ok(guard),
+        Err(err) => {
+            INITIALISED.store(false, Ordering::SeqCst);
+            Err(err)
+        }
+    }
+}
+
+/// Inner implementation that builds and installs the subscriber.
+///
+/// Separated from [`init_subscriber`] so that the `INITIALISED` flag can
+/// be reset cleanly on failure without duplicating the guard logic.
+fn try_init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
     // 1. Determine filter directive: TRIBAL_LOG env var overrides config.
     let directive = std::env::var("TRIBAL_LOG").unwrap_or(config.level);
 
