@@ -149,27 +149,51 @@ mod tests {
         assert!(config.include_llm_content);
     }
 
+    /// Roundtrip-tests every `LogFormat` variant through serde.
+    ///
+    /// The `match` is a compile-time exhaustiveness guard: adding a
+    /// variant without listing it here fails the build.
     #[test]
-    fn test_deserialise_log_format_json() {
-        let format: LogFormat = serde_json::from_str(r#""json""#).unwrap();
-        assert_eq!(format, LogFormat::Json);
+    fn test_deserialise_log_format_variants() {
+        // Exhaustiveness guard — adding a variant without a test case
+        // produces a compile error here.
+        #[allow(dead_code)]
+        fn check_exhaustiveness(v: LogFormat) {
+            match v {
+                LogFormat::Json | LogFormat::Pretty => {}
+            }
+        }
+
+        let cases: &[(LogFormat, &str)] = &[
+            (LogFormat::Json, r#""json""#),
+            (LogFormat::Pretty, r#""pretty""#),
+        ];
+        for &(expected, json) in cases {
+            let parsed: LogFormat = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed, expected, "deserialising {json}");
+        }
     }
 
+    /// Roundtrip-tests every `LogOutput` variant through serde.
+    ///
+    /// The `match` is a compile-time exhaustiveness guard: adding a
+    /// variant without listing it here fails the build.
     #[test]
-    fn test_deserialise_log_format_pretty() {
-        let format: LogFormat = serde_json::from_str(r#""pretty""#).unwrap();
-        assert_eq!(format, LogFormat::Pretty);
-    }
+    fn test_deserialise_log_output_variants() {
+        #[allow(dead_code)]
+        fn check_exhaustiveness(v: LogOutput) {
+            match v {
+                LogOutput::Stderr | LogOutput::File => {}
+            }
+        }
 
-    #[test]
-    fn test_deserialise_log_output_stderr() {
-        let output: LogOutput = serde_json::from_str(r#""stderr""#).unwrap();
-        assert_eq!(output, LogOutput::Stderr);
-    }
-
-    #[test]
-    fn test_deserialise_log_output_file() {
-        let output: LogOutput = serde_json::from_str(r#""file""#).unwrap();
-        assert_eq!(output, LogOutput::File);
+        let cases: &[(LogOutput, &str)] = &[
+            (LogOutput::Stderr, r#""stderr""#),
+            (LogOutput::File, r#""file""#),
+        ];
+        for &(expected, json) in cases {
+            let parsed: LogOutput = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed, expected, "deserialising {json}");
+        }
     }
 }
