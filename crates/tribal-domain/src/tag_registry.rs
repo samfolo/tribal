@@ -6,12 +6,13 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 
 /// An entry in the global tag registry.
 ///
 /// Each row represents a canonical tag. The database table is the registry;
 /// each row is an entry. Tags are stored in canonical form (lowercase, trimmed).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TypedBuilder)]
 pub struct TagRegistryEntry {
     /// The canonical tag string (lowercase).
     tag: String,

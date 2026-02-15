@@ -17,8 +17,8 @@ mod job;
 mod knowledge;
 mod pipeline_stage;
 mod principal;
-mod prompt_stage;
 mod project;
+mod prompt_stage;
 mod prompt_version;
 mod reference;
 mod reference_kind;
@@ -48,9 +48,9 @@ pub use item_observation::{ItemObservation, ItemObservationBuilder};
 pub use job::{Job, JobBuilder, JobOutcome, JobStatus};
 pub use knowledge::{Confidence, KnowledgeItem, KnowledgeItemBuilder, KnowledgeKind};
 pub use pipeline_stage::PipelineStage;
-pub use principal::Principal;
-pub use prompt_stage::PromptStage;
+pub use principal::{Principal, PrincipalBuilder};
 pub use project::{Project, ProjectBuilder};
+pub use prompt_stage::PromptStage;
 pub use prompt_version::{PromptVersion, PromptVersionBuilder};
 pub use reference::{Reference, ReferenceBuilder};
 pub use reference_kind::ReferenceKind;
@@ -61,12 +61,12 @@ pub use relation::{
 pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
 pub use source_type::SourceType;
 pub use standing::{Standing, StandingBuilder};
-pub use tag_registry::TagRegistryEntry;
+pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};
 pub use task::{Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
 pub use token_usage::{TokenUsage, TokenUsageBuilder};
 pub use triage::{
-    SimilarItem, TriageOutcome, TriageResult, TriageResultBuilder, TriageSimilarItemDecision,
-    TriageSimilarItemDecisionBuilder,
+    SimilarItem, SimilarItemBuilder, TriageOutcome, TriageResult, TriageResultBuilder,
+    TriageSimilarItemDecision, TriageSimilarItemDecisionBuilder,
 };
 
 /// Generates a serde roundtrip test for an enum with a compile-time
