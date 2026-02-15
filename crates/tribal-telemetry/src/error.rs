@@ -15,7 +15,7 @@ pub enum TelemetryError {
     /// The global tracing subscriber has already been initialised.
     ///
     /// [`init_subscriber`](crate::init_subscriber) can only be called
-    /// once per programme lifetime.  Subsequent calls return this error
+    /// once per program lifetime.  Subsequent calls return this error
     /// instead of panicking.
     #[error("subscriber already initialised")]
     SubscriberAlreadyInitialised,
@@ -69,13 +69,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn display_subscriber_already_initialised() {
+    fn test_display_subscriber_already_initialised() {
         let err = TelemetryError::SubscriberAlreadyInitialised;
         assert_eq!(err.to_string(), "subscriber already initialised");
     }
 
     #[test]
-    fn display_invalid_filter_directive() {
+    fn test_display_invalid_filter_directive() {
         let source = tracing_subscriber::EnvFilter::try_new("not valid [[")
             .unwrap_err();
         let err = TelemetryError::InvalidFilterDirective {
@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn display_file_output_missing_path() {
+    fn test_display_file_output_missing_path() {
         let err = TelemetryError::FileOutputMissingPath;
         assert_eq!(
             err.to_string(),
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn display_file_creation() {
+    fn test_display_file_creation() {
         let err = TelemetryError::FileCreation {
             path: "/nonexistent/dir/log.jsonl".to_owned(),
             source: std::io::Error::new(
