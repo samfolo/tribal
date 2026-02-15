@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::subscriber::set_global_default;
-use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 use crate::{
     config::{LogFormat, LogOutput, LoggingConfig},
@@ -106,12 +106,9 @@ pub fn init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, Telemetr
                 .map_err(|source| TelemetryError::SetGlobalDefault { source })?;
         }
         LogFormat::Pretty => {
-            let subscriber = Registry::default().with(env_filter).with(
-                fmt::layer()
-                    .pretty()
-                    .with_writer(writer)
-                    .with_target(true),
-            );
+            let subscriber = Registry::default()
+                .with(env_filter)
+                .with(fmt::layer().pretty().with_writer(writer).with_target(true));
             set_global_default(subscriber)
                 .map_err(|source| TelemetryError::SetGlobalDefault { source })?;
         }
