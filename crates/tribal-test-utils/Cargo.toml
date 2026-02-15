@@ -10,3 +10,11 @@ publish.workspace = true
 tribal-domain.workspace = true
 tribal-db.workspace = true
 tribal-inference.workspace = true
+sqlx = { workspace = true, features = ["migrate"] }
+testcontainers.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
