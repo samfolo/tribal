@@ -6,6 +6,8 @@
 
 mod db;
 mod error;
+mod factories;
 
 pub use db::{TestContext, TestTransaction, test_context};
 pub use error::TestDbError;
+pub use factories::*;

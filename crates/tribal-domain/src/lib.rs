@@ -29,10 +29,10 @@ mod task;
 mod token_usage;
 mod triage;
 
-pub use auth_token::AuthToken;
+pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use database_config::DatabaseConfig;
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
-pub use embedding::Embedding;
+pub use embedding::{Embedding, EmbeddingBuilder};
 pub use embedding_purpose::EmbeddingPurpose;
 pub use error_code::McpErrorCode;
 pub use feedback_rating::FeedbackRating;
@@ -42,23 +42,29 @@ pub use ids::{
     RetrievalFeedbackId, SessionId, TaskId, TokenUsageId, TriageResultId,
     TriageSimilarItemDecisionId,
 };
-pub use item_observation::ItemObservation;
-pub use job::{Job, JobOutcome, JobStatus};
-pub use knowledge::{Confidence, KnowledgeItem, KnowledgeKind};
+pub use item_observation::{ItemObservation, ItemObservationBuilder};
+pub use job::{Job, JobBuilder, JobOutcome, JobStatus};
+pub use knowledge::{Confidence, KnowledgeItem, KnowledgeItemBuilder, KnowledgeKind};
 pub use pipeline_stage::PipelineStage;
 pub use principal::Principal;
-pub use project::Project;
-pub use prompt_version::PromptVersion;
-pub use reference::Reference;
+pub use project::{Project, ProjectBuilder};
+pub use prompt_version::{PromptVersion, PromptVersionBuilder};
+pub use reference::{Reference, ReferenceBuilder};
 pub use reference_kind::ReferenceKind;
-pub use relation::{KnowledgeItemRelation, RelationHintType, RelationKind, RelationSuggestion};
-pub use retrieval_feedback::RetrievalFeedback;
+pub use relation::{
+    KnowledgeItemRelation, KnowledgeItemRelationBuilder, RelationHintType, RelationKind,
+    RelationSuggestion,
+};
+pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
 pub use source_type::SourceType;
-pub use standing::Standing;
+pub use standing::{Standing, StandingBuilder};
 pub use tag_registry::TagRegistryEntry;
-pub use task::{Task, TaskErrorKind, TaskStatus, TaskType};
-pub use token_usage::TokenUsage;
-pub use triage::{SimilarItem, TriageOutcome, TriageResult, TriageSimilarItemDecision};
+pub use task::{Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
+pub use token_usage::{TokenUsage, TokenUsageBuilder};
+pub use triage::{
+    SimilarItem, TriageOutcome, TriageResult, TriageResultBuilder, TriageSimilarItemDecision,
+    TriageSimilarItemDecisionBuilder,
+};
 
 /// Generates a serde roundtrip test for an enum with a compile-time
 /// exhaustiveness check.
