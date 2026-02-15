@@ -165,7 +165,10 @@ mod tests {
             matches!(result, Err(TelemetryError::InvalidFilterDirective { .. })),
             "expected InvalidFilterDirective, got {result:?}",
         );
-        assert!(!INITIALISED.load(Ordering::SeqCst), "flag should be reset after failure");
+        assert!(
+            !INITIALISED.load(Ordering::SeqCst),
+            "flag should be reset after failure"
+        );
     }
 
     #[test]
@@ -184,7 +187,10 @@ mod tests {
             matches!(result, Err(TelemetryError::FileOutputMissingPath)),
             "expected FileOutputMissingPath, got {result:?}",
         );
-        assert!(!INITIALISED.load(Ordering::SeqCst), "flag should be reset after failure");
+        assert!(
+            !INITIALISED.load(Ordering::SeqCst),
+            "flag should be reset after failure"
+        );
     }
 
     #[test]
@@ -203,7 +209,10 @@ mod tests {
             matches!(result, Err(TelemetryError::FileCreation { .. })),
             "expected FileCreation, got {result:?}",
         );
-        assert!(!INITIALISED.load(Ordering::SeqCst), "flag should be reset after failure");
+        assert!(
+            !INITIALISED.load(Ordering::SeqCst),
+            "flag should be reset after failure"
+        );
     }
 
     #[test]
