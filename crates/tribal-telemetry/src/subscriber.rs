@@ -144,6 +144,12 @@ mod tests {
     /// flag.  Without this, parallel test threads race on the `AtomicBool`.
     static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
+    // Note: each test calls `INITIALISED.store(false, ...)` at the start
+    // to reset state from whichever test ran previously.  Error-path tests
+    // do not need end-of-test cleanup because `init_subscriber` resets the
+    // flag automatically when it fails.  Tests where the second call may
+    // *succeed* still need explicit cleanup at the end.
+
     #[test]
     fn test_invalid_filter_directive_returns_error() {
         let _lock = TEST_MUTEX.lock().unwrap();
@@ -155,12 +161,11 @@ mod tests {
         };
         let result = init_subscriber(config);
 
-        INITIALISED.store(false, Ordering::SeqCst);
-
         assert!(
             matches!(result, Err(TelemetryError::InvalidFilterDirective { .. })),
             "expected InvalidFilterDirective, got {result:?}",
         );
+        assert!(!INITIALISED.load(Ordering::SeqCst), "flag should be reset after failure");
     }
 
     #[test]
@@ -175,12 +180,11 @@ mod tests {
         };
         let result = init_subscriber(config);
 
-        INITIALISED.store(false, Ordering::SeqCst);
-
         assert!(
             matches!(result, Err(TelemetryError::FileOutputMissingPath)),
             "expected FileOutputMissingPath, got {result:?}",
         );
+        assert!(!INITIALISED.load(Ordering::SeqCst), "flag should be reset after failure");
     }
 
     #[test]
@@ -195,11 +199,40 @@ mod tests {
         };
         let result = init_subscriber(config);
 
-        INITIALISED.store(false, Ordering::SeqCst);
-
         assert!(
             matches!(result, Err(TelemetryError::FileCreation { .. })),
             "expected FileCreation, got {result:?}",
         );
+        assert!(!INITIALISED.load(Ordering::SeqCst), "flag should be reset after failure");
+    }
+
+    #[test]
+    fn test_failed_init_allows_retry() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        INITIALISED.store(false, Ordering::SeqCst);
+
+        // First call with an invalid directive fails.
+        let bad_config = LoggingConfig {
+            level: "not valid [[".to_owned(),
+            ..LoggingConfig::default()
+        };
+        let result = init_subscriber(bad_config);
+        assert!(result.is_err());
+
+        // Flag was reset — a subsequent call with valid config is not
+        // rejected as `SubscriberAlreadyInitialised`.
+        let good_config = LoggingConfig::default();
+        let result = init_subscriber(good_config);
+
+        // We expect `SetGlobalDefault` (the unit test process may already
+        // have a subscriber) rather than `SubscriberAlreadyInitialised`.
+        // The key assertion is that the flag did not block retry.
+        assert!(
+            !matches!(result, Err(TelemetryError::SubscriberAlreadyInitialised)),
+            "flag should have been reset after failed init, got {result:?}",
+        );
+
+        // Clean up: the second call may have succeeded, leaving the flag true.
+        INITIALISED.store(false, Ordering::SeqCst);
     }
 }
