@@ -1,4 +1,14 @@
+//! Relation types and the knowledge item relation entity.
+//!
+//! Relationships are append-only and batch-committed via `relation_batch_id`.
+//! New understanding is expressed by adding new relations, never by modifying
+//! or deleting existing ones.
+
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
+
+use crate::{KnowledgeItemId, PrincipalId, RelationBatchId, RelationId};
 
 /// The type of a committed relationship between two knowledge items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -43,6 +53,66 @@ pub enum RelationSuggestion {
 pub enum RelationHintType {
     /// Intra-batch derivation hint from the extraction agent.
     DerivedFrom,
+}
+
+/// A committed relationship between two knowledge items.
+///
+/// Relationships are append-only and batch-committed. `source_id` is the
+/// item asserting the relationship (typically newer); `target_id` is the
+/// item being referenced. Bidirectional by query, unidirectional by storage.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TypedBuilder)]
+pub struct KnowledgeItemRelation {
+    /// Unique identifier with `rel_` prefix.
+    id: RelationId,
+    /// Groups relations from one relation task attempt.
+    relation_batch_id: RelationBatchId,
+    /// The item asserting the relationship (typically newer).
+    source_id: KnowledgeItemId,
+    /// The item being referenced.
+    target_id: KnowledgeItemId,
+    /// The type of relationship.
+    relation_type: RelationKind,
+    /// The principal who created this relation.
+    principal_id: PrincipalId,
+    /// When this relation was created.
+    created_at: DateTime<Utc>,
+}
+
+impl KnowledgeItemRelation {
+    /// Returns the relation identifier.
+    pub fn id(&self) -> RelationId {
+        self.id
+    }
+
+    /// Returns the relation batch identifier.
+    pub fn relation_batch_id(&self) -> RelationBatchId {
+        self.relation_batch_id
+    }
+
+    /// Returns the source item (asserting the relationship).
+    pub fn source_id(&self) -> KnowledgeItemId {
+        self.source_id
+    }
+
+    /// Returns the target item (being referenced).
+    pub fn target_id(&self) -> KnowledgeItemId {
+        self.target_id
+    }
+
+    /// Returns the relation type.
+    pub fn relation_type(&self) -> RelationKind {
+        self.relation_type
+    }
+
+    /// Returns the principal who created this relation.
+    pub fn principal_id(&self) -> PrincipalId {
+        self.principal_id
+    }
+
+    /// Returns when this relation was created.
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
 }
 
 #[cfg(test)]
