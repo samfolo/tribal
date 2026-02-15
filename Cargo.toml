@@ -15,7 +15,7 @@ members = [
 edition = "2024"
 version = "0.1.0"
 license = "MIT"
-rust-version = "1.89"
+rust-version = "1.93"
 publish = false
 
 [workspace.dependencies]
