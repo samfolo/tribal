@@ -119,13 +119,17 @@ pub fn init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, Telemetr
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    /// Serialises tests that manipulate the process-global `INITIALISED`
+    /// flag.  Without this, parallel test threads race on the `AtomicBool`.
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_invalid_filter_directive_returns_error() {
-        // Reset the global flag so this test can call init_subscriber.
-        // This is safe in unit tests because we expect it to fail before
-        // reaching set_global_default.
+        let _lock = TEST_MUTEX.lock().unwrap();
         INITIALISED.store(false, Ordering::SeqCst);
 
         let config = LoggingConfig {
@@ -134,7 +138,6 @@ mod tests {
         };
         let result = init_subscriber(config);
 
-        // Reset so other tests are not affected.
         INITIALISED.store(false, Ordering::SeqCst);
 
         assert!(
@@ -145,6 +148,7 @@ mod tests {
 
     #[test]
     fn test_file_output_without_path_returns_error() {
+        let _lock = TEST_MUTEX.lock().unwrap();
         INITIALISED.store(false, Ordering::SeqCst);
 
         let config = LoggingConfig {
@@ -164,6 +168,7 @@ mod tests {
 
     #[test]
     fn test_file_output_with_nonexistent_directory_returns_error() {
+        let _lock = TEST_MUTEX.lock().unwrap();
         INITIALISED.store(false, Ordering::SeqCst);
 
         let config = LoggingConfig {
