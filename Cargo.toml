@@ -35,6 +35,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Observability
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "registry"] }
+tracing-appender = "0.2"
 
 # Date and time
 chrono = { version = "0.4", features = ["serde"] }
