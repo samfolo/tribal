@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use sqlx::PgConnection;
 use tribal_domain::{Principal, PrincipalId};
+use typed_builder::TypedBuilder;
 
 use crate::DbError;
 
@@ -16,11 +17,12 @@ use crate::DbError;
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING *`.
-#[derive(Debug)]
+#[derive(Debug, TypedBuilder)]
 pub struct NewPrincipal {
     /// Human-readable key (e.g. `"user:sam"`, `"principal:local"`).
     pub principal_key: String,
     /// Optional display name.
+    #[builder(default)]
     pub display_name: Option<String>,
 }
 
