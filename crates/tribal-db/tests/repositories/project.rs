@@ -135,6 +135,18 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
         .await
         .expect("insert second");
 
+    // Both inserts share the same transaction timestamp (now() is
+    // transaction_timestamp()).  Shift the second project's created_at
+    // backward so it should sort before the first.
+    sqlx::query!(
+        "UPDATE projects SET created_at = $1 WHERE id = $2",
+        first.created_at() - chrono::Duration::seconds(10),
+        second.id().inner(),
+    )
+    .execute(&mut *txn)
+    .await
+    .expect("backdate second");
+
     let projects = repo.list(&mut txn).await.expect("list");
 
     assert!(projects.len() >= 2);
@@ -142,8 +154,8 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
     let first_pos = ids.iter().position(|id| *id == first.id()).unwrap();
     let second_pos = ids.iter().position(|id| *id == second.id()).unwrap();
     assert!(
-        first_pos < second_pos,
-        "first inserted should appear before second"
+        second_pos < first_pos,
+        "second (backdated) should appear before first"
     );
 }
 

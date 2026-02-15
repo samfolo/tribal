@@ -12,6 +12,7 @@ use typed_builder::TypedBuilder;
 
 use crate::DbError;
 
+const SCHEMA_VERSION_EXCEEDS_I32: &str = "schema_version exceeds i32::MAX";
 const SCHEMA_VERSION_OVERFLOW: &str = "negative schema_version in database — data corruption";
 
 /// Input for creating a new project.
@@ -102,7 +103,7 @@ impl ProjectRepository for PgProjectRepository {
         new_project: &NewProject,
     ) -> Result<Project, DbError> {
         let schema_version =
-            i32::try_from(new_project.schema_version).expect("schema_version exceeds i32::MAX");
+            i32::try_from(new_project.schema_version).expect(SCHEMA_VERSION_EXCEEDS_I32);
 
         let row = sqlx::query!(
             r#"
