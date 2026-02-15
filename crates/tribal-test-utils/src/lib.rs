@@ -1,4 +1,5 @@
 #![warn(clippy::pedantic)]
+#![allow(clippy::must_use_candidate)]
 #![deny(warnings)]
 //! Shared test infrastructure for Tribal: domain type factories,
 //! test database setup and teardown, mock inference providers,
@@ -6,6 +7,8 @@
 
 mod db;
 mod error;
+mod factories;
 
 pub use db::{TestContext, TestTransaction, test_context};
 pub use error::TestDbError;
+pub use factories::*;
