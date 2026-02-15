@@ -107,6 +107,12 @@ macro_rules! define_id {
                 id.to_string()
             }
         }
+
+        impl From<uuid::Uuid> for $name {
+            fn from(uuid: uuid::Uuid) -> Self {
+                Self(uuid)
+            }
+        }
     };
 }
 
@@ -171,6 +177,13 @@ macro_rules! id_tests {
             let copied = id;
             // Both bindings remain usable — `id` was not moved.
             assert_eq!(id, copied);
+        }
+
+        #[test]
+        fn test_from_uuid() {
+            let raw = uuid::Uuid::new_v4();
+            let id = <$type>::from(raw);
+            assert_eq!(id.inner(), &raw);
         }
     };
 }
