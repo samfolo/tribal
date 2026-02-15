@@ -47,6 +47,7 @@ anyhow = "1"
 
 # Testing
 tempfile = "3"
+testcontainers = "0.23"
 
 # Internal crates
 tribal-domain = { path = "crates/tribal-domain" }
