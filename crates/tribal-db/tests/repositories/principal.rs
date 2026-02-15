@@ -3,6 +3,20 @@ use tribal_domain::PrincipalId;
 use tribal_test_utils::{a_new_principal, test_context};
 
 #[tokio::test]
+async fn test_insert_with_none_optional_fields_returns_none() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgPrincipalRepository;
+
+    let new = a_new_principal()
+        .principal_key("user:null-fields".to_owned())
+        .build();
+    let principal = repo.insert(&mut txn, &new).await.expect("insert");
+
+    assert_eq!(principal.display_name(), None);
+}
+
+#[tokio::test]
 async fn test_insert_returns_populated_principal() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
