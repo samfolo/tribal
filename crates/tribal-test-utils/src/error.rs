@@ -1,18 +1,20 @@
-//! Crate-level error type for `tribal-test-utils`.
+//! Error types for `tribal-test-utils`.
 //!
-//! [`TestError`] covers failures during test infrastructure setup:
-//! container startup, migration execution, and connection pool creation.
+//! Each class of test infrastructure has its own scoped error enum for
+//! compile-time exhaustiveness. [`TestDbError`] covers database
+//! infrastructure failures: container startup, migration execution, and
+//! connection pool creation.
 
 use thiserror::Error;
 
-/// Errors produced by the test infrastructure layer.
+/// Errors produced by the database test infrastructure.
 ///
 /// All variants use named fields. `#[source]` preserves the error chain
 /// for debugging. These errors are intentionally **not** recoverable — a
 /// test infrastructure failure should cause the test to abort with a
 /// clear diagnostic message.
 #[derive(Debug, Error)]
-pub enum TestError {
+pub enum TestDbError {
     /// The testcontainers container failed to start, or host resolution
     /// failed after startup.
     ///
@@ -71,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_display_migration() {
-        let err = TestError::Migration {
+        let err = TestDbError::Migration {
             source: sqlx::migrate::MigrateError::VersionMissing(1),
         };
         assert_eq!(err.to_string(), "migration failed against test database");
@@ -79,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_display_pool_creation() {
-        let err = TestError::PoolCreation {
+        let err = TestDbError::PoolCreation {
             context: "connecting to 127.0.0.1:54321".to_owned(),
             source: sqlx::Error::RowNotFound,
         };
@@ -91,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_display_transaction_begin() {
-        let err = TestError::TransactionBegin {
+        let err = TestDbError::TransactionBegin {
             source: sqlx::Error::RowNotFound,
         };
         assert_eq!(err.to_string(), "failed to begin test transaction");
@@ -100,7 +102,7 @@ mod tests {
     #[test]
     fn test_from_migrate_error() {
         let migrate_err = sqlx::migrate::MigrateError::VersionMissing(42);
-        let err = TestError::from(migrate_err);
-        assert!(matches!(err, TestError::Migration { .. }));
+        let err = TestDbError::from(migrate_err);
+        assert!(matches!(err, TestDbError::Migration { .. }));
     }
 }
