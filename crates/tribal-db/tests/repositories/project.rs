@@ -15,7 +15,7 @@ async fn test_insert_returns_populated_project() {
         .settings(serde_json::json!({"key": "value"}))
         .build();
 
-    let project = repo.insert(&mut *txn, &new).await.expect("insert");
+    let project = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert_eq!(project.git_remote(), "git@github.com:test/insert-test.git");
     assert_eq!(project.name(), "insert-test");
@@ -35,9 +35,9 @@ async fn test_insert_duplicate_git_remote_returns_unique_violation() {
     let new = a_new_project()
         .git_remote("git@github.com:test/dup-remote.git".to_owned())
         .build();
-    repo.insert(&mut *txn, &new).await.expect("first insert");
+    repo.insert(&mut txn, &new).await.expect("first insert");
 
-    let result = repo.insert(&mut *txn, &new).await;
+    let result = repo.insert(&mut txn, &new).await;
     assert!(
         matches!(result, Err(DbError::UniqueViolation { .. })),
         "expected UniqueViolation, got: {result:?}"
@@ -53,10 +53,10 @@ async fn test_find_by_id_returns_project() {
     let new = a_new_project()
         .git_remote("git@github.com:test/find-id.git".to_owned())
         .build();
-    let inserted = repo.insert(&mut *txn, &new).await.expect("insert");
+    let inserted = repo.insert(&mut txn, &new).await.expect("insert");
 
     let found = repo
-        .find_by_id(&mut *txn, inserted.id())
+        .find_by_id(&mut txn, inserted.id())
         .await
         .expect("find_by_id");
 
@@ -70,7 +70,7 @@ async fn test_find_by_id_not_found_returns_error() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgProjectRepository;
 
-    let result = repo.find_by_id(&mut *txn, ProjectId::new()).await;
+    let result = repo.find_by_id(&mut txn, ProjectId::new()).await;
     assert!(
         matches!(result, Err(DbError::NotFound { .. })),
         "expected NotFound, got: {result:?}"
@@ -85,10 +85,10 @@ async fn test_find_by_git_remote_returns_project() {
 
     let remote = "git@github.com:test/find-remote.git";
     let new = a_new_project().git_remote(remote.to_owned()).build();
-    let inserted = repo.insert(&mut *txn, &new).await.expect("insert");
+    let inserted = repo.insert(&mut txn, &new).await.expect("insert");
 
     let found = repo
-        .find_by_git_remote(&mut *txn, remote)
+        .find_by_git_remote(&mut txn, remote)
         .await
         .expect("find_by_git_remote");
 
@@ -103,7 +103,7 @@ async fn test_find_by_git_remote_not_found_returns_none() {
     let repo = PgProjectRepository;
 
     let result = repo
-        .find_by_git_remote(&mut *txn, "git@github.com:nonexistent/repo.git")
+        .find_by_git_remote(&mut txn, "git@github.com:nonexistent/repo.git")
         .await
         .expect("find_by_git_remote");
 
@@ -118,7 +118,7 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
 
     let first = repo
         .insert(
-            &mut *txn,
+            &mut txn,
             &a_new_project()
                 .git_remote("git@github.com:test/list-first.git".to_owned())
                 .build(),
@@ -127,7 +127,7 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
         .expect("insert first");
     let second = repo
         .insert(
-            &mut *txn,
+            &mut txn,
             &a_new_project()
                 .git_remote("git@github.com:test/list-second.git".to_owned())
                 .build(),
@@ -135,7 +135,7 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
         .await
         .expect("insert second");
 
-    let projects = repo.list(&mut *txn).await.expect("list");
+    let projects = repo.list(&mut txn).await.expect("list");
 
     assert!(projects.len() >= 2);
     let ids: Vec<ProjectId> = projects.iter().map(|p| p.id()).collect();
@@ -153,6 +153,6 @@ async fn test_list_returns_empty_vec_when_no_projects() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgProjectRepository;
 
-    let projects = repo.list(&mut *txn).await.expect("list");
+    let projects = repo.list(&mut txn).await.expect("list");
     assert!(projects.is_empty());
 }

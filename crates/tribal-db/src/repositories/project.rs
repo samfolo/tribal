@@ -64,11 +64,7 @@ pub trait ProjectRepository {
     /// Returns [`DbError::NotFound`] if no project with the given ID
     /// exists (a broken reference).  Returns [`DbError::QueryFailed`]
     /// on database errors.
-    async fn find_by_id(
-        &self,
-        conn: &mut PgConnection,
-        id: ProjectId,
-    ) -> Result<Project, DbError>;
+    async fn find_by_id(&self, conn: &mut PgConnection, id: ProjectId) -> Result<Project, DbError>;
 
     /// Finds a project by its git remote URL.
     ///
@@ -131,10 +127,7 @@ impl ProjectRepository for PgProjectRepository {
                 .name(r.name)
                 .default_branch(r.default_branch)
                 .project_type(r.project_type)
-                .schema_version(
-                    u32::try_from(r.schema_version)
-                        .expect(SCHEMA_VERSION_OVERFLOW),
-                )
+                .schema_version(u32::try_from(r.schema_version).expect(SCHEMA_VERSION_OVERFLOW))
                 .settings(r.settings)
                 .created_at(r.created_at)
                 .updated_at(r.updated_at)
@@ -152,11 +145,7 @@ impl ProjectRepository for PgProjectRepository {
         }
     }
 
-    async fn find_by_id(
-        &self,
-        conn: &mut PgConnection,
-        id: ProjectId,
-    ) -> Result<Project, DbError> {
+    async fn find_by_id(&self, conn: &mut PgConnection, id: ProjectId) -> Result<Project, DbError> {
         let r = sqlx::query!(r#"SELECT * FROM projects WHERE id = $1"#, id.inner())
             .fetch_optional(&mut *conn)
             .await
@@ -175,10 +164,7 @@ impl ProjectRepository for PgProjectRepository {
             .name(r.name)
             .default_branch(r.default_branch)
             .project_type(r.project_type)
-            .schema_version(
-                u32::try_from(r.schema_version)
-                    .expect(SCHEMA_VERSION_OVERFLOW),
-            )
+            .schema_version(u32::try_from(r.schema_version).expect(SCHEMA_VERSION_OVERFLOW))
             .settings(r.settings)
             .created_at(r.created_at)
             .updated_at(r.updated_at)
@@ -208,10 +194,7 @@ impl ProjectRepository for PgProjectRepository {
                 .name(r.name)
                 .default_branch(r.default_branch)
                 .project_type(r.project_type)
-                .schema_version(
-                    u32::try_from(r.schema_version)
-                        .expect(SCHEMA_VERSION_OVERFLOW),
-                )
+                .schema_version(u32::try_from(r.schema_version).expect(SCHEMA_VERSION_OVERFLOW))
                 .settings(r.settings)
                 .created_at(r.created_at)
                 .updated_at(r.updated_at)
@@ -237,10 +220,7 @@ impl ProjectRepository for PgProjectRepository {
                     .name(r.name)
                     .default_branch(r.default_branch)
                     .project_type(r.project_type)
-                    .schema_version(
-                        u32::try_from(r.schema_version)
-                            .expect(SCHEMA_VERSION_OVERFLOW),
-                    )
+                    .schema_version(u32::try_from(r.schema_version).expect(SCHEMA_VERSION_OVERFLOW))
                     .settings(r.settings)
                     .created_at(r.created_at)
                     .updated_at(r.updated_at)

@@ -13,7 +13,7 @@ async fn test_insert_returns_populated_principal() {
         .display_name(Some("Test User".to_owned()))
         .build();
 
-    let principal = repo.insert(&mut *txn, &new).await.expect("insert");
+    let principal = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert_eq!(principal.principal_key(), "user:insert-test");
     assert_eq!(principal.display_name(), Some("Test User"));
@@ -29,9 +29,9 @@ async fn test_insert_duplicate_principal_key_returns_unique_violation() {
     let new = a_new_principal()
         .principal_key("user:dup-key".to_owned())
         .build();
-    repo.insert(&mut *txn, &new).await.expect("first insert");
+    repo.insert(&mut txn, &new).await.expect("first insert");
 
-    let result = repo.insert(&mut *txn, &new).await;
+    let result = repo.insert(&mut txn, &new).await;
     assert!(
         matches!(result, Err(DbError::UniqueViolation { .. })),
         "expected UniqueViolation, got: {result:?}"
@@ -47,10 +47,10 @@ async fn test_find_by_id_returns_principal() {
     let new = a_new_principal()
         .principal_key("user:find-id".to_owned())
         .build();
-    let inserted = repo.insert(&mut *txn, &new).await.expect("insert");
+    let inserted = repo.insert(&mut txn, &new).await.expect("insert");
 
     let found = repo
-        .find_by_id(&mut *txn, inserted.id())
+        .find_by_id(&mut txn, inserted.id())
         .await
         .expect("find_by_id");
 
@@ -64,7 +64,7 @@ async fn test_find_by_id_not_found_returns_error() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgPrincipalRepository;
 
-    let result = repo.find_by_id(&mut *txn, PrincipalId::new()).await;
+    let result = repo.find_by_id(&mut txn, PrincipalId::new()).await;
     assert!(
         matches!(result, Err(DbError::NotFound { .. })),
         "expected NotFound, got: {result:?}"
@@ -80,10 +80,10 @@ async fn test_find_by_key_returns_principal() {
     let new = a_new_principal()
         .principal_key("user:find-key".to_owned())
         .build();
-    let inserted = repo.insert(&mut *txn, &new).await.expect("insert");
+    let inserted = repo.insert(&mut txn, &new).await.expect("insert");
 
     let found = repo
-        .find_by_key(&mut *txn, "user:find-key")
+        .find_by_key(&mut txn, "user:find-key")
         .await
         .expect("find_by_key");
 
@@ -98,7 +98,7 @@ async fn test_find_by_key_not_found_returns_none() {
     let repo = PgPrincipalRepository;
 
     let result = repo
-        .find_by_key(&mut *txn, "user:nonexistent")
+        .find_by_key(&mut txn, "user:nonexistent")
         .await
         .expect("find_by_key");
 
