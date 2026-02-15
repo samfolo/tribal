@@ -104,3 +104,19 @@ pub use tag_registry::*;
 pub use task::*;
 pub use token_usage::*;
 pub use triage::*;
+
+// ---------------------------------------------------------------------------
+// Macro-level smoke test — verifies that generated setters override defaults.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_setter_overrides_default() {
+        let project = a_project().name("custom".to_owned()).build();
+        assert_eq!(project.name(), "custom");
+        assert_eq!(project.default_branch(), "main");
+    }
+}
