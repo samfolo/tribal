@@ -1,0 +1,38 @@
+use chrono::Utc;
+use tribal_domain::{
+    FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedback, RetrievalFeedbackId,
+};
+
+define_factory! {
+    /// Factory for [`RetrievalFeedback`] instances.
+    pub struct RetrievalFeedbackFactory for RetrievalFeedback {
+        id: RetrievalFeedbackId = RetrievalFeedbackId::new(),
+        trace_id: String = "00000000000000000000000000000001".to_owned(),
+        query_text: String = "test query".to_owned(),
+        embedding_model: String = "nomic-embed-text:v1.5".to_owned(),
+        returned_item_ids: Vec<KnowledgeItemId> = Vec::new(),
+        explored_anchor_ids: Vec<KnowledgeItemId> = Vec::new(),
+        policy_version: Option<String> = None,
+        principal_id: PrincipalId = PrincipalId::new(),
+        rating: FeedbackRating = FeedbackRating::Positive,
+        notes: Option<String> = None,
+        created_at: chrono::DateTime<Utc> = Utc::now(),
+    }
+}
+
+/// Returns a [`RetrievalFeedbackFactory`] with sensible defaults.
+pub fn a_retrieval_feedback() -> RetrievalFeedbackFactory {
+    RetrievalFeedbackFactory::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_builds_with_defaults() {
+        let f = a_retrieval_feedback().build();
+        assert_eq!(f.rating(), FeedbackRating::Positive);
+        assert_eq!(f.query_text(), "test query");
+    }
+}
