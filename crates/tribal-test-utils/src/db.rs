@@ -10,12 +10,12 @@
 
 use std::ops::{Deref, DerefMut};
 
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgPool, Postgres, Transaction};
-use testcontainers::core::wait::LogWaitStrategy;
-use testcontainers::core::{IntoContainerPort, WaitFor};
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction, postgres::PgPoolOptions};
+use testcontainers::{
+    ContainerAsync, GenericImage, ImageExt,
+    core::{IntoContainerPort, WaitFor, wait::LogWaitStrategy},
+    runners::AsyncRunner,
+};
 
 use crate::TestDbError;
 
@@ -57,8 +57,7 @@ impl TestContext {
         // once for TCP. Waiting for the second occurrence ensures the TCP
         // socket is ready before we attempt to connect.
         let ready_condition = WaitFor::log(
-            LogWaitStrategy::stdout("database system is ready to accept connections")
-                .with_times(2),
+            LogWaitStrategy::stdout("database system is ready to accept connections").with_times(2),
         );
 
         let container = GenericImage::new("ankane/pgvector", "latest")
@@ -82,16 +81,14 @@ impl TestContext {
                 source,
             })?;
 
-        let host_port = container
-            .get_host_port_ipv4(5432)
-            .await
-            .map_err(|source| TestDbError::PortMapping {
+        let host_port = container.get_host_port_ipv4(5432).await.map_err(|source| {
+            TestDbError::PortMapping {
                 container_port: 5432,
                 source,
-            })?;
+            }
+        })?;
 
-        let database_url =
-            format!("postgres://tribal:tribal@{host}:{host_port}/tribal_test");
+        let database_url = format!("postgres://tribal:tribal@{host}:{host_port}/tribal_test");
 
         let pool = PgPoolOptions::new()
             .max_connections(5)
@@ -149,9 +146,10 @@ impl TestContext {
 /// A database transaction that rolls back on drop.
 ///
 /// Wraps a `sqlx::Transaction<'static, Postgres>` and implements
-/// [`DerefMut`] to expose the transaction as an executor. When the
-/// `TestTransaction` is dropped (at test end, whether pass or fail),
-/// the transaction is rolled back automatically by sqlx.
+/// [`DerefMut`] to expose the underlying [`PgConnection`] as an
+/// executor. When the `TestTransaction` is dropped (at test end,
+/// whether pass or fail), the transaction is rolled back automatically
+/// by sqlx.
 ///
 /// # Usage
 ///
@@ -175,7 +173,7 @@ pub struct TestTransaction {
 }
 
 impl Deref for TestTransaction {
-    type Target = Transaction<'static, Postgres>;
+    type Target = PgConnection;
 
     fn deref(&self) -> &Self::Target {
         &self.transaction
