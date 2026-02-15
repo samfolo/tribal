@@ -23,6 +23,7 @@ pub struct Principal {
     /// Human-readable key (e.g. `"user:sam"`, `"principal:local"`).
     principal_key: String,
     /// Optional display name.
+    #[builder(default)]
     display_name: Option<String>,
     /// When this principal was created.
     created_at: DateTime<Utc>,
