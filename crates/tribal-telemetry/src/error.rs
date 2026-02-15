@@ -76,8 +76,7 @@ mod tests {
 
     #[test]
     fn test_display_invalid_filter_directive() {
-        let source = tracing_subscriber::EnvFilter::try_new("not valid [[")
-            .unwrap_err();
+        let source = tracing_subscriber::EnvFilter::try_new("not valid [[").unwrap_err();
         let err = TelemetryError::InvalidFilterDirective {
             directive: "not valid [[".to_owned(),
             source,
@@ -101,10 +100,7 @@ mod tests {
     fn test_display_file_creation() {
         let err = TelemetryError::FileCreation {
             path: "/nonexistent/dir/log.jsonl".to_owned(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "no such file or directory",
-            ),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such file or directory"),
         };
         assert_eq!(
             err.to_string(),
