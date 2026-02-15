@@ -153,16 +153,12 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
     // transaction_timestamp()).  Shift the second project's created_at
     // backward so it should sort before the first.
     let backdated = first.created_at() - chrono::Duration::seconds(10);
-    let second_id = second.id();
-    let second_uuid = second_id.inner();
-    sqlx::query!(
-        "UPDATE projects SET created_at = $1 WHERE id = $2",
-        backdated,
-        second_uuid,
-    )
-    .execute(&mut *txn)
-    .await
-    .expect("backdate second");
+    sqlx::query("UPDATE projects SET created_at = $1 WHERE id = $2")
+        .bind(backdated)
+        .bind(second.id().inner())
+        .execute(&mut *txn)
+        .await
+        .expect("backdate second");
 
     let projects = repo.list(&mut txn).await.expect("list");
 
