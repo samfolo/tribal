@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 /// The classification of how a re-observation was captured.
 ///
-/// Distinct from `SourceContext` (the rich discriminated union in RFC §4.2.2).
-/// `SourceType` is a flat enum classifying the observation source on
-/// [`ItemObservation`](crate::ItemObservation).
+/// Distinct from `SourceContext` (the rich discriminated union stored as
+/// JSONB on knowledge items). `SourceType` is a flat enum classifying the
+/// observation source on [`ItemObservation`](crate::ItemObservation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceType {
