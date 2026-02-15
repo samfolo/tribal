@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use sqlx::PgConnection;
 use tribal_domain::{Project, ProjectId};
+use typed_builder::TypedBuilder;
 
 use crate::DbError;
 
@@ -18,7 +19,7 @@ const SCHEMA_VERSION_OVERFLOW: &str = "negative schema_version in database — d
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`, `updated_at`) are produced by Postgres via
 /// `DEFAULT` clauses and returned via `RETURNING *`.
-#[derive(Debug)]
+#[derive(Debug, TypedBuilder)]
 pub struct NewProject {
     /// The git remote URL (stable project identity).
     pub git_remote: String,
@@ -27,6 +28,7 @@ pub struct NewProject {
     /// Default branch (e.g. `"main"`).
     pub default_branch: String,
     /// Optional project type hint.
+    #[builder(default)]
     pub project_type: Option<String>,
     /// Settings schema version.
     pub schema_version: u32,
