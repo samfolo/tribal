@@ -46,8 +46,14 @@ fn test_json_format_produces_structured_output() {
             found_event = true;
 
             // Verify required structural fields.
-            assert!(value.get("level").is_some(), "JSON line should contain 'level'");
-            assert!(value.get("target").is_some(), "JSON line should contain 'target'");
+            assert!(
+                value.get("level").is_some(),
+                "JSON line should contain 'level'"
+            );
+            assert!(
+                value.get("target").is_some(),
+                "JSON line should contain 'target'"
+            );
 
             // Verify span context is present.
             assert!(
