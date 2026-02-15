@@ -5,15 +5,28 @@
 //! connection pool. It is initialised once per test binary via
 //! [`test_context`] and shared across all tests in that binary.
 //!
-//! [`TestTransaction`] wraps an sqlx transaction that rolls back on drop,
+//! [`TestTransaction`] wraps a pooled connection with a manual `BEGIN`.
+//! The pool's `before_acquire` hook sends `ROLLBACK` before each reuse,
 //! providing complete test isolation without schema separation.
+//!
+//! # Why not `sqlx::Transaction`?
+//!
+//! `Transaction::drop` spawns an async rollback task via `tokio::spawn`.
+//! Under `#[tokio::test]`'s default `current_thread` runtime, the runtime
+//! shuts down before the task completes, leaking the pool connection.
+//! By using a raw `PoolConnection` with manual `BEGIN`, we ensure
+//! `PoolConnection::drop` (which is synchronous) always returns the
+//! connection to the pool.  The deferred `ROLLBACK` in `before_acquire`
+//! cleans up dirty state before the next test reuses the connection.
 
 use std::{
     ops::{Deref, DerefMut},
     time::Duration,
 };
 
-use sqlx::{PgConnection, PgPool, Postgres, Transaction, postgres::PgPoolOptions};
+use sqlx::{
+    Executor, PgConnection, PgPool, Postgres, pool::PoolConnection, postgres::PgPoolOptions,
+};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor, wait::LogWaitStrategy},
@@ -98,7 +111,13 @@ impl TestContext {
 
         let pool = PgPoolOptions::new()
             .max_connections(5)
-            .acquire_timeout(Duration::from_secs(30))
+            .acquire_timeout(Duration::from_secs(5))
+            .before_acquire(|conn, _meta| {
+                Box::pin(async move {
+                    conn.execute("ROLLBACK").await.ok();
+                    Ok(true)
+                })
+            })
             .connect(&database_url)
             .await
             .map_err(|source| TestDbError::PoolCreation {
@@ -129,34 +148,39 @@ impl TestContext {
         &self.pool
     }
 
-    /// Begins a new test transaction that rolls back on drop.
+    /// Begins a new test transaction.
     ///
-    /// Each test should call this method to obtain an isolated database
-    /// handle. All queries executed through the returned
-    /// [`TestTransaction`] are rolled back when it is dropped.
+    /// Acquires a pooled connection and sends `BEGIN` manually.  When the
+    /// returned [`TestTransaction`] is dropped, `PoolConnection::drop`
+    /// returns the connection synchronously.  The pool's `before_acquire`
+    /// hook sends `ROLLBACK` before the next test reuses the connection.
     ///
     /// # Errors
     ///
-    /// Returns [`TestDbError::TransactionBegin`] if the transaction cannot
-    /// be started.
+    /// Returns [`TestDbError::TransactionBegin`] if the connection cannot
+    /// be acquired or the `BEGIN` statement fails.
     pub async fn begin_test(&self) -> Result<TestTransaction, TestDbError> {
-        let transaction = self
+        let mut conn = self
             .pool
-            .begin()
+            .acquire()
             .await
             .map_err(|source| TestDbError::TransactionBegin { source })?;
 
-        Ok(TestTransaction { transaction })
+        conn.execute("BEGIN")
+            .await
+            .map_err(|source| TestDbError::TransactionBegin { source })?;
+
+        Ok(TestTransaction { conn })
     }
 }
 
-/// A database transaction that rolls back on drop.
+/// A pooled connection with an open `BEGIN` that is rolled back on reuse.
 ///
-/// Wraps a `sqlx::Transaction<'static, Postgres>` and implements
-/// [`DerefMut`] to expose the underlying [`PgConnection`] as an
-/// executor. When the `TestTransaction` is dropped (at test end,
-/// whether pass or fail), the transaction is rolled back automatically
-/// by sqlx.
+/// Wraps a [`PoolConnection<Postgres>`] and implements [`DerefMut`] to
+/// expose the underlying [`PgConnection`] as an executor.  When dropped,
+/// `PoolConnection::drop` returns the connection to the pool synchronously
+/// (no async spawn).  The pool's `before_acquire` hook sends `ROLLBACK`
+/// before the next test reuses the connection.
 ///
 /// # Usage
 ///
@@ -171,25 +195,25 @@ impl TestContext {
 ///     .await
 ///     .expect("insert should succeed");
 ///
-/// // Transaction rolls back on drop — no cleanup needed.
+/// // Connection returned to pool on drop; ROLLBACK runs on next acquire.
 /// # }
 /// ```
 pub struct TestTransaction {
-    /// The underlying sqlx transaction.
-    transaction: Transaction<'static, Postgres>,
+    /// The underlying pooled connection (with an open `BEGIN`).
+    conn: PoolConnection<Postgres>,
 }
 
 impl Deref for TestTransaction {
     type Target = PgConnection;
 
     fn deref(&self) -> &Self::Target {
-        &self.transaction
+        &self.conn
     }
 }
 
 impl DerefMut for TestTransaction {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.transaction
+        &mut self.conn
     }
 }
 
