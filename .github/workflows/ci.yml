@@ -25,9 +25,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo +nightly fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # Uncomment once sqlx queries exist:
-      # - run: cargo install sqlx-cli --no-default-features --features postgres
-      # - run: cargo sqlx prepare --check --workspace
+      - run: cargo install sqlx-cli --no-default-features --features postgres
+      - run: cargo sqlx prepare --check --workspace
 
   test:
     name: Test

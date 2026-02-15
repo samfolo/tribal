@@ -6,10 +6,10 @@ test:
 test-unit:
     cargo test --workspace --lib
 
-# Format and lint check
+# Format and lint check (no live database required)
 check:
     cargo +nightly fmt --all -- --check
-    cargo clippy --workspace --all-targets -- -D warnings
+    SQLX_OFFLINE=true cargo clippy --workspace --all-targets -- -D warnings
 
 # Format code
 fmt:
@@ -37,8 +37,7 @@ sqlx-prepare:
     cargo sqlx prepare --workspace
 
 # Full pre-push check (what CI will run)
-# TODO: add sqlx-prepare once the first migration lands
-pre-push: fmt check test
+pre-push: fmt check sqlx-prepare test
 
 # Run the MCP server locally (stdio mode)
 serve:
