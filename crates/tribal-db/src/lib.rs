@@ -6,5 +6,12 @@
 mod error;
 mod pool;
 
+/// Compiled migrations for the Tribal database schema.
+///
+/// Embeds all SQL migration files from `crates/tribal-db/migrations/` at
+/// compile time. Used by [`tribal_test_utils::TestContext`] to run
+/// migrations against test databases.
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
+
 pub use error::DbError;
 pub use pool::create_pool;
