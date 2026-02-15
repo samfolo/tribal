@@ -37,6 +37,7 @@
       "Bash(gh pr list:*)",
       "Bash(gh pr view:*)",
       "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
 
       "Bash(grep:*)"
     ]
