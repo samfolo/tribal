@@ -3,6 +3,20 @@ use tribal_domain::ProjectId;
 use tribal_test_utils::{a_new_project, test_context};
 
 #[tokio::test]
+async fn test_insert_with_none_optional_fields_returns_none() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgProjectRepository;
+
+    let new = a_new_project()
+        .git_remote("git@github.com:test/null-fields.git".to_owned())
+        .build();
+    let project = repo.insert(&mut txn, &new).await.expect("insert");
+
+    assert_eq!(project.project_type(), None);
+}
+
+#[tokio::test]
 async fn test_insert_returns_populated_project() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
@@ -138,10 +152,13 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
     // Both inserts share the same transaction timestamp (now() is
     // transaction_timestamp()).  Shift the second project's created_at
     // backward so it should sort before the first.
+    let backdated = first.created_at() - chrono::Duration::seconds(10);
+    let second_id = second.id();
+    let second_uuid = second_id.inner();
     sqlx::query!(
         "UPDATE projects SET created_at = $1 WHERE id = $2",
-        first.created_at() - chrono::Duration::seconds(10),
-        second.id().inner(),
+        backdated,
+        second_uuid,
     )
     .execute(&mut *txn)
     .await
