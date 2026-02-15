@@ -1,30 +1,73 @@
 #![warn(clippy::pedantic)]
+#![allow(clippy::must_use_candidate)]
 #![deny(warnings)]
 //! Core domain types, ID newtypes, shared error types, and configuration
 //! structs for Tribal.
 
+mod auth_token;
 mod database_config;
 mod discovery;
+mod embedding;
+mod embedding_purpose;
 mod error_code;
+mod feedback_rating;
 mod ids;
+mod item_observation;
 mod job;
 mod knowledge;
+mod pipeline_stage;
+mod principal;
+mod project;
+mod prompt_stage;
+mod prompt_version;
+mod reference;
 mod reference_kind;
 mod relation;
+mod retrieval_feedback;
+mod source_type;
+mod standing;
+mod tag_registry;
 mod task;
+mod token_usage;
+mod triage;
 
+pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use database_config::DatabaseConfig;
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
+pub use embedding::{Embedding, EmbeddingBuilder};
+pub use embedding_purpose::EmbeddingPurpose;
 pub use error_code::McpErrorCode;
+pub use feedback_rating::FeedbackRating;
 pub use ids::{
-    EpisodeId, IdParseError, JobId, KnowledgeItemId, ProjectId, ReferenceId, RetrievalFeedbackId,
-    SessionId, TaskId,
+    AuthTokenId, EmbeddingId, EpisodeId, IdParseError, ItemObservationId, JobId, KnowledgeItemId,
+    PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId, RelationId,
+    RetrievalFeedbackId, SessionId, TaskId, TokenUsageId, TriageResultId,
+    TriageSimilarItemDecisionId,
 };
-pub use job::{JobOutcome, JobStatus};
-pub use knowledge::{Confidence, KnowledgeKind};
+pub use item_observation::{ItemObservation, ItemObservationBuilder};
+pub use job::{Job, JobBuilder, JobOutcome, JobStatus};
+pub use knowledge::{Confidence, KnowledgeItem, KnowledgeItemBuilder, KnowledgeKind};
+pub use pipeline_stage::PipelineStage;
+pub use principal::{Principal, PrincipalBuilder};
+pub use project::{Project, ProjectBuilder};
+pub use prompt_stage::PromptStage;
+pub use prompt_version::{PromptVersion, PromptVersionBuilder};
+pub use reference::{Reference, ReferenceBuilder};
 pub use reference_kind::ReferenceKind;
-pub use relation::{RelationHintType, RelationKind, RelationSuggestion};
-pub use task::{TaskErrorKind, TaskStatus, TaskType};
+pub use relation::{
+    KnowledgeItemRelation, KnowledgeItemRelationBuilder, RelationHintType, RelationKind,
+    RelationSuggestion,
+};
+pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
+pub use source_type::SourceType;
+pub use standing::{Standing, StandingBuilder};
+pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};
+pub use task::{Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
+pub use token_usage::{TokenUsage, TokenUsageBuilder};
+pub use triage::{
+    SimilarItem, SimilarItemBuilder, TriageOutcome, TriageResult, TriageResultBuilder,
+    TriageSimilarItemDecision, TriageSimilarItemDecisionBuilder,
+};
 
 /// Generates a serde roundtrip test for an enum with a compile-time
 /// exhaustiveness check.
