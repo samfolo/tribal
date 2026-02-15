@@ -5,6 +5,7 @@
 
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:crates.io)",
+      "WebFetch(domain:github.com)",
       "WebFetch(domain:rust-lang.github.io)",
       "WebFetch(domain:raw.githubusercontent.com)",
 

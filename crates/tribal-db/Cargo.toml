@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 tribal-domain.workspace = true
-sqlx = { workspace = true, features = ["migrate"] }
+sqlx = { workspace = true, features = ["migrate", "macros"] }
 pgvector.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
