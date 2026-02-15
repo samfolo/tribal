@@ -69,6 +69,7 @@ pub enum TaskErrorKind {
 /// - `retry_count` starts at 0 and is incremented on failure.
 /// - Dead-letter condition: `retry_count > task_max_retries` after increment.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TypedBuilder)]
+#[allow(clippy::struct_field_names)]
 pub struct Task {
     /// Unique identifier with `task_` prefix.
     id: TaskId,

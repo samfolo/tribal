@@ -15,6 +15,7 @@ use crate::{EmbeddingId, KnowledgeItemId};
 /// Produced by the embedding model during triage. Multiple embeddings
 /// per item are supported for model migration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
+#[allow(clippy::struct_field_names)]
 pub struct Embedding {
     /// Unique identifier with `emb_` prefix.
     id: EmbeddingId,

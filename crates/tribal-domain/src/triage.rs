@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    ItemObservationId, JobId, KnowledgeItemId, RelationSuggestion,
-    TriageResultId, TriageSimilarItemDecisionId,
+    ItemObservationId, JobId, KnowledgeItemId, RelationSuggestion, TriageResultId,
+    TriageSimilarItemDecisionId,
 };
 
 // ---------------------------------------------------------------------------

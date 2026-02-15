@@ -9,9 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{
-    EpisodeId, JobId, PrincipalId, ProjectId, PromptVersionId, RelationBatchId,
-};
+use crate::{EpisodeId, JobId, PrincipalId, ProjectId, PromptVersionId, RelationBatchId};
 
 /// The lifecycle status of a job in the ingest pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

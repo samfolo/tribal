@@ -25,7 +25,7 @@ pub struct Standing {
     /// If superseded, which item replaced this one.
     #[builder(default)]
     superseded_by: Option<KnowledgeItemId>,
-    /// Re-encounter frequency (1 + item_observations count).
+    /// Re-encounter frequency (1 + `item_observations` count).
     observation_count: u32,
     /// Most recent supporting item (actionable ID).
     #[builder(default)]

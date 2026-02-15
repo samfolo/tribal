@@ -15,6 +15,7 @@ use crate::PrincipalId;
 /// Principals are the attribution target for all write operations.
 /// The `principal_key` is human-readable; the `id` is used in foreign keys.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
 pub struct Principal {
     /// Unique identifier with `prin_` prefix.
     id: PrincipalId,
