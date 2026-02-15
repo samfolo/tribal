@@ -5,6 +5,7 @@
 
 mod error;
 mod pool;
+pub mod repositories;
 
 /// Compiled migrations for the Tribal database schema.
 ///
@@ -15,3 +16,7 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 
 pub use error::DbError;
 pub use pool::create_pool;
+pub use repositories::{
+    NewPrincipal, NewProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository,
+    ProjectRepository,
+};
