@@ -158,8 +158,8 @@ pub struct SemanticSearchParams {
 pub struct SemanticSearchResult {
     /// The knowledge item.
     pub item: KnowledgeItem,
-    /// Cosine similarity (1 − cosine distance).
-    pub similarity: f32,
+    /// Cosine similarity (1 − cosine distance), as computed by Postgres.
+    pub similarity: f64,
 }
 
 /// The full response from a semantic search.
@@ -387,10 +387,7 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         conn: &mut PgConnection,
         params: &SemanticSearchParams,
     ) -> Result<SemanticSearchResponse, DbError> {
-        let cursor_values = match &params.cursor {
-            Some(c) => Some(decode_cursor(c)?),
-            None => None,
-        };
+        let cursor_values = params.cursor.as_deref().map(decode_cursor).transpose()?;
 
         let query_vector = pgvector::Vector::from(params.query_embedding.clone());
         let limit = params.limit as usize;
@@ -450,7 +447,7 @@ async fn fetch_candidates(
     conn: &mut PgConnection,
     params: &SemanticSearchParams,
     query_vector: &pgvector::Vector,
-    cursor_values: Option<(f32, uuid::Uuid)>,
+    cursor_values: Option<(f64, uuid::Uuid)>,
     k: i64,
 ) -> Result<Vec<SemanticSearchResult>, DbError> {
     let mut sql = String::from(
@@ -516,7 +513,7 @@ async fn fetch_candidates(
         .bind(&params.embedding_model);
 
     if let Some((cursor_sim, cursor_id)) = cursor_values {
-        query = query.bind(f64::from(cursor_sim)).bind(cursor_id);
+        query = query.bind(cursor_sim).bind(cursor_id);
     }
 
     query = query.bind(k);
@@ -551,11 +548,7 @@ async fn fetch_candidates(
                 row.get("created_at"),
             );
 
-            SemanticSearchResult {
-                item,
-                #[allow(clippy::cast_possible_truncation)]
-                similarity: similarity as f32,
-            }
+            SemanticSearchResult { item, similarity }
         })
         .collect())
 }
