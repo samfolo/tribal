@@ -468,7 +468,7 @@ async fn test_semantic_search_filters_by_kinds() {
         .expect("insert fact");
     insert_embedding(&mut txn, fact_item.id(), EMBEDDING_MODEL, make_embedding(0)).await;
 
-    let _heuristic_item = repo
+    let heuristic_item = repo
         .insert(
             &mut txn,
             &a_new_knowledge_item()
@@ -482,7 +482,7 @@ async fn test_semantic_search_filters_by_kinds() {
         .expect("insert heuristic");
     insert_embedding(
         &mut txn,
-        _heuristic_item.id(),
+        heuristic_item.id(),
         EMBEDDING_MODEL,
         make_embedding(0),
     )
@@ -526,7 +526,7 @@ async fn test_semantic_search_filters_by_tags_and_semantics() {
         .expect("insert both");
     insert_embedding(&mut txn, both_tags.id(), EMBEDDING_MODEL, make_embedding(0)).await;
 
-    let _one_tag = repo
+    let one_tag = repo
         .insert(
             &mut txn,
             &a_new_knowledge_item()
@@ -538,7 +538,7 @@ async fn test_semantic_search_filters_by_tags_and_semantics() {
         )
         .await
         .expect("insert one");
-    insert_embedding(&mut txn, _one_tag.id(), EMBEDDING_MODEL, make_embedding(0)).await;
+    insert_embedding(&mut txn, one_tag.id(), EMBEDDING_MODEL, make_embedding(0)).await;
 
     // Filter requires BOTH "rust" AND "testing" (AND semantics).
     let params = SemanticSearchParams::builder()
