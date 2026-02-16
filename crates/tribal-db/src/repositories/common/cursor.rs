@@ -70,7 +70,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let encoded = encode_cursor(similarity, id);
         let (decoded_sim, decoded_id) = decode_cursor(&encoded).expect("decode");
-        assert_eq!(decoded_sim, similarity);
+        assert_eq!(decoded_sim.to_bits(), similarity.to_bits());
         assert_eq!(decoded_id, id);
     }
 
@@ -97,7 +97,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let encoded = encode_cursor(0.0, id);
         let (sim, decoded_id) = decode_cursor(&encoded).expect("decode");
-        assert_eq!(sim, 0.0);
+        assert_eq!(sim.to_bits(), 0.0_f32.to_bits());
         assert_eq!(decoded_id, id);
     }
 
@@ -105,7 +105,7 @@ mod tests {
     fn test_cursor_nil_uuid() {
         let encoded = encode_cursor(1.0, uuid::Uuid::nil());
         let (sim, id) = decode_cursor(&encoded).expect("decode");
-        assert_eq!(sim, 1.0);
+        assert_eq!(sim.to_bits(), 1.0_f32.to_bits());
         assert_eq!(id, uuid::Uuid::nil());
     }
 }

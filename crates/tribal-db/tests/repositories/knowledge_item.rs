@@ -558,12 +558,12 @@ async fn test_semantic_search_filters_by_tags_and_semantics() {
 }
 
 #[tokio::test]
-async fn test_semantic_search_filters_by_time_range() {
+async fn test_semantic_search_filters_by_time_range_from() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgKnowledgeItemRepository;
 
-    let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-time").await;
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-time-from").await;
 
     let early = repo
         .insert(
@@ -616,6 +616,67 @@ async fn test_semantic_search_filters_by_time_range() {
 
     assert_eq!(response.results.len(), 1);
     assert_eq!(response.results[0].item.id(), late.id());
+}
+
+#[tokio::test]
+async fn test_semantic_search_filters_by_time_range_to() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgKnowledgeItemRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-time-to").await;
+
+    let early = repo
+        .insert(
+            &mut txn,
+            &a_new_knowledge_item()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .content("early item".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert early");
+    insert_embedding(&mut txn, early.id(), EMBEDDING_MODEL, make_embedding(0)).await;
+
+    let late = repo
+        .insert(
+            &mut txn,
+            &a_new_knowledge_item()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .content("late item".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert late");
+    insert_embedding(&mut txn, late.id(), EMBEDDING_MODEL, make_embedding(0)).await;
+
+    // Push "late" 10 seconds into the future so we can filter by upper bound.
+    let cutoff = late.created_at() + chrono::Duration::seconds(5);
+    let forwarded = late.created_at() + chrono::Duration::seconds(10);
+    sqlx::query("UPDATE knowledge_items SET created_at = $1 WHERE id = $2")
+        .bind(forwarded)
+        .bind(late.id().inner())
+        .execute(&mut *txn)
+        .await
+        .expect("forward late");
+
+    // Only items before cutoff (excludes the forwarded late item).
+    let params = SemanticSearchParams::builder()
+        .query_embedding(make_embedding(0))
+        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .time_range_to(Some(cutoff))
+        .limit(10)
+        .build();
+
+    let response = repo
+        .semantic_search(&mut txn, &params)
+        .await
+        .expect("search");
+
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(response.results[0].item.id(), early.id());
 }
 
 #[tokio::test]
