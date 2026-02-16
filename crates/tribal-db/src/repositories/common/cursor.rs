@@ -54,16 +54,9 @@ pub(crate) fn decode_cursor(cursor: &str) -> Result<(f32, uuid::Uuid), DbError> 
         })?;
     }
 
-    let similarity = f32::from_be_bytes(
-        bytes[..4]
-            .try_into()
-            .expect("slice length verified above"),
-    );
-    let id = uuid::Uuid::from_bytes(
-        bytes[4..]
-            .try_into()
-            .expect("slice length verified above"),
-    );
+    let similarity =
+        f32::from_be_bytes(bytes[..4].try_into().expect("slice length verified above"));
+    let id = uuid::Uuid::from_bytes(bytes[4..].try_into().expect("slice length verified above"));
     Ok((similarity, id))
 }
 

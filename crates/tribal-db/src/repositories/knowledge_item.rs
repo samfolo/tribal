@@ -5,14 +5,15 @@
 //! pgvector's HNSW index with cosine distance and supports structured
 //! filtering, superseded-item exclusion, and cursor-based pagination.
 
+use std::fmt::Write;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
-use typed_builder::TypedBuilder;
-
 use tribal_domain::{
     Confidence, EpisodeId, KnowledgeItem, KnowledgeItemId, KnowledgeKind, PrincipalId, ProjectId,
 };
+use typed_builder::TypedBuilder;
 
 use super::common::cursor::{decode_cursor, encode_cursor};
 use crate::DbError;
@@ -39,14 +40,15 @@ const WIDENED_CANDIDATE_MULTIPLIER: i64 = 10;
 /// builder chain across the four repository methods.  Panics if `kind`
 /// or `confidence` contain unrecognised values, which indicates a schema
 /// mismatch (the CHECK constraints should prevent this).
+#[allow(clippy::too_many_arguments)]
 fn build_knowledge_item(
     id: uuid::Uuid,
     project_id: uuid::Uuid,
     principal_id: uuid::Uuid,
-    kind: String,
+    kind: &str,
     content: String,
     tags: Vec<String>,
-    confidence: String,
+    confidence: &str,
     claim_context: Option<serde_json::Value>,
     source_context: serde_json::Value,
     episode_id: Option<uuid::Uuid>,
@@ -289,10 +291,10 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
             r.id,
             r.project_id,
             r.principal_id,
-            r.kind,
+            &r.kind,
             r.content,
             r.tags,
-            r.confidence,
+            &r.confidence,
             r.claim_context,
             r.source_context,
             r.episode_id,
@@ -307,29 +309,26 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         conn: &mut PgConnection,
         id: KnowledgeItemId,
     ) -> Result<KnowledgeItem, DbError> {
-        let r = sqlx::query!(
-            r#"SELECT * FROM knowledge_items WHERE id = $1"#,
-            id.inner(),
-        )
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding knowledge item by id {id}"),
-            source: e,
-        })?
-        .ok_or_else(|| DbError::NotFound {
-            entity: "knowledge_item",
-            id: id.to_string(),
-        })?;
+        let r = sqlx::query!(r#"SELECT * FROM knowledge_items WHERE id = $1"#, id.inner(),)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding knowledge item by id {id}"),
+                source: e,
+            })?
+            .ok_or_else(|| DbError::NotFound {
+                entity: "knowledge_item",
+                id: id.to_string(),
+            })?;
 
         Ok(build_knowledge_item(
             r.id,
             r.project_id,
             r.principal_id,
-            r.kind,
+            &r.kind,
             r.content,
             r.tags,
-            r.confidence,
+            &r.confidence,
             r.claim_context,
             r.source_context,
             r.episode_id,
@@ -368,10 +367,10 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
                     r.id,
                     r.project_id,
                     r.principal_id,
-                    r.kind,
+                    &r.kind,
                     r.content,
                     r.tags,
-                    r.confidence,
+                    &r.confidence,
                     r.claim_context,
                     r.source_context,
                     r.episode_id,
@@ -398,13 +397,11 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
 
         // First attempt: K = limit × 5.
         let k = i64::from(params.limit) * CANDIDATE_MULTIPLIER;
-        let candidates =
-            fetch_candidates(conn, params, &query_vector, cursor_values, k).await?;
+        let candidates = fetch_candidates(conn, params, &query_vector, cursor_values, k).await?;
         let filtered = apply_structured_filters(candidates, params);
 
         if filtered.len() >= limit {
-            let results: Vec<SemanticSearchResult> =
-                filtered.into_iter().take(limit).collect();
+            let results: Vec<SemanticSearchResult> = filtered.into_iter().take(limit).collect();
             let next_cursor = results
                 .last()
                 .map(|r| encode_cursor(r.similarity, *r.item.id().inner()));
@@ -422,8 +419,7 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         let filtered_wide = apply_structured_filters(candidates_wide, params);
 
         let enough = filtered_wide.len() >= limit;
-        let results: Vec<SemanticSearchResult> =
-            filtered_wide.into_iter().take(limit).collect();
+        let results: Vec<SemanticSearchResult> = filtered_wide.into_iter().take(limit).collect();
         let next_cursor = if results.len() >= limit {
             results
                 .last()
@@ -488,27 +484,31 @@ async fn fetch_candidates(
 
     // Cursor-based pagination.
     if cursor_values.is_some() {
-        sql.push_str(&format!(
+        let id_idx = param_idx + 1;
+        write!(
+            sql,
             r"
             AND (
                 1.0 - (e.embedding <=> $1::vector) < ${param_idx}
                 OR (
                     1.0 - (e.embedding <=> $1::vector) = ${param_idx}
-                    AND ki.id > ${}
+                    AND ki.id > ${id_idx}
                 )
             )
             ",
-            param_idx + 1,
-        ));
+        )
+        .expect("writing to String is infallible");
         param_idx += 2;
     }
 
-    sql.push_str(&format!(
+    write!(
+        sql,
         r"
         ORDER BY similarity DESC, ki.id ASC
         LIMIT ${param_idx}
         "
-    ));
+    )
+    .expect("writing to String is infallible");
 
     // Bind parameters.
     let mut query = sqlx::query(&sql)
@@ -533,14 +533,16 @@ async fn fetch_candidates(
         .into_iter()
         .map(|row| {
             let similarity: f64 = row.get("similarity");
+            let kind: String = row.get("kind");
+            let confidence: String = row.get("confidence");
             let item = build_knowledge_item(
                 row.get("id"),
                 row.get("project_id"),
                 row.get("principal_id"),
-                row.get("kind"),
+                &kind,
                 row.get("content"),
                 row.get("tags"),
-                row.get("confidence"),
+                &confidence,
                 row.get("claim_context"),
                 row.get("source_context"),
                 row.get("episode_id"),
@@ -570,16 +572,16 @@ fn apply_structured_filters(
     candidates
         .into_iter()
         .filter(|r| {
-            if let Some(ref pid) = params.project_id {
-                if r.item.project_id() != *pid {
-                    return false;
-                }
+            if let Some(ref pid) = params.project_id
+                && r.item.project_id() != *pid
+            {
+                return false;
             }
 
-            if let Some(ref kinds) = params.kinds {
-                if !kinds.contains(&r.item.kind()) {
-                    return false;
-                }
+            if let Some(ref kinds) = params.kinds
+                && !kinds.contains(&r.item.kind())
+            {
+                return false;
             }
 
             if let Some(ref tags) = params.tags {
@@ -590,16 +592,16 @@ fn apply_structured_filters(
                 }
             }
 
-            if let Some(from) = params.time_range_from {
-                if r.item.created_at() < from {
-                    return false;
-                }
+            if let Some(from) = params.time_range_from
+                && r.item.created_at() < from
+            {
+                return false;
             }
 
-            if let Some(to) = params.time_range_to {
-                if r.item.created_at() > to {
-                    return false;
-                }
+            if let Some(to) = params.time_range_to
+                && r.item.created_at() > to
+            {
+                return false;
             }
 
             true
