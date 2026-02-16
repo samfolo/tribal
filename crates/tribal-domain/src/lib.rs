@@ -144,3 +144,39 @@ macro_rules! enum_serde_tests {
 
 #[cfg(test)]
 pub(crate) use enum_serde_tests;
+
+/// Generates an `as_str()` / `FromStr` roundtrip test for an enum with a
+/// compile-time exhaustiveness check, plus an invalid-input assertion.
+#[cfg(test)]
+macro_rules! enum_text_tests {
+    ($test_name:ident, $type:ty { $($variant:path => $str:literal),+ $(,)? }) => {
+        #[test]
+        fn $test_name() {
+            // Compile-time exhaustiveness guard: every variant must be listed.
+            #[allow(dead_code)]
+            fn check_exhaustiveness(v: $type) {
+                match v {
+                    $( $variant => {} )+
+                }
+            }
+
+            let variants: &[($type, &str)] = &[
+                $( ($variant, $str), )+
+            ];
+            for &(variant, expected_str) in variants {
+                assert_eq!(variant.as_str(), expected_str, "as_str for {variant:?}");
+                assert_eq!(variant.to_string(), expected_str, "Display for {variant:?}");
+                let parsed: $type = expected_str.parse().expect("should parse");
+                assert_eq!(parsed, variant, "FromStr for {expected_str:?}");
+            }
+
+            assert!(
+                "bogus_not_a_real_variant".parse::<$type>().is_err(),
+                "invalid input should fail"
+            );
+        }
+    };
+}
+
+#[cfg(test)]
+pub(crate) use enum_text_tests;
