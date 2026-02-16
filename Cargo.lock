@@ -2791,6 +2791,8 @@ dependencies = [
 name = "tribal-db"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "pgvector",
  "serde_json",
  "sqlx",
@@ -2798,6 +2800,9 @@ dependencies = [
  "tokio",
  "tracing",
  "tribal-domain",
+ "tribal-test-utils",
+ "typed-builder",
+ "uuid",
 ]
 
 [[package]]

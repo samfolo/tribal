@@ -3,6 +3,7 @@
     "allow": [
       "WebSearch",
 
+      "WebFetch(domain:blog.rust-lang.org)",
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:crates.io)",
       "WebFetch(domain:github.com)",
@@ -11,6 +12,7 @@
 
       "Bash(brew list:*)",
 
+      "Bash(SQLX_OFFLINE=true cargo clippy:*)",
       "Bash(cargo +nightly expand:*)",
       "Bash(cargo +nightly fmt:*)",
       "Bash(cargo build:*)",
@@ -34,6 +36,8 @@
       "Bash(gh pr checks:*)",
       "Bash(gh pr list:*)",
       "Bash(gh pr view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
 
       "Bash(grep:*)"
     ]
