@@ -47,6 +47,17 @@ pub enum DbError {
         id: String,
     },
 
+    /// A pagination cursor could not be decoded.
+    ///
+    /// Returned when a cursor is malformed, truncated, or otherwise
+    /// unparseable.  This is a client input error, distinct from a
+    /// database failure.
+    #[error("invalid cursor: {detail}")]
+    InvalidCursor {
+        /// Human-readable description of why the cursor is invalid.
+        detail: String,
+    },
+
     /// A connection pool has no available connections.
     ///
     /// Maps to the `resource_exhausted` MCP error code at the boundary.
@@ -102,6 +113,17 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "row not found: job with id job_550e8400-e29b-41d4-a716-446655440000"
+        );
+    }
+
+    #[test]
+    fn test_display_invalid_cursor() {
+        let err = DbError::InvalidCursor {
+            detail: "expected 48 hex characters, got 4".to_owned(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid cursor: expected 48 hex characters, got 4"
         );
     }
 

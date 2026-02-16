@@ -4,6 +4,46 @@
 //! Core domain types, ID newtypes, shared error types, and configuration
 //! structs for Tribal.
 
+/// Generates `as_str()`, [`Display`], and [`FromStr`] implementations for a
+/// simple enum whose variants map one-to-one to database TEXT values.
+///
+/// Includes a compile-time exhaustiveness guard: if a variant is added to
+/// the enum but not listed in the macro invocation, the embedded `match`
+/// becomes non-exhaustive and the build fails.
+macro_rules! enum_text_conversions {
+    ($type:ty { $($variant:path => $str:literal),+ $(,)? }) => {
+        impl $type {
+            /// Returns the database string representation.
+            #[must_use]
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $( $variant => $str, )+
+                }
+            }
+        }
+
+        impl std::fmt::Display for $type {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl std::str::FromStr for $type {
+            type Err = String;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $( $str => Ok($variant), )+
+                    other => Err(format!(
+                        "unknown {}: {other}",
+                        stringify!($type),
+                    )),
+                }
+            }
+        }
+    };
+}
+
 mod auth_token;
 mod database_config;
 mod discovery;
@@ -102,3 +142,39 @@ macro_rules! enum_serde_tests {
 
 #[cfg(test)]
 pub(crate) use enum_serde_tests;
+
+/// Generates an `as_str()` / `FromStr` roundtrip test for an enum with a
+/// compile-time exhaustiveness check, plus an invalid-input assertion.
+#[cfg(test)]
+macro_rules! enum_text_tests {
+    ($test_name:ident, $type:ty { $($variant:path => $str:literal),+ $(,)? }) => {
+        #[test]
+        fn $test_name() {
+            // Compile-time exhaustiveness guard: every variant must be listed.
+            #[allow(dead_code)]
+            fn check_exhaustiveness(v: $type) {
+                match v {
+                    $( $variant => {} )+
+                }
+            }
+
+            let variants: &[($type, &str)] = &[
+                $( ($variant, $str), )+
+            ];
+            for &(variant, expected_str) in variants {
+                assert_eq!(variant.as_str(), expected_str, "as_str for {variant:?}");
+                assert_eq!(variant.to_string(), expected_str, "Display for {variant:?}");
+                let parsed: $type = expected_str.parse().expect("should parse");
+                assert_eq!(parsed, variant, "FromStr for {expected_str:?}");
+            }
+
+            assert!(
+                "bogus_not_a_real_variant".parse::<$type>().is_err(),
+                "invalid input should fail"
+            );
+        }
+    };
+}
+
+#[cfg(test)]
+pub(crate) use enum_text_tests;

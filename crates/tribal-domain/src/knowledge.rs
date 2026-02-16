@@ -25,6 +25,13 @@ pub enum KnowledgeKind {
     DecisionRecord,
 }
 
+enum_text_conversions!(KnowledgeKind {
+    KnowledgeKind::Fact => "fact",
+    KnowledgeKind::Heuristic => "heuristic",
+    KnowledgeKind::Procedure => "procedure",
+    KnowledgeKind::DecisionRecord => "decision_record",
+});
+
 /// The confidence level of a knowledge item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +43,12 @@ pub enum Confidence {
     /// Flagged as potentially inaccurate or context-dependent.
     Uncertain,
 }
+
+enum_text_conversions!(Confidence {
+    Confidence::Verified => "verified",
+    Confidence::Inferred => "inferred",
+    Confidence::Uncertain => "uncertain",
+});
 
 /// A knowledge item stored in the Tribal knowledge graph.
 ///
@@ -154,7 +167,7 @@ impl KnowledgeItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enum_serde_tests;
+    use crate::{enum_serde_tests, enum_text_tests};
 
     enum_serde_tests!(test_knowledge_kind_serde_roundtrip, KnowledgeKind {
         KnowledgeKind::Fact => "fact",
@@ -164,6 +177,19 @@ mod tests {
     });
 
     enum_serde_tests!(test_confidence_serde_roundtrip, Confidence {
+        Confidence::Verified => "verified",
+        Confidence::Inferred => "inferred",
+        Confidence::Uncertain => "uncertain",
+    });
+
+    enum_text_tests!(test_knowledge_kind_text_roundtrip, KnowledgeKind {
+        KnowledgeKind::Fact => "fact",
+        KnowledgeKind::Heuristic => "heuristic",
+        KnowledgeKind::Procedure => "procedure",
+        KnowledgeKind::DecisionRecord => "decision_record",
+    });
+
+    enum_text_tests!(test_confidence_text_roundtrip, Confidence {
         Confidence::Verified => "verified",
         Confidence::Inferred => "inferred",
         Confidence::Uncertain => "uncertain",
