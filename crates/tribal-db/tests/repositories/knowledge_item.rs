@@ -890,6 +890,40 @@ async fn test_semantic_search_no_next_cursor_when_no_more_results() {
 }
 
 #[tokio::test]
+async fn test_semantic_search_no_next_cursor_when_total_equals_limit() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgKnowledgeItemRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "ss-total-eq-limit").await;
+
+    let new = a_new_knowledge_item()
+        .project_id(project_id)
+        .principal_id(principal_id)
+        .build();
+    let item = repo.insert(&mut txn, &new).await.expect("insert");
+    insert_embedding(&mut txn, item.id(), EMBEDDING_MODEL, make_embedding(0)).await;
+
+    // Limit exactly matches the number of items — no more pages exist.
+    let params = SemanticSearchParams::builder()
+        .query_embedding(make_embedding(0))
+        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .limit(1)
+        .build();
+
+    let response = repo
+        .semantic_search(&mut txn, &params)
+        .await
+        .expect("search");
+
+    assert_eq!(response.results.len(), 1);
+    assert!(
+        response.next_cursor.is_none(),
+        "no more rows exist, cursor should be None"
+    );
+}
+
+#[tokio::test]
 async fn test_semantic_search_invalid_cursor_returns_error() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");

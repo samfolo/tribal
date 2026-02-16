@@ -24,11 +24,13 @@ use crate::DbError;
 
 const UNKNOWN_KIND_IN_DB: &str = "unrecognised knowledge kind in database — schema mismatch";
 const UNKNOWN_CONFIDENCE_IN_DB: &str = "unrecognised confidence in database — schema mismatch";
+const CANDIDATE_LIMIT_OVERFLOW: &str = "candidate limit exceeds i64 range";
+const STRING_WRITE_INFALLIBLE: &str = "writing to String is infallible";
 
 /// Initial candidate multiplier for the widening strategy.
-const CANDIDATE_MULTIPLIER: i64 = 5;
+const CANDIDATE_MULTIPLIER: usize = 5;
 /// Widened candidate multiplier (applied once when initial fetch under-fills).
-const WIDENED_CANDIDATE_MULTIPLIER: i64 = 10;
+const WIDENED_CANDIDATE_MULTIPLIER: usize = 10;
 
 // ---------------------------------------------------------------------------
 // Row mapping helper
@@ -393,15 +395,22 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         let limit = params.limit as usize;
 
         // First attempt: K = limit × 5.
-        let k = i64::from(params.limit) * CANDIDATE_MULTIPLIER;
+        let k = limit * CANDIDATE_MULTIPLIER;
         let candidates = fetch_candidates(conn, params, &query_vector, cursor_values, k).await?;
+        let candidate_count = candidates.len();
         let filtered = apply_structured_filters(candidates, params);
 
         if filtered.len() >= limit {
+            let filtered_count = filtered.len();
             let results: Vec<SemanticSearchResult> = filtered.into_iter().take(limit).collect();
-            let next_cursor = results
-                .last()
-                .map(|r| encode_cursor(r.similarity, *r.item.id().inner()));
+            let has_more = filtered_count > limit || candidate_count == k;
+            let next_cursor = if has_more {
+                results
+                    .last()
+                    .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+            } else {
+                None
+            };
             return Ok(SemanticSearchResponse {
                 results,
                 next_cursor,
@@ -410,14 +419,18 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         }
 
         // Widened attempt: K = limit × 10.
-        let k_wide = i64::from(params.limit) * WIDENED_CANDIDATE_MULTIPLIER;
+        let k_wide = limit * WIDENED_CANDIDATE_MULTIPLIER;
         let candidates_wide =
             fetch_candidates(conn, params, &query_vector, cursor_values, k_wide).await?;
+        let candidate_count_wide = candidates_wide.len();
         let filtered_wide = apply_structured_filters(candidates_wide, params);
 
         let enough = filtered_wide.len() >= limit;
+        let filtered_wide_count = filtered_wide.len();
         let results: Vec<SemanticSearchResult> = filtered_wide.into_iter().take(limit).collect();
-        let next_cursor = if results.len() >= limit {
+        let has_more = results.len() >= limit
+            && (filtered_wide_count > limit || candidate_count_wide == k_wide);
+        let next_cursor = if has_more {
             results
                 .last()
                 .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
@@ -439,31 +452,32 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
 
 /// Fetches candidate rows from the database using cosine distance.
 ///
-/// Applies the embedding model filter, optional superseded-item exclusion,
-/// and cursor pagination in SQL.  Structured filters (project, kinds, tags,
-/// time range) are applied afterwards in Rust to avoid interfering with the
-/// HNSW vector index scan.
+/// The query uses a CTE to compute similarity once, then applies cursor
+/// pagination in the outer query against the precomputed value.
+/// Structured filters (project, kinds, tags, time range) are applied
+/// afterwards in Rust to avoid interfering with the HNSW vector index
+/// scan.
 async fn fetch_candidates(
     conn: &mut PgConnection,
     params: &SemanticSearchParams,
     query_vector: &pgvector::Vector,
     cursor_values: Option<(f64, uuid::Uuid)>,
-    k: i64,
+    k: usize,
 ) -> Result<Vec<SemanticSearchResult>, DbError> {
+    // Inner CTE: compute similarity once via the HNSW index.
     let mut sql = String::from(
         r"
-        SELECT
-            ki.id, ki.project_id, ki.principal_id, ki.kind, ki.content,
-            ki.tags, ki.confidence, ki.claim_context, ki.source_context,
-            ki.episode_id, ki.capture_commit, ki.capture_branch, ki.created_at,
-            1.0 - (e.embedding <=> $1::vector) AS similarity
-        FROM knowledge_items ki
-        INNER JOIN embeddings e ON e.knowledge_item_id = ki.id
-        WHERE e.model = $2
+        WITH candidates AS (
+            SELECT
+                ki.id, ki.project_id, ki.principal_id, ki.kind, ki.content,
+                ki.tags, ki.confidence, ki.claim_context, ki.source_context,
+                ki.episode_id, ki.capture_commit, ki.capture_branch, ki.created_at,
+                1.0 - (e.embedding <=> $1::vector) AS similarity
+            FROM knowledge_items ki
+            INNER JOIN embeddings e ON e.knowledge_item_id = ki.id
+            WHERE e.model = $2
         ",
     );
-
-    let mut param_idx: u32 = 3;
 
     // Superseded-item exclusion (only committed supersedes relations count).
     if !params.include_superseded {
@@ -479,33 +493,40 @@ async fn fetch_candidates(
         );
     }
 
-    // Cursor-based pagination.
+    sql.push_str(
+        r"
+        )
+        SELECT * FROM candidates
+        WHERE 1=1
+        ",
+    );
+
+    let mut param_idx: u32 = 3;
+
+    // Cursor-based pagination (references precomputed similarity).
     if cursor_values.is_some() {
         let id_idx = param_idx + 1;
         write!(
             sql,
             r"
             AND (
-                1.0 - (e.embedding <=> $1::vector) < ${param_idx}
-                OR (
-                    1.0 - (e.embedding <=> $1::vector) = ${param_idx}
-                    AND ki.id > ${id_idx}
-                )
+                similarity < ${param_idx}
+                OR (similarity = ${param_idx} AND id > ${id_idx})
             )
             ",
         )
-        .expect("writing to String is infallible");
+        .expect(STRING_WRITE_INFALLIBLE);
         param_idx += 2;
     }
 
     write!(
         sql,
         r"
-        ORDER BY similarity DESC, ki.id ASC
+        ORDER BY similarity DESC, id ASC
         LIMIT ${param_idx}
         "
     )
-    .expect("writing to String is infallible");
+    .expect(STRING_WRITE_INFALLIBLE);
 
     // Bind parameters.
     let mut query = sqlx::query(&sql)
@@ -516,7 +537,7 @@ async fn fetch_candidates(
         query = query.bind(cursor_sim).bind(cursor_id);
     }
 
-    query = query.bind(k);
+    query = query.bind(i64::try_from(k).expect(CANDIDATE_LIMIT_OVERFLOW));
 
     let rows = query
         .fetch_all(&mut *conn)
