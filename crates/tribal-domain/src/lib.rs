@@ -4,6 +4,48 @@
 //! Core domain types, ID newtypes, shared error types, and configuration
 //! structs for Tribal.
 
+/// Generates `as_str()`, [`Display`], and [`FromStr`] implementations for a
+/// simple enum whose variants map one-to-one to database TEXT values.
+///
+/// Includes a compile-time exhaustiveness guard: if a variant is added to
+/// the enum but not listed in the macro invocation, the embedded `match`
+/// becomes non-exhaustive and the build fails.
+macro_rules! enum_text_conversions {
+    ($type:ty { $($variant:path => $str:literal),+ $(,)? }) => {
+        impl $type {
+            /// Returns the database string representation.
+            #[must_use]
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $( $variant => $str, )+
+                }
+            }
+        }
+
+        impl std::fmt::Display for $type {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl std::str::FromStr for $type {
+            type Err = String;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $( $str => Ok($variant), )+
+                    other => Err(format!(
+                        "unknown {}: {other}",
+                        stringify!($type),
+                    )),
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use enum_text_conversions;
+
 mod auth_token;
 mod database_config;
 mod discovery;
