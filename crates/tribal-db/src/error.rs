@@ -119,9 +119,12 @@ mod tests {
     #[test]
     fn test_display_invalid_cursor() {
         let err = DbError::InvalidCursor {
-            detail: "expected 20 bytes, got 4".to_owned(),
+            detail: "expected 48 hex characters, got 4".to_owned(),
         };
-        assert_eq!(err.to_string(), "invalid cursor: expected 20 bytes, got 4");
+        assert_eq!(
+            err.to_string(),
+            "invalid cursor: expected 48 hex characters, got 4"
+        );
     }
 
     #[test]
