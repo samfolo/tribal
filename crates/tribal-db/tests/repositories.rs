@@ -5,6 +5,9 @@
 //! [`TestTransaction`](tribal_test_utils::TestTransaction) for isolation
 //! via transaction rollback.
 
+#[path = "repositories/knowledge_item.rs"]
+mod knowledge_item;
+
 #[path = "repositories/principal.rs"]
 mod principal;
 
