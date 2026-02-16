@@ -44,8 +44,6 @@ macro_rules! enum_text_conversions {
     };
 }
 
-pub(crate) use enum_text_conversions;
-
 mod auth_token;
 mod database_config;
 mod discovery;
