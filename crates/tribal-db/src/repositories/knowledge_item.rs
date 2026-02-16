@@ -452,11 +452,12 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
 
 /// Fetches candidate rows from the database using cosine distance.
 ///
-/// The query uses a CTE to compute similarity once, then applies cursor
-/// pagination in the outer query against the precomputed value.
-/// Structured filters (project, kinds, tags, time range) are applied
-/// afterwards in Rust to avoid interfering with the HNSW vector index
-/// scan.
+/// The query uses `ORDER BY e.embedding <=> $1::vector ASC` so that the
+/// Postgres planner can use the HNSW index for an ordered scan.  Similarity
+/// (`1 − distance`) is computed in the SELECT list only — it does not
+/// affect index choice.  Structured filters (project, kinds, tags, time
+/// range) are applied afterwards in Rust to avoid interfering with the
+/// vector index scan.
 async fn fetch_candidates(
     conn: &mut PgConnection,
     params: &SemanticSearchParams,
@@ -464,18 +465,16 @@ async fn fetch_candidates(
     cursor_values: Option<(f64, uuid::Uuid)>,
     k: usize,
 ) -> Result<Vec<SemanticSearchResult>, DbError> {
-    // Inner CTE: compute similarity once via the HNSW index.
     let mut sql = String::from(
         r"
-        WITH candidates AS (
-            SELECT
-                ki.id, ki.project_id, ki.principal_id, ki.kind, ki.content,
-                ki.tags, ki.confidence, ki.claim_context, ki.source_context,
-                ki.episode_id, ki.capture_commit, ki.capture_branch, ki.created_at,
-                1.0 - (e.embedding <=> $1::vector) AS similarity
-            FROM knowledge_items ki
-            INNER JOIN embeddings e ON e.knowledge_item_id = ki.id
-            WHERE e.model = $2
+        SELECT
+            ki.id, ki.project_id, ki.principal_id, ki.kind, ki.content,
+            ki.tags, ki.confidence, ki.claim_context, ki.source_context,
+            ki.episode_id, ki.capture_commit, ki.capture_branch, ki.created_at,
+            1.0 - (e.embedding <=> $1::vector) AS similarity
+        FROM knowledge_items ki
+        INNER JOIN embeddings e ON e.knowledge_item_id = ki.id
+        WHERE e.model = $2
         ",
     );
 
@@ -493,25 +492,17 @@ async fn fetch_candidates(
         );
     }
 
-    sql.push_str(
-        r"
-        )
-        SELECT * FROM candidates
-        WHERE 1=1
-        ",
-    );
-
     let mut param_idx: u32 = 3;
 
-    // Cursor-based pagination (references precomputed similarity).
+    // Cursor-based pagination (compares on raw distance, ascending).
     if cursor_values.is_some() {
         let id_idx = param_idx + 1;
         write!(
             sql,
             r"
             AND (
-                similarity < ${param_idx}
-                OR (similarity = ${param_idx} AND id > ${id_idx})
+                (e.embedding <=> $1::vector) > ${param_idx}
+                OR ((e.embedding <=> $1::vector) = ${param_idx} AND ki.id > ${id_idx})
             )
             ",
         )
@@ -519,10 +510,11 @@ async fn fetch_candidates(
         param_idx += 2;
     }
 
+    // Raw distance operator in ORDER BY enables HNSW index-ordered scan.
     write!(
         sql,
         r"
-        ORDER BY similarity DESC, id ASC
+        ORDER BY e.embedding <=> $1::vector ASC, ki.id ASC
         LIMIT ${param_idx}
         "
     )
@@ -533,8 +525,10 @@ async fn fetch_candidates(
         .bind(query_vector)
         .bind(&params.embedding_model);
 
+    // Cursor stores similarity; convert to distance for the WHERE clause.
     if let Some((cursor_sim, cursor_id)) = cursor_values {
-        query = query.bind(cursor_sim).bind(cursor_id);
+        let cursor_dist = 1.0 - cursor_sim;
+        query = query.bind(cursor_dist).bind(cursor_id);
     }
 
     query = query.bind(i64::try_from(k).expect(CANDIDATE_LIMIT_OVERFLOW));
