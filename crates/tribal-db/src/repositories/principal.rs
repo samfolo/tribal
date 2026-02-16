@@ -104,7 +104,7 @@ impl PrincipalRepository for PgPrincipalRepository {
                 .created_at(r.created_at)
                 .build()),
             Err(e) => {
-                if let Some(uv) = super::try_into_unique_violation(&e) {
+                if let Some(uv) = super::common::constraint::try_into_unique_violation(&e) {
                     Err(uv)
                 } else {
                     Err(DbError::QueryFailed {

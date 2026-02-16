@@ -134,7 +134,7 @@ impl ProjectRepository for PgProjectRepository {
                 .updated_at(r.updated_at)
                 .build()),
             Err(e) => {
-                if let Some(uv) = super::try_into_unique_violation(&e) {
+                if let Some(uv) = super::common::constraint::try_into_unique_violation(&e) {
                     Err(uv)
                 } else {
                     Err(DbError::QueryFailed {
