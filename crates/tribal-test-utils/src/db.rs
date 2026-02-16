@@ -1,19 +1,33 @@
-//! Database test infrastructure: container lifecycle, pool management,
+//! Database test infrastructure: container lifecycle, connection management,
 //! and per-test transaction isolation.
 //!
 //! [`TestContext`] manages a pgvector container (via testcontainers) and a
-//! connection pool. It is initialised once per test binary via
+//! connection pool.  It is initialised once per test binary via
 //! [`test_context`] and shared across all tests in that binary.
 //!
-//! [`TestTransaction`] wraps an sqlx transaction that rolls back on drop,
-//! providing complete test isolation without schema separation.
+//! [`TestTransaction`] wraps a raw [`PgConnection`] with a manual `BEGIN`.
+//! When dropped, the connection is closed synchronously (TCP socket close),
+//! and Postgres automatically rolls back the uncommitted transaction.
+//!
+//! # Why raw connections instead of pooled?
+//!
+//! Both `Transaction::drop` and `PoolConnection::drop` in sqlx 0.8 use
+//! `tokio::spawn` internally.  Under `#[tokio::test]`'s default
+//! `current_thread` runtime, each test creates its own runtime that shuts
+//! down when the test future completes.  Spawned cleanup tasks are
+//! cancelled before they can return connections to the pool, eventually
+//! exhausting the pool's semaphore and causing `PoolTimedOut`.
+//!
+//! Raw `PgConnection` has no async `Drop` — it simply closes the TCP
+//! socket synchronously.  Each test gets its own connection, and
+//! Postgres rolls back the open transaction when the socket closes.
 
 use std::{
     ops::{Deref, DerefMut},
     time::Duration,
 };
 
-use sqlx::{PgConnection, PgPool, Postgres, Transaction, postgres::PgPoolOptions};
+use sqlx::{Connection, Executor, PgConnection, PgPool, postgres::PgPoolOptions};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor, wait::LogWaitStrategy},
@@ -40,6 +54,8 @@ use crate::TestDbError;
 pub struct TestContext {
     /// The connection pool connected to the test container.
     pool: PgPool,
+    /// Connection URL for creating raw (non-pooled) connections.
+    database_url: String,
     /// The running container handle. Held to keep the container alive;
     /// dropped automatically when the process exits.
     _container: ContainerAsync<GenericImage>,
@@ -116,6 +132,7 @@ impl TestContext {
 
         Ok(Self {
             pool,
+            database_url,
             _container: container,
         })
     }
@@ -129,34 +146,34 @@ impl TestContext {
         &self.pool
     }
 
-    /// Begins a new test transaction that rolls back on drop.
+    /// Begins a new test transaction.
     ///
-    /// Each test should call this method to obtain an isolated database
-    /// handle. All queries executed through the returned
-    /// [`TestTransaction`] are rolled back when it is dropped.
+    /// Opens a raw connection to the test database and sends `BEGIN`.
+    /// When the returned [`TestTransaction`] is dropped, the TCP socket
+    /// closes and Postgres automatically rolls back the transaction.
     ///
     /// # Errors
     ///
-    /// Returns [`TestDbError::TransactionBegin`] if the transaction cannot
-    /// be started.
+    /// Returns [`TestDbError::TransactionBegin`] if the connection cannot
+    /// be established or the `BEGIN` statement fails.
     pub async fn begin_test(&self) -> Result<TestTransaction, TestDbError> {
-        let transaction = self
-            .pool
-            .begin()
+        let mut conn = PgConnection::connect(&self.database_url)
             .await
             .map_err(|source| TestDbError::TransactionBegin { source })?;
 
-        Ok(TestTransaction { transaction })
+        conn.execute("BEGIN")
+            .await
+            .map_err(|source| TestDbError::TransactionBegin { source })?;
+
+        Ok(TestTransaction { conn })
     }
 }
 
-/// A database transaction that rolls back on drop.
+/// A raw database connection with an open `BEGIN`, rolled back on drop.
 ///
-/// Wraps a `sqlx::Transaction<'static, Postgres>` and implements
-/// [`DerefMut`] to expose the underlying [`PgConnection`] as an
-/// executor. When the `TestTransaction` is dropped (at test end,
-/// whether pass or fail), the transaction is rolled back automatically
-/// by sqlx.
+/// Wraps a [`PgConnection`] and implements [`DerefMut`] to expose the
+/// underlying connection as an executor.  When dropped, the TCP socket
+/// closes synchronously and Postgres rolls back the open transaction.
 ///
 /// # Usage
 ///
@@ -171,25 +188,25 @@ impl TestContext {
 ///     .await
 ///     .expect("insert should succeed");
 ///
-/// // Transaction rolls back on drop — no cleanup needed.
+/// // Connection closed on drop; Postgres rolls back the transaction.
 /// # }
 /// ```
 pub struct TestTransaction {
-    /// The underlying sqlx transaction.
-    transaction: Transaction<'static, Postgres>,
+    /// The underlying raw connection (with an open `BEGIN`).
+    conn: PgConnection,
 }
 
 impl Deref for TestTransaction {
     type Target = PgConnection;
 
     fn deref(&self) -> &Self::Target {
-        &self.transaction
+        &self.conn
     }
 }
 
 impl DerefMut for TestTransaction {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.transaction
+        &mut self.conn
     }
 }
 

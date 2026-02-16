@@ -48,6 +48,9 @@ anyhow = "1"
 # Builders
 typed-builder = "0.23"
 
+# Async traits
+async-trait = "0.1"
+
 # Testing
 tempfile = "3"
 testcontainers = "0.27"
