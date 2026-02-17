@@ -58,6 +58,7 @@ pub struct NewReference {
 /// chain across the three repository methods.  Panics if `kind` contains
 /// an unrecognised value, which indicates a schema mismatch (the CHECK
 /// constraint should prevent this).
+#[allow(clippy::too_many_arguments)]
 fn build_reference(
     id: uuid::Uuid,
     knowledge_item_id: uuid::Uuid,
