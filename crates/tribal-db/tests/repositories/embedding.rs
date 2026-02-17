@@ -96,9 +96,7 @@ async fn test_insert_generates_prefixed_id() {
 
     let (_, _, item_id) = setup_prerequisites(&mut txn, "emb-insert-prefix").await;
 
-    let new = a_new_embedding()
-        .knowledge_item_id(item_id)
-        .build();
+    let new = a_new_embedding().knowledge_item_id(item_id).build();
 
     let emb = repo.insert(&mut txn, &new).await.expect("insert");
 

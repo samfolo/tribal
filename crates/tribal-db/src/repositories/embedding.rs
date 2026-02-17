@@ -95,8 +95,7 @@ impl EmbeddingRepository for PgEmbeddingRepository {
         conn: &mut PgConnection,
         new: &NewEmbedding,
     ) -> Result<Embedding, DbError> {
-        let dimensions =
-            i32::try_from(new.dimensions).expect(DIMENSIONS_EXCEEDS_I32);
+        let dimensions = i32::try_from(new.dimensions).expect(DIMENSIONS_EXCEEDS_I32);
         let vector = pgvector::Vector::from(new.embedding.clone());
 
         let row = sqlx::query(
@@ -119,16 +118,13 @@ impl EmbeddingRepository for PgEmbeddingRepository {
                 ))
                 .model(r.get::<String, _>("model"))
                 .dimensions(
-                    u32::try_from(r.get::<i32, _>("dimensions"))
-                        .expect(DIMENSIONS_OVERFLOW),
+                    u32::try_from(r.get::<i32, _>("dimensions")).expect(DIMENSIONS_OVERFLOW),
                 )
                 .embedding(new.embedding.clone())
                 .created_at(r.get("created_at"))
                 .build()),
             Err(e) => {
-                if let Some(uv) =
-                    super::common::constraint::try_into_unique_violation(&e)
-                {
+                if let Some(uv) = super::common::constraint::try_into_unique_violation(&e) {
                     Err(uv)
                 } else {
                     Err(DbError::QueryFailed {
@@ -171,8 +167,7 @@ impl EmbeddingRepository for PgEmbeddingRepository {
                 ))
                 .model(r.get::<String, _>("model"))
                 .dimensions(
-                    u32::try_from(r.get::<i32, _>("dimensions"))
-                        .expect(DIMENSIONS_OVERFLOW),
+                    u32::try_from(r.get::<i32, _>("dimensions")).expect(DIMENSIONS_OVERFLOW),
                 )
                 .embedding(vector.to_vec())
                 .created_at(r.get("created_at"))
