@@ -14,12 +14,26 @@ pub enum ReferenceKind {
     Symbol,
 }
 
+enum_text_conversions!(ReferenceKind {
+    ReferenceKind::FilePath => "file_path",
+    ReferenceKind::Url => "url",
+    ReferenceKind::Concept => "concept",
+    ReferenceKind::Symbol => "symbol",
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enum_serde_tests;
+    use crate::{enum_serde_tests, enum_text_tests};
 
     enum_serde_tests!(test_reference_kind_serde_roundtrip, ReferenceKind {
+        ReferenceKind::FilePath => "file_path",
+        ReferenceKind::Url => "url",
+        ReferenceKind::Concept => "concept",
+        ReferenceKind::Symbol => "symbol",
+    });
+
+    enum_text_tests!(test_reference_kind_text_roundtrip, ReferenceKind {
         ReferenceKind::FilePath => "file_path",
         ReferenceKind::Url => "url",
         ReferenceKind::Concept => "concept",
