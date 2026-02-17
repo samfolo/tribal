@@ -6,13 +6,17 @@
 //! repositories pool-agnostic.
 
 mod common;
+mod embedding;
 mod knowledge_item;
 mod principal;
 mod project;
+mod reference;
 
+pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
 pub use knowledge_item::{
     KnowledgeItemRepository, NewKnowledgeItem, PgKnowledgeItemRepository, SemanticSearchParams,
     SemanticSearchResponse, SemanticSearchResult,
 };
 pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
 pub use project::{NewProject, PgProjectRepository, ProjectRepository};
+pub use reference::{NewReference, PgReferenceRepository, ReferenceRepository};

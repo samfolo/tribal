@@ -17,7 +17,9 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 pub use error::DbError;
 pub use pool::create_pool;
 pub use repositories::{
-    KnowledgeItemRepository, NewKnowledgeItem, NewPrincipal, NewProject, PgKnowledgeItemRepository,
-    PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
-    SemanticSearchParams, SemanticSearchResponse, SemanticSearchResult,
+    EmbeddingRepository, KnowledgeItemRepository, NewEmbedding, NewKnowledgeItem, NewPrincipal,
+    NewProject, NewReference, PgEmbeddingRepository, PgKnowledgeItemRepository,
+    PgPrincipalRepository, PgProjectRepository, PgReferenceRepository, PrincipalRepository,
+    ProjectRepository, ReferenceRepository, SemanticSearchParams, SemanticSearchResponse,
+    SemanticSearchResult,
 };
