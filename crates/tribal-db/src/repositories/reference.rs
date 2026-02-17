@@ -16,8 +16,7 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
-const UNKNOWN_KIND_IN_DB: &str =
-    "unrecognised reference kind in database — schema mismatch";
+const UNKNOWN_KIND_IN_DB: &str = "unrecognised reference kind in database — schema mismatch";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -198,9 +197,7 @@ impl ReferenceRepository for PgReferenceRepository {
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
-            context: format!(
-                "finding references by knowledge item id {knowledge_item_id}"
-            ),
+            context: format!("finding references by knowledge item id {knowledge_item_id}"),
             source: e,
         })?;
 
@@ -230,8 +227,7 @@ impl ReferenceRepository for PgReferenceRepository {
             return Ok(Vec::new());
         }
 
-        let raw_ids: Vec<uuid::Uuid> =
-            knowledge_item_ids.iter().map(|id| *id.inner()).collect();
+        let raw_ids: Vec<uuid::Uuid> = knowledge_item_ids.iter().map(|id| *id.inner()).collect();
 
         let rows = sqlx::query!(
             r#"

@@ -1,7 +1,6 @@
 use tribal_db::{
-    KnowledgeItemRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
-    PgProjectRepository, PgReferenceRepository, PrincipalRepository, ProjectRepository,
-    ReferenceRepository,
+    KnowledgeItemRepository, PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
+    PgReferenceRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
 };
 use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId, ReferenceKind};
 use tribal_test_utils::{
@@ -190,27 +189,14 @@ async fn test_find_by_knowledge_item_ids_returns_references_for_multiple_items()
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgReferenceRepository;
 
-    let (_, project_id, item_a) = setup_prerequisites(&mut txn, "ref-find-ids-a").await;
+    let (principal_id, project_id, item_a) = setup_prerequisites(&mut txn, "ref-find-ids-a").await;
 
     let item_b = PgKnowledgeItemRepository
         .insert(
             &mut txn,
             &a_new_knowledge_item()
                 .project_id(project_id)
-                .principal_id({
-                    // Re-use the principal created by setup_prerequisites
-                    // by querying via the same suffix pattern.  Instead,
-                    // just create a second knowledge item under the same project.
-                    PrincipalId::from(
-                        *tribal_db::PgPrincipalRepository
-                            .find_by_key(&mut txn, "user:test-ref-find-ids-a")
-                            .await
-                            .expect("find principal")
-                            .expect("principal exists")
-                            .id()
-                            .inner(),
-                    )
-                })
+                .principal_id(principal_id)
                 .content("second item".to_owned())
                 .build(),
         )
@@ -271,26 +257,15 @@ async fn test_find_by_knowledge_item_ids_omits_items_without_references() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgReferenceRepository;
 
-    let (_, project_id, item_with_ref) =
+    let (principal_id, project_id, item_with_ref) =
         setup_prerequisites(&mut txn, "ref-find-ids-omit").await;
 
-    // Create a second knowledge item without any references.
     let item_without_ref = PgKnowledgeItemRepository
         .insert(
             &mut txn,
             &a_new_knowledge_item()
                 .project_id(project_id)
-                .principal_id({
-                    PrincipalId::from(
-                        *tribal_db::PgPrincipalRepository
-                            .find_by_key(&mut txn, "user:test-ref-find-ids-omit")
-                            .await
-                            .expect("find principal")
-                            .expect("principal exists")
-                            .id()
-                            .inner(),
-                    )
-                })
+                .principal_id(principal_id)
                 .content("item without references".to_owned())
                 .build(),
         )
