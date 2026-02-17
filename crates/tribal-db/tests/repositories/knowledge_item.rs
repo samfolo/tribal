@@ -2,7 +2,9 @@ use tribal_db::{
     DbError, KnowledgeItemRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
     PgProjectRepository, PrincipalRepository, ProjectRepository, SemanticSearchParams,
 };
-use tribal_domain::{Confidence, KnowledgeItemId, KnowledgeKind, PrincipalId, ProjectId};
+use tribal_domain::{
+    Confidence, EpisodeId, KnowledgeItemId, KnowledgeKind, PrincipalId, ProjectId,
+};
 use tribal_test_utils::{a_new_knowledge_item, a_new_principal, a_new_project, test_context};
 
 // ---------------------------------------------------------------------------
@@ -232,6 +234,35 @@ async fn test_insert_with_tags_stores_and_returns_tags() {
     let item = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert_eq!(item.tags(), &tags);
+}
+
+#[tokio::test]
+async fn test_insert_with_all_optional_fields_round_trips() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgKnowledgeItemRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "insert-opts").await;
+
+    let episode_id = EpisodeId::new();
+    let new = a_new_knowledge_item()
+        .project_id(project_id)
+        .principal_id(principal_id)
+        .claim_context(Some(serde_json::json!({"runtime": "tokio-1.x"})))
+        .episode_id(Some(episode_id))
+        .capture_commit(Some("abc123def456".to_owned()))
+        .capture_branch(Some("feat/test-branch".to_owned()))
+        .build();
+
+    let item = repo.insert(&mut txn, &new).await.expect("insert");
+
+    assert_eq!(
+        item.claim_context(),
+        Some(&serde_json::json!({"runtime": "tokio-1.x"}))
+    );
+    assert_eq!(item.episode_id(), Some(episode_id));
+    assert_eq!(item.capture_commit(), Some("abc123def456"));
+    assert_eq!(item.capture_branch(), Some("feat/test-branch"));
 }
 
 // ---------------------------------------------------------------------------
