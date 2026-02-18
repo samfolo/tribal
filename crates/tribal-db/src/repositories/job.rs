@@ -4,6 +4,10 @@
 //! lookup, status transition, batch sizing, and batch commit operations.
 //! All mutations use `RETURNING *` to produce the updated domain type
 //! atomically.
+//!
+//! Uses raw `sqlx::query()` because job status transitions bind and
+//! parse domain enums as TEXT, and the compile-time macro cannot
+//! type-check these casts.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -39,6 +43,9 @@ const EXTRACTION_ORIGINAL_COUNT_OVERFLOW: &str =
 /// via `DEFAULT` clauses and returned via `RETURNING *`.
 #[derive(Debug, TypedBuilder)]
 pub struct NewJob {
+    /// Episode grouping (correlation key).
+    #[builder(default)]
+    pub correlation_id: Option<EpisodeId>,
     /// The project this job belongs to.
     pub project_id: ProjectId,
     /// The principal who initiated this job.
@@ -48,9 +55,6 @@ pub struct NewJob {
     pub actor_id: Option<PrincipalId>,
     /// Source context (opaque JSONB).
     pub source_context: serde_json::Value,
-    /// Episode grouping (correlation key).
-    #[builder(default)]
-    pub correlation_id: Option<EpisodeId>,
     /// Extraction prompt version at job creation time.
     pub extraction_prompt_version_id: PromptVersionId,
     /// Triage prompt version at job creation time.
@@ -182,18 +186,18 @@ impl JobRepository for PgJobRepository {
     async fn insert(&self, conn: &mut PgConnection, new_job: &NewJob) -> Result<Job, DbError> {
         let row = sqlx::query(
             "INSERT INTO jobs \
-                 (project_id, principal_id, actor_id, source_context, \
-                  correlation_id, extraction_prompt_version_id, \
+                 (correlation_id, project_id, principal_id, actor_id, \
+                  source_context, extraction_prompt_version_id, \
                   triage_prompt_version_id, relation_prompt_version_id, \
                   trace_context) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              RETURNING *",
         )
+        .bind(new_job.correlation_id.map(|id| *id.inner()))
         .bind(new_job.project_id.inner())
         .bind(new_job.principal_id.inner())
         .bind(new_job.actor_id.map(|id| *id.inner()))
         .bind(&new_job.source_context)
-        .bind(new_job.correlation_id.map(|id| *id.inner()))
         .bind(new_job.extraction_prompt_version_id.inner())
         .bind(new_job.triage_prompt_version_id.inner())
         .bind(new_job.relation_prompt_version_id.inner())

@@ -40,11 +40,11 @@ pub fn a_job() -> JobFactory {
 define_factory! {
     /// Factory for [`NewJob`] instances used in repository insert operations.
     pub struct NewJobFactory for NewJob {
+        correlation_id: Option<tribal_domain::EpisodeId> = None,
         project_id: ProjectId = ProjectId::new(),
         principal_id: PrincipalId = PrincipalId::new(),
         actor_id: Option<PrincipalId> = None,
         source_context: serde_json::Value = serde_json::json!({}),
-        correlation_id: Option<tribal_domain::EpisodeId> = None,
         extraction_prompt_version_id: PromptVersionId = PromptVersionId::new(),
         triage_prompt_version_id: PromptVersionId = PromptVersionId::new(),
         relation_prompt_version_id: PromptVersionId = PromptVersionId::new(),
