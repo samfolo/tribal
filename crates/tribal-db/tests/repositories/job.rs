@@ -371,6 +371,25 @@ async fn test_update_status_invalid_transition() {
     );
 }
 
+#[tokio::test]
+async fn test_update_status_not_found() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let transition = a_job_status_transition()
+        .status(JobStatus::Extracting)
+        .build();
+    let result = repo
+        .update_status(&mut txn, tribal_domain::JobId::new(), &transition)
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(DbError::NotFound { entity: "job", .. })
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // update_batch_size
 // ---------------------------------------------------------------------------
@@ -400,6 +419,22 @@ async fn test_update_batch_size() {
 
     assert_eq!(updated.batch_size(), Some(10));
     assert_eq!(updated.extraction_original_count(), Some(15));
+}
+
+#[tokio::test]
+async fn test_update_batch_size_not_found() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let result = repo
+        .update_batch_size(&mut txn, tribal_domain::JobId::new(), 10, 15)
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(DbError::NotFound { entity: "job", .. })
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -432,4 +467,24 @@ async fn test_set_committed_batch_id() {
         .expect("set_committed_batch_id");
 
     assert_eq!(updated.committed_batch_id(), Some(batch_id));
+}
+
+#[tokio::test]
+async fn test_set_committed_batch_id_not_found() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let result = repo
+        .set_committed_batch_id(
+            &mut txn,
+            tribal_domain::JobId::new(),
+            RelationBatchId::new(),
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(DbError::NotFound { entity: "job", .. })
+    ));
 }

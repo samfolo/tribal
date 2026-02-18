@@ -270,6 +270,20 @@ async fn test_find_by_job_id() {
     assert!(types.contains(&TaskType::Triage));
 }
 
+#[tokio::test]
+async fn test_find_by_job_id_empty() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTaskRepository;
+
+    let tasks = repo
+        .find_by_job_id(&mut txn, tribal_domain::JobId::new())
+        .await
+        .expect("find_by_job_id");
+
+    assert!(tasks.is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // claim
 // ---------------------------------------------------------------------------
@@ -561,11 +575,7 @@ async fn test_fail_requeues_within_budget() {
     assert_eq!(found.error_kind(), Some(TaskErrorKind::ProviderError));
     assert_eq!(found.error_message(), Some("provider returned 503"));
     // available_at should be the caller-provided value.
-    let diff = (found.available_at() - backoff_at).num_milliseconds().abs();
-    assert!(
-        diff < 1000,
-        "available_at should match caller-provided value"
-    );
+    assert_eq!(found.available_at(), backoff_at);
 }
 
 #[tokio::test]
@@ -619,13 +629,7 @@ async fn test_fail_dead_letters_when_exceeding_max_retries() {
     assert!(found.claim_token().is_none());
     assert!(found.claimed_by().is_none());
     // available_at preserved (not set to caller-provided backoff_at).
-    let diff = (found.available_at() - original_available_at)
-        .num_milliseconds()
-        .abs();
-    assert!(
-        diff < 1000,
-        "dead-lettered task should preserve original available_at"
-    );
+    assert_eq!(found.available_at(), original_available_at);
 }
 
 #[tokio::test]
@@ -704,7 +708,15 @@ async fn test_reclaim_stale_heartbeat_expired() {
     assert!(found.claim_token().is_none());
     assert!(found.claimed_by().is_none());
     // Exponential backoff: power(2, 0) = 1 second from now.
-    assert!(found.available_at() > chrono::Utc::now() - chrono::Duration::seconds(5));
+    let now = chrono::Utc::now();
+    assert!(
+        found.available_at() > now,
+        "available_at should be in the future (exponential backoff applied)"
+    );
+    assert!(
+        found.available_at() < now + chrono::Duration::seconds(5),
+        "backoff should be within expected range"
+    );
 }
 
 #[tokio::test]
@@ -742,8 +754,21 @@ async fn test_reclaim_stale_startup_reclaim() {
         .expect("find_by_id");
 
     assert_eq!(found.status(), TaskStatus::Queued);
+    assert_eq!(found.retry_count(), 1);
     assert_eq!(found.error_kind(), Some(TaskErrorKind::StartupReclaim));
     assert_eq!(found.error_message(), Some("startup_reclaim"));
+    assert!(found.claim_token().is_none());
+    assert!(found.claimed_by().is_none());
+    // Startup reclaim: flat 1-second backoff.
+    let now = chrono::Utc::now();
+    assert!(
+        found.available_at() > now,
+        "available_at should be in the future (flat 1-second backoff)"
+    );
+    assert!(
+        found.available_at() < now + chrono::Duration::seconds(5),
+        "startup_reclaim backoff should be close to 1 second"
+    );
 }
 
 #[tokio::test]
@@ -776,6 +801,12 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
         .await
         .expect("backdate heartbeat");
 
+    let pre_reclaim_available_at = repo
+        .find_by_id(&mut txn, task.id())
+        .await
+        .expect("find_by_id")
+        .available_at();
+
     let count = repo
         .reclaim_stale(&mut txn, 30, 3, 10, TaskErrorKind::HeartbeatExpired)
         .await
@@ -790,4 +821,10 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
 
     assert_eq!(found.status(), TaskStatus::DeadLetter);
     assert_eq!(found.retry_count(), 4);
+    assert_eq!(found.error_kind(), Some(TaskErrorKind::HeartbeatExpired));
+    assert_eq!(found.error_message(), Some("heartbeat_expired"));
+    assert!(found.claim_token().is_none());
+    assert!(found.claimed_by().is_none());
+    // Dead-letter preserves original available_at.
+    assert_eq!(found.available_at(), pre_reclaim_available_at);
 }
