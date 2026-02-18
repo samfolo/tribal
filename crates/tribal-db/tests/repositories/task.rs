@@ -1,3 +1,4 @@
+use chrono::SubsecRound;
 use tribal_db::{
     DbError, JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
     PgTaskRepository, PrincipalRepository, ProjectRepository, TaskRepository,
@@ -543,7 +544,8 @@ async fn test_fail_requeues_within_budget() {
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
 
-    let backoff_at = chrono::Utc::now() + chrono::Duration::seconds(4);
+    // Truncate to microseconds — Postgres timestamptz has microsecond precision.
+    let backoff_at = (chrono::Utc::now() + chrono::Duration::seconds(4)).trunc_subsecs(6);
     let rows = repo
         .fail(
             &mut txn,
