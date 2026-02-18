@@ -26,6 +26,8 @@ const UNKNOWN_RELATION_KIND_IN_DB: &str =
 const UNKNOWN_KNOWLEDGE_KIND_IN_DB: &str =
     "unrecognised knowledge kind in database — schema mismatch";
 const UNKNOWN_CONFIDENCE_IN_DB: &str = "unrecognised confidence in database — schema mismatch";
+const MAX_DEPTH_EXCEEDS_I32: &str = "max_depth exceeds i32 range";
+const NEGATIVE_DEPTH_IN_CTE: &str = "negative depth in CTE — logic error";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -169,7 +171,7 @@ fn build_traversal_node(
         source_id: KnowledgeItemId::from(source_id),
         target_id: KnowledgeItemId::from(target_id),
         relation_created_at,
-        depth: u32::try_from(depth).expect("negative depth in CTE — logic error"),
+        depth: u32::try_from(depth).expect(NEGATIVE_DEPTH_IN_CTE),
     }
 }
 
@@ -285,6 +287,43 @@ fn relation_type_strings(relation_types: Option<&[RelationKind]>) -> Option<Vec<
     relation_types.map(|rts| rts.iter().map(|rt| rt.as_str().to_owned()).collect())
 }
 
+/// Finds committed relations anchored on a given column.
+///
+/// `anchor_col` must be either `"r.target_id"` (inbound) or
+/// `"r.source_id"` (outbound).  The query joins against
+/// `jobs.committed_batch_id` and optionally filters by relation type.
+async fn find_committed_relations(
+    conn: &mut PgConnection,
+    anchor_col: &str,
+    direction_label: &str,
+    anchor_id: KnowledgeItemId,
+    relation_types: Option<&[RelationKind]>,
+) -> Result<Vec<tribal_domain::KnowledgeItemRelation>, DbError> {
+    let type_strings = relation_type_strings(relation_types);
+
+    let sql = format!(
+        "SELECT r.id, r.relation_batch_id, r.source_id, r.target_id, \
+                r.relation_type, r.principal_id, r.created_at \
+         FROM knowledge_item_relations r \
+         INNER JOIN jobs j ON j.committed_batch_id = r.relation_batch_id \
+         WHERE {anchor_col} = $1 \
+           AND ($2::text[] IS NULL OR r.relation_type = ANY($2)) \
+         ORDER BY r.created_at DESC"
+    );
+
+    let rows = sqlx::query(&sql)
+        .bind(anchor_id.inner())
+        .bind(&type_strings)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("finding {direction_label} relations for {anchor_id}"),
+            source: e,
+        })?;
+
+    Ok(rows.into_iter().map(map_relation_row).collect())
+}
+
 /// Maps a raw `sqlx::Row` from a relation query into a
 /// [`KnowledgeItemRelation`].
 fn map_relation_row(r: sqlx::postgres::PgRow) -> tribal_domain::KnowledgeItemRelation {
@@ -383,8 +422,7 @@ async fn run_directional_cte(
          LIMIT $4"
     );
 
-    let max_depth_i32 =
-        i32::try_from(max_depth).expect("max_depth exceeds i32 range");
+    let max_depth_i32 = i32::try_from(max_depth).expect(MAX_DEPTH_EXCEEDS_I32);
     let fetch_limit = i64::from(limit) + 1;
 
     let rows = sqlx::query(&sql)
@@ -462,27 +500,7 @@ impl RelationRepository for PgRelationRepository {
         anchor_id: KnowledgeItemId,
         relation_types: Option<&[RelationKind]>,
     ) -> Result<Vec<tribal_domain::KnowledgeItemRelation>, DbError> {
-        let type_strings = relation_type_strings(relation_types);
-
-        let rows = sqlx::query(
-            "SELECT r.id, r.relation_batch_id, r.source_id, r.target_id, \
-                    r.relation_type, r.principal_id, r.created_at \
-             FROM knowledge_item_relations r \
-             INNER JOIN jobs j ON j.committed_batch_id = r.relation_batch_id \
-             WHERE r.target_id = $1 \
-               AND ($2::text[] IS NULL OR r.relation_type = ANY($2)) \
-             ORDER BY r.created_at DESC",
-        )
-        .bind(anchor_id.inner())
-        .bind(&type_strings)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding inbound relations for {anchor_id}"),
-            source: e,
-        })?;
-
-        Ok(rows.into_iter().map(map_relation_row).collect())
+        find_committed_relations(conn, "r.target_id", "inbound", anchor_id, relation_types).await
     }
 
     async fn find_outbound(
@@ -491,27 +509,7 @@ impl RelationRepository for PgRelationRepository {
         anchor_id: KnowledgeItemId,
         relation_types: Option<&[RelationKind]>,
     ) -> Result<Vec<tribal_domain::KnowledgeItemRelation>, DbError> {
-        let type_strings = relation_type_strings(relation_types);
-
-        let rows = sqlx::query(
-            "SELECT r.id, r.relation_batch_id, r.source_id, r.target_id, \
-                    r.relation_type, r.principal_id, r.created_at \
-             FROM knowledge_item_relations r \
-             INNER JOIN jobs j ON j.committed_batch_id = r.relation_batch_id \
-             WHERE r.source_id = $1 \
-               AND ($2::text[] IS NULL OR r.relation_type = ANY($2)) \
-             ORDER BY r.created_at DESC",
-        )
-        .bind(anchor_id.inner())
-        .bind(&type_strings)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding outbound relations for {anchor_id}"),
-            source: e,
-        })?;
-
-        Ok(rows.into_iter().map(map_relation_row).collect())
+        find_committed_relations(conn, "r.source_id", "outbound", anchor_id, relation_types).await
     }
 
     async fn traverse(
@@ -526,23 +524,16 @@ impl RelationRepository for PgRelationRepository {
         let type_strings = relation_type_strings(relation_types);
 
         match direction {
-            Direction::Inbound => {
+            Direction::Inbound | Direction::Outbound => {
+                let cte_dir = match direction {
+                    Direction::Inbound => CteDirection::Inbound,
+                    Direction::Outbound => CteDirection::Outbound,
+                    Direction::Both => unreachable!(),
+                };
                 let (nodes, exact) = run_directional_cte(
                     conn,
                     anchor_id,
-                    CteDirection::Inbound,
-                    max_depth,
-                    limit,
-                    &type_strings,
-                )
-                .await?;
-                Ok(TraversalResponse { nodes, exact })
-            }
-            Direction::Outbound => {
-                let (nodes, exact) = run_directional_cte(
-                    conn,
-                    anchor_id,
-                    CteDirection::Outbound,
+                    cte_dir,
                     max_depth,
                     limit,
                     &type_strings,
