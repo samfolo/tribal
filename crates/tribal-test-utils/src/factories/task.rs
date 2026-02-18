@@ -1,4 +1,5 @@
 use chrono::Utc;
+use tribal_db::NewTask;
 use tribal_domain::{JobId, Task, TaskId, TaskStatus, TaskType};
 
 define_factory! {
@@ -27,6 +28,20 @@ pub fn a_task() -> TaskFactory {
     TaskFactory::new()
 }
 
+define_factory! {
+    /// Factory for [`NewTask`] instances used in repository insert operations.
+    pub struct NewTaskFactory for NewTask {
+        job_id: JobId = JobId::new(),
+        task_type: TaskType = TaskType::Extraction,
+        batch_index: Option<u32> = None,
+    }
+}
+
+/// Returns a [`NewTaskFactory`] with sensible defaults.
+pub fn a_new_task() -> NewTaskFactory {
+    NewTaskFactory::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -37,5 +52,12 @@ mod tests {
         assert_eq!(t.task_type(), TaskType::Extraction);
         assert_eq!(t.status(), TaskStatus::Queued);
         assert_eq!(t.retry_count(), 0);
+    }
+
+    #[test]
+    fn test_new_task_builds_with_defaults() {
+        let new = a_new_task().build();
+        assert_eq!(new.task_type.as_str(), "extraction");
+        assert!(new.batch_index.is_none());
     }
 }
