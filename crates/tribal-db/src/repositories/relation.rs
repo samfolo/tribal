@@ -151,10 +151,17 @@ fn build_traversal_node(
         .id(KnowledgeItemId::from(item_id))
         .project_id(ProjectId::from(project_id))
         .principal_id(PrincipalId::from(principal_id))
-        .kind(kind.parse::<KnowledgeKind>().expect(UNKNOWN_KNOWLEDGE_KIND_IN_DB))
+        .kind(
+            kind.parse::<KnowledgeKind>()
+                .expect(UNKNOWN_KNOWLEDGE_KIND_IN_DB),
+        )
         .content(content)
         .tags(tags)
-        .confidence(confidence.parse::<Confidence>().expect(UNKNOWN_CONFIDENCE_IN_DB))
+        .confidence(
+            confidence
+                .parse::<Confidence>()
+                .expect(UNKNOWN_CONFIDENCE_IN_DB),
+        )
         .claim_context(claim_context)
         .source_context(source_context)
         .episode_id(episode_id.map(EpisodeId::from))
@@ -321,12 +328,12 @@ async fn find_committed_relations(
             source: e,
         })?;
 
-    Ok(rows.into_iter().map(map_relation_row).collect())
+    Ok(rows.into_iter().map(|r| map_relation_row(&r)).collect())
 }
 
 /// Maps a raw `sqlx::Row` from a relation query into a
 /// [`KnowledgeItemRelation`].
-fn map_relation_row(r: sqlx::postgres::PgRow) -> tribal_domain::KnowledgeItemRelation {
+fn map_relation_row(r: &sqlx::postgres::PgRow) -> tribal_domain::KnowledgeItemRelation {
     build_relation(
         r.get("id"),
         r.get("relation_batch_id"),
@@ -339,7 +346,7 @@ fn map_relation_row(r: sqlx::postgres::PgRow) -> tribal_domain::KnowledgeItemRel
 }
 
 /// Maps a raw `sqlx::Row` from a traversal CTE into a [`TraversalNode`].
-fn map_traversal_row(r: sqlx::postgres::PgRow) -> TraversalNode {
+fn map_traversal_row(r: &sqlx::postgres::PgRow) -> TraversalNode {
     build_traversal_node(
         r.get("item_id"),
         r.get("project_id"),
@@ -372,7 +379,7 @@ async fn run_directional_cte(
     direction: CteDirection,
     max_depth: u32,
     limit: u32,
-    type_strings: &Option<Vec<String>>,
+    type_strings: Option<&[String]>,
 ) -> Result<(Vec<TraversalNode>, bool), DbError> {
     // Inbound: anchor sits at target_id, discovered items are source_id.
     // Outbound: anchor sits at source_id, discovered items are target_id.
@@ -395,7 +402,8 @@ async fn run_directional_cte(
                     ki.capture_branch, ki.created_at AS item_created_at, \
                     r.relation_type, r.source_id, r.target_id, \
                     r.created_at AS relation_created_at, \
-                    1 AS depth \
+                    1 AS depth, \
+                    ARRAY[$1::uuid, ki.id] AS visited \
              FROM knowledge_item_relations r \
              INNER JOIN jobs j ON j.committed_batch_id = r.relation_batch_id \
              INNER JOIN knowledge_items ki ON ki.id = {base_item_join_col} \
@@ -408,16 +416,23 @@ async fn run_directional_cte(
                     ki.source_context, ki.episode_id, ki.capture_commit, \
                     ki.capture_branch, ki.created_at, \
                     r.relation_type, r.source_id, r.target_id, \
-                    r.created_at, t.depth + 1 \
+                    r.created_at, t.depth + 1, \
+                    t.visited || ki.id \
              FROM knowledge_item_relations r \
              INNER JOIN jobs j ON j.committed_batch_id = r.relation_batch_id \
              INNER JOIN traversal t ON {rec_join_col} = t.item_id \
              INNER JOIN knowledge_items ki ON ki.id = {rec_item_join_col} \
              WHERE t.depth < $2 \
-               AND ki.id NOT IN (SELECT item_id FROM traversal) \
+               AND NOT (ki.id = ANY(t.visited)) \
                AND ($3::text[] IS NULL OR r.relation_type = ANY($3)) \
          ) \
-         SELECT * FROM traversal \
+         SELECT item_id, project_id, item_principal_id, kind, \
+                content, tags, confidence, claim_context, \
+                source_context, episode_id, capture_commit, \
+                capture_branch, item_created_at, \
+                relation_type, source_id, target_id, \
+                relation_created_at, depth \
+         FROM traversal \
          ORDER BY depth ASC \
          LIMIT $4"
     );
@@ -441,7 +456,7 @@ async fn run_directional_cte(
     let nodes: Vec<TraversalNode> = rows
         .into_iter()
         .take(limit as usize)
-        .map(map_traversal_row)
+        .map(|r| map_traversal_row(&r))
         .collect();
     let exact = fetched <= limit as usize;
 
@@ -461,10 +476,8 @@ impl RelationRepository for PgRelationRepository {
 
         let batch_ids: Vec<uuid::Uuid> =
             batch.iter().map(|r| *r.relation_batch_id.inner()).collect();
-        let source_ids: Vec<uuid::Uuid> =
-            batch.iter().map(|r| *r.source_id.inner()).collect();
-        let target_ids: Vec<uuid::Uuid> =
-            batch.iter().map(|r| *r.target_id.inner()).collect();
+        let source_ids: Vec<uuid::Uuid> = batch.iter().map(|r| *r.source_id.inner()).collect();
+        let target_ids: Vec<uuid::Uuid> = batch.iter().map(|r| *r.target_id.inner()).collect();
         let types: Vec<String> = batch
             .iter()
             .map(|r| r.relation_type.as_str().to_owned())
@@ -491,7 +504,7 @@ impl RelationRepository for PgRelationRepository {
             source: e,
         })?;
 
-        Ok(rows.into_iter().map(map_relation_row).collect())
+        Ok(rows.into_iter().map(|r| map_relation_row(&r)).collect())
     }
 
     async fn find_inbound(
@@ -522,6 +535,7 @@ impl RelationRepository for PgRelationRepository {
         relation_types: Option<&[RelationKind]>,
     ) -> Result<TraversalResponse, DbError> {
         let type_strings = relation_type_strings(relation_types);
+        let type_str_slice = type_strings.as_deref();
 
         match direction {
             Direction::Inbound | Direction::Outbound => {
@@ -530,15 +544,9 @@ impl RelationRepository for PgRelationRepository {
                     Direction::Outbound => CteDirection::Outbound,
                     Direction::Both => unreachable!(),
                 };
-                let (nodes, exact) = run_directional_cte(
-                    conn,
-                    anchor_id,
-                    cte_dir,
-                    max_depth,
-                    limit,
-                    &type_strings,
-                )
-                .await?;
+                let (nodes, exact) =
+                    run_directional_cte(conn, anchor_id, cte_dir, max_depth, limit, type_str_slice)
+                        .await?;
                 Ok(TraversalResponse { nodes, exact })
             }
             Direction::Both => {
@@ -548,7 +556,7 @@ impl RelationRepository for PgRelationRepository {
                     CteDirection::Inbound,
                     max_depth,
                     limit,
-                    &type_strings,
+                    type_str_slice,
                 )
                 .await?;
                 let (outbound_nodes, outbound_exact) = run_directional_cte(
@@ -557,7 +565,7 @@ impl RelationRepository for PgRelationRepository {
                     CteDirection::Outbound,
                     max_depth,
                     limit,
-                    &type_strings,
+                    type_str_slice,
                 )
                 .await?;
 
@@ -582,8 +590,7 @@ impl RelationRepository for PgRelationRepository {
 
                 let total = merged.len();
                 merged.truncate(limit as usize);
-                let exact =
-                    inbound_exact && outbound_exact && total <= limit as usize;
+                let exact = inbound_exact && outbound_exact && total <= limit as usize;
 
                 Ok(TraversalResponse {
                     nodes: merged,
