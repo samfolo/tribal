@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{SubsecRound, Utc};
 use tribal_db::{
     DbError, JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
     PrincipalRepository, ProjectRepository,
@@ -290,7 +290,8 @@ async fn test_update_status_to_completed() {
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
 
-    let completed_at = Utc::now();
+    // Truncate to microseconds — Postgres timestamptz has microsecond precision.
+    let completed_at = Utc::now().trunc_subsecs(6);
     let transition = a_job_status_transition()
         .status(JobStatus::Completed)
         .outcome(Some(JobOutcome::Success))
@@ -326,7 +327,8 @@ async fn test_update_status_to_failed() {
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
 
-    let completed_at = Utc::now();
+    // Truncate to microseconds — Postgres timestamptz has microsecond precision.
+    let completed_at = Utc::now().trunc_subsecs(6);
     let transition = a_job_status_transition()
         .status(JobStatus::Failed)
         .outcome(Some(JobOutcome::Failure))
