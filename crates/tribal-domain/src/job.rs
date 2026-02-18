@@ -47,6 +47,22 @@ pub enum JobOutcome {
     Failure,
 }
 
+enum_text_conversions!(JobStatus {
+    JobStatus::Queued => "queued",
+    JobStatus::Extracting => "extracting",
+    JobStatus::Triaging => "triaging",
+    JobStatus::Relating => "relating",
+    JobStatus::Completed => "completed",
+    JobStatus::Failed => "failed",
+});
+
+enum_text_conversions!(JobOutcome {
+    JobOutcome::Success => "success",
+    JobOutcome::Partial => "partial",
+    JobOutcome::Empty => "empty",
+    JobOutcome::Failure => "failure",
+});
+
 /// An ingest pipeline job.
 ///
 /// # Invariants
