@@ -109,7 +109,8 @@ pub trait JobRepository {
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn find_by_id(&self, conn: &mut PgConnection, id: JobId) -> Result<Job, DbError>;
 
-    /// Finds all jobs for a project, ordered by `created_at` descending.
+    /// Finds all jobs for a project, ordered by `created_at` descending
+    /// with `id` as tiebreaker.
     ///
     /// # Errors
     ///
@@ -229,7 +230,7 @@ impl JobRepository for PgJobRepository {
         conn: &mut PgConnection,
         project_id: ProjectId,
     ) -> Result<Vec<Job>, DbError> {
-        let rows = sqlx::query("SELECT * FROM jobs WHERE project_id = $1 ORDER BY created_at DESC")
+        let rows = sqlx::query("SELECT * FROM jobs WHERE project_id = $1 ORDER BY created_at DESC, id DESC")
             .bind(project_id.inner())
             .fetch_all(&mut *conn)
             .await
