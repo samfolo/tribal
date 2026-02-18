@@ -8,6 +8,9 @@
 #[path = "repositories/embedding.rs"]
 mod embedding;
 
+#[path = "repositories/job.rs"]
+mod job;
+
 #[path = "repositories/knowledge_item.rs"]
 mod knowledge_item;
 
@@ -22,3 +25,6 @@ mod reference;
 
 #[path = "repositories/relation.rs"]
 mod relation;
+
+#[path = "repositories/task.rs"]
+mod task;
