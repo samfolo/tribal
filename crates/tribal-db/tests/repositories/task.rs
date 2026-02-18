@@ -260,6 +260,14 @@ async fn test_find_by_job_id() {
         .expect("find_by_job_id");
 
     assert_eq!(tasks.len(), 3);
+    // All tasks share a transaction-scoped created_at, so id (ASC)
+    // breaks the tie. Verify monotonic id ordering.
+    assert!(tasks[0].id() < tasks[1].id());
+    assert!(tasks[1].id() < tasks[2].id());
+    // All expected task types are present.
+    let types: Vec<_> = tasks.iter().map(|t| t.task_type()).collect();
+    assert!(types.contains(&TaskType::Extraction));
+    assert!(types.contains(&TaskType::Triage));
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +313,40 @@ async fn test_claim_returns_claimed_tasks() {
         assert!(task.claimed_at().is_some());
         assert!(task.heartbeat_at().is_some());
     }
+}
+
+#[tokio::test]
+async fn test_claim_respects_limit() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTaskRepository;
+
+    let job_id = setup_task_prerequisites(&mut txn, "claim-limit").await;
+
+    repo.insert(
+        &mut txn,
+        &a_new_task()
+            .job_id(job_id)
+            .task_type(TaskType::Extraction)
+            .build(),
+    )
+    .await
+    .expect("insert extraction");
+
+    repo.insert(
+        &mut txn,
+        &a_new_task()
+            .job_id(job_id)
+            .task_type(TaskType::Triage)
+            .batch_index(Some(0))
+            .build(),
+    )
+    .await
+    .expect("insert triage");
+
+    let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
+
+    assert_eq!(claimed.len(), 1);
 }
 
 #[tokio::test]
@@ -368,12 +410,21 @@ async fn test_heartbeat_updates_timestamp() {
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
 
+    let original_heartbeat_at = task.heartbeat_at().expect("claimed task has heartbeat_at");
+
     let rows = repo
         .heartbeat(&mut txn, task.id(), task.claim_token().unwrap())
         .await
         .expect("heartbeat");
 
     assert_eq!(rows, 1);
+
+    let found = repo
+        .find_by_id(&mut txn, task.id())
+        .await
+        .expect("find_by_id");
+
+    assert!(found.heartbeat_at().expect("heartbeat_at set") >= original_heartbeat_at);
 }
 
 #[tokio::test]

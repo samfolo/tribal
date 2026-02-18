@@ -4,7 +4,7 @@ use tribal_db::{
     PrincipalRepository, ProjectRepository,
 };
 use tribal_domain::{
-    JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId, RelationBatchId,
+    EpisodeId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId, RelationBatchId,
 };
 use tribal_test_utils::{
     a_job_status_transition, a_new_job, a_new_principal, a_new_project, test_context,
@@ -95,6 +95,44 @@ async fn test_insert_returns_populated_job() {
     assert!(job.committed_batch_id().is_none());
     assert!(job.error_message().is_none());
     assert!(job.completed_at().is_none());
+}
+
+#[tokio::test]
+async fn test_insert_with_optional_fields_round_trips() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let (principal_id, project_id, pv_id) =
+        setup_job_prerequisites(&mut txn, "insert-optional").await;
+
+    let actor = PgPrincipalRepository
+        .insert(
+            &mut txn,
+            &a_new_principal()
+                .principal_key("user:job-test-actor".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert actor");
+
+    let correlation_id = EpisodeId::new();
+    let new = a_new_job()
+        .project_id(project_id)
+        .principal_id(principal_id)
+        .actor_id(Some(actor.id()))
+        .correlation_id(Some(correlation_id))
+        .extraction_prompt_version_id(pv_id)
+        .triage_prompt_version_id(pv_id)
+        .relation_prompt_version_id(pv_id)
+        .trace_context(Some("00-abc-def-01".to_owned()))
+        .build();
+
+    let job = repo.insert(&mut txn, &new).await.expect("insert");
+
+    assert_eq!(job.actor_id(), Some(actor.id()));
+    assert_eq!(job.correlation_id(), Some(correlation_id));
+    assert_eq!(job.trace_context(), Some("00-abc-def-01"));
 }
 
 // ---------------------------------------------------------------------------

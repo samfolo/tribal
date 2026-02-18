@@ -3,6 +3,10 @@
 //! Tasks are the unit of work in the ingest pipeline.  Claiming uses an
 //! atomic CTE with `FOR UPDATE SKIP LOCKED`.  Retry uses exponential
 //! backoff; dead-letter shelves tasks that exhaust their retry budget.
+//!
+//! Uses raw `sqlx::query()` because CTE-based atomic operations
+//! (`claim`, `reclaim_stale`) and conditional `CASE` expressions
+//! (`fail`) are unsupported by the compile-time macro.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -76,7 +80,8 @@ pub trait TaskRepository {
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn find_by_id(&self, conn: &mut PgConnection, id: TaskId) -> Result<Task, DbError>;
 
-    /// Finds all tasks for a job, ordered by `created_at` ascending.
+    /// Finds all tasks for a job, ordered by `created_at` ascending
+    /// with `id` as tiebreaker.
     ///
     /// # Errors
     ///
@@ -251,14 +256,15 @@ impl TaskRepository for PgTaskRepository {
         conn: &mut PgConnection,
         job_id: JobId,
     ) -> Result<Vec<Task>, DbError> {
-        let rows = sqlx::query("SELECT * FROM tasks WHERE job_id = $1 ORDER BY created_at ASC")
-            .bind(job_id.inner())
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|e| DbError::QueryFailed {
-                context: format!("finding tasks for job {job_id}"),
-                source: e,
-            })?;
+        let rows =
+            sqlx::query("SELECT * FROM tasks WHERE job_id = $1 ORDER BY created_at ASC, id ASC")
+                .bind(job_id.inner())
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: format!("finding tasks for job {job_id}"),
+                    source: e,
+                })?;
 
         Ok(rows.iter().map(map_task_row).collect())
     }
