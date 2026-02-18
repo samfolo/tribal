@@ -19,3 +19,6 @@ mod project;
 
 #[path = "repositories/reference.rs"]
 mod reference;
+
+#[path = "repositories/relation.rs"]
+mod relation;
