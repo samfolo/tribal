@@ -2,7 +2,7 @@ use tribal_db::{
     DbError, JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
     PgTaskRepository, PrincipalRepository, ProjectRepository, TaskRepository,
 };
-use tribal_domain::{JobId, TaskErrorKind, TaskStatus, TaskType};
+use tribal_domain::{JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use tribal_test_utils::{a_new_job, a_new_principal, a_new_project, a_new_task, test_context};
 
 // ---------------------------------------------------------------------------
@@ -200,9 +200,7 @@ async fn test_find_by_id_not_found() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTaskRepository;
 
-    let result = repo
-        .find_by_id(&mut txn, tribal_domain::TaskId::new())
-        .await;
+    let result = repo.find_by_id(&mut txn, TaskId::new()).await;
 
     assert!(matches!(
         result,
@@ -277,7 +275,7 @@ async fn test_find_by_job_id_empty() {
     let repo = PgTaskRepository;
 
     let tasks = repo
-        .find_by_job_id(&mut txn, tribal_domain::JobId::new())
+        .find_by_job_id(&mut txn, JobId::new())
         .await
         .expect("find_by_job_id");
 
