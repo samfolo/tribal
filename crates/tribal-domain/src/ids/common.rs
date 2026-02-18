@@ -41,7 +41,7 @@ macro_rules! define_id {
     ($(#[$meta:meta])* $name:ident, $prefix:literal) => {
         $(#[$meta])*
         #[derive(
-            Debug, Clone, Copy, PartialEq, Eq, Hash,
+            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
             serde::Serialize, serde::Deserialize,
         )]
         #[serde(try_from = "String", into = "String")]

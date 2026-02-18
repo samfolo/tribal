@@ -60,6 +60,29 @@ pub enum TaskErrorKind {
     Timeout,
 }
 
+enum_text_conversions!(TaskType {
+    TaskType::Extraction => "extraction",
+    TaskType::Triage => "triage",
+    TaskType::Relation => "relation",
+});
+
+enum_text_conversions!(TaskStatus {
+    TaskStatus::Queued => "queued",
+    TaskStatus::Claimed => "claimed",
+    TaskStatus::Completed => "completed",
+    TaskStatus::DeadLetter => "dead_letter",
+});
+
+enum_text_conversions!(TaskErrorKind {
+    TaskErrorKind::ProviderError => "provider_error",
+    TaskErrorKind::SemaphoreTimeout => "semaphore_timeout",
+    TaskErrorKind::ParseError => "parse_error",
+    TaskErrorKind::HeartbeatExpired => "heartbeat_expired",
+    TaskErrorKind::StartupReclaim => "startup_reclaim",
+    TaskErrorKind::OwnershipLost => "ownership_lost",
+    TaskErrorKind::Timeout => "timeout",
+});
+
 /// A task in the ingest pipeline.
 ///
 /// # Invariants
@@ -192,7 +215,7 @@ impl Task {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enum_serde_tests;
+    use crate::{enum_serde_tests, enum_text_tests};
 
     enum_serde_tests!(test_task_type_serde_roundtrip, TaskType {
         TaskType::Extraction => "extraction",
@@ -208,6 +231,29 @@ mod tests {
     });
 
     enum_serde_tests!(test_task_error_kind_serde_roundtrip, TaskErrorKind {
+        TaskErrorKind::ProviderError => "provider_error",
+        TaskErrorKind::SemaphoreTimeout => "semaphore_timeout",
+        TaskErrorKind::ParseError => "parse_error",
+        TaskErrorKind::HeartbeatExpired => "heartbeat_expired",
+        TaskErrorKind::StartupReclaim => "startup_reclaim",
+        TaskErrorKind::OwnershipLost => "ownership_lost",
+        TaskErrorKind::Timeout => "timeout",
+    });
+
+    enum_text_tests!(test_task_type_text_roundtrip, TaskType {
+        TaskType::Extraction => "extraction",
+        TaskType::Triage => "triage",
+        TaskType::Relation => "relation",
+    });
+
+    enum_text_tests!(test_task_status_text_roundtrip, TaskStatus {
+        TaskStatus::Queued => "queued",
+        TaskStatus::Claimed => "claimed",
+        TaskStatus::Completed => "completed",
+        TaskStatus::DeadLetter => "dead_letter",
+    });
+
+    enum_text_tests!(test_task_error_kind_text_roundtrip, TaskErrorKind {
         TaskErrorKind::ProviderError => "provider_error",
         TaskErrorKind::SemaphoreTimeout => "semaphore_timeout",
         TaskErrorKind::ParseError => "parse_error",
