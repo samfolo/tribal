@@ -626,6 +626,10 @@ async fn test_fail_dead_letters_when_exceeding_max_retries() {
     assert_eq!(found.retry_count(), 4);
     assert!(found.claim_token().is_none());
     assert!(found.claimed_by().is_none());
+    assert!(found.claimed_at().is_none());
+    assert!(found.heartbeat_at().is_none());
+    assert_eq!(found.error_kind(), Some(TaskErrorKind::ProviderError));
+    assert_eq!(found.error_message(), Some("final failure"));
     // available_at preserved (not set to caller-provided backoff_at).
     assert_eq!(found.available_at(), original_available_at);
 }
@@ -705,6 +709,8 @@ async fn test_reclaim_stale_heartbeat_expired() {
     assert_eq!(found.error_message(), Some("heartbeat_expired"));
     assert!(found.claim_token().is_none());
     assert!(found.claimed_by().is_none());
+    assert!(found.claimed_at().is_none());
+    assert!(found.heartbeat_at().is_none());
     // Exponential backoff: power(2, 0) = 1 second from now.
     let now = chrono::Utc::now();
     assert!(
@@ -757,6 +763,8 @@ async fn test_reclaim_stale_startup_reclaim() {
     assert_eq!(found.error_message(), Some("startup_reclaim"));
     assert!(found.claim_token().is_none());
     assert!(found.claimed_by().is_none());
+    assert!(found.claimed_at().is_none());
+    assert!(found.heartbeat_at().is_none());
     // Startup reclaim: flat 1-second backoff.
     let now = chrono::Utc::now();
     assert!(
@@ -823,6 +831,8 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
     assert_eq!(found.error_message(), Some("heartbeat_expired"));
     assert!(found.claim_token().is_none());
     assert!(found.claimed_by().is_none());
+    assert!(found.claimed_at().is_none());
+    assert!(found.heartbeat_at().is_none());
     // Dead-letter preserves original available_at.
     assert_eq!(found.available_at(), pre_reclaim_available_at);
 }
