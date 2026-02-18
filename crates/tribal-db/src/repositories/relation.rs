@@ -89,11 +89,6 @@ pub struct TraversalResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Row mapping helpers
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
 
@@ -257,9 +252,7 @@ fn map_relation_row(r: &sqlx::postgres::PgRow) -> tribal_domain::KnowledgeItemRe
                 .parse::<RelationKind>()
                 .expect(UNKNOWN_RELATION_KIND_IN_DB),
         )
-        .principal_id(PrincipalId::from(
-            r.get::<uuid::Uuid, _>("principal_id"),
-        ))
+        .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
         .created_at(r.get("created_at"))
         .build()
 }
@@ -286,7 +279,10 @@ fn map_traversal_row(r: &sqlx::postgres::PgRow) -> TraversalNode {
         )
         .claim_context(r.get("claim_context"))
         .source_context(r.get("source_context"))
-        .episode_id(r.get::<Option<uuid::Uuid>, _>("episode_id").map(EpisodeId::from))
+        .episode_id(
+            r.get::<Option<uuid::Uuid>, _>("episode_id")
+                .map(EpisodeId::from),
+        )
         .capture_commit(r.get("capture_commit"))
         .capture_branch(r.get("capture_branch"))
         .created_at(r.get("item_created_at"))
