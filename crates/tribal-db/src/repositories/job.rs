@@ -20,13 +20,10 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
-const UNKNOWN_JOB_STATUS_IN_DB: &str =
-    "unrecognised job status in database — schema mismatch";
-const UNKNOWN_JOB_OUTCOME_IN_DB: &str =
-    "unrecognised job outcome in database — schema mismatch";
+const UNKNOWN_JOB_STATUS_IN_DB: &str = "unrecognised job status in database — schema mismatch";
+const UNKNOWN_JOB_OUTCOME_IN_DB: &str = "unrecognised job outcome in database — schema mismatch";
 const BATCH_SIZE_EXCEEDS_I32: &str = "batch_size exceeds i32::MAX";
-const EXTRACTION_ORIGINAL_COUNT_EXCEEDS_I32: &str =
-    "extraction_original_count exceeds i32::MAX";
+const EXTRACTION_ORIGINAL_COUNT_EXCEEDS_I32: &str = "extraction_original_count exceeds i32::MAX";
 const BATCH_SIZE_OVERFLOW: &str = "negative batch_size in database — data corruption";
 const EXTRACTION_ORIGINAL_COUNT_OVERFLOW: &str =
     "negative extraction_original_count in database — data corruption";
@@ -102,11 +99,7 @@ pub trait JobRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn insert(
-        &self,
-        conn: &mut PgConnection,
-        new_job: &NewJob,
-    ) -> Result<Job, DbError>;
+    async fn insert(&self, conn: &mut PgConnection, new_job: &NewJob) -> Result<Job, DbError>;
 
     /// Finds a job by its ID.
     ///
@@ -114,11 +107,7 @@ pub trait JobRepository {
     ///
     /// Returns [`DbError::NotFound`] if no job with the given ID exists.
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_id(
-        &self,
-        conn: &mut PgConnection,
-        id: JobId,
-    ) -> Result<Job, DbError>;
+    async fn find_by_id(&self, conn: &mut PgConnection, id: JobId) -> Result<Job, DbError>;
 
     /// Finds all jobs for a project, ordered by `created_at` descending.
     ///
@@ -134,7 +123,7 @@ pub trait JobRepository {
     /// Transitions a job's status and returns the updated job.
     ///
     /// Sets `updated_at` to `now()` atomically.  Terminal transitions
-    /// must supply appropriate outcome and error_message fields to
+    /// must supply appropriate outcome and `error_message` fields to
     /// satisfy database CHECK constraints.
     ///
     /// # Errors
@@ -189,11 +178,7 @@ pub struct PgJobRepository;
 
 #[async_trait]
 impl JobRepository for PgJobRepository {
-    async fn insert(
-        &self,
-        conn: &mut PgConnection,
-        new_job: &NewJob,
-    ) -> Result<Job, DbError> {
+    async fn insert(&self, conn: &mut PgConnection, new_job: &NewJob) -> Result<Job, DbError> {
         let row = sqlx::query(
             "INSERT INTO jobs \
                  (project_id, principal_id, actor_id, source_context, \
@@ -222,11 +207,7 @@ impl JobRepository for PgJobRepository {
         Ok(map_job_row(&row))
     }
 
-    async fn find_by_id(
-        &self,
-        conn: &mut PgConnection,
-        id: JobId,
-    ) -> Result<Job, DbError> {
+    async fn find_by_id(&self, conn: &mut PgConnection, id: JobId) -> Result<Job, DbError> {
         let row = sqlx::query("SELECT * FROM jobs WHERE id = $1")
             .bind(id.inner())
             .fetch_optional(&mut *conn)
@@ -248,16 +229,14 @@ impl JobRepository for PgJobRepository {
         conn: &mut PgConnection,
         project_id: ProjectId,
     ) -> Result<Vec<Job>, DbError> {
-        let rows = sqlx::query(
-            "SELECT * FROM jobs WHERE project_id = $1 ORDER BY created_at DESC",
-        )
-        .bind(project_id.inner())
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding jobs for project {project_id}"),
-            source: e,
-        })?;
+        let rows = sqlx::query("SELECT * FROM jobs WHERE project_id = $1 ORDER BY created_at DESC")
+            .bind(project_id.inner())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding jobs for project {project_id}"),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_job_row).collect())
     }
@@ -301,8 +280,7 @@ impl JobRepository for PgJobRepository {
         batch_size: u32,
         extraction_original_count: u32,
     ) -> Result<Job, DbError> {
-        let batch_size_i32 =
-            i32::try_from(batch_size).expect(BATCH_SIZE_EXCEEDS_I32);
+        let batch_size_i32 = i32::try_from(batch_size).expect(BATCH_SIZE_EXCEEDS_I32);
         let original_count_i32 =
             i32::try_from(extraction_original_count).expect(EXTRACTION_ORIGINAL_COUNT_EXCEEDS_I32);
 
@@ -372,9 +350,7 @@ fn map_job_row(r: &sqlx::postgres::PgRow) -> Job {
                 .map(EpisodeId::from),
         )
         .project_id(ProjectId::from(r.get::<uuid::Uuid, _>("project_id")))
-        .principal_id(PrincipalId::from(
-            r.get::<uuid::Uuid, _>("principal_id"),
-        ))
+        .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
         .actor_id(
             r.get::<Option<uuid::Uuid>, _>("actor_id")
                 .map(PrincipalId::from),

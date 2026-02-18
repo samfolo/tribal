@@ -16,18 +16,14 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
-const UNKNOWN_TASK_TYPE_IN_DB: &str =
-    "unrecognised task type in database — schema mismatch";
-const UNKNOWN_TASK_STATUS_IN_DB: &str =
-    "unrecognised task status in database — schema mismatch";
+const UNKNOWN_TASK_TYPE_IN_DB: &str = "unrecognised task type in database — schema mismatch";
+const UNKNOWN_TASK_STATUS_IN_DB: &str = "unrecognised task status in database — schema mismatch";
 const UNKNOWN_TASK_ERROR_KIND_IN_DB: &str =
     "unrecognised task error kind in database — schema mismatch";
 const BATCH_INDEX_EXCEEDS_I32: &str = "batch_index exceeds i32::MAX";
 const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data corruption";
 const RETRY_COUNT_OVERFLOW: &str = "negative retry_count in database — data corruption";
-const LIMIT_EXCEEDS_I64: &str = "limit exceeds i64 range";
 const MAX_RETRIES_EXCEEDS_I32: &str = "max_retries exceeds i32::MAX";
-const TIMEOUT_SECONDS_EXCEEDS_F64: &str = "timeout_seconds exceeds f64 range";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -70,11 +66,7 @@ pub trait TaskRepository {
     ///
     /// Returns [`DbError::UniqueViolation`] on duplicate task conflict.
     /// Returns [`DbError::QueryFailed`] on other database errors.
-    async fn insert(
-        &self,
-        conn: &mut PgConnection,
-        new_task: &NewTask,
-    ) -> Result<Task, DbError>;
+    async fn insert(&self, conn: &mut PgConnection, new_task: &NewTask) -> Result<Task, DbError>;
 
     /// Finds a task by its ID.
     ///
@@ -82,11 +74,7 @@ pub trait TaskRepository {
     ///
     /// Returns [`DbError::NotFound`] if no task with the given ID exists.
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_id(
-        &self,
-        conn: &mut PgConnection,
-        id: TaskId,
-    ) -> Result<Task, DbError>;
+    async fn find_by_id(&self, conn: &mut PgConnection, id: TaskId) -> Result<Task, DbError>;
 
     /// Finds all tasks for a job, ordered by `created_at` ascending.
     ///
@@ -163,6 +151,7 @@ pub trait TaskRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
+    #[allow(clippy::too_many_arguments)]
     async fn fail(
         &self,
         conn: &mut PgConnection,
@@ -209,11 +198,7 @@ pub struct PgTaskRepository;
 
 #[async_trait]
 impl TaskRepository for PgTaskRepository {
-    async fn insert(
-        &self,
-        conn: &mut PgConnection,
-        new_task: &NewTask,
-    ) -> Result<Task, DbError> {
+    async fn insert(&self, conn: &mut PgConnection, new_task: &NewTask) -> Result<Task, DbError> {
         let batch_index_i32 = new_task
             .batch_index
             .map(|v| i32::try_from(v).expect(BATCH_INDEX_EXCEEDS_I32));
@@ -244,11 +229,7 @@ impl TaskRepository for PgTaskRepository {
         }
     }
 
-    async fn find_by_id(
-        &self,
-        conn: &mut PgConnection,
-        id: TaskId,
-    ) -> Result<Task, DbError> {
+    async fn find_by_id(&self, conn: &mut PgConnection, id: TaskId) -> Result<Task, DbError> {
         let row = sqlx::query("SELECT * FROM tasks WHERE id = $1")
             .bind(id.inner())
             .fetch_optional(&mut *conn)
@@ -270,16 +251,14 @@ impl TaskRepository for PgTaskRepository {
         conn: &mut PgConnection,
         job_id: JobId,
     ) -> Result<Vec<Task>, DbError> {
-        let rows = sqlx::query(
-            "SELECT * FROM tasks WHERE job_id = $1 ORDER BY created_at ASC",
-        )
-        .bind(job_id.inner())
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding tasks for job {job_id}"),
-            source: e,
-        })?;
+        let rows = sqlx::query("SELECT * FROM tasks WHERE job_id = $1 ORDER BY created_at ASC")
+            .bind(job_id.inner())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding tasks for job {job_id}"),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_task_row).collect())
     }
@@ -379,8 +358,7 @@ impl TaskRepository for PgTaskRepository {
         error_kind: TaskErrorKind,
         error_message: &str,
     ) -> Result<u64, DbError> {
-        let max_retries_i32 =
-            i32::try_from(max_retries).expect(MAX_RETRIES_EXCEEDS_I32);
+        let max_retries_i32 = i32::try_from(max_retries).expect(MAX_RETRIES_EXCEEDS_I32);
 
         let result = sqlx::query(
             "UPDATE tasks \
@@ -427,9 +405,8 @@ impl TaskRepository for PgTaskRepository {
         error_kind: TaskErrorKind,
     ) -> Result<u64, DbError> {
         let timeout_f64 = f64::from(timeout_seconds);
-        let max_retries_i32 =
-            i32::try_from(max_retries).expect(MAX_RETRIES_EXCEEDS_I32);
-        let limit_i64 = i64::try_from(limit).expect(LIMIT_EXCEEDS_I64);
+        let max_retries_i32 = i32::try_from(max_retries).expect(MAX_RETRIES_EXCEEDS_I32);
+        let limit_i64 = i64::from(limit);
         let error_kind_str = error_kind.as_str();
 
         let result = sqlx::query(
@@ -508,16 +485,11 @@ fn map_task_row(r: &sqlx::postgres::PgRow) -> Task {
         .claimed_by(r.get("claimed_by"))
         .claimed_at(r.get("claimed_at"))
         .heartbeat_at(r.get("heartbeat_at"))
-        .retry_count(
-            u32::try_from(r.get::<i32, _>("retry_count"))
-                .expect(RETRY_COUNT_OVERFLOW),
-        )
-        .error_kind(
-            r.get::<Option<String>, _>("error_kind").map(|s| {
-                s.parse::<TaskErrorKind>()
-                    .expect(UNKNOWN_TASK_ERROR_KIND_IN_DB)
-            }),
-        )
+        .retry_count(u32::try_from(r.get::<i32, _>("retry_count")).expect(RETRY_COUNT_OVERFLOW))
+        .error_kind(r.get::<Option<String>, _>("error_kind").map(|s| {
+            s.parse::<TaskErrorKind>()
+                .expect(UNKNOWN_TASK_ERROR_KIND_IN_DB)
+        }))
         .error_message(r.get("error_message"))
         .created_at(r.get("created_at"))
         .updated_at(r.get("updated_at"))
