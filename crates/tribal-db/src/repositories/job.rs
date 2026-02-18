@@ -230,14 +230,16 @@ impl JobRepository for PgJobRepository {
         conn: &mut PgConnection,
         project_id: ProjectId,
     ) -> Result<Vec<Job>, DbError> {
-        let rows = sqlx::query("SELECT * FROM jobs WHERE project_id = $1 ORDER BY created_at DESC, id DESC")
-            .bind(project_id.inner())
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|e| DbError::QueryFailed {
-                context: format!("finding jobs for project {project_id}"),
-                source: e,
-            })?;
+        let rows = sqlx::query(
+            "SELECT * FROM jobs WHERE project_id = $1 ORDER BY created_at DESC, id DESC",
+        )
+        .bind(project_id.inner())
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("finding jobs for project {project_id}"),
+            source: e,
+        })?;
 
         Ok(rows.iter().map(map_job_row).collect())
     }
