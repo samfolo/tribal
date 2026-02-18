@@ -27,6 +27,13 @@ pub enum RelationKind {
     DerivedFrom,
 }
 
+enum_text_conversions!(RelationKind {
+    RelationKind::Supports => "supports",
+    RelationKind::Contradicts => "contradicts",
+    RelationKind::Supersedes => "supersedes",
+    RelationKind::DerivedFrom => "derived_from",
+});
+
 /// The triage agent's classification of a similar item before any
 /// relationship is created.
 ///
@@ -118,7 +125,14 @@ impl KnowledgeItemRelation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enum_serde_tests;
+    use crate::{enum_serde_tests, enum_text_tests};
+
+    enum_text_tests!(test_relation_kind_text_roundtrip, RelationKind {
+        RelationKind::Supports => "supports",
+        RelationKind::Contradicts => "contradicts",
+        RelationKind::Supersedes => "supersedes",
+        RelationKind::DerivedFrom => "derived_from",
+    });
 
     enum_serde_tests!(test_relation_kind_serde_roundtrip, RelationKind {
         RelationKind::Supports => "supports",
