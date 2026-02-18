@@ -450,6 +450,43 @@ async fn test_find_outbound_returns_empty_when_no_committed_relations() {
 }
 
 // ---------------------------------------------------------------------------
+// traverse — uncommitted exclusion
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_traverse_returns_empty_when_no_committed_relations() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgRelationRepository;
+
+    let (principal_id, project_id, item_a) =
+        setup_prerequisites(&mut txn, "rel-trav-uncommitted").await;
+    let item_b = setup_item(&mut txn, project_id, principal_id, "item B").await;
+
+    // Insert but do NOT commit the batch.
+    let batch_id = RelationBatchId::new();
+    repo.batch_insert(
+        &mut txn,
+        &[a_new_knowledge_item_relation()
+            .relation_batch_id(batch_id)
+            .source_id(item_a)
+            .target_id(item_b)
+            .principal_id(principal_id)
+            .build()],
+    )
+    .await
+    .expect("batch_insert");
+
+    let response = repo
+        .traverse(&mut txn, item_b, Direction::Inbound, 2, 10, None)
+        .await
+        .expect("traverse");
+
+    assert!(response.nodes.is_empty());
+    assert!(response.exact);
+}
+
+// ---------------------------------------------------------------------------
 // traverse — inbound
 // ---------------------------------------------------------------------------
 
