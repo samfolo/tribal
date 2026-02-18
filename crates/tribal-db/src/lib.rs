@@ -17,10 +17,11 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 pub use error::DbError;
 pub use pool::create_pool;
 pub use repositories::{
-    EmbeddingRepository, KnowledgeItemRepository, NewEmbedding, NewKnowledgeItem,
-    NewKnowledgeItemRelation, NewPrincipal, NewProject, NewReference, PgEmbeddingRepository,
-    PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository, PgReferenceRepository,
-    PgRelationRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
+    EmbeddingRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository, NewEmbedding,
+    NewJob, NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject, NewReference,
+    NewTask, PgEmbeddingRepository, PgJobRepository, PgKnowledgeItemRepository,
+    PgPrincipalRepository, PgProjectRepository, PgReferenceRepository, PgRelationRepository,
+    PgTaskRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
     RelationRepository, SemanticSearchParams, SemanticSearchResponse, SemanticSearchResult,
-    TraversalNode, TraversalResponse,
+    TaskRepository, TraversalNode, TraversalResponse,
 };
