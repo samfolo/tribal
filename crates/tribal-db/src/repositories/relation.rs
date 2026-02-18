@@ -92,95 +92,6 @@ pub struct TraversalResponse {
 // Row mapping helpers
 // ---------------------------------------------------------------------------
 
-/// Builds a [`KnowledgeItemRelation`] from raw row field values.
-///
-/// Panics if `relation_type` contains an unrecognised value, which
-/// indicates a schema mismatch (the CHECK constraint should prevent this).
-fn build_relation(
-    id: uuid::Uuid,
-    relation_batch_id: uuid::Uuid,
-    source_id: uuid::Uuid,
-    target_id: uuid::Uuid,
-    relation_type: &str,
-    principal_id: uuid::Uuid,
-    created_at: DateTime<Utc>,
-) -> tribal_domain::KnowledgeItemRelation {
-    tribal_domain::KnowledgeItemRelation::builder()
-        .id(RelationId::from(id))
-        .relation_batch_id(RelationBatchId::from(relation_batch_id))
-        .source_id(KnowledgeItemId::from(source_id))
-        .target_id(KnowledgeItemId::from(target_id))
-        .relation_type(
-            relation_type
-                .parse::<RelationKind>()
-                .expect(UNKNOWN_RELATION_KIND_IN_DB),
-        )
-        .principal_id(PrincipalId::from(principal_id))
-        .created_at(created_at)
-        .build()
-}
-
-/// Builds a [`TraversalNode`] from a raw CTE result row.
-///
-/// The CTE joins `knowledge_items` and `knowledge_item_relations` so
-/// the row contains both item fields and relation metadata.
-#[allow(clippy::too_many_arguments)]
-fn build_traversal_node(
-    // Knowledge item fields
-    item_id: uuid::Uuid,
-    project_id: uuid::Uuid,
-    principal_id: uuid::Uuid,
-    kind: &str,
-    content: String,
-    tags: Vec<String>,
-    confidence: &str,
-    claim_context: Option<serde_json::Value>,
-    source_context: serde_json::Value,
-    episode_id: Option<uuid::Uuid>,
-    capture_commit: Option<String>,
-    capture_branch: Option<String>,
-    item_created_at: DateTime<Utc>,
-    // Relation metadata
-    relation_type: &str,
-    source_id: uuid::Uuid,
-    target_id: uuid::Uuid,
-    relation_created_at: DateTime<Utc>,
-    depth: i32,
-) -> TraversalNode {
-    let item = KnowledgeItem::builder()
-        .id(KnowledgeItemId::from(item_id))
-        .project_id(ProjectId::from(project_id))
-        .principal_id(PrincipalId::from(principal_id))
-        .kind(
-            kind.parse::<KnowledgeKind>()
-                .expect(UNKNOWN_KNOWLEDGE_KIND_IN_DB),
-        )
-        .content(content)
-        .tags(tags)
-        .confidence(
-            confidence
-                .parse::<Confidence>()
-                .expect(UNKNOWN_CONFIDENCE_IN_DB),
-        )
-        .claim_context(claim_context)
-        .source_context(source_context)
-        .episode_id(episode_id.map(EpisodeId::from))
-        .capture_commit(capture_commit)
-        .capture_branch(capture_branch)
-        .created_at(item_created_at)
-        .build();
-
-    TraversalNode {
-        item,
-        relation_type: relation_type
-            .parse::<RelationKind>()
-            .expect(UNKNOWN_RELATION_KIND_IN_DB),
-        source_id: KnowledgeItemId::from(source_id),
-        target_id: KnowledgeItemId::from(target_id),
-        relation_created_at,
-        depth: u32::try_from(depth).expect(NEGATIVE_DEPTH_IN_CTE),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -195,7 +106,7 @@ fn build_traversal_node(
 pub trait RelationRepository {
     /// Inserts a batch of relations and returns the fully populated domain types.
     ///
-    /// All relations in the batch should share the same `relation_batch_id`.
+    /// All relations in the batch must share the same `relation_batch_id`.
     /// Uses a single `UNNEST`-based INSERT for efficiency.
     ///
     /// Returns an empty vec without issuing a query if `batch` is empty.
@@ -334,39 +245,64 @@ async fn find_committed_relations(
 /// Maps a raw `sqlx::Row` from a relation query into a
 /// [`KnowledgeItemRelation`].
 fn map_relation_row(r: &sqlx::postgres::PgRow) -> tribal_domain::KnowledgeItemRelation {
-    build_relation(
-        r.get("id"),
-        r.get("relation_batch_id"),
-        r.get("source_id"),
-        r.get("target_id"),
-        r.get::<String, _>("relation_type").as_str(),
-        r.get("principal_id"),
-        r.get("created_at"),
-    )
+    tribal_domain::KnowledgeItemRelation::builder()
+        .id(RelationId::from(r.get::<uuid::Uuid, _>("id")))
+        .relation_batch_id(RelationBatchId::from(
+            r.get::<uuid::Uuid, _>("relation_batch_id"),
+        ))
+        .source_id(KnowledgeItemId::from(r.get::<uuid::Uuid, _>("source_id")))
+        .target_id(KnowledgeItemId::from(r.get::<uuid::Uuid, _>("target_id")))
+        .relation_type(
+            r.get::<String, _>("relation_type")
+                .parse::<RelationKind>()
+                .expect(UNKNOWN_RELATION_KIND_IN_DB),
+        )
+        .principal_id(PrincipalId::from(
+            r.get::<uuid::Uuid, _>("principal_id"),
+        ))
+        .created_at(r.get("created_at"))
+        .build()
 }
 
 /// Maps a raw `sqlx::Row` from a traversal CTE into a [`TraversalNode`].
 fn map_traversal_row(r: &sqlx::postgres::PgRow) -> TraversalNode {
-    build_traversal_node(
-        r.get("item_id"),
-        r.get("project_id"),
-        r.get("item_principal_id"),
-        r.get::<String, _>("kind").as_str(),
-        r.get("content"),
-        r.get("tags"),
-        r.get::<String, _>("confidence").as_str(),
-        r.get("claim_context"),
-        r.get("source_context"),
-        r.get("episode_id"),
-        r.get("capture_commit"),
-        r.get("capture_branch"),
-        r.get("item_created_at"),
-        r.get::<String, _>("relation_type").as_str(),
-        r.get("source_id"),
-        r.get("target_id"),
-        r.get("relation_created_at"),
-        r.get("depth"),
-    )
+    let item = KnowledgeItem::builder()
+        .id(KnowledgeItemId::from(r.get::<uuid::Uuid, _>("item_id")))
+        .project_id(ProjectId::from(r.get::<uuid::Uuid, _>("project_id")))
+        .principal_id(PrincipalId::from(
+            r.get::<uuid::Uuid, _>("item_principal_id"),
+        ))
+        .kind(
+            r.get::<String, _>("kind")
+                .parse::<KnowledgeKind>()
+                .expect(UNKNOWN_KNOWLEDGE_KIND_IN_DB),
+        )
+        .content(r.get("content"))
+        .tags(r.get("tags"))
+        .confidence(
+            r.get::<String, _>("confidence")
+                .parse::<Confidence>()
+                .expect(UNKNOWN_CONFIDENCE_IN_DB),
+        )
+        .claim_context(r.get("claim_context"))
+        .source_context(r.get("source_context"))
+        .episode_id(r.get::<Option<uuid::Uuid>, _>("episode_id").map(EpisodeId::from))
+        .capture_commit(r.get("capture_commit"))
+        .capture_branch(r.get("capture_branch"))
+        .created_at(r.get("item_created_at"))
+        .build();
+
+    TraversalNode {
+        item,
+        relation_type: r
+            .get::<String, _>("relation_type")
+            .parse::<RelationKind>()
+            .expect(UNKNOWN_RELATION_KIND_IN_DB),
+        source_id: KnowledgeItemId::from(r.get::<uuid::Uuid, _>("source_id")),
+        target_id: KnowledgeItemId::from(r.get::<uuid::Uuid, _>("target_id")),
+        relation_created_at: r.get("relation_created_at"),
+        depth: u32::try_from(r.get::<i32, _>("depth")).expect(NEGATIVE_DEPTH_IN_CTE),
+    }
 }
 
 /// Runs a single-direction recursive CTE traversal.
@@ -473,6 +409,13 @@ impl RelationRepository for PgRelationRepository {
         if batch.is_empty() {
             return Ok(Vec::new());
         }
+
+        debug_assert!(
+            batch
+                .windows(2)
+                .all(|w| w[0].relation_batch_id == w[1].relation_batch_id),
+            "all relations in a batch must share the same relation_batch_id"
+        );
 
         let batch_ids: Vec<uuid::Uuid> =
             batch.iter().map(|r| *r.relation_batch_id.inner()).collect();
@@ -581,7 +524,7 @@ impl RelationRepository for PgRelationRepository {
                     let key = (
                         *node.source_id.inner(),
                         *node.target_id.inner(),
-                        node.relation_type.as_str(),
+                        node.relation_type,
                     );
                     if seen.insert(key) {
                         merged.push(node);
