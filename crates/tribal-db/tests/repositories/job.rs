@@ -4,7 +4,8 @@ use tribal_db::{
     PrincipalRepository, ProjectRepository,
 };
 use tribal_domain::{
-    EpisodeId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId, RelationBatchId,
+    EpisodeId, JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId,
+    RelationBatchId,
 };
 use tribal_test_utils::{
     a_job_status_transition, a_new_job, a_new_principal, a_new_project, test_context,
@@ -171,7 +172,7 @@ async fn test_find_by_id_not_found() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let result = repo.find_by_id(&mut txn, tribal_domain::JobId::new()).await;
+    let result = repo.find_by_id(&mut txn, JobId::new()).await;
 
     assert!(matches!(
         result,
@@ -228,7 +229,7 @@ async fn test_find_by_project_id_empty() {
     let repo = PgJobRepository;
 
     let jobs = repo
-        .find_by_project_id(&mut txn, tribal_domain::ProjectId::new())
+        .find_by_project_id(&mut txn, ProjectId::new())
         .await
         .expect("find_by_project_id");
 
@@ -289,10 +290,11 @@ async fn test_update_status_to_completed() {
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
 
+    let completed_at = Utc::now();
     let transition = a_job_status_transition()
         .status(JobStatus::Completed)
         .outcome(Some(JobOutcome::Success))
-        .completed_at(Some(Utc::now()))
+        .completed_at(Some(completed_at))
         .build();
     let updated = repo
         .update_status(&mut txn, job.id(), &transition)
@@ -301,7 +303,7 @@ async fn test_update_status_to_completed() {
 
     assert_eq!(updated.status(), JobStatus::Completed);
     assert_eq!(updated.outcome(), Some(JobOutcome::Success));
-    assert!(updated.completed_at().is_some());
+    assert_eq!(updated.completed_at(), Some(completed_at));
     assert!(updated.error_message().is_none());
 }
 
@@ -324,11 +326,12 @@ async fn test_update_status_to_failed() {
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
 
+    let completed_at = Utc::now();
     let transition = a_job_status_transition()
         .status(JobStatus::Failed)
         .outcome(Some(JobOutcome::Failure))
         .error_message(Some("extraction dead-lettered".to_owned()))
-        .completed_at(Some(Utc::now()))
+        .completed_at(Some(completed_at))
         .build();
     let updated = repo
         .update_status(&mut txn, job.id(), &transition)
@@ -338,6 +341,7 @@ async fn test_update_status_to_failed() {
     assert_eq!(updated.status(), JobStatus::Failed);
     assert_eq!(updated.outcome(), Some(JobOutcome::Failure));
     assert_eq!(updated.error_message(), Some("extraction dead-lettered"));
+    assert_eq!(updated.completed_at(), Some(completed_at));
 }
 
 #[tokio::test]
@@ -381,7 +385,7 @@ async fn test_update_status_not_found() {
         .status(JobStatus::Extracting)
         .build();
     let result = repo
-        .update_status(&mut txn, tribal_domain::JobId::new(), &transition)
+        .update_status(&mut txn, JobId::new(), &transition)
         .await;
 
     assert!(matches!(
@@ -427,9 +431,7 @@ async fn test_update_batch_size_not_found() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let result = repo
-        .update_batch_size(&mut txn, tribal_domain::JobId::new(), 10, 15)
-        .await;
+    let result = repo.update_batch_size(&mut txn, JobId::new(), 10, 15).await;
 
     assert!(matches!(
         result,
@@ -476,11 +478,7 @@ async fn test_set_committed_batch_id_not_found() {
     let repo = PgJobRepository;
 
     let result = repo
-        .set_committed_batch_id(
-            &mut txn,
-            tribal_domain::JobId::new(),
-            RelationBatchId::new(),
-        )
+        .set_committed_batch_id(&mut txn, JobId::new(), RelationBatchId::new())
         .await;
 
     assert!(matches!(
