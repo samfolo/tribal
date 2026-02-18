@@ -23,3 +23,7 @@ pub use repositories::{
     ProjectRepository, ReferenceRepository, SemanticSearchParams, SemanticSearchResponse,
     SemanticSearchResult,
 };
+pub use repositories::{
+    NewKnowledgeItemRelation, PgRelationRepository, RelationRepository, TraversalNode,
+    TraversalResponse,
+};

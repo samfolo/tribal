@@ -11,6 +11,7 @@ mod knowledge_item;
 mod principal;
 mod project;
 mod reference;
+mod relation;
 
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
 pub use knowledge_item::{
@@ -20,3 +21,7 @@ pub use knowledge_item::{
 pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
 pub use project::{NewProject, PgProjectRepository, ProjectRepository};
 pub use reference::{NewReference, PgReferenceRepository, ReferenceRepository};
+pub use relation::{
+    NewKnowledgeItemRelation, PgRelationRepository, RelationRepository, TraversalNode,
+    TraversalResponse,
+};
