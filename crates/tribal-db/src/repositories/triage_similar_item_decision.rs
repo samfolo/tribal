@@ -136,10 +136,8 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
             .iter()
             .map(|d| d.suggested_relation.as_str().to_owned())
             .collect();
-        let justification_texts: Vec<String> = batch
-            .iter()
-            .map(|d| d.justification_text.clone())
-            .collect();
+        let justification_texts: Vec<String> =
+            batch.iter().map(|d| d.justification_text.clone()).collect();
 
         let result = sqlx::query(
             "INSERT INTO triage_similar_item_decisions \
@@ -194,9 +192,7 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
-            context: format!(
-                "finding triage similar item decisions for job {job_id}"
-            ),
+            context: format!("finding triage similar item decisions for job {job_id}"),
             source: e,
         })?;
 
@@ -244,17 +240,13 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
 
 /// Maps a raw `sqlx::Row` from a triage similar item decision query into a
 /// [`TriageSimilarItemDecision`].
-fn map_triage_similar_item_decision_row(
-    r: &sqlx::postgres::PgRow,
-) -> TriageSimilarItemDecision {
+fn map_triage_similar_item_decision_row(r: &sqlx::postgres::PgRow) -> TriageSimilarItemDecision {
     TriageSimilarItemDecision::builder()
         .id(TriageSimilarItemDecisionId::from(
             r.get::<uuid::Uuid, _>("id"),
         ))
         .job_id(JobId::from(r.get::<uuid::Uuid, _>("job_id")))
-        .batch_index(
-            u32::try_from(r.get::<i32, _>("batch_index")).expect(BATCH_INDEX_OVERFLOW),
-        )
+        .batch_index(u32::try_from(r.get::<i32, _>("batch_index")).expect(BATCH_INDEX_OVERFLOW))
         .matched_item_id(KnowledgeItemId::from(
             r.get::<uuid::Uuid, _>("matched_item_id"),
         ))

@@ -3,7 +3,9 @@ use tribal_db::{
     PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
     PgTriageResultRepository, PrincipalRepository, ProjectRepository, TriageResultRepository,
 };
-use tribal_domain::{JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, TriageOutcome};
+use tribal_domain::{
+    JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, TriageOutcome,
+};
 use tribal_test_utils::{
     a_new_item_observation, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project,
     a_new_triage_result_created, a_new_triage_result_duplicate, a_new_triage_result_failed,
@@ -41,7 +43,7 @@ async fn setup_prerequisites(
         .expect("insert project");
 
     let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let pv_id: uuid::Uuid = sqlx::query_scalar(
+    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO prompt_versions (stage, content_hash, content) \
          VALUES ('extraction', $1, 'test') RETURNING id",
     )
@@ -50,16 +52,16 @@ async fn setup_prerequisites(
     .await
     .expect("insert prompt_version");
 
-    let pv = PromptVersionId::from(pv_id);
+    let pv_id = PromptVersionId::from(prompt_version_id);
     let job = tribal_db::PgJobRepository
         .insert(
             txn,
             &a_new_job()
                 .project_id(project.id())
                 .principal_id(principal.id())
-                .extraction_prompt_version_id(pv)
-                .triage_prompt_version_id(pv)
-                .relation_prompt_version_id(pv)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
                 .build(),
         )
         .await
@@ -111,10 +113,7 @@ async fn test_insert_created_outcome() {
     assert_eq!(result.job_id(), job_id);
     assert_eq!(result.batch_index(), 0);
     assert!(result.similar_items().is_empty());
-    assert_eq!(
-        *result.outcome(),
-        TriageOutcome::Created { item_id }
-    );
+    assert_eq!(*result.outcome(), TriageOutcome::Created { item_id });
 }
 
 // ---------------------------------------------------------------------------
@@ -297,9 +296,15 @@ async fn test_find_by_job_id_returns_all_ordered() {
 
     assert_eq!(results.len(), 3);
     assert_eq!(results[0].batch_index(), 0);
-    assert!(matches!(results[0].outcome(), TriageOutcome::Created { .. }));
+    assert!(matches!(
+        results[0].outcome(),
+        TriageOutcome::Created { .. }
+    ));
     assert_eq!(results[1].batch_index(), 1);
-    assert!(matches!(results[1].outcome(), TriageOutcome::Duplicate { .. }));
+    assert!(matches!(
+        results[1].outcome(),
+        TriageOutcome::Duplicate { .. }
+    ));
     assert_eq!(results[2].batch_index(), 2);
     assert!(matches!(results[2].outcome(), TriageOutcome::Failed { .. }));
 }

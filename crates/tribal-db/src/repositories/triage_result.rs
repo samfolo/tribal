@@ -116,8 +116,14 @@ impl TriageResultRepository for PgTriageResultRepository {
     ) -> Result<TriageResult, DbError> {
         let batch_index_i32 = i32::try_from(new.batch_index).expect(BATCH_INDEX_EXCEEDS_I32);
 
-        let (outcome_type, knowledge_item_id, observation_id, matched_item_id, error_message, retryable) =
-            flatten_outcome(&new.outcome);
+        let (
+            outcome_type,
+            knowledge_item_id,
+            observation_id,
+            matched_item_id,
+            error_message,
+            retryable,
+        ) = flatten_outcome(&new.outcome);
 
         let result = sqlx::query(
             "INSERT INTO triage_results \
@@ -190,9 +196,7 @@ impl TriageResultRepository for PgTriageResultRepository {
         .fetch_optional(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
-            context: format!(
-                "finding triage result for job {job_id} batch_index {batch_index}"
-            ),
+            context: format!("finding triage result for job {job_id} batch_index {batch_index}"),
             source: e,
         })?;
 
@@ -216,14 +220,9 @@ fn flatten_outcome(
     Option<bool>,
 ) {
     match outcome {
-        TriageOutcome::Created { item_id } => (
-            "created",
-            Some(*item_id.inner()),
-            None,
-            None,
-            None,
-            None,
-        ),
+        TriageOutcome::Created { item_id } => {
+            ("created", Some(*item_id.inner()), None, None, None, None)
+        }
         TriageOutcome::Duplicate {
             observation_id,
             matched_item_id,
@@ -258,17 +257,11 @@ fn map_triage_result_row(r: &sqlx::postgres::PgRow) -> TriageResult {
     let outcome_type = r.get::<String, _>("outcome_type");
     let outcome = match outcome_type.as_str() {
         "created" => TriageOutcome::Created {
-            item_id: KnowledgeItemId::from(
-                r.get::<uuid::Uuid, _>("knowledge_item_id"),
-            ),
+            item_id: KnowledgeItemId::from(r.get::<uuid::Uuid, _>("knowledge_item_id")),
         },
         "duplicate" => TriageOutcome::Duplicate {
-            observation_id: ItemObservationId::from(
-                r.get::<uuid::Uuid, _>("observation_id"),
-            ),
-            matched_item_id: KnowledgeItemId::from(
-                r.get::<uuid::Uuid, _>("matched_item_id"),
-            ),
+            observation_id: ItemObservationId::from(r.get::<uuid::Uuid, _>("observation_id")),
+            matched_item_id: KnowledgeItemId::from(r.get::<uuid::Uuid, _>("matched_item_id")),
         },
         "failed" => TriageOutcome::Failed {
             error_message: r.get("error_message"),
@@ -280,9 +273,7 @@ fn map_triage_result_row(r: &sqlx::postgres::PgRow) -> TriageResult {
     TriageResult::builder()
         .id(TriageResultId::from(r.get::<uuid::Uuid, _>("id")))
         .job_id(JobId::from(r.get::<uuid::Uuid, _>("job_id")))
-        .batch_index(
-            u32::try_from(r.get::<i32, _>("batch_index")).expect(BATCH_INDEX_OVERFLOW),
-        )
+        .batch_index(u32::try_from(r.get::<i32, _>("batch_index")).expect(BATCH_INDEX_OVERFLOW))
         .outcome(outcome)
         .created_at(r.get("created_at"))
         .build()

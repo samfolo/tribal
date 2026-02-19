@@ -15,8 +15,7 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
-const UNKNOWN_SOURCE_TYPE_IN_DB: &str =
-    "unrecognised source type in database — schema mismatch";
+const UNKNOWN_SOURCE_TYPE_IN_DB: &str = "unrecognised source type in database — schema mismatch";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -121,9 +120,7 @@ impl ItemObservationRepository for PgItemObservationRepository {
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
-            context: format!(
-                "finding observations for knowledge item {knowledge_item_id}"
-            ),
+            context: format!("finding observations for knowledge item {knowledge_item_id}"),
             source: e,
         })?;
 
@@ -143,9 +140,7 @@ fn map_item_observation_row(r: &sqlx::postgres::PgRow) -> ItemObservation {
         .knowledge_item_id(KnowledgeItemId::from(
             r.get::<uuid::Uuid, _>("knowledge_item_id"),
         ))
-        .principal_id(PrincipalId::from(
-            r.get::<uuid::Uuid, _>("principal_id"),
-        ))
+        .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
         .source_type(
             r.get::<String, _>("source_type")
                 .parse::<SourceType>()

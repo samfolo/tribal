@@ -39,19 +39,23 @@ async fn test_batch_upsert_mix_of_new_and_existing() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTagRegistryRepository;
 
-    repo.upsert(&mut txn, "existing").await.expect("pre-insert");
+    let pre_existing = repo.upsert(&mut txn, "existing").await.expect("pre-insert");
 
-    let tags = vec![
-        "existing".to_owned(),
-        "alpha".to_owned(),
-        "beta".to_owned(),
-    ];
-    let entries = repo.batch_upsert(&mut txn, &tags).await.expect("batch_upsert");
+    let tags = vec!["existing".to_owned(), "alpha".to_owned(), "beta".to_owned()];
+    let entries = repo
+        .batch_upsert(&mut txn, &tags)
+        .await
+        .expect("batch_upsert");
 
     assert_eq!(entries.len(), 3);
     assert_eq!(entries[0].tag(), "alpha");
     assert_eq!(entries[1].tag(), "beta");
     assert_eq!(entries[2].tag(), "existing");
+    assert_eq!(
+        entries[2].first_seen_at(),
+        pre_existing.first_seen_at(),
+        "pre-existing tag's first_seen_at must be preserved"
+    );
 }
 
 #[tokio::test]
@@ -60,7 +64,10 @@ async fn test_batch_upsert_empty_returns_empty() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTagRegistryRepository;
 
-    let entries = repo.batch_upsert(&mut txn, &[]).await.expect("batch_upsert");
+    let entries = repo
+        .batch_upsert(&mut txn, &[])
+        .await
+        .expect("batch_upsert");
 
     assert!(entries.is_empty());
 }
