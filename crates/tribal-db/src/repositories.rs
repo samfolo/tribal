@@ -14,6 +14,7 @@ mod principal;
 mod project;
 mod reference;
 mod relation;
+mod standing;
 mod tag_registry;
 mod task;
 mod triage_result;
@@ -35,6 +36,7 @@ pub use relation::{
     NewKnowledgeItemRelation, PgRelationRepository, RelationRepository, TraversalNode,
     TraversalResponse,
 };
+pub use standing::{PgStandingRepository, StandingRepository};
 pub use tag_registry::{PgTagRegistryRepository, TagRegistryRepository};
 pub use task::{NewTask, PgTaskRepository, TaskRepository};
 pub use triage_result::{NewTriageResult, PgTriageResultRepository, TriageResultRepository};

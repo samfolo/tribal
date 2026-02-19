@@ -6,7 +6,7 @@ define_factory! {
         supporting_count: u32 = 0,
         contradicting_count: u32 = 0,
         superseded_by: Option<KnowledgeItemId> = None,
-        observation_count: u32 = 1,
+        observation_count: u32 = 0,
         newest_supporting_id: Option<KnowledgeItemId> = None,
         newest_contradicting_id: Option<KnowledgeItemId> = None,
         supporting_episode_count: u32 = 0,
@@ -27,7 +27,7 @@ mod tests {
     fn test_builds_with_defaults() {
         let s = a_standing().build();
         assert_eq!(s.supporting_count(), 0);
-        assert_eq!(s.observation_count(), 1);
+        assert_eq!(s.observation_count(), 0);
         assert!(s.superseded_by().is_none());
     }
 }
