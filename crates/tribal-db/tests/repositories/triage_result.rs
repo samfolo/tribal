@@ -111,6 +111,11 @@ async fn test_insert_created_outcome() {
 
     let result = repo.insert(&mut txn, &new).await.expect("insert");
 
+    assert!(
+        result.id().to_string().starts_with("tr_"),
+        "expected tr_ prefix, got: {}",
+        result.id()
+    );
     assert_eq!(result.job_id(), job_id);
     assert_eq!(result.batch_index(), 0);
     assert!(result.similar_items().is_empty());

@@ -72,6 +72,11 @@ async fn test_insert_returns_populated_observation() {
 
     let obs = repo.insert(&mut txn, &new).await.expect("insert");
 
+    assert!(
+        obs.id().to_string().starts_with("obs_"),
+        "expected obs_ prefix, got: {}",
+        obs.id()
+    );
     assert_eq!(obs.knowledge_item_id(), item_id);
     assert_eq!(obs.principal_id(), principal_id);
     assert_eq!(obs.source_type(), SourceType::ManualCapture);
