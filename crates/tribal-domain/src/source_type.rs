@@ -20,10 +20,24 @@ pub enum SourceType {
     FileWatch,
 }
 
+enum_text_conversions!(SourceType {
+    SourceType::AgentMediated => "agent_mediated",
+    SourceType::ManualCapture => "manual_capture",
+    SourceType::Derived => "derived",
+    SourceType::FileWatch => "file_watch",
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enum_serde_tests;
+    use crate::{enum_serde_tests, enum_text_tests};
+
+    enum_text_tests!(test_source_type_text_roundtrip, SourceType {
+        SourceType::AgentMediated => "agent_mediated",
+        SourceType::ManualCapture => "manual_capture",
+        SourceType::Derived => "derived",
+        SourceType::FileWatch => "file_watch",
+    });
 
     enum_serde_tests!(test_source_type_serde_roundtrip, SourceType {
         SourceType::AgentMediated => "agent_mediated",
