@@ -104,21 +104,30 @@ impl TagRegistryRepository for PgTagRegistryRepository {
             return Ok(Vec::new());
         }
 
-        let rows = sqlx::query(
-            "WITH inserted AS ( \
-                 INSERT INTO tag_registry (tag) \
-                 SELECT * FROM UNNEST($1::text[]) \
-                 ON CONFLICT (tag) DO NOTHING \
-             ) \
-             SELECT * FROM tag_registry WHERE tag = ANY($1) ORDER BY tag",
+        // Two statements rather than a CTE: in Postgres, a data-modifying
+        // CTE and its outer SELECT share the same snapshot, so the SELECT
+        // cannot see rows the CTE just inserted.
+        sqlx::query(
+            "INSERT INTO tag_registry (tag) \
+             SELECT * FROM UNNEST($1::text[]) \
+             ON CONFLICT (tag) DO NOTHING",
         )
         .bind(tags)
-        .fetch_all(&mut *conn)
+        .execute(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
             context: format!("batch upserting {} tags", tags.len()),
             source: e,
         })?;
+
+        let rows = sqlx::query("SELECT * FROM tag_registry WHERE tag = ANY($1) ORDER BY tag")
+            .bind(tags)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("selecting {} tags after batch upsert", tags.len()),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_tag_registry_entry_row).collect())
     }
