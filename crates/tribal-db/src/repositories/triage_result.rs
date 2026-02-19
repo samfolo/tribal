@@ -116,14 +116,7 @@ impl TriageResultRepository for PgTriageResultRepository {
     ) -> Result<TriageResult, DbError> {
         let batch_index_i32 = i32::try_from(new.batch_index).expect(BATCH_INDEX_EXCEEDS_I32);
 
-        let (
-            outcome_type,
-            knowledge_item_id,
-            observation_id,
-            matched_item_id,
-            error_message,
-            retryable,
-        ) = flatten_outcome(&new.outcome);
+        let flat = flatten_outcome(&new.outcome);
 
         let result = sqlx::query(
             "INSERT INTO triage_results \
@@ -134,12 +127,12 @@ impl TriageResultRepository for PgTriageResultRepository {
         )
         .bind(new.job_id.inner())
         .bind(batch_index_i32)
-        .bind(outcome_type)
-        .bind(knowledge_item_id)
-        .bind(observation_id)
-        .bind(matched_item_id)
-        .bind(error_message)
-        .bind(retryable)
+        .bind(flat.outcome_type)
+        .bind(flat.knowledge_item_id)
+        .bind(flat.observation_id)
+        .bind(flat.matched_item_id)
+        .bind(flat.error_message)
+        .bind(flat.retryable)
         .fetch_one(&mut *conn)
         .await;
 
@@ -208,43 +201,49 @@ impl TriageResultRepository for PgTriageResultRepository {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Flattens a [`TriageOutcome`] enum into the database column values.
-fn flatten_outcome(
-    outcome: &TriageOutcome,
-) -> (
-    &'static str,
-    Option<uuid::Uuid>,
-    Option<uuid::Uuid>,
-    Option<uuid::Uuid>,
-    Option<&str>,
-    Option<bool>,
-) {
+/// Database column values for a flattened [`TriageOutcome`].
+struct FlatOutcome<'a> {
+    outcome_type: &'static str,
+    knowledge_item_id: Option<uuid::Uuid>,
+    observation_id: Option<uuid::Uuid>,
+    matched_item_id: Option<uuid::Uuid>,
+    error_message: Option<&'a str>,
+    retryable: Option<bool>,
+}
+
+/// Flattens a [`TriageOutcome`] enum into database column values.
+fn flatten_outcome(outcome: &TriageOutcome) -> FlatOutcome<'_> {
     match outcome {
-        TriageOutcome::Created { item_id } => {
-            ("created", Some(*item_id.inner()), None, None, None, None)
-        }
+        TriageOutcome::Created { item_id } => FlatOutcome {
+            outcome_type: "created",
+            knowledge_item_id: Some(*item_id.inner()),
+            observation_id: None,
+            matched_item_id: None,
+            error_message: None,
+            retryable: None,
+        },
         TriageOutcome::Duplicate {
             observation_id,
             matched_item_id,
-        } => (
-            "duplicate",
-            None,
-            Some(*observation_id.inner()),
-            Some(*matched_item_id.inner()),
-            None,
-            None,
-        ),
+        } => FlatOutcome {
+            outcome_type: "duplicate",
+            knowledge_item_id: None,
+            observation_id: Some(*observation_id.inner()),
+            matched_item_id: Some(*matched_item_id.inner()),
+            error_message: None,
+            retryable: None,
+        },
         TriageOutcome::Failed {
             error_message,
             retryable,
-        } => (
-            "failed",
-            None,
-            None,
-            None,
-            Some(error_message.as_str()),
-            Some(*retryable),
-        ),
+        } => FlatOutcome {
+            outcome_type: "failed",
+            knowledge_item_id: None,
+            observation_id: None,
+            matched_item_id: None,
+            error_message: Some(error_message.as_str()),
+            retryable: Some(*retryable),
+        },
     }
 }
 

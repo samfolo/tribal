@@ -1,7 +1,8 @@
 use tribal_db::{
-    DbError, ItemObservationRepository, KnowledgeItemRepository, PgItemObservationRepository,
-    PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
-    PgTriageResultRepository, PrincipalRepository, ProjectRepository, TriageResultRepository,
+    DbError, ItemObservationRepository, JobRepository, KnowledgeItemRepository,
+    PgItemObservationRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
+    PgProjectRepository, PgTriageResultRepository, PrincipalRepository, ProjectRepository,
+    TriageResultRepository,
 };
 use tribal_domain::{
     JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, TriageOutcome,
