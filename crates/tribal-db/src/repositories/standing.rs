@@ -154,8 +154,7 @@ impl StandingRepository for PgStandingRepository {
             source: e,
         })?;
 
-        let map: HashMap<KnowledgeItemId, Standing> =
-            rows.iter().map(map_standing_row).collect();
+        let map: HashMap<KnowledgeItemId, Standing> = rows.iter().map(map_standing_row).collect();
 
         let zero = Standing::builder()
             .supporting_count(0)

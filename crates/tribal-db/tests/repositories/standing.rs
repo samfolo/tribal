@@ -4,7 +4,9 @@ use tribal_db::{
     PgStandingRepository, PrincipalRepository, ProjectRepository, RelationRepository,
     StandingRepository,
 };
-use tribal_domain::{EpisodeId, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationKind};
+use tribal_domain::{
+    EpisodeId, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationKind,
+};
 use tribal_test_utils::{
     a_new_item_observation, a_new_knowledge_item, a_new_knowledge_item_relation, a_new_principal,
     a_new_project, test_context,
@@ -107,9 +109,9 @@ async fn test_compute_returns_standings_in_input_order() {
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "order").await;
-    let item_a = setup_item(&mut txn, project_id, principal_id).await;
-    let item_b = setup_item(&mut txn, project_id, principal_id).await;
-    let item_c = setup_item(&mut txn, project_id, principal_id).await;
+    let item_a_id = setup_item(&mut txn, project_id, principal_id).await;
+    let item_b_id = setup_item(&mut txn, project_id, principal_id).await;
+    let item_c_id = setup_item(&mut txn, project_id, principal_id).await;
 
     // A supports B (committed).
     let batch_id = RelationBatchId::new();
@@ -118,8 +120,8 @@ async fn test_compute_returns_standings_in_input_order() {
             &mut txn,
             &[a_new_knowledge_item_relation()
                 .relation_batch_id(batch_id)
-                .source_id(item_a)
-                .target_id(item_b)
+                .source_id(item_a_id)
+                .target_id(item_b_id)
                 .relation_type(RelationKind::Supports)
                 .principal_id(principal_id)
                 .build()],
@@ -133,7 +135,7 @@ async fn test_compute_returns_standings_in_input_order() {
         .insert(
             &mut txn,
             &a_new_item_observation()
-                .knowledge_item_id(item_c)
+                .knowledge_item_id(item_c_id)
                 .principal_id(principal_id)
                 .build(),
         )
@@ -141,17 +143,17 @@ async fn test_compute_returns_standings_in_input_order() {
         .expect("insert observation");
 
     let standings = repo
-        .compute(&mut txn, &[item_c, item_b, item_a])
+        .compute(&mut txn, &[item_c_id, item_b_id, item_a_id])
         .await
         .expect("compute");
 
     assert_eq!(standings.len(), 3);
-    // item_c has 1 observation, 0 support.
+    // C has 1 observation, 0 support.
     assert_eq!(standings[0].observation_count(), 1);
     assert_eq!(standings[0].supporting_count(), 0);
-    // item_b has 1 support.
+    // B has 1 support.
     assert_eq!(standings[1].supporting_count(), 1);
-    // item_a has nothing.
+    // A has nothing.
     assert_eq!(standings[2].supporting_count(), 0);
     assert_eq!(standings[2].observation_count(), 0);
 }
@@ -163,12 +165,9 @@ async fn test_compute_empty_graph_returns_zero_standings() {
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "empty-graph").await;
-    let item = setup_item(&mut txn, project_id, principal_id).await;
+    let item_id = setup_item(&mut txn, project_id, principal_id).await;
 
-    let standings = repo
-        .compute(&mut txn, &[item])
-        .await
-        .expect("compute");
+    let standings = repo.compute(&mut txn, &[item_id]).await.expect("compute");
 
     assert_eq!(standings.len(), 1);
     let s = &standings[0];
@@ -189,8 +188,8 @@ async fn test_compute_excludes_derived_from_relations() {
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "derived-from").await;
-    let item_a = setup_item(&mut txn, project_id, principal_id).await;
-    let item_b = setup_item(&mut txn, project_id, principal_id).await;
+    let source_id = setup_item(&mut txn, project_id, principal_id).await;
+    let target_id = setup_item(&mut txn, project_id, principal_id).await;
 
     let batch_id = RelationBatchId::new();
     PgRelationRepository
@@ -198,8 +197,8 @@ async fn test_compute_excludes_derived_from_relations() {
             &mut txn,
             &[a_new_knowledge_item_relation()
                 .relation_batch_id(batch_id)
-                .source_id(item_a)
-                .target_id(item_b)
+                .source_id(source_id)
+                .target_id(target_id)
                 .relation_type(RelationKind::DerivedFrom)
                 .principal_id(principal_id)
                 .build()],
@@ -208,10 +207,7 @@ async fn test_compute_excludes_derived_from_relations() {
         .expect("batch_insert");
     commit_batch(&mut txn, project_id, principal_id, batch_id).await;
 
-    let standings = repo
-        .compute(&mut txn, &[item_b])
-        .await
-        .expect("compute");
+    let standings = repo.compute(&mut txn, &[target_id]).await.expect("compute");
 
     assert_eq!(standings[0].supporting_count(), 0);
     assert_eq!(standings[0].contradicting_count(), 0);
@@ -224,8 +220,8 @@ async fn test_compute_excludes_uncommitted_batch_relations() {
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "uncommitted").await;
-    let item_a = setup_item(&mut txn, project_id, principal_id).await;
-    let item_b = setup_item(&mut txn, project_id, principal_id).await;
+    let source_id = setup_item(&mut txn, project_id, principal_id).await;
+    let target_id = setup_item(&mut txn, project_id, principal_id).await;
 
     // Insert but do NOT commit the batch.
     let batch_id = RelationBatchId::new();
@@ -234,8 +230,8 @@ async fn test_compute_excludes_uncommitted_batch_relations() {
             &mut txn,
             &[a_new_knowledge_item_relation()
                 .relation_batch_id(batch_id)
-                .source_id(item_a)
-                .target_id(item_b)
+                .source_id(source_id)
+                .target_id(target_id)
                 .relation_type(RelationKind::Supports)
                 .principal_id(principal_id)
                 .build()],
@@ -243,10 +239,7 @@ async fn test_compute_excludes_uncommitted_batch_relations() {
         .await
         .expect("batch_insert");
 
-    let standings = repo
-        .compute(&mut txn, &[item_b])
-        .await
-        .expect("compute");
+    let standings = repo.compute(&mut txn, &[target_id]).await.expect("compute");
 
     assert_eq!(standings[0].supporting_count(), 0);
 }
@@ -258,14 +251,14 @@ async fn test_compute_counts_observations() {
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "obs-count").await;
-    let item = setup_item(&mut txn, project_id, principal_id).await;
+    let item_id = setup_item(&mut txn, project_id, principal_id).await;
 
     for _ in 0..3 {
         PgItemObservationRepository
             .insert(
                 &mut txn,
                 &a_new_item_observation()
-                    .knowledge_item_id(item)
+                    .knowledge_item_id(item_id)
                     .principal_id(principal_id)
                     .build(),
             )
@@ -273,10 +266,7 @@ async fn test_compute_counts_observations() {
             .expect("insert observation");
     }
 
-    let standings = repo
-        .compute(&mut txn, &[item])
-        .await
-        .expect("compute");
+    let standings = repo.compute(&mut txn, &[item_id]).await.expect("compute");
 
     assert_eq!(standings[0].observation_count(), 3);
 }
@@ -289,8 +279,8 @@ async fn test_compute_diversity_metrics() {
 
     let (principal_id, project_id_1) = setup_prerequisites(&mut txn, "diversity-1").await;
 
-    // Second project with the same principal.
-    let project_2 = PgProjectRepository
+    // Second project (same principal is reused for all items below).
+    let project_id_2 = PgProjectRepository
         .insert(
             &mut txn,
             &a_new_project()
@@ -298,20 +288,20 @@ async fn test_compute_diversity_metrics() {
                 .build(),
         )
         .await
-        .expect("insert project 2");
-    let project_id_2 = project_2.id();
+        .expect("insert project 2")
+        .id();
 
-    let target = setup_item(&mut txn, project_id_1, principal_id).await;
+    let target_id = setup_item(&mut txn, project_id_1, principal_id).await;
 
     // Supporting item from project 1, episode A.
-    let ep_a = EpisodeId::new();
-    let supporter_1 = PgKnowledgeItemRepository
+    let ep_a_id = EpisodeId::new();
+    let supporter_1_id = PgKnowledgeItemRepository
         .insert(
             &mut txn,
             &a_new_knowledge_item()
                 .project_id(project_id_1)
                 .principal_id(principal_id)
-                .episode_id(Some(ep_a))
+                .episode_id(Some(ep_a_id))
                 .build(),
         )
         .await
@@ -319,14 +309,14 @@ async fn test_compute_diversity_metrics() {
         .id();
 
     // Supporting item from project 2, episode B.
-    let ep_b = EpisodeId::new();
-    let supporter_2 = PgKnowledgeItemRepository
+    let ep_b_id = EpisodeId::new();
+    let supporter_2_id = PgKnowledgeItemRepository
         .insert(
             &mut txn,
             &a_new_knowledge_item()
                 .project_id(project_id_2)
                 .principal_id(principal_id)
-                .episode_id(Some(ep_b))
+                .episode_id(Some(ep_b_id))
                 .build(),
         )
         .await
@@ -334,14 +324,14 @@ async fn test_compute_diversity_metrics() {
         .id();
 
     // Supporting item from project 1, episode C.
-    let ep_c = EpisodeId::new();
-    let supporter_3 = PgKnowledgeItemRepository
+    let ep_c_id = EpisodeId::new();
+    let supporter_3_id = PgKnowledgeItemRepository
         .insert(
             &mut txn,
             &a_new_knowledge_item()
                 .project_id(project_id_1)
                 .principal_id(principal_id)
-                .episode_id(Some(ep_c))
+                .episode_id(Some(ep_c_id))
                 .build(),
         )
         .await
@@ -355,22 +345,22 @@ async fn test_compute_diversity_metrics() {
             &[
                 a_new_knowledge_item_relation()
                     .relation_batch_id(batch_id)
-                    .source_id(supporter_1)
-                    .target_id(target)
+                    .source_id(supporter_1_id)
+                    .target_id(target_id)
                     .relation_type(RelationKind::Supports)
                     .principal_id(principal_id)
                     .build(),
                 a_new_knowledge_item_relation()
                     .relation_batch_id(batch_id)
-                    .source_id(supporter_2)
-                    .target_id(target)
+                    .source_id(supporter_2_id)
+                    .target_id(target_id)
                     .relation_type(RelationKind::Supports)
                     .principal_id(principal_id)
                     .build(),
                 a_new_knowledge_item_relation()
                     .relation_batch_id(batch_id)
-                    .source_id(supporter_3)
-                    .target_id(target)
+                    .source_id(supporter_3_id)
+                    .target_id(target_id)
                     .relation_type(RelationKind::Supports)
                     .principal_id(principal_id)
                     .build(),
@@ -380,10 +370,7 @@ async fn test_compute_diversity_metrics() {
         .expect("batch_insert");
     commit_batch(&mut txn, project_id_1, principal_id, batch_id).await;
 
-    let standings = repo
-        .compute(&mut txn, &[target])
-        .await
-        .expect("compute");
+    let standings = repo.compute(&mut txn, &[target_id]).await.expect("compute");
 
     assert_eq!(standings[0].supporting_count(), 3);
     assert_eq!(standings[0].supporting_episode_count(), 3);
@@ -407,9 +394,9 @@ async fn test_compute_unknown_ids_return_zero_standings() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgStandingRepository;
 
-    let unknown = KnowledgeItemId::new();
+    let unknown_id = KnowledgeItemId::new();
     let standings = repo
-        .compute(&mut txn, &[unknown])
+        .compute(&mut txn, &[unknown_id])
         .await
         .expect("compute");
 
@@ -432,8 +419,8 @@ async fn test_compute_superseded_by() {
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "superseded").await;
-    let old_item = setup_item(&mut txn, project_id, principal_id).await;
-    let new_item = setup_item(&mut txn, project_id, principal_id).await;
+    let old_item_id = setup_item(&mut txn, project_id, principal_id).await;
+    let new_item_id = setup_item(&mut txn, project_id, principal_id).await;
 
     let batch_id = RelationBatchId::new();
     PgRelationRepository
@@ -441,8 +428,8 @@ async fn test_compute_superseded_by() {
             &mut txn,
             &[a_new_knowledge_item_relation()
                 .relation_batch_id(batch_id)
-                .source_id(new_item)
-                .target_id(old_item)
+                .source_id(new_item_id)
+                .target_id(old_item_id)
                 .relation_type(RelationKind::Supersedes)
                 .principal_id(principal_id)
                 .build()],
@@ -452,11 +439,11 @@ async fn test_compute_superseded_by() {
     commit_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let standings = repo
-        .compute(&mut txn, &[old_item])
+        .compute(&mut txn, &[old_item_id])
         .await
         .expect("compute");
 
-    assert_eq!(standings[0].superseded_by(), Some(new_item));
+    assert_eq!(standings[0].superseded_by(), Some(new_item_id));
 }
 
 #[tokio::test]
@@ -466,29 +453,29 @@ async fn test_compute_newest_supporting_and_contradicting() {
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "newest-ids").await;
-    let target = setup_item(&mut txn, project_id, principal_id).await;
-    let older_supporter = setup_item(&mut txn, project_id, principal_id).await;
-    let newer_supporter = setup_item(&mut txn, project_id, principal_id).await;
-    let older_contradictor = setup_item(&mut txn, project_id, principal_id).await;
-    let newer_contradictor = setup_item(&mut txn, project_id, principal_id).await;
+    let target_id = setup_item(&mut txn, project_id, principal_id).await;
+    let older_supporter_id = setup_item(&mut txn, project_id, principal_id).await;
+    let newer_supporter_id = setup_item(&mut txn, project_id, principal_id).await;
+    let older_contradictor_id = setup_item(&mut txn, project_id, principal_id).await;
+    let newer_contradictor_id = setup_item(&mut txn, project_id, principal_id).await;
 
     // First batch — older relations.
-    let batch_1 = RelationBatchId::new();
+    let batch_1_id = RelationBatchId::new();
     PgRelationRepository
         .batch_insert(
             &mut txn,
             &[
                 a_new_knowledge_item_relation()
-                    .relation_batch_id(batch_1)
-                    .source_id(older_supporter)
-                    .target_id(target)
+                    .relation_batch_id(batch_1_id)
+                    .source_id(older_supporter_id)
+                    .target_id(target_id)
                     .relation_type(RelationKind::Supports)
                     .principal_id(principal_id)
                     .build(),
                 a_new_knowledge_item_relation()
-                    .relation_batch_id(batch_1)
-                    .source_id(older_contradictor)
-                    .target_id(target)
+                    .relation_batch_id(batch_1_id)
+                    .source_id(older_contradictor_id)
+                    .target_id(target_id)
                     .relation_type(RelationKind::Contradicts)
                     .principal_id(principal_id)
                     .build(),
@@ -496,7 +483,7 @@ async fn test_compute_newest_supporting_and_contradicting() {
         )
         .await
         .expect("batch_insert 1");
-    commit_batch(&mut txn, project_id, principal_id, batch_1).await;
+    commit_batch(&mut txn, project_id, principal_id, batch_1_id).await;
 
     // Backdate the older relations so they are strictly older.
     sqlx::query(
@@ -504,28 +491,28 @@ async fn test_compute_newest_supporting_and_contradicting() {
          SET created_at = created_at - interval '1 hour' \
          WHERE relation_batch_id = $1",
     )
-    .bind(batch_1.inner())
+    .bind(batch_1_id.inner())
     .execute(&mut *txn)
     .await
     .expect("backdate older relations");
 
     // Second batch — newer relations.
-    let batch_2 = RelationBatchId::new();
+    let batch_2_id = RelationBatchId::new();
     PgRelationRepository
         .batch_insert(
             &mut txn,
             &[
                 a_new_knowledge_item_relation()
-                    .relation_batch_id(batch_2)
-                    .source_id(newer_supporter)
-                    .target_id(target)
+                    .relation_batch_id(batch_2_id)
+                    .source_id(newer_supporter_id)
+                    .target_id(target_id)
                     .relation_type(RelationKind::Supports)
                     .principal_id(principal_id)
                     .build(),
                 a_new_knowledge_item_relation()
-                    .relation_batch_id(batch_2)
-                    .source_id(newer_contradictor)
-                    .target_id(target)
+                    .relation_batch_id(batch_2_id)
+                    .source_id(newer_contradictor_id)
+                    .target_id(target_id)
                     .relation_type(RelationKind::Contradicts)
                     .principal_id(principal_id)
                     .build(),
@@ -533,17 +520,17 @@ async fn test_compute_newest_supporting_and_contradicting() {
         )
         .await
         .expect("batch_insert 2");
-    commit_batch(&mut txn, project_id, principal_id, batch_2).await;
+    commit_batch(&mut txn, project_id, principal_id, batch_2_id).await;
 
-    let standings = repo
-        .compute(&mut txn, &[target])
-        .await
-        .expect("compute");
+    let standings = repo.compute(&mut txn, &[target_id]).await.expect("compute");
 
-    assert_eq!(standings[0].newest_supporting_id(), Some(newer_supporter));
+    assert_eq!(
+        standings[0].newest_supporting_id(),
+        Some(newer_supporter_id)
+    );
     assert_eq!(
         standings[0].newest_contradicting_id(),
-        Some(newer_contradictor)
+        Some(newer_contradictor_id)
     );
 }
 
@@ -554,46 +541,43 @@ async fn test_compute_counts_distinct_source_items() {
     let repo = PgStandingRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "distinct-count").await;
-    let target = setup_item(&mut txn, project_id, principal_id).await;
-    let source = setup_item(&mut txn, project_id, principal_id).await;
+    let target_id = setup_item(&mut txn, project_id, principal_id).await;
+    let source_id = setup_item(&mut txn, project_id, principal_id).await;
 
     // Two relation rows from the same source to the same target.
-    let batch_1 = RelationBatchId::new();
+    let batch_1_id = RelationBatchId::new();
     PgRelationRepository
         .batch_insert(
             &mut txn,
             &[a_new_knowledge_item_relation()
-                .relation_batch_id(batch_1)
-                .source_id(source)
-                .target_id(target)
+                .relation_batch_id(batch_1_id)
+                .source_id(source_id)
+                .target_id(target_id)
                 .relation_type(RelationKind::Supports)
                 .principal_id(principal_id)
                 .build()],
         )
         .await
         .expect("batch_insert 1");
-    commit_batch(&mut txn, project_id, principal_id, batch_1).await;
+    commit_batch(&mut txn, project_id, principal_id, batch_1_id).await;
 
-    let batch_2 = RelationBatchId::new();
+    let batch_2_id = RelationBatchId::new();
     PgRelationRepository
         .batch_insert(
             &mut txn,
             &[a_new_knowledge_item_relation()
-                .relation_batch_id(batch_2)
-                .source_id(source)
-                .target_id(target)
+                .relation_batch_id(batch_2_id)
+                .source_id(source_id)
+                .target_id(target_id)
                 .relation_type(RelationKind::Supports)
                 .principal_id(principal_id)
                 .build()],
         )
         .await
         .expect("batch_insert 2");
-    commit_batch(&mut txn, project_id, principal_id, batch_2).await;
+    commit_batch(&mut txn, project_id, principal_id, batch_2_id).await;
 
-    let standings = repo
-        .compute(&mut txn, &[target])
-        .await
-        .expect("compute");
+    let standings = repo.compute(&mut txn, &[target_id]).await.expect("compute");
 
     assert_eq!(standings[0].supporting_count(), 1);
 }
