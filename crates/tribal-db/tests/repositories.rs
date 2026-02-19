@@ -29,6 +29,9 @@ mod reference;
 #[path = "repositories/relation.rs"]
 mod relation;
 
+#[path = "repositories/standing.rs"]
+mod standing;
+
 #[path = "repositories/tag_registry.rs"]
 mod tag_registry;
 

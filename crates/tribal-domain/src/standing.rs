@@ -25,7 +25,7 @@ pub struct Standing {
     /// If superseded, which item replaced this one.
     #[builder(default)]
     superseded_by: Option<KnowledgeItemId>,
-    /// Re-encounter frequency (1 + `item_observations` count).
+    /// Number of `item_observations` rows for this item.
     observation_count: u32,
     /// Most recent supporting item (actionable ID).
     #[builder(default)]
@@ -55,7 +55,7 @@ impl Standing {
         self.superseded_by
     }
 
-    /// Returns the observation count (re-encounter frequency).
+    /// Returns the observation count.
     pub fn observation_count(&self) -> u32 {
         self.observation_count
     }
