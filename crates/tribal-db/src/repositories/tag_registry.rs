@@ -29,11 +29,8 @@ pub trait TagRegistryRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn upsert(
-        &self,
-        conn: &mut PgConnection,
-        tag: &str,
-    ) -> Result<TagRegistryEntry, DbError>;
+    async fn upsert(&self, conn: &mut PgConnection, tag: &str)
+    -> Result<TagRegistryEntry, DbError>;
 
     /// Inserts multiple tags into the registry idempotently and returns
     /// all corresponding entries ordered by `tag`.
@@ -55,8 +52,7 @@ pub trait TagRegistryRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_all(&self, conn: &mut PgConnection)
-        -> Result<Vec<TagRegistryEntry>, DbError>;
+    async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<TagRegistryEntry>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,24 +117,19 @@ impl TagRegistryRepository for PgTagRegistryRepository {
             source: e,
         })?;
 
-        let rows = sqlx::query(
-            "SELECT * FROM tag_registry WHERE tag = ANY($1) ORDER BY tag",
-        )
-        .bind(tags)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("selecting {} tags after batch upsert", tags.len()),
-            source: e,
-        })?;
+        let rows = sqlx::query("SELECT * FROM tag_registry WHERE tag = ANY($1) ORDER BY tag")
+            .bind(tags)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("selecting {} tags after batch upsert", tags.len()),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_tag_registry_entry_row).collect())
     }
 
-    async fn find_all(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<Vec<TagRegistryEntry>, DbError> {
+    async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<TagRegistryEntry>, DbError> {
         let rows = sqlx::query("SELECT * FROM tag_registry ORDER BY tag")
             .fetch_all(&mut *conn)
             .await

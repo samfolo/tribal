@@ -42,7 +42,7 @@ async fn setup_prerequisites(
         .expect("insert project");
 
     let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let pv_id: uuid::Uuid = sqlx::query_scalar(
+    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO prompt_versions (stage, content_hash, content) \
          VALUES ('extraction', $1, 'test') RETURNING id",
     )
@@ -51,16 +51,16 @@ async fn setup_prerequisites(
     .await
     .expect("insert prompt_version");
 
-    let pv = PromptVersionId::from(pv_id);
+    let pv_id = PromptVersionId::from(prompt_version_id);
     let job = tribal_db::PgJobRepository
         .insert(
             txn,
             &a_new_job()
                 .project_id(project.id())
                 .principal_id(principal.id())
-                .extraction_prompt_version_id(pv)
-                .triage_prompt_version_id(pv)
-                .relation_prompt_version_id(pv)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
                 .build(),
         )
         .await
@@ -121,7 +121,10 @@ async fn test_batch_insert_returns_populated_decisions() {
             .build(),
     ];
 
-    let results = repo.batch_insert(&mut txn, &batch).await.expect("batch_insert");
+    let results = repo
+        .batch_insert(&mut txn, &batch)
+        .await
+        .expect("batch_insert");
 
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].job_id(), job_id);
@@ -138,13 +141,13 @@ async fn test_batch_insert_duplicate_returns_unique_violation() {
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "batch-uv").await;
     let item_id = setup_item(&mut txn, project_id, principal_id).await;
 
-    let decision = a_new_triage_similar_item_decision()
+    let first = a_new_triage_similar_item_decision()
         .job_id(job_id)
         .batch_index(0)
         .matched_item_id(item_id)
         .build();
 
-    repo.batch_insert(&mut txn, &[decision.build()])
+    repo.batch_insert(&mut txn, &[first])
         .await
         .expect("first insert");
 
@@ -154,10 +157,7 @@ async fn test_batch_insert_duplicate_returns_unique_violation() {
         .matched_item_id(item_id)
         .build();
 
-    let err = repo
-        .batch_insert(&mut txn, &[duplicate.build()])
-        .await
-        .unwrap_err();
+    let err = repo.batch_insert(&mut txn, &[duplicate]).await.unwrap_err();
 
     assert!(
         matches!(err, DbError::UniqueViolation { .. }),
@@ -171,7 +171,10 @@ async fn test_batch_insert_empty_returns_empty() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTriageSimilarItemDecisionRepository;
 
-    let results = repo.batch_insert(&mut txn, &[]).await.expect("batch_insert");
+    let results = repo
+        .batch_insert(&mut txn, &[])
+        .await
+        .expect("batch_insert");
 
     assert!(results.is_empty());
 }
@@ -231,7 +234,7 @@ async fn test_find_by_job_id_returns_empty_for_unknown_job() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_find_by_job_id_and_batch_index_returns_matching() {
+async fn test_find_by_job_id_and_batch_index_returns_matching_ordered_by_created_at() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTriageSimilarItemDecisionRepository;
@@ -239,7 +242,9 @@ async fn test_find_by_job_id_and_batch_index_returns_matching() {
     let (principal_id, project_id, job_id) = setup_prerequisites(&mut txn, "find-bi").await;
     let item_a = setup_item(&mut txn, project_id, principal_id).await;
     let item_b = setup_item(&mut txn, project_id, principal_id).await;
+    let item_other = setup_item(&mut txn, project_id, principal_id).await;
 
+    // Insert two decisions for batch_index 0 and one for batch_index 1.
     let batch = vec![
         a_new_triage_similar_item_decision()
             .job_id(job_id)
@@ -248,20 +253,45 @@ async fn test_find_by_job_id_and_batch_index_returns_matching() {
             .build(),
         a_new_triage_similar_item_decision()
             .job_id(job_id)
-            .batch_index(1)
+            .batch_index(0)
             .matched_item_id(item_b)
+            .build(),
+        a_new_triage_similar_item_decision()
+            .job_id(job_id)
+            .batch_index(1)
+            .matched_item_id(item_other)
             .build(),
     ];
 
-    repo.batch_insert(&mut txn, &batch).await.expect("insert");
+    let inserted = repo.batch_insert(&mut txn, &batch).await.expect("insert");
+
+    // Backdate item_b's decision so it sorts before item_a's by created_at.
+    sqlx::query(
+        "UPDATE triage_similar_item_decisions \
+         SET created_at = created_at - interval '1 hour' \
+         WHERE id = $1",
+    )
+    .bind(inserted[1].id().inner())
+    .execute(&mut *txn)
+    .await
+    .expect("backdate decision");
 
     let results = repo
         .find_by_job_id_and_batch_index(&mut txn, job_id, 0)
         .await
         .expect("find");
 
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].matched_item_id(), item_a);
+    assert_eq!(
+        results.len(),
+        2,
+        "should only return batch_index=0 decisions"
+    );
+    assert_eq!(
+        results[0].matched_item_id(),
+        item_b,
+        "earlier created_at should come first"
+    );
+    assert_eq!(results[1].matched_item_id(), item_a);
 }
 
 #[tokio::test]

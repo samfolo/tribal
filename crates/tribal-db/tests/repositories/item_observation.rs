@@ -82,13 +82,14 @@ async fn test_insert_returns_populated_observation() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_find_by_knowledge_item_id_returns_observations_ordered() {
+async fn test_find_by_knowledge_item_id_returns_observations_ordered_by_observed_at() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgItemObservationRepository;
 
     let (principal_id, item_id) = setup_prerequisites(&mut txn, "find-ordered").await;
 
+    // Insert two observations (both get the same now() within this txn).
     let first = repo
         .insert(
             &mut txn,
@@ -113,14 +114,29 @@ async fn test_find_by_knowledge_item_id_returns_observations_ordered() {
         .await
         .expect("insert second");
 
+    // Force the second observation to have an *earlier* timestamp so we
+    // can verify the query orders by observed_at, not insertion order.
+    sqlx::query(
+        "UPDATE item_observations SET observed_at = observed_at - interval '1 hour' \
+         WHERE id = $1",
+    )
+    .bind(second.id().inner())
+    .execute(&mut *txn)
+    .await
+    .expect("backdate second observation");
+
     let results = repo
         .find_by_knowledge_item_id(&mut txn, item_id)
         .await
         .expect("find");
 
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].id(), first.id());
-    assert_eq!(results[1].id(), second.id());
+    assert_eq!(
+        results[0].id(),
+        second.id(),
+        "earlier observed_at should come first"
+    );
+    assert_eq!(results[1].id(), first.id());
 }
 
 #[tokio::test]
