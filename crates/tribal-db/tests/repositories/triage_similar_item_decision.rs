@@ -127,6 +127,11 @@ async fn test_batch_insert_returns_populated_decisions() {
         .expect("batch_insert");
 
     assert_eq!(results.len(), 2);
+    assert!(
+        results[0].id().to_string().starts_with("tsd_"),
+        "expected tsd_ prefix, got: {}",
+        results[0].id()
+    );
     assert_eq!(results[0].job_id(), job_id);
     assert_eq!(results[0].batch_index(), 0);
     assert_eq!(results[1].job_id(), job_id);
