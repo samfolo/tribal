@@ -51,6 +51,12 @@ pub enum RelationSuggestion {
     Unrelated,
 }
 
+enum_text_conversions!(RelationSuggestion {
+    RelationSuggestion::Supports => "supports",
+    RelationSuggestion::Contradicts => "contradicts",
+    RelationSuggestion::Unrelated => "unrelated",
+});
+
 /// The type of an intra-batch relation hint emitted by the extraction agent.
 ///
 /// Currently a single variant; the enum exists as an extension point for
@@ -139,6 +145,12 @@ mod tests {
         RelationKind::Contradicts => "contradicts",
         RelationKind::Supersedes => "supersedes",
         RelationKind::DerivedFrom => "derived_from",
+    });
+
+    enum_text_tests!(test_relation_suggestion_text_roundtrip, RelationSuggestion {
+        RelationSuggestion::Supports => "supports",
+        RelationSuggestion::Contradicts => "contradicts",
+        RelationSuggestion::Unrelated => "unrelated",
     });
 
     enum_serde_tests!(test_relation_suggestion_serde_roundtrip, RelationSuggestion {
