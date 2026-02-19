@@ -13,7 +13,7 @@ define_factory! {
     /// Factory for [`SimilarItem`] instances.
     pub struct SimilarItemFactory for SimilarItem {
         item_id: KnowledgeItemId = KnowledgeItemId::new(),
-        similarity_score: f32 = 0.85,
+        similarity_score: f32 = 0.0,
         suggested_relation: RelationSuggestion = RelationSuggestion::Supports,
     }
 }
@@ -34,7 +34,7 @@ define_factory! {
         job_id: JobId = JobId::new(),
         batch_index: u32 = 0,
         matched_item_id: KnowledgeItemId = KnowledgeItemId::new(),
-        similarity_score: f32 = 0.85,
+        similarity_score: f32 = 0.0,
         suggested_relation: RelationSuggestion = RelationSuggestion::Supports,
         justification_text: String = "test justification".to_owned(),
         created_at: chrono::DateTime<Utc> = Utc::now(),
@@ -135,7 +135,7 @@ define_factory! {
         job_id: JobId = JobId::new(),
         batch_index: u32 = 0,
         matched_item_id: KnowledgeItemId = KnowledgeItemId::new(),
-        similarity_score: f32 = 0.85,
+        similarity_score: f32 = 0.0,
         suggested_relation: RelationSuggestion = RelationSuggestion::Supports,
         justification_text: String = "test justification".to_owned(),
     }
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn test_similar_item_builds_with_defaults() {
         let s = a_similar_item().build();
-        assert!((s.similarity_score() - 0.85).abs() < f32::EPSILON);
+        assert!((s.similarity_score() - 0.0).abs() < f32::EPSILON);
         assert_eq!(s.suggested_relation(), RelationSuggestion::Supports);
     }
 
