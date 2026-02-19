@@ -1,0 +1,599 @@
+use tribal_db::{
+    ItemObservationRepository, KnowledgeItemRepository, PgItemObservationRepository,
+    PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository, PgRelationRepository,
+    PgStandingRepository, PrincipalRepository, ProjectRepository, RelationRepository,
+    StandingRepository,
+};
+use tribal_domain::{EpisodeId, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationKind};
+use tribal_test_utils::{
+    a_new_item_observation, a_new_knowledge_item, a_new_knowledge_item_relation, a_new_principal,
+    a_new_project, test_context,
+};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Inserts a principal and project, returning their IDs.
+async fn setup_prerequisites(
+    txn: &mut sqlx::PgConnection,
+    suffix: &str,
+) -> (PrincipalId, ProjectId) {
+    let principal = PgPrincipalRepository
+        .insert(
+            txn,
+            &a_new_principal()
+                .principal_key(format!("user:standing-{suffix}"))
+                .build(),
+        )
+        .await
+        .expect("insert principal");
+
+    let project = PgProjectRepository
+        .insert(
+            txn,
+            &a_new_project()
+                .git_remote(format!("git@github.com:test/standing-{suffix}.git"))
+                .build(),
+        )
+        .await
+        .expect("insert project");
+
+    (principal.id(), project.id())
+}
+
+/// Inserts a knowledge item and returns its ID.
+async fn setup_item(
+    txn: &mut sqlx::PgConnection,
+    project_id: ProjectId,
+    principal_id: PrincipalId,
+) -> KnowledgeItemId {
+    PgKnowledgeItemRepository
+        .insert(
+            txn,
+            &a_new_knowledge_item()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert knowledge item")
+        .id()
+}
+
+/// Creates a prompt_version row and a completed job with the given
+/// `committed_batch_id`, satisfying FK constraints.
+async fn commit_batch(
+    txn: &mut sqlx::PgConnection,
+    project_id: ProjectId,
+    principal_id: PrincipalId,
+    batch_id: RelationBatchId,
+) {
+    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
+    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO prompt_versions (stage, content_hash, content) \
+         VALUES ('extraction', $1, 'test') RETURNING id",
+    )
+    .bind(&content_hash)
+    .fetch_one(&mut *txn)
+    .await
+    .expect("insert prompt_version");
+
+    sqlx::query(
+        "INSERT INTO jobs \
+         (project_id, principal_id, source_context, status, outcome, \
+          committed_batch_id, extraction_prompt_version_id, \
+          triage_prompt_version_id, relation_prompt_version_id) \
+         VALUES ($1, $2, $3, 'completed', 'success', $4, $5, $5, $5)",
+    )
+    .bind(project_id.inner())
+    .bind(principal_id.inner())
+    .bind(serde_json::json!({}))
+    .bind(batch_id.inner())
+    .bind(prompt_version_id)
+    .execute(&mut *txn)
+    .await
+    .expect("insert job");
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_compute_returns_standings_in_input_order() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "order").await;
+    let item_a = setup_item(&mut txn, project_id, principal_id).await;
+    let item_b = setup_item(&mut txn, project_id, principal_id).await;
+    let item_c = setup_item(&mut txn, project_id, principal_id).await;
+
+    // A supports B (committed).
+    let batch_id = RelationBatchId::new();
+    PgRelationRepository
+        .batch_insert(
+            &mut txn,
+            &[a_new_knowledge_item_relation()
+                .relation_batch_id(batch_id)
+                .source_id(item_a)
+                .target_id(item_b)
+                .relation_type(RelationKind::Supports)
+                .principal_id(principal_id)
+                .build()],
+        )
+        .await
+        .expect("batch_insert");
+    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+
+    // Add an observation on C.
+    PgItemObservationRepository
+        .insert(
+            &mut txn,
+            &a_new_item_observation()
+                .knowledge_item_id(item_c)
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert observation");
+
+    let standings = repo
+        .compute(&mut txn, &[item_c, item_b, item_a])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings.len(), 3);
+    // item_c has 1 observation, 0 support.
+    assert_eq!(standings[0].observation_count(), 1);
+    assert_eq!(standings[0].supporting_count(), 0);
+    // item_b has 1 support.
+    assert_eq!(standings[1].supporting_count(), 1);
+    // item_a has nothing.
+    assert_eq!(standings[2].supporting_count(), 0);
+    assert_eq!(standings[2].observation_count(), 0);
+}
+
+#[tokio::test]
+async fn test_compute_empty_graph_returns_zero_standings() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "empty-graph").await;
+    let item = setup_item(&mut txn, project_id, principal_id).await;
+
+    let standings = repo
+        .compute(&mut txn, &[item])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings.len(), 1);
+    let s = &standings[0];
+    assert_eq!(s.supporting_count(), 0);
+    assert_eq!(s.contradicting_count(), 0);
+    assert!(s.superseded_by().is_none());
+    assert_eq!(s.observation_count(), 0);
+    assert!(s.newest_supporting_id().is_none());
+    assert!(s.newest_contradicting_id().is_none());
+    assert_eq!(s.supporting_episode_count(), 0);
+    assert_eq!(s.supporting_project_count(), 0);
+}
+
+#[tokio::test]
+async fn test_compute_excludes_derived_from_relations() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "derived-from").await;
+    let item_a = setup_item(&mut txn, project_id, principal_id).await;
+    let item_b = setup_item(&mut txn, project_id, principal_id).await;
+
+    let batch_id = RelationBatchId::new();
+    PgRelationRepository
+        .batch_insert(
+            &mut txn,
+            &[a_new_knowledge_item_relation()
+                .relation_batch_id(batch_id)
+                .source_id(item_a)
+                .target_id(item_b)
+                .relation_type(RelationKind::DerivedFrom)
+                .principal_id(principal_id)
+                .build()],
+        )
+        .await
+        .expect("batch_insert");
+    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+
+    let standings = repo
+        .compute(&mut txn, &[item_b])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings[0].supporting_count(), 0);
+    assert_eq!(standings[0].contradicting_count(), 0);
+}
+
+#[tokio::test]
+async fn test_compute_excludes_uncommitted_batch_relations() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "uncommitted").await;
+    let item_a = setup_item(&mut txn, project_id, principal_id).await;
+    let item_b = setup_item(&mut txn, project_id, principal_id).await;
+
+    // Insert but do NOT commit the batch.
+    let batch_id = RelationBatchId::new();
+    PgRelationRepository
+        .batch_insert(
+            &mut txn,
+            &[a_new_knowledge_item_relation()
+                .relation_batch_id(batch_id)
+                .source_id(item_a)
+                .target_id(item_b)
+                .relation_type(RelationKind::Supports)
+                .principal_id(principal_id)
+                .build()],
+        )
+        .await
+        .expect("batch_insert");
+
+    let standings = repo
+        .compute(&mut txn, &[item_b])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings[0].supporting_count(), 0);
+}
+
+#[tokio::test]
+async fn test_compute_counts_observations() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "obs-count").await;
+    let item = setup_item(&mut txn, project_id, principal_id).await;
+
+    for _ in 0..3 {
+        PgItemObservationRepository
+            .insert(
+                &mut txn,
+                &a_new_item_observation()
+                    .knowledge_item_id(item)
+                    .principal_id(principal_id)
+                    .build(),
+            )
+            .await
+            .expect("insert observation");
+    }
+
+    let standings = repo
+        .compute(&mut txn, &[item])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings[0].observation_count(), 3);
+}
+
+#[tokio::test]
+async fn test_compute_diversity_metrics() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let (principal_id, project_id_1) = setup_prerequisites(&mut txn, "diversity-1").await;
+
+    // Second project with the same principal.
+    let project_2 = PgProjectRepository
+        .insert(
+            &mut txn,
+            &a_new_project()
+                .git_remote("git@github.com:test/standing-diversity-2.git".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert project 2");
+    let project_id_2 = project_2.id();
+
+    let target = setup_item(&mut txn, project_id_1, principal_id).await;
+
+    // Supporting item from project 1, episode A.
+    let ep_a = EpisodeId::new();
+    let supporter_1 = PgKnowledgeItemRepository
+        .insert(
+            &mut txn,
+            &a_new_knowledge_item()
+                .project_id(project_id_1)
+                .principal_id(principal_id)
+                .episode_id(Some(ep_a))
+                .build(),
+        )
+        .await
+        .expect("insert supporter 1")
+        .id();
+
+    // Supporting item from project 2, episode B.
+    let ep_b = EpisodeId::new();
+    let supporter_2 = PgKnowledgeItemRepository
+        .insert(
+            &mut txn,
+            &a_new_knowledge_item()
+                .project_id(project_id_2)
+                .principal_id(principal_id)
+                .episode_id(Some(ep_b))
+                .build(),
+        )
+        .await
+        .expect("insert supporter 2")
+        .id();
+
+    // Supporting item from project 1, episode C.
+    let ep_c = EpisodeId::new();
+    let supporter_3 = PgKnowledgeItemRepository
+        .insert(
+            &mut txn,
+            &a_new_knowledge_item()
+                .project_id(project_id_1)
+                .principal_id(principal_id)
+                .episode_id(Some(ep_c))
+                .build(),
+        )
+        .await
+        .expect("insert supporter 3")
+        .id();
+
+    let batch_id = RelationBatchId::new();
+    PgRelationRepository
+        .batch_insert(
+            &mut txn,
+            &[
+                a_new_knowledge_item_relation()
+                    .relation_batch_id(batch_id)
+                    .source_id(supporter_1)
+                    .target_id(target)
+                    .relation_type(RelationKind::Supports)
+                    .principal_id(principal_id)
+                    .build(),
+                a_new_knowledge_item_relation()
+                    .relation_batch_id(batch_id)
+                    .source_id(supporter_2)
+                    .target_id(target)
+                    .relation_type(RelationKind::Supports)
+                    .principal_id(principal_id)
+                    .build(),
+                a_new_knowledge_item_relation()
+                    .relation_batch_id(batch_id)
+                    .source_id(supporter_3)
+                    .target_id(target)
+                    .relation_type(RelationKind::Supports)
+                    .principal_id(principal_id)
+                    .build(),
+            ],
+        )
+        .await
+        .expect("batch_insert");
+    commit_batch(&mut txn, project_id_1, principal_id, batch_id).await;
+
+    let standings = repo
+        .compute(&mut txn, &[target])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings[0].supporting_count(), 3);
+    assert_eq!(standings[0].supporting_episode_count(), 3);
+    assert_eq!(standings[0].supporting_project_count(), 2);
+}
+
+#[tokio::test]
+async fn test_compute_empty_slice_returns_empty_vec() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let standings = repo.compute(&mut txn, &[]).await.expect("compute");
+
+    assert!(standings.is_empty());
+}
+
+#[tokio::test]
+async fn test_compute_unknown_ids_return_zero_standings() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let unknown = KnowledgeItemId::new();
+    let standings = repo
+        .compute(&mut txn, &[unknown])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings.len(), 1);
+    let s = &standings[0];
+    assert_eq!(s.supporting_count(), 0);
+    assert_eq!(s.contradicting_count(), 0);
+    assert!(s.superseded_by().is_none());
+    assert_eq!(s.observation_count(), 0);
+    assert!(s.newest_supporting_id().is_none());
+    assert!(s.newest_contradicting_id().is_none());
+    assert_eq!(s.supporting_episode_count(), 0);
+    assert_eq!(s.supporting_project_count(), 0);
+}
+
+#[tokio::test]
+async fn test_compute_superseded_by() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "superseded").await;
+    let old_item = setup_item(&mut txn, project_id, principal_id).await;
+    let new_item = setup_item(&mut txn, project_id, principal_id).await;
+
+    let batch_id = RelationBatchId::new();
+    PgRelationRepository
+        .batch_insert(
+            &mut txn,
+            &[a_new_knowledge_item_relation()
+                .relation_batch_id(batch_id)
+                .source_id(new_item)
+                .target_id(old_item)
+                .relation_type(RelationKind::Supersedes)
+                .principal_id(principal_id)
+                .build()],
+        )
+        .await
+        .expect("batch_insert");
+    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+
+    let standings = repo
+        .compute(&mut txn, &[old_item])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings[0].superseded_by(), Some(new_item));
+}
+
+#[tokio::test]
+async fn test_compute_newest_supporting_and_contradicting() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "newest-ids").await;
+    let target = setup_item(&mut txn, project_id, principal_id).await;
+    let older_supporter = setup_item(&mut txn, project_id, principal_id).await;
+    let newer_supporter = setup_item(&mut txn, project_id, principal_id).await;
+    let older_contradictor = setup_item(&mut txn, project_id, principal_id).await;
+    let newer_contradictor = setup_item(&mut txn, project_id, principal_id).await;
+
+    // First batch — older relations.
+    let batch_1 = RelationBatchId::new();
+    PgRelationRepository
+        .batch_insert(
+            &mut txn,
+            &[
+                a_new_knowledge_item_relation()
+                    .relation_batch_id(batch_1)
+                    .source_id(older_supporter)
+                    .target_id(target)
+                    .relation_type(RelationKind::Supports)
+                    .principal_id(principal_id)
+                    .build(),
+                a_new_knowledge_item_relation()
+                    .relation_batch_id(batch_1)
+                    .source_id(older_contradictor)
+                    .target_id(target)
+                    .relation_type(RelationKind::Contradicts)
+                    .principal_id(principal_id)
+                    .build(),
+            ],
+        )
+        .await
+        .expect("batch_insert 1");
+    commit_batch(&mut txn, project_id, principal_id, batch_1).await;
+
+    // Backdate the older relations so they are strictly older.
+    sqlx::query(
+        "UPDATE knowledge_item_relations \
+         SET created_at = created_at - interval '1 hour' \
+         WHERE relation_batch_id = $1",
+    )
+    .bind(batch_1.inner())
+    .execute(&mut *txn)
+    .await
+    .expect("backdate older relations");
+
+    // Second batch — newer relations.
+    let batch_2 = RelationBatchId::new();
+    PgRelationRepository
+        .batch_insert(
+            &mut txn,
+            &[
+                a_new_knowledge_item_relation()
+                    .relation_batch_id(batch_2)
+                    .source_id(newer_supporter)
+                    .target_id(target)
+                    .relation_type(RelationKind::Supports)
+                    .principal_id(principal_id)
+                    .build(),
+                a_new_knowledge_item_relation()
+                    .relation_batch_id(batch_2)
+                    .source_id(newer_contradictor)
+                    .target_id(target)
+                    .relation_type(RelationKind::Contradicts)
+                    .principal_id(principal_id)
+                    .build(),
+            ],
+        )
+        .await
+        .expect("batch_insert 2");
+    commit_batch(&mut txn, project_id, principal_id, batch_2).await;
+
+    let standings = repo
+        .compute(&mut txn, &[target])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings[0].newest_supporting_id(), Some(newer_supporter));
+    assert_eq!(
+        standings[0].newest_contradicting_id(),
+        Some(newer_contradictor)
+    );
+}
+
+#[tokio::test]
+async fn test_compute_counts_distinct_source_items() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgStandingRepository;
+
+    let (principal_id, project_id) = setup_prerequisites(&mut txn, "distinct-count").await;
+    let target = setup_item(&mut txn, project_id, principal_id).await;
+    let source = setup_item(&mut txn, project_id, principal_id).await;
+
+    // Two relation rows from the same source to the same target.
+    let batch_1 = RelationBatchId::new();
+    PgRelationRepository
+        .batch_insert(
+            &mut txn,
+            &[a_new_knowledge_item_relation()
+                .relation_batch_id(batch_1)
+                .source_id(source)
+                .target_id(target)
+                .relation_type(RelationKind::Supports)
+                .principal_id(principal_id)
+                .build()],
+        )
+        .await
+        .expect("batch_insert 1");
+    commit_batch(&mut txn, project_id, principal_id, batch_1).await;
+
+    let batch_2 = RelationBatchId::new();
+    PgRelationRepository
+        .batch_insert(
+            &mut txn,
+            &[a_new_knowledge_item_relation()
+                .relation_batch_id(batch_2)
+                .source_id(source)
+                .target_id(target)
+                .relation_type(RelationKind::Supports)
+                .principal_id(principal_id)
+                .build()],
+        )
+        .await
+        .expect("batch_insert 2");
+    commit_batch(&mut txn, project_id, principal_id, batch_2).await;
+
+    let standings = repo
+        .compute(&mut txn, &[target])
+        .await
+        .expect("compute");
+
+    assert_eq!(standings[0].supporting_count(), 1);
+}
