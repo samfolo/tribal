@@ -8,6 +8,9 @@
 #[path = "repositories/embedding.rs"]
 mod embedding;
 
+#[path = "repositories/item_observation.rs"]
+mod item_observation;
+
 #[path = "repositories/job.rs"]
 mod job;
 
@@ -26,5 +29,14 @@ mod reference;
 #[path = "repositories/relation.rs"]
 mod relation;
 
+#[path = "repositories/tag_registry.rs"]
+mod tag_registry;
+
 #[path = "repositories/task.rs"]
 mod task;
+
+#[path = "repositories/triage_result.rs"]
+mod triage_result;
+
+#[path = "repositories/triage_similar_item_decision.rs"]
+mod triage_similar_item_decision;

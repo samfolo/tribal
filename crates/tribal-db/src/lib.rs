@@ -17,11 +17,14 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 pub use error::DbError;
 pub use pool::create_pool;
 pub use repositories::{
-    EmbeddingRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository, NewEmbedding,
-    NewJob, NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject, NewReference,
-    NewTask, PgEmbeddingRepository, PgJobRepository, PgKnowledgeItemRepository,
-    PgPrincipalRepository, PgProjectRepository, PgReferenceRepository, PgRelationRepository,
-    PgTaskRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
-    RelationRepository, SemanticSearchParams, SemanticSearchResponse, SemanticSearchResult,
-    TaskRepository, TraversalNode, TraversalResponse,
+    EmbeddingRepository, ItemObservationRepository, JobRepository, JobStatusTransition,
+    KnowledgeItemRepository, NewEmbedding, NewItemObservation, NewJob, NewKnowledgeItem,
+    NewKnowledgeItemRelation, NewPrincipal, NewProject, NewReference, NewTask, NewTriageResult,
+    NewTriageSimilarItemDecision, PgEmbeddingRepository, PgItemObservationRepository,
+    PgJobRepository, PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
+    PgReferenceRepository, PgRelationRepository, PgTagRegistryRepository, PgTaskRepository,
+    PgTriageResultRepository, PgTriageSimilarItemDecisionRepository, PrincipalRepository,
+    ProjectRepository, ReferenceRepository, RelationRepository, SemanticSearchParams,
+    SemanticSearchResponse, SemanticSearchResult, TagRegistryRepository, TaskRepository,
+    TraversalNode, TraversalResponse, TriageResultRepository, TriageSimilarItemDecisionRepository,
 };

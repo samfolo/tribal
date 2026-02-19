@@ -7,15 +7,22 @@
 
 mod common;
 mod embedding;
+mod item_observation;
 mod job;
 mod knowledge_item;
 mod principal;
 mod project;
 mod reference;
 mod relation;
+mod tag_registry;
 mod task;
+mod triage_result;
+mod triage_similar_item_decision;
 
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
+pub use item_observation::{
+    ItemObservationRepository, NewItemObservation, PgItemObservationRepository,
+};
 pub use job::{JobRepository, JobStatusTransition, NewJob, PgJobRepository};
 pub use knowledge_item::{
     KnowledgeItemRepository, NewKnowledgeItem, PgKnowledgeItemRepository, SemanticSearchParams,
@@ -28,4 +35,10 @@ pub use relation::{
     NewKnowledgeItemRelation, PgRelationRepository, RelationRepository, TraversalNode,
     TraversalResponse,
 };
+pub use tag_registry::{PgTagRegistryRepository, TagRegistryRepository};
 pub use task::{NewTask, PgTaskRepository, TaskRepository};
+pub use triage_result::{NewTriageResult, PgTriageResultRepository, TriageResultRepository};
+pub use triage_similar_item_decision::{
+    NewTriageSimilarItemDecision, PgTriageSimilarItemDecisionRepository,
+    TriageSimilarItemDecisionRepository,
+};
