@@ -9,11 +9,20 @@ use sqlx::{PgConnection, Row};
 use tribal_domain::{ItemObservation, ItemObservationId, KnowledgeItemId, PrincipalId, SourceType};
 use typed_builder::TypedBuilder;
 
+use super::common::columns::columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+const COLUMNS: &[&str] = &[
+    "id",
+    "knowledge_item_id",
+    "principal_id",
+    "source_type",
+    "observed_at",
+];
 
 const UNKNOWN_SOURCE_TYPE_IN_DB: &str = "unrecognised source type in database â€” schema mismatch";
 
@@ -24,7 +33,7 @@ const UNKNOWN_SOURCE_TYPE_IN_DB: &str = "unrecognised source type in database â€
 /// Input for creating a new item observation.
 ///
 /// Server-generated fields (`id`, `observed_at`) are produced by Postgres
-/// defaults and returned via `RETURNING *`.
+/// defaults and returned via `RETURNING {columns}`.
 #[derive(Debug, TypedBuilder)]
 pub struct NewItemObservation {
     /// The knowledge item that was re-observed.
@@ -87,21 +96,24 @@ impl ItemObservationRepository for PgItemObservationRepository {
         conn: &mut PgConnection,
         new: &NewItemObservation,
     ) -> Result<ItemObservation, DbError> {
-        let row = sqlx::query(
+        let sql = format!(
             "INSERT INTO item_observations \
                  (knowledge_item_id, principal_id, source_type) \
              VALUES ($1, $2, $3) \
-             RETURNING *",
-        )
-        .bind(new.knowledge_item_id.inner())
-        .bind(new.principal_id.inner())
-        .bind(new.source_type.as_str())
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: "inserting item observation".to_owned(),
-            source: e,
-        })?;
+             RETURNING {columns}",
+            columns = columns(COLUMNS),
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(new.knowledge_item_id.inner())
+            .bind(new.principal_id.inner())
+            .bind(new.source_type.as_str())
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "inserting item observation".to_owned(),
+                source: e,
+            })?;
 
         Ok(map_item_observation_row(&row))
     }
@@ -111,18 +123,21 @@ impl ItemObservationRepository for PgItemObservationRepository {
         conn: &mut PgConnection,
         knowledge_item_id: KnowledgeItemId,
     ) -> Result<Vec<ItemObservation>, DbError> {
-        let rows = sqlx::query(
-            "SELECT * FROM item_observations \
+        let sql = format!(
+            "SELECT {columns} FROM item_observations \
              WHERE knowledge_item_id = $1 \
              ORDER BY observed_at",
-        )
-        .bind(knowledge_item_id.inner())
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding observations for knowledge item {knowledge_item_id}"),
-            source: e,
-        })?;
+            columns = columns(COLUMNS),
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(knowledge_item_id.inner())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding observations for knowledge item {knowledge_item_id}"),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_item_observation_row).collect())
     }

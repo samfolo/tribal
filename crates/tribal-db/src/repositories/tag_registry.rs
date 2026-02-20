@@ -8,7 +8,14 @@ use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::TagRegistryEntry;
 
+use super::common::columns::columns;
 use crate::DbError;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const COLUMNS: &[&str] = &["tag", "first_seen_at"];
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -83,7 +90,12 @@ impl TagRegistryRepository for PgTagRegistryRepository {
             source: e,
         })?;
 
-        let row = sqlx::query("SELECT * FROM tag_registry WHERE tag = $1")
+        let sql = format!(
+            "SELECT {columns} FROM tag_registry WHERE tag = $1",
+            columns = columns(COLUMNS),
+        );
+
+        let row = sqlx::query(&sql)
             .bind(tag)
             .fetch_one(&mut *conn)
             .await
@@ -120,7 +132,12 @@ impl TagRegistryRepository for PgTagRegistryRepository {
             source: e,
         })?;
 
-        let rows = sqlx::query("SELECT * FROM tag_registry WHERE tag = ANY($1) ORDER BY tag")
+        let sql = format!(
+            "SELECT {columns} FROM tag_registry WHERE tag = ANY($1) ORDER BY tag",
+            columns = columns(COLUMNS),
+        );
+
+        let rows = sqlx::query(&sql)
             .bind(tags)
             .fetch_all(&mut *conn)
             .await
@@ -133,13 +150,19 @@ impl TagRegistryRepository for PgTagRegistryRepository {
     }
 
     async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<TagRegistryEntry>, DbError> {
-        let rows = sqlx::query("SELECT * FROM tag_registry ORDER BY tag")
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|e| DbError::QueryFailed {
-                context: "listing all tags".to_owned(),
-                source: e,
-            })?;
+        let sql = format!(
+            "SELECT {columns} FROM tag_registry ORDER BY tag",
+            columns = columns(COLUMNS),
+        );
+
+        let rows =
+            sqlx::query(&sql)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: "listing all tags".to_owned(),
+                    source: e,
+                })?;
 
         Ok(rows.iter().map(map_tag_registry_entry_row).collect())
     }

@@ -11,6 +11,7 @@ use tribal_domain::{
 };
 use typed_builder::TypedBuilder;
 
+use super::common::columns::columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
@@ -100,9 +101,19 @@ pub trait RetrievalFeedbackRepository {
 /// A zero-sized type with no internal state.
 pub struct PgRetrievalFeedbackRepository;
 
-const COLUMNS: &str = "id, trace_id, query_text, embedding_model, \
-                        returned_item_ids, explored_anchor_ids, \
-                        policy_version, principal_id, rating, notes, created_at";
+const COLUMNS: &[&str] = &[
+    "id",
+    "trace_id",
+    "query_text",
+    "embedding_model",
+    "returned_item_ids",
+    "explored_anchor_ids",
+    "policy_version",
+    "principal_id",
+    "rating",
+    "notes",
+    "created_at",
+];
 
 #[async_trait]
 impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
@@ -125,7 +136,8 @@ impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
                   returned_item_ids, explored_anchor_ids, \
                   policy_version, principal_id, rating, notes) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-             RETURNING {COLUMNS}",
+             RETURNING {columns}",
+            columns = columns(COLUMNS),
         );
 
         let row = sqlx::query(&sql)
@@ -153,7 +165,10 @@ impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
         conn: &mut PgConnection,
         id: RetrievalFeedbackId,
     ) -> Result<RetrievalFeedback, DbError> {
-        let sql = format!("SELECT {COLUMNS} FROM retrieval_feedback WHERE id = $1");
+        let sql = format!(
+            "SELECT {columns} FROM retrieval_feedback WHERE id = $1",
+            columns = columns(COLUMNS),
+        );
 
         let row = sqlx::query(&sql)
             .bind(id.inner())

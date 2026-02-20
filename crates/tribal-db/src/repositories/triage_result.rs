@@ -17,11 +17,25 @@ use tribal_domain::{
 };
 use typed_builder::TypedBuilder;
 
+use super::common::columns::columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+const COLUMNS: &[&str] = &[
+    "id",
+    "job_id",
+    "batch_index",
+    "outcome_type",
+    "knowledge_item_id",
+    "observation_id",
+    "matched_item_id",
+    "error_message",
+    "retryable",
+    "created_at",
+];
 
 const UNKNOWN_OUTCOME_TYPE_IN_DB: &str =
     "unrecognised triage outcome type in database — schema mismatch";
@@ -118,23 +132,26 @@ impl TriageResultRepository for PgTriageResultRepository {
 
         let flat = flatten_outcome(&new.outcome);
 
-        let result = sqlx::query(
+        let sql = format!(
             "INSERT INTO triage_results \
                  (job_id, batch_index, outcome_type, knowledge_item_id, \
                   observation_id, matched_item_id, error_message, retryable) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-             RETURNING *",
-        )
-        .bind(new.job_id.inner())
-        .bind(batch_index_i32)
-        .bind(flat.outcome_type)
-        .bind(flat.knowledge_item_id)
-        .bind(flat.observation_id)
-        .bind(flat.matched_item_id)
-        .bind(flat.error_message)
-        .bind(flat.retryable)
-        .fetch_one(&mut *conn)
-        .await;
+             RETURNING {columns}",
+            columns = columns(COLUMNS),
+        );
+
+        let result = sqlx::query(&sql)
+            .bind(new.job_id.inner())
+            .bind(batch_index_i32)
+            .bind(flat.outcome_type)
+            .bind(flat.knowledge_item_id)
+            .bind(flat.observation_id)
+            .bind(flat.matched_item_id)
+            .bind(flat.error_message)
+            .bind(flat.retryable)
+            .fetch_one(&mut *conn)
+            .await;
 
         match result {
             Ok(row) => Ok(map_triage_result_row(&row)),
@@ -156,18 +173,21 @@ impl TriageResultRepository for PgTriageResultRepository {
         conn: &mut PgConnection,
         job_id: JobId,
     ) -> Result<Vec<TriageResult>, DbError> {
-        let rows = sqlx::query(
-            "SELECT * FROM triage_results \
+        let sql = format!(
+            "SELECT {columns} FROM triage_results \
              WHERE job_id = $1 \
              ORDER BY batch_index",
-        )
-        .bind(job_id.inner())
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding triage results for job {job_id}"),
-            source: e,
-        })?;
+            columns = columns(COLUMNS),
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(job_id.inner())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding triage results for job {job_id}"),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_triage_result_row).collect())
     }
@@ -180,18 +200,23 @@ impl TriageResultRepository for PgTriageResultRepository {
     ) -> Result<Option<TriageResult>, DbError> {
         let batch_index_i32 = i32::try_from(batch_index).expect(BATCH_INDEX_EXCEEDS_I32);
 
-        let row = sqlx::query(
-            "SELECT * FROM triage_results \
+        let sql = format!(
+            "SELECT {columns} FROM triage_results \
              WHERE job_id = $1 AND batch_index = $2",
-        )
-        .bind(job_id.inner())
-        .bind(batch_index_i32)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding triage result for job {job_id} batch_index {batch_index}"),
-            source: e,
-        })?;
+            columns = columns(COLUMNS),
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(job_id.inner())
+            .bind(batch_index_i32)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!(
+                    "finding triage result for job {job_id} batch_index {batch_index}"
+                ),
+                source: e,
+            })?;
 
         Ok(row.as_ref().map(map_triage_result_row))
     }

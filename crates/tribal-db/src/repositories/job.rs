@@ -2,8 +2,8 @@
 //!
 //! Jobs track ingest pipeline runs.  The repository provides insert,
 //! lookup, status transition, batch sizing, and batch commit operations.
-//! All mutations use `RETURNING *` to produce the updated domain type
-//! atomically.
+//! All mutations use `RETURNING {columns}` to produce the updated domain
+//! type atomically.
 //!
 //! Uses raw `sqlx::query()` because job status transitions bind and
 //! parse domain enums as TEXT, and the compile-time macro cannot
@@ -18,11 +18,34 @@ use tribal_domain::{
 };
 use typed_builder::TypedBuilder;
 
+use super::common::columns::columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+const COLUMNS: &[&str] = &[
+    "id",
+    "correlation_id",
+    "project_id",
+    "principal_id",
+    "actor_id",
+    "status",
+    "outcome",
+    "batch_size",
+    "committed_batch_id",
+    "source_context",
+    "extraction_original_count",
+    "error_message",
+    "extraction_prompt_version_id",
+    "triage_prompt_version_id",
+    "relation_prompt_version_id",
+    "trace_context",
+    "completed_at",
+    "created_at",
+    "updated_at",
+];
 
 const UNKNOWN_JOB_STATUS_IN_DB: &str = "unrecognised job status in database — schema mismatch";
 const UNKNOWN_JOB_OUTCOME_IN_DB: &str = "unrecognised job outcome in database — schema mismatch";
@@ -40,7 +63,7 @@ const EXTRACTION_ORIGINAL_COUNT_OVERFLOW: &str =
 ///
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `status`, `created_at`, `updated_at`) are produced by Postgres
-/// via `DEFAULT` clauses and returned via `RETURNING *`.
+/// via `DEFAULT` clauses and returned via `RETURNING {columns}`.
 #[derive(Debug, TypedBuilder)]
 pub struct NewJob {
     /// Episode grouping (correlation key).
@@ -184,36 +207,44 @@ pub struct PgJobRepository;
 #[async_trait]
 impl JobRepository for PgJobRepository {
     async fn insert(&self, conn: &mut PgConnection, new_job: &NewJob) -> Result<Job, DbError> {
-        let row = sqlx::query(
+        let sql = format!(
             "INSERT INTO jobs \
                  (correlation_id, project_id, principal_id, actor_id, \
                   source_context, extraction_prompt_version_id, \
                   triage_prompt_version_id, relation_prompt_version_id, \
                   trace_context) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-             RETURNING *",
-        )
-        .bind(new_job.correlation_id.map(|id| *id.inner()))
-        .bind(new_job.project_id.inner())
-        .bind(new_job.principal_id.inner())
-        .bind(new_job.actor_id.map(|id| *id.inner()))
-        .bind(&new_job.source_context)
-        .bind(new_job.extraction_prompt_version_id.inner())
-        .bind(new_job.triage_prompt_version_id.inner())
-        .bind(new_job.relation_prompt_version_id.inner())
-        .bind(&new_job.trace_context)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: "inserting job".to_owned(),
-            source: e,
-        })?;
+             RETURNING {columns}",
+            columns = columns(COLUMNS),
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(new_job.correlation_id.map(|id| *id.inner()))
+            .bind(new_job.project_id.inner())
+            .bind(new_job.principal_id.inner())
+            .bind(new_job.actor_id.map(|id| *id.inner()))
+            .bind(&new_job.source_context)
+            .bind(new_job.extraction_prompt_version_id.inner())
+            .bind(new_job.triage_prompt_version_id.inner())
+            .bind(new_job.relation_prompt_version_id.inner())
+            .bind(&new_job.trace_context)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "inserting job".to_owned(),
+                source: e,
+            })?;
 
         Ok(map_job_row(&row))
     }
 
     async fn find_by_id(&self, conn: &mut PgConnection, id: JobId) -> Result<Job, DbError> {
-        let row = sqlx::query("SELECT * FROM jobs WHERE id = $1")
+        let sql = format!(
+            "SELECT {columns} FROM jobs WHERE id = $1",
+            columns = columns(COLUMNS),
+        );
+
+        let row = sqlx::query(&sql)
             .bind(id.inner())
             .fetch_optional(&mut *conn)
             .await
@@ -234,16 +265,20 @@ impl JobRepository for PgJobRepository {
         conn: &mut PgConnection,
         project_id: ProjectId,
     ) -> Result<Vec<Job>, DbError> {
-        let rows = sqlx::query(
-            "SELECT * FROM jobs WHERE project_id = $1 ORDER BY created_at DESC, id DESC",
-        )
-        .bind(project_id.inner())
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding jobs for project {project_id}"),
-            source: e,
-        })?;
+        let sql = format!(
+            "SELECT {columns} FROM jobs WHERE project_id = $1 \
+             ORDER BY created_at DESC, id DESC",
+            columns = columns(COLUMNS),
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(project_id.inner())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding jobs for project {project_id}"),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_job_row).collect())
     }
@@ -254,28 +289,31 @@ impl JobRepository for PgJobRepository {
         id: JobId,
         transition: &JobStatusTransition,
     ) -> Result<Job, DbError> {
-        let row = sqlx::query(
+        let sql = format!(
             "UPDATE jobs \
              SET status = $2, outcome = $3, error_message = $4, \
                  completed_at = $5, updated_at = now() \
              WHERE id = $1 \
-             RETURNING *",
-        )
-        .bind(id.inner())
-        .bind(transition.status.as_str())
-        .bind(transition.outcome.map(|o| o.as_str().to_owned()))
-        .bind(&transition.error_message)
-        .bind(transition.completed_at)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("updating job status for {id}"),
-            source: e,
-        })?
-        .ok_or_else(|| DbError::NotFound {
-            entity: "job",
-            id: id.to_string(),
-        })?;
+             RETURNING {columns}",
+            columns = columns(COLUMNS),
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(id.inner())
+            .bind(transition.status.as_str())
+            .bind(transition.outcome.map(|o| o.as_str().to_owned()))
+            .bind(&transition.error_message)
+            .bind(transition.completed_at)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("updating job status for {id}"),
+                source: e,
+            })?
+            .ok_or_else(|| DbError::NotFound {
+                entity: "job",
+                id: id.to_string(),
+            })?;
 
         Ok(map_job_row(&row))
     }
@@ -291,26 +329,29 @@ impl JobRepository for PgJobRepository {
         let original_count_i32 =
             i32::try_from(extraction_original_count).expect(EXTRACTION_ORIGINAL_COUNT_EXCEEDS_I32);
 
-        let row = sqlx::query(
+        let sql = format!(
             "UPDATE jobs \
              SET batch_size = $2, extraction_original_count = $3, \
                  updated_at = now() \
              WHERE id = $1 \
-             RETURNING *",
-        )
-        .bind(id.inner())
-        .bind(batch_size_i32)
-        .bind(original_count_i32)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("updating batch size for job {id}"),
-            source: e,
-        })?
-        .ok_or_else(|| DbError::NotFound {
-            entity: "job",
-            id: id.to_string(),
-        })?;
+             RETURNING {columns}",
+            columns = columns(COLUMNS),
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(id.inner())
+            .bind(batch_size_i32)
+            .bind(original_count_i32)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("updating batch size for job {id}"),
+                source: e,
+            })?
+            .ok_or_else(|| DbError::NotFound {
+                entity: "job",
+                id: id.to_string(),
+            })?;
 
         Ok(map_job_row(&row))
     }
@@ -321,24 +362,27 @@ impl JobRepository for PgJobRepository {
         id: JobId,
         batch_id: RelationBatchId,
     ) -> Result<Job, DbError> {
-        let row = sqlx::query(
+        let sql = format!(
             "UPDATE jobs \
              SET committed_batch_id = $2, updated_at = now() \
              WHERE id = $1 \
-             RETURNING *",
-        )
-        .bind(id.inner())
-        .bind(batch_id.inner())
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("setting committed batch id for job {id}"),
-            source: e,
-        })?
-        .ok_or_else(|| DbError::NotFound {
-            entity: "job",
-            id: id.to_string(),
-        })?;
+             RETURNING {columns}",
+            columns = columns(COLUMNS),
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(id.inner())
+            .bind(batch_id.inner())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("setting committed batch id for job {id}"),
+                source: e,
+            })?
+            .ok_or_else(|| DbError::NotFound {
+                entity: "job",
+                id: id.to_string(),
+            })?;
 
         Ok(map_job_row(&row))
     }

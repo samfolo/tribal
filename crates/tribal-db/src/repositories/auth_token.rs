@@ -11,6 +11,7 @@ use sqlx::{PgConnection, Row};
 use tribal_domain::{AuthToken, AuthTokenId, PrincipalId};
 use typed_builder::TypedBuilder;
 
+use super::common::columns::columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
@@ -107,7 +108,14 @@ pub trait AuthTokenRepository {
 /// A zero-sized type with no internal state.
 pub struct PgAuthTokenRepository;
 
-const COLUMNS: &str = "id, token_hash, principal_id, expires_at, created_at, revoked_at";
+const COLUMNS: &[&str] = &[
+    "id",
+    "token_hash",
+    "principal_id",
+    "expires_at",
+    "created_at",
+    "revoked_at",
+];
 
 #[async_trait]
 impl AuthTokenRepository for PgAuthTokenRepository {
@@ -119,7 +127,8 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         let sql = format!(
             "INSERT INTO auth_tokens (token_hash, principal_id, expires_at) \
              VALUES ($1, $2, $3) \
-             RETURNING {COLUMNS}",
+             RETURNING {columns}",
+            columns = columns(COLUMNS),
         );
 
         let result = sqlx::query(&sql)
@@ -149,7 +158,10 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         conn: &mut PgConnection,
         token_hash: &str,
     ) -> Result<Option<AuthToken>, DbError> {
-        let sql = format!("SELECT {COLUMNS} FROM auth_tokens WHERE token_hash = $1",);
+        let sql = format!(
+            "SELECT {columns} FROM auth_tokens WHERE token_hash = $1",
+            columns = columns(COLUMNS),
+        );
 
         let row = sqlx::query(&sql)
             .bind(token_hash)
@@ -169,9 +181,10 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         principal_id: PrincipalId,
     ) -> Result<Vec<AuthToken>, DbError> {
         let sql = format!(
-            "SELECT {COLUMNS} FROM auth_tokens \
+            "SELECT {columns} FROM auth_tokens \
              WHERE principal_id = $1 \
              ORDER BY created_at DESC",
+            columns = columns(COLUMNS),
         );
 
         let rows = sqlx::query(&sql)
@@ -207,7 +220,10 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         })?;
 
         // Fetch current state regardless of whether the update affected rows.
-        let sql = format!("SELECT {COLUMNS} FROM auth_tokens WHERE id = $1");
+        let sql = format!(
+            "SELECT {columns} FROM auth_tokens WHERE id = $1",
+            columns = columns(COLUMNS),
+        );
 
         let row = sqlx::query(&sql)
             .bind(id.inner())
