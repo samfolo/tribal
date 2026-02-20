@@ -14,14 +14,14 @@ use sqlx::{PgConnection, Row};
 use tribal_domain::{JobId, Task, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use typed_builder::TypedBuilder;
 
-use super::common::columns::{columns, qualified_columns};
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: &[&str] = &[
+const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
     "task_type",
@@ -37,7 +37,7 @@ const COLUMNS: &[&str] = &[
     "error_message",
     "created_at",
     "updated_at",
-];
+]);
 
 const UNKNOWN_TASK_TYPE_IN_DB: &str = "unrecognised task type in database — schema mismatch";
 const UNKNOWN_TASK_STATUS_IN_DB: &str = "unrecognised task status in database — schema mismatch";
@@ -57,7 +57,7 @@ const MAX_RETRIES_EXCEEDS_I32: &str = "max_retries exceeds i32::MAX";
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `status`, `available_at`, `created_at`, `updated_at`) are
 /// produced by Postgres via `DEFAULT` clauses and returned via
-/// `RETURNING {columns}`.
+/// `RETURNING {COLUMNS}`.
 #[derive(Debug, TypedBuilder)]
 pub struct NewTask {
     /// The job this task belongs to.
@@ -230,8 +230,7 @@ impl TaskRepository for PgTaskRepository {
         let sql = format!(
             "INSERT INTO tasks (job_id, task_type, batch_index) \
              VALUES ($1, $2, $3) \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)
@@ -257,10 +256,7 @@ impl TaskRepository for PgTaskRepository {
     }
 
     async fn find_by_id(&self, conn: &mut PgConnection, id: TaskId) -> Result<Task, DbError> {
-        let sql = format!(
-            "SELECT {columns} FROM tasks WHERE id = $1",
-            columns = columns(COLUMNS),
-        );
+        let sql = format!("SELECT {COLUMNS} FROM tasks WHERE id = $1");
 
         let row = sqlx::query(&sql)
             .bind(id.inner())
@@ -284,9 +280,8 @@ impl TaskRepository for PgTaskRepository {
         job_id: JobId,
     ) -> Result<Vec<Task>, DbError> {
         let sql = format!(
-            "SELECT {columns} FROM tasks WHERE job_id = $1 \
+            "SELECT {COLUMNS} FROM tasks WHERE job_id = $1 \
              ORDER BY created_at ASC, id ASC",
-            columns = columns(COLUMNS),
         );
 
         let rows = sqlx::query(&sql)
@@ -327,7 +322,7 @@ impl TaskRepository for PgTaskRepository {
              FROM claimable c \
              WHERE t.id = c.id \
              RETURNING {columns}",
-            columns = qualified_columns(COLUMNS, "t"),
+            columns = COLUMNS.qualified("t"),
         );
 
         let rows = sqlx::query(&sql)

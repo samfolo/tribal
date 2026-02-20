@@ -2,7 +2,7 @@
 //!
 //! Jobs track ingest pipeline runs.  The repository provides insert,
 //! lookup, status transition, batch sizing, and batch commit operations.
-//! All mutations use `RETURNING {columns}` to produce the updated domain
+//! All mutations use `RETURNING {COLUMNS}` to produce the updated domain
 //! type atomically.
 //!
 //! Uses raw `sqlx::query()` because job status transitions bind and
@@ -18,14 +18,14 @@ use tribal_domain::{
 };
 use typed_builder::TypedBuilder;
 
-use super::common::columns::columns;
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: &[&str] = &[
+const COLUMNS: Columns = Columns(&[
     "id",
     "correlation_id",
     "project_id",
@@ -45,7 +45,7 @@ const COLUMNS: &[&str] = &[
     "completed_at",
     "created_at",
     "updated_at",
-];
+]);
 
 const UNKNOWN_JOB_STATUS_IN_DB: &str = "unrecognised job status in database — schema mismatch";
 const UNKNOWN_JOB_OUTCOME_IN_DB: &str = "unrecognised job outcome in database — schema mismatch";
@@ -63,7 +63,7 @@ const EXTRACTION_ORIGINAL_COUNT_OVERFLOW: &str =
 ///
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `status`, `created_at`, `updated_at`) are produced by Postgres
-/// via `DEFAULT` clauses and returned via `RETURNING {columns}`.
+/// via `DEFAULT` clauses and returned via `RETURNING {COLUMNS}`.
 #[derive(Debug, TypedBuilder)]
 pub struct NewJob {
     /// Episode grouping (correlation key).
@@ -214,8 +214,7 @@ impl JobRepository for PgJobRepository {
                   triage_prompt_version_id, relation_prompt_version_id, \
                   trace_context) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)
@@ -239,10 +238,7 @@ impl JobRepository for PgJobRepository {
     }
 
     async fn find_by_id(&self, conn: &mut PgConnection, id: JobId) -> Result<Job, DbError> {
-        let sql = format!(
-            "SELECT {columns} FROM jobs WHERE id = $1",
-            columns = columns(COLUMNS),
-        );
+        let sql = format!("SELECT {COLUMNS} FROM jobs WHERE id = $1");
 
         let row = sqlx::query(&sql)
             .bind(id.inner())
@@ -266,9 +262,8 @@ impl JobRepository for PgJobRepository {
         project_id: ProjectId,
     ) -> Result<Vec<Job>, DbError> {
         let sql = format!(
-            "SELECT {columns} FROM jobs WHERE project_id = $1 \
+            "SELECT {COLUMNS} FROM jobs WHERE project_id = $1 \
              ORDER BY created_at DESC, id DESC",
-            columns = columns(COLUMNS),
         );
 
         let rows = sqlx::query(&sql)
@@ -294,8 +289,7 @@ impl JobRepository for PgJobRepository {
              SET status = $2, outcome = $3, error_message = $4, \
                  completed_at = $5, updated_at = now() \
              WHERE id = $1 \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)
@@ -334,8 +328,7 @@ impl JobRepository for PgJobRepository {
              SET batch_size = $2, extraction_original_count = $3, \
                  updated_at = now() \
              WHERE id = $1 \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)
@@ -366,8 +359,7 @@ impl JobRepository for PgJobRepository {
             "UPDATE jobs \
              SET committed_batch_id = $2, updated_at = now() \
              WHERE id = $1 \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)

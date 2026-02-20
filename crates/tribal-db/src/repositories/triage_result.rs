@@ -17,14 +17,14 @@ use tribal_domain::{
 };
 use typed_builder::TypedBuilder;
 
-use super::common::columns::columns;
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: &[&str] = &[
+const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
     "batch_index",
@@ -35,7 +35,7 @@ const COLUMNS: &[&str] = &[
     "error_message",
     "retryable",
     "created_at",
-];
+]);
 
 const UNKNOWN_OUTCOME_TYPE_IN_DB: &str =
     "unrecognised triage outcome type in database — schema mismatch";
@@ -137,8 +137,7 @@ impl TriageResultRepository for PgTriageResultRepository {
                  (job_id, batch_index, outcome_type, knowledge_item_id, \
                   observation_id, matched_item_id, error_message, retryable) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let result = sqlx::query(&sql)
@@ -174,10 +173,9 @@ impl TriageResultRepository for PgTriageResultRepository {
         job_id: JobId,
     ) -> Result<Vec<TriageResult>, DbError> {
         let sql = format!(
-            "SELECT {columns} FROM triage_results \
+            "SELECT {COLUMNS} FROM triage_results \
              WHERE job_id = $1 \
              ORDER BY batch_index",
-            columns = columns(COLUMNS),
         );
 
         let rows = sqlx::query(&sql)
@@ -201,9 +199,8 @@ impl TriageResultRepository for PgTriageResultRepository {
         let batch_index_i32 = i32::try_from(batch_index).expect(BATCH_INDEX_EXCEEDS_I32);
 
         let sql = format!(
-            "SELECT {columns} FROM triage_results \
+            "SELECT {COLUMNS} FROM triage_results \
              WHERE job_id = $1 AND batch_index = $2",
-            columns = columns(COLUMNS),
         );
 
         let row = sqlx::query(&sql)
