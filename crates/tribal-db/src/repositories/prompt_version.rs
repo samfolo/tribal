@@ -117,15 +117,15 @@ impl PromptVersionRepository for PgPromptVersionRepository {
         );
 
         let row = sqlx::query(&sql)
-        .bind(new.stage.as_str())
-        .bind(&new.content_hash)
-        .bind(&new.content)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: "upserting prompt version".to_owned(),
-            source: e,
-        })?;
+            .bind(new.stage.as_str())
+            .bind(&new.content_hash)
+            .bind(&new.content)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "upserting prompt version".to_owned(),
+                source: e,
+            })?;
 
         if let Some(r) = row {
             return Ok(map_prompt_version_row(&r));
@@ -138,14 +138,14 @@ impl PromptVersionRepository for PgPromptVersionRepository {
         );
 
         let r = sqlx::query(&sql)
-        .bind(new.stage.as_str())
-        .bind(&new.content_hash)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: "finding existing prompt version after conflict".to_owned(),
-            source: e,
-        })?;
+            .bind(new.stage.as_str())
+            .bind(&new.content_hash)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "finding existing prompt version after conflict".to_owned(),
+                source: e,
+            })?;
 
         Ok(map_prompt_version_row(&r))
     }
@@ -158,17 +158,17 @@ impl PromptVersionRepository for PgPromptVersionRepository {
         let sql = format!("SELECT {COLUMNS} FROM prompt_versions WHERE id = $1");
 
         let row = sqlx::query(&sql)
-        .bind(id.inner())
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding prompt version {id}"),
-            source: e,
-        })?
-        .ok_or_else(|| DbError::NotFound {
-            entity: "prompt_version",
-            id: id.to_string(),
-        })?;
+            .bind(id.inner())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding prompt version {id}"),
+                source: e,
+            })?
+            .ok_or_else(|| DbError::NotFound {
+                entity: "prompt_version",
+                id: id.to_string(),
+            })?;
 
         Ok(map_prompt_version_row(&row))
     }
@@ -185,14 +185,14 @@ impl PromptVersionRepository for PgPromptVersionRepository {
         );
 
         let row = sqlx::query(&sql)
-        .bind(stage.as_str())
-        .bind(content_hash)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: "finding prompt version by stage and hash".to_owned(),
-            source: e,
-        })?;
+            .bind(stage.as_str())
+            .bind(content_hash)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "finding prompt version by stage and hash".to_owned(),
+                source: e,
+            })?;
 
         Ok(row.as_ref().map(map_prompt_version_row))
     }
