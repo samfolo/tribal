@@ -174,7 +174,7 @@ impl TokenUsageRepository for PgTokenUsageRepository {
         new: &NewTokenUsage,
     ) -> Result<TokenUsage, DbError> {
         let stage_str = new.stage.pipeline_stage().as_str();
-        let purpose_str = new.stage.purpose().map(|p| p.as_str().to_owned());
+        let purpose_str = new.stage.purpose().map(|p| p.as_str());
 
         let sql = format!(
             "INSERT INTO token_usage \
