@@ -4,7 +4,9 @@ use tribal_db::{
     TokenUsageStage,
 };
 use tribal_domain::{EmbeddingPurpose, JobId, PipelineStage, PrincipalId, ProjectId};
-use tribal_test_utils::{a_new_principal, a_new_project, a_new_prompt_version, a_new_token_usage, test_context};
+use tribal_test_utils::{
+    a_new_principal, a_new_project, a_new_prompt_version, a_new_token_usage, test_context,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -193,15 +195,23 @@ async fn test_find_by_job_id_returns_records_ordered() {
         .tokens_output(10)
         .build();
 
-    repo.insert(&mut *txn, &first).await.expect("insert first");
-    repo.insert(&mut *txn, &second).await.expect("insert second");
+    let first_tu = repo.insert(&mut *txn, &first).await.expect("insert first");
 
-    let results = repo
-        .find_by_job_id(&mut *txn, job_id)
+    // Backdate the first record so ordering is deterministic.
+    sqlx::query("UPDATE token_usage SET created_at = created_at - interval '1 hour' WHERE id = $1")
+        .bind(first_tu.id().inner())
+        .execute(&mut *txn)
         .await
-        .expect("find");
+        .expect("backdate");
+
+    repo.insert(&mut *txn, &second)
+        .await
+        .expect("insert second");
+
+    let results = repo.find_by_job_id(&mut *txn, job_id).await.expect("find");
 
     assert_eq!(results.len(), 2);
+    // Ordered by created_at ASC — oldest first.
     assert!(results[0].created_at() <= results[1].created_at());
 }
 

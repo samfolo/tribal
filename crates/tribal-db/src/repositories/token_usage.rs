@@ -251,12 +251,10 @@ fn map_token_usage_row(r: &sqlx::postgres::PgRow) -> TokenUsage {
                 .parse::<PipelineStage>()
                 .expect(UNKNOWN_PIPELINE_STAGE_IN_DB),
         )
-        .purpose(
-            r.get::<Option<String>, _>("purpose").map(|s| {
-                s.parse::<EmbeddingPurpose>()
-                    .expect(UNKNOWN_EMBEDDING_PURPOSE_IN_DB)
-            }),
-        )
+        .purpose(r.get::<Option<String>, _>("purpose").map(|s| {
+            s.parse::<EmbeddingPurpose>()
+                .expect(UNKNOWN_EMBEDDING_PURPOSE_IN_DB)
+        }))
         .provider(r.get("provider"))
         .model(r.get("model"))
         .tokens_input(r.get("tokens_input"))

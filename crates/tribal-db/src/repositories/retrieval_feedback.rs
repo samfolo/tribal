@@ -111,11 +111,8 @@ impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
         conn: &mut PgConnection,
         new: &NewRetrievalFeedback,
     ) -> Result<RetrievalFeedback, DbError> {
-        let returned_ids: Vec<uuid::Uuid> = new
-            .returned_item_ids
-            .iter()
-            .map(|id| *id.inner())
-            .collect();
+        let returned_ids: Vec<uuid::Uuid> =
+            new.returned_item_ids.iter().map(|id| *id.inner()).collect();
         let explored_ids: Vec<uuid::Uuid> = new
             .explored_anchor_ids
             .iter()

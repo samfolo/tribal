@@ -126,8 +126,6 @@ async fn test_find_by_id_not_found() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgRetrievalFeedbackRepository;
 
-    let result = repo
-        .find_by_id(&mut *txn, RetrievalFeedbackId::new())
-        .await;
+    let result = repo.find_by_id(&mut *txn, RetrievalFeedbackId::new()).await;
     assert!(result.is_err());
 }
