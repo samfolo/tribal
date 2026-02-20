@@ -48,6 +48,9 @@ anyhow = "1"
 # Builders
 typed-builder = "0.23"
 
+# Ordered collections
+indexmap = "2"
+
 # Async traits
 async-trait = "0.1"
 
