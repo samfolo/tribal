@@ -61,7 +61,13 @@ mod tests {
     #[test]
     fn test_new_builds_with_defaults() {
         let new = a_new_retrieval_feedback().build();
-        assert_eq!(new.rating, FeedbackRating::Positive);
+        assert_eq!(new.trace_id, "00000000000000000000000000000001");
         assert_eq!(new.query_text, "test query");
+        assert_eq!(new.embedding_model, "nomic-embed-text:v1.5");
+        assert!(new.returned_item_ids.is_empty());
+        assert!(new.explored_anchor_ids.is_empty());
+        assert!(new.policy_version.is_none());
+        assert_eq!(new.rating, FeedbackRating::Positive);
+        assert!(new.notes.is_none());
     }
 }
