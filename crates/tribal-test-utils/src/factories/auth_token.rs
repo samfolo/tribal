@@ -15,7 +15,7 @@ define_factory! {
 }
 
 /// Returns an [`AuthTokenFactory`] with sensible defaults.
-pub fn a_auth_token() -> AuthTokenFactory {
+pub fn an_auth_token() -> AuthTokenFactory {
     AuthTokenFactory::new()
 }
 
@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn test_builds_with_defaults() {
-        let t = a_auth_token().build();
+        let t = an_auth_token().build();
         assert_eq!(t.token_hash().len(), 64);
         assert!(t.revoked_at().is_none());
     }

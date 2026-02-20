@@ -1,6 +1,6 @@
 use chrono::{SubsecRound, Utc};
 use tribal_db::{
-    AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
+    AuthTokenRepository, DbError, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
 };
 use tribal_domain::{AuthTokenId, PrincipalId};
 use tribal_test_utils::{a_new_auth_token, a_new_principal, test_context};
@@ -40,17 +40,20 @@ async fn test_insert_returns_populated_auth_token() {
 
     let principal_id = setup_principal(&mut txn, "insert").await;
     let hash = make_token_hash();
+    let expires_at = (Utc::now() + chrono::Duration::hours(24)).trunc_subsecs(6);
 
     let new = a_new_auth_token()
         .token_hash(hash.clone())
         .principal_id(principal_id)
+        .expires_at(expires_at)
         .build();
 
-    let token = repo.insert(&mut *txn, &new).await.expect("insert");
+    let token = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert!(token.id().to_string().starts_with("at_"));
     assert_eq!(token.token_hash(), hash);
     assert_eq!(token.principal_id(), principal_id);
+    assert_eq!(token.expires_at(), expires_at);
     assert!(token.revoked_at().is_none());
 }
 
@@ -68,10 +71,13 @@ async fn test_insert_duplicate_hash_returns_unique_violation() {
         .principal_id(principal_id)
         .build();
 
-    repo.insert(&mut *txn, &new).await.expect("first insert");
+    repo.insert(&mut txn, &new).await.expect("first insert");
 
-    let result = repo.insert(&mut *txn, &new).await;
-    assert!(result.is_err());
+    let result = repo.insert(&mut txn, &new).await;
+    assert!(
+        matches!(result, Err(DbError::UniqueViolation { .. })),
+        "expected UniqueViolation, got: {result:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +95,7 @@ async fn test_find_by_hash_returns_auth_token() {
 
     let token = repo
         .insert(
-            &mut *txn,
+            &mut txn,
             &a_new_auth_token()
                 .token_hash(hash.clone())
                 .principal_id(principal_id)
@@ -98,7 +104,7 @@ async fn test_find_by_hash_returns_auth_token() {
         .await
         .expect("insert");
 
-    let found = repo.find_by_hash(&mut *txn, &hash).await.expect("find");
+    let found = repo.find_by_hash(&mut txn, &hash).await.expect("find");
 
     assert_eq!(found.unwrap().id(), token.id());
 }
@@ -110,7 +116,7 @@ async fn test_find_by_hash_returns_none_for_unknown() {
     let repo = PgAuthTokenRepository;
 
     let found = repo
-        .find_by_hash(&mut *txn, &make_token_hash())
+        .find_by_hash(&mut txn, &make_token_hash())
         .await
         .expect("find");
 
@@ -131,7 +137,7 @@ async fn test_find_by_principal_id_returns_tokens_ordered() {
 
     let first = repo
         .insert(
-            &mut *txn,
+            &mut txn,
             &a_new_auth_token()
                 .token_hash(make_token_hash())
                 .principal_id(principal_id)
@@ -149,7 +155,7 @@ async fn test_find_by_principal_id_returns_tokens_ordered() {
 
     let _second = repo
         .insert(
-            &mut *txn,
+            &mut txn,
             &a_new_auth_token()
                 .token_hash(make_token_hash())
                 .principal_id(principal_id)
@@ -159,7 +165,7 @@ async fn test_find_by_principal_id_returns_tokens_ordered() {
         .expect("second insert");
 
     let results = repo
-        .find_by_principal_id(&mut *txn, principal_id)
+        .find_by_principal_id(&mut txn, principal_id)
         .await
         .expect("find");
 
@@ -175,7 +181,7 @@ async fn test_find_by_principal_id_returns_empty_for_unknown() {
     let repo = PgAuthTokenRepository;
 
     let results = repo
-        .find_by_principal_id(&mut *txn, PrincipalId::new())
+        .find_by_principal_id(&mut txn, PrincipalId::new())
         .await
         .expect("find");
 
@@ -196,7 +202,7 @@ async fn test_revoke_sets_revoked_at() {
 
     let token = repo
         .insert(
-            &mut *txn,
+            &mut txn,
             &a_new_auth_token()
                 .token_hash(make_token_hash())
                 .principal_id(principal_id)
@@ -207,7 +213,7 @@ async fn test_revoke_sets_revoked_at() {
 
     let revoked_at = Utc::now().trunc_subsecs(6);
     let revoked = repo
-        .revoke(&mut *txn, token.id(), revoked_at)
+        .revoke(&mut txn, token.id(), revoked_at)
         .await
         .expect("revoke");
 
@@ -225,7 +231,7 @@ async fn test_revoke_is_idempotent() {
 
     let token = repo
         .insert(
-            &mut *txn,
+            &mut txn,
             &a_new_auth_token()
                 .token_hash(make_token_hash())
                 .principal_id(principal_id)
@@ -236,13 +242,13 @@ async fn test_revoke_is_idempotent() {
 
     let first_revoke_at = Utc::now().trunc_subsecs(6);
     let first = repo
-        .revoke(&mut *txn, token.id(), first_revoke_at)
+        .revoke(&mut txn, token.id(), first_revoke_at)
         .await
         .expect("first revoke");
 
     let second_revoke_at = Utc::now().trunc_subsecs(6);
     let second = repo
-        .revoke(&mut *txn, token.id(), second_revoke_at)
+        .revoke(&mut txn, token.id(), second_revoke_at)
         .await
         .expect("second revoke");
 
@@ -257,7 +263,10 @@ async fn test_revoke_not_found() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
-    let result = repo.revoke(&mut *txn, AuthTokenId::new(), Utc::now()).await;
+    let result = repo.revoke(&mut txn, AuthTokenId::new(), Utc::now()).await;
 
-    assert!(result.is_err());
+    assert!(
+        matches!(result, Err(DbError::NotFound { .. })),
+        "expected NotFound, got: {result:?}"
+    );
 }

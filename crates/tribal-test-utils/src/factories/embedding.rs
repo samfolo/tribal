@@ -15,7 +15,7 @@ define_factory! {
 }
 
 /// Returns an [`EmbeddingFactory`] with sensible defaults.
-pub fn a_embedding() -> EmbeddingFactory {
+pub fn an_embedding() -> EmbeddingFactory {
     EmbeddingFactory::new()
 }
 
@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn test_builds_with_defaults() {
-        let e = a_embedding().build();
+        let e = an_embedding().build();
         assert_eq!(e.model(), "nomic-embed-text:v1.5");
         assert_eq!(e.dimensions(), 384);
         assert_eq!(e.embedding().len(), 384);

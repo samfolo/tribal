@@ -103,17 +103,24 @@ async fn test_insert_returns_populated_token_usage() {
         .prompt_version_id(Some(pv_id))
         .build();
 
-    let tu = repo.insert(&mut *txn, &new).await.expect("insert");
+    let tu = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert!(tu.id().to_string().starts_with("tu_"));
     assert_eq!(tu.job_id(), Some(job_id));
+    assert!(tu.task_id().is_none());
+    assert_eq!(tu.attempt(), 0);
     assert_eq!(tu.stage(), PipelineStage::Extraction);
     assert!(tu.purpose().is_none());
     assert_eq!(tu.provider(), "test-provider");
     assert_eq!(tu.model(), "test-model");
     assert_eq!(tu.tokens_input(), 100);
     assert_eq!(tu.tokens_output(), 50);
+    assert_eq!(tu.tokens_cache_read(), 0);
+    assert_eq!(tu.tokens_cache_write(), 0);
+    assert_eq!(tu.tokens_total(), 150);
+    assert_eq!(tu.latency_ms(), 200);
     assert_eq!(tu.prompt_version_id(), Some(pv_id));
+    assert!(tu.trace_id().is_none());
 }
 
 #[tokio::test]
@@ -127,7 +134,7 @@ async fn test_insert_computes_tokens_total() {
         .tokens_output(75)
         .build();
 
-    let tu = repo.insert(&mut *txn, &new).await.expect("insert");
+    let tu = repo.insert(&mut txn, &new).await.expect("insert");
     assert_eq!(tu.tokens_total(), 375);
 }
 
@@ -143,7 +150,7 @@ async fn test_insert_embedding_stage_with_purpose() {
         })
         .build();
 
-    let tu = repo.insert(&mut *txn, &new).await.expect("insert");
+    let tu = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert_eq!(tu.stage(), PipelineStage::Embedding);
     assert_eq!(tu.purpose(), Some(EmbeddingPurpose::Candidate));
@@ -161,11 +168,26 @@ async fn test_insert_with_null_fk_fields() {
         })
         .build();
 
-    let tu = repo.insert(&mut *txn, &new).await.expect("insert");
+    let tu = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert!(tu.job_id().is_none());
     assert!(tu.task_id().is_none());
     assert!(tu.prompt_version_id().is_none());
+}
+
+#[tokio::test]
+async fn test_insert_with_trace_id_round_trips() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTokenUsageRepository;
+
+    let new = a_new_token_usage()
+        .trace_id(Some("trace-abc-123".to_owned()))
+        .build();
+
+    let tu = repo.insert(&mut txn, &new).await.expect("insert");
+
+    assert_eq!(tu.trace_id(), Some("trace-abc-123"));
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +217,7 @@ async fn test_find_by_job_id_returns_records_ordered() {
         .tokens_output(10)
         .build();
 
-    let first_tu = repo.insert(&mut *txn, &first).await.expect("insert first");
+    let first_tu = repo.insert(&mut txn, &first).await.expect("insert first");
 
     // Backdate the first record so ordering is deterministic.
     sqlx::query("UPDATE token_usage SET created_at = created_at - interval '1 hour' WHERE id = $1")
@@ -204,11 +226,9 @@ async fn test_find_by_job_id_returns_records_ordered() {
         .await
         .expect("backdate");
 
-    repo.insert(&mut *txn, &second)
-        .await
-        .expect("insert second");
+    repo.insert(&mut txn, &second).await.expect("insert second");
 
-    let results = repo.find_by_job_id(&mut *txn, job_id).await.expect("find");
+    let results = repo.find_by_job_id(&mut txn, job_id).await.expect("find");
 
     assert_eq!(results.len(), 2);
     // Ordered by created_at ASC — oldest first.
@@ -222,7 +242,7 @@ async fn test_find_by_job_id_returns_empty_for_unknown() {
     let repo = PgTokenUsageRepository;
 
     let results = repo
-        .find_by_job_id(&mut *txn, JobId::new())
+        .find_by_job_id(&mut txn, JobId::new())
         .await
         .expect("find");
 
