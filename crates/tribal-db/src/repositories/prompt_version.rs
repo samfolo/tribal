@@ -15,8 +15,7 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
-const UNKNOWN_PROMPT_STAGE_IN_DB: &str =
-    "unrecognised prompt stage in database — schema mismatch";
+const UNKNOWN_PROMPT_STAGE_IN_DB: &str = "unrecognised prompt stage in database — schema mismatch";
 
 // ---------------------------------------------------------------------------
 // Input types

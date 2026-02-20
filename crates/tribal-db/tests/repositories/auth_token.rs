@@ -98,10 +98,7 @@ async fn test_find_by_hash_returns_auth_token() {
         .await
         .expect("insert");
 
-    let found = repo
-        .find_by_hash(&mut *txn, &hash)
-        .await
-        .expect("find");
+    let found = repo.find_by_hash(&mut *txn, &hash).await.expect("find");
 
     assert_eq!(found.unwrap().id(), token.id());
 }
@@ -260,9 +257,7 @@ async fn test_revoke_not_found() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgAuthTokenRepository;
 
-    let result = repo
-        .revoke(&mut *txn, AuthTokenId::new(), Utc::now())
-        .await;
+    let result = repo.revoke(&mut *txn, AuthTokenId::new(), Utc::now()).await;
 
     assert!(result.is_err());
 }

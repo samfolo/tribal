@@ -149,9 +149,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         conn: &mut PgConnection,
         token_hash: &str,
     ) -> Result<Option<AuthToken>, DbError> {
-        let sql = format!(
-            "SELECT {COLUMNS} FROM auth_tokens WHERE token_hash = $1",
-        );
+        let sql = format!("SELECT {COLUMNS} FROM auth_tokens WHERE token_hash = $1",);
 
         let row = sqlx::query(&sql)
             .bind(token_hash)
