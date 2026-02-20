@@ -5,6 +5,9 @@
 //! [`TestTransaction`](tribal_test_utils::TestTransaction) for isolation
 //! via transaction rollback.
 
+#[path = "repositories/auth_token.rs"]
+mod auth_token;
+
 #[path = "repositories/embedding.rs"]
 mod embedding;
 
@@ -23,11 +26,17 @@ mod principal;
 #[path = "repositories/project.rs"]
 mod project;
 
+#[path = "repositories/prompt_version.rs"]
+mod prompt_version;
+
 #[path = "repositories/reference.rs"]
 mod reference;
 
 #[path = "repositories/relation.rs"]
 mod relation;
+
+#[path = "repositories/retrieval_feedback.rs"]
+mod retrieval_feedback;
 
 #[path = "repositories/standing.rs"]
 mod standing;
@@ -37,6 +46,9 @@ mod tag_registry;
 
 #[path = "repositories/task.rs"]
 mod task;
+
+#[path = "repositories/token_usage.rs"]
+mod token_usage;
 
 #[path = "repositories/triage_result.rs"]
 mod triage_result;
