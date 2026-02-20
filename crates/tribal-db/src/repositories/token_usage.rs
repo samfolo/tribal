@@ -19,6 +19,26 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
+const COLUMNS: Columns = Columns(&[
+    "id",
+    "job_id",
+    "task_id",
+    "attempt",
+    "stage",
+    "purpose",
+    "provider",
+    "model",
+    "tokens_input",
+    "tokens_output",
+    "tokens_cache_read",
+    "tokens_cache_write",
+    "tokens_total",
+    "latency_ms",
+    "prompt_version_id",
+    "trace_id",
+    "created_at",
+]);
+
 const UNKNOWN_PIPELINE_STAGE_IN_DB: &str =
     "unrecognised pipeline stage in database — schema mismatch";
 const UNKNOWN_EMBEDDING_PURPOSE_IN_DB: &str =
@@ -162,26 +182,6 @@ pub trait TokenUsageRepository {
 ///
 /// A zero-sized type with no internal state.
 pub struct PgTokenUsageRepository;
-
-const COLUMNS: Columns = Columns(&[
-    "id",
-    "job_id",
-    "task_id",
-    "attempt",
-    "stage",
-    "purpose",
-    "provider",
-    "model",
-    "tokens_input",
-    "tokens_output",
-    "tokens_cache_read",
-    "tokens_cache_write",
-    "tokens_total",
-    "latency_ms",
-    "prompt_version_id",
-    "trace_id",
-    "created_at",
-]);
 
 #[async_trait]
 impl TokenUsageRepository for PgTokenUsageRepository {

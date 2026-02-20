@@ -15,6 +15,19 @@ use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const COLUMNS: Columns = Columns(&[
+    "id",
+    "token_hash",
+    "principal_id",
+    "expires_at",
+    "created_at",
+    "revoked_at",
+]);
+
+// ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
 
@@ -107,15 +120,6 @@ pub trait AuthTokenRepository {
 ///
 /// A zero-sized type with no internal state.
 pub struct PgAuthTokenRepository;
-
-const COLUMNS: Columns = Columns(&[
-    "id",
-    "token_hash",
-    "principal_id",
-    "expires_at",
-    "created_at",
-    "revoked_at",
-]);
 
 #[async_trait]
 impl AuthTokenRepository for PgAuthTokenRepository {
