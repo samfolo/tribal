@@ -9,7 +9,7 @@ use sqlx::{PgConnection, Row};
 use tribal_domain::{PromptStage, PromptVersion, PromptVersionId};
 use typed_builder::TypedBuilder;
 
-use super::common::columns::columns;
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ pub trait PromptVersionRepository {
 /// A zero-sized type with no internal state.
 pub struct PgPromptVersionRepository;
 
-const COLUMNS: &[&str] = &["id", "stage", "content_hash", "content", "created_at"];
+const COLUMNS: Columns = Columns(&["id", "stage", "content_hash", "content", "created_at"]);
 
 #[async_trait]
 impl PromptVersionRepository for PgPromptVersionRepository {
@@ -114,8 +114,7 @@ impl PromptVersionRepository for PgPromptVersionRepository {
             "INSERT INTO prompt_versions (stage, content_hash, content) \
              VALUES ($1, $2, $3) \
              ON CONFLICT (stage, content_hash) DO NOTHING \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)
@@ -135,9 +134,8 @@ impl PromptVersionRepository for PgPromptVersionRepository {
 
         // Conflict path — content already exists for this stage.
         let sql = format!(
-            "SELECT {columns} FROM prompt_versions \
+            "SELECT {COLUMNS} FROM prompt_versions \
              WHERE stage = $1 AND content_hash = $2",
-            columns = columns(COLUMNS),
         );
 
         let r = sqlx::query(&sql)
@@ -158,10 +156,7 @@ impl PromptVersionRepository for PgPromptVersionRepository {
         conn: &mut PgConnection,
         id: PromptVersionId,
     ) -> Result<PromptVersion, DbError> {
-        let sql = format!(
-            "SELECT {columns} FROM prompt_versions WHERE id = $1",
-            columns = columns(COLUMNS),
-        );
+        let sql = format!("SELECT {COLUMNS} FROM prompt_versions WHERE id = $1");
 
         let row = sqlx::query(&sql)
             .bind(id.inner())
@@ -186,9 +181,8 @@ impl PromptVersionRepository for PgPromptVersionRepository {
         content_hash: &str,
     ) -> Result<Option<PromptVersion>, DbError> {
         let sql = format!(
-            "SELECT {columns} FROM prompt_versions \
+            "SELECT {COLUMNS} FROM prompt_versions \
              WHERE stage = $1 AND content_hash = $2",
-            columns = columns(COLUMNS),
         );
 
         let row = sqlx::query(&sql)

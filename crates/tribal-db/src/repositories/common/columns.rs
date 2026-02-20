@@ -1,30 +1,51 @@
-//! Column-list formatting helpers for SQL queries.
+//! Column-list formatting for SQL queries.
 //!
-//! Repositories declare their columns as `&[&str]` slices and use these
-//! helpers to produce comma-separated lists for `SELECT` and `RETURNING`
-//! clauses.
+//! Repositories declare their columns as a `Columns` constant and
+//! interpolate it directly into `format!()` strings via its `Display`
+//! implementation.  For CTE queries that need a table qualifier,
+//! `Columns::qualified` produces `"t.id, t.name, …"`.
 
-/// Joins column names into a comma-separated list.
+use std::fmt;
+
+/// A static list of column names for a repository table.
+///
+/// Implements [`Display`] to produce a comma-separated list suitable
+/// for `SELECT` and `RETURNING` clauses.
 ///
 /// ```text
-/// columns(&["id", "name"]) => "id, name"
+/// const COLUMNS: Columns = Columns(&["id", "name"]);
+/// format!("SELECT {COLUMNS} FROM table")  // => "SELECT id, name FROM table"
 /// ```
-pub(crate) fn columns(cols: &[&str]) -> String {
-    cols.join(", ")
+pub(crate) struct Columns(pub(crate) &'static [&'static str]);
+
+impl fmt::Display for Columns {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut iter = self.0.iter();
+        if let Some(first) = iter.next() {
+            write!(f, "{first}")?;
+            for col in iter {
+                write!(f, ", {col}")?;
+            }
+        }
+        Ok(())
+    }
 }
 
-/// Joins column names with a table qualifier prefix.
-///
-/// Used in CTE `RETURNING` clauses where the table alias is required.
-///
-/// ```text
-/// qualified_columns(&["id", "name"], "t") => "t.id, t.name"
-/// ```
-pub(crate) fn qualified_columns(cols: &[&str], qualifier: &str) -> String {
-    cols.iter()
-        .map(|c| format!("{qualifier}.{c}"))
-        .collect::<Vec<_>>()
-        .join(", ")
+impl Columns {
+    /// Formats each column with a table-qualifier prefix.
+    ///
+    /// Used in CTE `RETURNING` clauses where the table alias is required.
+    ///
+    /// ```text
+    /// COLUMNS.qualified("t")  // => "t.id, t.name"
+    /// ```
+    pub(crate) fn qualified(&self, qualifier: &str) -> String {
+        self.0
+            .iter()
+            .map(|c| format!("{qualifier}.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 #[cfg(test)]
@@ -32,20 +53,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_columns_joins_with_commas() {
-        assert_eq!(
-            columns(&["id", "name", "created_at"]),
-            "id, name, created_at"
-        );
+    fn test_display_joins_with_commas() {
+        let cols = Columns(&["id", "name", "created_at"]);
+        assert_eq!(cols.to_string(), "id, name, created_at");
     }
 
     #[test]
-    fn test_columns_single_element() {
-        assert_eq!(columns(&["id"]), "id");
+    fn test_display_single_element() {
+        let cols = Columns(&["id"]);
+        assert_eq!(cols.to_string(), "id");
     }
 
     #[test]
-    fn test_qualified_columns_prefixes_each() {
-        assert_eq!(qualified_columns(&["id", "name"], "t"), "t.id, t.name",);
+    fn test_qualified_prefixes_each() {
+        let cols = Columns(&["id", "name"]);
+        assert_eq!(cols.qualified("t"), "t.id, t.name");
     }
 }

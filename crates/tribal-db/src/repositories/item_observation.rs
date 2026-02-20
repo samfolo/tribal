@@ -9,20 +9,20 @@ use sqlx::{PgConnection, Row};
 use tribal_domain::{ItemObservation, ItemObservationId, KnowledgeItemId, PrincipalId, SourceType};
 use typed_builder::TypedBuilder;
 
-use super::common::columns::columns;
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: &[&str] = &[
+const COLUMNS: Columns = Columns(&[
     "id",
     "knowledge_item_id",
     "principal_id",
     "source_type",
     "observed_at",
-];
+]);
 
 const UNKNOWN_SOURCE_TYPE_IN_DB: &str = "unrecognised source type in database â€” schema mismatch";
 
@@ -33,7 +33,7 @@ const UNKNOWN_SOURCE_TYPE_IN_DB: &str = "unrecognised source type in database â€
 /// Input for creating a new item observation.
 ///
 /// Server-generated fields (`id`, `observed_at`) are produced by Postgres
-/// defaults and returned via `RETURNING {columns}`.
+/// defaults and returned via `RETURNING {COLUMNS}`.
 #[derive(Debug, TypedBuilder)]
 pub struct NewItemObservation {
     /// The knowledge item that was re-observed.
@@ -100,8 +100,7 @@ impl ItemObservationRepository for PgItemObservationRepository {
             "INSERT INTO item_observations \
                  (knowledge_item_id, principal_id, source_type) \
              VALUES ($1, $2, $3) \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)
@@ -124,10 +123,9 @@ impl ItemObservationRepository for PgItemObservationRepository {
         knowledge_item_id: KnowledgeItemId,
     ) -> Result<Vec<ItemObservation>, DbError> {
         let sql = format!(
-            "SELECT {columns} FROM item_observations \
+            "SELECT {COLUMNS} FROM item_observations \
              WHERE knowledge_item_id = $1 \
              ORDER BY observed_at",
-            columns = columns(COLUMNS),
         );
 
         let rows = sqlx::query(&sql)

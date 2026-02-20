@@ -8,14 +8,14 @@ use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::TagRegistryEntry;
 
-use super::common::columns::columns;
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: &[&str] = &["tag", "first_seen_at"];
+const COLUMNS: Columns = Columns(&["tag", "first_seen_at"]);
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -90,10 +90,7 @@ impl TagRegistryRepository for PgTagRegistryRepository {
             source: e,
         })?;
 
-        let sql = format!(
-            "SELECT {columns} FROM tag_registry WHERE tag = $1",
-            columns = columns(COLUMNS),
-        );
+        let sql = format!("SELECT {COLUMNS} FROM tag_registry WHERE tag = $1");
 
         let row = sqlx::query(&sql)
             .bind(tag)
@@ -132,10 +129,7 @@ impl TagRegistryRepository for PgTagRegistryRepository {
             source: e,
         })?;
 
-        let sql = format!(
-            "SELECT {columns} FROM tag_registry WHERE tag = ANY($1) ORDER BY tag",
-            columns = columns(COLUMNS),
-        );
+        let sql = format!("SELECT {COLUMNS} FROM tag_registry WHERE tag = ANY($1) ORDER BY tag");
 
         let rows = sqlx::query(&sql)
             .bind(tags)
@@ -150,10 +144,7 @@ impl TagRegistryRepository for PgTagRegistryRepository {
     }
 
     async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<TagRegistryEntry>, DbError> {
-        let sql = format!(
-            "SELECT {columns} FROM tag_registry ORDER BY tag",
-            columns = columns(COLUMNS),
-        );
+        let sql = format!("SELECT {COLUMNS} FROM tag_registry ORDER BY tag");
 
         let rows =
             sqlx::query(&sql)

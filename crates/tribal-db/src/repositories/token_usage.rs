@@ -12,7 +12,7 @@ use tribal_domain::{
 };
 use typed_builder::TypedBuilder;
 
-use super::common::columns::columns;
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ pub trait TokenUsageRepository {
 /// A zero-sized type with no internal state.
 pub struct PgTokenUsageRepository;
 
-const COLUMNS: &[&str] = &[
+const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
     "task_id",
@@ -181,7 +181,7 @@ const COLUMNS: &[&str] = &[
     "prompt_version_id",
     "trace_id",
     "created_at",
-];
+]);
 
 #[async_trait]
 impl TokenUsageRepository for PgTokenUsageRepository {
@@ -199,8 +199,7 @@ impl TokenUsageRepository for PgTokenUsageRepository {
                   tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, \
                   tokens_total, latency_ms, prompt_version_id, trace_id) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $8 + $9, $12, $13, $14) \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)
@@ -234,10 +233,9 @@ impl TokenUsageRepository for PgTokenUsageRepository {
         job_id: JobId,
     ) -> Result<Vec<TokenUsage>, DbError> {
         let sql = format!(
-            "SELECT {columns} FROM token_usage \
+            "SELECT {COLUMNS} FROM token_usage \
              WHERE job_id = $1 \
              ORDER BY created_at ASC",
-            columns = columns(COLUMNS),
         );
 
         let rows = sqlx::query(&sql)

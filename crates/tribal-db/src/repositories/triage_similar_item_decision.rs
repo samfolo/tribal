@@ -13,14 +13,14 @@ use tribal_domain::{
 };
 use typed_builder::TypedBuilder;
 
-use super::common::columns::columns;
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: &[&str] = &[
+const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
     "batch_index",
@@ -29,7 +29,7 @@ const COLUMNS: &[&str] = &[
     "suggested_relation",
     "justification_text",
     "created_at",
-];
+]);
 
 const UNKNOWN_RELATION_SUGGESTION_IN_DB: &str =
     "unrecognised relation suggestion in database — schema mismatch";
@@ -43,7 +43,7 @@ const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data co
 /// Input for creating a new triage similar item decision.
 ///
 /// Server-generated fields (`id`, `created_at`) are produced by Postgres
-/// defaults and returned via `RETURNING {columns}`.
+/// defaults and returned via `RETURNING {COLUMNS}`.
 #[derive(Debug, TypedBuilder)]
 pub struct NewTriageSimilarItemDecision {
     /// The job this decision belongs to.
@@ -158,8 +158,7 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
              SELECT * FROM UNNEST(\
                  $1::uuid[], $2::int[], $3::uuid[], $4::real[], \
                  $5::text[], $6::text[]) \
-             RETURNING {columns}",
-            columns = columns(COLUMNS),
+             RETURNING {COLUMNS}",
         );
 
         let result = sqlx::query(&sql)
@@ -199,10 +198,9 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
         job_id: JobId,
     ) -> Result<Vec<TriageSimilarItemDecision>, DbError> {
         let sql = format!(
-            "SELECT {columns} FROM triage_similar_item_decisions \
+            "SELECT {COLUMNS} FROM triage_similar_item_decisions \
              WHERE job_id = $1 \
              ORDER BY batch_index, created_at",
-            columns = columns(COLUMNS),
         );
 
         let rows = sqlx::query(&sql)
@@ -229,10 +227,9 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
         let batch_index_i32 = i32::try_from(batch_index).expect(BATCH_INDEX_EXCEEDS_I32);
 
         let sql = format!(
-            "SELECT {columns} FROM triage_similar_item_decisions \
+            "SELECT {COLUMNS} FROM triage_similar_item_decisions \
              WHERE job_id = $1 AND batch_index = $2 \
              ORDER BY created_at",
-            columns = columns(COLUMNS),
         );
 
         let rows = sqlx::query(&sql)
