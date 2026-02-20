@@ -33,7 +33,10 @@ mod tests {
 
     #[test]
     fn test_columns_joins_with_commas() {
-        assert_eq!(columns(&["id", "name", "created_at"]), "id, name, created_at");
+        assert_eq!(
+            columns(&["id", "name", "created_at"]),
+            "id, name, created_at"
+        );
     }
 
     #[test]
@@ -43,9 +46,6 @@ mod tests {
 
     #[test]
     fn test_qualified_columns_prefixes_each() {
-        assert_eq!(
-            qualified_columns(&["id", "name"], "t"),
-            "t.id, t.name",
-        );
+        assert_eq!(qualified_columns(&["id", "name"], "t"), "t.id, t.name",);
     }
 }
