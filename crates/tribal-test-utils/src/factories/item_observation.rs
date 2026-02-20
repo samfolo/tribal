@@ -14,7 +14,7 @@ define_factory! {
 }
 
 /// Returns an [`ItemObservationFactory`] with sensible defaults.
-pub fn a_item_observation() -> ItemObservationFactory {
+pub fn an_item_observation() -> ItemObservationFactory {
     ItemObservationFactory::new()
 }
 
@@ -39,7 +39,7 @@ mod tests {
 
     #[test]
     fn test_builds_with_defaults() {
-        let o = a_item_observation().build();
+        let o = an_item_observation().build();
         assert_eq!(o.source_type(), SourceType::AgentMediated);
     }
 

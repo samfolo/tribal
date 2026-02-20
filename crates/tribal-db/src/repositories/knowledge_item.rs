@@ -311,7 +311,7 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         conn: &mut PgConnection,
         id: KnowledgeItemId,
     ) -> Result<KnowledgeItem, DbError> {
-        let r = sqlx::query!(r#"SELECT * FROM knowledge_items WHERE id = $1"#, id.inner(),)
+        let r = sqlx::query!(r#"SELECT * FROM knowledge_items WHERE id = $1"#, id.inner())
             .fetch_optional(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {

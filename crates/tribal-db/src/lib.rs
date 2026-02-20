@@ -17,15 +17,18 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 pub use error::DbError;
 pub use pool::create_pool;
 pub use repositories::{
-    EmbeddingRepository, ItemObservationRepository, JobRepository, JobStatusTransition,
-    KnowledgeItemRepository, NewEmbedding, NewItemObservation, NewJob, NewKnowledgeItem,
-    NewKnowledgeItemRelation, NewPrincipal, NewProject, NewReference, NewTask, NewTriageResult,
-    NewTriageSimilarItemDecision, PgEmbeddingRepository, PgItemObservationRepository,
-    PgJobRepository, PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
-    PgReferenceRepository, PgRelationRepository, PgStandingRepository, PgTagRegistryRepository,
-    PgTaskRepository, PgTriageResultRepository, PgTriageSimilarItemDecisionRepository,
-    PrincipalRepository, ProjectRepository, ReferenceRepository, RelationRepository,
-    SemanticSearchParams, SemanticSearchResponse, SemanticSearchResult, StandingRepository,
-    TagRegistryRepository, TaskRepository, TraversalNode, TraversalResponse,
+    AuthTokenRepository, EmbeddingRepository, ItemObservationRepository, JobRepository,
+    JobStatusTransition, KnowledgeItemRepository, NewAuthToken, NewEmbedding, NewItemObservation,
+    NewJob, NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject, NewPromptVersion,
+    NewReference, NewRetrievalFeedback, NewTask, NewTokenUsage, NewTriageResult,
+    NewTriageSimilarItemDecision, PgAuthTokenRepository, PgEmbeddingRepository,
+    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
+    PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository, PgRelationRepository,
+    PgRetrievalFeedbackRepository, PgStandingRepository, PgTagRegistryRepository, PgTaskRepository,
+    PgTokenUsageRepository, PgTriageResultRepository, PgTriageSimilarItemDecisionRepository,
+    PrincipalRepository, ProjectRepository, PromptVersionRepository, ReferenceRepository,
+    RelationRepository, RetrievalFeedbackRepository, SemanticSearchParams, SemanticSearchResponse,
+    SemanticSearchResult, StandingRepository, TagRegistryRepository, TaskRepository,
+    TokenUsageRepository, TokenUsageStage, TraversalNode, TraversalResponse,
     TriageResultRepository, TriageSimilarItemDecisionRepository,
 };
