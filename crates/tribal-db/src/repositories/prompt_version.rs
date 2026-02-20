@@ -16,6 +16,8 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
+const COLUMNS: Columns = Columns(&["id", "stage", "content_hash", "content", "created_at"]);
+
 const UNKNOWN_PROMPT_STAGE_IN_DB: &str = "unrecognised prompt stage in database — schema mismatch";
 
 // ---------------------------------------------------------------------------
@@ -100,8 +102,6 @@ pub trait PromptVersionRepository {
 ///
 /// A zero-sized type with no internal state.
 pub struct PgPromptVersionRepository;
-
-const COLUMNS: Columns = Columns(&["id", "stage", "content_hash", "content", "created_at"]);
 
 #[async_trait]
 impl PromptVersionRepository for PgPromptVersionRepository {

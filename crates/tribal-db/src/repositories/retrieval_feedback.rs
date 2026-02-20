@@ -18,6 +18,20 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
+const COLUMNS: Columns = Columns(&[
+    "id",
+    "trace_id",
+    "query_text",
+    "embedding_model",
+    "returned_item_ids",
+    "explored_anchor_ids",
+    "policy_version",
+    "principal_id",
+    "rating",
+    "notes",
+    "created_at",
+]);
+
 const UNKNOWN_FEEDBACK_RATING_IN_DB: &str =
     "unrecognised feedback rating in database — schema mismatch";
 
@@ -100,20 +114,6 @@ pub trait RetrievalFeedbackRepository {
 ///
 /// A zero-sized type with no internal state.
 pub struct PgRetrievalFeedbackRepository;
-
-const COLUMNS: Columns = Columns(&[
-    "id",
-    "trace_id",
-    "query_text",
-    "embedding_model",
-    "returned_item_ids",
-    "explored_anchor_ids",
-    "policy_version",
-    "principal_id",
-    "rating",
-    "notes",
-    "created_at",
-]);
 
 #[async_trait]
 impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
