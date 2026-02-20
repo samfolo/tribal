@@ -162,42 +162,6 @@ pub trait TokenUsageRepository {
 /// A zero-sized type with no internal state.
 pub struct PgTokenUsageRepository;
 
-/// Maps a raw `sqlx::Row` from a token usage query into a
-/// [`TokenUsage`].
-fn map_token_usage_row(r: &sqlx::postgres::PgRow) -> TokenUsage {
-    TokenUsage::builder()
-        .id(TokenUsageId::from(r.get::<uuid::Uuid, _>("id")))
-        .job_id(r.get::<Option<uuid::Uuid>, _>("job_id").map(JobId::from))
-        .task_id(r.get::<Option<uuid::Uuid>, _>("task_id").map(TaskId::from))
-        .attempt(r.get("attempt"))
-        .stage(
-            r.get::<String, _>("stage")
-                .parse::<PipelineStage>()
-                .expect(UNKNOWN_PIPELINE_STAGE_IN_DB),
-        )
-        .purpose(
-            r.get::<Option<String>, _>("purpose").map(|s| {
-                s.parse::<EmbeddingPurpose>()
-                    .expect(UNKNOWN_EMBEDDING_PURPOSE_IN_DB)
-            }),
-        )
-        .provider(r.get("provider"))
-        .model(r.get("model"))
-        .tokens_input(r.get("tokens_input"))
-        .tokens_output(r.get("tokens_output"))
-        .tokens_cache_read(r.get("tokens_cache_read"))
-        .tokens_cache_write(r.get("tokens_cache_write"))
-        .tokens_total(r.get("tokens_total"))
-        .latency_ms(r.get("latency_ms"))
-        .prompt_version_id(
-            r.get::<Option<uuid::Uuid>, _>("prompt_version_id")
-                .map(PromptVersionId::from),
-        )
-        .trace_id(r.get("trace_id"))
-        .created_at(r.get("created_at"))
-        .build()
-}
-
 const COLUMNS: &str = "id, job_id, task_id, attempt, stage, purpose, provider, model, \
                         tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, \
                         tokens_total, latency_ms, prompt_version_id, trace_id, created_at";
@@ -268,4 +232,44 @@ impl TokenUsageRepository for PgTokenUsageRepository {
 
         Ok(rows.iter().map(map_token_usage_row).collect())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Row mapping
+// ---------------------------------------------------------------------------
+
+/// Maps a raw `sqlx::Row` from a token usage query into a
+/// [`TokenUsage`].
+fn map_token_usage_row(r: &sqlx::postgres::PgRow) -> TokenUsage {
+    TokenUsage::builder()
+        .id(TokenUsageId::from(r.get::<uuid::Uuid, _>("id")))
+        .job_id(r.get::<Option<uuid::Uuid>, _>("job_id").map(JobId::from))
+        .task_id(r.get::<Option<uuid::Uuid>, _>("task_id").map(TaskId::from))
+        .attempt(r.get("attempt"))
+        .stage(
+            r.get::<String, _>("stage")
+                .parse::<PipelineStage>()
+                .expect(UNKNOWN_PIPELINE_STAGE_IN_DB),
+        )
+        .purpose(
+            r.get::<Option<String>, _>("purpose").map(|s| {
+                s.parse::<EmbeddingPurpose>()
+                    .expect(UNKNOWN_EMBEDDING_PURPOSE_IN_DB)
+            }),
+        )
+        .provider(r.get("provider"))
+        .model(r.get("model"))
+        .tokens_input(r.get("tokens_input"))
+        .tokens_output(r.get("tokens_output"))
+        .tokens_cache_read(r.get("tokens_cache_read"))
+        .tokens_cache_write(r.get("tokens_cache_write"))
+        .tokens_total(r.get("tokens_total"))
+        .latency_ms(r.get("latency_ms"))
+        .prompt_version_id(
+            r.get::<Option<uuid::Uuid>, _>("prompt_version_id")
+                .map(PromptVersionId::from),
+        )
+        .trace_id(r.get("trace_id"))
+        .created_at(r.get("created_at"))
+        .build()
 }

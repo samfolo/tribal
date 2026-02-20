@@ -100,38 +100,6 @@ pub trait RetrievalFeedbackRepository {
 /// A zero-sized type with no internal state.
 pub struct PgRetrievalFeedbackRepository;
 
-/// Maps a raw `sqlx::Row` from a retrieval feedback query into a
-/// [`RetrievalFeedback`].
-fn map_retrieval_feedback_row(r: &sqlx::postgres::PgRow) -> RetrievalFeedback {
-    RetrievalFeedback::builder()
-        .id(RetrievalFeedbackId::from(r.get::<uuid::Uuid, _>("id")))
-        .trace_id(r.get("trace_id"))
-        .query_text(r.get("query_text"))
-        .embedding_model(r.get("embedding_model"))
-        .returned_item_ids(
-            r.get::<Vec<uuid::Uuid>, _>("returned_item_ids")
-                .into_iter()
-                .map(KnowledgeItemId::from)
-                .collect(),
-        )
-        .explored_anchor_ids(
-            r.get::<Vec<uuid::Uuid>, _>("explored_anchor_ids")
-                .into_iter()
-                .map(KnowledgeItemId::from)
-                .collect(),
-        )
-        .policy_version(r.get("policy_version"))
-        .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
-        .rating(
-            r.get::<String, _>("rating")
-                .parse::<FeedbackRating>()
-                .expect(UNKNOWN_FEEDBACK_RATING_IN_DB),
-        )
-        .notes(r.get("notes"))
-        .created_at(r.get("created_at"))
-        .build()
-}
-
 const COLUMNS: &str = "id, trace_id, query_text, embedding_model, \
                         returned_item_ids, explored_anchor_ids, \
                         policy_version, principal_id, rating, notes, created_at";
@@ -205,4 +173,40 @@ impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
 
         Ok(map_retrieval_feedback_row(&row))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Row mapping
+// ---------------------------------------------------------------------------
+
+/// Maps a raw `sqlx::Row` from a retrieval feedback query into a
+/// [`RetrievalFeedback`].
+fn map_retrieval_feedback_row(r: &sqlx::postgres::PgRow) -> RetrievalFeedback {
+    RetrievalFeedback::builder()
+        .id(RetrievalFeedbackId::from(r.get::<uuid::Uuid, _>("id")))
+        .trace_id(r.get("trace_id"))
+        .query_text(r.get("query_text"))
+        .embedding_model(r.get("embedding_model"))
+        .returned_item_ids(
+            r.get::<Vec<uuid::Uuid>, _>("returned_item_ids")
+                .into_iter()
+                .map(KnowledgeItemId::from)
+                .collect(),
+        )
+        .explored_anchor_ids(
+            r.get::<Vec<uuid::Uuid>, _>("explored_anchor_ids")
+                .into_iter()
+                .map(KnowledgeItemId::from)
+                .collect(),
+        )
+        .policy_version(r.get("policy_version"))
+        .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
+        .rating(
+            r.get::<String, _>("rating")
+                .parse::<FeedbackRating>()
+                .expect(UNKNOWN_FEEDBACK_RATING_IN_DB),
+        )
+        .notes(r.get("notes"))
+        .created_at(r.get("created_at"))
+        .build()
 }

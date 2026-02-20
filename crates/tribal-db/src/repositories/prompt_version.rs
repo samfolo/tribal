@@ -101,22 +101,6 @@ pub trait PromptVersionRepository {
 /// A zero-sized type with no internal state.
 pub struct PgPromptVersionRepository;
 
-/// Maps a raw `sqlx::Row` from a prompt version query into a
-/// [`PromptVersion`].
-fn map_prompt_version_row(r: &sqlx::postgres::PgRow) -> PromptVersion {
-    PromptVersion::builder()
-        .id(PromptVersionId::from(r.get::<uuid::Uuid, _>("id")))
-        .stage(
-            r.get::<String, _>("stage")
-                .parse::<PromptStage>()
-                .expect(UNKNOWN_PROMPT_STAGE_IN_DB),
-        )
-        .content_hash(r.get("content_hash"))
-        .content(r.get("content"))
-        .created_at(r.get("created_at"))
-        .build()
-}
-
 #[async_trait]
 impl PromptVersionRepository for PgPromptVersionRepository {
     async fn upsert(
@@ -208,4 +192,24 @@ impl PromptVersionRepository for PgPromptVersionRepository {
 
         Ok(row.as_ref().map(map_prompt_version_row))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Row mapping
+// ---------------------------------------------------------------------------
+
+/// Maps a raw `sqlx::Row` from a prompt version query into a
+/// [`PromptVersion`].
+fn map_prompt_version_row(r: &sqlx::postgres::PgRow) -> PromptVersion {
+    PromptVersion::builder()
+        .id(PromptVersionId::from(r.get::<uuid::Uuid, _>("id")))
+        .stage(
+            r.get::<String, _>("stage")
+                .parse::<PromptStage>()
+                .expect(UNKNOWN_PROMPT_STAGE_IN_DB),
+        )
+        .content_hash(r.get("content_hash"))
+        .content(r.get("content"))
+        .created_at(r.get("created_at"))
+        .build()
 }
