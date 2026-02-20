@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(config.level, "debug,tribal_db=trace");
         assert_eq!(config.format, LogFormat::Pretty);
         assert_eq!(config.output, LogOutput::File);
-        assert_eq!(config.file_path.as_deref(), Some("/var/log/tribal.jsonl"),);
+        assert_eq!(config.file_path.as_deref(), Some("/var/log/tribal.jsonl"));
         assert!(config.include_llm_content);
     }
 

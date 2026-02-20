@@ -18,12 +18,22 @@ pub enum EmbeddingPurpose {
     Query,
 }
 
+enum_text_conversions!(EmbeddingPurpose {
+    EmbeddingPurpose::Candidate => "candidate",
+    EmbeddingPurpose::Query => "query",
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enum_serde_tests;
+    use crate::{enum_serde_tests, enum_text_tests};
 
     enum_serde_tests!(test_embedding_purpose_serde_roundtrip, EmbeddingPurpose {
+        EmbeddingPurpose::Candidate => "candidate",
+        EmbeddingPurpose::Query => "query",
+    });
+
+    enum_text_tests!(test_embedding_purpose_text_roundtrip, EmbeddingPurpose {
         EmbeddingPurpose::Candidate => "candidate",
         EmbeddingPurpose::Query => "query",
     });

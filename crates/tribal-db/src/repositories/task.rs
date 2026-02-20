@@ -14,11 +14,30 @@ use sqlx::{PgConnection, Row};
 use tribal_domain::{JobId, Task, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use typed_builder::TypedBuilder;
 
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+const COLUMNS: Columns = Columns(&[
+    "id",
+    "job_id",
+    "task_type",
+    "status",
+    "batch_index",
+    "claim_token",
+    "available_at",
+    "claimed_by",
+    "claimed_at",
+    "heartbeat_at",
+    "retry_count",
+    "error_kind",
+    "error_message",
+    "created_at",
+    "updated_at",
+]);
 
 const UNKNOWN_TASK_TYPE_IN_DB: &str = "unrecognised task type in database — schema mismatch";
 const UNKNOWN_TASK_STATUS_IN_DB: &str = "unrecognised task status in database — schema mismatch";
@@ -38,7 +57,7 @@ const MAX_RETRIES_EXCEEDS_I32: &str = "max_retries exceeds i32::MAX";
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `status`, `available_at`, `created_at`, `updated_at`) are
 /// produced by Postgres via `DEFAULT` clauses and returned via
-/// `RETURNING *`.
+/// `RETURNING {COLUMNS}`.
 #[derive(Debug, TypedBuilder)]
 pub struct NewTask {
     /// The job this task belongs to.
@@ -208,16 +227,18 @@ impl TaskRepository for PgTaskRepository {
             .batch_index
             .map(|v| i32::try_from(v).expect(BATCH_INDEX_EXCEEDS_I32));
 
-        let row = sqlx::query(
+        let sql = format!(
             "INSERT INTO tasks (job_id, task_type, batch_index) \
              VALUES ($1, $2, $3) \
-             RETURNING *",
-        )
-        .bind(new_task.job_id.inner())
-        .bind(new_task.task_type.as_str())
-        .bind(batch_index_i32)
-        .fetch_one(&mut *conn)
-        .await;
+             RETURNING {COLUMNS}",
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(new_task.job_id.inner())
+            .bind(new_task.task_type.as_str())
+            .bind(batch_index_i32)
+            .fetch_one(&mut *conn)
+            .await;
 
         match row {
             Ok(r) => Ok(map_task_row(&r)),
@@ -235,7 +256,9 @@ impl TaskRepository for PgTaskRepository {
     }
 
     async fn find_by_id(&self, conn: &mut PgConnection, id: TaskId) -> Result<Task, DbError> {
-        let row = sqlx::query("SELECT * FROM tasks WHERE id = $1")
+        let sql = format!("SELECT {COLUMNS} FROM tasks WHERE id = $1");
+
+        let row = sqlx::query(&sql)
             .bind(id.inner())
             .fetch_optional(&mut *conn)
             .await
@@ -256,15 +279,19 @@ impl TaskRepository for PgTaskRepository {
         conn: &mut PgConnection,
         job_id: JobId,
     ) -> Result<Vec<Task>, DbError> {
-        let rows =
-            sqlx::query("SELECT * FROM tasks WHERE job_id = $1 ORDER BY created_at ASC, id ASC")
-                .bind(job_id.inner())
-                .fetch_all(&mut *conn)
-                .await
-                .map_err(|e| DbError::QueryFailed {
-                    context: format!("finding tasks for job {job_id}"),
-                    source: e,
-                })?;
+        let sql = format!(
+            "SELECT {COLUMNS} FROM tasks WHERE job_id = $1 \
+             ORDER BY created_at ASC, id ASC",
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(job_id.inner())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding tasks for job {job_id}"),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_task_row).collect())
     }
@@ -277,7 +304,7 @@ impl TaskRepository for PgTaskRepository {
     ) -> Result<Vec<Task>, DbError> {
         let limit_i64 = i64::from(limit);
 
-        let rows = sqlx::query(
+        let sql = format!(
             "WITH claimable AS ( \
                  SELECT id FROM tasks \
                  WHERE status = 'queued' AND available_at <= now() \
@@ -294,16 +321,19 @@ impl TaskRepository for PgTaskRepository {
                  updated_at = now() \
              FROM claimable c \
              WHERE t.id = c.id \
-             RETURNING t.*",
-        )
-        .bind(limit_i64)
-        .bind(claimed_by)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("claiming up to {limit} tasks"),
-            source: e,
-        })?;
+             RETURNING {columns}",
+            columns = COLUMNS.qualified("t"),
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(limit_i64)
+            .bind(claimed_by)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("claiming up to {limit} tasks"),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_task_row).collect())
     }

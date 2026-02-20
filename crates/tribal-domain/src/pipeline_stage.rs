@@ -23,12 +23,26 @@ pub enum PipelineStage {
     Embedding,
 }
 
+enum_text_conversions!(PipelineStage {
+    PipelineStage::Extraction => "extraction",
+    PipelineStage::Triage => "triage",
+    PipelineStage::Relation => "relation",
+    PipelineStage::Embedding => "embedding",
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enum_serde_tests;
+    use crate::{enum_serde_tests, enum_text_tests};
 
     enum_serde_tests!(test_pipeline_stage_serde_roundtrip, PipelineStage {
+        PipelineStage::Extraction => "extraction",
+        PipelineStage::Triage => "triage",
+        PipelineStage::Relation => "relation",
+        PipelineStage::Embedding => "embedding",
+    });
+
+    enum_text_tests!(test_pipeline_stage_text_roundtrip, PipelineStage {
         PipelineStage::Extraction => "extraction",
         PipelineStage::Triage => "triage",
         PipelineStage::Relation => "relation",

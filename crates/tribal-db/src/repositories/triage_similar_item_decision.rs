@@ -13,11 +13,23 @@ use tribal_domain::{
 };
 use typed_builder::TypedBuilder;
 
+use super::common::columns::Columns;
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+const COLUMNS: Columns = Columns(&[
+    "id",
+    "job_id",
+    "batch_index",
+    "matched_item_id",
+    "similarity_score",
+    "suggested_relation",
+    "justification_text",
+    "created_at",
+]);
 
 const UNKNOWN_RELATION_SUGGESTION_IN_DB: &str =
     "unrecognised relation suggestion in database — schema mismatch";
@@ -31,7 +43,7 @@ const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data co
 /// Input for creating a new triage similar item decision.
 ///
 /// Server-generated fields (`id`, `created_at`) are produced by Postgres
-/// defaults and returned via `RETURNING *`.
+/// defaults and returned via `RETURNING {COLUMNS}`.
 #[derive(Debug, TypedBuilder)]
 pub struct NewTriageSimilarItemDecision {
     /// The job this decision belongs to.
@@ -139,23 +151,25 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
         let justification_texts: Vec<String> =
             batch.iter().map(|d| d.justification_text.clone()).collect();
 
-        let result = sqlx::query(
+        let sql = format!(
             "INSERT INTO triage_similar_item_decisions \
                  (job_id, batch_index, matched_item_id, similarity_score, \
                   suggested_relation, justification_text) \
              SELECT * FROM UNNEST(\
                  $1::uuid[], $2::int[], $3::uuid[], $4::real[], \
                  $5::text[], $6::text[]) \
-             RETURNING *",
-        )
-        .bind(&job_ids)
-        .bind(&batch_indices)
-        .bind(&matched_item_ids)
-        .bind(&similarity_scores)
-        .bind(&suggested_relations)
-        .bind(&justification_texts)
-        .fetch_all(&mut *conn)
-        .await;
+             RETURNING {COLUMNS}",
+        );
+
+        let result = sqlx::query(&sql)
+            .bind(&job_ids)
+            .bind(&batch_indices)
+            .bind(&matched_item_ids)
+            .bind(&similarity_scores)
+            .bind(&suggested_relations)
+            .bind(&justification_texts)
+            .fetch_all(&mut *conn)
+            .await;
 
         match result {
             Ok(rows) => Ok(rows
@@ -183,18 +197,20 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
         conn: &mut PgConnection,
         job_id: JobId,
     ) -> Result<Vec<TriageSimilarItemDecision>, DbError> {
-        let rows = sqlx::query(
-            "SELECT * FROM triage_similar_item_decisions \
+        let sql = format!(
+            "SELECT {COLUMNS} FROM triage_similar_item_decisions \
              WHERE job_id = $1 \
              ORDER BY batch_index, created_at",
-        )
-        .bind(job_id.inner())
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("finding triage similar item decisions for job {job_id}"),
-            source: e,
-        })?;
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(job_id.inner())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding triage similar item decisions for job {job_id}"),
+                source: e,
+            })?;
 
         Ok(rows
             .iter()
@@ -210,22 +226,24 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
     ) -> Result<Vec<TriageSimilarItemDecision>, DbError> {
         let batch_index_i32 = i32::try_from(batch_index).expect(BATCH_INDEX_EXCEEDS_I32);
 
-        let rows = sqlx::query(
-            "SELECT * FROM triage_similar_item_decisions \
+        let sql = format!(
+            "SELECT {COLUMNS} FROM triage_similar_item_decisions \
              WHERE job_id = $1 AND batch_index = $2 \
              ORDER BY created_at",
-        )
-        .bind(job_id.inner())
-        .bind(batch_index_i32)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!(
-                "finding triage similar item decisions for job {job_id} \
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(job_id.inner())
+            .bind(batch_index_i32)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!(
+                    "finding triage similar item decisions for job {job_id} \
                  batch_index {batch_index}"
-            ),
-            source: e,
-        })?;
+                ),
+                source: e,
+            })?;
 
         Ok(rows
             .iter()

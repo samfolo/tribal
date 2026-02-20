@@ -21,12 +21,24 @@ pub enum PromptStage {
     Relation,
 }
 
+enum_text_conversions!(PromptStage {
+    PromptStage::Extraction => "extraction",
+    PromptStage::Triage => "triage",
+    PromptStage::Relation => "relation",
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enum_serde_tests;
+    use crate::{enum_serde_tests, enum_text_tests};
 
     enum_serde_tests!(test_prompt_stage_serde_roundtrip, PromptStage {
+        PromptStage::Extraction => "extraction",
+        PromptStage::Triage => "triage",
+        PromptStage::Relation => "relation",
+    });
+
+    enum_text_tests!(test_prompt_stage_text_roundtrip, PromptStage {
         PromptStage::Extraction => "extraction",
         PromptStage::Triage => "triage",
         PromptStage::Relation => "relation",

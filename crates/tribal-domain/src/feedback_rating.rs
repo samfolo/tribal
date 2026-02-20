@@ -15,12 +15,22 @@ pub enum FeedbackRating {
     Negative,
 }
 
+enum_text_conversions!(FeedbackRating {
+    FeedbackRating::Positive => "positive",
+    FeedbackRating::Negative => "negative",
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enum_serde_tests;
+    use crate::{enum_serde_tests, enum_text_tests};
 
     enum_serde_tests!(test_feedback_rating_serde_roundtrip, FeedbackRating {
+        FeedbackRating::Positive => "positive",
+        FeedbackRating::Negative => "negative",
+    });
+
+    enum_text_tests!(test_feedback_rating_text_roundtrip, FeedbackRating {
         FeedbackRating::Positive => "positive",
         FeedbackRating::Negative => "negative",
     });
