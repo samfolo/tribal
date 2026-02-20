@@ -1,5 +1,5 @@
 use tribal_db::{
-    PgPrincipalRepository, PgRetrievalFeedbackRepository, PrincipalRepository,
+    DbError, PgPrincipalRepository, PgRetrievalFeedbackRepository, PrincipalRepository,
     RetrievalFeedbackRepository,
 };
 use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedbackId};
@@ -41,12 +41,15 @@ async fn test_insert_returns_populated_retrieval_feedback() {
         .notes(Some("not relevant".to_owned()))
         .build();
 
-    let fb = repo.insert(&mut *txn, &new).await.expect("insert");
+    let fb = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert!(fb.id().to_string().starts_with("fb_"));
     assert_eq!(fb.trace_id(), "00000000000000000000000000000001");
     assert_eq!(fb.query_text(), "test query");
     assert_eq!(fb.embedding_model(), "nomic-embed-text:v1.5");
+    assert!(fb.returned_item_ids().is_empty());
+    assert!(fb.explored_anchor_ids().is_empty());
+    assert!(fb.policy_version().is_none());
     assert_eq!(fb.principal_id(), principal_id);
     assert_eq!(fb.rating(), FeedbackRating::Negative);
     assert_eq!(fb.notes(), Some("not relevant"));
@@ -69,7 +72,7 @@ async fn test_insert_with_populated_uuid_arrays() {
         .explored_anchor_ids(explored.clone())
         .build();
 
-    let fb = repo.insert(&mut *txn, &new).await.expect("insert");
+    let fb = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert_eq!(fb.returned_item_ids(), &returned);
     assert_eq!(fb.explored_anchor_ids(), &explored);
@@ -87,7 +90,7 @@ async fn test_insert_with_empty_arrays() {
         .principal_id(principal_id)
         .build();
 
-    let fb = repo.insert(&mut *txn, &new).await.expect("insert");
+    let fb = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert!(fb.returned_item_ids().is_empty());
     assert!(fb.explored_anchor_ids().is_empty());
@@ -107,7 +110,7 @@ async fn test_find_by_id_returns_retrieval_feedback() {
 
     let fb = repo
         .insert(
-            &mut *txn,
+            &mut txn,
             &a_new_retrieval_feedback()
                 .principal_id(principal_id)
                 .build(),
@@ -115,7 +118,7 @@ async fn test_find_by_id_returns_retrieval_feedback() {
         .await
         .expect("insert");
 
-    let found = repo.find_by_id(&mut *txn, fb.id()).await.expect("find");
+    let found = repo.find_by_id(&mut txn, fb.id()).await.expect("find");
     assert_eq!(found.id(), fb.id());
     assert_eq!(found.query_text(), fb.query_text());
 }
@@ -126,6 +129,9 @@ async fn test_find_by_id_not_found() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgRetrievalFeedbackRepository;
 
-    let result = repo.find_by_id(&mut *txn, RetrievalFeedbackId::new()).await;
-    assert!(result.is_err());
+    let result = repo.find_by_id(&mut txn, RetrievalFeedbackId::new()).await;
+    assert!(
+        matches!(result, Err(DbError::NotFound { .. })),
+        "expected NotFound, got: {result:?}"
+    );
 }
