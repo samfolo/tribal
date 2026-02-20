@@ -48,6 +48,7 @@ mod tests {
     fn test_new_builds_with_defaults() {
         let new = a_new_prompt_version().build();
         assert_eq!(new.stage, PromptStage::Extraction);
+        assert_eq!(new.content_hash.len(), 64);
         assert_eq!(new.content, "test prompt content");
     }
 }

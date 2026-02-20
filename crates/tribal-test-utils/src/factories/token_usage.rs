@@ -69,7 +69,17 @@ mod tests {
     #[test]
     fn test_new_builds_with_defaults() {
         let new = a_new_token_usage().build();
+        assert!(new.job_id.is_none());
+        assert!(new.task_id.is_none());
+        assert_eq!(new.attempt, 0);
+        assert_eq!(new.provider, "test-provider");
+        assert_eq!(new.model, "test-model");
         assert_eq!(new.tokens_input, 100);
         assert_eq!(new.tokens_output, 50);
+        assert_eq!(new.tokens_cache_read, 0);
+        assert_eq!(new.tokens_cache_write, 0);
+        assert_eq!(new.latency_ms, 200);
+        assert!(new.prompt_version_id.is_none());
+        assert!(new.trace_id.is_none());
     }
 }
