@@ -5,16 +5,14 @@
 //! tracing. It is generic over request and response types but hardcoded
 //! to [`InferenceError`].
 
-use std::collections::VecDeque;
-use std::fmt;
-use std::sync::Mutex;
+use std::{collections::VecDeque, fmt, sync::Mutex};
 
 use tracing::debug;
 use tribal_inference::{CompletionRequest, EmbeddingRequest, InferenceError};
 
 use super::responses::ErrorFactory;
 
-const MUTEX_POISONED: &str = "mock provider mutex poisoned";
+pub(crate) const MUTEX_POISONED: &str = "mock provider mutex poisoned";
 
 // ---------------------------------------------------------------------------
 // MockRequest trait
@@ -159,16 +157,15 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
 
     /// Dispatches a request through the conditional → sequential →
     /// exhaustion resolution chain.
-    pub fn dispatch(&self, request: Req) -> Result<Resp, InferenceError> {
+    pub fn dispatch(&self, request: &Req) -> Result<Resp, InferenceError> {
         let mut state = self.state.lock().expect(MUTEX_POISONED);
 
-        // 1. Record the request.
         state.history.push(request.clone());
         let call_number = state.history.len();
 
-        // 2. Check conditionals — first match wins.
+        // Check conditionals — first match wins.
         for entry in &self.conditionals {
-            if (entry.matcher)(&request) {
+            if (entry.matcher)(request) {
                 return match &entry.outcome {
                     ConditionalOutcome::Ok(resp) => {
                         let result = resp.clone();
@@ -192,7 +189,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
             }
         }
 
-        // 3. Pop from sequential queue.
+        // Pop from sequential queue.
         if let Some(entry) = state.queue.pop_front() {
             return match entry {
                 QueueEntry::Ok(resp) => {
@@ -217,7 +214,41 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
             };
         }
 
-        // 4. Queue exhausted — apply exhaustion behaviour.
+        // Queue exhausted — apply exhaustion behaviour.
+        self.handle_exhaustion(&mut state, request, call_number)
+    }
+
+    /// Returns the number of calls dispatched so far.
+    pub fn call_count(&self) -> usize {
+        self.state.lock().expect(MUTEX_POISONED).history.len()
+    }
+
+    /// Returns a clone of all requests dispatched so far, in order.
+    pub fn history(&self) -> Vec<Req> {
+        self.state.lock().expect(MUTEX_POISONED).history.clone()
+    }
+
+    /// Panics if the sequential queue has not been fully consumed.
+    pub fn assert_exhausted(&self) {
+        let state = self.state.lock().expect(MUTEX_POISONED);
+        let remaining = state.queue.len();
+        if remaining > 0 {
+            let consumed = state.sequential_count - remaining;
+            panic!(
+                "{name}: {consumed} of {total} sequential responses consumed, \
+                 {remaining} remaining",
+                name = self.provider_name,
+                total = state.sequential_count,
+            );
+        }
+    }
+
+    fn handle_exhaustion(
+        &self,
+        state: &mut CoreState<Req, Resp>,
+        request: &Req,
+        call_number: usize,
+    ) -> Result<Resp, InferenceError> {
         let consumed = state.sequential_count;
         let conditionals_count = self.conditionals.len();
 
@@ -270,31 +301,6 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                 );
                 Err(err)
             }
-        }
-    }
-
-    /// Returns the number of calls dispatched so far.
-    pub fn call_count(&self) -> usize {
-        self.state.lock().expect(MUTEX_POISONED).history.len()
-    }
-
-    /// Returns a clone of all requests dispatched so far, in order.
-    pub fn history(&self) -> Vec<Req> {
-        self.state.lock().expect(MUTEX_POISONED).history.clone()
-    }
-
-    /// Panics if the sequential queue has not been fully consumed.
-    pub fn assert_exhausted(&self) {
-        let state = self.state.lock().expect(MUTEX_POISONED);
-        let remaining = state.queue.len();
-        if remaining > 0 {
-            let consumed = state.sequential_count - remaining;
-            panic!(
-                "{name}: {consumed} of {total} sequential responses consumed, \
-                 {remaining} remaining",
-                name = self.provider_name,
-                total = state.sequential_count,
-            );
         }
     }
 }

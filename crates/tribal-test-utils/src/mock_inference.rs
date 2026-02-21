@@ -10,6 +10,7 @@ mod provider;
 mod responses;
 
 pub use core::ExhaustBehaviour;
+
 pub use matcher::{CompletionMatcher, EmbeddingMatcher};
 pub use provider::{
     ConditionalCompletionBuilder, ConditionalEmbeddingBuilder, MockEmbeddingProvider,
