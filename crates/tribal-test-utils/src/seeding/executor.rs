@@ -376,8 +376,9 @@ fn handle_relate(
         panic!("relation target '{target_label}' not found — defined items: {defined:?}");
     }
 
-    let principal_label = principal_label
-        .unwrap_or_else(|| panic!("relate() requires an active principal — call as_principal() first"));
+    let principal_label = principal_label.unwrap_or_else(|| {
+        panic!("relate() requires an active principal — call as_principal() first")
+    });
 
     debug!("seed[{idx}]: Relate source={source_label:?} kind={kind:?} target={target_label:?}");
 
