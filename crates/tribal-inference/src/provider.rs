@@ -8,9 +8,11 @@
 
 use async_trait::async_trait;
 
-use crate::error::InferenceError;
-use crate::request::{CompletionRequest, EmbeddingRequest};
-use crate::response::{CompletionResponse, EmbeddingResponse};
+use crate::{
+    error::InferenceError,
+    request::{CompletionRequest, EmbeddingRequest},
+    response::{CompletionResponse, EmbeddingResponse},
+};
 
 /// Abstraction for LLM completion providers.
 ///
@@ -49,10 +51,7 @@ pub trait EmbeddingProvider: Send + Sync {
     /// Returns [`InferenceError::ProviderUnavailable`] if the provider
     /// cannot be reached.  Returns [`InferenceError::EmbeddingFailed`]
     /// if the embedding call fails.
-    async fn embed(
-        &self,
-        request: EmbeddingRequest,
-    ) -> Result<EmbeddingResponse, InferenceError>;
+    async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, InferenceError>;
 }
 
 #[cfg(test)]
