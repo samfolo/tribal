@@ -914,7 +914,7 @@ async fn flush_relations(
         let batch_label = state
             .batch_command_indices
             .iter()
-            .max_by_key(|(_, &idx)| idx)
+            .max_by_key(|&(_, &idx)| idx)
             .map(|(label, _)| label.clone())
             .expect("commit=true but no batch label recorded");
 
