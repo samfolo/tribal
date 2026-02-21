@@ -41,6 +41,7 @@ impl EmbeddingGroupAssigner {
             .or_insert_with(|| {
                 let mut hasher = DefaultHasher::new();
                 group.hash(&mut hasher);
+                #[allow(clippy::cast_possible_truncation)]
                 let dim_index = (hasher.finish() as usize) % dims;
                 (dim_index, 0)
             });
@@ -71,7 +72,9 @@ pub(crate) fn make_group_embedding(
     if position_in_group > 0 {
         let noise_dim = (dominant + position_in_group) % dimensions;
         if noise_dim != dominant {
-            v[noise_dim] = 0.1 / (position_in_group as f32);
+            #[allow(clippy::cast_precision_loss)]
+            let perturbation = 0.1 / (position_in_group as f32);
+            v[noise_dim] = perturbation;
         }
     }
     v
