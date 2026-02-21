@@ -61,10 +61,7 @@ pub fn a_provider_unavailable(reason: impl Into<String>) -> ErrorFactory {
 
 /// Produces a closure returning [`InferenceError::LlmCallFailed`] with a
 /// synthetic `io::Error` source.
-pub fn an_llm_call_failure(
-    model: impl Into<String>,
-    context: impl Into<String>,
-) -> ErrorFactory {
+pub fn an_llm_call_failure(model: impl Into<String>, context: impl Into<String>) -> ErrorFactory {
     let model = model.into();
     let context = context.into();
     Box::new(move || InferenceError::LlmCallFailed {
@@ -76,10 +73,7 @@ pub fn an_llm_call_failure(
 
 /// Produces a closure returning [`InferenceError::EmbeddingFailed`] with a
 /// synthetic `io::Error` source.
-pub fn an_embedding_failure(
-    model: impl Into<String>,
-    context: impl Into<String>,
-) -> ErrorFactory {
+pub fn an_embedding_failure(model: impl Into<String>, context: impl Into<String>) -> ErrorFactory {
     let model = model.into();
     let context = context.into();
     Box::new(move || InferenceError::EmbeddingFailed {
@@ -129,33 +123,47 @@ mod tests {
     }
 
     #[test]
-    fn test_error_factories_produce_correct_variants() {
+    fn test_error_factories_produce_correct_variants_and_fields() {
         let err = a_provider_unavailable("down")();
-        assert!(matches!(err, InferenceError::ProviderUnavailable { .. }));
+        assert!(matches!(
+            err,
+            InferenceError::ProviderUnavailable { ref provider, ref reason }
+            if provider == "mock" && reason == "down"
+        ));
 
         let err = an_llm_call_failure("llama3", "timeout")();
-        assert!(matches!(err, InferenceError::LlmCallFailed { .. }));
+        assert!(matches!(
+            err,
+            InferenceError::LlmCallFailed { ref model, ref context, .. }
+            if model == "llama3" && context == "timeout"
+        ));
 
         let err = an_embedding_failure("nomic", "oom")();
-        assert!(matches!(err, InferenceError::EmbeddingFailed { .. }));
+        assert!(matches!(
+            err,
+            InferenceError::EmbeddingFailed { ref model, ref context, .. }
+            if model == "nomic" && context == "oom"
+        ));
 
         let err = a_parse_failure("JSON object", "{bad}")();
-        assert!(matches!(err, InferenceError::ResponseParseFailed { .. }));
+        assert!(matches!(
+            err,
+            InferenceError::ResponseParseFailed { ref expected_shape, ref actual }
+            if expected_shape == "JSON object" && actual == "{bad}"
+        ));
     }
 
     #[test]
-    fn test_error_factories_produce_distinct_instances() {
+    fn test_error_factory_produces_fresh_error_per_invocation() {
         let factory = an_llm_call_failure("llama3", "retry test");
         let err_a = factory();
         let err_b = factory();
 
-        let msg_a = format!("{err_a}");
-        let msg_b = format!("{err_b}");
-        assert_eq!(msg_a, msg_b);
-
-        // Both format to the same Debug string (same field values).
-        let dbg_a = format!("{err_a:?}");
-        let dbg_b = format!("{err_b:?}");
-        assert_eq!(dbg_a, dbg_b);
+        // Same Display output confirms same field values.
+        assert_eq!(
+            format!("{err_a}"),
+            "LLM call failed for model llama3: retry test"
+        );
+        assert_eq!(format!("{err_a}"), format!("{err_b}"));
     }
 }

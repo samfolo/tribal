@@ -5,8 +5,7 @@
 //! constructed via fluent builders with sequential response queues,
 //! conditional matching, and configurable exhaustion behaviour.
 
-use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::{collections::VecDeque, sync::Mutex};
 
 use async_trait::async_trait;
 use tribal_inference::{
@@ -14,13 +13,13 @@ use tribal_inference::{
     InferenceError, InferenceProvider,
 };
 
-use super::core::{
-    ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MockProviderCore, QueueEntry,
+use super::{
+    core::{
+        ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED, MockProviderCore,
+        QueueEntry,
+    },
+    matcher::{CompletionMatcher, EmbeddingMatcher},
 };
-use super::matcher::{CompletionMatcher, EmbeddingMatcher};
-use super::responses::ErrorFactory;
-
-const MUTEX_POISONED: &str = "mock provider mutex poisoned";
 
 // ---------------------------------------------------------------------------
 // Usage accumulators
@@ -53,7 +52,6 @@ pub struct MockInferenceProvider {
 
 impl MockInferenceProvider {
     /// Returns a new builder for configuring this mock.
-    #[must_use]
     pub fn builder() -> MockInferenceProviderBuilder {
         MockInferenceProviderBuilder::new()
     }
@@ -69,11 +67,19 @@ impl MockInferenceProvider {
     }
 
     /// Returns the cumulative input tokens across all successful calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn total_input_tokens(&self) -> u64 {
         self.usage.lock().expect(MUTEX_POISONED).total_input_tokens
     }
 
     /// Returns the cumulative output tokens across all successful calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn total_output_tokens(&self) -> u64 {
         self.usage.lock().expect(MUTEX_POISONED).total_output_tokens
     }
@@ -90,7 +96,7 @@ impl InferenceProvider for MockInferenceProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, InferenceError> {
-        let result = self.core.dispatch(request)?;
+        let result = self.core.dispatch(&request)?;
         let mut usage = self.usage.lock().expect(MUTEX_POISONED);
         usage.total_input_tokens += u64::from(result.usage.input_tokens);
         usage.total_output_tokens += u64::from(result.usage.output_tokens);
@@ -120,14 +126,12 @@ impl MockInferenceProviderBuilder {
     }
 
     /// Enqueues a successful completion response (FIFO).
-    #[must_use]
     pub fn on_complete(mut self, response: CompletionResponse) -> Self {
         self.queue.push_back(QueueEntry::Ok(response));
         self
     }
 
     /// Enqueues an error factory that will fire on the corresponding call.
-    #[must_use]
     pub fn on_complete_error(
         mut self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
@@ -139,7 +143,6 @@ impl MockInferenceProviderBuilder {
     /// Begins a conditional entry — returns a scoped builder that
     /// captures the matcher and provides `respond_with` /
     /// `respond_with_error` to complete the entry.
-    #[must_use]
     pub fn when(self, matcher: CompletionMatcher) -> ConditionalCompletionBuilder {
         ConditionalCompletionBuilder {
             parent: self,
@@ -148,7 +151,6 @@ impl MockInferenceProviderBuilder {
     }
 
     /// Sets the behaviour when the sequential queue is exhausted.
-    #[must_use]
     pub fn on_exhaust(mut self, behaviour: ExhaustBehaviour) -> Self {
         self.exhaust_behaviour = behaviour;
         self
@@ -185,7 +187,6 @@ pub struct ConditionalCompletionBuilder {
 
 impl ConditionalCompletionBuilder {
     /// Registers a successful response for this conditional.
-    #[must_use]
     pub fn respond_with(self, response: CompletionResponse) -> MockInferenceProviderBuilder {
         let mut parent = self.parent;
         parent.conditionals.push(ConditionalEntry {
@@ -196,7 +197,6 @@ impl ConditionalCompletionBuilder {
     }
 
     /// Registers an error factory for this conditional.
-    #[must_use]
     pub fn respond_with_error(
         self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
@@ -226,7 +226,6 @@ pub struct MockEmbeddingProvider {
 
 impl MockEmbeddingProvider {
     /// Returns a new builder for configuring this mock.
-    #[must_use]
     pub fn builder() -> MockEmbeddingProviderBuilder {
         MockEmbeddingProviderBuilder::new()
     }
@@ -242,6 +241,10 @@ impl MockEmbeddingProvider {
     }
 
     /// Returns the cumulative total tokens across all successful calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn total_tokens(&self) -> u64 {
         self.usage.lock().expect(MUTEX_POISONED).total_tokens
     }
@@ -254,11 +257,8 @@ impl MockEmbeddingProvider {
 
 #[async_trait]
 impl EmbeddingProvider for MockEmbeddingProvider {
-    async fn embed(
-        &self,
-        request: EmbeddingRequest,
-    ) -> Result<EmbeddingResponse, InferenceError> {
-        let result = self.core.dispatch(request)?;
+    async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, InferenceError> {
+        let result = self.core.dispatch(&request)?;
         let mut usage = self.usage.lock().expect(MUTEX_POISONED);
         usage.total_tokens += u64::from(result.usage.total_tokens);
         Ok(result)
@@ -287,14 +287,12 @@ impl MockEmbeddingProviderBuilder {
     }
 
     /// Enqueues a successful embedding response (FIFO).
-    #[must_use]
     pub fn on_embed(mut self, response: EmbeddingResponse) -> Self {
         self.queue.push_back(QueueEntry::Ok(response));
         self
     }
 
     /// Enqueues an error factory that will fire on the corresponding call.
-    #[must_use]
     pub fn on_embed_error(
         mut self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
@@ -306,7 +304,6 @@ impl MockEmbeddingProviderBuilder {
     /// Begins a conditional entry — returns a scoped builder that
     /// captures the matcher and provides `respond_with` /
     /// `respond_with_error` to complete the entry.
-    #[must_use]
     pub fn when(self, matcher: EmbeddingMatcher) -> ConditionalEmbeddingBuilder {
         ConditionalEmbeddingBuilder {
             parent: self,
@@ -315,7 +312,6 @@ impl MockEmbeddingProviderBuilder {
     }
 
     /// Sets the behaviour when the sequential queue is exhausted.
-    #[must_use]
     pub fn on_exhaust(mut self, behaviour: ExhaustBehaviour) -> Self {
         self.exhaust_behaviour = behaviour;
         self
@@ -352,7 +348,6 @@ pub struct ConditionalEmbeddingBuilder {
 
 impl ConditionalEmbeddingBuilder {
     /// Registers a successful response for this conditional.
-    #[must_use]
     pub fn respond_with(self, response: EmbeddingResponse) -> MockEmbeddingProviderBuilder {
         let mut parent = self.parent;
         parent.conditionals.push(ConditionalEntry {
@@ -363,7 +358,6 @@ impl ConditionalEmbeddingBuilder {
     }
 
     /// Registers an error factory for this conditional.
-    #[must_use]
     pub fn respond_with_error(
         self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
@@ -439,13 +433,17 @@ mod tests {
         let provider = MockInferenceProvider::builder()
             .on_complete(a_completion_response("sequential"))
             .when(CompletionMatcher::has_model("special"))
-                .respond_with(a_completion_response("conditional"))
+            .respond_with(a_completion_response("conditional"))
             .build();
 
-        let cond = provider.complete(a_request("special", "sys")).await.unwrap();
+        // Conditional matches first despite sequential entry existing.
+        let cond = provider
+            .complete(a_request("special", "sys"))
+            .await
+            .unwrap();
         assert_eq!(cond.text, "conditional");
 
-        // Sequential entry is still available.
+        // Sequential entry was not consumed by the conditional call.
         let seq = provider.complete(a_request("other", "sys")).await.unwrap();
         assert_eq!(seq.text, "sequential");
     }
@@ -454,12 +452,15 @@ mod tests {
     async fn test_conditional_entries_fire_repeatedly() {
         let provider = MockInferenceProvider::builder()
             .when(CompletionMatcher::has_model("repeat"))
-                .respond_with(a_completion_response("again"))
+            .respond_with(a_completion_response("again"))
             .build();
 
-        for _ in 0..5 {
+        for i in 0..5 {
             let resp = provider.complete(a_request("repeat", "sys")).await.unwrap();
-            assert_eq!(resp.text, "again");
+            assert_eq!(
+                resp.text, "again",
+                "call {i} should return conditional response"
+            );
         }
         assert_eq!(provider.call_count(), 5);
     }
@@ -468,14 +469,18 @@ mod tests {
     async fn test_conditional_error_response() {
         let provider = MockInferenceProvider::builder()
             .when(CompletionMatcher::has_model("fail"))
-                .respond_with_error(a_provider_unavailable("conditional failure"))
+            .respond_with_error(a_provider_unavailable("conditional failure"))
             .build();
 
         let err = provider
             .complete(a_request("fail", "sys"))
             .await
             .unwrap_err();
-        assert!(matches!(err, InferenceError::ProviderUnavailable { .. }));
+        assert!(matches!(
+            err,
+            InferenceError::ProviderUnavailable { ref reason, .. }
+            if reason == "conditional failure"
+        ));
     }
 
     #[tokio::test]
@@ -483,10 +488,9 @@ mod tests {
     async fn test_conditional_only_no_match_triggers_exhaustion() {
         let provider = MockInferenceProvider::builder()
             .when(CompletionMatcher::has_model("specific"))
-                .respond_with(a_completion_response("match"))
+            .respond_with(a_completion_response("match"))
             .build();
 
-        // This model doesn't match any conditional, and the queue is empty.
         let _ = provider.complete(a_request("other", "sys")).await;
     }
 
@@ -504,13 +508,16 @@ mod tests {
             .on_exhaust(ExhaustBehaviour::RepeatLast)
             .build();
 
+        // First call consumes the sequential entry.
         let r1 = provider.complete(a_request("m", "sys")).await.unwrap();
+        assert_eq!(r1.text, "only");
+
+        // Subsequent calls clone the last successful response.
         let r2 = provider.complete(a_request("m", "sys")).await.unwrap();
         let r3 = provider.complete(a_request("m", "sys")).await.unwrap();
-
-        assert_eq!(r1.text, "only");
         assert_eq!(r2.text, "only");
         assert_eq!(r3.text, "only");
+        assert_eq!(provider.call_count(), 3);
     }
 
     #[tokio::test]
@@ -526,23 +533,25 @@ mod tests {
     #[tokio::test]
     async fn test_exhaust_error_returns_factory_output() {
         let provider = MockInferenceProvider::builder()
-            .on_exhaust(ExhaustBehaviour::Error(
-                a_provider_unavailable("rate limited"),
-            ))
+            .on_exhaust(ExhaustBehaviour::Error(a_provider_unavailable(
+                "rate limited",
+            )))
             .build();
 
-        let err = provider
-            .complete(a_request("m", "sys"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, InferenceError::ProviderUnavailable { .. }));
+        let err = provider.complete(a_request("m", "sys")).await.unwrap_err();
+        assert!(matches!(
+            err,
+            InferenceError::ProviderUnavailable { ref reason, .. }
+            if reason == "rate limited"
+        ));
 
-        // Fires repeatedly.
-        let err2 = provider
-            .complete(a_request("m", "sys"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err2, InferenceError::ProviderUnavailable { .. }));
+        // Fires repeatedly with fresh error instances.
+        let err2 = provider.complete(a_request("m", "sys")).await.unwrap_err();
+        assert!(matches!(
+            err2,
+            InferenceError::ProviderUnavailable { ref reason, .. }
+            if reason == "rate limited"
+        ));
     }
 
     #[tokio::test]
@@ -552,11 +561,12 @@ mod tests {
             .on_complete(a_completion_response("retry succeeds"))
             .build();
 
-        let err = provider
-            .complete(a_request("m", "sys"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, InferenceError::ProviderUnavailable { .. }));
+        let err = provider.complete(a_request("m", "sys")).await.unwrap_err();
+        assert!(matches!(
+            err,
+            InferenceError::ProviderUnavailable { ref reason, .. }
+            if reason == "first fails"
+        ));
 
         let ok = provider.complete(a_request("m", "sys")).await.unwrap();
         assert_eq!(ok.text, "retry succeeds");
@@ -575,7 +585,9 @@ mod tests {
         let history = provider.completion_history();
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].model, "model-a");
+        assert_eq!(history[0].system.as_deref(), Some("sys-a"));
         assert_eq!(history[1].model, "model-b");
+        assert_eq!(history[1].system.as_deref(), Some("sys-b"));
     }
 
     #[tokio::test]
@@ -586,11 +598,13 @@ mod tests {
             .on_complete(a_completion_response("ok2"))
             .build();
 
-        let _ = provider.complete(a_request("m", "sys")).await; // error
-        let _ = provider.complete(a_request("m", "sys")).await; // success
-        let _ = provider.complete(a_request("m", "sys")).await; // success
+        let _ = provider.complete(a_request("m", "sys")).await; // error — no usage
+        let _ = provider.complete(a_request("m", "sys")).await; // 100 input, 50 output
+        let _ = provider.complete(a_request("m", "sys")).await; // 100 input, 50 output
 
+        // Two successful calls × 100 input tokens each.
         assert_eq!(provider.total_input_tokens(), 200);
+        // Two successful calls × 50 output tokens each.
         assert_eq!(provider.total_output_tokens(), 100);
     }
 
@@ -603,7 +617,6 @@ mod tests {
             .build();
 
         let _ = provider.complete(a_request("m", "sys")).await;
-        // Only consumed 1 of 2.
         provider.assert_exhausted();
     }
 
@@ -614,7 +627,7 @@ mod tests {
             .build();
 
         let _ = provider.complete(a_request("m", "sys")).await;
-        provider.assert_exhausted(); // should not panic
+        provider.assert_exhausted();
     }
 
     #[test]
@@ -622,21 +635,11 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<MockInferenceProvider>();
 
-        // Verify trait-object construction compiles.
         let provider = MockInferenceProvider::builder().build();
         let _arc: Arc<dyn InferenceProvider> = Arc::new(provider);
     }
 
     // -- Embedding provider tests ------------------------------------------
-
-    #[test]
-    fn test_send_sync_embedding_provider() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<MockEmbeddingProvider>();
-
-        let provider = MockEmbeddingProvider::builder().build();
-        let _arc: Arc<dyn EmbeddingProvider> = Arc::new(provider);
-    }
 
     #[tokio::test]
     async fn test_embedding_sequential_delivery() {
@@ -656,6 +659,7 @@ mod tests {
 
         assert_eq!(r1.vector, vec![0.1, 0.2]);
         assert_eq!(r2.vector, vec![0.3, 0.4]);
+        assert_eq!(provider.call_count(), 2);
         provider.assert_exhausted();
     }
 
@@ -667,19 +671,20 @@ mod tests {
             .on_embed(an_embedding_response(vec![0.2]))
             .build();
 
-        let _ = provider.embed(an_embed_request("m", "a")).await; // error
-        let _ = provider.embed(an_embed_request("m", "b")).await; // success
-        let _ = provider.embed(an_embed_request("m", "c")).await; // success
+        let _ = provider.embed(an_embed_request("m", "a")).await; // error — no usage
+        let _ = provider.embed(an_embed_request("m", "b")).await; // 10 tokens
+        let _ = provider.embed(an_embed_request("m", "c")).await; // 10 tokens
 
-        // Default mock embedding has total_tokens = 10.
+        // Two successful calls × 10 total_tokens each.
         assert_eq!(provider.total_tokens(), 20);
+        assert_eq!(provider.call_count(), 3);
     }
 
     #[tokio::test]
     async fn test_embedding_conditional_with_has_purpose() {
         let provider = MockEmbeddingProvider::builder()
             .when(EmbeddingMatcher::has_purpose(EmbeddingPurpose::Query))
-                .respond_with(an_embedding_response(vec![1.0, 0.0]))
+            .respond_with(an_embedding_response(vec![1.0, 0.0]))
             .on_embed(an_embedding_response(vec![0.0, 1.0]))
             .build();
 
@@ -698,5 +703,14 @@ mod tests {
         assert_eq!(resp.vector, vec![0.0, 1.0]);
 
         provider.assert_exhausted();
+    }
+
+    #[test]
+    fn test_send_sync_embedding_provider() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockEmbeddingProvider>();
+
+        let provider = MockEmbeddingProvider::builder().build();
+        let _arc: Arc<dyn EmbeddingProvider> = Arc::new(provider);
     }
 }

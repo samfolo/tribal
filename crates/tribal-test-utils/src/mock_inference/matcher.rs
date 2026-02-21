@@ -176,8 +176,8 @@ mod tests {
 
     #[test]
     fn test_completion_and_composition() {
-        let matcher =
-            CompletionMatcher::has_model("llama3").and(CompletionMatcher::system_contains("triage"));
+        let matcher = CompletionMatcher::has_model("llama3")
+            .and(CompletionMatcher::system_contains("triage"));
 
         assert!(matcher.matches(&a_completion_request("llama3", Some("triage prompt"))));
         assert!(!matcher.matches(&a_completion_request("gpt-4", Some("triage prompt"))));
@@ -197,8 +197,8 @@ mod tests {
         let purpose_matcher = EmbeddingMatcher::has_purpose(EmbeddingPurpose::Candidate);
         assert!(purpose_matcher.matches(&an_embedding_request("m", "text")));
 
-        let combined = EmbeddingMatcher::has_model("nomic")
-            .and(EmbeddingMatcher::input_contains("knowledge"));
+        let combined =
+            EmbeddingMatcher::has_model("nomic").and(EmbeddingMatcher::input_contains("knowledge"));
         assert!(combined.matches(&an_embedding_request("nomic", "some knowledge")));
         assert!(!combined.matches(&an_embedding_request("nomic", "other text")));
         assert!(!combined.matches(&an_embedding_request("other", "some knowledge")));
