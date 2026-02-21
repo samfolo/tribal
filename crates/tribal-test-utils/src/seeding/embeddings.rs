@@ -77,7 +77,7 @@ pub(crate) fn make_group_embedding(
         let noise_dim = (dominant + position_in_group) % dimensions;
         if noise_dim != dominant {
             #[allow(clippy::cast_precision_loss)]
-            let perturbation = 0.1 / (position_in_group as f32);
+            let perturbation = 0.01 * (position_in_group as f32);
             v[noise_dim] = perturbation;
         }
     }
@@ -108,7 +108,7 @@ mod tests {
     fn test_make_group_embedding_perturbation() {
         let v = make_group_embedding(5, 1, 768);
         assert!((v[5] - 1.0).abs() < f32::EPSILON);
-        assert!((v[6] - 0.1).abs() < f32::EPSILON);
+        assert!((v[6] - 0.01).abs() < f32::EPSILON);
     }
 
     #[test]
