@@ -293,6 +293,14 @@ async fn test_seed_references_attached_to_items() {
         .await
         .expect("find references");
     assert_eq!(refs.len(), 2);
+
+    let db_ref_ids: Vec<_> = refs.iter().map(|r| r.id()).collect();
+    for id in ref_ids {
+        assert!(
+            db_ref_ids.contains(id),
+            "reference {id} from SeedResult should exist in database"
+        );
+    }
 }
 
 #[tokio::test]
@@ -515,6 +523,32 @@ async fn test_seed_forward_reference_within_scope() {
     assert_eq!(result.reference_ids("x").len(), 1);
 }
 
+#[tokio::test]
+#[should_panic(expected = "requires an active principal")]
+async fn test_clear_principal_persists_beyond_scope() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin txn");
+
+    // clear_principal within a scope persists beyond the scope boundary.
+    // The second for_project scope inherits the cleared state.
+    Seed::new()
+        .define_project("proj", "git@example.com:test.git")
+        .define_principal("user", "user:key")
+        .set_embedding_model("test-model", 768)
+        .as_principal("user")
+        .for_project("proj", |store| {
+            store
+                .add_item("a", item(Fact, "a").skip_embed())
+                .clear_principal();
+        })
+        .for_project("proj", |store| {
+            // No principal is active — this should panic.
+            store.add_item("b", item(Fact, "b").skip_embed());
+        })
+        .execute(&mut txn)
+        .await;
+}
+
 // ---------------------------------------------------------------------------
 // Pre-built scenarios
 // ---------------------------------------------------------------------------
@@ -526,21 +560,24 @@ async fn test_basic_knowledge_graph_scenario() {
 
     let result = scenarios::basic_knowledge_graph().execute(&mut txn).await;
 
-    // 1 project, 1 principal.
-    let _proj_id = result.project_id("tribal");
-    let _principal_id = result.principal_id("sam");
+    // 1 project, 1 principal — accessors don't panic.
+    result.project_id("tribal");
+    result.principal_id("sam");
 
     // 5 items.
-    let labels = result.item_labels();
-    assert_eq!(labels.len(), 5);
+    assert_eq!(result.item_labels().len(), 5);
 
-    // 5 embeddings (one per item).
-    for label in &labels {
-        let _ = result.embedding_id(label);
+    // 5 embeddings — one per item, accessor doesn't panic.
+    for label in &result.item_labels() {
+        result.embedding_id(label);
     }
 
     // 5 references (one per item).
-    let total_refs: usize = labels.iter().map(|l| result.reference_ids(l).len()).sum();
+    let total_refs: usize = result
+        .item_labels()
+        .iter()
+        .map(|l| result.reference_ids(l).len())
+        .sum();
     assert_eq!(total_refs, 5);
 
     // 3 relations in 1 committed batch.
@@ -555,28 +592,18 @@ async fn test_supersession_scenario() {
 
     let result = scenarios::supersession_scenario().execute(&mut txn).await;
 
-    // 1 project, 1 principal, 5 items, 5 embeddings.
-    let _proj_id = result.project_id("tribal");
-    let _principal_id = result.principal_id("sam");
+    // 1 project, 1 principal, 5 items — accessors don't panic.
+    result.project_id("tribal");
+    result.principal_id("sam");
     assert_eq!(result.item_labels().len(), 5);
 
-    // 3 committed batches.
+    // 3 committed batches with expected relation counts.
     assert_eq!(result.batch_count(), 3);
-
-    // original-support: 1 relation
     assert_eq!(result.relation_ids("original-support").len(), 1);
-    // contradiction: 1 relation
     assert_eq!(result.relation_ids("contradiction").len(), 1);
-    // supersession: 3 relations
     assert_eq!(result.relation_ids("supersession").len(), 3);
 
-    // Total: 5 relations.
-    let total = result.relation_ids("original-support").len()
-        + result.relation_ids("contradiction").len()
-        + result.relation_ids("supersession").len();
-    assert_eq!(total, 5);
-
-    // Verify 2 superseded items: original-fact and original-heuristic have
+    // 2 superseded items: original-fact and original-heuristic have
     // inbound Supersedes relations.
     let original_fact_id = result.item_id("original-fact");
     let original_heuristic_id = result.item_id("original-heuristic");
@@ -950,20 +977,18 @@ async fn test_no_principal_for_observe_panics() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin txn");
 
-    // The observe is declared before as_principal, so it captures None.
-    // The add_item is declared after, so it captures "user".
-    // The two-bucket partition processes items (bucket 1) first, creating
-    // "x" successfully, then processes observes (bucket 2) which panics
-    // on the missing principal.
+    // Items are added with a principal (bucket 1), then the principal
+    // is cleared. The observe (bucket 2) has no principal and panics.
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
         .define_principal("user", "user:key")
         .set_embedding_model("test-model", 768)
+        .as_principal("user")
         .for_project("proj", |store| {
             store
-                .observe("x", SourceType::AgentMediated)
-                .as_principal("user")
-                .add_item("x", item(Fact, "x").skip_embed());
+                .add_item("x", item(Fact, "x").skip_embed())
+                .clear_principal()
+                .observe("x", SourceType::AgentMediated);
         })
         .execute(&mut txn)
         .await;
