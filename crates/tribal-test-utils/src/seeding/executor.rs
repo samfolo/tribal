@@ -21,7 +21,7 @@ use tribal_db::{
     RelationRepository, TagRegistryRepository,
 };
 use tribal_domain::{
-    EmbeddingId, EpisodeId, ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId,
+    EmbeddingId, EpisodeId, ItemObservationId, KnowledgeItemId, PrincipalId, ProjectId,
     ReferenceId, RelationBatchId, RelationId, RelationKind,
 };
 
