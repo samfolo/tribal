@@ -28,7 +28,7 @@ use tribal_domain::{
 use super::{
     embeddings::{EmbeddingGroupAssigner, make_group_embedding},
     repository::{PgSeedRepository, SeedRepository},
-    types::{CommittedBatch, SeedCommand, SeedItemSpec, SeedReferenceSpec, SeedResult},
+    types::{CommittedBatch, SeedCommand, SeedReferenceSpec, SeedResult},
 };
 
 // ---------------------------------------------------------------------------
@@ -46,9 +46,6 @@ struct ExecutionState {
     embeddings: HashMap<String, EmbeddingId>,
     references: HashMap<String, Vec<ReferenceId>>,
     observations: HashMap<String, Vec<ItemObservationId>>,
-
-    // Cursor state
-    current_principal: Option<String>,
 
     // Embedding configuration
     embedding_model: Option<String>,
@@ -90,7 +87,6 @@ impl ExecutionState {
             embeddings: HashMap::new(),
             references: HashMap::new(),
             observations: HashMap::new(),
-            current_principal: None,
             embedding_model: None,
             embedding_dimensions: None,
             embedding_group_assigner: None,
@@ -123,6 +119,13 @@ struct PendingRelation {
     kind: RelationKind,
     target_label: String,
     principal_label: String,
+}
+
+/// Item metadata collected during scope processing for implicit embedding.
+struct PendingEmbedding {
+    label: String,
+    command_index: usize,
+    group: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +161,7 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
             }
 
             SeedCommand::SwitchPrincipal { label } => {
-                handle_switch_principal(i, label, &mut state);
+                handle_switch_principal(i, label, &state);
                 i += 1;
             }
 
@@ -172,8 +175,16 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
                 source_label,
                 kind,
                 target_label,
+                principal_label,
             } => {
-                handle_relate(i, source_label, *kind, target_label, &mut state);
+                handle_relate(
+                    i,
+                    source_label,
+                    *kind,
+                    target_label,
+                    principal_label.as_deref(),
+                    &mut state,
+                );
                 i += 1;
             }
 
@@ -334,14 +345,13 @@ fn handle_set_embedding_model(
     state.embedding_group_assigner = Some(EmbeddingGroupAssigner::new(dimensions));
 }
 
-fn handle_switch_principal(idx: usize, label: &str, state: &mut ExecutionState) {
+fn handle_switch_principal(idx: usize, label: &str, state: &ExecutionState) {
     if !state.principals.contains_key(label) {
         let defined: Vec<_> = state.principals.keys().collect();
         panic!("unknown principal '{label}' — defined principals: {defined:?}");
     }
 
     debug!("seed[{idx}]: SwitchPrincipal label={label:?}");
-    state.current_principal = Some(label.to_owned());
 }
 
 fn handle_relate(
@@ -349,6 +359,7 @@ fn handle_relate(
     source_label: &str,
     kind: RelationKind,
     target_label: &str,
+    principal_label: Option<&str>,
     state: &mut ExecutionState,
 ) {
     assert!(
@@ -365,10 +376,8 @@ fn handle_relate(
         panic!("relation target '{target_label}' not found — defined items: {defined:?}");
     }
 
-    let principal_label = state
-        .current_principal
-        .clone()
-        .expect("relate() requires an active principal — call as_principal() first");
+    let principal_label = principal_label
+        .unwrap_or_else(|| panic!("relate() requires an active principal — call as_principal() first"));
 
     debug!("seed[{idx}]: Relate source={source_label:?} kind={kind:?} target={target_label:?}");
 
@@ -376,7 +385,7 @@ fn handle_relate(
         source_label: source_label.to_owned(),
         kind,
         target_label: target_label.to_owned(),
-        principal_label,
+        principal_label: principal_label.to_owned(),
     });
 }
 
@@ -458,21 +467,13 @@ async fn handle_project_scope(
     let vt = state.virtual_time();
 
     // --- Bucket 1: Items ---
-    let scope_item_labels = process_scope_items(commands, &scope_indices, vt, state, conn).await;
+    let pending_embeddings = process_scope_items(commands, &scope_indices, vt, state, conn).await;
 
     // --- Bucket 2: Dependents ---
     process_scope_dependents(commands, &scope_indices, project_label, vt, state, conn).await;
 
     // --- Implicit embedding on scope close ---
-    process_scope_embeddings(
-        commands,
-        &scope_indices,
-        &scope_item_labels,
-        begin_idx,
-        state,
-        conn,
-    )
-    .await;
+    process_scope_embeddings(&pending_embeddings, state, conn).await;
 
     debug!("seed[{end_idx}]: EndProjectScope project={project_label:?}");
 
@@ -480,15 +481,18 @@ async fn handle_project_scope(
 }
 
 /// Bucket 1: inserts all `AddItem` commands within the scope.
+///
+/// Returns [`PendingEmbedding`] metadata for items that need embedding
+/// (those not marked `skip_embed`), used by the implicit embedding phase.
 async fn process_scope_items(
     commands: &[SeedCommand],
     scope_indices: &[usize],
     vt: DateTime<Utc>,
     state: &mut ExecutionState,
     conn: &mut PgConnection,
-) -> Vec<String> {
+) -> Vec<PendingEmbedding> {
     let repo = PgSeedRepository;
-    let mut scope_item_labels = Vec::new();
+    let mut pending_embeddings = Vec::new();
 
     for &idx in scope_indices {
         let SeedCommand::AddItem {
@@ -553,7 +557,14 @@ async fn process_scope_items(
         state
             .item_projects
             .insert(label.clone(), item_project_label.clone());
-        scope_item_labels.push(label.clone());
+
+        if !spec.skip_embed {
+            pending_embeddings.push(PendingEmbedding {
+                label: label.clone(),
+                command_index: idx,
+                group: spec.embedding_group.clone(),
+            });
+        }
 
         if !spec.tags.is_empty() {
             PgTagRegistryRepository
@@ -565,7 +576,7 @@ async fn process_scope_items(
         repo.backdate_item(conn, ki_id, vt).await;
     }
 
-    scope_item_labels
+    pending_embeddings
 }
 
 /// Bucket 2: processes `Observe`, `AddReference`, and
@@ -783,36 +794,13 @@ async fn handle_scope_add_reference_spec(
 }
 
 /// Implicit embedding on scope close: generates and inserts
-/// deterministic embeddings for all non-`skip_embed` items added in
-/// this scope.
+/// deterministic embeddings for items collected during the item phase.
 async fn process_scope_embeddings(
-    commands: &[SeedCommand],
-    scope_indices: &[usize],
-    scope_item_labels: &[String],
-    scope_start: usize,
+    pending: &[PendingEmbedding],
     state: &mut ExecutionState,
     conn: &mut PgConnection,
 ) {
-    // Collect embeddable items (those not marked skip_embed).
-    let embeddable: Vec<(String, SeedItemSpec)> = scope_item_labels
-        .iter()
-        .filter_map(|label| {
-            let idx = scope_indices.iter().find(|&&idx| {
-                matches!(
-                    &commands[idx],
-                    SeedCommand::AddItem { label: l, .. } if l == label
-                )
-            })?;
-            if let SeedCommand::AddItem { spec, .. } = &commands[*idx]
-                && !spec.skip_embed
-            {
-                return Some((label.clone(), spec.clone()));
-            }
-            None
-        })
-        .collect();
-
-    if embeddable.is_empty() {
+    if pending.is_empty() {
         return;
     }
 
@@ -825,18 +813,21 @@ async fn process_scope_embeddings(
     let dimensions = state.embedding_dimensions.unwrap();
     let assigner = state.embedding_group_assigner.as_mut().unwrap();
 
-    for (label, spec) in &embeddable {
-        let group = spec
-            .embedding_group
+    for item in pending {
+        let group = item
+            .group
             .clone()
-            .unwrap_or_else(|| format!("__item:{label}"));
+            .unwrap_or_else(|| format!("__item:{}", item.label));
 
         let (group_index, position) = assigner.assign(&group);
         let vector = make_group_embedding(group_index, position, dimensions);
 
-        let ki_id = state.items[label.as_str()];
+        let ki_id = state.items[item.label.as_str()];
 
-        debug!("seed[{scope_start}]: EmbedItem label={label:?} model={model:?} group={group:?}");
+        debug!(
+            "seed[{}]: EmbedItem label={:?} model={model:?} group={group:?}",
+            item.command_index, item.label
+        );
 
         let new_embedding = NewEmbedding::builder()
             .knowledge_item_id(ki_id)
@@ -850,7 +841,7 @@ async fn process_scope_embeddings(
             .await
             .expect("seed: insert embedding");
 
-        state.embeddings.insert(label.clone(), embedding.id());
+        state.embeddings.insert(item.label.clone(), embedding.id());
     }
 }
 

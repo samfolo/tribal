@@ -80,6 +80,7 @@ pub(crate) enum SeedCommand {
         source_label: String,
         kind: RelationKind,
         target_label: String,
+        principal_label: Option<String>,
     },
     CommitRelations {
         label: String,
@@ -252,8 +253,6 @@ pub fn reference(kind: ReferenceKind, value: impl Into<String>) -> SeedReference
 pub struct Seed {
     commands: Vec<SeedCommand>,
     current_principal: Option<String>,
-    embedding_model: Option<String>,
-    embedding_dimensions: Option<usize>,
 }
 
 impl Seed {
@@ -263,8 +262,6 @@ impl Seed {
         Self {
             commands: Vec::new(),
             current_principal: None,
-            embedding_model: None,
-            embedding_dimensions: None,
         }
     }
 
@@ -301,11 +298,8 @@ impl Seed {
     /// with conflicting values.
     #[must_use]
     pub fn set_embedding_model(mut self, model: impl Into<String>, dimensions: usize) -> Self {
-        let model = model.into();
-        self.embedding_model = Some(model.clone());
-        self.embedding_dimensions = Some(dimensions);
         self.commands
-            .push(SeedCommand::SetEmbeddingModel { model, dimensions });
+            .push(SeedCommand::SetEmbeddingModel { model: model.into(), dimensions });
         self
     }
 
@@ -370,6 +364,7 @@ impl Seed {
             source_label: source_label.into(),
             kind,
             target_label: target_label.into(),
+            principal_label: self.current_principal.clone(),
         });
         self
     }
