@@ -298,8 +298,10 @@ impl Seed {
     /// with conflicting values.
     #[must_use]
     pub fn set_embedding_model(mut self, model: impl Into<String>, dimensions: usize) -> Self {
-        self.commands
-            .push(SeedCommand::SetEmbeddingModel { model: model.into(), dimensions });
+        self.commands.push(SeedCommand::SetEmbeddingModel {
+            model: model.into(),
+            dimensions,
+        });
         self
     }
 
