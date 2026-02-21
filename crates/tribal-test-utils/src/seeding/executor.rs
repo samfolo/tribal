@@ -464,13 +464,11 @@ async fn handle_project_scope(
     }
     let end_idx = i;
 
-    let project_id = state.projects[project_label];
     let vt = state.virtual_time();
 
     // --- Bucket 1: Items ---
     let scope_item_labels =
-        process_scope_items(commands, &scope_indices, project_label, project_id, vt, state, conn)
-            .await;
+        process_scope_items(commands, &scope_indices, vt, state, conn).await;
 
     // --- Bucket 2: Dependents ---
     process_scope_dependents(commands, &scope_indices, project_label, vt, state, conn).await;
@@ -488,8 +486,6 @@ async fn handle_project_scope(
 async fn process_scope_items(
     commands: &[SeedCommand],
     scope_indices: &[usize],
-    project_label: &str,
-    project_id: ProjectId,
     vt: DateTime<Utc>,
     state: &mut ExecutionState,
     conn: &mut PgConnection,
@@ -500,9 +496,9 @@ async fn process_scope_items(
     for &idx in scope_indices {
         let SeedCommand::AddItem {
             label,
+            project_label: item_project_label,
             principal_label,
             spec,
-            ..
         } = &commands[idx]
         else {
             continue;
@@ -524,6 +520,8 @@ async fn process_scope_items(
             panic!("unknown principal '{principal_label}' — defined principals: {defined:?}");
         });
 
+        let item_project_id = state.projects[item_project_label.as_str()];
+
         let episode_id = spec
             .episode_label
             .as_ref()
@@ -531,12 +529,12 @@ async fn process_scope_items(
 
         debug!(
             "seed[{idx}]: AddItem label={label:?} kind={:?} \
-             project={project_label:?} principal={principal_label:?}",
+             project={item_project_label:?} principal={principal_label:?}",
             spec.kind
         );
 
         let new_item = NewKnowledgeItem::builder()
-            .project_id(project_id)
+            .project_id(item_project_id)
             .principal_id(principal_id)
             .kind(spec.kind)
             .content(spec.content.clone())
@@ -557,7 +555,7 @@ async fn process_scope_items(
         state.items.insert(label.clone(), ki_id);
         state
             .item_projects
-            .insert(label.clone(), project_label.to_owned());
+            .insert(label.clone(), item_project_label.clone());
         scope_item_labels.push(label.clone());
 
         if !spec.tags.is_empty() {

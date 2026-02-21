@@ -48,6 +48,9 @@ anyhow = "1"
 # Builders
 typed-builder = "0.23"
 
+# Hashing
+fnv = "1"
+
 # Ordered collections
 indexmap = "2"
 
