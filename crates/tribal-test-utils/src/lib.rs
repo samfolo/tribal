@@ -8,9 +8,11 @@
 mod db;
 mod error;
 mod factories;
+mod mock_inference;
 mod seeding;
 
 pub use db::{TestContext, TestTransaction, test_context};
 pub use error::TestDbError;
 pub use factories::*;
+pub use mock_inference::*;
 pub use seeding::*;
