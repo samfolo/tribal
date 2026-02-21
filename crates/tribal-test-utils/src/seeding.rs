@@ -6,9 +6,11 @@
 //! [`Seed::execute`] is called. Pre-built scenarios provide common test
 //! graph shapes.
 
+mod embeddings;
 mod executor;
+mod repository;
 pub mod scenarios;
 mod types;
 
-pub use executor::commit_relation_batch;
+pub use repository::commit_relation_batch;
 pub use types::{Seed, SeedItemSpec, SeedReferenceSpec, SeedResult, item, reference};
