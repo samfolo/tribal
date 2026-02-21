@@ -8,7 +8,9 @@
 mod db;
 mod error;
 mod factories;
+mod seeding;
 
 pub use db::{TestContext, TestTransaction, test_context};
 pub use error::TestDbError;
 pub use factories::*;
+pub use seeding::*;

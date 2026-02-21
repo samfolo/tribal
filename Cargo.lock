@@ -2863,7 +2863,10 @@ dependencies = [
 name = "tribal-test-utils"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
+ "fnv",
+ "indexmap 2.13.0",
  "serde_json",
  "sqlx",
  "testcontainers",
