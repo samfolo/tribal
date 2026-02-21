@@ -14,7 +14,11 @@ use tribal_inference::{CompletionRequest, EmbeddingRequest, InferenceError};
 
 use super::responses::ErrorFactory;
 
-// ── MockRequest trait ────────────────────────────────────────────────
+const MUTEX_POISONED: &str = "mock provider mutex poisoned";
+
+// ---------------------------------------------------------------------------
+// MockRequest trait
+// ---------------------------------------------------------------------------
 
 /// Extracts diagnostic information from request types for panic messages
 /// and tracing.
@@ -67,7 +71,9 @@ impl MockRequest for EmbeddingRequest {
     }
 }
 
-// ── ExhaustBehaviour ─────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// ExhaustBehaviour
+// ---------------------------------------------------------------------------
 
 /// Controls what happens when the sequential response queue is drained.
 pub enum ExhaustBehaviour {
@@ -81,7 +87,9 @@ pub enum ExhaustBehaviour {
     Error(ErrorFactory),
 }
 
-// ── Queue and conditional types ──────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Queue and conditional types
+// ---------------------------------------------------------------------------
 
 /// A single entry in the sequential response queue.
 pub(crate) enum QueueEntry<Resp> {
@@ -101,7 +109,9 @@ pub(crate) struct ConditionalEntry<Req, Resp> {
     pub outcome: ConditionalOutcome<Resp>,
 }
 
-// ── Core state ───────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Core state
+// ---------------------------------------------------------------------------
 
 struct CoreState<Req, Resp> {
     queue: VecDeque<QueueEntry<Resp>>,
@@ -110,7 +120,9 @@ struct CoreState<Req, Resp> {
     sequential_count: usize,
 }
 
-// ── MockProviderCore ─────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// MockProviderCore
+// ---------------------------------------------------------------------------
 
 /// Generic dispatch core for mock providers.
 ///
@@ -148,7 +160,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
     /// Dispatches a request through the conditional → sequential →
     /// exhaustion resolution chain.
     pub fn dispatch(&self, request: Req) -> Result<Resp, InferenceError> {
-        let mut state = self.state.lock().expect("mock provider mutex poisoned");
+        let mut state = self.state.lock().expect(MUTEX_POISONED);
 
         // 1. Record the request.
         state.history.push(request.clone());
@@ -263,17 +275,17 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
 
     /// Returns the number of calls dispatched so far.
     pub fn call_count(&self) -> usize {
-        self.state.lock().expect("mock provider mutex poisoned").history.len()
+        self.state.lock().expect(MUTEX_POISONED).history.len()
     }
 
     /// Returns a clone of all requests dispatched so far, in order.
     pub fn history(&self) -> Vec<Req> {
-        self.state.lock().expect("mock provider mutex poisoned").history.clone()
+        self.state.lock().expect(MUTEX_POISONED).history.clone()
     }
 
     /// Panics if the sequential queue has not been fully consumed.
     pub fn assert_exhausted(&self) {
-        let state = self.state.lock().expect("mock provider mutex poisoned");
+        let state = self.state.lock().expect(MUTEX_POISONED);
         let remaining = state.queue.len();
         if remaining > 0 {
             let consumed = state.sequential_count - remaining;
