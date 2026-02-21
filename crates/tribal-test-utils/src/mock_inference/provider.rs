@@ -57,11 +57,19 @@ impl MockInferenceProvider {
     }
 
     /// Returns a clone of all completion requests dispatched so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn completion_history(&self) -> Vec<CompletionRequest> {
         self.core.history()
     }
 
     /// Returns the number of calls dispatched so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn call_count(&self) -> usize {
         self.core.call_count()
     }
@@ -85,6 +93,11 @@ impl MockInferenceProvider {
     }
 
     /// Panics if the sequential queue has not been fully consumed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if sequential entries remain unconsumed, or if the
+    /// internal mutex is poisoned.
     pub fn assert_exhausted(&self) {
         self.core.assert_exhausted();
     }
@@ -231,11 +244,19 @@ impl MockEmbeddingProvider {
     }
 
     /// Returns a clone of all embedding requests dispatched so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn embedding_history(&self) -> Vec<EmbeddingRequest> {
         self.core.history()
     }
 
     /// Returns the number of calls dispatched so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn call_count(&self) -> usize {
         self.core.call_count()
     }
@@ -250,6 +271,11 @@ impl MockEmbeddingProvider {
     }
 
     /// Panics if the sequential queue has not been fully consumed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if sequential entries remain unconsumed, or if the
+    /// internal mutex is poisoned.
     pub fn assert_exhausted(&self) {
         self.core.assert_exhausted();
     }
