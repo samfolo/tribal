@@ -549,6 +549,50 @@ async fn test_clear_principal_persists_beyond_scope() {
         .await;
 }
 
+#[tokio::test]
+#[should_panic(expected = "requires an active principal")]
+async fn test_clear_principal_prevents_subsequent_relate() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin txn");
+
+    Seed::new()
+        .define_project("proj", "git@example.com:test.git")
+        .define_principal("user", "user:key")
+        .set_embedding_model("test-model", 768)
+        .as_principal("user")
+        .for_project("proj", |store| {
+            store
+                .add_item("a", item(Fact, "alpha").skip_embed())
+                .add_item("b", item(Fact, "beta").skip_embed());
+        })
+        .clear_principal()
+        .relate("a", Supports, "b")
+        .execute(&mut txn)
+        .await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "requires an active principal")]
+async fn test_scope_clear_principal_prevents_subsequent_relate() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin txn");
+
+    Seed::new()
+        .define_project("proj", "git@example.com:test.git")
+        .define_principal("user", "user:key")
+        .set_embedding_model("test-model", 768)
+        .as_principal("user")
+        .for_project("proj", |store| {
+            store
+                .add_item("a", item(Fact, "alpha").skip_embed())
+                .add_item("b", item(Fact, "beta").skip_embed())
+                .clear_principal();
+        })
+        .relate("a", Supports, "b")
+        .execute(&mut txn)
+        .await;
+}
+
 // ---------------------------------------------------------------------------
 // Pre-built scenarios
 // ---------------------------------------------------------------------------
