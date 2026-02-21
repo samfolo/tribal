@@ -318,6 +318,14 @@ impl Seed {
         self
     }
 
+    /// Clears the active principal. Subsequent `add_item` or `observe`
+    /// calls without a re-set principal will panic at execute-time.
+    #[must_use]
+    pub fn clear_principal(mut self) -> Self {
+        self.current_principal = None;
+        self
+    }
+
     /// Opens a project scope. Items, observations, and references
     /// declared within the closure are attributed to the named project.
     ///
@@ -474,6 +482,14 @@ impl ProjectScope<'_> {
     /// Switches the active principal within this scope.
     pub fn as_principal(&mut self, label: impl Into<String>) -> &mut Self {
         *self.current_principal = Some(label.into());
+        self
+    }
+
+    /// Clears the active principal within this scope. Subsequent
+    /// `add_item` or `observe` calls without a re-set principal will
+    /// panic at execute-time.
+    pub fn clear_principal(&mut self) -> &mut Self {
+        *self.current_principal = None;
         self
     }
 }
