@@ -1,9 +1,12 @@
 //! Seed executor: processes the command list accumulated by the
 //! [`Seed`](super::types::Seed) builder, inserting entities via the
 //! repository layer and returning a [`SeedResult`].
+//!
+//! Uses a reducer pattern: the main [`execute`] loop dispatches each
+//! command to a dedicated handler function that updates the shared
+//! [`ExecutionState`].
 
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 use chrono::{DateTime, Duration, SubsecRound, Utc};
 use indexmap::IndexMap;
@@ -22,171 +25,15 @@ use tribal_domain::{
     ReferenceId, RelationBatchId, RelationId, RelationKind,
 };
 
-use super::types::{CommittedBatch, SeedCommand, SeedItemSpec, SeedResult};
-
-// ---------------------------------------------------------------------------
-// Deterministic embedding generation
-// ---------------------------------------------------------------------------
-
-/// Assigns embedding group labels to dominant vector dimensions.
-struct EmbeddingGroupAssigner {
-    /// Label → (dominant dimension index, next position within group).
-    groups: HashMap<String, (usize, usize)>,
-    dimensions: usize,
-}
-
-impl EmbeddingGroupAssigner {
-    fn new(dimensions: usize) -> Self {
-        Self {
-            groups: HashMap::new(),
-            dimensions,
-        }
-    }
-
-    /// Returns `(dimension_index, position_in_group)` for the given
-    /// group label. The dimension is determined by hashing the label;
-    /// the position increments on each call within the same group.
-    fn assign(&mut self, group: &str) -> (usize, usize) {
-        let dims = self.dimensions;
-        let entry = self
-            .groups
-            .entry(group.to_owned())
-            .or_insert_with(|| {
-                let mut hasher = DefaultHasher::new();
-                group.hash(&mut hasher);
-                let dim_index = (hasher.finish() as usize) % dims;
-                (dim_index, 0)
-            });
-        let position = entry.1;
-        entry.1 += 1;
-        (entry.0, position)
-    }
-}
-
-/// Generates a deterministic embedding vector for an item.
-///
-/// Position 0 produces the canonical basis vector for the group's
-/// dominant dimension. Subsequent positions add small perturbations
-/// for deterministic search ordering within the group.
-fn make_group_embedding(
-    group_index: usize,
-    position_in_group: usize,
-    dimensions: usize,
-) -> Vec<f32> {
-    let mut v = vec![0.0f32; dimensions];
-    let dominant = group_index % dimensions;
-    v[dominant] = 1.0;
-    if position_in_group > 0 {
-        let noise_dim = (dominant + position_in_group) % dimensions;
-        if noise_dim != dominant {
-            v[noise_dim] = 0.1 / (position_in_group as f32);
-        }
-    }
-    v
-}
-
-// ---------------------------------------------------------------------------
-// Commitment scaffolding
-// ---------------------------------------------------------------------------
-
-/// Creates commitment scaffolding for a relation batch: a
-/// `prompt_version` row and a completed `job` row with
-/// `committed_batch_id = batch_id`.
-///
-/// Returns the [`JobId`] of the created job. Intended for test setup
-/// where relations need to appear committed without a full pipeline
-/// run.
-pub async fn commit_relation_batch(
-    conn: &mut PgConnection,
-    project_id: ProjectId,
-    principal_id: PrincipalId,
-    batch_id: RelationBatchId,
-) -> JobId {
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-
-    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut *conn)
-    .await
-    .expect("seed: insert prompt_version");
-
-    let job_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO jobs \
-         (project_id, principal_id, source_context, status, outcome, \
-          committed_batch_id, extraction_prompt_version_id, \
-          triage_prompt_version_id, relation_prompt_version_id) \
-         VALUES ($1, $2, $3, 'completed', 'success', $4, $5, $5, $5) \
-         RETURNING id",
-    )
-    .bind(project_id.inner())
-    .bind(principal_id.inner())
-    .bind(serde_json::json!({}))
-    .bind(batch_id.inner())
-    .bind(prompt_version_id)
-    .fetch_one(&mut *conn)
-    .await
-    .expect("seed: insert job");
-
-    JobId::from(job_id)
-}
-
-// ---------------------------------------------------------------------------
-// Backdating helpers
-// ---------------------------------------------------------------------------
-
-async fn backdate_item(conn: &mut PgConnection, id: KnowledgeItemId, ts: DateTime<Utc>) {
-    sqlx::query("UPDATE knowledge_items SET created_at = $1 WHERE id = $2")
-        .bind(ts)
-        .bind(id.inner())
-        .execute(&mut *conn)
-        .await
-        .expect("seed: backdate item");
-}
-
-async fn backdate_observation(
-    conn: &mut PgConnection,
-    id: ItemObservationId,
-    ts: DateTime<Utc>,
-) {
-    sqlx::query("UPDATE item_observations SET observed_at = $1 WHERE id = $2")
-        .bind(ts)
-        .bind(id.inner())
-        .execute(&mut *conn)
-        .await
-        .expect("seed: backdate observation");
-}
-
-async fn backdate_relations(conn: &mut PgConnection, ids: &[RelationId], ts: DateTime<Utc>) {
-    if ids.is_empty() {
-        return;
-    }
-    let raw_ids: Vec<&uuid::Uuid> = ids.iter().map(RelationId::inner).collect();
-    sqlx::query("UPDATE knowledge_item_relations SET created_at = $1 WHERE id = ANY($2)")
-        .bind(ts)
-        .bind(&raw_ids)
-        .execute(&mut *conn)
-        .await
-        .expect("seed: backdate relations");
-}
-
-// ---------------------------------------------------------------------------
-// Pending relation
-// ---------------------------------------------------------------------------
-
-struct PendingRelation {
-    source_label: String,
-    kind: RelationKind,
-    target_label: String,
-    principal_label: String,
-}
+use super::embeddings::{EmbeddingGroupAssigner, make_group_embedding};
+use super::repository::{PgSeedRepository, SeedRepository};
+use super::types::{CommittedBatch, SeedCommand, SeedItemSpec, SeedReferenceSpec, SeedResult};
 
 // ---------------------------------------------------------------------------
 // Execution state
 // ---------------------------------------------------------------------------
 
+/// Mutable state threaded through every command handler.
 struct ExecutionState {
     // Label → ID mappings
     projects: HashMap<String, ProjectId>,
@@ -271,28 +118,23 @@ impl ExecutionState {
     }
 }
 
+/// An accumulated relation awaiting commitment or final flush.
+struct PendingRelation {
+    source_label: String,
+    kind: RelationKind,
+    target_label: String,
+    principal_label: String,
+}
+
 // ---------------------------------------------------------------------------
-// Main executor
+// Main dispatcher
 // ---------------------------------------------------------------------------
 
 /// Executes a command list against the database.
 pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection) -> SeedResult {
     let mut state = ExecutionState::new();
 
-    // Pre-scan validation: at least one project and one principal.
-    let has_project = commands
-        .iter()
-        .any(|c| matches!(c, SeedCommand::CreateProject { .. }));
-    let has_principal = commands
-        .iter()
-        .any(|c| matches!(c, SeedCommand::CreatePrincipal { .. }));
-
-    if !has_project {
-        panic!("execute() called but no projects were defined");
-    }
-    if !has_principal {
-        panic!("execute() called but no principals were defined");
-    }
+    validate_preamble(&commands);
 
     let mut i = 0;
     while i < commands.len() {
@@ -302,138 +144,35 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
                 git_remote,
                 name,
             } => {
-                if let Some(&prev) = state.project_command_indices.get(label) {
-                    panic!(
-                        "duplicate project label '{label}' — first defined at command {prev}"
-                    );
-                }
-                state.project_command_indices.insert(label.clone(), i);
-
-                debug!("seed[{i}]: CreateProject label={label:?} git_remote={git_remote:?}");
-
-                let new_project = NewProject::builder()
-                    .git_remote(git_remote.clone())
-                    .name(name.clone())
-                    .default_branch("main".to_owned())
-                    .schema_version(1)
-                    .settings(serde_json::json!({}))
-                    .build();
-
-                let project = PgProjectRepository
-                    .insert(&mut *conn, &new_project)
-                    .await
-                    .expect("seed: insert project");
-
-                state.projects.insert(label.clone(), project.id());
+                handle_create_project(i, label, git_remote, name, &mut state, conn).await;
                 i += 1;
             }
 
             SeedCommand::CreatePrincipal { label, key } => {
-                if let Some(&prev) = state.principal_command_indices.get(label) {
-                    panic!(
-                        "duplicate principal label '{label}' — first defined at command {prev}"
-                    );
-                }
-                state.principal_command_indices.insert(label.clone(), i);
-
-                debug!("seed[{i}]: CreatePrincipal label={label:?} key={key:?}");
-
-                let new_principal = NewPrincipal::builder()
-                    .principal_key(key.clone())
-                    .build();
-
-                let principal = PgPrincipalRepository
-                    .insert(&mut *conn, &new_principal)
-                    .await
-                    .expect("seed: insert principal");
-
-                state.principals.insert(label.clone(), principal.id());
+                handle_create_principal(i, label, key, &mut state, conn).await;
                 i += 1;
             }
 
             SeedCommand::SetEmbeddingModel { model, dimensions } => {
-                let dimensions = *dimensions;
-
-                if dimensions == 0 {
-                    panic!("embedding dimensions must be greater than zero");
-                }
-
-                if let (Some(existing_model), Some(existing_dims)) =
-                    (&state.embedding_model, state.embedding_dimensions)
-                {
-                    if existing_model == model && existing_dims == dimensions {
-                        // Idempotent — no-op.
-                        debug!("seed[{i}]: SetEmbeddingModel (no-op, identical values)");
-                        i += 1;
-                        continue;
-                    }
-                    panic!(
-                        "set_embedding_model() called with conflicting values — \
-                         was ({existing_model}, {existing_dims}), \
-                         now ({model}, {dimensions})"
-                    );
-                }
-
-                debug!("seed[{i}]: SetEmbeddingModel model={model:?} dimensions={dimensions}");
-
-                state.embedding_model = Some(model.clone());
-                state.embedding_dimensions = Some(dimensions);
-                state.embedding_group_assigner = Some(EmbeddingGroupAssigner::new(dimensions));
+                handle_set_embedding_model(i, model, *dimensions, &mut state);
                 i += 1;
             }
 
             SeedCommand::SwitchPrincipal { label } => {
-                if !state.principals.contains_key(label) {
-                    let defined: Vec<_> = state.principals.keys().collect();
-                    panic!(
-                        "unknown principal '{label}' — defined principals: {defined:?}"
-                    );
-                }
-
-                debug!("seed[{i}]: SwitchPrincipal label={label:?}");
-                state.current_principal = Some(label.clone());
+                handle_switch_principal(i, label, &mut state);
                 i += 1;
             }
 
             SeedCommand::BeginProjectScope { project_label } => {
-                if !state.projects.contains_key(project_label) {
-                    let defined: Vec<_> = state.projects.keys().collect();
-                    panic!(
-                        "unknown project '{project_label}' — defined projects: {defined:?}"
-                    );
-                }
-
-                debug!("seed[{i}]: BeginProjectScope project={project_label:?}");
-
-                // Collect commands until matching EndProjectScope.
-                let scope_start = i;
-                let mut scope_commands = Vec::new();
-                i += 1;
-                while i < commands.len() {
-                    if matches!(
-                        &commands[i],
-                        SeedCommand::EndProjectScope { project_label: p } if p == project_label
-                    ) {
-                        break;
-                    }
-                    scope_commands.push(i);
-                    i += 1;
-                }
-
-                process_project_scope(
-                    &commands,
-                    &scope_commands,
+                let end_idx = handle_project_scope(
+                    i,
                     project_label,
-                    scope_start,
+                    &commands,
                     &mut state,
                     conn,
                 )
                 .await;
-
-                debug!("seed[{i}]: EndProjectScope project={project_label:?}");
-
-                // Skip past EndProjectScope.
-                i += 1;
+                i = end_idx + 1;
             }
 
             SeedCommand::Relate {
@@ -441,89 +180,24 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
                 kind,
                 target_label,
             } => {
-                if source_label == target_label {
-                    panic!(
-                        "self-relation not permitted: '{source_label}' cannot relate to itself"
-                    );
-                }
-
-                if !state.items.contains_key(source_label) {
-                    let defined: Vec<_> = state.items.keys().collect();
-                    panic!(
-                        "relation source '{source_label}' not found — defined items: {defined:?}"
-                    );
-                }
-                if !state.items.contains_key(target_label) {
-                    let defined: Vec<_> = state.items.keys().collect();
-                    panic!(
-                        "relation target '{target_label}' not found — defined items: {defined:?}"
-                    );
-                }
-
-                let principal_label = state.current_principal.clone().expect(
-                    "relate() requires an active principal — call as_principal() first",
-                );
-
-                debug!(
-                    "seed[{i}]: Relate source={source_label:?} kind={kind:?} target={target_label:?}"
-                );
-
-                state.pending_relations.push(PendingRelation {
-                    source_label: source_label.clone(),
-                    kind: *kind,
-                    target_label: target_label.clone(),
-                    principal_label,
-                });
+                handle_relate(i, source_label, *kind, target_label, &mut state);
                 i += 1;
             }
 
             SeedCommand::CommitRelations { label } => {
-                if state.pending_relations.is_empty() {
-                    warn!("seed[{i}]: commit_relations({label:?}) called with no pending relations");
-                    i += 1;
-                    continue;
-                }
-
-                if let Some(&prev) = state.batch_command_indices.get(label) {
-                    panic!(
-                        "duplicate batch label '{label}' — first committed at command {prev}"
-                    );
-                }
-                state.batch_command_indices.insert(label.clone(), i);
-
-                debug!(
-                    "seed[{i}]: CommitRelations batch_label={label:?} relation_count={}",
-                    state.pending_relations.len()
-                );
-
-                let relation_ids =
-                    flush_relations(&mut state, conn, true).await;
-
-                let batch = state.committed_batches.get(label).expect(
-                    "committed batch should have been stored by flush_relations",
-                );
-                let _ = batch; // Suppress unused warning; batch is already stored.
-
-                drop(relation_ids);
+                handle_commit_relations(i, label, &mut state, conn).await;
                 i += 1;
             }
 
             SeedCommand::Advance { delta } => {
-                if *delta < Duration::zero() {
-                    panic!(
-                        "advance() requires a non-negative duration, got {delta}"
-                    );
-                }
-
-                debug!(
-                    "seed[{i}]: Advance delta={delta} virtual_time={:?}",
-                    state.virtual_time() + *delta
-                );
-                state.accumulated_offset = state.accumulated_offset + *delta;
+                handle_advance(i, *delta, &mut state);
                 i += 1;
             }
 
-            // These are consumed by BeginProjectScope handler.
+            // These variants are only emitted inside BeginProjectScope..
+            // EndProjectScope pairs and are consumed by
+            // handle_project_scope. The builder API (Seed::for_project)
+            // guarantees they never appear at the top level.
             SeedCommand::AddItem { .. }
             | SeedCommand::Observe { .. }
             | SeedCommand::AddReference { .. }
@@ -538,11 +212,10 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
 
     // Final flush: uncommitted relations.
     if !state.pending_relations.is_empty() {
-        let relation_ids = flush_relations(&mut state, conn, false).await;
+        let relation_ids = flush_relations(&mut state, conn, None).await;
         state.uncommitted_relations = relation_ids;
     }
 
-    // Build SeedResult.
     SeedResult {
         projects: state.projects,
         principals: state.principals,
@@ -556,156 +229,374 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
 }
 
 // ---------------------------------------------------------------------------
-// Scope processing
+// Preamble validation
 // ---------------------------------------------------------------------------
 
-/// Processes a project scope using the two-bucket partition:
-/// 1. Items (with tag registration and backdating)
-/// 2. Dependents (observations, references)
-/// Then implicit embedding on scope close.
-async fn process_project_scope(
-    commands: &[SeedCommand],
-    scope_indices: &[usize],
-    project_label: &str,
-    scope_start: usize,
+/// Validates that the command list contains at least one project and
+/// one principal definition.
+fn validate_preamble(commands: &[SeedCommand]) {
+    let has_project = commands
+        .iter()
+        .any(|c| matches!(c, SeedCommand::CreateProject { .. }));
+    let has_principal = commands
+        .iter()
+        .any(|c| matches!(c, SeedCommand::CreatePrincipal { .. }));
+
+    if !has_project {
+        panic!("execute() called but no projects were defined");
+    }
+    if !has_principal {
+        panic!("execute() called but no principals were defined");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command handlers
+// ---------------------------------------------------------------------------
+
+async fn handle_create_project(
+    idx: usize,
+    label: &str,
+    git_remote: &str,
+    name: &str,
     state: &mut ExecutionState,
     conn: &mut PgConnection,
 ) {
+    if let Some(&prev) = state.project_command_indices.get(label) {
+        panic!("duplicate project label '{label}' — first defined at command {prev}");
+    }
+    state.project_command_indices.insert(label.to_owned(), idx);
+
+    debug!("seed[{idx}]: CreateProject label={label:?} git_remote={git_remote:?}");
+
+    let new_project = NewProject::builder()
+        .git_remote(git_remote.to_owned())
+        .name(name.to_owned())
+        .default_branch("main".to_owned())
+        .schema_version(1)
+        .settings(serde_json::json!({}))
+        .build();
+
+    let project = PgProjectRepository
+        .insert(&mut *conn, &new_project)
+        .await
+        .expect("seed: insert project");
+
+    state.projects.insert(label.to_owned(), project.id());
+}
+
+async fn handle_create_principal(
+    idx: usize,
+    label: &str,
+    key: &str,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) {
+    if let Some(&prev) = state.principal_command_indices.get(label) {
+        panic!("duplicate principal label '{label}' — first defined at command {prev}");
+    }
+    state
+        .principal_command_indices
+        .insert(label.to_owned(), idx);
+
+    debug!("seed[{idx}]: CreatePrincipal label={label:?} key={key:?}");
+
+    let new_principal = NewPrincipal::builder()
+        .principal_key(key.to_owned())
+        .build();
+
+    let principal = PgPrincipalRepository
+        .insert(&mut *conn, &new_principal)
+        .await
+        .expect("seed: insert principal");
+
+    state.principals.insert(label.to_owned(), principal.id());
+}
+
+fn handle_set_embedding_model(
+    idx: usize,
+    model: &str,
+    dimensions: usize,
+    state: &mut ExecutionState,
+) {
+    if dimensions == 0 {
+        panic!("embedding dimensions must be greater than zero");
+    }
+
+    if let (Some(existing_model), Some(existing_dims)) =
+        (&state.embedding_model, state.embedding_dimensions)
+    {
+        if existing_model == model && existing_dims == dimensions {
+            debug!("seed[{idx}]: SetEmbeddingModel (no-op, identical values)");
+            return;
+        }
+        panic!(
+            "set_embedding_model() called with conflicting values — \
+             was ({existing_model}, {existing_dims}), now ({model}, {dimensions})"
+        );
+    }
+
+    debug!("seed[{idx}]: SetEmbeddingModel model={model:?} dimensions={dimensions}");
+
+    state.embedding_model = Some(model.to_owned());
+    state.embedding_dimensions = Some(dimensions);
+    state.embedding_group_assigner = Some(EmbeddingGroupAssigner::new(dimensions));
+}
+
+fn handle_switch_principal(idx: usize, label: &str, state: &mut ExecutionState) {
+    if !state.principals.contains_key(label) {
+        let defined: Vec<_> = state.principals.keys().collect();
+        panic!("unknown principal '{label}' — defined principals: {defined:?}");
+    }
+
+    debug!("seed[{idx}]: SwitchPrincipal label={label:?}");
+    state.current_principal = Some(label.to_owned());
+}
+
+fn handle_relate(
+    idx: usize,
+    source_label: &str,
+    kind: RelationKind,
+    target_label: &str,
+    state: &mut ExecutionState,
+) {
+    if source_label == target_label {
+        panic!("self-relation not permitted: '{source_label}' cannot relate to itself");
+    }
+
+    if !state.items.contains_key(source_label) {
+        let defined: Vec<_> = state.items.keys().collect();
+        panic!("relation source '{source_label}' not found — defined items: {defined:?}");
+    }
+    if !state.items.contains_key(target_label) {
+        let defined: Vec<_> = state.items.keys().collect();
+        panic!("relation target '{target_label}' not found — defined items: {defined:?}");
+    }
+
+    let principal_label = state
+        .current_principal
+        .clone()
+        .expect("relate() requires an active principal — call as_principal() first");
+
+    debug!(
+        "seed[{idx}]: Relate source={source_label:?} kind={kind:?} target={target_label:?}"
+    );
+
+    state.pending_relations.push(PendingRelation {
+        source_label: source_label.to_owned(),
+        kind,
+        target_label: target_label.to_owned(),
+        principal_label,
+    });
+}
+
+async fn handle_commit_relations(
+    idx: usize,
+    label: &str,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) {
+    if state.pending_relations.is_empty() {
+        warn!("seed[{idx}]: commit_relations({label:?}) called with no pending relations");
+        return;
+    }
+
+    if let Some(&prev) = state.batch_command_indices.get(label) {
+        panic!("duplicate batch label '{label}' — first committed at command {prev}");
+    }
+    state.batch_command_indices.insert(label.to_owned(), idx);
+
+    debug!(
+        "seed[{idx}]: CommitRelations batch_label={label:?} relation_count={}",
+        state.pending_relations.len()
+    );
+
+    flush_relations(state, conn, Some(label)).await;
+}
+
+fn handle_advance(idx: usize, delta: Duration, state: &mut ExecutionState) {
+    if delta < Duration::zero() {
+        panic!("advance() requires a non-negative duration, got {delta}");
+    }
+
+    debug!(
+        "seed[{idx}]: Advance delta={delta} virtual_time={:?}",
+        state.virtual_time() + delta
+    );
+    state.accumulated_offset = state.accumulated_offset + delta;
+}
+
+// ---------------------------------------------------------------------------
+// Project scope processing
+// ---------------------------------------------------------------------------
+
+/// Processes a `BeginProjectScope..EndProjectScope` range using the
+/// two-bucket partition (items, then dependents) with implicit
+/// embedding on scope close.
+///
+/// Returns the index of the `EndProjectScope` command.
+async fn handle_project_scope(
+    begin_idx: usize,
+    project_label: &str,
+    commands: &[SeedCommand],
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) -> usize {
+    if !state.projects.contains_key(project_label) {
+        let defined: Vec<_> = state.projects.keys().collect();
+        panic!("unknown project '{project_label}' — defined projects: {defined:?}");
+    }
+
+    debug!("seed[{begin_idx}]: BeginProjectScope project={project_label:?}");
+
+    // Collect indices of commands within this scope.
+    let mut scope_indices = Vec::new();
+    let mut i = begin_idx + 1;
+    while i < commands.len() {
+        if matches!(
+            &commands[i],
+            SeedCommand::EndProjectScope { project_label: p } if p == project_label
+        ) {
+            break;
+        }
+        scope_indices.push(i);
+        i += 1;
+    }
+    let end_idx = i;
+
     let project_id = state.projects[project_label];
     let vt = state.virtual_time();
 
     // --- Bucket 1: Items ---
-    let mut scope_item_labels: Vec<String> = Vec::new();
+    let scope_item_labels =
+        process_scope_items(commands, &scope_indices, project_label, project_id, vt, state, conn)
+            .await;
+
+    // --- Bucket 2: Dependents ---
+    process_scope_dependents(commands, &scope_indices, project_label, vt, state, conn).await;
+
+    // --- Implicit embedding on scope close ---
+    process_scope_embeddings(commands, &scope_indices, &scope_item_labels, begin_idx, state, conn)
+        .await;
+
+    debug!("seed[{end_idx}]: EndProjectScope project={project_label:?}");
+
+    end_idx
+}
+
+/// Bucket 1: inserts all `AddItem` commands within the scope.
+async fn process_scope_items(
+    commands: &[SeedCommand],
+    scope_indices: &[usize],
+    project_label: &str,
+    project_id: ProjectId,
+    vt: DateTime<Utc>,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) -> Vec<String> {
+    let repo = PgSeedRepository;
+    let mut scope_item_labels = Vec::new();
 
     for &idx in scope_indices {
-        if let SeedCommand::AddItem {
+        let SeedCommand::AddItem {
             label,
             principal_label,
             spec,
             ..
         } = &commands[idx]
-        {
-            // Validate no duplicate item label.
-            if let Some(&prev) = state.item_command_indices.get(label) {
-                panic!(
-                    "duplicate item label '{label}' — first defined at command {prev}"
-                );
-            }
-            state.item_command_indices.insert(label.clone(), idx);
+        else {
+            continue;
+        };
 
-            // Validate principal.
-            let principal_label = principal_label.as_ref().unwrap_or_else(|| {
-                panic!(
-                    "add_item() requires an active principal — \
-                     call as_principal() before for_project()"
-                );
-            });
-            let principal_id = *state.principals.get(principal_label).unwrap_or_else(|| {
-                let defined: Vec<_> = state.principals.keys().collect();
-                panic!(
-                    "unknown principal '{principal_label}' — defined principals: {defined:?}"
-                );
-            });
-
-            // Resolve episode.
-            let episode_id = spec
-                .episode_label
-                .as_ref()
-                .map(|ep| state.resolve_episode(ep));
-
-            debug!(
-                "seed[{idx}]: AddItem label={label:?} kind={:?} project={project_label:?} principal={principal_label:?}",
-                spec.kind
-            );
-
-            let new_item = NewKnowledgeItem::builder()
-                .project_id(project_id)
-                .principal_id(principal_id)
-                .kind(spec.kind)
-                .content(spec.content.clone())
-                .tags(spec.tags.clone())
-                .confidence(spec.confidence)
-                .source_context(spec.source_context.clone())
-                .episode_id(episode_id)
-                .capture_commit(spec.capture_commit.clone())
-                .capture_branch(spec.capture_branch.clone())
-                .build();
-
-            let item = PgKnowledgeItemRepository
-                .insert(&mut *conn, &new_item)
-                .await
-                .expect("seed: insert item");
-
-            let ki_id = item.id();
-            state.items.insert(label.clone(), ki_id);
-            state.item_projects.insert(label.clone(), project_label.to_owned());
-            scope_item_labels.push(label.clone());
-
-            // Auto-register tags.
-            if !spec.tags.is_empty() {
-                PgTagRegistryRepository
-                    .batch_upsert(&mut *conn, &spec.tags)
-                    .await
-                    .expect("seed: register tags");
-            }
-
-            // Backdate created_at.
-            backdate_item(conn, ki_id, vt).await;
+        if let Some(&prev) = state.item_command_indices.get(label) {
+            panic!("duplicate item label '{label}' — first defined at command {prev}");
         }
+        state.item_command_indices.insert(label.clone(), idx);
+
+        let principal_label = principal_label.as_ref().unwrap_or_else(|| {
+            panic!(
+                "add_item() requires an active principal — \
+                 call as_principal() before for_project()"
+            );
+        });
+        let principal_id = *state.principals.get(principal_label).unwrap_or_else(|| {
+            let defined: Vec<_> = state.principals.keys().collect();
+            panic!("unknown principal '{principal_label}' — defined principals: {defined:?}");
+        });
+
+        let episode_id = spec
+            .episode_label
+            .as_ref()
+            .map(|ep| state.resolve_episode(ep));
+
+        debug!(
+            "seed[{idx}]: AddItem label={label:?} kind={:?} \
+             project={project_label:?} principal={principal_label:?}",
+            spec.kind
+        );
+
+        let new_item = NewKnowledgeItem::builder()
+            .project_id(project_id)
+            .principal_id(principal_id)
+            .kind(spec.kind)
+            .content(spec.content.clone())
+            .tags(spec.tags.clone())
+            .confidence(spec.confidence)
+            .source_context(spec.source_context.clone())
+            .episode_id(episode_id)
+            .capture_commit(spec.capture_commit.clone())
+            .capture_branch(spec.capture_branch.clone())
+            .build();
+
+        let item = PgKnowledgeItemRepository
+            .insert(&mut *conn, &new_item)
+            .await
+            .expect("seed: insert item");
+
+        let ki_id = item.id();
+        state.items.insert(label.clone(), ki_id);
+        state
+            .item_projects
+            .insert(label.clone(), project_label.to_owned());
+        scope_item_labels.push(label.clone());
+
+        if !spec.tags.is_empty() {
+            PgTagRegistryRepository
+                .batch_upsert(&mut *conn, &spec.tags)
+                .await
+                .expect("seed: register tags");
+        }
+
+        repo.backdate_item(conn, ki_id, vt).await;
     }
 
-    // --- Bucket 2: Dependents ---
+    scope_item_labels
+}
+
+/// Bucket 2: processes `Observe`, `AddReference`, and
+/// `AddReferenceSpec` commands. Uses exhaustive matching to ensure
+/// new command variants cannot be silently dropped.
+async fn process_scope_dependents(
+    commands: &[SeedCommand],
+    scope_indices: &[usize],
+    project_label: &str,
+    vt: DateTime<Utc>,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) {
+    let repo = PgSeedRepository;
+
     for &idx in scope_indices {
         match &commands[idx] {
+            // Items handled in bucket 1.
+            SeedCommand::AddItem { .. } => {}
+
             SeedCommand::Observe {
                 item_label,
                 principal_label,
                 source_type,
             } => {
-                let ki_id = *state.items.get(item_label).unwrap_or_else(|| {
-                    let defined: Vec<_> = state.items.keys().collect();
-                    panic!(
-                        "observe target '{item_label}' not found — defined items: {defined:?}"
-                    );
-                });
-
-                let principal_label = principal_label.as_ref().unwrap_or_else(|| {
-                    panic!(
-                        "observe() requires an active principal — \
-                         call as_principal() before for_project()"
-                    );
-                });
-                let principal_id =
-                    *state.principals.get(principal_label).unwrap_or_else(|| {
-                        let defined: Vec<_> = state.principals.keys().collect();
-                        panic!(
-                            "unknown principal '{principal_label}' — \
-                             defined principals: {defined:?}"
-                        );
-                    });
-
-                debug!("seed[{idx}]: Observe item={item_label:?} source_type={source_type:?}");
-
-                let new_obs = NewItemObservation::builder()
-                    .knowledge_item_id(ki_id)
-                    .principal_id(principal_id)
-                    .source_type(*source_type)
-                    .build();
-
-                let obs = PgItemObservationRepository
-                    .insert(&mut *conn, &new_obs)
-                    .await
-                    .expect("seed: insert observation");
-
-                let obs_id = obs.id();
-                state
-                    .observations
-                    .entry(item_label.clone())
-                    .or_default()
-                    .push(obs_id);
-
-                // Backdate observed_at.
-                backdate_observation(conn, obs_id, vt).await;
+                handle_scope_observe(idx, item_label, principal_label, *source_type, vt, state, conn, &repo).await;
             }
 
             SeedCommand::AddReference {
@@ -714,36 +605,7 @@ async fn process_project_scope(
                 kind,
                 value,
             } => {
-                let ki_id = *state.items.get(item_label).unwrap_or_else(|| {
-                    let defined: Vec<_> = state.items.keys().collect();
-                    panic!(
-                        "reference target '{item_label}' not found — \
-                         defined items: {defined:?}"
-                    );
-                });
-                let ref_project_id = state.projects[ref_project_label.as_str()];
-
-                debug!(
-                    "seed[{idx}]: AddReference item={item_label:?} kind={kind:?} value={value:?}"
-                );
-
-                let new_ref = NewReference::builder()
-                    .knowledge_item_id(ki_id)
-                    .kind(*kind)
-                    .value(value.clone())
-                    .project_id(ref_project_id)
-                    .build();
-
-                let reference = PgReferenceRepository
-                    .insert(&mut *conn, &new_ref)
-                    .await
-                    .expect("seed: insert reference");
-
-                state
-                    .references
-                    .entry(item_label.clone())
-                    .or_default()
-                    .push(reference.id());
+                handle_scope_add_reference(idx, item_label, ref_project_label, *kind, value, state, conn).await;
             }
 
             SeedCommand::AddReferenceSpec {
@@ -751,48 +613,168 @@ async fn process_project_scope(
                 project_label: ref_project_label,
                 spec,
             } => {
-                let ki_id = *state.items.get(item_label).unwrap_or_else(|| {
-                    let defined: Vec<_> = state.items.keys().collect();
-                    panic!(
-                        "reference target '{item_label}' not found — \
-                         defined items: {defined:?}"
-                    );
-                });
-                let ref_project_id = state.projects[ref_project_label.as_str()];
-
-                debug!(
-                    "seed[{idx}]: AddReferenceSpec item={item_label:?} kind={:?} value={:?}",
-                    spec.kind, spec.value
-                );
-
-                let new_ref = NewReference::builder()
-                    .knowledge_item_id(ki_id)
-                    .kind(spec.kind)
-                    .value(spec.value.clone())
-                    .description(spec.description.clone())
-                    .project_id(ref_project_id)
-                    .commit(spec.commit.clone())
-                    .branch(spec.branch.clone())
-                    .build();
-
-                let reference = PgReferenceRepository
-                    .insert(&mut *conn, &new_ref)
-                    .await
-                    .expect("seed: insert reference");
-
-                state
-                    .references
-                    .entry(item_label.clone())
-                    .or_default()
-                    .push(reference.id());
+                handle_scope_add_reference_spec(idx, item_label, ref_project_label, spec, state, conn).await;
             }
 
-            // Items were handled in bucket 1; skip everything else.
-            _ => {}
+            // These variants cannot appear inside a project scope.
+            // The builder API only emits AddItem, Observe,
+            // AddReference, and AddReferenceSpec within
+            // BeginProjectScope..EndProjectScope.
+            SeedCommand::CreateProject { .. }
+            | SeedCommand::CreatePrincipal { .. }
+            | SeedCommand::SetEmbeddingModel { .. }
+            | SeedCommand::SwitchPrincipal { .. }
+            | SeedCommand::BeginProjectScope { .. }
+            | SeedCommand::EndProjectScope { .. }
+            | SeedCommand::Relate { .. }
+            | SeedCommand::CommitRelations { .. }
+            | SeedCommand::Advance { .. } => {
+                unreachable!(
+                    "seed[{idx}]: unexpected command inside project scope '{project_label}'"
+                );
+            }
         }
     }
+}
 
-    // --- Implicit embedding on scope close ---
+async fn handle_scope_observe(
+    idx: usize,
+    item_label: &str,
+    principal_label: &Option<String>,
+    source_type: tribal_domain::SourceType,
+    vt: DateTime<Utc>,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+    repo: &PgSeedRepository,
+) {
+    let ki_id = *state.items.get(item_label).unwrap_or_else(|| {
+        let defined: Vec<_> = state.items.keys().collect();
+        panic!("observe target '{item_label}' not found — defined items: {defined:?}");
+    });
+
+    let principal_label = principal_label.as_ref().unwrap_or_else(|| {
+        panic!(
+            "observe() requires an active principal — \
+             call as_principal() before for_project()"
+        );
+    });
+    let principal_id = *state.principals.get(principal_label).unwrap_or_else(|| {
+        let defined: Vec<_> = state.principals.keys().collect();
+        panic!("unknown principal '{principal_label}' — defined principals: {defined:?}");
+    });
+
+    debug!("seed[{idx}]: Observe item={item_label:?} source_type={source_type:?}");
+
+    let new_obs = NewItemObservation::builder()
+        .knowledge_item_id(ki_id)
+        .principal_id(principal_id)
+        .source_type(source_type)
+        .build();
+
+    let obs = PgItemObservationRepository
+        .insert(&mut *conn, &new_obs)
+        .await
+        .expect("seed: insert observation");
+
+    let obs_id = obs.id();
+    state
+        .observations
+        .entry(item_label.to_owned())
+        .or_default()
+        .push(obs_id);
+
+    repo.backdate_observation(conn, obs_id, vt).await;
+}
+
+async fn handle_scope_add_reference(
+    idx: usize,
+    item_label: &str,
+    ref_project_label: &str,
+    kind: tribal_domain::ReferenceKind,
+    value: &str,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) {
+    let ki_id = *state.items.get(item_label).unwrap_or_else(|| {
+        let defined: Vec<_> = state.items.keys().collect();
+        panic!("reference target '{item_label}' not found — defined items: {defined:?}");
+    });
+    let ref_project_id = state.projects[ref_project_label];
+
+    debug!("seed[{idx}]: AddReference item={item_label:?} kind={kind:?} value={value:?}");
+
+    let new_ref = NewReference::builder()
+        .knowledge_item_id(ki_id)
+        .kind(kind)
+        .value(value.to_owned())
+        .project_id(ref_project_id)
+        .build();
+
+    let reference = PgReferenceRepository
+        .insert(&mut *conn, &new_ref)
+        .await
+        .expect("seed: insert reference");
+
+    state
+        .references
+        .entry(item_label.to_owned())
+        .or_default()
+        .push(reference.id());
+}
+
+async fn handle_scope_add_reference_spec(
+    idx: usize,
+    item_label: &str,
+    ref_project_label: &str,
+    spec: &SeedReferenceSpec,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) {
+    let ki_id = *state.items.get(item_label).unwrap_or_else(|| {
+        let defined: Vec<_> = state.items.keys().collect();
+        panic!("reference target '{item_label}' not found — defined items: {defined:?}");
+    });
+    let ref_project_id = state.projects[ref_project_label];
+
+    debug!(
+        "seed[{idx}]: AddReferenceSpec item={item_label:?} kind={:?} value={:?}",
+        spec.kind, spec.value
+    );
+
+    let new_ref = NewReference::builder()
+        .knowledge_item_id(ki_id)
+        .kind(spec.kind)
+        .value(spec.value.clone())
+        .description(spec.description.clone())
+        .project_id(ref_project_id)
+        .commit(spec.commit.clone())
+        .branch(spec.branch.clone())
+        .build();
+
+    let reference = PgReferenceRepository
+        .insert(&mut *conn, &new_ref)
+        .await
+        .expect("seed: insert reference");
+
+    state
+        .references
+        .entry(item_label.to_owned())
+        .or_default()
+        .push(reference.id());
+}
+
+/// Implicit embedding on scope close: generates and inserts
+/// deterministic embeddings for all non-`skip_embed` items added in
+/// this scope.
+async fn process_scope_embeddings(
+    commands: &[SeedCommand],
+    scope_indices: &[usize],
+    scope_item_labels: &[String],
+    scope_start: usize,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) {
+    // Collect embeddable items (those not marked skip_embed).
     let embeddable: Vec<(String, SeedItemSpec)> = scope_item_labels
         .iter()
         .filter_map(|label| {
@@ -811,45 +793,47 @@ async fn process_project_scope(
         })
         .collect();
 
-    if !embeddable.is_empty() {
-        let model = state.embedding_model.as_ref().unwrap_or_else(|| {
-            panic!(
-                "for_project() adds embeddable items but no embedding model set — \
-                 call set_embedding_model() first or mark all items skip_embed()"
-            );
-        });
-        let dimensions = state.embedding_dimensions.unwrap();
-        let assigner = state.embedding_group_assigner.as_mut().unwrap();
+    if embeddable.is_empty() {
+        return;
+    }
 
-        for (label, spec) in &embeddable {
-            let group = spec
-                .embedding_group
-                .clone()
-                .unwrap_or_else(|| format!("__item:{label}"));
+    let model = state.embedding_model.as_ref().unwrap_or_else(|| {
+        panic!(
+            "for_project() adds embeddable items but no embedding model set — \
+             call set_embedding_model() first or mark all items skip_embed()"
+        );
+    });
+    let dimensions = state.embedding_dimensions.unwrap();
+    let assigner = state.embedding_group_assigner.as_mut().unwrap();
 
-            let (group_index, position) = assigner.assign(&group);
-            let vector = make_group_embedding(group_index, position, dimensions);
+    for (label, spec) in &embeddable {
+        let group = spec
+            .embedding_group
+            .clone()
+            .unwrap_or_else(|| format!("__item:{label}"));
 
-            let ki_id = state.items[label.as_str()];
+        let (group_index, position) = assigner.assign(&group);
+        let vector = make_group_embedding(group_index, position, dimensions);
 
-            debug!(
-                "seed[{scope_start}]: EmbedItem label={label:?} model={model:?} group={group:?}"
-            );
+        let ki_id = state.items[label.as_str()];
 
-            let new_embedding = NewEmbedding::builder()
-                .knowledge_item_id(ki_id)
-                .model(model.clone())
-                .dimensions(u32::try_from(dimensions).expect("dimensions fit in u32"))
-                .embedding(vector)
-                .build();
+        debug!(
+            "seed[{scope_start}]: EmbedItem label={label:?} model={model:?} group={group:?}"
+        );
 
-            let embedding = PgEmbeddingRepository
-                .insert(&mut *conn, &new_embedding)
-                .await
-                .expect("seed: insert embedding");
+        let new_embedding = NewEmbedding::builder()
+            .knowledge_item_id(ki_id)
+            .model(model.clone())
+            .dimensions(u32::try_from(dimensions).expect("dimensions fit in u32"))
+            .embedding(vector)
+            .build();
 
-            state.embeddings.insert(label.clone(), embedding.id());
-        }
+        let embedding = PgEmbeddingRepository
+            .insert(&mut *conn, &new_embedding)
+            .await
+            .expect("seed: insert embedding");
+
+        state.embeddings.insert(label.clone(), embedding.id());
     }
 }
 
@@ -857,20 +841,20 @@ async fn process_project_scope(
 // Relation flushing
 // ---------------------------------------------------------------------------
 
-/// Flushes pending relations. If `commit` is true, creates commitment
-/// scaffolding and stores the batch in `committed_batches` under the
-/// label from the most recent `CommitRelations` command.
+/// Flushes pending relations. If `batch_label` is `Some`, creates
+/// commitment scaffolding and stores the batch in `committed_batches`.
+/// If `None`, relations are inserted without scaffolding (uncommitted).
 ///
-/// Returns the relation IDs.
+/// Returns the inserted relation IDs.
 async fn flush_relations(
     state: &mut ExecutionState,
     conn: &mut PgConnection,
-    commit: bool,
+    batch_label: Option<&str>,
 ) -> Vec<RelationId> {
+    let repo = PgSeedRepository;
     let batch_id = RelationBatchId::new();
     let vt = state.virtual_time();
 
-    // Build NewKnowledgeItemRelation structs.
     let new_relations: Vec<NewKnowledgeItemRelation> = state
         .pending_relations
         .iter()
@@ -896,30 +880,21 @@ async fn flush_relations(
 
     let relation_ids: Vec<RelationId> = inserted.iter().map(|r| r.id()).collect();
 
-    // Backdate all relations.
-    backdate_relations(conn, &relation_ids, vt).await;
+    repo.backdate_relations(conn, &relation_ids, vt).await;
 
-    if commit {
-        // Use first relation's source item's project for scaffolding.
+    if let Some(label) = batch_label {
         let first_source = &state.pending_relations[0].source_label;
         let project_label = &state.item_projects[first_source.as_str()];
         let project_id = state.projects[project_label.as_str()];
         let principal_id =
             state.principals[state.pending_relations[0].principal_label.as_str()];
 
-        let job_id =
-            commit_relation_batch(&mut *conn, project_id, principal_id, batch_id).await;
-
-        // Find the batch label from the most recent CommitRelations command index.
-        let batch_label = state
-            .batch_command_indices
-            .iter()
-            .max_by_key(|&(_, &idx)| idx)
-            .map(|(label, _)| label.clone())
-            .expect("commit=true but no batch label recorded");
+        let job_id = repo
+            .commit_relation_batch(&mut *conn, project_id, principal_id, batch_id)
+            .await;
 
         state.committed_batches.insert(
-            batch_label,
+            label.to_owned(),
             CommittedBatch {
                 relation_ids: relation_ids.clone(),
                 job_id,
@@ -930,88 +905,4 @@ async fn flush_relations(
 
     state.pending_relations.clear();
     relation_ids
-}
-
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_make_group_embedding_canonical_vector() {
-        let v = make_group_embedding(5, 0, 768);
-        assert_eq!(v.len(), 768);
-        assert!((v[5] - 1.0).abs() < f32::EPSILON);
-        for (i, &val) in v.iter().enumerate() {
-            if i != 5 {
-                assert!((val - 0.0).abs() < f32::EPSILON, "dim {i} should be 0.0");
-            }
-        }
-    }
-
-    #[test]
-    fn test_make_group_embedding_perturbation() {
-        let v = make_group_embedding(5, 1, 768);
-        assert!((v[5] - 1.0).abs() < f32::EPSILON);
-        // Noise at dim (5 + 1) % 768 = 6.
-        assert!((v[6] - 0.1).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn test_make_group_embedding_increasing_perturbation_reduces_similarity() {
-        let v0 = make_group_embedding(5, 0, 768);
-        let v1 = make_group_embedding(5, 1, 768);
-        let v2 = make_group_embedding(5, 2, 768);
-
-        let cos_01 = cosine_similarity(&v0, &v1);
-        let cos_02 = cosine_similarity(&v0, &v2);
-
-        assert!(
-            cos_01 > cos_02,
-            "position 1 ({cos_01}) should be more similar to canonical than position 2 ({cos_02})"
-        );
-    }
-
-    #[test]
-    fn test_embedding_group_assigner_same_group_same_dim() {
-        let mut assigner = EmbeddingGroupAssigner::new(768);
-        let (dim_a, pos_a) = assigner.assign("group-a");
-        let (dim_b, pos_b) = assigner.assign("group-a");
-        assert_eq!(dim_a, dim_b);
-        assert_eq!(pos_a, 0);
-        assert_eq!(pos_b, 1);
-    }
-
-    #[test]
-    fn test_embedding_group_assigner_different_groups() {
-        let mut assigner = EmbeddingGroupAssigner::new(768);
-        let (dim_a, _) = assigner.assign("caching");
-        let (dim_b, _) = assigner.assign("design");
-        // With 768 dimensions, hash collision is negligible.
-        assert_ne!(
-            dim_a, dim_b,
-            "different groups should map to different dimensions (hash collision unlikely)"
-        );
-    }
-
-    #[test]
-    fn test_embedding_group_assigner_auto_position_increment() {
-        let mut assigner = EmbeddingGroupAssigner::new(768);
-        let (_, p0) = assigner.assign("x");
-        let (_, p1) = assigner.assign("x");
-        let (_, p2) = assigner.assign("x");
-        assert_eq!(p0, 0);
-        assert_eq!(p1, 1);
-        assert_eq!(p2, 2);
-    }
-
-    fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-        let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        dot / (norm_a * norm_b)
-    }
 }
