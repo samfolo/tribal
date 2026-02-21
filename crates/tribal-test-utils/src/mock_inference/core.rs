@@ -11,6 +11,7 @@ use tracing::debug;
 use tribal_inference::{CompletionRequest, EmbeddingRequest, InferenceError};
 
 use super::responses::ErrorFactory;
+use crate::text::truncate;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -48,8 +49,7 @@ impl MockRequest for CompletionRequest {
 
     fn context_preview(&self) -> String {
         match &self.system {
-            Some(s) if s.len() > 80 => format!("{}...", &s[..80]),
-            Some(s) => s.clone(),
+            Some(s) => truncate(s, 80),
             None => "<none>".to_owned(),
         }
     }
@@ -65,11 +65,7 @@ impl MockRequest for EmbeddingRequest {
     }
 
     fn context_preview(&self) -> String {
-        if self.input.len() > 80 {
-            format!("{}...", &self.input[..80])
-        } else {
-            self.input.clone()
-        }
+        truncate(&self.input, 80)
     }
 }
 
