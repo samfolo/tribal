@@ -168,7 +168,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
         let call_number = state.history.len();
 
         // Check conditionals — first match wins.
-        for entry in &self.conditionals {
+        for (idx, entry) in self.conditionals.iter().enumerate() {
             if (entry.matcher)(request) {
                 return match &entry.outcome {
                     ConditionalOutcome::Ok(resp) => {
@@ -176,7 +176,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                         debug!(
                             provider = self.provider_name,
                             call = call_number,
-                            "conditional match"
+                            "conditional #{idx} matched"
                         );
                         Ok(result)
                     }
@@ -185,7 +185,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                         debug!(
                             provider = self.provider_name,
                             call = call_number,
-                            "conditional error"
+                            "conditional #{idx} error"
                         );
                         Err(err)
                     }
@@ -195,6 +195,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
 
         // Pop from sequential queue.
         if let Some(entry) = state.queue.pop_front() {
+            let consumed = state.sequential_count - state.queue.len();
             return match entry {
                 QueueEntry::Ok(resp) => {
                     let result = resp.clone();
@@ -202,7 +203,8 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                     debug!(
                         provider = self.provider_name,
                         call = call_number,
-                        "sequential"
+                        "sequential queue pop ({consumed} of {total})",
+                        total = state.sequential_count,
                     );
                     Ok(result)
                 }
@@ -211,7 +213,8 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                     debug!(
                         provider = self.provider_name,
                         call = call_number,
-                        "sequential error"
+                        "sequential queue pop ({consumed} of {total}), error",
+                        total = state.sequential_count,
                     );
                     Err(err)
                 }
@@ -292,7 +295,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                 debug!(
                     provider = self.provider_name,
                     call = call_number,
-                    "repeat last"
+                    "exhausted, repeating last"
                 );
                 Ok(result)
             }
