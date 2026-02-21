@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_llm_call_failed_source_chain() {
-        let inner = std::io::Error::new(std::io::ErrorKind::Other, "upstream");
+        let inner = std::io::Error::other("upstream");
         let err = InferenceError::LlmCallFailed {
             model: "model".to_owned(),
             context: "ctx".to_owned(),
