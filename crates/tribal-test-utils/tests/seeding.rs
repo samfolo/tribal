@@ -8,17 +8,17 @@
 use chrono::Duration;
 use tribal_db::{
     EmbeddingRepository, ItemObservationRepository, JobRepository, KnowledgeItemRepository,
-    PgEmbeddingRepository, PgItemObservationRepository, PgJobRepository,
-    PgKnowledgeItemRepository, PgReferenceRepository, PgRelationRepository, PgTagRegistryRepository,
-    ReferenceRepository, RelationRepository, TagRegistryRepository,
+    PgEmbeddingRepository, PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository,
+    PgReferenceRepository, PgRelationRepository, PgTagRegistryRepository, ReferenceRepository,
+    RelationRepository, TagRegistryRepository,
 };
 use tribal_domain::{
-    KnowledgeKind::{self, DecisionRecord, Fact, Heuristic},
-    ReferenceKind::{self, Concept, FilePath, Symbol, Url},
-    RelationKind::{Contradicts, DerivedFrom, Supersedes, Supports},
+    KnowledgeKind::{Fact, Heuristic},
+    ReferenceKind::{FilePath, Url},
+    RelationKind::{Supersedes, Supports},
     SourceType,
 };
-use tribal_test_utils::{Seed, SeedReferenceSpec, item, reference, scenarios, test_context};
+use tribal_test_utils::{Seed, item, scenarios, test_context};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,7 +48,7 @@ async fn test_basic_seed_inserts_project_and_principal() {
         .for_project("proj", |store| {
             store.add_item("item-1", item(Fact, "test content").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let proj_id = result.project_id("proj");
@@ -57,7 +57,7 @@ async fn test_basic_seed_inserts_project_and_principal() {
 
     // Verify IDs are valid by fetching from the database.
     let item = PgKnowledgeItemRepository
-        .find_by_id(&mut *txn, ki_id)
+        .find_by_id(&mut txn, ki_id)
         .await
         .expect("item should exist");
     assert_eq!(item.id(), ki_id);
@@ -83,18 +83,18 @@ async fn test_seed_with_items_and_embeddings() {
                 .add_item("a", item(Fact, "alpha").embedding_group("grp"))
                 .add_item("b", item(Heuristic, "beta").embedding_group("grp"));
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     // Both items should have embeddings.
     let emb_a = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut *txn, result.item_id("a"), "test-model")
+        .find_by_knowledge_item_id(&mut txn, result.item_id("a"), "test-model")
         .await
         .expect("query")
         .expect("embedding for 'a' should exist");
 
     let emb_b = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut *txn, result.item_id("b"), "test-model")
+        .find_by_knowledge_item_id(&mut txn, result.item_id("b"), "test-model")
         .await
         .expect("query")
         .expect("embedding for 'b' should exist");
@@ -122,11 +122,11 @@ async fn test_seed_with_tags_auto_registers_in_registry() {
                     .skip_embed(),
             );
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let all_tags = PgTagRegistryRepository
-        .find_all(&mut *txn)
+        .find_all(&mut txn)
         .await
         .expect("find_all tags");
 
@@ -152,15 +152,15 @@ async fn test_seed_virtual_clock_backdating() {
         .for_project("proj", |store| {
             store.add_item("late", item(Fact, "late item").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let early = PgKnowledgeItemRepository
-        .find_by_id(&mut *txn, result.item_id("early"))
+        .find_by_id(&mut txn, result.item_id("early"))
         .await
         .expect("find early");
     let late = PgKnowledgeItemRepository
-        .find_by_id(&mut *txn, result.item_id("late"))
+        .find_by_id(&mut txn, result.item_id("late"))
         .await
         .expect("find late");
 
@@ -189,12 +189,12 @@ async fn test_seed_commit_relations_creates_scaffolding() {
         })
         .relate("a", Supports, "b")
         .commit_relations("batch-1")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let job_id = result.batch_job_id("batch-1");
     let job = PgJobRepository
-        .find_by_id(&mut *txn, job_id)
+        .find_by_id(&mut txn, job_id)
         .await
         .expect("job should exist");
 
@@ -223,7 +223,7 @@ async fn test_seed_uncommitted_relations_no_scaffolding() {
                 .add_item("b", item(Fact, "beta").skip_embed());
         })
         .relate("a", Supports, "b")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     assert_eq!(result.uncommitted_relation_ids().len(), 1);
@@ -245,20 +245,20 @@ async fn test_seed_observations_backdated() {
                 .add_item("a", item(Fact, "alpha").skip_embed())
                 .observe("a", SourceType::AgentMediated);
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let obs_ids = result.observation_ids("a");
     assert_eq!(obs_ids.len(), 1);
 
     let observations = PgItemObservationRepository
-        .find_by_knowledge_item_id(&mut *txn, result.item_id("a"))
+        .find_by_knowledge_item_id(&mut txn, result.item_id("a"))
         .await
         .expect("find observations");
     assert_eq!(observations.len(), 1);
 
     let item = PgKnowledgeItemRepository
-        .find_by_id(&mut *txn, result.item_id("a"))
+        .find_by_id(&mut txn, result.item_id("a"))
         .await
         .expect("find item");
 
@@ -282,14 +282,14 @@ async fn test_seed_references_attached_to_items() {
                 .add_reference("a", FilePath, "//src/main.rs")
                 .add_reference("a", Url, "https://example.com");
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let ref_ids = result.reference_ids("a");
     assert_eq!(ref_ids.len(), 2);
 
     let refs = PgReferenceRepository
-        .find_by_knowledge_item_id(&mut *txn, result.item_id("a"))
+        .find_by_knowledge_item_id(&mut txn, result.item_id("a"))
         .await
         .expect("find references");
     assert_eq!(refs.len(), 2);
@@ -311,21 +311,21 @@ async fn test_seed_embedding_groups_produce_similar_vectors() {
                 .add_item("b", item(Fact, "beta").embedding_group("same"))
                 .add_item("c", item(Fact, "gamma").embedding_group("different"));
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let emb_a = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut *txn, result.item_id("a"), "test-model")
+        .find_by_knowledge_item_id(&mut txn, result.item_id("a"), "test-model")
         .await
         .expect("query")
         .expect("embedding a");
     let emb_b = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut *txn, result.item_id("b"), "test-model")
+        .find_by_knowledge_item_id(&mut txn, result.item_id("b"), "test-model")
         .await
         .expect("query")
         .expect("embedding b");
     let emb_c = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut *txn, result.item_id("c"), "test-model")
+        .find_by_knowledge_item_id(&mut txn, result.item_id("c"), "test-model")
         .await
         .expect("query")
         .expect("embedding c");
@@ -352,11 +352,11 @@ async fn test_seed_skip_embed_item_has_no_embedding() {
         .for_project("proj", |store| {
             store.add_item("skipped", item(Fact, "no vector").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let emb = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut *txn, result.item_id("skipped"), "test-model")
+        .find_by_knowledge_item_id(&mut txn, result.item_id("skipped"), "test-model")
         .await
         .expect("query");
 
@@ -379,19 +379,19 @@ async fn test_seed_episode_label_shares_episode_id() {
                 .add_item("b", item(Fact, "beta").episode("ep-1").skip_embed())
                 .add_item("c", item(Fact, "gamma").episode("ep-2").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let item_a = PgKnowledgeItemRepository
-        .find_by_id(&mut *txn, result.item_id("a"))
+        .find_by_id(&mut txn, result.item_id("a"))
         .await
         .expect("find a");
     let item_b = PgKnowledgeItemRepository
-        .find_by_id(&mut *txn, result.item_id("b"))
+        .find_by_id(&mut txn, result.item_id("b"))
         .await
         .expect("find b");
     let item_c = PgKnowledgeItemRepository
-        .find_by_id(&mut *txn, result.item_id("c"))
+        .find_by_id(&mut txn, result.item_id("c"))
         .await
         .expect("find c");
 
@@ -426,7 +426,7 @@ async fn test_seed_cross_project_relations() {
         })
         .relate("item-a", Supports, "item-b")
         .commit_relations("cross-proj")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     assert_eq!(result.relation_ids("cross-proj").len(), 1);
@@ -450,7 +450,7 @@ async fn test_seed_cross_project_observations() {
             // Observe an item from project A within project B's scope.
             store.observe("item-a", SourceType::ManualCapture);
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let obs = result.observation_ids("item-a");
@@ -474,15 +474,15 @@ async fn test_seed_as_principal_within_scope() {
                 .as_principal("bob")
                 .add_item("by-bob", item(Fact, "bob's item").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let alice_item = PgKnowledgeItemRepository
-        .find_by_id(&mut *txn, result.item_id("by-alice"))
+        .find_by_id(&mut txn, result.item_id("by-alice"))
         .await
         .expect("find alice item");
     let bob_item = PgKnowledgeItemRepository
-        .find_by_id(&mut *txn, result.item_id("by-bob"))
+        .find_by_id(&mut txn, result.item_id("by-bob"))
         .await
         .expect("find bob item");
 
@@ -508,7 +508,7 @@ async fn test_seed_forward_reference_within_scope() {
                 .add_reference("x", FilePath, "//src/lib.rs")
                 .add_item("x", item(Fact, "forward-referenced item").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     assert_eq!(result.observation_ids("x").len(), 1);
@@ -524,9 +524,7 @@ async fn test_basic_knowledge_graph_scenario() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin txn");
 
-    let result = scenarios::basic_knowledge_graph()
-        .execute(&mut *txn)
-        .await;
+    let result = scenarios::basic_knowledge_graph().execute(&mut txn).await;
 
     // 1 project, 1 principal.
     let _proj_id = result.project_id("tribal");
@@ -555,9 +553,7 @@ async fn test_supersession_scenario() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin txn");
 
-    let result = scenarios::supersession_scenario()
-        .execute(&mut *txn)
-        .await;
+    let result = scenarios::supersession_scenario().execute(&mut txn).await;
 
     // 1 project, 1 principal, 5 items, 5 embeddings.
     let _proj_id = result.project_id("tribal");
@@ -586,7 +582,7 @@ async fn test_supersession_scenario() {
     let original_heuristic_id = result.item_id("original-heuristic");
 
     let inbound_fact = PgRelationRepository
-        .find_inbound(&mut *txn, original_fact_id, Some(&[Supersedes]))
+        .find_inbound(&mut txn, original_fact_id, Some(&[Supersedes]))
         .await
         .expect("find inbound supersedes for original-fact");
     assert_eq!(
@@ -596,7 +592,7 @@ async fn test_supersession_scenario() {
     );
 
     let inbound_heuristic = PgRelationRepository
-        .find_inbound(&mut *txn, original_heuristic_id, Some(&[Supersedes]))
+        .find_inbound(&mut txn, original_heuristic_id, Some(&[Supersedes]))
         .await
         .expect("find inbound supersedes for original-heuristic");
     assert_eq!(
@@ -624,7 +620,7 @@ async fn test_seed_composability() {
         })
         .relate("extra-item", Supports, "heuristic-1")
         .commit_relations("extended-batch")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     // Original 5 + 1 new = 6 items.
@@ -654,7 +650,7 @@ async fn test_duplicate_project_label_panics() {
         .for_project("proj", |store| {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -673,7 +669,7 @@ async fn test_duplicate_principal_label_panics() {
         .for_project("proj", |store| {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -693,7 +689,7 @@ async fn test_duplicate_item_label_panics() {
                 .add_item("x", item(Fact, "first").skip_embed())
                 .add_item("x", item(Fact, "second").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -718,7 +714,7 @@ async fn test_duplicate_batch_label_panics() {
         .commit_relations("batch")
         .relate("b", Supports, "c")
         .commit_relations("batch")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -737,7 +733,7 @@ async fn test_unknown_relate_source_panics() {
             store.add_item("a", item(Fact, "alpha").skip_embed());
         })
         .relate("unknown", Supports, "a")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -756,7 +752,7 @@ async fn test_unknown_relate_target_panics() {
             store.add_item("a", item(Fact, "alpha").skip_embed());
         })
         .relate("a", Supports, "unknown")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -774,7 +770,7 @@ async fn test_unknown_observe_target_panics() {
         .for_project("proj", |store| {
             store.observe("unknown", SourceType::AgentMediated);
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -792,7 +788,7 @@ async fn test_unknown_reference_target_panics() {
         .for_project("proj", |store| {
             store.add_reference("unknown", FilePath, "//src/lib.rs");
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -810,7 +806,7 @@ async fn test_unknown_principal_panics() {
         .for_project("proj", |store| {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -828,7 +824,7 @@ async fn test_unknown_project_panics() {
         .for_project("ghost", |store| {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -845,7 +841,7 @@ async fn test_no_embedding_model_panics() {
         .for_project("proj", |store| {
             store.add_item("x", item(Fact, "embeddable item"));
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -864,7 +860,7 @@ async fn test_negative_advance_panics() {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
         .advance(Duration::hours(-1))
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -876,7 +872,7 @@ async fn test_no_projects_defined_panics() {
 
     Seed::new()
         .define_principal("user", "user:key")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -888,7 +884,7 @@ async fn test_no_principals_defined_panics() {
 
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -907,7 +903,7 @@ async fn test_self_relation_panics() {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
         .relate("x", Supports, "x")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -926,7 +922,7 @@ async fn test_conflicting_embedding_model_panics() {
         .for_project("proj", |store| {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -944,7 +940,7 @@ async fn test_no_principal_for_add_item_panics() {
         .for_project("proj", |store| {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -954,22 +950,22 @@ async fn test_no_principal_for_observe_panics() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin txn");
 
+    // The observe is declared before as_principal, so it captures None.
+    // The add_item is declared after, so it captures "user".
+    // The two-bucket partition processes items (bucket 1) first, creating
+    // "x" successfully, then processes observes (bucket 2) which panics
+    // on the missing principal.
     Seed::new()
         .define_project("proj", "git@example.com:test.git")
         .define_principal("user", "user:key")
         .set_embedding_model("test-model", 768)
-        .as_principal("user")
         .for_project("proj", |store| {
-            store.add_item("x", item(Fact, "x").skip_embed());
+            store
+                .observe("x", SourceType::AgentMediated)
+                .as_principal("user")
+                .add_item("x", item(Fact, "x").skip_embed());
         })
-        // Reset principal state by building a new scope without it.
-        .for_project("proj", |store| {
-            // We need to clear the principal first.
-            // The simplest way: the observe path checks principal_label.
-            // We need a way to have no principal. Let's manipulate via a
-            // second seed that doesn't set a principal.
-        })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -987,7 +983,7 @@ async fn test_zero_dimensions_panics() {
         .for_project("proj", |store| {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 }
 
@@ -1009,7 +1005,7 @@ async fn test_commit_relations_with_no_pending_is_noop() {
             store.add_item("x", item(Fact, "x").skip_embed());
         })
         .commit_relations("empty-batch")
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     assert_eq!(result.batch_count(), 0);
@@ -1030,7 +1026,7 @@ async fn test_set_embedding_model_identical_is_noop() {
         .for_project("proj", |store| {
             store.add_item("x", item(Fact, "x"));
         })
-        .execute(&mut *txn)
+        .execute(&mut txn)
         .await;
 
     let _ = result.embedding_id("x");
