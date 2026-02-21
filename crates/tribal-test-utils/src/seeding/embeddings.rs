@@ -138,14 +138,24 @@ mod tests {
     }
 
     #[test]
-    fn test_embedding_group_assigner_different_groups() {
+    fn test_embedding_group_assigner_tracks_groups_independently() {
         let mut assigner = EmbeddingGroupAssigner::new(768);
-        let (dim_a, _) = assigner.assign("caching");
-        let (dim_b, _) = assigner.assign("design");
-        assert_ne!(
-            dim_a, dim_b,
-            "different groups should map to different dimensions"
-        );
+        // Interleave assignments from two groups.
+        let (dim_a1, pos_a1) = assigner.assign("caching");
+        let (dim_b1, pos_b1) = assigner.assign("design");
+        let (dim_a2, pos_a2) = assigner.assign("caching");
+        let (dim_b2, pos_b2) = assigner.assign("design");
+
+        // Each group maintains its own deterministic dimension
+        // (different groups may hash to the same dimension).
+        assert_eq!(dim_a1, dim_a2);
+        assert_eq!(dim_b1, dim_b2);
+
+        // Positions increment independently per group.
+        assert_eq!(pos_a1, 0);
+        assert_eq!(pos_b1, 0);
+        assert_eq!(pos_a2, 1);
+        assert_eq!(pos_b2, 1);
     }
 
     #[test]
