@@ -132,7 +132,7 @@ mod tests {
         EmbeddingRequest {
             input: input.to_owned(),
             model: model.to_owned(),
-            purpose: EmbeddingPurpose::Storage,
+            purpose: EmbeddingPurpose::Candidate,
         }
     }
 
@@ -194,7 +194,7 @@ mod tests {
         assert!(input_matcher.matches(&an_embedding_request("m", "some knowledge here")));
         assert!(!input_matcher.matches(&an_embedding_request("m", "nothing relevant")));
 
-        let purpose_matcher = EmbeddingMatcher::has_purpose(EmbeddingPurpose::Storage);
+        let purpose_matcher = EmbeddingMatcher::has_purpose(EmbeddingPurpose::Candidate);
         assert!(purpose_matcher.matches(&an_embedding_request("m", "text")));
 
         let combined = EmbeddingMatcher::has_model("nomic")
