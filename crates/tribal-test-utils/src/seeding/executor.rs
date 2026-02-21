@@ -25,9 +25,11 @@ use tribal_domain::{
     ReferenceId, RelationBatchId, RelationId, RelationKind,
 };
 
-use super::embeddings::{EmbeddingGroupAssigner, make_group_embedding};
-use super::repository::{PgSeedRepository, SeedRepository};
-use super::types::{CommittedBatch, SeedCommand, SeedItemSpec, SeedReferenceSpec, SeedResult};
+use super::{
+    embeddings::{EmbeddingGroupAssigner, make_group_embedding},
+    repository::{PgSeedRepository, SeedRepository},
+    types::{CommittedBatch, SeedCommand, SeedItemSpec, SeedReferenceSpec, SeedResult},
+};
 
 // ---------------------------------------------------------------------------
 // Execution state
@@ -111,10 +113,7 @@ impl ExecutionState {
     }
 
     fn resolve_episode(&mut self, label: &str) -> EpisodeId {
-        *self
-            .episodes
-            .entry(label.to_owned())
-            .or_insert_with(EpisodeId::new)
+        *self.episodes.entry(label.to_owned()).or_default()
     }
 }
 
@@ -164,14 +163,8 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
             }
 
             SeedCommand::BeginProjectScope { project_label } => {
-                let end_idx = handle_project_scope(
-                    i,
-                    project_label,
-                    &commands,
-                    &mut state,
-                    conn,
-                )
-                .await;
+                let end_idx =
+                    handle_project_scope(i, project_label, &commands, &mut state, conn).await;
                 i = end_idx + 1;
             }
 
@@ -203,9 +196,7 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
             | SeedCommand::AddReference { .. }
             | SeedCommand::AddReferenceSpec { .. }
             | SeedCommand::EndProjectScope { .. } => {
-                unreachable!(
-                    "seed[{i}]: command should have been consumed by scope handler"
-                );
+                unreachable!("seed[{i}]: command should have been consumed by scope handler");
             }
         }
     }
@@ -242,12 +233,11 @@ fn validate_preamble(commands: &[SeedCommand]) {
         .iter()
         .any(|c| matches!(c, SeedCommand::CreatePrincipal { .. }));
 
-    if !has_project {
-        panic!("execute() called but no projects were defined");
-    }
-    if !has_principal {
-        panic!("execute() called but no principals were defined");
-    }
+    assert!(has_project, "execute() called but no projects were defined");
+    assert!(
+        has_principal,
+        "execute() called but no principals were defined"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -319,9 +309,10 @@ fn handle_set_embedding_model(
     dimensions: usize,
     state: &mut ExecutionState,
 ) {
-    if dimensions == 0 {
-        panic!("embedding dimensions must be greater than zero");
-    }
+    assert!(
+        dimensions != 0,
+        "embedding dimensions must be greater than zero"
+    );
 
     if let (Some(existing_model), Some(existing_dims)) =
         (&state.embedding_model, state.embedding_dimensions)
@@ -360,9 +351,10 @@ fn handle_relate(
     target_label: &str,
     state: &mut ExecutionState,
 ) {
-    if source_label == target_label {
-        panic!("self-relation not permitted: '{source_label}' cannot relate to itself");
-    }
+    assert!(
+        source_label != target_label,
+        "self-relation not permitted: '{source_label}' cannot relate to itself"
+    );
 
     if !state.items.contains_key(source_label) {
         let defined: Vec<_> = state.items.keys().collect();
@@ -378,9 +370,7 @@ fn handle_relate(
         .clone()
         .expect("relate() requires an active principal — call as_principal() first");
 
-    debug!(
-        "seed[{idx}]: Relate source={source_label:?} kind={kind:?} target={target_label:?}"
-    );
+    debug!("seed[{idx}]: Relate source={source_label:?} kind={kind:?} target={target_label:?}");
 
     state.pending_relations.push(PendingRelation {
         source_label: source_label.to_owned(),
@@ -415,15 +405,16 @@ async fn handle_commit_relations(
 }
 
 fn handle_advance(idx: usize, delta: Duration, state: &mut ExecutionState) {
-    if delta < Duration::zero() {
-        panic!("advance() requires a non-negative duration, got {delta}");
-    }
+    assert!(
+        delta >= Duration::zero(),
+        "advance() requires a non-negative duration, got {delta}"
+    );
 
     debug!(
         "seed[{idx}]: Advance delta={delta} virtual_time={:?}",
         state.virtual_time() + delta
     );
-    state.accumulated_offset = state.accumulated_offset + delta;
+    state.accumulated_offset += delta;
 }
 
 // ---------------------------------------------------------------------------
@@ -467,15 +458,21 @@ async fn handle_project_scope(
     let vt = state.virtual_time();
 
     // --- Bucket 1: Items ---
-    let scope_item_labels =
-        process_scope_items(commands, &scope_indices, vt, state, conn).await;
+    let scope_item_labels = process_scope_items(commands, &scope_indices, vt, state, conn).await;
 
     // --- Bucket 2: Dependents ---
     process_scope_dependents(commands, &scope_indices, project_label, vt, state, conn).await;
 
     // --- Implicit embedding on scope close ---
-    process_scope_embeddings(commands, &scope_indices, &scope_item_labels, begin_idx, state, conn)
-        .await;
+    process_scope_embeddings(
+        commands,
+        &scope_indices,
+        &scope_item_labels,
+        begin_idx,
+        state,
+        conn,
+    )
+    .await;
 
     debug!("seed[{end_idx}]: EndProjectScope project={project_label:?}");
 
@@ -582,8 +579,6 @@ async fn process_scope_dependents(
     state: &mut ExecutionState,
     conn: &mut PgConnection,
 ) {
-    let repo = PgSeedRepository;
-
     for &idx in scope_indices {
         match &commands[idx] {
             // Items handled in bucket 1.
@@ -594,7 +589,16 @@ async fn process_scope_dependents(
                 principal_label,
                 source_type,
             } => {
-                handle_scope_observe(idx, item_label, principal_label, *source_type, vt, state, conn, &repo).await;
+                handle_scope_observe(
+                    idx,
+                    item_label,
+                    principal_label.as_deref(),
+                    *source_type,
+                    vt,
+                    state,
+                    conn,
+                )
+                .await;
             }
 
             SeedCommand::AddReference {
@@ -603,7 +607,16 @@ async fn process_scope_dependents(
                 kind,
                 value,
             } => {
-                handle_scope_add_reference(idx, item_label, ref_project_label, *kind, value, state, conn).await;
+                handle_scope_add_reference(
+                    idx,
+                    item_label,
+                    ref_project_label,
+                    *kind,
+                    value,
+                    state,
+                    conn,
+                )
+                .await;
             }
 
             SeedCommand::AddReferenceSpec {
@@ -611,7 +624,15 @@ async fn process_scope_dependents(
                 project_label: ref_project_label,
                 spec,
             } => {
-                handle_scope_add_reference_spec(idx, item_label, ref_project_label, spec, state, conn).await;
+                handle_scope_add_reference_spec(
+                    idx,
+                    item_label,
+                    ref_project_label,
+                    spec,
+                    state,
+                    conn,
+                )
+                .await;
             }
 
             // These variants cannot appear inside a project scope.
@@ -638,19 +659,19 @@ async fn process_scope_dependents(
 async fn handle_scope_observe(
     idx: usize,
     item_label: &str,
-    principal_label: &Option<String>,
+    principal_label: Option<&str>,
     source_type: tribal_domain::SourceType,
     vt: DateTime<Utc>,
     state: &mut ExecutionState,
     conn: &mut PgConnection,
-    repo: &PgSeedRepository,
 ) {
+    let repo = PgSeedRepository;
     let ki_id = *state.items.get(item_label).unwrap_or_else(|| {
         let defined: Vec<_> = state.items.keys().collect();
         panic!("observe target '{item_label}' not found — defined items: {defined:?}");
     });
 
-    let principal_label = principal_label.as_ref().unwrap_or_else(|| {
+    let principal_label = principal_label.unwrap_or_else(|| {
         panic!(
             "observe() requires an active principal — \
              call as_principal() before for_project()"
@@ -782,10 +803,10 @@ async fn process_scope_embeddings(
                     SeedCommand::AddItem { label: l, .. } if l == label
                 )
             })?;
-            if let SeedCommand::AddItem { spec, .. } = &commands[*idx] {
-                if !spec.skip_embed {
-                    return Some((label.clone(), spec.clone()));
-                }
+            if let SeedCommand::AddItem { spec, .. } = &commands[*idx]
+                && !spec.skip_embed
+            {
+                return Some((label.clone(), spec.clone()));
             }
             None
         })
@@ -815,9 +836,7 @@ async fn process_scope_embeddings(
 
         let ki_id = state.items[label.as_str()];
 
-        debug!(
-            "seed[{scope_start}]: EmbedItem label={label:?} model={model:?} group={group:?}"
-        );
+        debug!("seed[{scope_start}]: EmbedItem label={label:?} model={model:?} group={group:?}");
 
         let new_embedding = NewEmbedding::builder()
             .knowledge_item_id(ki_id)
@@ -876,7 +895,10 @@ async fn flush_relations(
         .await
         .expect("seed: batch insert relations");
 
-    let relation_ids: Vec<RelationId> = inserted.iter().map(|r| r.id()).collect();
+    let relation_ids: Vec<RelationId> = inserted
+        .iter()
+        .map(tribal_domain::KnowledgeItemRelation::id)
+        .collect();
 
     repo.backdate_relations(conn, &relation_ids, vt).await;
 
@@ -884,8 +906,7 @@ async fn flush_relations(
         let first_source = &state.pending_relations[0].source_label;
         let project_label = &state.item_projects[first_source.as_str()];
         let project_id = state.projects[project_label.as_str()];
-        let principal_id =
-            state.principals[state.pending_relations[0].principal_label.as_str()];
+        let principal_id = state.principals[state.pending_relations[0].principal_label.as_str()];
 
         let job_id = repo
             .commit_relation_batch(&mut *conn, project_id, principal_id, batch_id)
