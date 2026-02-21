@@ -12,6 +12,10 @@ use tribal_inference::{CompletionRequest, EmbeddingRequest, InferenceError};
 
 use super::responses::ErrorFactory;
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
 pub(crate) const MUTEX_POISONED: &str = "mock provider mutex poisoned";
 
 // ---------------------------------------------------------------------------
