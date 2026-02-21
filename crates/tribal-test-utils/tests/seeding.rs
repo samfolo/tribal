@@ -10,7 +10,7 @@ use tribal_db::{
     EmbeddingRepository, ItemObservationRepository, JobRepository, KnowledgeItemRepository,
     PgEmbeddingRepository, PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository,
     PgReferenceRepository, PgRelationRepository, PgTagRegistryRepository, ReferenceRepository,
-    RelationRepository, TagRegistryRepository,
+    RelationRepository, SemanticSearchParams, TagRegistryRepository,
 };
 use tribal_domain::{
     KnowledgeKind::{Fact, Heuristic},
@@ -626,6 +626,68 @@ async fn test_supersession_scenario() {
         inbound_heuristic.len(),
         1,
         "original-heuristic should have 1 inbound Supersedes relation"
+    );
+}
+
+#[tokio::test]
+async fn test_supersession_scenario_excludes_superseded_from_search() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin txn");
+
+    let result = scenarios::supersession_scenario().execute(&mut txn).await;
+
+    // Use the superseded item's own embedding as the query vector.
+    let emb = PgEmbeddingRepository
+        .find_by_knowledge_item_id(&mut txn, result.item_id("original-fact"), "test-model")
+        .await
+        .expect("query")
+        .expect("embedding should exist");
+
+    // Default: include_superseded = false.
+    let params = SemanticSearchParams::builder()
+        .query_embedding(emb.embedding().to_vec())
+        .embedding_model("test-model".to_owned())
+        .limit(10)
+        .build();
+
+    let response = PgKnowledgeItemRepository
+        .semantic_search(&mut txn, &params)
+        .await
+        .expect("search");
+
+    let ids: Vec<_> = response.results.iter().map(|r| r.item.id()).collect();
+
+    // superseding-fact shares the "library-x" embedding group — it should
+    // appear because it is not superseded.
+    assert!(
+        ids.contains(&result.item_id("superseding-fact")),
+        "superseding-fact (same embedding group, not superseded) should appear"
+    );
+    // original-fact is in the same embedding group but has a committed
+    // Supersedes relation targeting it — excluded by default.
+    assert!(
+        !ids.contains(&result.item_id("original-fact")),
+        "original-fact (superseded) should be excluded"
+    );
+
+    // With include_superseded = true, superseded items appear.
+    let params_incl = SemanticSearchParams::builder()
+        .query_embedding(emb.embedding().to_vec())
+        .embedding_model("test-model".to_owned())
+        .include_superseded(true)
+        .limit(10)
+        .build();
+
+    let response_incl = PgKnowledgeItemRepository
+        .semantic_search(&mut txn, &params_incl)
+        .await
+        .expect("search with superseded");
+
+    let ids_incl: Vec<_> = response_incl.results.iter().map(|r| r.item.id()).collect();
+
+    assert!(
+        ids_incl.contains(&result.item_id("original-fact")),
+        "original-fact should appear when include_superseded is true"
     );
 }
 
