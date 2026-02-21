@@ -11,9 +11,8 @@ use chrono::Duration;
 use indexmap::IndexMap;
 use sqlx::PgConnection;
 use tribal_domain::{
-    Confidence, EmbeddingId, ItemObservationId, JobId, KnowledgeItemId, KnowledgeKind,
-    PrincipalId, ProjectId, ReferenceId, ReferenceKind, RelationBatchId, RelationId, RelationKind,
-    SourceType,
+    Confidence, EmbeddingId, ItemObservationId, JobId, KnowledgeItemId, KnowledgeKind, PrincipalId,
+    ProjectId, ReferenceId, ReferenceKind, RelationBatchId, RelationId, RelationKind, SourceType,
 };
 
 use super::executor;
@@ -288,11 +287,7 @@ impl Seed {
 
     /// Registers a principal with the given label and key.
     #[must_use]
-    pub fn define_principal(
-        mut self,
-        label: impl Into<String>,
-        key: impl Into<String>,
-    ) -> Self {
+    pub fn define_principal(mut self, label: impl Into<String>, key: impl Into<String>) -> Self {
         self.commands.push(SeedCommand::CreatePrincipal {
             label: label.into(),
             key: key.into(),
@@ -309,10 +304,8 @@ impl Seed {
         let model = model.into();
         self.embedding_model = Some(model.clone());
         self.embedding_dimensions = Some(dimensions);
-        self.commands.push(SeedCommand::SetEmbeddingModel {
-            model,
-            dimensions,
-        });
+        self.commands
+            .push(SeedCommand::SetEmbeddingModel { model, dimensions });
         self
     }
 
@@ -428,11 +421,7 @@ pub struct ProjectScope<'a> {
 
 impl ProjectScope<'_> {
     /// Adds a knowledge item to the current project.
-    pub fn add_item(
-        &mut self,
-        label: impl Into<String>,
-        spec: SeedItemSpec,
-    ) -> &mut Self {
+    pub fn add_item(&mut self, label: impl Into<String>, spec: SeedItemSpec) -> &mut Self {
         self.commands.push(SeedCommand::AddItem {
             label: label.into(),
             project_label: self.project_label.clone(),
@@ -443,11 +432,7 @@ impl ProjectScope<'_> {
     }
 
     /// Records an observation of an existing knowledge item.
-    pub fn observe(
-        &mut self,
-        item_label: impl Into<String>,
-        source_type: SourceType,
-    ) -> &mut Self {
+    pub fn observe(&mut self, item_label: impl Into<String>, source_type: SourceType) -> &mut Self {
         self.commands.push(SeedCommand::Observe {
             item_label: item_label.into(),
             principal_label: self.current_principal.clone(),
@@ -564,9 +549,7 @@ impl SeedResult {
     pub fn embedding_id(&self, item_label: &str) -> EmbeddingId {
         *self.embeddings.get(item_label).unwrap_or_else(|| {
             let embedded: Vec<_> = self.embeddings.keys().collect();
-            panic!(
-                "no embedding for item '{item_label}' — embedded items: {embedded:?}"
-            );
+            panic!("no embedding for item '{item_label}' — embedded items: {embedded:?}");
         })
     }
 
@@ -581,9 +564,7 @@ impl SeedResult {
             .get(batch_label)
             .unwrap_or_else(|| {
                 let defined: Vec<_> = self.committed_batches.keys().collect();
-                panic!(
-                    "unknown batch label '{batch_label}' — defined batches: {defined:?}"
-                );
+                panic!("unknown batch label '{batch_label}' — defined batches: {defined:?}");
             })
             .relation_ids
     }
@@ -598,9 +579,7 @@ impl SeedResult {
             .get(batch_label)
             .unwrap_or_else(|| {
                 let defined: Vec<_> = self.committed_batches.keys().collect();
-                panic!(
-                    "unknown batch label '{batch_label}' — defined batches: {defined:?}"
-                );
+                panic!("unknown batch label '{batch_label}' — defined batches: {defined:?}");
             })
             .job_id
     }
@@ -608,17 +587,13 @@ impl SeedResult {
     /// Returns all reference IDs for a given item label, in insertion
     /// order. Returns an empty slice if the item has no references.
     pub fn reference_ids(&self, item_label: &str) -> &[ReferenceId] {
-        self.references
-            .get(item_label)
-            .map_or(&[], Vec::as_slice)
+        self.references.get(item_label).map_or(&[], Vec::as_slice)
     }
 
     /// Returns all observation IDs for a given item label, in insertion
     /// order. Returns an empty slice if the item has no observations.
     pub fn observation_ids(&self, item_label: &str) -> &[ItemObservationId] {
-        self.observations
-            .get(item_label)
-            .map_or(&[], Vec::as_slice)
+        self.observations.get(item_label).map_or(&[], Vec::as_slice)
     }
 
     /// Returns all item labels in insertion order.

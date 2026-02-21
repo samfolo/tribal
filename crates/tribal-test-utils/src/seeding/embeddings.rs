@@ -4,9 +4,16 @@
 //! cosine similarity. Items in different groups are assigned to
 //! distinct dominant dimensions via hashing, producing dissimilar
 //! vectors.
+//!
+//! Uses FNV-1a hashing for cross-version determinism — unlike
+//! `DefaultHasher`, the FNV algorithm is specified and stable.
 
-use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+};
+
+use fnv::FnvHasher;
 
 // ---------------------------------------------------------------------------
 // Group assigner
@@ -35,16 +42,13 @@ impl EmbeddingGroupAssigner {
     /// group label.
     pub(crate) fn assign(&mut self, group: &str) -> (usize, usize) {
         let dims = self.dimensions;
-        let entry = self
-            .groups
-            .entry(group.to_owned())
-            .or_insert_with(|| {
-                let mut hasher = DefaultHasher::new();
-                group.hash(&mut hasher);
-                #[allow(clippy::cast_possible_truncation)]
-                let dim_index = (hasher.finish() as usize) % dims;
-                (dim_index, 0)
-            });
+        let entry = self.groups.entry(group.to_owned()).or_insert_with(|| {
+            let mut hasher = FnvHasher::default();
+            group.hash(&mut hasher);
+            #[allow(clippy::cast_possible_truncation)]
+            let dim_index = (hasher.finish() as usize) % dims;
+            (dim_index, 0)
+        });
         let position = entry.1;
         entry.1 += 1;
         (entry.0, position)

@@ -109,8 +109,7 @@ pub fn supersession_scenario() -> Seed {
                 )
                 .add_item(
                     "revised-heuristic",
-                    item(Heuristic, "Use approach B for Library X")
-                        .embedding_group("approach-b"),
+                    item(Heuristic, "Use approach B for Library X").embedding_group("approach-b"),
                 );
         })
         .relate("superseding-fact", Supersedes, "original-fact")
