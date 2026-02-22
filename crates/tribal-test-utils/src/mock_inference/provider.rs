@@ -413,24 +413,22 @@ mod tests {
         a_completion_response, a_provider_unavailable, an_embedding_response,
     };
 
-    fn a_request(model: &str, system: &str) -> CompletionRequest {
+    fn a_request(system: &str) -> CompletionRequest {
         CompletionRequest {
             system: Some(system.to_owned()),
             messages: vec![Message {
                 role: Role::User,
                 content: "test".to_owned(),
             }],
-            model: model.to_owned(),
             temperature: None,
             max_tokens: None,
             response_format: None,
         }
     }
 
-    fn an_embed_request(model: &str, input: &str) -> EmbeddingRequest {
+    fn an_embed_request(input: &str) -> EmbeddingRequest {
         EmbeddingRequest {
             input: input.to_owned(),
-            model: model.to_owned(),
             purpose: EmbeddingPurpose::Candidate,
         }
     }
@@ -445,9 +443,9 @@ mod tests {
             .on_complete(a_completion_response("third"))
             .build();
 
-        let r1 = provider.complete(a_request("m", "sys")).await.unwrap();
-        let r2 = provider.complete(a_request("m", "sys")).await.unwrap();
-        let r3 = provider.complete(a_request("m", "sys")).await.unwrap();
+        let r1 = provider.complete(a_request("sys")).await.unwrap();
+        let r2 = provider.complete(a_request("sys")).await.unwrap();
+        let r3 = provider.complete(a_request("sys")).await.unwrap();
 
         assert_eq!(r1.text, "first");
         assert_eq!(r2.text, "second");
@@ -458,31 +456,31 @@ mod tests {
     async fn test_conditional_match_takes_priority_over_sequential() {
         let provider = MockInferenceProvider::builder()
             .on_complete(a_completion_response("sequential"))
-            .when(CompletionMatcher::has_model("special"))
+            .when(CompletionMatcher::system_contains("special"))
             .respond_with(a_completion_response("conditional"))
             .build();
 
         // Conditional matches first despite sequential entry existing.
         let cond = provider
-            .complete(a_request("special", "sys"))
+            .complete(a_request("special"))
             .await
             .unwrap();
         assert_eq!(cond.text, "conditional");
 
         // Sequential entry was not consumed by the conditional call.
-        let seq = provider.complete(a_request("other", "sys")).await.unwrap();
+        let seq = provider.complete(a_request("other")).await.unwrap();
         assert_eq!(seq.text, "sequential");
     }
 
     #[tokio::test]
     async fn test_conditional_entries_fire_repeatedly() {
         let provider = MockInferenceProvider::builder()
-            .when(CompletionMatcher::has_model("repeat"))
+            .when(CompletionMatcher::system_contains("repeat"))
             .respond_with(a_completion_response("again"))
             .build();
 
         for i in 0..5 {
-            let resp = provider.complete(a_request("repeat", "sys")).await.unwrap();
+            let resp = provider.complete(a_request("repeat")).await.unwrap();
             assert_eq!(
                 resp.text, "again",
                 "call {i} should return conditional response"
@@ -494,12 +492,12 @@ mod tests {
     #[tokio::test]
     async fn test_conditional_error_response() {
         let provider = MockInferenceProvider::builder()
-            .when(CompletionMatcher::has_model("fail"))
+            .when(CompletionMatcher::system_contains("fail"))
             .respond_with_error(a_provider_unavailable("conditional failure"))
             .build();
 
         let err = provider
-            .complete(a_request("fail", "sys"))
+            .complete(a_request("fail"))
             .await
             .unwrap_err();
         assert!(matches!(
@@ -513,18 +511,18 @@ mod tests {
     #[should_panic(expected = "sequential queue exhausted")]
     async fn test_conditional_only_no_match_triggers_exhaustion() {
         let provider = MockInferenceProvider::builder()
-            .when(CompletionMatcher::has_model("specific"))
+            .when(CompletionMatcher::system_contains("specific"))
             .respond_with(a_completion_response("match"))
             .build();
 
-        let _ = provider.complete(a_request("other", "sys")).await;
+        let _ = provider.complete(a_request("other")).await;
     }
 
     #[tokio::test]
     #[should_panic(expected = "sequential queue exhausted")]
     async fn test_exhaust_panic_on_empty_queue() {
         let provider = MockInferenceProvider::builder().build();
-        let _ = provider.complete(a_request("m", "sys")).await;
+        let _ = provider.complete(a_request("sys")).await;
     }
 
     #[tokio::test]
@@ -535,12 +533,12 @@ mod tests {
             .build();
 
         // First call consumes the sequential entry.
-        let r1 = provider.complete(a_request("m", "sys")).await.unwrap();
+        let r1 = provider.complete(a_request("sys")).await.unwrap();
         assert_eq!(r1.text, "only");
 
         // Subsequent calls clone the last successful response.
-        let r2 = provider.complete(a_request("m", "sys")).await.unwrap();
-        let r3 = provider.complete(a_request("m", "sys")).await.unwrap();
+        let r2 = provider.complete(a_request("sys")).await.unwrap();
+        let r3 = provider.complete(a_request("sys")).await.unwrap();
         assert_eq!(r2.text, "only");
         assert_eq!(r3.text, "only");
         assert_eq!(provider.call_count(), 3);
@@ -553,7 +551,7 @@ mod tests {
             .on_exhaust(ExhaustBehaviour::RepeatLast)
             .build();
 
-        let _ = provider.complete(a_request("m", "sys")).await;
+        let _ = provider.complete(a_request("sys")).await;
     }
 
     #[tokio::test]
@@ -564,7 +562,7 @@ mod tests {
             )))
             .build();
 
-        let err = provider.complete(a_request("m", "sys")).await.unwrap_err();
+        let err = provider.complete(a_request("sys")).await.unwrap_err();
         assert!(matches!(
             err,
             InferenceError::ProviderUnavailable { ref reason, .. }
@@ -572,7 +570,7 @@ mod tests {
         ));
 
         // Fires repeatedly with fresh error instances.
-        let err2 = provider.complete(a_request("m", "sys")).await.unwrap_err();
+        let err2 = provider.complete(a_request("sys")).await.unwrap_err();
         assert!(matches!(
             err2,
             InferenceError::ProviderUnavailable { ref reason, .. }
@@ -587,14 +585,14 @@ mod tests {
             .on_complete(a_completion_response("retry succeeds"))
             .build();
 
-        let err = provider.complete(a_request("m", "sys")).await.unwrap_err();
+        let err = provider.complete(a_request("sys")).await.unwrap_err();
         assert!(matches!(
             err,
             InferenceError::ProviderUnavailable { ref reason, .. }
             if reason == "first fails"
         ));
 
-        let ok = provider.complete(a_request("m", "sys")).await.unwrap();
+        let ok = provider.complete(a_request("sys")).await.unwrap();
         assert_eq!(ok.text, "retry succeeds");
     }
 
@@ -605,14 +603,12 @@ mod tests {
             .on_complete_error(a_provider_unavailable("fail"))
             .build();
 
-        let _ = provider.complete(a_request("model-a", "sys-a")).await;
-        let _ = provider.complete(a_request("model-b", "sys-b")).await;
+        let _ = provider.complete(a_request("sys-a")).await;
+        let _ = provider.complete(a_request("sys-b")).await;
 
         let history = provider.completion_history();
         assert_eq!(history.len(), 2);
-        assert_eq!(history[0].model, "model-a");
         assert_eq!(history[0].system.as_deref(), Some("sys-a"));
-        assert_eq!(history[1].model, "model-b");
         assert_eq!(history[1].system.as_deref(), Some("sys-b"));
     }
 
@@ -624,9 +620,9 @@ mod tests {
             .on_complete(a_completion_response("ok2"))
             .build();
 
-        let _ = provider.complete(a_request("m", "sys")).await; // error — no usage
-        let _ = provider.complete(a_request("m", "sys")).await; // 100 input, 50 output
-        let _ = provider.complete(a_request("m", "sys")).await; // 100 input, 50 output
+        let _ = provider.complete(a_request("sys")).await; // error — no usage
+        let _ = provider.complete(a_request("sys")).await; // 100 input, 50 output
+        let _ = provider.complete(a_request("sys")).await; // 100 input, 50 output
 
         // Two successful calls × 100 input tokens each.
         assert_eq!(provider.total_input_tokens(), 200);
@@ -642,7 +638,7 @@ mod tests {
             .on_complete(a_completion_response("b"))
             .build();
 
-        let _ = provider.complete(a_request("m", "sys")).await;
+        let _ = provider.complete(a_request("sys")).await;
         provider.assert_exhausted();
     }
 
@@ -652,7 +648,7 @@ mod tests {
             .on_complete(a_completion_response("only"))
             .build();
 
-        let _ = provider.complete(a_request("m", "sys")).await;
+        let _ = provider.complete(a_request("sys")).await;
         provider.assert_exhausted();
     }
 
@@ -675,11 +671,11 @@ mod tests {
             .build();
 
         let r1 = provider
-            .embed(an_embed_request("m", "first"))
+            .embed(an_embed_request("first"))
             .await
             .unwrap();
         let r2 = provider
-            .embed(an_embed_request("m", "second"))
+            .embed(an_embed_request("second"))
             .await
             .unwrap();
 
@@ -697,9 +693,9 @@ mod tests {
             .on_embed(an_embedding_response(vec![0.2]))
             .build();
 
-        let _ = provider.embed(an_embed_request("m", "a")).await; // error — no usage
-        let _ = provider.embed(an_embed_request("m", "b")).await; // 10 tokens
-        let _ = provider.embed(an_embed_request("m", "c")).await; // 10 tokens
+        let _ = provider.embed(an_embed_request("a")).await; // error — no usage
+        let _ = provider.embed(an_embed_request("b")).await; // 10 tokens
+        let _ = provider.embed(an_embed_request("c")).await; // 10 tokens
 
         // Two successful calls × 10 total_tokens each.
         assert_eq!(provider.total_tokens(), 20);
@@ -717,14 +713,13 @@ mod tests {
         // Query purpose matches the conditional.
         let query_req = EmbeddingRequest {
             input: "search text".to_owned(),
-            model: "m".to_owned(),
             purpose: EmbeddingPurpose::Query,
         };
         let resp = provider.embed(query_req).await.unwrap();
         assert_eq!(resp.vector, vec![1.0, 0.0]);
 
         // Candidate purpose falls through to sequential.
-        let candidate_req = an_embed_request("m", "index text");
+        let candidate_req = an_embed_request("index text");
         let resp = provider.embed(candidate_req).await.unwrap();
         assert_eq!(resp.vector, vec![0.0, 1.0]);
 

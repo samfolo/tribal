@@ -50,8 +50,6 @@ pub struct CompletionRequest {
     pub system: Option<String>,
     /// The conversation messages.
     pub messages: Vec<Message>,
-    /// The model identifier (e.g. `"llama3"`).
-    pub model: String,
     /// Sampling temperature.  `None` uses the provider default.
     pub temperature: Option<f32>,
     /// Maximum tokens to generate.  `None` uses the provider default.
@@ -65,8 +63,6 @@ pub struct CompletionRequest {
 pub struct EmbeddingRequest {
     /// The text to embed.
     pub input: String,
-    /// The embedding model identifier (e.g. `"nomic-embed-text:v1.5"`).
-    pub model: String,
     /// Whether this embedding is for indexing a candidate or querying.
     pub purpose: EmbeddingPurpose,
 }
@@ -83,7 +79,6 @@ mod tests {
                 role: Role::User,
                 content: "hello".to_owned(),
             }],
-            model: "llama3".to_owned(),
             temperature: None,
             max_tokens: Some(100),
             response_format: None,
@@ -96,7 +91,6 @@ mod tests {
     fn test_embedding_request_fields_accessible() {
         let request = EmbeddingRequest {
             input: "some text".to_owned(),
-            model: "nomic-embed-text".to_owned(),
             purpose: EmbeddingPurpose::Candidate,
         };
         let cloned = request.clone();
