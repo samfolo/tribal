@@ -213,8 +213,7 @@ impl ProviderRegistry {
                 return Err(ProviderRegistryError::DuplicateKey { key });
             }
 
-            let pool_size =
-                usize::try_from(limits.max_in_flight).expect(U32_FITS_IN_USIZE);
+            let pool_size = usize::try_from(limits.max_in_flight).expect(U32_FITS_IN_USIZE);
 
             let semaphore = Arc::new(Semaphore::new(pool_size));
 
