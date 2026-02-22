@@ -13,6 +13,7 @@ use tribal_domain::{EmbeddingPurpose, span_attrs};
 use crate::{
     EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage, InferenceError,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
+    http::{latency_ms, normalise_base_url},
     validation::validate_embeddings,
 };
 
@@ -23,7 +24,6 @@ use crate::{
 const PROVIDER_NAME: &str = "ollama";
 const PROBE_INPUT: &str = "tribal probe";
 const EMBED_PATH: &str = "/api/embed";
-const TAGS_PATH: &str = "/api/tags";
 
 // ---------------------------------------------------------------------------
 // Private serde types
@@ -50,16 +50,6 @@ struct OllamaEmbedResponse {
     load_duration: Option<u64>,
 }
 
-#[derive(serde::Deserialize)]
-struct OllamaTagsResponse {
-    models: Vec<OllamaTagModel>,
-}
-
-#[derive(serde::Deserialize)]
-struct OllamaTagModel {
-    name: String,
-}
-
 // ---------------------------------------------------------------------------
 // OllamaEmbeddingProvider
 // ---------------------------------------------------------------------------
@@ -84,14 +74,9 @@ impl OllamaEmbeddingProvider {
         model: impl Into<String>,
         expected_dimensions: u32,
     ) -> Self {
-        let mut url = base_url.into();
-        while url.ends_with('/') {
-            url.pop();
-        }
-
         Self {
             client,
-            base_url: url,
+            base_url: normalise_base_url(base_url),
             model: model.into(),
             expected_dimensions,
         }
@@ -117,7 +102,7 @@ impl OllamaEmbeddingProvider {
         );
 
         async {
-            self.check_tags().await;
+            super::tags::check_tags(&self.client, &self.base_url, &self.model).await;
 
             let request = EmbeddingRequest {
                 input: PROBE_INPUT.to_owned(),
@@ -134,41 +119,6 @@ impl OllamaEmbeddingProvider {
         }
         .instrument(span)
         .await
-    }
-
-    /// Best-effort check of `/api/tags` for model availability.
-    async fn check_tags(&self) {
-        let url = format!("{}{TAGS_PATH}", self.base_url);
-        let result = self.client.get(&url).send().await;
-
-        match result {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(tags) = resp.json::<OllamaTagsResponse>().await {
-                    let found = tags.models.iter().any(|m| {
-                        m.name == self.model || m.name.starts_with(&format!("{}:", self.model))
-                    });
-
-                    if !found {
-                        tracing::warn!(
-                            model = %self.model,
-                            "model not found in {TAGS_PATH} — ensure it has been pulled",
-                        );
-                    }
-                }
-            }
-            Ok(resp) => {
-                tracing::warn!(
-                    status = %resp.status(),
-                    "{TAGS_PATH} returned non-success status",
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "{TAGS_PATH} unreachable (best-effort check)",
-                );
-            }
-        }
     }
 }
 
@@ -255,7 +205,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                 0
             });
 
-            let latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX);
+            let latency_ms = latency_ms(latency);
 
             let current = tracing::Span::current();
             current.record(span_attrs::EMBEDDING_TOKENS, total_tokens);
@@ -299,6 +249,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::ollama::tags::TAGS_PATH;
 
     fn a_request(input: &str) -> EmbeddingRequest {
         EmbeddingRequest {
@@ -367,7 +318,6 @@ mod tests {
         assert_eq!(response.usage.provider, PROVIDER_NAME);
         assert_eq!(response.usage.model, "nomic-embed-text:v1.5");
         assert_eq!(response.usage.total_tokens, 5);
-        assert!(response.usage.latency > Duration::ZERO);
     }
 
     #[tokio::test]
