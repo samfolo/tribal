@@ -6,8 +6,8 @@ use reqwest::StatusCode;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Maximum number of characters to include when previewing a response body
-/// in error context strings.
+/// Maximum number of bytes to include when previewing a response body in
+/// error context strings.
 const BODY_PREVIEW_LIMIT: usize = 200;
 
 /// Anthropic's overloaded status code, semantically equivalent to 503.
@@ -37,8 +37,8 @@ pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
 ///
 /// Newlines, tabs, and consecutive whitespace are collapsed to single
 /// spaces.  The result is truncated to at most [`BODY_PREVIEW_LIMIT`]
-/// characters with `"..."` appended when truncated.  Truncation is
-/// UTF-8 safe — it never splits a multi-byte codepoint.
+/// bytes with `"..."` appended when truncated.  Truncation is UTF-8
+/// safe — it never splits a multi-byte codepoint.
 pub(crate) fn body_preview(body: &str) -> String {
     let normalised: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -107,7 +107,7 @@ mod tests {
         assert!(result.ends_with("..."));
         // Must not panic on multi-byte boundary.
         // floor_char_boundary rounds down, so we get at most 200 bytes
-        // of content (100 £ chars) + "...".
+        // of content (100 £ codepoints) + "...".
         assert!(result.len() <= BODY_PREVIEW_LIMIT + 3);
     }
 
