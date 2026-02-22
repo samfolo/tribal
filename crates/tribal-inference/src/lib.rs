@@ -10,6 +10,7 @@ mod provider;
 mod request;
 mod response;
 mod usage;
+mod validation;
 
 pub use error::InferenceError;
 pub use ollama::OllamaEmbeddingProvider;
