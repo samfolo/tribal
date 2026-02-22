@@ -23,7 +23,6 @@ use crate::{
 const PROVIDER_NAME: &str = "ollama";
 const PROBE_INPUT: &str = "tribal probe";
 const EMBED_PATH: &str = "/api/embed";
-const TAGS_PATH: &str = "/api/tags";
 
 // ---------------------------------------------------------------------------
 // Private serde types
@@ -48,16 +47,6 @@ struct OllamaEmbedResponse {
     total_duration: Option<u64>,
     #[serde(default)]
     load_duration: Option<u64>,
-}
-
-#[derive(serde::Deserialize)]
-struct OllamaTagsResponse {
-    models: Vec<OllamaTagModel>,
-}
-
-#[derive(serde::Deserialize)]
-struct OllamaTagModel {
-    name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +106,7 @@ impl OllamaEmbeddingProvider {
         );
 
         async {
-            self.check_tags().await;
+            super::tags::check_tags(&self.client, &self.base_url, &self.model).await;
 
             let request = EmbeddingRequest {
                 input: PROBE_INPUT.to_owned(),
@@ -136,40 +125,6 @@ impl OllamaEmbeddingProvider {
         .await
     }
 
-    /// Best-effort check of `/api/tags` for model availability.
-    async fn check_tags(&self) {
-        let url = format!("{}{TAGS_PATH}", self.base_url);
-        let result = self.client.get(&url).send().await;
-
-        match result {
-            Ok(resp) if resp.status().is_success() => {
-                if let Ok(tags) = resp.json::<OllamaTagsResponse>().await {
-                    let found = tags.models.iter().any(|m| {
-                        m.name == self.model || m.name.starts_with(&format!("{}:", self.model))
-                    });
-
-                    if !found {
-                        tracing::warn!(
-                            model = %self.model,
-                            "model not found in {TAGS_PATH} — ensure it has been pulled",
-                        );
-                    }
-                }
-            }
-            Ok(resp) => {
-                tracing::warn!(
-                    status = %resp.status(),
-                    "{TAGS_PATH} returned non-success status",
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "{TAGS_PATH} unreachable (best-effort check)",
-                );
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +253,7 @@ mod tests {
         matchers::{body_json, method, path},
     };
 
+    use crate::ollama::tags::TAGS_PATH;
     use super::*;
 
     fn a_request(input: &str) -> EmbeddingRequest {
