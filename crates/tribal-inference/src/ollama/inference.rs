@@ -205,6 +205,7 @@ impl InferenceProvider for OllamaInferenceProvider {
                     status,
                     &response_body,
                     PROVIDER_NAME,
+                    &[],
                     |ctx| InferenceError::LlmCallFailed {
                         model: self.model.clone(),
                         context: ctx,
