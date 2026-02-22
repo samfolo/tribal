@@ -14,6 +14,7 @@ use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
     Message, ResponseFormat, Role,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
+    http::{latency_ms, normalise_base_url},
 };
 
 // ---------------------------------------------------------------------------
@@ -95,14 +96,9 @@ impl OllamaInferenceProvider {
         base_url: impl Into<String>,
         model: impl Into<String>,
     ) -> Self {
-        let mut url = base_url.into();
-        while url.ends_with('/') {
-            url.pop();
-        }
-
         Self {
             client,
-            base_url: url,
+            base_url: normalise_base_url(base_url),
             model: model.into(),
         }
     }
@@ -185,42 +181,7 @@ impl InferenceProvider for OllamaInferenceProvider {
             }
 
             let started = Instant::now();
-
-            let mut messages =
-                Vec::with_capacity(request.messages.len() + usize::from(request.system.is_some()));
-
-            if let Some(ref system) = request.system {
-                messages.push(OllamaChatMessage {
-                    role: "system",
-                    content: system,
-                });
-            }
-
-            for msg in &request.messages {
-                messages.push(OllamaChatMessage {
-                    role: role_str(msg.role),
-                    content: &msg.content,
-                });
-            }
-
-            let format = request.response_format.as_ref().map(map_response_format);
-
-            let options = match (request.temperature, request.max_tokens) {
-                (None, None) => None,
-                (temp, max_tok) => Some(OllamaChatOptions {
-                    temperature: temp,
-                    num_predict: max_tok,
-                }),
-            };
-
-            let body = OllamaChatRequest {
-                model: &self.model,
-                messages,
-                stream: false,
-                format,
-                options,
-            };
-
+            let body = build_request(&self.model, &request);
             let url = format!("{}{CHAT_PATH}", self.base_url);
             let http_response = self
                 .client
@@ -255,6 +216,13 @@ impl InferenceProvider for OllamaInferenceProvider {
                 map_json_parse_error(&e, "OllamaChatResponse JSON object", &response_body)
             })?;
 
+            if let Some(total_ns) = parsed.total_duration {
+                tracing::debug!(total_duration_ms = total_ns / 1_000_000, "provider timing");
+            }
+            if let Some(load_ns) = parsed.load_duration {
+                tracing::debug!(load_duration_ms = load_ns / 1_000_000, "provider timing");
+            }
+
             let input_tokens = parsed.prompt_eval_count.unwrap_or_else(|| {
                 tracing::debug!("prompt_eval_count absent, defaulting to 0");
                 0
@@ -267,14 +235,7 @@ impl InferenceProvider for OllamaInferenceProvider {
 
             let total_tokens = input_tokens + output_tokens;
 
-            if let Some(total_ns) = parsed.total_duration {
-                tracing::debug!(total_duration_ms = total_ns / 1_000_000, "provider timing");
-            }
-            if let Some(load_ns) = parsed.load_duration {
-                tracing::debug!(load_duration_ms = load_ns / 1_000_000, "provider timing");
-            }
-
-            let latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX);
+            let latency_ms = latency_ms(latency);
 
             let current = tracing::Span::current();
             current.record(span_attrs::LLM_TOKENS_INPUT, input_tokens);
@@ -315,10 +276,40 @@ impl InferenceProvider for OllamaInferenceProvider {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn role_str(role: Role) -> &'static str {
-    match role {
-        Role::User => "user",
-        Role::Assistant => "assistant",
+fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OllamaChatRequest<'a> {
+    let mut messages =
+        Vec::with_capacity(request.messages.len() + usize::from(request.system.is_some()));
+
+    if let Some(ref system) = request.system {
+        messages.push(OllamaChatMessage {
+            role: "system",
+            content: system,
+        });
+    }
+
+    for msg in &request.messages {
+        messages.push(OllamaChatMessage {
+            role: msg.role.as_str(),
+            content: &msg.content,
+        });
+    }
+
+    let format = request.response_format.as_ref().map(map_response_format);
+
+    let options = match (request.temperature, request.max_tokens) {
+        (None, None) => None,
+        (temp, max_tok) => Some(OllamaChatOptions {
+            temperature: temp,
+            num_predict: max_tok,
+        }),
+    };
+
+    OllamaChatRequest {
+        model,
+        messages,
+        stream: false,
+        format,
+        options,
     }
 }
 
@@ -838,6 +829,35 @@ mod tests {
                     && actual.starts_with("invalid JSON:")
             ),
             "expected ResponseParseFailed with shape and JSON error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chat_unexpected_shape_returns_response_parse_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status": "ok", "data": 42})),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let err = provider.complete(a_request("test")).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                InferenceError::ResponseParseFailed {
+                    ref expected_shape,
+                    ref actual,
+                }
+                if expected_shape == "OllamaChatResponse JSON object"
+                    && actual.starts_with("invalid JSON:")
+            ),
+            "expected ResponseParseFailed for structural mismatch, got {err:?}"
         );
     }
 

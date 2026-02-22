@@ -13,6 +13,7 @@ use tribal_domain::{EmbeddingPurpose, span_attrs};
 use crate::{
     EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage, InferenceError,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
+    http::{latency_ms, normalise_base_url},
     validation::validate_embeddings,
 };
 
@@ -73,14 +74,9 @@ impl OllamaEmbeddingProvider {
         model: impl Into<String>,
         expected_dimensions: u32,
     ) -> Self {
-        let mut url = base_url.into();
-        while url.ends_with('/') {
-            url.pop();
-        }
-
         Self {
             client,
-            base_url: url,
+            base_url: normalise_base_url(base_url),
             model: model.into(),
             expected_dimensions,
         }
@@ -209,7 +205,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                 0
             });
 
-            let latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX);
+            let latency_ms = latency_ms(latency);
 
             let current = tracing::Span::current();
             current.record(span_attrs::EMBEDDING_TOKENS, total_tokens);
