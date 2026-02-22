@@ -6,7 +6,6 @@
 mod config;
 mod error;
 mod guard;
-pub mod span_attrs;
 mod subscriber;
 
 pub use config::{LogFormat, LogOutput, LoggingConfig};
