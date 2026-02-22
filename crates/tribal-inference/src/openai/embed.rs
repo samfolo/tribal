@@ -1,7 +1,7 @@
-//! OpenAI embedding provider targeting the `/v1/embeddings` endpoint.
+//! `OpenAI` embedding provider targeting the `/v1/embeddings` endpoint.
 //!
-//! Implements [`EmbeddingProvider`] for OpenAI and OpenAI-compatible
-//! runtimes (vLLM, LM Studio, LocalAI, LiteLLM). The provider owns
+//! Implements [`EmbeddingProvider`] for `OpenAI` and `OpenAI`-compatible
+//! runtimes (`vLLM`, `LM Studio`, `LocalAI`, `LiteLLM`). The provider owns
 //! the model name and expected vector dimensions, validating every
 //! response against `expected_dimensions`.
 
@@ -59,9 +59,9 @@ struct OpenAiEmbedUsage {
 // OpenAiEmbeddingProvider
 // ---------------------------------------------------------------------------
 
-/// Concrete embedding provider for OpenAI's `/v1/embeddings` endpoint.
+/// Concrete embedding provider for `OpenAI`'s `/v1/embeddings` endpoint.
 ///
-/// Compatible with any OpenAI-compatible runtime. Owns the model name
+/// Compatible with any `OpenAI`-compatible runtime. Owns the model name
 /// and expected vector dimensions. Validates every response vector
 /// against `expected_dimensions` and returns
 /// [`InferenceError::ResponseParseFailed`] on mismatch.
@@ -78,7 +78,7 @@ pub struct OpenAiEmbeddingProvider {
 }
 
 impl OpenAiEmbeddingProvider {
-    /// Creates a new OpenAI embedding provider.
+    /// Creates a new `OpenAI` embedding provider.
     pub fn new(
         client: reqwest::Client,
         base_url: impl Into<String>,
@@ -212,10 +212,8 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
                     map_json_parse_error(&e, "OpenAiEmbedResponse JSON object", &response_body)
                 })?;
 
-            let embeddings: Vec<Vec<f32>> =
-                parsed.data.into_iter().map(|d| d.embedding).collect();
-            let vector =
-                validate_embeddings(embeddings, self.expected_dimensions, &self.model)?;
+            let embeddings: Vec<Vec<f32>> = parsed.data.into_iter().map(|d| d.embedding).collect();
+            let vector = validate_embeddings(embeddings, self.expected_dimensions, &self.model)?;
 
             let total_tokens = parsed.usage.total_tokens;
             let latency_ms = latency_ms(latency);
@@ -438,8 +436,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let provider =
-            OpenAiEmbeddingProvider::new(client, server.uri(), "model", "key", 3);
+        let provider = OpenAiEmbeddingProvider::new(client, server.uri(), "model", "key", 3);
 
         let err = provider.embed(a_request("test")).await.unwrap_err();
         assert!(matches!(

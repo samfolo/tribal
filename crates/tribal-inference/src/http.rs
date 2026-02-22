@@ -3,6 +3,9 @@
 use std::time::Duration;
 
 use reqwest::StatusCode;
+use tribal_domain::span_attrs;
+
+use crate::CompletionUsage;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -14,6 +17,9 @@ const BODY_PREVIEW_LIMIT: usize = 200;
 
 /// Anthropic's overloaded status code, semantically equivalent to 503.
 const ANTHROPIC_OVERLOADED: u16 = 529;
+
+/// Default `max_tokens` for completion probe requests.
+pub(crate) const PROBE_MAX_TOKENS: u32 = 8;
 
 // ---------------------------------------------------------------------------
 // Status classification
@@ -74,6 +80,34 @@ pub(crate) fn normalise_base_url(url: impl Into<String>) -> String {
 /// [`u64::MAX`] for durations that exceed the representable range.
 pub(crate) fn latency_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+// ---------------------------------------------------------------------------
+// Completion span recording
+// ---------------------------------------------------------------------------
+
+/// Records completion token counts, cache counts, and latency on the
+/// current tracing span, then emits a `debug`-level log event.
+pub(crate) fn record_completion_usage(usage: &CompletionUsage) {
+    let latency_ms = latency_ms(usage.latency);
+
+    let current = tracing::Span::current();
+    current.record(span_attrs::LLM_TOKENS_INPUT, usage.input_tokens);
+    current.record(span_attrs::LLM_TOKENS_OUTPUT, usage.output_tokens);
+    current.record(span_attrs::LLM_TOKENS_TOTAL, usage.total_tokens);
+    current.record(span_attrs::LLM_LATENCY_MS, latency_ms);
+    current.record(span_attrs::LLM_TOKENS_CACHE_READ, usage.cache_read_tokens);
+    current.record(span_attrs::LLM_TOKENS_CACHE_WRITE, usage.cache_write_tokens);
+
+    tracing::debug!(
+        input_tokens = usage.input_tokens,
+        output_tokens = usage.output_tokens,
+        total_tokens = usage.total_tokens,
+        cache_read_tokens = usage.cache_read_tokens,
+        cache_write_tokens = usage.cache_write_tokens,
+        latency_ms,
+        "completion generated",
+    );
 }
 
 // ---------------------------------------------------------------------------

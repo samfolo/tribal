@@ -1,7 +1,7 @@
-//! OpenAI inference provider targeting the `/v1/chat/completions` endpoint.
+//! `OpenAI` inference provider targeting the `/v1/chat/completions` endpoint.
 //!
-//! Implements [`InferenceProvider`] for OpenAI and OpenAI-compatible
-//! runtimes (vLLM, LM Studio, LocalAI, LiteLLM). The provider sends
+//! Implements [`InferenceProvider`] for `OpenAI` and `OpenAI`-compatible
+//! runtimes (`vLLM`, `LM Studio`, `LocalAI`, `LiteLLM`). The provider sends
 //! non-streaming chat completion requests and maps the response to
 //! [`CompletionResponse`].
 
@@ -15,7 +15,7 @@ use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
     Message, ResponseFormat, Role,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
-    http::{latency_ms, normalise_base_url},
+    http::{PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
 
 // ---------------------------------------------------------------------------
@@ -67,6 +67,7 @@ struct OpenAiChoiceMessage {
 }
 
 #[derive(serde::Deserialize)]
+#[allow(clippy::struct_field_names)] // Matches OpenAI API field names.
 struct OpenAiChatUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
@@ -77,11 +78,11 @@ struct OpenAiChatUsage {
 // OpenAiInferenceProvider
 // ---------------------------------------------------------------------------
 
-/// Concrete inference provider for OpenAI's `/v1/chat/completions` endpoint.
+/// Concrete inference provider for `OpenAI`'s `/v1/chat/completions` endpoint.
 ///
-/// Compatible with any OpenAI-compatible runtime. Sends non-streaming
+/// Compatible with any `OpenAI`-compatible runtime. Sends non-streaming
 /// chat completion requests and maps the response to
-/// [`CompletionResponse`]. OpenAI does not expose prompt caching via
+/// [`CompletionResponse`]. `OpenAI` does not expose prompt caching via
 /// this endpoint, so cache token counts are always zero.
 ///
 /// Authentication is set per-request via the `Authorization: Bearer`
@@ -95,7 +96,7 @@ pub struct OpenAiInferenceProvider {
 }
 
 impl OpenAiInferenceProvider {
-    /// Creates a new OpenAI inference provider.
+    /// Creates a new `OpenAI` inference provider.
     pub fn new(
         client: reqwest::Client,
         base_url: impl Into<String>,
@@ -132,7 +133,7 @@ impl OpenAiInferenceProvider {
                     content: PROBE_INPUT.to_owned(),
                 }],
                 temperature: Some(0.0),
-                max_tokens: Some(8),
+                max_tokens: Some(PROBE_MAX_TOKENS),
                 response_format: None,
             };
             let _response = self.complete(request).await?;
@@ -224,17 +225,18 @@ impl InferenceProvider for OpenAiInferenceProvider {
                 ));
             }
 
-            let parsed: OpenAiChatResponse =
-                serde_json::from_str(&response_body).map_err(|e| {
-                    map_json_parse_error(&e, "OpenAiChatResponse JSON object", &response_body)
-                })?;
-
-            let choice = parsed.choices.first().ok_or_else(|| {
-                InferenceError::ResponseParseFailed {
-                    expected_shape: "choices[0].message.content present".to_owned(),
-                    actual: "choices array is empty".to_owned(),
-                }
+            let parsed: OpenAiChatResponse = serde_json::from_str(&response_body).map_err(|e| {
+                map_json_parse_error(&e, "OpenAiChatResponse JSON object", &response_body)
             })?;
+
+            let choice =
+                parsed
+                    .choices
+                    .first()
+                    .ok_or_else(|| InferenceError::ResponseParseFailed {
+                        expected_shape: "choices[0].message.content present".to_owned(),
+                        actual: "choices array is empty".to_owned(),
+                    })?;
 
             let text = choice.message.content.clone().ok_or_else(|| {
                 InferenceError::ResponseParseFailed {
@@ -243,41 +245,19 @@ impl InferenceProvider for OpenAiInferenceProvider {
                 }
             })?;
 
-            let input_tokens = parsed.usage.prompt_tokens;
-            let output_tokens = parsed.usage.completion_tokens;
-            let total_tokens = parsed.usage.total_tokens;
+            let usage = CompletionUsage {
+                provider: PROVIDER_NAME.to_owned(),
+                model: self.model.clone(),
+                input_tokens: parsed.usage.prompt_tokens,
+                output_tokens: parsed.usage.completion_tokens,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                total_tokens: parsed.usage.total_tokens,
+                latency,
+            };
+            record_completion_usage(&usage);
 
-            let latency_ms = latency_ms(latency);
-
-            let current = tracing::Span::current();
-            current.record(span_attrs::LLM_TOKENS_INPUT, input_tokens);
-            current.record(span_attrs::LLM_TOKENS_OUTPUT, output_tokens);
-            current.record(span_attrs::LLM_TOKENS_TOTAL, total_tokens);
-            current.record(span_attrs::LLM_LATENCY_MS, latency_ms);
-            current.record(span_attrs::LLM_TOKENS_CACHE_READ, 0_u32);
-            current.record(span_attrs::LLM_TOKENS_CACHE_WRITE, 0_u32);
-
-            tracing::debug!(
-                input_tokens,
-                output_tokens,
-                total_tokens,
-                latency_ms,
-                "completion generated",
-            );
-
-            Ok(CompletionResponse {
-                text,
-                usage: CompletionUsage {
-                    provider: PROVIDER_NAME.to_owned(),
-                    model: self.model.clone(),
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens: 0,
-                    cache_write_tokens: 0,
-                    total_tokens,
-                    latency,
-                },
-            })
+            Ok(CompletionResponse { text, usage })
         }
         .instrument(span)
         .await
@@ -380,7 +360,12 @@ mod tests {
     }
 
     fn setup(server: &MockServer) -> OpenAiInferenceProvider {
-        OpenAiInferenceProvider::new(reqwest::Client::new(), server.uri(), "gpt-4o-mini", "test-key")
+        OpenAiInferenceProvider::new(
+            reqwest::Client::new(),
+            server.uri(),
+            "gpt-4o-mini",
+            "test-key",
+        )
     }
 
     // -- Constructor ---------------------------------------------------------
@@ -687,8 +672,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let provider =
-            OpenAiInferenceProvider::new(client, server.uri(), "model", "key");
+        let provider = OpenAiInferenceProvider::new(client, server.uri(), "model", "key");
 
         let err = provider.complete(a_request("test")).await.unwrap_err();
         assert!(matches!(
