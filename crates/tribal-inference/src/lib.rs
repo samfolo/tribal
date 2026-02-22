@@ -4,12 +4,15 @@
 //! client, cloud API clients, and embedding generation.
 
 mod error;
+mod http;
+mod ollama;
 mod provider;
 mod request;
 mod response;
 mod usage;
 
 pub use error::InferenceError;
+pub use ollama::OllamaEmbeddingProvider;
 pub use provider::{EmbeddingProvider, InferenceProvider};
 pub use request::{CompletionRequest, EmbeddingRequest, Message, ResponseFormat, Role};
 pub use response::{CompletionResponse, EmbeddingResponse};
