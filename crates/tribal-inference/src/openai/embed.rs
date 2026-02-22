@@ -1,8 +1,9 @@
-//! Ollama embedding provider targeting the `/api/embed` endpoint.
+//! `OpenAI` embedding provider targeting the `/v1/embeddings` endpoint.
 //!
-//! Implements [`EmbeddingProvider`] for local Ollama instances. The
-//! provider owns the model name and expected vector dimensions, validating
-//! every response against `expected_dimensions`.
+//! Implements [`EmbeddingProvider`] for `OpenAI` and `OpenAI`-compatible
+//! runtimes (`vLLM`, `LM Studio`, `LocalAI`, `LiteLLM`). The provider owns
+//! the model name and expected vector dimensions, validating every
+//! response against `expected_dimensions`.
 
 use std::time::Instant;
 
@@ -21,79 +22,91 @@ use crate::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const PROVIDER_NAME: &str = "ollama";
+const PROVIDER_NAME: &str = "openai";
 const PROBE_INPUT: &str = "tribal probe";
-const EMBED_PATH: &str = "/api/embed";
+const EMBED_PATH: &str = "/v1/embeddings";
 
 // ---------------------------------------------------------------------------
 // Private serde types
 // ---------------------------------------------------------------------------
 
-// Targets Ollama /api/embed — tested against Ollama v0.6.x (Feb 2026).
-// API reference: https://github.com/ollama/ollama/blob/main/docs/api.md
+// Targets OpenAI /v1/embeddings — tested against OpenAI API (Feb 2026).
 
 #[derive(serde::Serialize)]
-struct OllamaEmbedRequest<'a> {
+struct OpenAiEmbedRequest<'a> {
     model: &'a str,
     input: &'a str,
-    truncate: bool,
+    encoding_format: &'a str,
 }
 
 #[derive(serde::Deserialize)]
-struct OllamaEmbedResponse {
-    embeddings: Vec<Vec<f32>>,
-    #[serde(default)]
-    prompt_eval_count: Option<u32>,
-    #[serde(default)]
-    total_duration: Option<u64>,
-    #[serde(default)]
-    load_duration: Option<u64>,
+struct OpenAiEmbedResponse {
+    data: Vec<OpenAiEmbedData>,
+    usage: OpenAiEmbedUsage,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiEmbedData {
+    embedding: Vec<f32>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiEmbedUsage {
+    total_tokens: u32,
 }
 
 // ---------------------------------------------------------------------------
-// OllamaEmbeddingProvider
+// OpenAiEmbeddingProvider
 // ---------------------------------------------------------------------------
 
-/// Concrete embedding provider for Ollama's `/api/embed` endpoint.
+/// Concrete embedding provider for `OpenAI`'s `/v1/embeddings` endpoint.
 ///
-/// Owns the model name and expected vector dimensions. Validates every
-/// response vector against `expected_dimensions` and returns
+/// Compatible with any `OpenAI`-compatible runtime. Owns the model name
+/// and expected vector dimensions. Validates every response vector
+/// against `expected_dimensions` and returns
 /// [`InferenceError::ResponseParseFailed`] on mismatch.
-pub struct OllamaEmbeddingProvider {
+///
+/// Authentication is set per-request via the `Authorization: Bearer`
+/// header — the shared [`reqwest::Client`] is not pre-configured with
+/// credentials.
+pub struct OpenAiEmbeddingProvider {
     client: reqwest::Client,
     base_url: String,
     model: String,
+    api_key: String,
     expected_dimensions: u32,
 }
 
-impl OllamaEmbeddingProvider {
-    /// Creates a new Ollama embedding provider.
+impl OpenAiEmbeddingProvider {
+    /// Creates a new `OpenAI` embedding provider.
     pub fn new(
         client: reqwest::Client,
         base_url: impl Into<String>,
         model: impl Into<String>,
+        api_key: impl Into<String>,
         expected_dimensions: u32,
     ) -> Self {
         Self {
             client,
             base_url: normalise_base_url(base_url),
             model: model.into(),
+            api_key: api_key.into(),
             expected_dimensions,
         }
     }
 
     /// Validates model availability and dimension configuration.
     ///
-    /// Sends a best-effort GET to `/api/tags` to check whether the
-    /// configured model is locally available, then embeds the canonical
-    /// string `"tribal probe"` and validates the returned vector length
-    /// against `expected_dimensions`.
+    /// Embeds the canonical string `"tribal probe"` and validates the
+    /// returned vector length against `expected_dimensions`.
     ///
     /// # Errors
     ///
-    /// Returns [`InferenceError::ProviderUnavailable`] if Ollama cannot
-    /// be reached.  Returns [`InferenceError::ResponseParseFailed`] if
-    /// the returned vector length does not match expectations.
+    /// Returns [`InferenceError::ProviderUnavailable`] if the provider
+    /// cannot be reached.  Returns [`InferenceError::EmbeddingFailed`]
+    /// if the API key or model is rejected.  Returns
+    /// [`InferenceError::ResponseParseFailed`] if the returned vector
+    /// length does not match expectations.
     pub async fn probe_model(&self) -> Result<(), InferenceError> {
         let span = tracing::info_span!(
             "tribal.embedding.probe",
@@ -102,8 +115,6 @@ impl OllamaEmbeddingProvider {
         );
 
         async {
-            super::tags::check_tags(&self.client, &self.base_url, &self.model).await;
-
             let request = EmbeddingRequest {
                 input: PROBE_INPUT.to_owned(),
                 purpose: EmbeddingPurpose::Candidate,
@@ -127,7 +138,7 @@ impl OllamaEmbeddingProvider {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl EmbeddingProvider for OllamaEmbeddingProvider {
+impl EmbeddingProvider for OpenAiEmbeddingProvider {
     async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, InferenceError> {
         if request.input.is_empty() {
             return Err(InferenceError::EmbeddingFailed {
@@ -150,21 +161,27 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
         async {
             let started = Instant::now();
             let url = format!("{}{EMBED_PATH}", self.base_url);
-            let body = OllamaEmbedRequest {
+            let body = OpenAiEmbedRequest {
                 model: &self.model,
                 input: &request.input,
-                truncate: true,
+                encoding_format: "float",
             };
 
             let http_response = self
                 .client
                 .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
                 .json(&body)
                 .send()
                 .await
                 .map_err(|e| map_send_error(&e, PROVIDER_NAME))?;
 
             let status = http_response.status();
+            let retry_after = http_response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
             let response_body = http_response
                 .text()
                 .await
@@ -173,11 +190,15 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
             let latency = started.elapsed();
 
             if !status.is_success() {
+                let extra: Vec<(&str, &str)> = retry_after
+                    .as_deref()
+                    .map(|v| vec![("Retry-After", v)])
+                    .unwrap_or_default();
                 return Err(map_http_error(
                     status,
                     &response_body,
                     PROVIDER_NAME,
-                    &[],
+                    &extra,
                     |ctx| InferenceError::EmbeddingFailed {
                         model: self.model.clone(),
                         context: ctx,
@@ -186,26 +207,15 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                 ));
             }
 
-            let parsed: OllamaEmbedResponse =
+            let parsed: OpenAiEmbedResponse =
                 serde_json::from_str(&response_body).map_err(|e| {
-                    map_json_parse_error(&e, "OllamaEmbedResponse JSON object", &response_body)
+                    map_json_parse_error(&e, "OpenAiEmbedResponse JSON object", &response_body)
                 })?;
 
-            if let Some(total_ns) = parsed.total_duration {
-                tracing::debug!(total_duration_ms = total_ns / 1_000_000, "provider timing");
-            }
-            if let Some(load_ns) = parsed.load_duration {
-                tracing::debug!(load_duration_ms = load_ns / 1_000_000, "provider timing");
-            }
+            let embeddings: Vec<Vec<f32>> = parsed.data.into_iter().map(|d| d.embedding).collect();
+            let vector = validate_embeddings(embeddings, self.expected_dimensions, &self.model)?;
 
-            let vector =
-                validate_embeddings(parsed.embeddings, self.expected_dimensions, &self.model)?;
-
-            let total_tokens = parsed.prompt_eval_count.unwrap_or_else(|| {
-                tracing::debug!("prompt_eval_count absent, defaulting to 0");
-                0
-            });
-
+            let total_tokens = parsed.usage.total_tokens;
             let latency_ms = latency_ms(latency);
 
             let current = tracing::Span::current();
@@ -246,11 +256,10 @@ mod tests {
     use tribal_domain::EmbeddingPurpose;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{body_json, method, path},
+        matchers::{body_json, header, method, path},
     };
 
     use super::*;
-    use crate::ollama::tags::TAGS_PATH;
 
     fn a_request(input: &str) -> EmbeddingRequest {
         EmbeddingRequest {
@@ -261,18 +270,26 @@ mod tests {
 
     fn a_valid_response_json(dims: usize) -> serde_json::Value {
         serde_json::json!({
-            "embeddings": [vec![0.1_f32; dims]],
-            "prompt_eval_count": 5,
-            "total_duration": 100_000_000_u64,
-            "load_duration": 10_000_000_u64,
+            "object": "list",
+            "data": [{
+                "object": "embedding",
+                "embedding": vec![0.1_f32; dims],
+                "index": 0,
+            }],
+            "model": "text-embedding-3-small",
+            "usage": {
+                "prompt_tokens": 5,
+                "total_tokens": 5,
+            },
         })
     }
 
-    fn setup(server: &MockServer, dims: u32) -> OllamaEmbeddingProvider {
-        OllamaEmbeddingProvider::new(
+    fn setup(server: &MockServer, dims: u32) -> OpenAiEmbeddingProvider {
+        OpenAiEmbeddingProvider::new(
             reqwest::Client::new(),
             server.uri(),
-            "nomic-embed-text:v1.5",
+            "text-embedding-3-small",
+            "test-key",
             dims,
         )
     }
@@ -290,17 +307,18 @@ mod tests {
             .await;
 
         let url_with_slash = format!("{}/", server.uri());
-        let provider = OllamaEmbeddingProvider::new(
+        let provider = OpenAiEmbeddingProvider::new(
             reqwest::Client::new(),
             url_with_slash,
-            "nomic-embed-text:v1.5",
+            "text-embedding-3-small",
+            "test-key",
             3,
         );
 
         provider.embed(a_request("test")).await.unwrap();
     }
 
-    // -- Happy path ---------------------------------------------------------
+    // -- Happy path ----------------------------------------------------------
 
     #[tokio::test]
     async fn test_embed_success() {
@@ -317,7 +335,7 @@ mod tests {
 
         assert_eq!(response.vector, vec![0.1, 0.1, 0.1]);
         assert_eq!(response.usage.provider, PROVIDER_NAME);
-        assert_eq!(response.usage.model, "nomic-embed-text:v1.5");
+        assert_eq!(response.usage.model, "text-embedding-3-small");
         assert_eq!(response.usage.total_tokens, 5);
     }
 
@@ -328,9 +346,9 @@ mod tests {
         Mock::given(method("POST"))
             .and(path(EMBED_PATH))
             .and(body_json(serde_json::json!({
-                "model": "nomic-embed-text:v1.5",
+                "model": "text-embedding-3-small",
                 "input": "hello world",
-                "truncate": true,
+                "encoding_format": "float",
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)))
             .expect(1)
@@ -341,7 +359,25 @@ mod tests {
         let _ = provider.embed(a_request("hello world")).await.unwrap();
     }
 
-    // -- Input validation ---------------------------------------------------
+    // -- Auth headers --------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_embed_sends_bearer_auth_header() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(EMBED_PATH))
+            .and(header("Authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server, 3);
+        let _ = provider.embed(a_request("test")).await.unwrap();
+    }
+
+    // -- Input validation ----------------------------------------------------
 
     #[tokio::test]
     async fn test_embed_empty_input_returns_embedding_failed() {
@@ -356,17 +392,22 @@ mod tests {
                 ref context,
                 ..
             }
-            if model == "nomic-embed-text:v1.5"
+            if model == "text-embedding-3-small"
                 && context == "input text is empty"
         ));
     }
 
-    // -- Network errors -----------------------------------------------------
+    // -- Network errors ------------------------------------------------------
 
     #[tokio::test]
     async fn test_embed_connection_refused_returns_provider_unavailable() {
-        let provider =
-            OllamaEmbeddingProvider::new(reqwest::Client::new(), "http://127.0.0.1:1", "model", 3);
+        let provider = OpenAiEmbeddingProvider::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1",
+            "model",
+            "key",
+            3,
+        );
 
         let err = provider.embed(a_request("test")).await.unwrap_err();
         assert!(matches!(
@@ -395,7 +436,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let provider = OllamaEmbeddingProvider::new(client, server.uri(), "model", 3);
+        let provider = OpenAiEmbeddingProvider::new(client, server.uri(), "model", "key", 3);
 
         let err = provider.embed(a_request("test")).await.unwrap_err();
         assert!(matches!(
@@ -405,7 +446,7 @@ mod tests {
         ));
     }
 
-    // -- HTTP error mapping -------------------------------------------------
+    // -- HTTP error mapping --------------------------------------------------
 
     #[tokio::test]
     async fn test_embed_http_500_returns_provider_unavailable() {
@@ -498,7 +539,79 @@ mod tests {
         );
     }
 
-    // -- Response parsing ---------------------------------------------------
+    #[tokio::test]
+    async fn test_embed_http_401_returns_embedding_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(EMBED_PATH))
+            .respond_with(ResponseTemplate::new(401).set_body_string("unauthorised"))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server, 3);
+        let err = provider.embed(a_request("test")).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                InferenceError::EmbeddingFailed { ref context, .. }
+                if context.contains("401")
+            ),
+            "expected EmbeddingFailed with 401 status, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_embed_http_403_returns_embedding_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(EMBED_PATH))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server, 3);
+        let err = provider.embed(a_request("test")).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                InferenceError::EmbeddingFailed { ref context, .. }
+                if context.contains("403")
+            ),
+            "expected EmbeddingFailed with 403 status, got {err:?}"
+        );
+    }
+
+    // -- 429 Retry-After -----------------------------------------------------
+
+    #[tokio::test]
+    async fn test_embed_http_429_includes_retry_after_in_context() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(EMBED_PATH))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .set_body_string("rate limited")
+                    .append_header("Retry-After", "30"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server, 3);
+        let err = provider.embed(a_request("test")).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                InferenceError::ProviderUnavailable { ref reason, .. }
+                if reason.contains("429") && reason.contains("; Retry-After: 30")
+            ),
+            "expected ProviderUnavailable with Retry-After metadata, got {err:?}"
+        );
+    }
+
+    // -- Response parsing ----------------------------------------------------
 
     #[tokio::test]
     async fn test_embed_malformed_json_returns_response_parse_failed() {
@@ -519,7 +632,7 @@ mod tests {
                     ref expected_shape,
                     ref actual,
                 }
-                if expected_shape == "OllamaEmbedResponse JSON object"
+                if expected_shape == "OpenAiEmbedResponse JSON object"
                     && actual.starts_with("invalid JSON:")
             ),
             "expected ResponseParseFailed with shape and JSON error, got {err:?}"
@@ -527,13 +640,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_embed_empty_embeddings_returns_embedding_failed() {
+    async fn test_embed_empty_data_returns_embedding_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(EMBED_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "embeddings": [],
-                "prompt_eval_count": 0,
+                "object": "list",
+                "data": [],
+                "usage": { "prompt_tokens": 0, "total_tokens": 0 },
             })))
             .mount(&server)
             .await;
@@ -549,13 +663,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_embed_multiple_embeddings_returns_response_parse_failed() {
+    async fn test_embed_multiple_data_returns_response_parse_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(EMBED_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
-                "prompt_eval_count": 5,
+                "object": "list",
+                "data": [
+                    { "object": "embedding", "embedding": [0.1, 0.2, 0.3], "index": 0 },
+                    { "object": "embedding", "embedding": [0.4, 0.5, 0.6], "index": 1 },
+                ],
+                "usage": { "prompt_tokens": 5, "total_tokens": 5 },
             })))
             .mount(&server)
             .await;
@@ -603,24 +721,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_embed_missing_prompt_eval_count_defaults_to_zero() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(EMBED_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "embeddings": [[0.1, 0.2, 0.3]],
-            })))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server, 3);
-        let response = provider.embed(a_request("test")).await.unwrap();
-
-        assert_eq!(response.usage.total_tokens, 0);
-    }
-
-    // -- Response body truncation -------------------------------------------
+    // -- Response body truncation --------------------------------------------
 
     #[tokio::test]
     async fn test_embed_response_body_truncated_in_error_context() {
@@ -645,20 +746,12 @@ mod tests {
         );
     }
 
-    // -- Probe tests --------------------------------------------------------
+    // -- Probe tests ---------------------------------------------------------
 
     #[tokio::test]
     async fn test_probe_model_success() {
         let server = MockServer::start().await;
 
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [{"name": "nomic-embed-text:v1.5"}],
-            })))
-            .mount(&server)
-            .await;
-
         Mock::given(method("POST"))
             .and(path(EMBED_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)))
@@ -670,36 +763,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_probe_model_tags_failure_continues() {
+    async fn test_probe_model_failure_propagates() {
         let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path(EMBED_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server, 3);
-        provider.probe_model().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_embed_failure_propagates() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [],
-            })))
-            .mount(&server)
-            .await;
 
         Mock::given(method("POST"))
             .and(path(EMBED_PATH))
@@ -718,14 +783,6 @@ mod tests {
     #[tokio::test]
     async fn test_probe_model_dimension_mismatch_propagates() {
         let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [{"name": "nomic-embed-text:v1.5"}],
-            })))
-            .mount(&server)
-            .await;
 
         Mock::given(method("POST"))
             .and(path(EMBED_PATH))

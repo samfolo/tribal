@@ -1,8 +1,9 @@
-//! Ollama inference provider targeting the `/api/chat` endpoint.
+//! `OpenAI` inference provider targeting the `/v1/chat/completions` endpoint.
 //!
-//! Implements [`InferenceProvider`] for local Ollama instances. The
-//! provider sends non-streaming chat completion requests and maps
-//! Ollama's response shape to [`CompletionResponse`].
+//! Implements [`InferenceProvider`] for `OpenAI` and `OpenAI`-compatible
+//! runtimes (`vLLM`, `LM Studio`, `LocalAI`, `LiteLLM`). The provider sends
+//! non-streaming chat completion requests and maps the response to
+//! [`CompletionResponse`].
 
 use std::time::Instant;
 
@@ -21,100 +22,102 @@ use crate::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const PROVIDER_NAME: &str = "ollama";
+const PROVIDER_NAME: &str = "openai";
 const PROBE_INPUT: &str = "Respond with OK";
-const CHAT_PATH: &str = "/api/chat";
+const CHAT_PATH: &str = "/v1/chat/completions";
 
 // ---------------------------------------------------------------------------
 // Private serde types
 // ---------------------------------------------------------------------------
 
-// Targets Ollama /api/chat — tested against Ollama v0.6.x (Feb 2026).
-// API reference: https://github.com/ollama/ollama/blob/main/docs/api.md
+// Targets OpenAI /v1/chat/completions — tested against OpenAI API (Feb 2026).
 
 #[derive(serde::Serialize)]
-struct OllamaChatRequest<'a> {
+struct OpenAiChatRequest<'a> {
     model: &'a str,
-    messages: Vec<OllamaChatMessage<'a>>,
-    stream: bool,
+    messages: Vec<OpenAiChatMessage<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    format: Option<serde_json::Value>,
+    temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    options: Option<OllamaChatOptions>,
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<serde_json::Value>,
 }
 
 #[derive(serde::Serialize)]
-struct OllamaChatMessage<'a> {
+struct OpenAiChatMessage<'a> {
     role: &'a str,
     content: &'a str,
 }
 
-#[derive(serde::Serialize)]
-struct OllamaChatOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    num_predict: Option<u32>,
+#[derive(serde::Deserialize)]
+struct OpenAiChatResponse {
+    choices: Vec<OpenAiChoice>,
+    usage: OpenAiChatUsage,
 }
 
 #[derive(serde::Deserialize)]
-struct OllamaChatResponse {
-    message: OllamaChatResponseMessage,
-    #[serde(default)]
-    prompt_eval_count: Option<u32>,
-    #[serde(default)]
-    eval_count: Option<u32>,
-    #[serde(default)]
-    total_duration: Option<u64>,
-    #[serde(default)]
-    load_duration: Option<u64>,
+struct OpenAiChoice {
+    message: OpenAiChoiceMessage,
 }
 
 #[derive(serde::Deserialize)]
-struct OllamaChatResponseMessage {
-    content: String,
+struct OpenAiChoiceMessage {
+    content: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[allow(clippy::struct_field_names)] // Matches OpenAI API field names.
+struct OpenAiChatUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
 }
 
 // ---------------------------------------------------------------------------
-// OllamaInferenceProvider
+// OpenAiInferenceProvider
 // ---------------------------------------------------------------------------
 
-/// Concrete inference provider for Ollama's `/api/chat` endpoint.
+/// Concrete inference provider for `OpenAI`'s `/v1/chat/completions` endpoint.
 ///
-/// Sends non-streaming chat completion requests and maps the response
-/// to [`CompletionResponse`]. Ollama does not support prompt caching,
-/// so cache token counts are always zero.
-pub struct OllamaInferenceProvider {
+/// Compatible with any `OpenAI`-compatible runtime. Sends non-streaming
+/// chat completion requests and maps the response to
+/// [`CompletionResponse`]. `OpenAI` does not expose prompt caching via
+/// this endpoint, so cache token counts are always zero.
+///
+/// Authentication is set per-request via the `Authorization: Bearer`
+/// header — the shared [`reqwest::Client`] is not pre-configured with
+/// credentials.
+pub struct OpenAiInferenceProvider {
     client: reqwest::Client,
     base_url: String,
     model: String,
+    api_key: String,
 }
 
-impl OllamaInferenceProvider {
-    /// Creates a new Ollama inference provider.
+impl OpenAiInferenceProvider {
+    /// Creates a new `OpenAI` inference provider.
     pub fn new(
         client: reqwest::Client,
         base_url: impl Into<String>,
         model: impl Into<String>,
+        api_key: impl Into<String>,
     ) -> Self {
         Self {
             client,
             base_url: normalise_base_url(base_url),
             model: model.into(),
+            api_key: api_key.into(),
         }
     }
 
-    /// Validates model availability by sending a trivial completion.
-    ///
-    /// Sends a best-effort GET to `/api/tags` to check whether the
-    /// configured model is locally available, then sends a minimal
-    /// completion request to verify the model can generate output.
+    /// Validates API key and model access by sending a trivial completion.
     ///
     /// # Errors
     ///
-    /// Returns [`InferenceError::ProviderUnavailable`] if Ollama cannot
-    /// be reached.  Returns [`InferenceError::LlmCallFailed`] if the
-    /// model rejects the request.
+    /// Returns [`InferenceError::ProviderUnavailable`] if the provider
+    /// cannot be reached.  Returns [`InferenceError::LlmCallFailed`] if
+    /// the API key or model is rejected.
     pub async fn probe_model(&self) -> Result<(), InferenceError> {
         let span = tracing::info_span!(
             "tribal.llm.probe",
@@ -123,8 +126,6 @@ impl OllamaInferenceProvider {
         );
 
         async {
-            super::tags::check_tags(&self.client, &self.base_url, &self.model).await;
-
             let request = CompletionRequest {
                 system: None,
                 messages: vec![Message {
@@ -150,7 +151,7 @@ impl OllamaInferenceProvider {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl InferenceProvider for OllamaInferenceProvider {
+impl InferenceProvider for OpenAiInferenceProvider {
     async fn complete(
         &self,
         request: CompletionRequest,
@@ -187,12 +188,18 @@ impl InferenceProvider for OllamaInferenceProvider {
             let http_response = self
                 .client
                 .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
                 .json(&body)
                 .send()
                 .await
                 .map_err(|e| map_send_error(&e, PROVIDER_NAME))?;
 
             let status = http_response.status();
+            let retry_after = http_response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
             let response_body = http_response
                 .text()
                 .await
@@ -201,11 +208,15 @@ impl InferenceProvider for OllamaInferenceProvider {
             let latency = started.elapsed();
 
             if !status.is_success() {
+                let extra: Vec<(&str, &str)> = retry_after
+                    .as_deref()
+                    .map(|v| vec![("Retry-After", v)])
+                    .unwrap_or_default();
                 return Err(map_http_error(
                     status,
                     &response_body,
                     PROVIDER_NAME,
-                    &[],
+                    &extra,
                     |ctx| InferenceError::LlmCallFailed {
                         model: self.model.clone(),
                         context: ctx,
@@ -214,45 +225,39 @@ impl InferenceProvider for OllamaInferenceProvider {
                 ));
             }
 
-            let parsed: OllamaChatResponse = serde_json::from_str(&response_body).map_err(|e| {
-                map_json_parse_error(&e, "OllamaChatResponse JSON object", &response_body)
+            let parsed: OpenAiChatResponse = serde_json::from_str(&response_body).map_err(|e| {
+                map_json_parse_error(&e, "OpenAiChatResponse JSON object", &response_body)
             })?;
 
-            if let Some(total_ns) = parsed.total_duration {
-                tracing::debug!(total_duration_ms = total_ns / 1_000_000, "provider timing");
-            }
-            if let Some(load_ns) = parsed.load_duration {
-                tracing::debug!(load_duration_ms = load_ns / 1_000_000, "provider timing");
-            }
+            let choice =
+                parsed
+                    .choices
+                    .first()
+                    .ok_or_else(|| InferenceError::ResponseParseFailed {
+                        expected_shape: "choices[0] present".to_owned(),
+                        actual: "choices array is empty".to_owned(),
+                    })?;
 
-            let input_tokens = parsed.prompt_eval_count.unwrap_or_else(|| {
-                tracing::debug!("prompt_eval_count absent, defaulting to 0");
-                0
-            });
-
-            let output_tokens = parsed.eval_count.unwrap_or_else(|| {
-                tracing::debug!("eval_count absent, defaulting to 0");
-                0
-            });
-
-            let total_tokens = input_tokens.saturating_add(output_tokens);
+            let text = choice.message.content.clone().ok_or_else(|| {
+                InferenceError::ResponseParseFailed {
+                    expected_shape: "choices[0].message.content present".to_owned(),
+                    actual: "choices[0].message.content is null".to_owned(),
+                }
+            })?;
 
             let usage = CompletionUsage {
                 provider: PROVIDER_NAME.to_owned(),
                 model: self.model.clone(),
-                input_tokens,
-                output_tokens,
+                input_tokens: parsed.usage.prompt_tokens,
+                output_tokens: parsed.usage.completion_tokens,
                 cache_read_tokens: 0,
                 cache_write_tokens: 0,
-                total_tokens,
+                total_tokens: parsed.usage.total_tokens,
                 latency,
             };
             record_completion_usage(&usage);
 
-            Ok(CompletionResponse {
-                text: parsed.message.content,
-                usage,
-            })
+            Ok(CompletionResponse { text, usage })
         }
         .instrument(span)
         .await
@@ -263,47 +268,45 @@ impl InferenceProvider for OllamaInferenceProvider {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OllamaChatRequest<'a> {
+fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OpenAiChatRequest<'a> {
     let mut messages =
         Vec::with_capacity(request.messages.len() + usize::from(request.system.is_some()));
 
     if let Some(ref system) = request.system {
-        messages.push(OllamaChatMessage {
+        messages.push(OpenAiChatMessage {
             role: "system",
             content: system,
         });
     }
 
     for msg in &request.messages {
-        messages.push(OllamaChatMessage {
+        messages.push(OpenAiChatMessage {
             role: msg.role.as_str(),
             content: &msg.content,
         });
     }
 
-    let format = request.response_format.as_ref().map(map_response_format);
+    let response_format = request.response_format.as_ref().map(map_response_format);
 
-    let options = match (request.temperature, request.max_tokens) {
-        (None, None) => None,
-        (temp, max_tok) => Some(OllamaChatOptions {
-            temperature: temp,
-            num_predict: max_tok,
-        }),
-    };
-
-    OllamaChatRequest {
+    OpenAiChatRequest {
         model,
         messages,
-        stream: false,
-        format,
-        options,
+        temperature: request.temperature,
+        max_tokens: request.max_tokens,
+        response_format,
     }
 }
 
 fn map_response_format(format: &ResponseFormat) -> serde_json::Value {
     match format {
-        ResponseFormat::Json => serde_json::Value::String("json".to_owned()),
-        ResponseFormat::JsonSchema { schema } => schema.clone(),
+        ResponseFormat::Json => serde_json::json!({"type": "json_object"}),
+        ResponseFormat::JsonSchema { schema } => serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "response",
+                "schema": schema,
+            },
+        }),
     }
 }
 
@@ -317,11 +320,10 @@ mod tests {
 
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{body_json, method, path},
+        matchers::{body_json, header, method, path},
     };
 
     use super::*;
-    use crate::ollama::tags::TAGS_PATH;
 
     fn a_request(content: &str) -> CompletionRequest {
         CompletionRequest {
@@ -338,16 +340,32 @@ mod tests {
 
     fn a_valid_response_json() -> serde_json::Value {
         serde_json::json!({
-            "message": { "role": "assistant", "content": "Hello!" },
-            "prompt_eval_count": 10,
-            "eval_count": 5,
-            "total_duration": 200_000_000_u64,
-            "load_duration": 20_000_000_u64,
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "model": "gpt-4o-mini",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello!",
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            },
         })
     }
 
-    fn setup(server: &MockServer) -> OllamaInferenceProvider {
-        OllamaInferenceProvider::new(reqwest::Client::new(), server.uri(), "llama3.2:3b")
+    fn setup(server: &MockServer) -> OpenAiInferenceProvider {
+        OpenAiInferenceProvider::new(
+            reqwest::Client::new(),
+            server.uri(),
+            "gpt-4o-mini",
+            "test-key",
+        )
     }
 
     // -- Constructor ---------------------------------------------------------
@@ -363,8 +381,12 @@ mod tests {
             .await;
 
         let url_with_slash = format!("{}/", server.uri());
-        let provider =
-            OllamaInferenceProvider::new(reqwest::Client::new(), url_with_slash, "llama3.2:3b");
+        let provider = OpenAiInferenceProvider::new(
+            reqwest::Client::new(),
+            url_with_slash,
+            "gpt-4o-mini",
+            "test-key",
+        );
 
         provider.complete(a_request("test")).await.unwrap();
     }
@@ -386,7 +408,7 @@ mod tests {
 
         assert_eq!(response.text, "Hello!");
         assert_eq!(response.usage.provider, PROVIDER_NAME);
-        assert_eq!(response.usage.model, "llama3.2:3b");
+        assert_eq!(response.usage.model, "gpt-4o-mini");
         assert_eq!(response.usage.input_tokens, 10);
         assert_eq!(response.usage.output_tokens, 5);
         assert_eq!(response.usage.total_tokens, 15);
@@ -401,9 +423,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
             .and(body_json(serde_json::json!({
-                "model": "llama3.2:3b",
+                "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "hello world"}],
-                "stream": false,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
             .expect(1)
@@ -421,12 +442,11 @@ mod tests {
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
             .and(body_json(serde_json::json!({
-                "model": "llama3.2:3b",
+                "model": "gpt-4o-mini",
                 "messages": [
                     {"role": "system", "content": "You are helpful."},
                     {"role": "user", "content": "hi"},
                 ],
-                "stream": false,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
             .expect(1)
@@ -447,6 +467,26 @@ mod tests {
         let _ = provider.complete(request).await.unwrap();
     }
 
+    // -- Auth headers --------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_chat_sends_bearer_auth_header() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .and(header("Authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let _ = provider.complete(a_request("test")).await.unwrap();
+    }
+
+    // -- Response format -----------------------------------------------------
+
     #[tokio::test]
     async fn test_chat_sends_response_format_json() {
         let server = MockServer::start().await;
@@ -454,10 +494,9 @@ mod tests {
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
             .and(body_json(serde_json::json!({
-                "model": "llama3.2:3b",
+                "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "test"}],
-                "stream": false,
-                "format": "json",
+                "response_format": {"type": "json_object"},
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
             .expect(1)
@@ -487,10 +526,15 @@ mod tests {
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
             .and(body_json(serde_json::json!({
-                "model": "llama3.2:3b",
+                "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "test"}],
-                "stream": false,
-                "format": schema.clone(),
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response",
+                        "schema": schema.clone(),
+                    },
+                },
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
             .expect(1)
@@ -511,19 +555,38 @@ mod tests {
         let _ = provider.complete(request).await.unwrap();
     }
 
-    // -- Options serialisation -----------------------------------------------
-
     #[tokio::test]
-    async fn test_chat_sends_options_both_set() {
+    async fn test_chat_omits_response_format_when_none() {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
             .and(body_json(serde_json::json!({
-                "model": "llama3.2:3b",
+                "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "test"}],
-                "stream": false,
-                "options": {"temperature": 0.7, "num_predict": 100},
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let _ = provider.complete(a_request("test")).await.unwrap();
+    }
+
+    // -- Options serialisation -----------------------------------------------
+
+    #[tokio::test]
+    async fn test_chat_sends_temperature_and_max_tokens() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "test"}],
+                "temperature": 0.7,
+                "max_tokens": 100,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
             .expect(1)
@@ -542,88 +605,6 @@ mod tests {
             response_format: None,
         };
         let _ = provider.complete(request).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_chat_sends_options_temperature_only() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path(CHAT_PATH))
-            .and(body_json(serde_json::json!({
-                "model": "llama3.2:3b",
-                "messages": [{"role": "user", "content": "test"}],
-                "stream": false,
-                "options": {"temperature": 0.5},
-            })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        let request = CompletionRequest {
-            system: None,
-            messages: vec![Message {
-                role: Role::User,
-                content: "test".to_owned(),
-            }],
-            temperature: Some(0.5),
-            max_tokens: None,
-            response_format: None,
-        };
-        let _ = provider.complete(request).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_chat_sends_options_max_tokens_only() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path(CHAT_PATH))
-            .and(body_json(serde_json::json!({
-                "model": "llama3.2:3b",
-                "messages": [{"role": "user", "content": "test"}],
-                "stream": false,
-                "options": {"num_predict": 200},
-            })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        let request = CompletionRequest {
-            system: None,
-            messages: vec![Message {
-                role: Role::User,
-                content: "test".to_owned(),
-            }],
-            temperature: None,
-            max_tokens: Some(200),
-            response_format: None,
-        };
-        let _ = provider.complete(request).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_chat_omits_options_when_both_none() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path(CHAT_PATH))
-            .and(body_json(serde_json::json!({
-                "model": "llama3.2:3b",
-                "messages": [{"role": "user", "content": "test"}],
-                "stream": false,
-            })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        let _ = provider.complete(a_request("test")).await.unwrap();
     }
 
     // -- Input validation ----------------------------------------------------
@@ -648,7 +629,7 @@ mod tests {
                 ref context,
                 ..
             }
-            if model == "llama3.2:3b"
+            if model == "gpt-4o-mini"
                 && context == "messages list is empty"
         ));
     }
@@ -657,8 +638,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_connection_refused_returns_provider_unavailable() {
-        let provider =
-            OllamaInferenceProvider::new(reqwest::Client::new(), "http://127.0.0.1:1", "model");
+        let provider = OpenAiInferenceProvider::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1",
+            "model",
+            "key",
+        );
 
         let err = provider.complete(a_request("test")).await.unwrap_err();
         assert!(matches!(
@@ -687,7 +672,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let provider = OllamaInferenceProvider::new(client, server.uri(), "model");
+        let provider = OpenAiInferenceProvider::new(client, server.uri(), "model", "key");
 
         let err = provider.complete(a_request("test")).await.unwrap_err();
         assert!(matches!(
@@ -790,6 +775,78 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_chat_http_401_returns_llm_call_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .respond_with(ResponseTemplate::new(401).set_body_string("unauthorised"))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let err = provider.complete(a_request("test")).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                InferenceError::LlmCallFailed { ref context, .. }
+                if context.contains("401")
+            ),
+            "expected LlmCallFailed with 401 status, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chat_http_403_returns_llm_call_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let err = provider.complete(a_request("test")).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                InferenceError::LlmCallFailed { ref context, .. }
+                if context.contains("403")
+            ),
+            "expected LlmCallFailed with 403 status, got {err:?}"
+        );
+    }
+
+    // -- 429 Retry-After -----------------------------------------------------
+
+    #[tokio::test]
+    async fn test_chat_http_429_includes_retry_after_in_context() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .set_body_string("rate limited")
+                    .append_header("Retry-After", "30"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let err = provider.complete(a_request("test")).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                InferenceError::ProviderUnavailable { ref reason, .. }
+                if reason.contains("429") && reason.contains("; Retry-After: 30")
+            ),
+            "expected ProviderUnavailable with Retry-After metadata, got {err:?}"
+        );
+    }
+
     // -- Response parsing ----------------------------------------------------
 
     #[tokio::test]
@@ -811,7 +868,7 @@ mod tests {
                     ref expected_shape,
                     ref actual,
                 }
-                if expected_shape == "OllamaChatResponse JSON object"
+                if expected_shape == "OpenAiChatResponse JSON object"
                     && actual.starts_with("invalid JSON:")
             ),
             "expected ResponseParseFailed with shape and JSON error, got {err:?}"
@@ -819,14 +876,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_chat_unexpected_shape_returns_response_parse_failed() {
+    async fn test_chat_null_content_returns_response_parse_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"status": "ok", "data": 42})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": "gpt-4o-mini",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                    },
+                    "finish_reason": "stop",
+                }],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 0,
+                    "total_tokens": 10,
+                },
+            })))
             .mount(&server)
             .await;
 
@@ -840,51 +911,47 @@ mod tests {
                     ref expected_shape,
                     ref actual,
                 }
-                if expected_shape == "OllamaChatResponse JSON object"
-                    && actual.starts_with("invalid JSON:")
+                if expected_shape == "choices[0].message.content present"
+                    && actual == "choices[0].message.content is null"
             ),
-            "expected ResponseParseFailed for structural mismatch, got {err:?}"
+            "expected ResponseParseFailed for null content, got {err:?}"
         );
     }
 
     #[tokio::test]
-    async fn test_chat_missing_prompt_eval_count_defaults_to_zero() {
+    async fn test_chat_empty_choices_returns_response_parse_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "message": {"role": "assistant", "content": "OK"},
-                "eval_count": 3,
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": "gpt-4o-mini",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 0,
+                    "total_tokens": 10,
+                },
             })))
             .mount(&server)
             .await;
 
         let provider = setup(&server);
-        let response = provider.complete(a_request("test")).await.unwrap();
+        let err = provider.complete(a_request("test")).await.unwrap_err();
 
-        assert_eq!(response.usage.input_tokens, 0);
-        assert_eq!(response.usage.output_tokens, 3);
-        assert_eq!(response.usage.total_tokens, 3);
-    }
-
-    #[tokio::test]
-    async fn test_chat_missing_eval_count_defaults_to_zero() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(CHAT_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "message": {"role": "assistant", "content": "OK"},
-                "prompt_eval_count": 8,
-            })))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        let response = provider.complete(a_request("test")).await.unwrap();
-
-        assert_eq!(response.usage.input_tokens, 8);
-        assert_eq!(response.usage.output_tokens, 0);
-        assert_eq!(response.usage.total_tokens, 8);
+        assert!(
+            matches!(
+                err,
+                InferenceError::ResponseParseFailed {
+                    ref expected_shape,
+                    ref actual,
+                }
+                if expected_shape == "choices[0] present"
+                    && actual == "choices array is empty"
+            ),
+            "expected ResponseParseFailed for empty choices, got {err:?}"
+        );
     }
 
     // -- Response body truncation --------------------------------------------
@@ -918,34 +985,6 @@ mod tests {
     async fn test_probe_model_success() {
         let server = MockServer::start().await;
 
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [{"name": "llama3.2:3b"}],
-            })))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path(CHAT_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        provider.probe_model().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_tags_failure_continues() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
@@ -959,14 +998,6 @@ mod tests {
     #[tokio::test]
     async fn test_probe_model_completion_failure_propagates() {
         let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [],
-            })))
-            .mount(&server)
-            .await;
 
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
