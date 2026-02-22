@@ -30,9 +30,9 @@ pub enum InferenceError {
         model: String,
         /// Human-readable description of what the call was trying to do.
         context: String,
-        /// The underlying provider error.
+        /// The underlying provider error, if one exists.
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// An LLM completion call failed.
@@ -42,9 +42,9 @@ pub enum InferenceError {
         model: String,
         /// Human-readable description of what the call was trying to do.
         context: String,
-        /// The underlying provider error.
+        /// The underlying provider error, if one exists.
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// The provider returned a response that could not be parsed into
@@ -79,10 +79,10 @@ mod tests {
         let err = InferenceError::EmbeddingFailed {
             model: "nomic-embed-text".to_owned(),
             context: "generating candidate embedding".to_owned(),
-            source: Box::new(std::io::Error::new(
+            source: Some(Box::new(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "request timed out",
-            )),
+            ))),
         };
         assert_eq!(
             err.to_string(),
@@ -96,10 +96,10 @@ mod tests {
         let err = InferenceError::LlmCallFailed {
             model: "claude-sonnet".to_owned(),
             context: "extraction prompt".to_owned(),
-            source: Box::new(std::io::Error::new(
+            source: Some(Box::new(std::io::Error::new(
                 std::io::ErrorKind::ConnectionReset,
                 "connection reset",
-            )),
+            ))),
         };
         assert_eq!(
             err.to_string(),
@@ -126,7 +126,7 @@ mod tests {
         let err = InferenceError::EmbeddingFailed {
             model: "model".to_owned(),
             context: "ctx".to_owned(),
-            source: Box::new(inner),
+            source: Some(Box::new(inner)),
         };
         assert!(std::error::Error::source(&err).is_some());
     }
@@ -137,8 +137,28 @@ mod tests {
         let err = InferenceError::LlmCallFailed {
             model: "model".to_owned(),
             context: "ctx".to_owned(),
-            source: Box::new(inner),
+            source: Some(Box::new(inner)),
         };
         assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn test_embedding_failed_source_none() {
+        let err = InferenceError::EmbeddingFailed {
+            model: "model".to_owned(),
+            context: "empty input".to_owned(),
+            source: None,
+        };
+        assert!(std::error::Error::source(&err).is_none());
+    }
+
+    #[test]
+    fn test_llm_call_failed_source_none() {
+        let err = InferenceError::LlmCallFailed {
+            model: "model".to_owned(),
+            context: "empty messages".to_owned(),
+            source: None,
+        };
+        assert!(std::error::Error::source(&err).is_none());
     }
 }
