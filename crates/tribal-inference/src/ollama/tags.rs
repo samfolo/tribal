@@ -34,8 +34,8 @@ pub(super) async fn check_tags(client: &reqwest::Client, base_url: &str, model: 
     let result = client.get(&url).send().await;
 
     match result {
-        Ok(resp) if resp.status().is_success() => {
-            if let Ok(tags) = resp.json::<OllamaTagsResponse>().await {
+        Ok(resp) if resp.status().is_success() => match resp.json::<OllamaTagsResponse>().await {
+            Ok(tags) => {
                 let found = tags
                     .models
                     .iter()
@@ -48,7 +48,13 @@ pub(super) async fn check_tags(client: &reqwest::Client, base_url: &str, model: 
                     );
                 }
             }
-        }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to deserialise {TAGS_PATH} response (best-effort check)",
+                );
+            }
+        },
         Ok(resp) => {
             tracing::warn!(
                 status = %resp.status(),

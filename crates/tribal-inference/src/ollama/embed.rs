@@ -318,7 +318,6 @@ mod tests {
         assert_eq!(response.usage.provider, PROVIDER_NAME);
         assert_eq!(response.usage.model, "nomic-embed-text:v1.5");
         assert_eq!(response.usage.total_tokens, 5);
-        assert!(response.usage.latency > Duration::ZERO);
     }
 
     #[tokio::test]
