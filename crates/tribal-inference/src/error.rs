@@ -78,9 +78,14 @@ pub(crate) fn map_http_error(
     status: StatusCode,
     body: &str,
     provider: &str,
+    extra: &[(&str, &str)],
     non_retryable: impl FnOnce(String) -> InferenceError,
 ) -> InferenceError {
-    let context = format!("HTTP {status}: {}", body_preview(body));
+    let mut context = format!("HTTP {status}: {}", body_preview(body));
+    for (key, value) in extra {
+        use std::fmt::Write;
+        let _ = write!(context, "; {key}: {value}");
+    }
 
     if is_retryable_status(status) {
         tracing::warn!(%status, provider, "provider returned retryable error");
@@ -241,6 +246,7 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR,
             "oops",
             "test-provider",
+            &[],
             |ctx| InferenceError::EmbeddingFailed {
                 model: "m".to_owned(),
                 context: ctx,
@@ -260,6 +266,7 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "slow down",
             "test-provider",
+            &[],
             |ctx| InferenceError::EmbeddingFailed {
                 model: "m".to_owned(),
                 context: ctx,
@@ -276,7 +283,7 @@ mod tests {
     #[test]
     fn test_map_http_error_529_returns_provider_unavailable() {
         let status = StatusCode::from_u16(529).unwrap();
-        let err = map_http_error(status, "overloaded", "anthropic", |ctx| {
+        let err = map_http_error(status, "overloaded", "anthropic", &[], |ctx| {
             InferenceError::LlmCallFailed {
                 model: "m".to_owned(),
                 context: ctx,
@@ -296,6 +303,7 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "bad input",
             "test-provider",
+            &[],
             |ctx| InferenceError::EmbeddingFailed {
                 model: "test-model".to_owned(),
                 context: ctx,
@@ -320,6 +328,7 @@ mod tests {
             StatusCode::BAD_REQUEST,
             &long_body,
             "test-provider",
+            &[],
             |ctx| InferenceError::EmbeddingFailed {
                 model: "m".to_owned(),
                 context: ctx,
@@ -331,6 +340,30 @@ mod tests {
             InferenceError::EmbeddingFailed { ref context, .. }
             if context.contains("...") && context.len() < 300
         ));
+    }
+
+    #[test]
+    fn test_map_http_error_appends_extra_metadata() {
+        let err = map_http_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate limited",
+            "openai",
+            &[("Retry-After", "30")],
+            |ctx| InferenceError::EmbeddingFailed {
+                model: "m".to_owned(),
+                context: ctx,
+                source: None,
+            },
+        );
+        assert!(
+            matches!(
+                err,
+                InferenceError::ProviderUnavailable { ref reason, .. }
+                if reason.contains("429")
+                    && reason.contains("; Retry-After: 30")
+            ),
+            "expected ProviderUnavailable with extra metadata, got {err:?}"
+        );
     }
 
     // -- map_json_parse_error -----------------------------------------------
