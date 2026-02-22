@@ -1,10 +1,17 @@
-//! Crate-level error type for `tribal-inference`.
+//! Crate-level error type and construction helpers for `tribal-inference`.
 //!
 //! [`InferenceError`] is the single error enum for the inference layer.
 //! All variants use named fields; wrapped errors carry `#[source]` for
 //! error chain propagation.
+//!
+//! The `map_*` helpers centralise error construction so that logging,
+//! status classification, and body truncation are consistent across all
+//! provider implementations.
 
+use reqwest::StatusCode;
 use thiserror::Error;
+
+use crate::http::{body_preview, is_retryable_status};
 
 /// Errors produced by the inference layer.
 ///
@@ -30,9 +37,9 @@ pub enum InferenceError {
         model: String,
         /// Human-readable description of what the call was trying to do.
         context: String,
-        /// The underlying provider error.
+        /// The underlying provider error, if one exists.
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// An LLM completion call failed.
@@ -42,9 +49,9 @@ pub enum InferenceError {
         model: String,
         /// Human-readable description of what the call was trying to do.
         context: String,
-        /// The underlying provider error.
+        /// The underlying provider error, if one exists.
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
     /// The provider returned a response that could not be parsed into
@@ -57,6 +64,70 @@ pub enum InferenceError {
         actual: String,
     },
 }
+
+// ---------------------------------------------------------------------------
+// Error mapping helpers
+// ---------------------------------------------------------------------------
+
+/// Maps a non-success HTTP status to an [`InferenceError`].
+///
+/// Retryable statuses (429, 5xx, 529) produce [`InferenceError::ProviderUnavailable`].
+/// All other statuses delegate to `non_retryable` for the caller to
+/// choose the appropriate variant (`EmbeddingFailed` or `LlmCallFailed`).
+pub(crate) fn map_http_error(
+    status: StatusCode,
+    body: &str,
+    provider: &str,
+    non_retryable: impl FnOnce(String) -> InferenceError,
+) -> InferenceError {
+    let context = format!("HTTP {status}: {}", body_preview(body));
+
+    if is_retryable_status(status) {
+        tracing::warn!(%status, provider, "provider returned retryable error");
+        InferenceError::ProviderUnavailable {
+            provider: provider.to_owned(),
+            reason: context,
+        }
+    } else {
+        tracing::warn!(%status, provider, "provider returned non-retryable error");
+        non_retryable(context)
+    }
+}
+
+/// Maps a `reqwest` send failure to [`InferenceError::ProviderUnavailable`].
+pub(crate) fn map_send_error(e: &reqwest::Error, provider: &str) -> InferenceError {
+    tracing::warn!(error = %e, "request failed");
+    InferenceError::ProviderUnavailable {
+        provider: provider.to_owned(),
+        reason: e.to_string(),
+    }
+}
+
+/// Maps a response body read failure to [`InferenceError::ProviderUnavailable`].
+pub(crate) fn map_body_read_error(e: &reqwest::Error, provider: &str) -> InferenceError {
+    InferenceError::ProviderUnavailable {
+        provider: provider.to_owned(),
+        reason: format!("failed to read response body: {e}"),
+    }
+}
+
+/// Maps a JSON deserialisation failure to [`InferenceError::ResponseParseFailed`].
+pub(crate) fn map_json_parse_error(
+    e: &serde_json::Error,
+    expected: &str,
+    body: &str,
+) -> InferenceError {
+    tracing::warn!(error = %e, "failed to parse response");
+    tracing::debug!(body = %body, "raw response body");
+    InferenceError::ResponseParseFailed {
+        expected_shape: expected.to_owned(),
+        actual: format!("invalid JSON: {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -79,10 +150,10 @@ mod tests {
         let err = InferenceError::EmbeddingFailed {
             model: "nomic-embed-text".to_owned(),
             context: "generating candidate embedding".to_owned(),
-            source: Box::new(std::io::Error::new(
+            source: Some(Box::new(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "request timed out",
-            )),
+            ))),
         };
         assert_eq!(
             err.to_string(),
@@ -96,10 +167,10 @@ mod tests {
         let err = InferenceError::LlmCallFailed {
             model: "claude-sonnet".to_owned(),
             context: "extraction prompt".to_owned(),
-            source: Box::new(std::io::Error::new(
+            source: Some(Box::new(std::io::Error::new(
                 std::io::ErrorKind::ConnectionReset,
                 "connection reset",
-            )),
+            ))),
         };
         assert_eq!(
             err.to_string(),
@@ -126,7 +197,7 @@ mod tests {
         let err = InferenceError::EmbeddingFailed {
             model: "model".to_owned(),
             context: "ctx".to_owned(),
-            source: Box::new(inner),
+            source: Some(Box::new(inner)),
         };
         assert!(std::error::Error::source(&err).is_some());
     }
@@ -137,8 +208,145 @@ mod tests {
         let err = InferenceError::LlmCallFailed {
             model: "model".to_owned(),
             context: "ctx".to_owned(),
-            source: Box::new(inner),
+            source: Some(Box::new(inner)),
         };
         assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn test_embedding_failed_source_none() {
+        let err = InferenceError::EmbeddingFailed {
+            model: "model".to_owned(),
+            context: "empty input".to_owned(),
+            source: None,
+        };
+        assert!(std::error::Error::source(&err).is_none());
+    }
+
+    #[test]
+    fn test_llm_call_failed_source_none() {
+        let err = InferenceError::LlmCallFailed {
+            model: "model".to_owned(),
+            context: "empty messages".to_owned(),
+            source: None,
+        };
+        assert!(std::error::Error::source(&err).is_none());
+    }
+
+    // -- map_http_error -----------------------------------------------------
+
+    #[test]
+    fn test_map_http_error_server_error_returns_provider_unavailable() {
+        let err = map_http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "oops",
+            "test-provider",
+            |ctx| InferenceError::EmbeddingFailed {
+                model: "m".to_owned(),
+                context: ctx,
+                source: None,
+            },
+        );
+        assert!(matches!(
+            err,
+            InferenceError::ProviderUnavailable { ref provider, .. }
+            if provider == "test-provider"
+        ));
+    }
+
+    #[test]
+    fn test_map_http_error_too_many_requests_returns_provider_unavailable() {
+        let err = map_http_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "slow down",
+            "test-provider",
+            |ctx| InferenceError::EmbeddingFailed {
+                model: "m".to_owned(),
+                context: ctx,
+                source: None,
+            },
+        );
+        assert!(matches!(
+            err,
+            InferenceError::ProviderUnavailable { ref reason, .. }
+            if reason.contains("429")
+        ));
+    }
+
+    #[test]
+    fn test_map_http_error_529_returns_provider_unavailable() {
+        let status = StatusCode::from_u16(529).unwrap();
+        let err = map_http_error(status, "overloaded", "anthropic", |ctx| {
+            InferenceError::LlmCallFailed {
+                model: "m".to_owned(),
+                context: ctx,
+                source: None,
+            }
+        });
+        assert!(matches!(
+            err,
+            InferenceError::ProviderUnavailable { ref reason, .. }
+            if reason.contains("529")
+        ));
+    }
+
+    #[test]
+    fn test_map_http_error_client_error_delegates_to_closure() {
+        let err = map_http_error(
+            StatusCode::BAD_REQUEST,
+            "bad input",
+            "test-provider",
+            |ctx| InferenceError::EmbeddingFailed {
+                model: "test-model".to_owned(),
+                context: ctx,
+                source: None,
+            },
+        );
+        assert!(matches!(
+            err,
+            InferenceError::EmbeddingFailed {
+                ref model,
+                ref context,
+                ..
+            }
+            if model == "test-model" && context.contains("400")
+        ));
+    }
+
+    #[test]
+    fn test_map_http_error_includes_body_preview() {
+        let long_body = "x".repeat(500);
+        let err = map_http_error(
+            StatusCode::BAD_REQUEST,
+            &long_body,
+            "test-provider",
+            |ctx| InferenceError::EmbeddingFailed {
+                model: "m".to_owned(),
+                context: ctx,
+                source: None,
+            },
+        );
+        assert!(matches!(
+            err,
+            InferenceError::EmbeddingFailed { ref context, .. }
+            if context.contains("...") && context.len() < 300
+        ));
+    }
+
+    // -- map_json_parse_error -----------------------------------------------
+
+    #[test]
+    fn test_map_json_parse_error_returns_response_parse_failed() {
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let err = map_json_parse_error(&json_err, "SomeResponse JSON object", "raw body");
+        assert!(matches!(
+            err,
+            InferenceError::ResponseParseFailed {
+                ref expected_shape,
+                ref actual,
+            }
+            if expected_shape == "SomeResponse JSON object"
+                && actual.starts_with("invalid JSON:")
+        ));
     }
 }

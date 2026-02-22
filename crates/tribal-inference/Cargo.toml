@@ -10,5 +10,12 @@ publish.workspace = true
 tribal-domain.workspace = true
 
 async-trait.workspace = true
+reqwest.workspace = true
+serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+wiremock.workspace = true

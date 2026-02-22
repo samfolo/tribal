@@ -26,9 +26,6 @@ pub(crate) const MUTEX_POISONED: &str = "mock provider mutex poisoned";
 /// Extracts diagnostic information from request types for panic messages
 /// and tracing.
 pub(crate) trait MockRequest: Clone + Send + Sync + fmt::Debug {
-    /// The model identifier from the request.
-    fn model(&self) -> &str;
-
     /// The label for the context field shown in panic messages
     /// (`"system"` for completions, `"input"` for embeddings).
     fn context_label(&self) -> &'static str;
@@ -39,10 +36,6 @@ pub(crate) trait MockRequest: Clone + Send + Sync + fmt::Debug {
 }
 
 impl MockRequest for CompletionRequest {
-    fn model(&self) -> &str {
-        &self.model
-    }
-
     fn context_label(&self) -> &'static str {
         "system"
     }
@@ -56,10 +49,6 @@ impl MockRequest for CompletionRequest {
 }
 
 impl MockRequest for EmbeddingRequest {
-    fn model(&self) -> &str {
-        &self.model
-    }
-
     fn context_label(&self) -> &'static str {
         "input"
     }
@@ -261,12 +250,11 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                     "{name}: sequential queue exhausted\n  \
                      sequential: {consumed} of {total} consumed, 0 remaining\n  \
                      conditionals: {conds} registered\n  \
-                     call #{call}: model=\"{model}\", {label}=\"{preview}\"",
+                     call #{call}: {label}=\"{preview}\"",
                     name = self.provider_name,
                     total = consumed,
                     conds = conditionals_count,
                     call = call_number,
-                    model = request.model(),
                     label = request.context_label(),
                     preview = request.context_preview(),
                 );
@@ -278,12 +266,11 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                          sequential response exists\n  \
                          sequential: {consumed} of {total} consumed\n  \
                          conditionals: {conds} registered\n  \
-                         call #{call}: model=\"{model}\", {label}=\"{preview}\"",
+                         call #{call}: {label}=\"{preview}\"",
                         name = self.provider_name,
                         total = consumed,
                         conds = conditionals_count,
                         call = call_number,
-                        model = request.model(),
                         label = request.context_label(),
                         preview = request.context_preview(),
                     );
