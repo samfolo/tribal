@@ -124,7 +124,6 @@ impl OllamaEmbeddingProvider {
         .instrument(span)
         .await
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -253,8 +252,8 @@ mod tests {
         matchers::{body_json, method, path},
     };
 
-    use crate::ollama::tags::TAGS_PATH;
     use super::*;
+    use crate::ollama::tags::TAGS_PATH;
 
     fn a_request(input: &str) -> EmbeddingRequest {
         EmbeddingRequest {

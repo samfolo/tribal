@@ -36,9 +36,10 @@ pub(super) async fn check_tags(client: &reqwest::Client, base_url: &str, model: 
     match result {
         Ok(resp) if resp.status().is_success() => {
             if let Ok(tags) = resp.json::<OllamaTagsResponse>().await {
-                let found = tags.models.iter().any(|m| {
-                    m.name == model || m.name.starts_with(&format!("{model}:"))
-                });
+                let found = tags
+                    .models
+                    .iter()
+                    .any(|m| m.name == model || m.name.starts_with(&format!("{model}:")));
 
                 if !found {
                     tracing::warn!(
