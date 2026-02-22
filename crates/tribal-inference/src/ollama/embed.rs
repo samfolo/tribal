@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use reqwest::StatusCode;
+use tracing::Instrument;
 use tribal_domain::{EmbeddingPurpose, span_attrs};
 
 use crate::{
@@ -109,22 +110,25 @@ impl OllamaEmbeddingProvider {
             { span_attrs::EMBEDDING_PROVIDER } = PROVIDER_NAME,
             { span_attrs::EMBEDDING_MODEL } = %self.model,
         );
-        let _guard = span.enter();
 
-        self.check_tags().await;
+        async {
+            self.check_tags().await;
 
-        let request = EmbeddingRequest {
-            input: PROBE_INPUT.to_owned(),
-            purpose: EmbeddingPurpose::Candidate,
-        };
-        let _response = self.embed(request).await?;
+            let request = EmbeddingRequest {
+                input: PROBE_INPUT.to_owned(),
+                purpose: EmbeddingPurpose::Candidate,
+            };
+            let _response = self.embed(request).await?;
 
-        tracing::info!(
-            dimensions = self.expected_dimensions,
-            "model {} probe succeeded",
-            self.model,
-        );
-        Ok(())
+            tracing::info!(
+                dimensions = self.expected_dimensions,
+                "model {} probe succeeded",
+                self.model,
+            );
+            Ok(())
+        }
+        .instrument(span)
+        .await
     }
 
     /// Best-effort check of `/api/tags` for model availability.
@@ -187,91 +191,97 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
             { span_attrs::EMBEDDING_DIMENSIONS } = tracing::field::Empty,
             { span_attrs::EMBEDDING_LATENCY_MS } = tracing::field::Empty,
         );
-        let _guard = span.enter();
 
-        let started = Instant::now();
-        let url = format!("{}{EMBED_PATH}", self.base_url);
-        let body = OllamaEmbedRequest {
-            model: &self.model,
-            input: &request.input,
-            truncate: true,
-        };
+        async {
+            let started = Instant::now();
+            let url = format!("{}{EMBED_PATH}", self.base_url);
+            let body = OllamaEmbedRequest {
+                model: &self.model,
+                input: &request.input,
+                truncate: true,
+            };
 
-        let http_response = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "embed request failed");
-                InferenceError::ProviderUnavailable {
-                    provider: PROVIDER_NAME.to_owned(),
-                    reason: e.to_string(),
-                }
-            })?;
-
-        let status = http_response.status();
-        let response_body =
-            http_response
-                .text()
+            let http_response = self
+                .client
+                .post(&url)
+                .json(&body)
+                .send()
                 .await
-                .map_err(|e| InferenceError::ProviderUnavailable {
-                    provider: PROVIDER_NAME.to_owned(),
-                    reason: format!("failed to read response body: {e}"),
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "embed request failed");
+                    InferenceError::ProviderUnavailable {
+                        provider: PROVIDER_NAME.to_owned(),
+                        reason: e.to_string(),
+                    }
                 })?;
 
-        let latency = started.elapsed();
+            let status = http_response.status();
+            let response_body =
+                http_response
+                    .text()
+                    .await
+                    .map_err(|e| InferenceError::ProviderUnavailable {
+                        provider: PROVIDER_NAME.to_owned(),
+                        reason: format!("failed to read response body: {e}"),
+                    })?;
 
-        if !status.is_success() {
-            return Err(map_http_error(status, &response_body, &self.model));
-        }
+            let latency = started.elapsed();
 
-        let parsed: OllamaEmbedResponse = serde_json::from_str(&response_body).map_err(|e| {
-            tracing::warn!(error = %e, "failed to parse embed response");
-            tracing::debug!(body = %response_body, "raw response body");
-            InferenceError::ResponseParseFailed {
-                expected_shape: "OllamaEmbedResponse JSON object".to_owned(),
-                actual: format!("invalid JSON: {e}"),
+            if !status.is_success() {
+                return Err(map_http_error(status, &response_body, &self.model));
             }
-        })?;
 
-        if let Some(total_ns) = parsed.total_duration {
-            tracing::debug!(total_duration_ms = total_ns / 1_000_000, "provider timing");
+            let parsed: OllamaEmbedResponse =
+                serde_json::from_str(&response_body).map_err(|e| {
+                    tracing::warn!(error = %e, "failed to parse embed response");
+                    tracing::debug!(body = %response_body, "raw response body");
+                    InferenceError::ResponseParseFailed {
+                        expected_shape: "OllamaEmbedResponse JSON object".to_owned(),
+                        actual: format!("invalid JSON: {e}"),
+                    }
+                })?;
+
+            if let Some(total_ns) = parsed.total_duration {
+                tracing::debug!(total_duration_ms = total_ns / 1_000_000, "provider timing");
+            }
+            if let Some(load_ns) = parsed.load_duration {
+                tracing::debug!(load_duration_ms = load_ns / 1_000_000, "provider timing");
+            }
+
+            let vector =
+                validate_embeddings(parsed.embeddings, self.expected_dimensions, &self.model)?;
+
+            let total_tokens = parsed.prompt_eval_count.unwrap_or_else(|| {
+                tracing::debug!("prompt_eval_count absent, defaulting to 0");
+                0
+            });
+
+            let latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX);
+
+            let current = tracing::Span::current();
+            current.record(span_attrs::EMBEDDING_TOKENS, total_tokens);
+            current.record(span_attrs::EMBEDDING_DIMENSIONS, self.expected_dimensions);
+            current.record(span_attrs::EMBEDDING_LATENCY_MS, latency_ms);
+
+            tracing::debug!(
+                tokens = total_tokens,
+                dimensions = self.expected_dimensions,
+                latency_ms,
+                "embedding generated",
+            );
+
+            Ok(EmbeddingResponse {
+                vector,
+                usage: EmbeddingUsage {
+                    provider: PROVIDER_NAME.to_owned(),
+                    model: self.model.clone(),
+                    total_tokens,
+                    latency,
+                },
+            })
         }
-        if let Some(load_ns) = parsed.load_duration {
-            tracing::debug!(load_duration_ms = load_ns / 1_000_000, "provider timing");
-        }
-
-        let vector = validate_embeddings(parsed.embeddings, self.expected_dimensions, &self.model)?;
-
-        let total_tokens = parsed.prompt_eval_count.unwrap_or_else(|| {
-            tracing::debug!("prompt_eval_count absent, defaulting to 0");
-            0
-        });
-
-        let latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX);
-
-        span.record(span_attrs::EMBEDDING_TOKENS, total_tokens);
-        span.record(span_attrs::EMBEDDING_DIMENSIONS, self.expected_dimensions);
-        span.record(span_attrs::EMBEDDING_LATENCY_MS, latency_ms);
-
-        tracing::debug!(
-            tokens = total_tokens,
-            dimensions = self.expected_dimensions,
-            latency_ms,
-            "embedding generated",
-        );
-
-        Ok(EmbeddingResponse {
-            vector,
-            usage: EmbeddingUsage {
-                provider: PROVIDER_NAME.to_owned(),
-                model: self.model.clone(),
-                total_tokens,
-                latency,
-            },
-        })
+        .instrument(span)
+        .await
     }
 }
 
@@ -370,7 +380,7 @@ mod tests {
         })
     }
 
-    async fn setup(server: &MockServer, dims: u32) -> OllamaEmbeddingProvider {
+    fn setup(server: &MockServer, dims: u32) -> OllamaEmbeddingProvider {
         OllamaEmbeddingProvider::new(
             reqwest::Client::new(),
             server.uri(),
@@ -391,7 +401,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let response = provider.embed(a_request("test input")).await.unwrap();
 
         assert_eq!(response.vector, vec![0.1, 0.1, 0.1]);
@@ -417,7 +427,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let _ = provider.embed(a_request("hello world")).await.unwrap();
     }
 
@@ -426,7 +436,7 @@ mod tests {
     #[tokio::test]
     async fn test_embed_empty_input_returns_embedding_failed() {
         let server = MockServer::start().await;
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
 
         let err = provider.embed(a_request("")).await.unwrap_err();
         assert!(matches!(
@@ -496,7 +506,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
         assert!(
@@ -518,7 +528,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
         assert!(
@@ -540,7 +550,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
         assert!(
@@ -565,7 +575,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
         assert!(
@@ -589,7 +599,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
         assert!(
@@ -618,7 +628,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
         assert!(matches!(
@@ -640,7 +650,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
         assert!(
@@ -666,7 +676,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
         assert!(
@@ -694,7 +704,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let response = provider.embed(a_request("test")).await.unwrap();
 
         assert_eq!(response.usage.total_tokens, 0);
@@ -712,7 +722,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
         assert!(
@@ -745,7 +755,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         provider.probe_model().await.unwrap();
     }
 
@@ -765,7 +775,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         provider.probe_model().await.unwrap();
     }
 
@@ -787,7 +797,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.probe_model().await.unwrap_err();
         assert!(
             matches!(err, InferenceError::ProviderUnavailable { .. }),
@@ -813,7 +823,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = setup(&server, 3).await;
+        let provider = setup(&server, 3);
         let err = provider.probe_model().await.unwrap_err();
         assert!(
             matches!(err, InferenceError::ResponseParseFailed { .. }),
