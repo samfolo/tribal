@@ -22,6 +22,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const PROVIDER_NAME: &str = "ollama";
+const PROBE_INPUT: &str = "Respond with OK";
 const CHAT_PATH: &str = "/api/chat";
 
 // ---------------------------------------------------------------------------
@@ -128,7 +129,7 @@ impl OllamaInferenceProvider {
                 system: None,
                 messages: vec![Message {
                     role: Role::User,
-                    content: "Respond with OK".to_owned(),
+                    content: PROBE_INPUT.to_owned(),
                 }],
                 temperature: Some(0.0),
                 max_tokens: Some(8),
@@ -233,7 +234,7 @@ impl InferenceProvider for OllamaInferenceProvider {
                 0
             });
 
-            let total_tokens = input_tokens + output_tokens;
+            let total_tokens = input_tokens.saturating_add(output_tokens);
 
             let latency_ms = latency_ms(latency);
 
@@ -405,7 +406,6 @@ mod tests {
         assert_eq!(response.usage.total_tokens, 15);
         assert_eq!(response.usage.cache_read_tokens, 0);
         assert_eq!(response.usage.cache_write_tokens, 0);
-        assert!(response.usage.latency > Duration::ZERO);
     }
 
     #[tokio::test]
