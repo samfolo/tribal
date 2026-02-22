@@ -15,7 +15,7 @@ use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
     Message, ResponseFormat, Role,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
-    http::{latency_ms, normalise_base_url},
+    http::{PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
 
 // ---------------------------------------------------------------------------
@@ -81,6 +81,7 @@ enum AnthropicContentBlock {
 }
 
 #[derive(serde::Deserialize)]
+#[allow(clippy::struct_field_names)] // Matches Anthropic API field names.
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
@@ -149,7 +150,7 @@ impl AnthropicInferenceProvider {
                     content: PROBE_INPUT.to_owned(),
                 }],
                 temperature: Some(0.0),
-                max_tokens: Some(8),
+                max_tokens: Some(PROBE_MAX_TOKENS),
                 response_format: None,
             };
             let _response = self.complete(request).await?;
@@ -244,54 +245,27 @@ impl InferenceProvider for AnthropicInferenceProvider {
 
             let parsed: AnthropicChatResponse =
                 serde_json::from_str(&response_body).map_err(|e| {
-                    map_json_parse_error(
-                        &e,
-                        "AnthropicChatResponse JSON object",
-                        &response_body,
-                    )
+                    map_json_parse_error(&e, "AnthropicChatResponse JSON object", &response_body)
                 })?;
 
             let text = extract_text_content(&parsed.content)?;
 
             let input_tokens = parsed.usage.input_tokens;
             let output_tokens = parsed.usage.output_tokens;
-            let total_tokens = input_tokens.saturating_add(output_tokens);
-            let cache_read_tokens = parsed.usage.cache_read_input_tokens.unwrap_or(0);
-            let cache_write_tokens = parsed.usage.cache_creation_input_tokens.unwrap_or(0);
 
-            let latency_ms = latency_ms(latency);
-
-            let current = tracing::Span::current();
-            current.record(span_attrs::LLM_TOKENS_INPUT, input_tokens);
-            current.record(span_attrs::LLM_TOKENS_OUTPUT, output_tokens);
-            current.record(span_attrs::LLM_TOKENS_TOTAL, total_tokens);
-            current.record(span_attrs::LLM_LATENCY_MS, latency_ms);
-            current.record(span_attrs::LLM_TOKENS_CACHE_READ, cache_read_tokens);
-            current.record(span_attrs::LLM_TOKENS_CACHE_WRITE, cache_write_tokens);
-
-            tracing::debug!(
+            let usage = CompletionUsage {
+                provider: PROVIDER_NAME.to_owned(),
+                model: self.model.clone(),
                 input_tokens,
                 output_tokens,
-                total_tokens,
-                cache_read_tokens,
-                cache_write_tokens,
-                latency_ms,
-                "completion generated",
-            );
+                cache_read_tokens: parsed.usage.cache_read_input_tokens.unwrap_or(0),
+                cache_write_tokens: parsed.usage.cache_creation_input_tokens.unwrap_or(0),
+                total_tokens: input_tokens.saturating_add(output_tokens),
+                latency,
+            };
+            record_completion_usage(&usage);
 
-            Ok(CompletionResponse {
-                text,
-                usage: CompletionUsage {
-                    provider: PROVIDER_NAME.to_owned(),
-                    model: self.model.clone(),
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens,
-                    cache_write_tokens,
-                    total_tokens,
-                    latency,
-                },
-            })
+            Ok(CompletionResponse { text, usage })
         }
         .instrument(span)
         .await
@@ -750,7 +724,7 @@ mod tests {
                 "type": "message",
                 "role": "assistant",
                 "content": [
-                    {"type": "tool_use", "id": "tu_1", "name": "search", "input": {}},
+                    {"type": "tool_use", "id": "toolu_01abc123", "name": "search", "input": {}},
                     {"type": "text", "text": "result"},
                 ],
                 "model": "claude-haiku-4-5-20251001",
@@ -778,7 +752,7 @@ mod tests {
                 "type": "message",
                 "role": "assistant",
                 "content": [
-                    {"type": "tool_use", "id": "tu_1", "name": "search", "input": {}},
+                    {"type": "tool_use", "id": "toolu_01abc123", "name": "search", "input": {}},
                 ],
                 "model": "claude-haiku-4-5-20251001",
                 "stop_reason": "tool_use",
@@ -906,8 +880,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let provider =
-            AnthropicInferenceProvider::new(client, server.uri(), "model", "key");
+        let provider = AnthropicInferenceProvider::new(client, server.uri(), "model", "key");
 
         let err = provider.complete(a_request("test")).await.unwrap_err();
         assert!(matches!(

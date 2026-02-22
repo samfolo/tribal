@@ -1,4 +1,4 @@
-//! OpenAI inference and embedding provider implementations.
+//! `OpenAI` inference and embedding provider implementations.
 
 mod embed;
 mod inference;

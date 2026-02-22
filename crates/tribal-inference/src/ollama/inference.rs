@@ -14,7 +14,7 @@ use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
     Message, ResponseFormat, Role,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
-    http::{latency_ms, normalise_base_url},
+    http::{PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
 
 // ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ impl OllamaInferenceProvider {
                     content: PROBE_INPUT.to_owned(),
                 }],
                 temperature: Some(0.0),
-                max_tokens: Some(8),
+                max_tokens: Some(PROBE_MAX_TOKENS),
                 response_format: None,
             };
             let _response = self.complete(request).await?;
@@ -237,36 +237,21 @@ impl InferenceProvider for OllamaInferenceProvider {
 
             let total_tokens = input_tokens.saturating_add(output_tokens);
 
-            let latency_ms = latency_ms(latency);
-
-            let current = tracing::Span::current();
-            current.record(span_attrs::LLM_TOKENS_INPUT, input_tokens);
-            current.record(span_attrs::LLM_TOKENS_OUTPUT, output_tokens);
-            current.record(span_attrs::LLM_TOKENS_TOTAL, total_tokens);
-            current.record(span_attrs::LLM_LATENCY_MS, latency_ms);
-            current.record(span_attrs::LLM_TOKENS_CACHE_READ, 0_u32);
-            current.record(span_attrs::LLM_TOKENS_CACHE_WRITE, 0_u32);
-
-            tracing::debug!(
+            let usage = CompletionUsage {
+                provider: PROVIDER_NAME.to_owned(),
+                model: self.model.clone(),
                 input_tokens,
                 output_tokens,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 total_tokens,
-                latency_ms,
-                "completion generated",
-            );
+                latency,
+            };
+            record_completion_usage(&usage);
 
             Ok(CompletionResponse {
                 text: parsed.message.content,
-                usage: CompletionUsage {
-                    provider: PROVIDER_NAME.to_owned(),
-                    model: self.model.clone(),
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens: 0,
-                    cache_write_tokens: 0,
-                    total_tokens,
-                    latency,
-                },
+                usage,
             })
         }
         .instrument(span)
