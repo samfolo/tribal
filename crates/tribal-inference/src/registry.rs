@@ -8,9 +8,7 @@
 //!
 //! The registry is eagerly constructed and immutable after construction.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::Semaphore;
 use url::Url;
@@ -21,6 +19,9 @@ use url::Url;
 
 /// User-Agent header value sent on all registry-constructed HTTP clients.
 const USER_AGENT: &str = concat!("tribal/", env!("CARGO_PKG_VERSION"));
+
+const U32_FITS_IN_USIZE: &str = "u32 always fits in usize";
+const CLIENT_BUILD_FAILED: &str = "reqwest client builder with valid configuration";
 
 // ---------------------------------------------------------------------------
 // RequestClass
@@ -165,6 +166,7 @@ pub enum ProviderRegistryError {
 /// Use [`ProviderRegistry::new`] with an iterator of
 /// `(ProviderKey, ProviderLimits)` pairs.  Construction validates all
 /// entries and returns an error on the first invalid entry.
+#[derive(Debug)]
 pub struct ProviderRegistry {
     semaphores: HashMap<ProviderKey, Arc<Semaphore>>,
     clients: HashMap<ProviderKey, reqwest::Client>,
@@ -211,8 +213,8 @@ impl ProviderRegistry {
                 return Err(ProviderRegistryError::DuplicateKey { key });
             }
 
-            let pool_size = usize::try_from(limits.max_in_flight)
-                .expect("u32 always fits in usize");
+            let pool_size =
+                usize::try_from(limits.max_in_flight).expect(U32_FITS_IN_USIZE);
 
             let semaphore = Arc::new(Semaphore::new(pool_size));
 
@@ -221,7 +223,7 @@ impl ProviderRegistry {
                 .timeout(limits.request_timeout)
                 .user_agent(USER_AGENT)
                 .build()
-                .expect("reqwest client builder with valid configuration");
+                .expect(CLIENT_BUILD_FAILED);
 
             semaphores.insert(key.clone(), semaphore);
             clients.insert(key, client);
@@ -274,12 +276,13 @@ fn normalise_registry_url(raw: &str) -> Result<String, ProviderRegistryError> {
             reason: "missing host".to_owned(),
         })?;
 
-    let port = parsed.port_or_known_default().ok_or_else(|| {
-        ProviderRegistryError::UnparseableUrl {
-            url: raw.to_owned(),
-            reason: "unknown port for scheme".to_owned(),
-        }
-    })?;
+    let port =
+        parsed
+            .port_or_known_default()
+            .ok_or_else(|| ProviderRegistryError::UnparseableUrl {
+                url: raw.to_owned(),
+                reason: "unknown port for scheme".to_owned(),
+            })?;
 
     let path = parsed.path().trim_end_matches('/');
 
@@ -298,20 +301,20 @@ mod tests {
 
     #[test]
     fn test_normalise_strips_trailing_slash() {
-        let key = ProviderKey::new("ollama", "http://localhost:11434/", RequestClass::Embedding)
-            .unwrap();
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434/", RequestClass::Embedding).unwrap();
         assert_eq!(key.normalised_base_url(), "http://localhost:11434");
     }
 
     #[test]
     fn test_normalise_lowercases_scheme_and_host() {
-        let key =
-            ProviderKey::new("openai", "HTTPS://API.OPENAI.COM/v1", RequestClass::Inference)
-                .unwrap();
-        assert_eq!(
-            key.normalised_base_url(),
-            "https://api.openai.com:443/v1"
-        );
+        let key = ProviderKey::new(
+            "openai",
+            "HTTPS://API.OPENAI.COM/v1",
+            RequestClass::Inference,
+        )
+        .unwrap();
+        assert_eq!(key.normalised_base_url(), "https://api.openai.com:443/v1");
     }
 
     #[test]
@@ -322,27 +325,19 @@ mod tests {
             RequestClass::Inference,
         )
         .unwrap();
-        assert_eq!(
-            key.normalised_base_url(),
-            "https://api.anthropic.com:443"
-        );
+        assert_eq!(key.normalised_base_url(), "https://api.anthropic.com:443");
     }
 
     #[test]
     fn test_normalise_includes_default_port_http() {
-        let key =
-            ProviderKey::new("ollama", "http://localhost", RequestClass::Embedding).unwrap();
+        let key = ProviderKey::new("ollama", "http://localhost", RequestClass::Embedding).unwrap();
         assert_eq!(key.normalised_base_url(), "http://localhost:80");
     }
 
     #[test]
     fn test_normalise_retains_explicit_port() {
-        let key = ProviderKey::new(
-            "ollama",
-            "http://localhost:11434",
-            RequestClass::Embedding,
-        )
-        .unwrap();
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         assert_eq!(key.normalised_base_url(), "http://localhost:11434");
     }
 
@@ -385,10 +380,7 @@ mod tests {
             RequestClass::Inference,
         )
         .unwrap();
-        assert_eq!(
-            key.normalised_base_url(),
-            "http://localhost:11434/api"
-        );
+        assert_eq!(key.normalised_base_url(), "http://localhost:11434/api");
     }
 
     #[test]
@@ -399,10 +391,7 @@ mod tests {
             RequestClass::Inference,
         )
         .unwrap();
-        assert_eq!(
-            key.normalised_base_url(),
-            "http://localhost:11434/api"
-        );
+        assert_eq!(key.normalised_base_url(), "http://localhost:11434/api");
     }
 
     #[test]
@@ -413,10 +402,7 @@ mod tests {
             RequestClass::Inference,
         )
         .unwrap();
-        assert_eq!(
-            key.normalised_base_url(),
-            "http://localhost:11434/api"
-        );
+        assert_eq!(key.normalised_base_url(), "http://localhost:11434/api");
     }
 
     #[test]
@@ -436,64 +422,42 @@ mod tests {
 
     #[test]
     fn test_key_same_normalised_url_equal() {
-        let a = ProviderKey::new("ollama", "http://localhost:11434/", RequestClass::Embedding)
-            .unwrap();
-        let b = ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding)
-            .unwrap();
+        let a =
+            ProviderKey::new("ollama", "http://localhost:11434/", RequestClass::Embedding).unwrap();
+        let b =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn test_key_case_insensitive_url_equal() {
-        let a = ProviderKey::new(
-            "ollama",
-            "HTTP://LOCALHOST:11434",
-            RequestClass::Embedding,
-        )
-        .unwrap();
-        let b = ProviderKey::new(
-            "ollama",
-            "http://localhost:11434",
-            RequestClass::Embedding,
-        )
-        .unwrap();
+        let a =
+            ProviderKey::new("ollama", "HTTP://LOCALHOST:11434", RequestClass::Embedding).unwrap();
+        let b =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn test_key_default_port_equal() {
-        let a =
-            ProviderKey::new("ollama", "http://localhost", RequestClass::Embedding).unwrap();
-        let b =
-            ProviderKey::new("ollama", "http://localhost:80", RequestClass::Embedding).unwrap();
+        let a = ProviderKey::new("ollama", "http://localhost", RequestClass::Embedding).unwrap();
+        let b = ProviderKey::new("ollama", "http://localhost:80", RequestClass::Embedding).unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn test_key_different_request_class_not_equal() {
-        let embedding = ProviderKey::new(
-            "ollama",
-            "http://localhost:11434",
-            RequestClass::Embedding,
-        )
-        .unwrap();
-        let inference = ProviderKey::new(
-            "ollama",
-            "http://localhost:11434",
-            RequestClass::Inference,
-        )
-        .unwrap();
+        let embedding =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
+        let inference =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Inference).unwrap();
         assert_ne!(embedding, inference);
     }
 
     #[test]
     fn test_key_different_provider_kind_not_equal() {
-        let a = ProviderKey::new(
-            "openai",
-            "https://api.example.com",
-            RequestClass::Inference,
-        )
-        .unwrap();
+        let a =
+            ProviderKey::new("openai", "https://api.example.com", RequestClass::Inference).unwrap();
         let b = ProviderKey::new(
             "anthropic",
             "https://api.example.com",
@@ -507,8 +471,8 @@ mod tests {
 
     #[test]
     fn test_registry_construction_and_lookup() {
-        let key = ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding)
-            .unwrap();
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         let limits = ProviderLimits {
             max_in_flight: 4,
             request_timeout: Duration::from_secs(30),
@@ -521,8 +485,8 @@ mod tests {
 
     #[test]
     fn test_registry_semaphore_permit_count() {
-        let key = ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding)
-            .unwrap();
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         let limits = ProviderLimits {
             max_in_flight: 3,
             request_timeout: Duration::from_secs(30),
@@ -535,18 +499,10 @@ mod tests {
 
     #[test]
     fn test_registry_multiple_entries() {
-        let embedding_key = ProviderKey::new(
-            "ollama",
-            "http://localhost:11434",
-            RequestClass::Embedding,
-        )
-        .unwrap();
-        let inference_key = ProviderKey::new(
-            "ollama",
-            "http://localhost:11434",
-            RequestClass::Inference,
-        )
-        .unwrap();
+        let embedding_key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
+        let inference_key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Inference).unwrap();
 
         let embedding_limits = ProviderLimits {
             max_in_flight: 2,
@@ -564,23 +520,25 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            registry.semaphore(&embedding_key).unwrap().available_permits(),
+            registry
+                .semaphore(&embedding_key)
+                .unwrap()
+                .available_permits(),
             2,
         );
         assert_eq!(
-            registry.semaphore(&inference_key).unwrap().available_permits(),
+            registry
+                .semaphore(&inference_key)
+                .unwrap()
+                .available_permits(),
             4,
         );
     }
 
     #[test]
     fn test_registry_lookup_unregistered_key_returns_none() {
-        let registered = ProviderKey::new(
-            "ollama",
-            "http://localhost:11434",
-            RequestClass::Embedding,
-        )
-        .unwrap();
+        let registered =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         let unregistered = ProviderKey::new(
             "anthropic",
             "https://api.anthropic.com",
@@ -601,8 +559,8 @@ mod tests {
     #[test]
     fn test_registry_empty_construction() {
         let registry = ProviderRegistry::new(Vec::new()).unwrap();
-        let key = ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding)
-            .unwrap();
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         assert!(registry.semaphore(&key).is_none());
         assert!(registry.client(&key).is_none());
     }
@@ -611,8 +569,8 @@ mod tests {
 
     #[test]
     fn test_zero_max_in_flight_returns_error() {
-        let key = ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding)
-            .unwrap();
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         let limits = ProviderLimits {
             max_in_flight: 0,
             request_timeout: Duration::from_secs(30),
@@ -626,8 +584,8 @@ mod tests {
 
     #[test]
     fn test_zero_timeout_returns_error() {
-        let key = ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding)
-            .unwrap();
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         let limits = ProviderLimits {
             max_in_flight: 4,
             request_timeout: Duration::ZERO,
@@ -641,14 +599,13 @@ mod tests {
 
     #[test]
     fn test_duplicate_key_returns_error() {
-        let key = ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding)
-            .unwrap();
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         let limits = ProviderLimits {
             max_in_flight: 4,
             request_timeout: Duration::from_secs(30),
         };
-        let result =
-            ProviderRegistry::new(vec![(key.clone(), limits.clone()), (key, limits)]);
+        let result = ProviderRegistry::new(vec![(key.clone(), limits.clone()), (key, limits)]);
         assert!(
             matches!(result, Err(ProviderRegistryError::DuplicateKey { .. })),
             "expected DuplicateKey, got {result:?}",
@@ -657,24 +614,15 @@ mod tests {
 
     #[test]
     fn test_duplicate_key_via_normalisation_returns_error() {
-        let key_a = ProviderKey::new(
-            "ollama",
-            "http://localhost:11434/",
-            RequestClass::Embedding,
-        )
-        .unwrap();
-        let key_b = ProviderKey::new(
-            "ollama",
-            "http://localhost:11434",
-            RequestClass::Embedding,
-        )
-        .unwrap();
+        let key_a =
+            ProviderKey::new("ollama", "http://localhost:11434/", RequestClass::Embedding).unwrap();
+        let key_b =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
         let limits = ProviderLimits {
             max_in_flight: 4,
             request_timeout: Duration::from_secs(30),
         };
-        let result =
-            ProviderRegistry::new(vec![(key_a, limits.clone()), (key_b, limits)]);
+        let result = ProviderRegistry::new(vec![(key_a, limits.clone()), (key_b, limits)]);
         assert!(
             matches!(result, Err(ProviderRegistryError::DuplicateKey { .. })),
             "expected DuplicateKey, got {result:?}",
@@ -685,8 +633,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_client_sends_user_agent_header() {
-        use wiremock::matchers::{header, method};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{header, method},
+        };
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -696,8 +646,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let key =
-            ProviderKey::new("test", &server.uri(), RequestClass::Inference).unwrap();
+        let key = ProviderKey::new("test", &server.uri(), RequestClass::Inference).unwrap();
         let limits = ProviderLimits {
             max_in_flight: 4,
             request_timeout: Duration::from_secs(30),
@@ -711,19 +660,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_client_respects_timeout() {
-        use wiremock::matchers::method;
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(200).set_delay(Duration::from_secs(30)),
-            )
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
             .mount(&server)
             .await;
 
-        let key =
-            ProviderKey::new("test", &server.uri(), RequestClass::Inference).unwrap();
+        let key = ProviderKey::new("test", &server.uri(), RequestClass::Inference).unwrap();
         let limits = ProviderLimits {
             max_in_flight: 4,
             request_timeout: Duration::from_millis(50),
