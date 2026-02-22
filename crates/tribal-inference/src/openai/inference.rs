@@ -234,7 +234,7 @@ impl InferenceProvider for OpenAiInferenceProvider {
                     .choices
                     .first()
                     .ok_or_else(|| InferenceError::ResponseParseFailed {
-                        expected_shape: "choices[0].message.content present".to_owned(),
+                        expected_shape: "choices[0] present".to_owned(),
                         actual: "choices array is empty".to_owned(),
                     })?;
 
@@ -947,7 +947,7 @@ mod tests {
                     ref expected_shape,
                     ref actual,
                 }
-                if expected_shape == "choices[0].message.content present"
+                if expected_shape == "choices[0] present"
                     && actual == "choices array is empty"
             ),
             "expected ResponseParseFailed for empty choices, got {err:?}"

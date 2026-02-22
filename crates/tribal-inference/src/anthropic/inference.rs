@@ -324,13 +324,15 @@ fn map_response_format(format: &ResponseFormat) -> Option<AnthropicOutputConfig>
 /// response.
 fn extract_text_content(content: &[AnthropicContentBlock]) -> Result<String, InferenceError> {
     let mut text = String::new();
+    let mut text_block_count: usize = 0;
     for block in content {
         if let AnthropicContentBlock::Text { text: t } = block {
             text.push_str(t);
+            text_block_count += 1;
         }
     }
 
-    if text.is_empty() {
+    if text_block_count == 0 {
         return Err(InferenceError::ResponseParseFailed {
             expected_shape: "at least one text content block".to_owned(),
             actual: "0 text blocks in response".to_owned(),
@@ -1161,6 +1163,50 @@ mod tests {
         assert!(
             matches!(err, InferenceError::ProviderUnavailable { .. }),
             "expected ProviderUnavailable, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_probe_model_auth_401_returns_llm_call_failed() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(MESSAGES_PATH))
+            .respond_with(ResponseTemplate::new(401).set_body_string("invalid api key"))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let err = provider.probe_model().await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                InferenceError::LlmCallFailed { ref context, .. }
+                if context.contains("401")
+            ),
+            "expected LlmCallFailed with 401 status, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_probe_model_auth_403_returns_llm_call_failed() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(MESSAGES_PATH))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let err = provider.probe_model().await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                InferenceError::LlmCallFailed { ref context, .. }
+                if context.contains("403")
+            ),
+            "expected LlmCallFailed with 403 status, got {err:?}"
         );
     }
 }
