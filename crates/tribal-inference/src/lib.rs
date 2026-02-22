@@ -13,7 +13,7 @@ mod usage;
 mod validation;
 
 pub use error::InferenceError;
-pub use ollama::OllamaEmbeddingProvider;
+pub use ollama::{OllamaEmbeddingProvider, OllamaInferenceProvider};
 pub use provider::{EmbeddingProvider, InferenceProvider};
 pub use request::{CompletionRequest, EmbeddingRequest, Message, ResponseFormat, Role};
 pub use response::{CompletionResponse, EmbeddingResponse};
