@@ -7,10 +7,12 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
+use reqwest::StatusCode;
 use tribal_domain::{EmbeddingPurpose, span_attrs};
 
 use crate::{
     EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage, InferenceError,
+    http::body_preview,
 };
 
 // ---------------------------------------------------------------------------
@@ -19,7 +21,8 @@ use crate::{
 
 const PROVIDER_NAME: &str = "ollama";
 const PROBE_INPUT: &str = "tribal probe";
-const BODY_PREVIEW_LIMIT: usize = 200;
+const EMBED_PATH: &str = "/api/embed";
+const TAGS_PATH: &str = "/api/tags";
 
 // ---------------------------------------------------------------------------
 // Private serde types
@@ -126,21 +129,21 @@ impl OllamaEmbeddingProvider {
 
     /// Best-effort check of `/api/tags` for model availability.
     async fn check_tags(&self) {
-        let url = format!("{}/api/tags", self.base_url);
+        let url = format!("{}{TAGS_PATH}", self.base_url);
         let result = self.client.get(&url).send().await;
 
         match result {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(tags) = resp.json::<OllamaTagsResponse>().await {
-                    let found = tags
-                        .models
-                        .iter()
-                        .any(|m| m.name == self.model || m.name.starts_with(&format!("{}:", self.model)));
+                    let found = tags.models.iter().any(|m| {
+                        m.name == self.model
+                            || m.name.starts_with(&format!("{}:", self.model))
+                    });
 
                     if !found {
                         tracing::warn!(
                             model = %self.model,
-                            "model not found in /api/tags — ensure it has been pulled",
+                            "model not found in {TAGS_PATH} — ensure it has been pulled",
                         );
                     }
                 }
@@ -148,13 +151,13 @@ impl OllamaEmbeddingProvider {
             Ok(resp) => {
                 tracing::warn!(
                     status = %resp.status(),
-                    "/api/tags returned non-success status",
+                    "{TAGS_PATH} returned non-success status",
                 );
             }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "/api/tags unreachable (best-effort check)",
+                    "{TAGS_PATH} unreachable (best-effort check)",
                 );
             }
         }
@@ -171,7 +174,6 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
         &self,
         request: EmbeddingRequest,
     ) -> Result<EmbeddingResponse, InferenceError> {
-        // Input validation — before span or HTTP call.
         if request.input.is_empty() {
             return Err(InferenceError::EmbeddingFailed {
                 model: self.model.clone(),
@@ -192,15 +194,13 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
         let _guard = span.enter();
 
         let started = Instant::now();
-
-        let url = format!("{}/api/embed", self.base_url);
+        let url = format!("{}{EMBED_PATH}", self.base_url);
         let body = OllamaEmbedRequest {
             model: &self.model,
             input: &request.input,
             truncate: true,
         };
 
-        // Send request.
         let http_response = self
             .client
             .post(&url)
@@ -225,25 +225,10 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
 
         let latency = started.elapsed();
 
-        // Map non-success HTTP status codes.
         if !status.is_success() {
-            let preview = truncate_body(&response_body);
-            if status.as_u16() == 429 || status.is_server_error() {
-                tracing::warn!(%status, "provider returned retryable error");
-                return Err(InferenceError::ProviderUnavailable {
-                    provider: PROVIDER_NAME.to_owned(),
-                    reason: format!("HTTP {status}: {preview}"),
-                });
-            }
-            tracing::warn!(%status, "provider returned non-retryable error");
-            return Err(InferenceError::EmbeddingFailed {
-                model: self.model.clone(),
-                context: format!("HTTP {status}: {preview}"),
-                source: None,
-            });
+            return Err(map_http_error(status, &response_body, &self.model));
         }
 
-        // Parse JSON response.
         let parsed: OllamaEmbedResponse =
             serde_json::from_str(&response_body).map_err(|e| {
                 tracing::warn!(error = %e, "failed to parse embed response");
@@ -254,7 +239,6 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                 }
             })?;
 
-        // Log provider-reported durations at debug level.
         if let Some(total_ns) = parsed.total_duration {
             tracing::debug!(total_duration_ms = total_ns / 1_000_000, "provider timing");
         }
@@ -262,49 +246,20 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
             tracing::debug!(load_duration_ms = load_ns / 1_000_000, "provider timing");
         }
 
-        // Validate embeddings array length.
-        if parsed.embeddings.is_empty() {
-            return Err(InferenceError::EmbeddingFailed {
-                model: self.model.clone(),
-                context: "embeddings array is empty".to_owned(),
-                source: None,
-            });
-        }
-        if parsed.embeddings.len() > 1 {
-            return Err(InferenceError::ResponseParseFailed {
-                expected_shape: "embeddings array length == 1".to_owned(),
-                actual: format!(
-                    "embeddings array length == {}",
-                    parsed.embeddings.len()
-                ),
-            });
-        }
+        let vector = validate_embeddings(
+            parsed.embeddings,
+            self.expected_dimensions,
+            &self.model,
+        )?;
 
-        let vector = parsed.embeddings.into_iter().next().expect("checked non-empty");
-
-        // Validate dimensions.
-        let actual_dims = vector.len();
-        let expected = self.expected_dimensions as usize;
-        if actual_dims != expected {
-            tracing::error!(
-                expected = expected,
-                actual = actual_dims,
-                "dimension mismatch — configuration error",
-            );
-            return Err(InferenceError::ResponseParseFailed {
-                expected_shape: format!("embedding vector length == {expected}"),
-                actual: format!("embedding vector length == {actual_dims}"),
-            });
-        }
-
-        // Handle optional prompt_eval_count.
         let total_tokens = parsed.prompt_eval_count.unwrap_or_else(|| {
             tracing::debug!("prompt_eval_count absent, defaulting to 0");
             0
         });
 
+        let dimensions = vector.len();
         span.record(span_attrs::EMBEDDING_TOKENS, total_tokens);
-        span.record(span_attrs::EMBEDDING_DIMENSIONS, actual_dims as u32);
+        span.record(span_attrs::EMBEDDING_DIMENSIONS, dimensions as u32);
         span.record(
             span_attrs::EMBEDDING_LATENCY_MS,
             latency.as_millis() as u64,
@@ -312,7 +267,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
 
         tracing::debug!(
             tokens = total_tokens,
-            dimensions = actual_dims,
+            dimensions,
             latency_ms = latency.as_millis() as u64,
             "embedding generated",
         );
@@ -333,17 +288,67 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Truncates a response body to at most [`BODY_PREVIEW_LIMIT`] characters,
-/// collapsing whitespace and ensuring UTF-8 safety.
-fn truncate_body(body: &str) -> String {
-    let normalised: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+/// Maps a non-success HTTP status to the appropriate [`InferenceError`].
+fn map_http_error(
+    status: StatusCode,
+    response_body: &str,
+    model: &str,
+) -> InferenceError {
+    let preview = body_preview(response_body);
 
-    if normalised.len() <= BODY_PREVIEW_LIMIT {
-        return normalised;
+    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        tracing::warn!(%status, "provider returned retryable error");
+        InferenceError::ProviderUnavailable {
+            provider: PROVIDER_NAME.to_owned(),
+            reason: format!("HTTP {status}: {preview}"),
+        }
+    } else {
+        tracing::warn!(%status, "provider returned non-retryable error");
+        InferenceError::EmbeddingFailed {
+            model: model.to_owned(),
+            context: format!("HTTP {status}: {preview}"),
+            source: None,
+        }
+    }
+}
+
+/// Validates the embeddings array from an Ollama response and extracts
+/// the single vector.
+fn validate_embeddings(
+    embeddings: Vec<Vec<f32>>,
+    expected_dimensions: u32,
+    model: &str,
+) -> Result<Vec<f32>, InferenceError> {
+    if embeddings.is_empty() {
+        return Err(InferenceError::EmbeddingFailed {
+            model: model.to_owned(),
+            context: "embeddings array is empty".to_owned(),
+            source: None,
+        });
+    }
+    if embeddings.len() > 1 {
+        return Err(InferenceError::ResponseParseFailed {
+            expected_shape: "embeddings array length == 1".to_owned(),
+            actual: format!("embeddings array length == {}", embeddings.len()),
+        });
     }
 
-    let boundary = normalised.floor_char_boundary(BODY_PREVIEW_LIMIT);
-    format!("{}...", &normalised[..boundary])
+    let vector = embeddings.into_iter().next().expect("checked non-empty");
+    let expected = expected_dimensions as usize;
+
+    if vector.len() != expected {
+        tracing::error!(
+            expected,
+            actual = vector.len(),
+            "dimension mismatch — configuration error",
+        );
+        return Err(InferenceError::ResponseParseFailed {
+            expected_shape: format!("embedding vector length == {expected}"),
+            actual: format!("embedding vector length == {}", vector.len()),
+        });
+    }
+
+    Ok(vector)
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +396,7 @@ mod tests {
     async fn test_embed_success() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)),
             )
@@ -403,7 +408,7 @@ mod tests {
         let response = provider.embed(a_request("test input")).await.unwrap();
 
         assert_eq!(response.vector, vec![0.1, 0.1, 0.1]);
-        assert_eq!(response.usage.provider, "ollama");
+        assert_eq!(response.usage.provider, PROVIDER_NAME);
         assert_eq!(response.usage.model, "nomic-embed-text:v1.5");
         assert_eq!(response.usage.total_tokens, 5);
         assert!(response.usage.latency > Duration::ZERO);
@@ -414,7 +419,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .and(body_json(serde_json::json!({
                 "model": "nomic-embed-text:v1.5",
                 "input": "hello world",
@@ -436,14 +441,18 @@ mod tests {
     #[tokio::test]
     async fn test_embed_empty_input_returns_embedding_failed() {
         let server = MockServer::start().await;
-        // No mock mounted — request must not reach the server.
         let provider = setup(&server, 3).await;
 
         let err = provider.embed(a_request("")).await.unwrap_err();
         assert!(matches!(
             err,
-            InferenceError::EmbeddingFailed { ref context, .. }
-            if context.contains("empty")
+            InferenceError::EmbeddingFailed {
+                ref model,
+                ref context,
+                ..
+            }
+            if model == "nomic-embed-text:v1.5"
+                && context == "input text is empty"
         ));
     }
 
@@ -453,7 +462,7 @@ mod tests {
     async fn test_embed_connection_refused_returns_provider_unavailable() {
         let provider = OllamaEmbeddingProvider::new(
             reqwest::Client::new(),
-            "http://127.0.0.1:1", // nothing listening
+            "http://127.0.0.1:1",
             "model",
             3,
         );
@@ -462,7 +471,7 @@ mod tests {
         assert!(matches!(
             err,
             InferenceError::ProviderUnavailable { ref provider, .. }
-            if provider == "ollama"
+            if provider == PROVIDER_NAME
         ));
     }
 
@@ -471,7 +480,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(a_valid_response_json(3))
@@ -485,18 +494,14 @@ mod tests {
             .build()
             .unwrap();
 
-        let provider = OllamaEmbeddingProvider::new(
-            client,
-            server.uri(),
-            "model",
-            3,
-        );
+        let provider =
+            OllamaEmbeddingProvider::new(client, server.uri(), "model", 3);
 
         let err = provider.embed(a_request("test")).await.unwrap_err();
         assert!(matches!(
             err,
             InferenceError::ProviderUnavailable { ref provider, .. }
-            if provider == "ollama"
+            if provider == PROVIDER_NAME
         ));
     }
 
@@ -506,64 +511,81 @@ mod tests {
     async fn test_embed_http_500_returns_provider_unavailable() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+            .and(path(EMBED_PATH))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("internal error"),
+            )
             .mount(&server)
             .await;
 
         let provider = setup(&server, 3).await;
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
-        assert!(matches!(
-            err,
-            InferenceError::ProviderUnavailable { ref reason, .. }
-            if reason.contains("500") && reason.contains("internal error")
-        ));
+        match err {
+            InferenceError::ProviderUnavailable { reason, .. } => {
+                assert!(reason.contains("500"), "reason should contain status: {reason}");
+                assert!(
+                    reason.contains("internal error"),
+                    "reason should contain body: {reason}"
+                );
+            }
+            other => panic!("expected ProviderUnavailable, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn test_embed_http_429_returns_provider_unavailable() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
-            .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+            .and(path(EMBED_PATH))
+            .respond_with(
+                ResponseTemplate::new(429).set_body_string("rate limited"),
+            )
             .mount(&server)
             .await;
 
         let provider = setup(&server, 3).await;
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
-        assert!(matches!(
-            err,
-            InferenceError::ProviderUnavailable { ref reason, .. }
-            if reason.contains("429")
-        ));
+        match err {
+            InferenceError::ProviderUnavailable { reason, .. } => {
+                assert!(reason.contains("429"), "reason should contain status: {reason}");
+            }
+            other => panic!("expected ProviderUnavailable, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn test_embed_http_400_returns_embedding_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
-            .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+            .and(path(EMBED_PATH))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_string("bad request"),
+            )
             .mount(&server)
             .await;
 
         let provider = setup(&server, 3).await;
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
-        assert!(matches!(
-            err,
-            InferenceError::EmbeddingFailed { ref context, .. }
-            if context.contains("400") && context.contains("bad request")
-        ));
+        match err {
+            InferenceError::EmbeddingFailed { context, .. } => {
+                assert!(context.contains("400"), "context should contain status: {context}");
+                assert!(
+                    context.contains("bad request"),
+                    "context should contain body: {context}"
+                );
+            }
+            other => panic!("expected EmbeddingFailed, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn test_embed_http_404_returns_embedding_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(
                 ResponseTemplate::new(404)
                     .set_body_json(serde_json::json!({"error": "model not found"})),
@@ -574,11 +596,12 @@ mod tests {
         let provider = setup(&server, 3).await;
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
-        assert!(matches!(
-            err,
-            InferenceError::EmbeddingFailed { ref context, .. }
-            if context.contains("404")
-        ));
+        match err {
+            InferenceError::EmbeddingFailed { context, .. } => {
+                assert!(context.contains("404"), "context should contain status: {context}");
+            }
+            other => panic!("expected EmbeddingFailed, got {other:?}"),
+        }
     }
 
     // -- Response parsing ---------------------------------------------------
@@ -587,7 +610,7 @@ mod tests {
     async fn test_embed_malformed_json_returns_response_parse_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(
                 ResponseTemplate::new(200).set_body_string("not json at all"),
             )
@@ -597,20 +620,23 @@ mod tests {
         let provider = setup(&server, 3).await;
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
-        assert!(matches!(
-            err,
+        match err {
             InferenceError::ResponseParseFailed {
-                ref expected_shape, ..
+                expected_shape,
+                actual,
+            } => {
+                assert_eq!(expected_shape, "OllamaEmbedResponse JSON object");
+                assert!(actual.starts_with("invalid JSON:"), "actual: {actual}");
             }
-            if expected_shape == "OllamaEmbedResponse JSON object"
-        ));
+            other => panic!("expected ResponseParseFailed, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn test_embed_empty_embeddings_returns_embedding_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "embeddings": [],
                 "prompt_eval_count": 0,
@@ -624,7 +650,7 @@ mod tests {
         assert!(matches!(
             err,
             InferenceError::EmbeddingFailed { ref context, .. }
-            if context.contains("empty")
+            if context == "embeddings array is empty"
         ));
     }
 
@@ -632,7 +658,7 @@ mod tests {
     async fn test_embed_multiple_embeddings_returns_response_parse_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
                 "prompt_eval_count": 5,
@@ -643,22 +669,23 @@ mod tests {
         let provider = setup(&server, 3).await;
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
-        assert!(matches!(
-            err,
+        match err {
             InferenceError::ResponseParseFailed {
-                ref expected_shape,
-                ref actual,
+                expected_shape,
+                actual,
+            } => {
+                assert_eq!(expected_shape, "embeddings array length == 1");
+                assert_eq!(actual, "embeddings array length == 2");
             }
-            if expected_shape == "embeddings array length == 1"
-                && actual == "embeddings array length == 2"
-        ));
+            other => panic!("expected ResponseParseFailed, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn test_embed_dimension_mismatch_returns_response_parse_failed() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(a_valid_response_json(5)),
             )
@@ -668,22 +695,23 @@ mod tests {
         let provider = setup(&server, 3).await;
         let err = provider.embed(a_request("test")).await.unwrap_err();
 
-        assert!(matches!(
-            err,
+        match err {
             InferenceError::ResponseParseFailed {
-                ref expected_shape,
-                ref actual,
+                expected_shape,
+                actual,
+            } => {
+                assert_eq!(expected_shape, "embedding vector length == 3");
+                assert_eq!(actual, "embedding vector length == 5");
             }
-            if expected_shape == "embedding vector length == 3"
-                && actual == "embedding vector length == 5"
-        ));
+            other => panic!("expected ResponseParseFailed, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn test_embed_missing_prompt_eval_count_defaults_to_zero() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "embeddings": [[0.1, 0.2, 0.3]],
             })))
@@ -703,7 +731,7 @@ mod tests {
         let server = MockServer::start().await;
         let long_body = "x".repeat(500);
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(
                 ResponseTemplate::new(500).set_body_string(&long_body),
             )
@@ -715,8 +743,9 @@ mod tests {
 
         match err {
             InferenceError::ProviderUnavailable { reason, .. } => {
-                assert!(reason.len() < 300, "reason should be truncated");
-                assert!(reason.contains("..."), "should end with ellipsis");
+                // "HTTP 500 Internal Server Error: " prefix + 200 truncated + "..."
+                assert!(reason.contains("..."), "should contain ellipsis: {reason}");
+                assert!(reason.len() < 300, "reason should be truncated: len={}", reason.len());
             }
             other => panic!("expected ProviderUnavailable, got {other:?}"),
         }
@@ -729,7 +758,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/tags"))
+            .and(path(TAGS_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "models": [{"name": "nomic-embed-text:v1.5"}],
             })))
@@ -737,7 +766,7 @@ mod tests {
             .await;
 
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)),
             )
@@ -753,13 +782,13 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/tags"))
+            .and(path(TAGS_PATH))
             .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
 
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)),
             )
@@ -775,7 +804,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/tags"))
+            .and(path(TAGS_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "models": [],
             })))
@@ -783,14 +812,19 @@ mod tests {
             .await;
 
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+            .and(path(EMBED_PATH))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("server error"),
+            )
             .mount(&server)
             .await;
 
         let provider = setup(&server, 3).await;
         let err = provider.probe_model().await.unwrap_err();
-        assert!(matches!(err, InferenceError::ProviderUnavailable { .. }));
+        assert!(
+            matches!(err, InferenceError::ProviderUnavailable { .. }),
+            "expected ProviderUnavailable, got {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -798,16 +832,15 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/api/tags"))
+            .and(path(TAGS_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "models": [{"name": "nomic-embed-text:v1.5"}],
             })))
             .mount(&server)
             .await;
 
-        // Response has 5 dimensions but provider expects 3.
         Mock::given(method("POST"))
-            .and(path("/api/embed"))
+            .and(path(EMBED_PATH))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(a_valid_response_json(5)),
             )
@@ -816,39 +849,9 @@ mod tests {
 
         let provider = setup(&server, 3).await;
         let err = provider.probe_model().await.unwrap_err();
-        assert!(matches!(err, InferenceError::ResponseParseFailed { .. }));
-    }
-
-    // -- Truncation helper --------------------------------------------------
-
-    #[test]
-    fn test_truncate_body_short_unchanged() {
-        let input = "short response";
-        assert_eq!(truncate_body(input), "short response");
-    }
-
-    #[test]
-    fn test_truncate_body_whitespace_normalised() {
-        let input = "line one\n\tline two\r\n  line  three";
-        assert_eq!(truncate_body(input), "line one line two line three");
-    }
-
-    #[test]
-    fn test_truncate_body_long_truncated() {
-        let input = "a".repeat(300);
-        let result = truncate_body(&input);
-        assert!(result.ends_with("..."));
-        // 200 chars + "..."
-        assert!(result.len() <= 203);
-    }
-
-    #[test]
-    fn test_truncate_body_multibyte_safe() {
-        // £ is 2 bytes in UTF-8.
-        let input = "£".repeat(300);
-        let result = truncate_body(&input);
-        assert!(result.ends_with("..."));
-        // Must not panic on multi-byte boundary.
-        assert!(result.len() <= 403); // 200 chars × 2 bytes + "..."
+        assert!(
+            matches!(err, InferenceError::ResponseParseFailed { .. }),
+            "expected ResponseParseFailed, got {err:?}"
+        );
     }
 }
