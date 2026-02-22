@@ -57,6 +57,9 @@ indexmap = "2"
 # HTTP client
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
+# URL parsing
+url = "2"
+
 # Async traits
 async-trait = "0.1"
 
