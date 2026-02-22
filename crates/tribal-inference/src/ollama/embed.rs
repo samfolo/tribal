@@ -177,6 +177,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                     status,
                     &response_body,
                     PROVIDER_NAME,
+                    &[],
                     |ctx| InferenceError::EmbeddingFailed {
                         model: self.model.clone(),
                         context: ctx,
