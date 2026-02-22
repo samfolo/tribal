@@ -461,10 +461,7 @@ mod tests {
             .build();
 
         // Conditional matches first despite sequential entry existing.
-        let cond = provider
-            .complete(a_request("special"))
-            .await
-            .unwrap();
+        let cond = provider.complete(a_request("special")).await.unwrap();
         assert_eq!(cond.text, "conditional");
 
         // Sequential entry was not consumed by the conditional call.
@@ -496,10 +493,7 @@ mod tests {
             .respond_with_error(a_provider_unavailable("conditional failure"))
             .build();
 
-        let err = provider
-            .complete(a_request("fail"))
-            .await
-            .unwrap_err();
+        let err = provider.complete(a_request("fail")).await.unwrap_err();
         assert!(matches!(
             err,
             InferenceError::ProviderUnavailable { ref reason, .. }
@@ -670,14 +664,8 @@ mod tests {
             .on_embed(an_embedding_response(vec![0.3, 0.4]))
             .build();
 
-        let r1 = provider
-            .embed(an_embed_request("first"))
-            .await
-            .unwrap();
-        let r2 = provider
-            .embed(an_embed_request("second"))
-            .await
-            .unwrap();
+        let r1 = provider.embed(an_embed_request("first")).await.unwrap();
+        let r2 = provider.embed(an_embed_request("second")).await.unwrap();
 
         assert_eq!(r1.vector, vec![0.1, 0.2]);
         assert_eq!(r2.vector, vec![0.3, 0.4]);
