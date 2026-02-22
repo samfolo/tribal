@@ -84,9 +84,14 @@ impl OllamaEmbeddingProvider {
         model: impl Into<String>,
         expected_dimensions: u32,
     ) -> Self {
+        let mut url = base_url.into();
+        while url.ends_with('/') {
+            url.pop();
+        }
+
         Self {
             client,
-            base_url: base_url.into(),
+            base_url: url,
             model: model.into(),
             expected_dimensions,
         }
@@ -318,6 +323,29 @@ mod tests {
             "nomic-embed-text:v1.5",
             dims,
         )
+    }
+
+    // -- Constructor ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_embed_trailing_slash_normalised() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(EMBED_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url_with_slash = format!("{}/", server.uri());
+        let provider = OllamaEmbeddingProvider::new(
+            reqwest::Client::new(),
+            url_with_slash,
+            "nomic-embed-text:v1.5",
+            3,
+        );
+
+        provider.embed(a_request("test")).await.unwrap();
     }
 
     // -- Happy path ---------------------------------------------------------
