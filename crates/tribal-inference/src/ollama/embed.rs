@@ -7,13 +7,13 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
-use reqwest::StatusCode;
 use tracing::Instrument;
 use tribal_domain::{EmbeddingPurpose, span_attrs};
 
 use crate::{
     EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage, InferenceError,
-    http::body_preview,
+    error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
+    validation::validate_embeddings,
 };
 
 // ---------------------------------------------------------------------------
@@ -207,38 +207,32 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "embed request failed");
-                    InferenceError::ProviderUnavailable {
-                        provider: PROVIDER_NAME.to_owned(),
-                        reason: e.to_string(),
-                    }
-                })?;
+                .map_err(|e| map_send_error(&e, PROVIDER_NAME))?;
 
             let status = http_response.status();
-            let response_body =
-                http_response
-                    .text()
-                    .await
-                    .map_err(|e| InferenceError::ProviderUnavailable {
-                        provider: PROVIDER_NAME.to_owned(),
-                        reason: format!("failed to read response body: {e}"),
-                    })?;
+            let response_body = http_response
+                .text()
+                .await
+                .map_err(|e| map_body_read_error(&e, PROVIDER_NAME))?;
 
             let latency = started.elapsed();
 
             if !status.is_success() {
-                return Err(map_http_error(status, &response_body, &self.model));
+                return Err(map_http_error(
+                    status,
+                    &response_body,
+                    PROVIDER_NAME,
+                    |ctx| InferenceError::EmbeddingFailed {
+                        model: self.model.clone(),
+                        context: ctx,
+                        source: None,
+                    },
+                ));
             }
 
             let parsed: OllamaEmbedResponse =
                 serde_json::from_str(&response_body).map_err(|e| {
-                    tracing::warn!(error = %e, "failed to parse embed response");
-                    tracing::debug!(body = %response_body, "raw response body");
-                    InferenceError::ResponseParseFailed {
-                        expected_shape: "OllamaEmbedResponse JSON object".to_owned(),
-                        actual: format!("invalid JSON: {e}"),
-                    }
+                    map_json_parse_error(&e, "OllamaEmbedResponse JSON object", &response_body)
                 })?;
 
             if let Some(total_ns) = parsed.total_duration {
@@ -283,69 +277,6 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
         .instrument(span)
         .await
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Maps a non-success HTTP status to the appropriate [`InferenceError`].
-fn map_http_error(status: StatusCode, response_body: &str, model: &str) -> InferenceError {
-    let preview = body_preview(response_body);
-
-    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-        tracing::warn!(%status, "provider returned retryable error");
-        InferenceError::ProviderUnavailable {
-            provider: PROVIDER_NAME.to_owned(),
-            reason: format!("HTTP {status}: {preview}"),
-        }
-    } else {
-        tracing::warn!(%status, "provider returned non-retryable error");
-        InferenceError::EmbeddingFailed {
-            model: model.to_owned(),
-            context: format!("HTTP {status}: {preview}"),
-            source: None,
-        }
-    }
-}
-
-/// Validates the embeddings array from an Ollama response and extracts
-/// the single vector.
-fn validate_embeddings(
-    embeddings: Vec<Vec<f32>>,
-    expected_dimensions: u32,
-    model: &str,
-) -> Result<Vec<f32>, InferenceError> {
-    if embeddings.is_empty() {
-        return Err(InferenceError::EmbeddingFailed {
-            model: model.to_owned(),
-            context: "embeddings array is empty".to_owned(),
-            source: None,
-        });
-    }
-    if embeddings.len() > 1 {
-        return Err(InferenceError::ResponseParseFailed {
-            expected_shape: "embeddings array length == 1".to_owned(),
-            actual: format!("embeddings array length == {}", embeddings.len()),
-        });
-    }
-
-    let vector = embeddings.into_iter().next().expect("checked non-empty");
-    let expected = expected_dimensions as usize;
-
-    if vector.len() != expected {
-        tracing::error!(
-            expected,
-            actual = vector.len(),
-            "dimension mismatch — configuration error",
-        );
-        return Err(InferenceError::ResponseParseFailed {
-            expected_shape: format!("embedding vector length == {expected}"),
-            actual: format!("embedding vector length == {}", vector.len()),
-        });
-    }
-
-    Ok(vector)
 }
 
 // ---------------------------------------------------------------------------

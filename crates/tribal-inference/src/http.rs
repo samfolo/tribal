@@ -1,5 +1,7 @@
 //! HTTP response utilities shared across inference provider implementations.
 
+use reqwest::StatusCode;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -7,6 +9,24 @@
 /// Maximum number of characters to include when previewing a response body
 /// in error context strings.
 const BODY_PREVIEW_LIMIT: usize = 200;
+
+/// Anthropic's overloaded status code, semantically equivalent to 503.
+const ANTHROPIC_OVERLOADED: u16 = 529;
+
+// ---------------------------------------------------------------------------
+// Status classification
+// ---------------------------------------------------------------------------
+
+/// Classifies whether an HTTP status code represents a transient,
+/// retryable error.
+///
+/// Retryable statuses: 429 (Too Many Requests), 5xx (server errors),
+/// and 529 (Anthropic overloaded).
+pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+        || status.as_u16() == ANTHROPIC_OVERLOADED
+}
 
 // ---------------------------------------------------------------------------
 // Body preview
@@ -37,6 +57,27 @@ pub(crate) fn body_preview(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- is_retryable_status ------------------------------------------------
+
+    #[test]
+    fn test_is_retryable_status_retryable_codes() {
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retryable_status(
+            StatusCode::from_u16(ANTHROPIC_OVERLOADED).unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_is_retryable_status_non_retryable_codes() {
+        assert!(!is_retryable_status(StatusCode::BAD_REQUEST));
+        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
+        assert!(!is_retryable_status(StatusCode::OK));
+    }
+
+    // -- body_preview -------------------------------------------------------
 
     #[test]
     fn test_body_preview_short_unchanged() {
