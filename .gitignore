@@ -5,7 +5,10 @@
 .env
 
 # Private design documents
+docs/archive/
+docs/draft/
 docs/internal/
+docs/notes/
 
 # OS-specific
 .DS_Store

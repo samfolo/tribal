@@ -3,11 +3,26 @@
     "allow": [
       "WebSearch",
 
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:claude.com)",
+      "WebFetch(domain:www.anthropic.com)",
+
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:platform.openai.com)",
+
+      "WebFetch(domain:docs.voyageai.com)",
+
+      "WebFetch(domain:docs.nomic.ai)",
+
+      "WebFetch(domain:ollama.com)",
+      "WebFetch(domain:ollama.readthedocs.io)",
+
       "WebFetch(domain:blog.rust-lang.org)",
-      "WebFetch(domain:docs.rs)",
       "WebFetch(domain:crates.io)",
-      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.rs)",
       "WebFetch(domain:rust-lang.github.io)",
+
+      "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
 
       "Bash(brew list:*)",
