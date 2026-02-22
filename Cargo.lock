@@ -3177,6 +3177,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tribal-domain",
+ "url",
  "wiremock",
 ]
 
