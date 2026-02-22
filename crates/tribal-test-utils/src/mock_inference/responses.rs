@@ -79,7 +79,9 @@ pub fn an_embedding_failure(model: impl Into<String>, context: impl Into<String>
     Box::new(move || InferenceError::EmbeddingFailed {
         model: model.clone(),
         context: context.clone(),
-        source: Some(Box::new(std::io::Error::other("simulated embedding failure"))),
+        source: Some(Box::new(std::io::Error::other(
+            "simulated embedding failure",
+        ))),
     })
 }
 
