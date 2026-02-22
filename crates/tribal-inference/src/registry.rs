@@ -11,7 +11,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::Semaphore;
-use url::Url;
+use url::{Host, Url};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -20,8 +20,6 @@ use url::Url;
 /// User-Agent header value sent on all registry-constructed HTTP clients.
 const USER_AGENT: &str = concat!("tribal/", env!("CARGO_PKG_VERSION"));
 
-const U32_FITS_IN_USIZE: &str = "u32 always fits in usize";
-const CLIENT_BUILD_FAILED: &str = "reqwest client builder with valid configuration";
 
 // ---------------------------------------------------------------------------
 // RequestClass
@@ -145,6 +143,15 @@ pub enum ProviderRegistryError {
         /// The key that was already registered.
         key: ProviderKey,
     },
+
+    /// The HTTP client could not be constructed.
+    #[error("failed to build HTTP client for key {key:?}: {reason}")]
+    ClientBuildFailed {
+        /// The key the client was being built for.
+        key: ProviderKey,
+        /// The underlying error description.
+        reason: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -190,11 +197,8 @@ impl ProviderRegistry {
     /// Returns [`ProviderRegistryError::DuplicateKey`] if a key appears
     /// more than once.
     ///
-    /// # Panics
-    ///
-    /// Panics if `reqwest::Client::builder().build()` fails.  This
-    /// should not occur with the configuration used here (rustls
-    /// backend, valid timeout and pool settings).
+    /// Returns [`ProviderRegistryError::ClientBuildFailed`] if a
+    /// `reqwest::Client` cannot be constructed.
     pub fn new(
         entries: impl IntoIterator<Item = (ProviderKey, ProviderLimits)>,
     ) -> Result<Self, ProviderRegistryError> {
@@ -213,7 +217,7 @@ impl ProviderRegistry {
                 return Err(ProviderRegistryError::DuplicateKey { key });
             }
 
-            let pool_size = usize::try_from(limits.max_in_flight).expect(U32_FITS_IN_USIZE);
+            let pool_size = limits.max_in_flight as usize;
 
             let semaphore = Arc::new(Semaphore::new(pool_size));
 
@@ -222,7 +226,10 @@ impl ProviderRegistry {
                 .timeout(limits.request_timeout)
                 .user_agent(USER_AGENT)
                 .build()
-                .expect(CLIENT_BUILD_FAILED);
+                .map_err(|e| ProviderRegistryError::ClientBuildFailed {
+                    key: key.clone(),
+                    reason: e.to_string(),
+                })?;
 
             semaphores.insert(key.clone(), semaphore);
             clients.insert(key, client);
@@ -269,7 +276,7 @@ fn normalise_registry_url(raw: &str) -> Result<String, ProviderRegistryError> {
     let scheme = parsed.scheme();
 
     let host = parsed
-        .host_str()
+        .host()
         .ok_or_else(|| ProviderRegistryError::UnparseableUrl {
             url: raw.to_owned(),
             reason: "missing host".to_owned(),
@@ -285,7 +292,12 @@ fn normalise_registry_url(raw: &str) -> Result<String, ProviderRegistryError> {
 
     let path = parsed.path().trim_end_matches('/');
 
-    Ok(format!("{scheme}://{host}:{port}{path}"))
+    // `Host::Display` formats IPv6 with brackets (e.g. `[::1]`),
+    // domains and IPv4 addresses pass through unchanged.
+    match host {
+        Host::Ipv6(addr) => Ok(format!("{scheme}://[{addr}]:{port}{path}")),
+        _ => Ok(format!("{scheme}://{host}:{port}{path}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +414,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(key.normalised_base_url(), "http://localhost:11434/api");
+    }
+
+    #[test]
+    fn test_normalise_ipv6_host_brackets_preserved() {
+        let key =
+            ProviderKey::new("ollama", "http://[::1]:11434/api", RequestClass::Embedding).unwrap();
+        assert_eq!(key.normalised_base_url(), "http://[::1]:11434/api");
     }
 
     #[test]
