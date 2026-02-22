@@ -23,12 +23,6 @@ impl CompletionMatcher {
         }
     }
 
-    /// Matches requests whose `model` field equals the given value.
-    pub fn has_model(model: impl Into<String>) -> Self {
-        let model = model.into();
-        Self::new(move |req| req.model == model)
-    }
-
     /// Matches requests whose system prompt contains the given text.
     pub fn system_contains(text: impl Into<String>) -> Self {
         let text = text.into();
@@ -78,12 +72,6 @@ impl EmbeddingMatcher {
         }
     }
 
-    /// Matches requests whose `model` field equals the given value.
-    pub fn has_model(model: impl Into<String>) -> Self {
-        let model = model.into();
-        Self::new(move |req| req.model == model)
-    }
-
     /// Matches requests whose `input` field contains the given text.
     pub fn input_contains(text: impl Into<String>) -> Self {
         let text = text.into();
@@ -114,49 +102,37 @@ mod tests {
 
     use super::*;
 
-    fn a_completion_request(model: &str, system: Option<&str>) -> CompletionRequest {
+    fn a_completion_request(system: Option<&str>) -> CompletionRequest {
         CompletionRequest {
             system: system.map(String::from),
             messages: vec![Message {
                 role: Role::User,
                 content: "test message".to_owned(),
             }],
-            model: model.to_owned(),
             temperature: None,
             max_tokens: None,
             response_format: None,
         }
     }
 
-    fn an_embedding_request(model: &str, input: &str) -> EmbeddingRequest {
+    fn an_embedding_request(input: &str) -> EmbeddingRequest {
         EmbeddingRequest {
             input: input.to_owned(),
-            model: model.to_owned(),
             purpose: EmbeddingPurpose::Candidate,
         }
     }
 
     #[test]
-    fn test_completion_has_model() {
-        let matcher = CompletionMatcher::has_model("llama3");
-        assert!(matcher.matches(&a_completion_request("llama3", None)));
-        assert!(!matcher.matches(&a_completion_request("gpt-4", None)));
-    }
-
-    #[test]
     fn test_completion_system_contains() {
         let matcher = CompletionMatcher::system_contains("extraction");
-        assert!(matcher.matches(&a_completion_request(
-            "m",
-            Some("You are an extraction agent")
-        )));
-        assert!(!matcher.matches(&a_completion_request("m", Some("triage only"))));
-        assert!(!matcher.matches(&a_completion_request("m", None)));
+        assert!(matcher.matches(&a_completion_request(Some("You are an extraction agent"))));
+        assert!(!matcher.matches(&a_completion_request(Some("triage only"))));
+        assert!(!matcher.matches(&a_completion_request(None)));
     }
 
     #[test]
     fn test_completion_message_contains() {
-        let mut req = a_completion_request("m", None);
+        let mut req = a_completion_request(None);
         req.messages = vec![
             Message {
                 role: Role::User,
@@ -176,31 +152,26 @@ mod tests {
 
     #[test]
     fn test_completion_and_composition() {
-        let matcher = CompletionMatcher::has_model("llama3")
-            .and(CompletionMatcher::system_contains("triage"));
+        let matcher = CompletionMatcher::system_contains("triage")
+            .and(CompletionMatcher::message_contains("test"));
 
-        assert!(matcher.matches(&a_completion_request("llama3", Some("triage prompt"))));
-        assert!(!matcher.matches(&a_completion_request("gpt-4", Some("triage prompt"))));
-        assert!(!matcher.matches(&a_completion_request("llama3", Some("extraction prompt"))));
+        assert!(matcher.matches(&a_completion_request(Some("triage prompt"))));
+        assert!(!matcher.matches(&a_completion_request(Some("extraction prompt"))));
+        assert!(!matcher.matches(&a_completion_request(None)));
     }
 
     #[test]
     fn test_embedding_matchers() {
-        let model_matcher = EmbeddingMatcher::has_model("nomic");
-        assert!(model_matcher.matches(&an_embedding_request("nomic", "text")));
-        assert!(!model_matcher.matches(&an_embedding_request("other", "text")));
-
         let input_matcher = EmbeddingMatcher::input_contains("knowledge");
-        assert!(input_matcher.matches(&an_embedding_request("m", "some knowledge here")));
-        assert!(!input_matcher.matches(&an_embedding_request("m", "nothing relevant")));
+        assert!(input_matcher.matches(&an_embedding_request("some knowledge here")));
+        assert!(!input_matcher.matches(&an_embedding_request("nothing relevant")));
 
         let purpose_matcher = EmbeddingMatcher::has_purpose(EmbeddingPurpose::Candidate);
-        assert!(purpose_matcher.matches(&an_embedding_request("m", "text")));
+        assert!(purpose_matcher.matches(&an_embedding_request("text")));
 
-        let combined =
-            EmbeddingMatcher::has_model("nomic").and(EmbeddingMatcher::input_contains("knowledge"));
-        assert!(combined.matches(&an_embedding_request("nomic", "some knowledge")));
-        assert!(!combined.matches(&an_embedding_request("nomic", "other text")));
-        assert!(!combined.matches(&an_embedding_request("other", "some knowledge")));
+        let combined = EmbeddingMatcher::input_contains("knowledge")
+            .and(EmbeddingMatcher::has_purpose(EmbeddingPurpose::Candidate));
+        assert!(combined.matches(&an_embedding_request("some knowledge")));
+        assert!(!combined.matches(&an_embedding_request("other text")));
     }
 }

@@ -65,6 +65,7 @@ mod reference_kind;
 mod relation;
 mod retrieval_feedback;
 mod source_type;
+pub mod span_attrs;
 mod standing;
 mod tag_registry;
 mod task;
