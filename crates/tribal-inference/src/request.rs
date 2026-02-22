@@ -19,6 +19,17 @@ pub enum Role {
     Assistant,
 }
 
+impl Role {
+    /// Returns the conventional wire-format string for this role.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
 /// The desired response format for a completion.
 ///
 /// New variants may be added in future without a semver-breaking change.
@@ -102,6 +113,12 @@ mod tests {
         let role = Role::User;
         let copied = role;
         assert_eq!(role, copied);
+    }
+
+    #[test]
+    fn test_role_as_str() {
+        assert_eq!(Role::User.as_str(), "user");
+        assert_eq!(Role::Assistant.as_str(), "assistant");
     }
 
     #[test]

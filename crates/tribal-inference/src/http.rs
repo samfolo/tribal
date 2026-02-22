@@ -1,4 +1,6 @@
-//! HTTP response utilities shared across inference provider implementations.
+//! HTTP and URL utilities shared across inference provider implementations.
+
+use std::time::Duration;
 
 use reqwest::StatusCode;
 
@@ -48,6 +50,30 @@ pub(crate) fn body_preview(body: &str) -> String {
 
     let boundary = normalised.floor_char_boundary(BODY_PREVIEW_LIMIT);
     format!("{}...", &normalised[..boundary])
+}
+
+// ---------------------------------------------------------------------------
+// URL helpers
+// ---------------------------------------------------------------------------
+
+/// Strips trailing slashes from a base URL to ensure consistent path
+/// concatenation (e.g. `format!("{base_url}/api/embed")`).
+pub(crate) fn normalise_base_url(url: impl Into<String>) -> String {
+    let mut url = url.into();
+    while url.ends_with('/') {
+        url.pop();
+    }
+    url
+}
+
+// ---------------------------------------------------------------------------
+// Latency helpers
+// ---------------------------------------------------------------------------
+
+/// Converts a [`Duration`] to whole milliseconds, saturating at
+/// [`u64::MAX`] for durations that exceed the representable range.
+pub(crate) fn latency_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -125,5 +151,43 @@ mod tests {
     #[test]
     fn test_body_preview_only_whitespace() {
         assert_eq!(body_preview("   \n\t  \r\n  "), "");
+    }
+
+    // -- normalise_base_url -------------------------------------------------
+
+    #[test]
+    fn test_normalise_base_url_strips_trailing_slashes() {
+        assert_eq!(
+            normalise_base_url("http://localhost:11434/"),
+            "http://localhost:11434"
+        );
+    }
+
+    #[test]
+    fn test_normalise_base_url_strips_multiple_slashes() {
+        assert_eq!(
+            normalise_base_url("http://localhost///"),
+            "http://localhost"
+        );
+    }
+
+    #[test]
+    fn test_normalise_base_url_no_trailing_slash_unchanged() {
+        assert_eq!(
+            normalise_base_url("http://localhost:11434"),
+            "http://localhost:11434"
+        );
+    }
+
+    // -- latency_ms ---------------------------------------------------------
+
+    #[test]
+    fn test_latency_ms_converts_duration() {
+        assert_eq!(latency_ms(Duration::from_millis(42)), 42);
+    }
+
+    #[test]
+    fn test_latency_ms_zero() {
+        assert_eq!(latency_ms(Duration::ZERO), 0);
     }
 }
