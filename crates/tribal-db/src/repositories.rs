@@ -8,6 +8,7 @@
 mod auth_token;
 mod common;
 mod embedding;
+mod extraction_result;
 mod item_observation;
 mod job;
 mod knowledge_item;
@@ -26,6 +27,9 @@ mod triage_similar_item_decision;
 
 pub use auth_token::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
+pub use extraction_result::{
+    ExtractionResultRepository, NewExtractionResult, PgExtractionResultRepository,
+};
 pub use item_observation::{
     ItemObservationRepository, NewItemObservation, PgItemObservationRepository,
 };
