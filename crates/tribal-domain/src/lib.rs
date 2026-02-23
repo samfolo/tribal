@@ -49,8 +49,8 @@ mod database_config;
 mod discovery;
 mod embedding;
 mod embedding_purpose;
-mod extraction_result;
 mod error_code;
+mod extraction_result;
 mod feedback_rating;
 mod ids;
 mod item_observation;
@@ -79,8 +79,8 @@ pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use embedding::{Embedding, EmbeddingBuilder};
 pub use embedding_purpose::EmbeddingPurpose;
 pub use error_code::McpErrorCode;
-pub use feedback_rating::FeedbackRating;
 pub use extraction_result::{ExtractionResult, ExtractionResultBuilder};
+pub use feedback_rating::FeedbackRating;
 pub use ids::{
     AuthTokenId, EmbeddingId, EpisodeId, ExtractionResultId, IdParseError, ItemObservationId,
     JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId,

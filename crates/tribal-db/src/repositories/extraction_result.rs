@@ -24,13 +24,7 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: Columns = Columns(&[
-    "id",
-    "job_id",
-    "candidates",
-    "relation_hints",
-    "created_at",
-]);
+const COLUMNS: Columns = Columns(&["id", "job_id", "candidates", "relation_hints", "created_at"]);
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -142,9 +136,7 @@ impl ExtractionResultRepository for PgExtractionResultRepository {
         conn: &mut PgConnection,
         job_id: JobId,
     ) -> Result<Option<ExtractionResult>, DbError> {
-        let sql = format!(
-            "SELECT {COLUMNS} FROM extraction_results WHERE job_id = $1",
-        );
+        let sql = format!("SELECT {COLUMNS} FROM extraction_results WHERE job_id = $1",);
 
         let row = sqlx::query(&sql)
             .bind(job_id.inner())
