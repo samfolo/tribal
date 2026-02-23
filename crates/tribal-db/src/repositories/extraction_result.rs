@@ -9,7 +9,7 @@
 //! remove the ownership guard and risk silent data corruption on stale
 //! worker commits.
 //!
-//! Uses raw `sqlx::query()` because the candidates and relation_hints
+//! Uses raw `sqlx::query()` because the `candidates` and `relation_hints`
 //! columns are opaque JSONB values.
 
 use async_trait::async_trait;
@@ -66,7 +66,7 @@ pub trait ExtractionResultRepository {
     /// A unique constraint on `job_id` ensures at most one result per
     /// job. If a unique violation fires, it means a previous extraction
     /// attempt fully committed and the current attempt is spurious — the
-    /// claim_token guard should have prevented this.
+    /// `claim_token` guard should have prevented this.
     ///
     /// # Errors
     ///
