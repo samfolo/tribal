@@ -50,6 +50,7 @@ mod discovery;
 mod embedding;
 mod embedding_purpose;
 mod error_code;
+mod extraction_result;
 mod feedback_rating;
 mod ids;
 mod item_observation;
@@ -78,11 +79,12 @@ pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use embedding::{Embedding, EmbeddingBuilder};
 pub use embedding_purpose::EmbeddingPurpose;
 pub use error_code::McpErrorCode;
+pub use extraction_result::{ExtractionResult, ExtractionResultBuilder};
 pub use feedback_rating::FeedbackRating;
 pub use ids::{
-    AuthTokenId, EmbeddingId, EpisodeId, IdParseError, ItemObservationId, JobId, KnowledgeItemId,
-    PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId, RelationId,
-    RetrievalFeedbackId, SessionId, TaskId, TokenUsageId, TriageResultId,
+    AuthTokenId, EmbeddingId, EpisodeId, ExtractionResultId, IdParseError, ItemObservationId,
+    JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId,
+    RelationId, RetrievalFeedbackId, SessionId, TaskId, TokenUsageId, TriageResultId,
     TriageSimilarItemDecisionId,
 };
 pub use item_observation::{ItemObservation, ItemObservationBuilder};

@@ -11,6 +11,9 @@ mod auth_token;
 #[path = "repositories/embedding.rs"]
 mod embedding;
 
+#[path = "repositories/extraction_result.rs"]
+mod extraction_result;
+
 #[path = "repositories/item_observation.rs"]
 mod item_observation;
 

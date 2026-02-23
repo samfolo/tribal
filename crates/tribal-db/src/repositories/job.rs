@@ -36,6 +36,7 @@ const COLUMNS: Columns = Columns(&[
     "batch_size",
     "committed_batch_id",
     "source_context",
+    "raw_input",
     "extraction_original_count",
     "error_message",
     "extraction_prompt_version_id",
@@ -78,6 +79,8 @@ pub struct NewJob {
     pub actor_id: Option<PrincipalId>,
     /// Source context (opaque JSONB).
     pub source_context: serde_json::Value,
+    /// Verbatim text from ingestion; primary input to extraction.
+    pub raw_input: String,
     /// Extraction prompt version at job creation time.
     pub extraction_prompt_version_id: PromptVersionId,
     /// Triage prompt version at job creation time.
@@ -210,10 +213,10 @@ impl JobRepository for PgJobRepository {
         let sql = format!(
             "INSERT INTO jobs \
                  (correlation_id, project_id, principal_id, actor_id, \
-                  source_context, extraction_prompt_version_id, \
+                  source_context, raw_input, extraction_prompt_version_id, \
                   triage_prompt_version_id, relation_prompt_version_id, \
                   trace_context) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              RETURNING {COLUMNS}",
         );
 
@@ -223,6 +226,7 @@ impl JobRepository for PgJobRepository {
             .bind(new_job.principal_id.inner())
             .bind(new_job.actor_id.map(|id| *id.inner()))
             .bind(&new_job.source_context)
+            .bind(&new_job.raw_input)
             .bind(new_job.extraction_prompt_version_id.inner())
             .bind(new_job.triage_prompt_version_id.inner())
             .bind(new_job.relation_prompt_version_id.inner())
@@ -416,6 +420,7 @@ fn map_job_row(r: &sqlx::postgres::PgRow) -> Job {
                 .map(RelationBatchId::from),
         )
         .source_context(r.get("source_context"))
+        .raw_input(r.get("raw_input"))
         .extraction_original_count(
             r.get::<Option<i32>, _>("extraction_original_count")
                 .map(|v| u32::try_from(v).expect(EXTRACTION_ORIGINAL_COUNT_OVERFLOW)),
