@@ -89,6 +89,7 @@ async fn test_insert_returns_populated_job() {
     assert_eq!(job.status(), JobStatus::Queued);
     assert!(job.outcome().is_none());
     assert_eq!(*job.source_context(), serde_json::json!({"tool": "test"}));
+    assert_eq!(job.raw_input(), "test raw input");
     assert_eq!(job.extraction_prompt_version_id(), pv_id);
     assert_eq!(job.triage_prompt_version_id(), pv_id);
     assert_eq!(job.relation_prompt_version_id(), pv_id);
@@ -126,6 +127,7 @@ async fn test_insert_with_optional_fields_round_trips() {
         .extraction_prompt_version_id(pv_id)
         .triage_prompt_version_id(pv_id)
         .relation_prompt_version_id(pv_id)
+        .raw_input("custom raw input for round-trip".to_owned())
         .trace_context(Some("00-abc-def-01".to_owned()))
         .build();
 
@@ -133,6 +135,7 @@ async fn test_insert_with_optional_fields_round_trips() {
 
     assert_eq!(job.actor_id(), Some(actor.id()));
     assert_eq!(job.correlation_id(), Some(correlation_id));
+    assert_eq!(job.raw_input(), "custom raw input for round-trip");
     assert_eq!(job.trace_context(), Some("00-abc-def-01"));
 }
 
@@ -164,6 +167,7 @@ async fn test_find_by_id_returns_job() {
 
     assert_eq!(found.id(), inserted.id());
     assert_eq!(found.status(), JobStatus::Queued);
+    assert_eq!(found.raw_input(), "test raw input");
 }
 
 #[tokio::test]
