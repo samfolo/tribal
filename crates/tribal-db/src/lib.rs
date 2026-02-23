@@ -17,11 +17,12 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 pub use error::DbError;
 pub use pool::create_pool;
 pub use repositories::{
-    AuthTokenRepository, EmbeddingRepository, ItemObservationRepository, JobRepository,
-    JobStatusTransition, KnowledgeItemRepository, NewAuthToken, NewEmbedding, NewItemObservation,
-    NewJob, NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject, NewPromptVersion,
-    NewReference, NewRetrievalFeedback, NewTask, NewTokenUsage, NewTriageResult,
-    NewTriageSimilarItemDecision, PgAuthTokenRepository, PgEmbeddingRepository,
+    AuthTokenRepository, EmbeddingRepository, ExtractionResultRepository,
+    ItemObservationRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,
+    NewAuthToken, NewEmbedding, NewExtractionResult, NewItemObservation, NewJob, NewKnowledgeItem,
+    NewKnowledgeItemRelation, NewPrincipal, NewProject, NewPromptVersion, NewReference,
+    NewRetrievalFeedback, NewTask, NewTokenUsage, NewTriageResult, NewTriageSimilarItemDecision,
+    PgAuthTokenRepository, PgEmbeddingRepository, PgExtractionResultRepository,
     PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
     PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository, PgRelationRepository,
     PgRetrievalFeedbackRepository, PgStandingRepository, PgTagRegistryRepository, PgTaskRepository,
