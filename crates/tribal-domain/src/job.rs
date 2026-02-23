@@ -99,6 +99,8 @@ pub struct Job {
     committed_batch_id: Option<RelationBatchId>,
     /// Source context (opaque JSONB — no control flow on contents).
     source_context: serde_json::Value,
+    /// Verbatim text from ingestion; primary input to extraction.
+    raw_input: String,
     /// Pre-cap candidate count from extraction.
     #[builder(default)]
     extraction_original_count: Option<u32>,
@@ -172,6 +174,11 @@ impl Job {
     /// Returns the source context (opaque JSONB).
     pub fn source_context(&self) -> &serde_json::Value {
         &self.source_context
+    }
+
+    /// Returns the verbatim ingest content read by the extraction worker.
+    pub fn raw_input(&self) -> &str {
+        &self.raw_input
     }
 
     /// Returns the pre-cap extraction candidate count.
