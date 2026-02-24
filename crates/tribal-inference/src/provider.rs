@@ -14,6 +14,23 @@ use crate::{
     response::{CompletionResponse, EmbeddingResponse},
 };
 
+// ---------------------------------------------------------------------------
+// ProviderIdentity
+// ---------------------------------------------------------------------------
+
+/// Identifies an inference or embedding provider by name and model.
+///
+/// Stored on each provider implementation and returned by reference
+/// from the [`InferenceProvider::identity`] and
+/// [`EmbeddingProvider::identity`] trait methods.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderIdentity {
+    /// The provider name (e.g. `"ollama"`, `"anthropic"`, `"openai"`).
+    pub name: String,
+    /// The model identifier (e.g. `"llama3"`, `"claude-sonnet-4-20250514"`).
+    pub model: String,
+}
+
 /// Abstraction for LLM completion providers.
 ///
 /// Implementations handle provider-specific serialisation, HTTP calls,
@@ -22,6 +39,9 @@ use crate::{
 /// `Arc<dyn InferenceProvider>`.
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
+    /// Returns the provider name and model identifier.
+    fn identity(&self) -> &ProviderIdentity;
+
     /// Sends a completion request and returns the generated response.
     ///
     /// # Errors
@@ -44,6 +64,9 @@ pub trait InferenceProvider: Send + Sync {
 /// `Arc<dyn EmbeddingProvider>`.
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
+    /// Returns the provider name and model identifier.
+    fn identity(&self) -> &ProviderIdentity;
+
     /// Generates an embedding vector for the given input text.
     ///
     /// # Errors
@@ -60,11 +83,27 @@ mod tests {
 
     use super::*;
 
-    struct StubInferenceProvider;
-    struct StubEmbeddingProvider;
+    struct StubInferenceProvider {
+        identity: ProviderIdentity,
+    }
+
+    struct StubEmbeddingProvider {
+        identity: ProviderIdentity,
+    }
+
+    fn stub_identity() -> ProviderIdentity {
+        ProviderIdentity {
+            name: "stub".to_owned(),
+            model: "stub-model".to_owned(),
+        }
+    }
 
     #[async_trait]
     impl InferenceProvider for StubInferenceProvider {
+        fn identity(&self) -> &ProviderIdentity {
+            &self.identity
+        }
+
         async fn complete(
             &self,
             _request: CompletionRequest,
@@ -75,6 +114,10 @@ mod tests {
 
     #[async_trait]
     impl EmbeddingProvider for StubEmbeddingProvider {
+        fn identity(&self) -> &ProviderIdentity {
+            &self.identity
+        }
+
         async fn embed(
             &self,
             _request: EmbeddingRequest,
@@ -88,7 +131,9 @@ mod tests {
     /// time by constructing trait objects from stub implementations.
     #[test]
     fn test_traits_are_object_safe() {
-        let _inference: Arc<dyn InferenceProvider> = Arc::new(StubInferenceProvider);
-        let _embedding: Arc<dyn EmbeddingProvider> = Arc::new(StubEmbeddingProvider);
+        let _inference: Arc<dyn InferenceProvider> =
+            Arc::new(StubInferenceProvider { identity: stub_identity() });
+        let _embedding: Arc<dyn EmbeddingProvider> =
+            Arc::new(StubEmbeddingProvider { identity: stub_identity() });
     }
 }
