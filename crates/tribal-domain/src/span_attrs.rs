@@ -94,3 +94,46 @@ pub const LLM_LATENCY_MS: &str = "tribal.llm.latency_ms";
 
 /// Span field name for the sampling temperature.
 pub const LLM_TEMPERATURE: &str = "tribal.llm.temperature";
+
+// ---------------------------------------------------------------------------
+// Worker spans
+// ---------------------------------------------------------------------------
+
+/// Span field name for the batch index of a triage task within its extraction.
+pub const BATCH_INDEX: &str = "tribal.batch_index";
+
+/// Span field name for the triage batch size (number of candidates).
+pub const BATCH_SIZE: &str = "tribal.batch_size";
+
+/// Span field name for the original candidate count before deduplication.
+pub const EXTRACTION_ORIGINAL_COUNT: &str = "tribal.extraction.original_count";
+
+/// Span field name for the triage stage outcome classification.
+pub const TRIAGE_OUTCOME: &str = "tribal.triage.outcome";
+
+/// Span field name for the number of relations committed.
+pub const RELATIONS_COMMITTED: &str = "tribal.relations.committed";
+
+/// Span field name for the number of relations skipped.
+pub const RELATIONS_SKIPPED: &str = "tribal.relations.skipped";
+
+/// Span field name for the overall job outcome.
+pub const JOB_OUTCOME: &str = "tribal.job.outcome";
+
+/// Span field name for the relation batch identifier.
+pub const RELATION_BATCH_ID: &str = "tribal.relation_batch_id";
+
+/// Span field name for the number of semantic search results returned.
+pub const SEARCH_RESULTS_COUNT: &str = "tribal.search.results_count";
+
+/// Span field name for the semantic search limit (top-K).
+pub const SEARCH_LIMIT: &str = "tribal.search.limit";
+
+/// Span field name for the task retry count.
+pub const RETRY_COUNT: &str = "tribal.retry_count";
+
+/// Span field name for the worker instance identifier.
+pub const WORKER_INSTANCE_ID: &str = "tribal.worker.instance_id";
+
+/// Span field name indicating the trace context was invalid or unparseable.
+pub const TRACE_CONTEXT_INVALID: &str = "tribal.trace_context.invalid";
