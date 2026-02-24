@@ -1,7 +1,7 @@
 //! Extraction stage: LLM-based candidate extraction from raw input.
 
-use tribal_db::repositories::NewExtractionResult;
-use tribal_db::repositories::NewTask;
+use tribal_db::NewExtractionResult;
+use tribal_db::NewTask;
 use tribal_inference::InferenceError;
 use tribal_inference::Usage;
 
@@ -26,6 +26,7 @@ pub(crate) struct StageOutput {
 
 /// Domain effects produced by a stage, committed transactionally after
 /// the stage completes.
+#[allow(dead_code)]
 pub(crate) enum StageCommit {
     /// Extraction stage effects.
     Extraction {

@@ -41,6 +41,7 @@ pub enum WorkerError {
 /// Each variant maps to a [`TaskErrorKind`] for structured persistence
 /// via [`StageError::to_error_kind`].
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 pub(crate) enum StageError {
     /// The inference provider returned an error.
     #[error("provider error during {context}")]
