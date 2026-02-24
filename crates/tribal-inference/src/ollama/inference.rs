@@ -12,7 +12,7 @@ use tribal_domain::span_attrs;
 
 use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
-    Message, ResponseFormat, Role,
+    Message, ProviderIdentity, ResponseFormat, Role,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
     http::{PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
@@ -87,7 +87,7 @@ struct OllamaChatResponseMessage {
 pub struct OllamaInferenceProvider {
     client: reqwest::Client,
     base_url: String,
-    model: String,
+    identity: ProviderIdentity,
 }
 
 impl OllamaInferenceProvider {
@@ -100,7 +100,10 @@ impl OllamaInferenceProvider {
         Self {
             client,
             base_url: normalise_base_url(base_url),
-            model: model.into(),
+            identity: ProviderIdentity {
+                name: PROVIDER_NAME.to_owned(),
+                model: model.into(),
+            },
         }
     }
 
@@ -119,11 +122,11 @@ impl OllamaInferenceProvider {
         let span = tracing::info_span!(
             "tribal.llm.probe",
             { span_attrs::LLM_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::LLM_MODEL } = %self.model,
+            { span_attrs::LLM_MODEL } = %self.identity.model,
         );
 
         async {
-            super::tags::check_tags(&self.client, &self.base_url, &self.model).await;
+            super::tags::check_tags(&self.client, &self.base_url, &self.identity.model).await;
 
             let request = CompletionRequest {
                 system: None,
@@ -137,7 +140,7 @@ impl OllamaInferenceProvider {
             };
             let _response = self.complete(request).await?;
 
-            tracing::info!("model {} probe succeeded", self.model);
+            tracing::info!("model {} probe succeeded", self.identity.model);
             Ok(())
         }
         .instrument(span)
@@ -151,13 +154,17 @@ impl OllamaInferenceProvider {
 
 #[async_trait]
 impl InferenceProvider for OllamaInferenceProvider {
+    fn identity(&self) -> &ProviderIdentity {
+        &self.identity
+    }
+
     async fn complete(
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, InferenceError> {
         if request.messages.is_empty() {
             return Err(InferenceError::LlmCallFailed {
-                model: self.model.clone(),
+                model: self.identity.model.clone(),
                 context: "messages list is empty".to_owned(),
                 source: None,
             });
@@ -166,7 +173,7 @@ impl InferenceProvider for OllamaInferenceProvider {
         let span = tracing::info_span!(
             "tribal.llm.call",
             { span_attrs::LLM_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::LLM_MODEL } = %self.model,
+            { span_attrs::LLM_MODEL } = %self.identity.model,
             { span_attrs::LLM_TOKENS_INPUT } = tracing::field::Empty,
             { span_attrs::LLM_TOKENS_OUTPUT } = tracing::field::Empty,
             { span_attrs::LLM_TOKENS_TOTAL } = tracing::field::Empty,
@@ -182,7 +189,7 @@ impl InferenceProvider for OllamaInferenceProvider {
             }
 
             let started = Instant::now();
-            let body = build_request(&self.model, &request);
+            let body = build_request(&self.identity.model, &request);
             let url = format!("{}{CHAT_PATH}", self.base_url);
             let http_response = self
                 .client
@@ -207,7 +214,7 @@ impl InferenceProvider for OllamaInferenceProvider {
                     PROVIDER_NAME,
                     &[],
                     |ctx| InferenceError::LlmCallFailed {
-                        model: self.model.clone(),
+                        model: self.identity.model.clone(),
                         context: ctx,
                         source: None,
                     },
@@ -239,7 +246,7 @@ impl InferenceProvider for OllamaInferenceProvider {
 
             let usage = CompletionUsage {
                 provider: PROVIDER_NAME.to_owned(),
-                model: self.model.clone(),
+                model: self.identity.model.clone(),
                 input_tokens,
                 output_tokens,
                 cache_read_tokens: 0,
