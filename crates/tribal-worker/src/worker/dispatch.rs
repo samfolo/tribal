@@ -1,7 +1,9 @@
 //! Worker struct, construction, and the poll-claim-dispatch loop.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use chrono::Utc;
 use dashmap::DashMap;
@@ -117,6 +119,7 @@ impl Worker {
 
     /// Returns the high-water mark of simultaneously in-flight tasks
     /// observed since the worker was created.
+    #[must_use]
     pub fn peak_concurrent(&self) -> usize {
         self.peak_concurrent.load(Ordering::SeqCst)
     }
