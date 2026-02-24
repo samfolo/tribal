@@ -1,6 +1,7 @@
 //! Worker struct, construction, and the poll-claim-dispatch loop.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono::Utc;
 use dashmap::DashMap;
@@ -70,6 +71,10 @@ pub struct Worker {
     instance_id: String,
     #[allow(dead_code)]
     job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
+    /// Current number of in-flight tasks.
+    active_tasks: Arc<AtomicUsize>,
+    /// High-water mark of simultaneously in-flight tasks.
+    peak_concurrent: Arc<AtomicUsize>,
 }
 
 impl Worker {
@@ -105,7 +110,15 @@ impl Worker {
             config,
             instance_id,
             job_state_txs: Arc::new(DashMap::new()),
+            active_tasks: Arc::new(AtomicUsize::new(0)),
+            peak_concurrent: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Returns the high-water mark of simultaneously in-flight tasks
+    /// observed since the worker was created.
+    pub fn peak_concurrent(&self) -> usize {
+        self.peak_concurrent.load(Ordering::SeqCst)
     }
 
     /// Reclaims stale tasks that were left claimed by a previous worker
@@ -212,6 +225,18 @@ impl Worker {
     /// 5. On success, records token usage and commits domain effects.
     ///    On failure, delegates to [`handle_stage_failure`](Self::handle_stage_failure).
     async fn run_task(&self, task: Task) {
+        let active = self.active_tasks.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak_concurrent.fetch_max(active, Ordering::SeqCst);
+
+        self.run_task_inner(task).await;
+
+        self.active_tasks.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Inner task dispatch, separated from [`run_task`](Self::run_task)
+    /// so the active-task counter is always decremented on all exit
+    /// paths.
+    async fn run_task_inner(&self, task: Task) {
         let job_id = task.job_id();
 
         let job: Job = {
