@@ -10,7 +10,7 @@ use std::{collections::VecDeque, sync::Mutex};
 use async_trait::async_trait;
 use tribal_inference::{
     CompletionRequest, CompletionResponse, EmbeddingProvider, EmbeddingRequest, EmbeddingResponse,
-    InferenceError, InferenceProvider,
+    InferenceError, InferenceProvider, ProviderIdentity,
 };
 
 use super::{
@@ -48,6 +48,7 @@ struct EmbeddingUsageAccumulator {
 pub struct MockInferenceProvider {
     core: MockProviderCore<CompletionRequest, CompletionResponse>,
     usage: Mutex<CompletionUsageAccumulator>,
+    identity: ProviderIdentity,
 }
 
 impl MockInferenceProvider {
@@ -115,6 +116,10 @@ impl InferenceProvider for MockInferenceProvider {
         usage.total_output_tokens += u64::from(result.usage.output_tokens);
         Ok(result)
     }
+
+    fn identity(&self) -> &ProviderIdentity {
+        &self.identity
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +132,7 @@ pub struct MockInferenceProviderBuilder {
     queue: VecDeque<QueueEntry<CompletionResponse>>,
     conditionals: Vec<ConditionalEntry<CompletionRequest, CompletionResponse>>,
     exhaust_behaviour: ExhaustBehaviour,
+    identity: ProviderIdentity,
 }
 
 impl MockInferenceProviderBuilder {
@@ -135,7 +141,17 @@ impl MockInferenceProviderBuilder {
             queue: VecDeque::new(),
             conditionals: Vec::new(),
             exhaust_behaviour: ExhaustBehaviour::Panic,
+            identity: ProviderIdentity {
+                name: "mock".into(),
+                model: "mock-model".into(),
+            },
         }
+    }
+
+    /// Sets the provider identity returned by [`InferenceProvider::identity`].
+    pub fn with_identity(mut self, identity: ProviderIdentity) -> Self {
+        self.identity = identity;
+        self
     }
 
     /// Enqueues a successful completion response (FIFO).
@@ -179,6 +195,7 @@ impl MockInferenceProviderBuilder {
                 self.exhaust_behaviour,
             ),
             usage: Mutex::new(CompletionUsageAccumulator::default()),
+            identity: self.identity,
         }
     }
 }
@@ -235,6 +252,7 @@ impl ConditionalCompletionBuilder {
 pub struct MockEmbeddingProvider {
     core: MockProviderCore<EmbeddingRequest, EmbeddingResponse>,
     usage: Mutex<EmbeddingUsageAccumulator>,
+    identity: ProviderIdentity,
 }
 
 impl MockEmbeddingProvider {
@@ -289,6 +307,10 @@ impl EmbeddingProvider for MockEmbeddingProvider {
         usage.total_tokens += u64::from(result.usage.total_tokens);
         Ok(result)
     }
+
+    fn identity(&self) -> &ProviderIdentity {
+        &self.identity
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +323,7 @@ pub struct MockEmbeddingProviderBuilder {
     queue: VecDeque<QueueEntry<EmbeddingResponse>>,
     conditionals: Vec<ConditionalEntry<EmbeddingRequest, EmbeddingResponse>>,
     exhaust_behaviour: ExhaustBehaviour,
+    identity: ProviderIdentity,
 }
 
 impl MockEmbeddingProviderBuilder {
@@ -309,7 +332,17 @@ impl MockEmbeddingProviderBuilder {
             queue: VecDeque::new(),
             conditionals: Vec::new(),
             exhaust_behaviour: ExhaustBehaviour::Panic,
+            identity: ProviderIdentity {
+                name: "mock".into(),
+                model: "mock-model".into(),
+            },
         }
+    }
+
+    /// Sets the provider identity returned by [`EmbeddingProvider::identity`].
+    pub fn with_identity(mut self, identity: ProviderIdentity) -> Self {
+        self.identity = identity;
+        self
     }
 
     /// Enqueues a successful embedding response (FIFO).
@@ -353,6 +386,7 @@ impl MockEmbeddingProviderBuilder {
                 self.exhaust_behaviour,
             ),
             usage: Mutex::new(EmbeddingUsageAccumulator::default()),
+            identity: self.identity,
         }
     }
 }
