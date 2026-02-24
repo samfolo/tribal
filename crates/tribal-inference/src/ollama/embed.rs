@@ -206,8 +206,11 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                 tracing::debug!(load_duration_ms = load_ns / 1_000_000, "provider timing");
             }
 
-            let vector =
-                validate_embeddings(parsed.embeddings, self.expected_dimensions, &self.identity.model)?;
+            let vector = validate_embeddings(
+                parsed.embeddings,
+                self.expected_dimensions,
+                &self.identity.model,
+            )?;
 
             let total_tokens = parsed.prompt_eval_count.unwrap_or_else(|| {
                 tracing::debug!("prompt_eval_count absent, defaulting to 0");

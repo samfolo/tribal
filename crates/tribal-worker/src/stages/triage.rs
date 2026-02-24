@@ -2,9 +2,7 @@
 
 use tribal_inference::InferenceError;
 
-use crate::error::StageError;
-use crate::stages::StageOutput;
-use crate::worker::Worker;
+use crate::{error::StageError, stages::StageOutput, worker::Worker};
 
 // ---------------------------------------------------------------------------
 // Stage implementation
@@ -16,6 +14,7 @@ impl Worker {
     /// # Errors
     ///
     /// Returns [`StageError::Provider`] — stub always fails.
+    #[allow(clippy::unused_async)]
     pub(crate) async fn run_triage(
         &self,
         _job: &tribal_domain::Job,

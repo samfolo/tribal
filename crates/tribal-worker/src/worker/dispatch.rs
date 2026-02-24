@@ -16,11 +16,12 @@ use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
 
-use crate::config::WorkerConfig;
-use crate::error::{StageError, WorkerError};
-use crate::stages::{StageCommit, StageOutput};
-
 use super::backoff::backoff_duration;
+use crate::{
+    config::WorkerConfig,
+    error::{StageError, WorkerError},
+    stages::{StageCommit, StageOutput},
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -113,6 +114,7 @@ impl Worker {
     /// # Errors
     ///
     /// Returns [`WorkerError`] on database failures.
+    #[allow(clippy::unused_async)]
     pub async fn startup_reclaim(&self) -> Result<u64, WorkerError> {
         // Implemented by ticket 4.2
         Ok(0)
@@ -125,6 +127,11 @@ impl Worker {
     /// onto a Tokio task guarded by a semaphore permit.  If a claim cycle
     /// fails, the poll interval doubles (capped at 60 s) as a transient-
     /// failure backoff; it resets on the next successful claim.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal semaphore is closed, which indicates a
+    /// programming error in the worker lifecycle.
     ///
     /// # Errors
     ///
@@ -155,9 +162,11 @@ impl Worker {
             let limit = clamp_to_u32(available);
 
             let claim_result = {
-                let mut conn = self.pool.acquire().await.map_err(|e| {
-                    WorkerError::PoolExhausted { source: e }
-                })?;
+                let mut conn = self
+                    .pool
+                    .acquire()
+                    .await
+                    .map_err(|e| WorkerError::PoolExhausted { source: e })?;
                 PgTaskRepository
                     .claim(&mut conn, limit, &self.instance_id)
                     .await
@@ -232,15 +241,13 @@ impl Worker {
         // Extraction → Extracting).  Non-transactional and fire-and-
         // forget — a failure here does not block task execution.
         let target_status = job_status_for_task_type(task.task_type());
-        if job.status() != target_status {
-            if let Ok(mut conn) = self.pool.acquire().await {
-                let transition = JobStatusTransition::builder()
-                    .status(target_status)
-                    .build();
-                let _ = PgJobRepository
-                    .update_status(&mut conn, job_id, &transition)
-                    .await;
-            }
+        if job.status() != target_status
+            && let Ok(mut conn) = self.pool.acquire().await
+        {
+            let transition = JobStatusTransition::builder().status(target_status).build();
+            let _ = PgJobRepository
+                .update_status(&mut conn, job_id, &transition)
+                .await;
         }
 
         // Notify job-state watch subscribers.  Each job has an optional
@@ -289,11 +296,7 @@ impl Worker {
     }
 
     /// Routes to the correct stage based on task type.
-    async fn dispatch_stage(
-        &self,
-        job: &Job,
-        task: &Task,
-    ) -> Result<StageOutput, StageError> {
+    async fn dispatch_stage(&self, job: &Job, task: &Task) -> Result<StageOutput, StageError> {
         match task.task_type() {
             TaskType::Extraction => self.run_extraction(job, task).await,
             TaskType::Triage => self.run_triage(job, task).await,
@@ -347,7 +350,7 @@ impl Worker {
 
         let fail_result = PgTaskRepository
             .fail(
-                &mut *txn,
+                &mut txn,
                 task.id(),
                 claim_token,
                 self.config.task_max_retries,
@@ -369,10 +372,8 @@ impl Worker {
         // still succeed, and the relation stage runs on whatever
         // triage results are available.
         if is_dead_lettered {
-            let should_fail_job = matches!(
-                task.task_type(),
-                TaskType::Extraction | TaskType::Relation
-            );
+            let should_fail_job =
+                matches!(task.task_type(), TaskType::Extraction | TaskType::Relation);
             if should_fail_job {
                 let transition = JobStatusTransition::builder()
                     .status(JobStatus::Failed)
@@ -381,7 +382,7 @@ impl Worker {
                     .completed_at(Some(Utc::now()))
                     .build();
                 if let Err(e) = PgJobRepository
-                    .update_status(&mut *txn, task.job_id(), &transition)
+                    .update_status(&mut txn, task.job_id(), &transition)
                     .await
                 {
                     tracing::error!(
@@ -440,28 +441,33 @@ impl Worker {
         batch_size: u32,
         original_count: u32,
     ) -> Result<(), StageError> {
-        let mut conn = self.pool.acquire().await.map_err(|e| StageError::Database {
-            stage: STAGE_EXTRACTION.into(),
-            context: "acquiring connection".into(),
-            source: tribal_db::DbError::QueryFailed {
-                context: "pool acquire".into(),
-                source: e,
-            },
-        })?;
-
-        let mut txn = sqlx::Connection::begin(&mut *conn).await.map_err(|e| {
-            StageError::Database {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
                 stage: STAGE_EXTRACTION.into(),
-                context: "beginning transaction".into(),
+                context: "acquiring connection".into(),
                 source: tribal_db::DbError::QueryFailed {
-                    context: "begin".into(),
+                    context: "pool acquire".into(),
                     source: e,
                 },
-            }
-        })?;
+            })?;
+
+        let mut txn =
+            sqlx::Connection::begin(&mut *conn)
+                .await
+                .map_err(|e| StageError::Database {
+                    stage: STAGE_EXTRACTION.into(),
+                    context: "beginning transaction".into(),
+                    source: tribal_db::DbError::QueryFailed {
+                        context: "begin".into(),
+                        source: e,
+                    },
+                })?;
 
         PgExtractionResultRepository
-            .insert(&mut *txn, &extraction_result)
+            .insert(&mut txn, &extraction_result)
             .await
             .map_err(|e| StageError::Database {
                 stage: STAGE_EXTRACTION.into(),
@@ -474,7 +480,7 @@ impl Worker {
         if !is_empty {
             for new_task in &triage_tasks {
                 PgTaskRepository
-                    .insert(&mut *txn, new_task)
+                    .insert(&mut txn, new_task)
                     .await
                     .map_err(|e| StageError::Database {
                         stage: STAGE_EXTRACTION.into(),
@@ -485,7 +491,7 @@ impl Worker {
         }
 
         PgJobRepository
-            .update_batch_size(&mut *txn, task.job_id(), batch_size, original_count)
+            .update_batch_size(&mut txn, task.job_id(), batch_size, original_count)
             .await
             .map_err(|e| StageError::Database {
                 stage: STAGE_EXTRACTION.into(),
@@ -509,7 +515,7 @@ impl Worker {
         };
 
         PgJobRepository
-            .update_status(&mut *txn, task.job_id(), &job_transition)
+            .update_status(&mut txn, task.job_id(), &job_transition)
             .await
             .map_err(|e| StageError::Database {
                 stage: STAGE_EXTRACTION.into(),
@@ -522,7 +528,7 @@ impl Worker {
         };
 
         let rows = PgTaskRepository
-            .complete(&mut *txn, task.id(), claim_token)
+            .complete(&mut txn, task.id(), claim_token)
             .await
             .map_err(|e| StageError::Database {
                 stage: STAGE_EXTRACTION.into(),
@@ -547,6 +553,7 @@ impl Worker {
     }
 
     /// Records token usage for a completed stage.
+    #[allow(clippy::unused_self)]
     fn record_token_usage(&self, _usages: &[Usage]) {
         // Implemented by ticket 4.6
     }
