@@ -69,9 +69,8 @@ pub struct Worker {
     #[allow(dead_code)]
     relation_key: ProviderKey,
     cancellation_token: CancellationToken,
-    pub(crate) config: WorkerConfig,
+    config: WorkerConfig,
     instance_id: String,
-    #[allow(dead_code)]
     job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
     /// Current number of in-flight tasks.
     active_tasks: Arc<AtomicUsize>,
@@ -81,6 +80,9 @@ pub struct Worker {
 
 impl Worker {
     /// Creates a new worker with all dependencies injected.
+    ///
+    /// The `job_state_txs` map is shared with MCP handlers so they
+    /// can subscribe to job status changes via `watch` channels.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: PgPool,
@@ -96,6 +98,7 @@ impl Worker {
         cancellation_token: CancellationToken,
         config: WorkerConfig,
         instance_id: String,
+        job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
     ) -> Self {
         Self {
             pool,
@@ -111,10 +114,16 @@ impl Worker {
             cancellation_token,
             config,
             instance_id,
-            job_state_txs: Arc::new(DashMap::new()),
+            job_state_txs,
             active_tasks: Arc::new(AtomicUsize::new(0)),
             peak_concurrent: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Returns a reference to the worker configuration.
+    #[must_use]
+    pub fn config(&self) -> &WorkerConfig {
+        &self.config
     }
 
     /// Returns the high-water mark of simultaneously in-flight tasks
@@ -131,7 +140,7 @@ impl Worker {
     ///
     /// Returns [`WorkerError`] on database failures.
     #[allow(clippy::unused_async)]
-    pub async fn startup_reclaim(&self) -> Result<u64, WorkerError> {
+    pub async fn startup_reclaim(&self) -> Result<u32, WorkerError> {
         // Implemented by ticket 4.2
         Ok(0)
     }
@@ -143,6 +152,9 @@ impl Worker {
     /// onto a Tokio task guarded by a semaphore permit.  If a claim cycle
     /// fails, the poll interval doubles (capped at 60 s) as a transient-
     /// failure backoff; it resets on the next successful claim.
+    ///
+    /// On cancellation, the loop stops claiming new tasks and drains all
+    /// in-flight tasks before returning.
     ///
     /// # Panics
     ///
@@ -157,11 +169,13 @@ impl Worker {
     pub async fn run(self: &Arc<Self>) -> Result<(), WorkerError> {
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_tasks));
         let mut poll_interval = self.config.poll_interval();
+        let mut in_flight = tokio::task::JoinSet::new();
 
         loop {
             tokio::select! {
                 () = self.cancellation_token.cancelled() => {
-                    tracing::info!(instance_id = %self.instance_id, "worker cancelled");
+                    tracing::info!(instance_id = %self.instance_id, "worker cancelled, draining in-flight tasks");
+                    while in_flight.join_next().await.is_some() {}
                     return Err(WorkerError::Cancelled);
                 }
                 () = tokio::time::sleep(poll_interval) => {}
@@ -198,7 +212,7 @@ impl Worker {
                             .await
                             .expect(SEMAPHORE_CLOSED);
                         let worker = Arc::clone(self);
-                        tokio::spawn(async move {
+                        in_flight.spawn(async move {
                             worker.run_task(task).await;
                             drop(permit);
                         });
@@ -206,9 +220,7 @@ impl Worker {
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "claim cycle failed, backing off");
-                    let doubled = poll_interval.as_secs().saturating_mul(2);
-                    let capped = doubled.min(MAX_CLAIM_BACKOFF_SECS);
-                    poll_interval = std::time::Duration::from_secs(capped.max(1));
+                    poll_interval = next_claim_backoff(poll_interval);
                 }
             }
         }
@@ -230,6 +242,11 @@ impl Worker {
     async fn run_task(&self, task: Task) {
         let active = self.active_tasks.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak_concurrent.fetch_max(active, Ordering::SeqCst);
+
+        // Cooperative yield so other spawned tasks can increment their
+        // counters before this task proceeds.  Ensures peak_concurrent
+        // captures true concurrency regardless of internal yield points.
+        tokio::task::yield_now().await;
 
         self.run_task_inner(task).await;
 
@@ -376,7 +393,7 @@ impl Worker {
             }
         };
 
-        let fail_result = PgTaskRepository
+        let rows_affected = match PgTaskRepository
             .fail(
                 &mut txn,
                 task.id(),
@@ -386,10 +403,17 @@ impl Worker {
                 error_kind,
                 &error_message,
             )
-            .await;
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(error = %e, task_id = %task.id(), "failed to fail task");
+                return;
+            }
+        };
 
-        if let Err(e) = fail_result {
-            tracing::error!(error = %e, task_id = %task.id(), "failed to fail task");
+        if rows_affected == 0 {
+            tracing::warn!(task_id = %task.id(), "ownership lost during failure handling");
             return;
         }
 
@@ -596,6 +620,14 @@ fn clamp_to_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
+/// Computes the next claim-cycle backoff by doubling the current poll
+/// interval, capping at [`MAX_CLAIM_BACKOFF_SECS`], and flooring at 1 s.
+fn next_claim_backoff(current: std::time::Duration) -> std::time::Duration {
+    let doubled = current.as_secs().saturating_mul(2);
+    let capped = doubled.min(MAX_CLAIM_BACKOFF_SECS);
+    std::time::Duration::from_secs(capped.max(1))
+}
+
 /// Maps a task type to the corresponding in-progress job status.
 fn job_status_for_task_type(task_type: TaskType) -> JobStatus {
     match task_type {
@@ -622,6 +654,37 @@ mod tests {
     #[test]
     fn test_clamp_to_u32_saturates() {
         assert_eq!(clamp_to_u32(usize::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn test_claim_backoff_doubles_and_caps() {
+        let one_sec = std::time::Duration::from_secs(1);
+        let two_sec = std::time::Duration::from_secs(2);
+
+        // Doubles from initial poll interval.
+        assert_eq!(next_claim_backoff(one_sec), two_sec);
+        assert_eq!(
+            next_claim_backoff(two_sec),
+            std::time::Duration::from_secs(4)
+        );
+
+        // Caps at MAX_CLAIM_BACKOFF_SECS.
+        let near_cap = std::time::Duration::from_secs(MAX_CLAIM_BACKOFF_SECS - 1);
+        assert_eq!(
+            next_claim_backoff(near_cap),
+            std::time::Duration::from_secs(MAX_CLAIM_BACKOFF_SECS),
+        );
+
+        // Already at cap stays at cap.
+        let at_cap = std::time::Duration::from_secs(MAX_CLAIM_BACKOFF_SECS);
+        assert_eq!(
+            next_claim_backoff(at_cap),
+            std::time::Duration::from_secs(MAX_CLAIM_BACKOFF_SECS),
+        );
+
+        // Zero-second interval floors at 1 s (not 0).
+        let zero = std::time::Duration::from_secs(0);
+        assert_eq!(next_claim_backoff(zero), one_sec);
     }
 
     #[test]
