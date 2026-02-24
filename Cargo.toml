@@ -60,6 +60,12 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 # URL parsing
 url = "2"
 
+# Cancellation and utilities
+tokio-util = "0.7"
+
+# Concurrent maps
+dashmap = "6"
+
 # Async traits
 async-trait = "0.1"
 
