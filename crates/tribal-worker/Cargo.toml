@@ -10,3 +10,17 @@ publish.workspace = true
 tribal-domain.workspace = true
 tribal-db.workspace = true
 tribal-inference.workspace = true
+
+tokio = { workspace = true }
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+
+[dev-dependencies]
+tribal-test-utils.workspace = true
