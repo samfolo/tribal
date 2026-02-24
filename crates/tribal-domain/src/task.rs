@@ -58,6 +58,8 @@ pub enum TaskErrorKind {
     OwnershipLost,
     /// Task exceeded `task_timeout_seconds`.
     Timeout,
+    /// Database error during stage execution.
+    DatabaseError,
 }
 
 enum_text_conversions!(TaskType {
@@ -81,6 +83,7 @@ enum_text_conversions!(TaskErrorKind {
     TaskErrorKind::StartupReclaim => "startup_reclaim",
     TaskErrorKind::OwnershipLost => "ownership_lost",
     TaskErrorKind::Timeout => "timeout",
+    TaskErrorKind::DatabaseError => "database_error",
 });
 
 /// A task in the ingest pipeline.
@@ -238,6 +241,7 @@ mod tests {
         TaskErrorKind::StartupReclaim => "startup_reclaim",
         TaskErrorKind::OwnershipLost => "ownership_lost",
         TaskErrorKind::Timeout => "timeout",
+        TaskErrorKind::DatabaseError => "database_error",
     });
 
     enum_text_tests!(test_task_type_text_roundtrip, TaskType {
@@ -261,5 +265,6 @@ mod tests {
         TaskErrorKind::StartupReclaim => "startup_reclaim",
         TaskErrorKind::OwnershipLost => "ownership_lost",
         TaskErrorKind::Timeout => "timeout",
+        TaskErrorKind::DatabaseError => "database_error",
     });
 }
