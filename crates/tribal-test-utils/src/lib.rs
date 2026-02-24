@@ -12,7 +12,7 @@ mod mock_inference;
 mod seeding;
 mod text;
 
-pub use db::{TestContext, TestTransaction, test_context};
+pub use db::{TestContext, TestTransaction, serial_lock, test_context};
 pub use error::TestDbError;
 pub use factories::*;
 pub use mock_inference::*;

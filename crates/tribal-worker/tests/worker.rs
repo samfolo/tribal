@@ -1,8 +1,16 @@
 //! Integration tests for the worker poll-claim-dispatch loop.
 //!
-//! Each test seeds data via committed transactions on the shared pool,
+//! Each test seeds data via committed raw connections (not pooled),
 //! constructs a [`Worker`] with mock providers (whose stubs always
 //! fail), runs the worker briefly, then asserts on task and job state.
+//!
+//! Tests are serialised via [`serial_lock`] because all workers claim
+//! from the same `tasks` table — parallel execution causes cross-test
+//! interference.
+//!
+//! Seeding and assertion queries use [`TestContext::raw_connection`]
+//! rather than pool connections to avoid the `PoolConnection::drop`
+//! spawn issue that leaks connections across serialised tests.
 
 use std::sync::Arc;
 
@@ -19,8 +27,8 @@ use tribal_domain::{
 };
 use tribal_inference::{ProviderKey, ProviderLimits, ProviderRegistry, RequestClass};
 use tribal_test_utils::{
-    MockEmbeddingProvider, MockInferenceProvider, a_new_job, a_new_principal, a_new_project,
-    a_new_task, test_context,
+    MockEmbeddingProvider, MockInferenceProvider, TestContext, a_new_job, a_new_principal,
+    a_new_project, a_new_task, serial_lock, test_context,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -34,15 +42,26 @@ const WORKER_INSTANCE: &str = "test-worker";
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Opens a raw (non-pooled) connection to the test database.
+///
+/// # Panics
+///
+/// Panics if the connection cannot be established.
+async fn raw_conn(ctx: &TestContext) -> sqlx::PgConnection {
+    ctx.raw_connection().await.expect("raw connection")
+}
+
 /// Inserts a principal, project, and prompt_version, returning the IDs
 /// needed to create a job.
 async fn setup_prerequisites(
-    conn: &mut sqlx::PgConnection,
+    ctx: &TestContext,
     suffix: &str,
 ) -> (PrincipalId, ProjectId, PromptVersionId) {
+    let mut conn = raw_conn(ctx).await;
+
     let principal = PgPrincipalRepository
         .insert(
-            conn,
+            &mut conn,
             &a_new_principal()
                 .principal_key(format!("user:worker-test-{suffix}"))
                 .build(),
@@ -52,7 +71,7 @@ async fn setup_prerequisites(
 
     let project = PgProjectRepository
         .insert(
-            conn,
+            &mut conn,
             &a_new_project()
                 .git_remote(format!("git@github.com:test/worker-{suffix}.git"))
                 .build(),
@@ -66,7 +85,7 @@ async fn setup_prerequisites(
          VALUES ('extraction', $1, 'test prompt') RETURNING id",
     )
     .bind(&content_hash)
-    .fetch_one(&mut *conn)
+    .fetch_one(&mut conn)
     .await
     .expect("insert prompt_version");
 
@@ -151,16 +170,14 @@ fn test_config() -> WorkerConfig {
 /// `available_at`.
 #[tokio::test]
 async fn test_retry_path_increments_retry_count() {
+    let _guard = serial_lock().await;
     let ctx = test_context().await;
     let pool = ctx.pool().clone();
 
-    let (principal_id, project_id, pv_id) = {
-        let mut conn = pool.acquire().await.expect("acquire");
-        setup_prerequisites(&mut conn, "retry").await
-    };
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "retry").await;
 
     let (job_id, task_id) = {
-        let mut conn = pool.acquire().await.expect("acquire");
+        let mut conn = raw_conn(ctx).await;
         let job = PgJobRepository
             .insert(
                 &mut conn,
@@ -188,21 +205,18 @@ async fn test_retry_path_increments_retry_count() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), test_config());
+    let worker = build_test_worker(pool, token.clone(), test_config());
 
-    // Run the worker for long enough to claim and fail the task.
     let worker_handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
     };
 
-    // Wait for the worker to process the task, then cancel.
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     token.cancel();
     let _ = worker_handle.await;
 
-    // Assert: the task should be re-queued with retry_count = 1.
-    let mut conn = pool.acquire().await.expect("acquire");
+    let mut conn = raw_conn(ctx).await;
     let task = PgTaskRepository
         .find_by_id(&mut conn, task_id)
         .await
@@ -228,7 +242,6 @@ async fn test_retry_path_increments_retry_count() {
         "available_at should be in the future (backoff)",
     );
 
-    // The job should still exist (not failed, since retries remain).
     let job = PgJobRepository
         .find_by_id(&mut conn, job_id)
         .await
@@ -244,17 +257,15 @@ async fn test_retry_path_increments_retry_count() {
 /// parent job transitions to Failed with a Failure outcome.
 #[tokio::test]
 async fn test_dead_letter_path_transitions_task_and_job() {
+    let _guard = serial_lock().await;
     let ctx = test_context().await;
     let pool = ctx.pool().clone();
     let config = test_config();
 
-    let (principal_id, project_id, pv_id) = {
-        let mut conn = pool.acquire().await.expect("acquire");
-        setup_prerequisites(&mut conn, "dead-letter").await
-    };
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "dead-letter").await;
 
     let (job_id, task_id) = {
-        let mut conn = pool.acquire().await.expect("acquire");
+        let mut conn = raw_conn(ctx).await;
         let job = PgJobRepository
             .insert(
                 &mut conn,
@@ -284,7 +295,7 @@ async fn test_dead_letter_path_transitions_task_and_job() {
         sqlx::query("UPDATE tasks SET retry_count = $1 WHERE id = $2")
             .bind(i32::try_from(config.task_max_retries).unwrap())
             .bind(task.id().inner())
-            .execute(&mut *conn)
+            .execute(&mut conn)
             .await
             .expect("set retry_count");
 
@@ -292,7 +303,7 @@ async fn test_dead_letter_path_transitions_task_and_job() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), config);
+    let worker = build_test_worker(pool, token.clone(), config);
 
     let worker_handle = {
         let w = Arc::clone(&worker);
@@ -303,7 +314,7 @@ async fn test_dead_letter_path_transitions_task_and_job() {
     token.cancel();
     let _ = worker_handle.await;
 
-    let mut conn = pool.acquire().await.expect("acquire");
+    let mut conn = raw_conn(ctx).await;
 
     let task = PgTaskRepository
         .find_by_id(&mut conn, task_id)
@@ -347,6 +358,7 @@ async fn test_dead_letter_path_transitions_task_and_job() {
 /// `Worker`.
 #[tokio::test]
 async fn test_concurrency_limit_respected() {
+    let _guard = serial_lock().await;
     let ctx = test_context().await;
     let pool = ctx.pool().clone();
     let max_concurrent = 2_usize;
@@ -363,15 +375,12 @@ async fn test_concurrency_limit_respected() {
         include_llm_content: false,
     };
 
-    let (principal_id, project_id, pv_id) = {
-        let mut conn = pool.acquire().await.expect("acquire");
-        setup_prerequisites(&mut conn, "concurrency").await
-    };
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "concurrency").await;
 
     // Seed more tasks than max_concurrent.
     let task_count = max_concurrent + 2;
     {
-        let mut conn = pool.acquire().await.expect("acquire");
+        let mut conn = raw_conn(ctx).await;
         for i in 0..task_count {
             let job = PgJobRepository
                 .insert(
@@ -401,7 +410,7 @@ async fn test_concurrency_limit_respected() {
     }
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), config);
+    let worker = build_test_worker(pool, token.clone(), config);
 
     let worker_handle = {
         let w = Arc::clone(&worker);

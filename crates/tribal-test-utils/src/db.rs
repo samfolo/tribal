@@ -146,6 +146,26 @@ impl TestContext {
         &self.pool
     }
 
+    /// Opens a raw (non-pooled) connection to the test database.
+    ///
+    /// Unlike pool connections, raw `PgConnection` drops synchronously
+    /// (TCP socket close), avoiding the `PoolConnection::drop` spawn
+    /// issue that leaks connections under `#[tokio::test]`.
+    ///
+    /// Statements execute with auto-commit (no wrapping transaction).
+    /// Use this when tests need committed data visible to other pool
+    /// connections (e.g. worker integration tests).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestDbError::TransactionBegin`] if the connection
+    /// cannot be established.
+    pub async fn raw_connection(&self) -> Result<PgConnection, TestDbError> {
+        PgConnection::connect(&self.database_url)
+            .await
+            .map_err(|source| TestDbError::TransactionBegin { source })
+    }
+
     /// Begins a new test transaction.
     ///
     /// Opens a raw connection to the test database and sends `BEGIN`.
@@ -208,6 +228,21 @@ impl DerefMut for TestTransaction {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.conn
     }
+}
+
+/// Serialisation lock for tests that commit data to the shared database.
+///
+/// [`TestTransaction`]-based tests are isolated via rollback and can run
+/// in parallel.  Tests that commit data (e.g. worker integration tests
+/// whose spawned tasks acquire their own pool connections) share mutable
+/// state in the `tasks` table and must run serially.
+///
+/// Hold the returned guard for the entire test.  Uses
+/// [`tokio::sync::Mutex`] so the guard is `Send` and can be held
+/// across `.await` points without triggering `clippy::await_holding_lock`.
+pub async fn serial_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
 }
 
 /// Global test context, initialised once per test binary.
