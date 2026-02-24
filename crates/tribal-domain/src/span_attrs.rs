@@ -105,7 +105,7 @@ pub const BATCH_INDEX: &str = "tribal.batch_index";
 /// Span field name for the triage batch size (number of candidates).
 pub const BATCH_SIZE: &str = "tribal.batch_size";
 
-/// Span field name for the original candidate count before deduplication.
+/// Span field name for the original extraction candidate count (pre-cap).
 pub const EXTRACTION_ORIGINAL_COUNT: &str = "tribal.extraction.original_count";
 
 /// Span field name for the triage stage outcome classification.

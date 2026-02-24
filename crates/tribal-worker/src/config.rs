@@ -65,7 +65,7 @@ pub struct WorkerConfig {
     #[serde(default = "default_triage_search_limit")]
     pub triage_search_limit: u32,
 
-    /// Whether to include raw LLM content in persisted results.
+    /// Whether to include raw LLM content in debug log output.
     #[serde(default)]
     pub include_llm_content: bool,
 }

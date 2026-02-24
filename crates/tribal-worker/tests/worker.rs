@@ -6,14 +6,16 @@
 
 use std::sync::Arc;
 
+use dashmap::DashMap;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
     JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository, PgTaskRepository,
     PrincipalRepository, ProjectRepository, TaskRepository,
 };
 use tribal_domain::{
-    JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId, TaskErrorKind, TaskStatus,
-    TaskType,
+    JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId, TaskErrorKind,
+    TaskStatus, TaskType,
 };
 use tribal_inference::{ProviderKey, ProviderLimits, ProviderRegistry, RequestClass};
 use tribal_test_utils::{
@@ -105,6 +107,8 @@ fn build_test_worker(
         .expect("valid registry"),
     );
 
+    let job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>> = Arc::new(DashMap::new());
+
     Arc::new(Worker::new(
         pool,
         registry,
@@ -119,6 +123,7 @@ fn build_test_worker(
         cancellation_token,
         config,
         WORKER_INSTANCE.to_owned(),
+        job_state_txs,
     ))
 }
 

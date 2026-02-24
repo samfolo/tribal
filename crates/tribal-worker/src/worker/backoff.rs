@@ -16,8 +16,29 @@ const BACKOFF_CAP_SECS: u64 = 60;
 /// Fractional jitter range applied to the base backoff.  A value of
 /// `0.2` means ±20%, so the final duration falls within
 /// `[base * 0.8, base * 1.2]`.
-#[cfg(test)]
+///
+/// Must be kept consistent with [`JITTER_DIVISOR`] (enforced by a
+/// compile-time assertion below).
 pub(crate) const JITTER_FRACTION: f64 = 0.2;
+
+/// Integer divisor for the jitter range: `base_secs / JITTER_DIVISOR`
+/// yields the jitter range.  Must equal `1 / JITTER_FRACTION` (i.e. 5
+/// for a 20% jitter).  Used in [`backoff_duration`] to avoid floating-
+/// point arithmetic in the hot path.
+const JITTER_DIVISOR: u64 = 5;
+
+// Compile-time check that JITTER_DIVISOR == 1 / JITTER_FRACTION.
+// Values are small exact constants so float comparison is safe here.
+#[allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+const _: () = assert!(
+    JITTER_DIVISOR as f64 * JITTER_FRACTION == 1.0,
+    "JITTER_DIVISOR must equal 1 / JITTER_FRACTION",
+);
 
 /// LCG multiplier from Knuth's MMIX linear congruential generator.
 /// Used by [`deterministic_jitter`] to produce a hash from the retry
@@ -38,7 +59,7 @@ const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
 /// happened, starting at 1 for the first failure).
 pub(crate) fn backoff_duration(retry_count: u32) -> chrono::Duration {
     let base_secs = 2u64.saturating_pow(retry_count).min(BACKOFF_CAP_SECS);
-    let jitter_range = base_secs / 5;
+    let jitter_range = base_secs / JITTER_DIVISOR;
     // Safe: jitter_range ≤ 12 (60 / 5), base_secs ≤ 60; both fit in i64.
     #[allow(clippy::cast_possible_wrap)]
     let jitter = if jitter_range > 0 {
