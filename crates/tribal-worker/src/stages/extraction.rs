@@ -1,12 +1,9 @@
 //! Extraction stage: LLM-based candidate extraction from raw input.
 
-use tribal_db::NewExtractionResult;
-use tribal_db::NewTask;
-use tribal_inference::InferenceError;
-use tribal_inference::Usage;
+use tribal_db::{NewExtractionResult, NewTask};
+use tribal_inference::{InferenceError, Usage};
 
-use crate::error::StageError;
-use crate::worker::Worker;
+use crate::{error::StageError, worker::Worker};
 
 // ---------------------------------------------------------------------------
 // StageOutput
@@ -51,6 +48,7 @@ impl Worker {
     /// # Errors
     ///
     /// Returns [`StageError::Provider`] — stub always fails.
+    #[allow(clippy::unused_async)]
     pub(crate) async fn run_extraction(
         &self,
         _job: &tribal_domain::Job,

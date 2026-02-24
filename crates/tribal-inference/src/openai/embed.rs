@@ -221,7 +221,8 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
                 })?;
 
             let embeddings: Vec<Vec<f32>> = parsed.data.into_iter().map(|d| d.embedding).collect();
-            let vector = validate_embeddings(embeddings, self.expected_dimensions, &self.identity.model)?;
+            let vector =
+                validate_embeddings(embeddings, self.expected_dimensions, &self.identity.model)?;
 
             let total_tokens = parsed.usage.total_tokens;
             let latency_ms = latency_ms(latency);

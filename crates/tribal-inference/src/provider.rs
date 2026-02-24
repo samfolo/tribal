@@ -131,9 +131,11 @@ mod tests {
     /// time by constructing trait objects from stub implementations.
     #[test]
     fn test_traits_are_object_safe() {
-        let _inference: Arc<dyn InferenceProvider> =
-            Arc::new(StubInferenceProvider { identity: stub_identity() });
-        let _embedding: Arc<dyn EmbeddingProvider> =
-            Arc::new(StubEmbeddingProvider { identity: stub_identity() });
+        let _inference: Arc<dyn InferenceProvider> = Arc::new(StubInferenceProvider {
+            identity: stub_identity(),
+        });
+        let _embedding: Arc<dyn EmbeddingProvider> = Arc::new(StubEmbeddingProvider {
+            identity: stub_identity(),
+        });
     }
 }
