@@ -12,6 +12,7 @@ use tribal_domain::{EmbeddingPurpose, span_attrs};
 
 use crate::{
     EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage, InferenceError,
+    ProviderIdentity,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
     http::{latency_ms, normalise_base_url},
     validation::validate_embeddings,
@@ -62,7 +63,7 @@ struct OllamaEmbedResponse {
 pub struct OllamaEmbeddingProvider {
     client: reqwest::Client,
     base_url: String,
-    model: String,
+    identity: ProviderIdentity,
     expected_dimensions: u32,
 }
 
@@ -77,7 +78,10 @@ impl OllamaEmbeddingProvider {
         Self {
             client,
             base_url: normalise_base_url(base_url),
-            model: model.into(),
+            identity: ProviderIdentity {
+                name: PROVIDER_NAME.to_owned(),
+                model: model.into(),
+            },
             expected_dimensions,
         }
     }
@@ -98,11 +102,11 @@ impl OllamaEmbeddingProvider {
         let span = tracing::info_span!(
             "tribal.embedding.probe",
             { span_attrs::EMBEDDING_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::EMBEDDING_MODEL } = %self.model,
+            { span_attrs::EMBEDDING_MODEL } = %self.identity.model,
         );
 
         async {
-            super::tags::check_tags(&self.client, &self.base_url, &self.model).await;
+            super::tags::check_tags(&self.client, &self.base_url, &self.identity.model).await;
 
             let request = EmbeddingRequest {
                 input: PROBE_INPUT.to_owned(),
@@ -113,7 +117,7 @@ impl OllamaEmbeddingProvider {
             tracing::info!(
                 dimensions = self.expected_dimensions,
                 "model {} probe succeeded",
-                self.model,
+                self.identity.model,
             );
             Ok(())
         }
@@ -128,10 +132,14 @@ impl OllamaEmbeddingProvider {
 
 #[async_trait]
 impl EmbeddingProvider for OllamaEmbeddingProvider {
+    fn identity(&self) -> &ProviderIdentity {
+        &self.identity
+    }
+
     async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, InferenceError> {
         if request.input.is_empty() {
             return Err(InferenceError::EmbeddingFailed {
-                model: self.model.clone(),
+                model: self.identity.model.clone(),
                 context: "input text is empty".to_owned(),
                 source: None,
             });
@@ -140,7 +148,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
         let span = tracing::info_span!(
             "tribal.embedding.generate",
             { span_attrs::EMBEDDING_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::EMBEDDING_MODEL } = %self.model,
+            { span_attrs::EMBEDDING_MODEL } = %self.identity.model,
             { span_attrs::EMBEDDING_PURPOSE } = %request.purpose,
             { span_attrs::EMBEDDING_TOKENS } = tracing::field::Empty,
             { span_attrs::EMBEDDING_DIMENSIONS } = tracing::field::Empty,
@@ -151,7 +159,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
             let started = Instant::now();
             let url = format!("{}{EMBED_PATH}", self.base_url);
             let body = OllamaEmbedRequest {
-                model: &self.model,
+                model: &self.identity.model,
                 input: &request.input,
                 truncate: true,
             };
@@ -179,7 +187,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                     PROVIDER_NAME,
                     &[],
                     |ctx| InferenceError::EmbeddingFailed {
-                        model: self.model.clone(),
+                        model: self.identity.model.clone(),
                         context: ctx,
                         source: None,
                     },
@@ -198,8 +206,11 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                 tracing::debug!(load_duration_ms = load_ns / 1_000_000, "provider timing");
             }
 
-            let vector =
-                validate_embeddings(parsed.embeddings, self.expected_dimensions, &self.model)?;
+            let vector = validate_embeddings(
+                parsed.embeddings,
+                self.expected_dimensions,
+                &self.identity.model,
+            )?;
 
             let total_tokens = parsed.prompt_eval_count.unwrap_or_else(|| {
                 tracing::debug!("prompt_eval_count absent, defaulting to 0");
@@ -224,7 +235,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
                 vector,
                 usage: EmbeddingUsage {
                     provider: PROVIDER_NAME.to_owned(),
-                    model: self.model.clone(),
+                    model: self.identity.model.clone(),
                     total_tokens,
                     latency,
                 },
