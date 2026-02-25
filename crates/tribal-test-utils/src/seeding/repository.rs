@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use sqlx::PgConnection;
 use tribal_domain::{
     ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationId,
+    TaskId,
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,14 @@ pub(crate) trait SeedRepository {
         ts: chrono::DateTime<chrono::Utc>,
     );
 
+    /// Backdates a task's `heartbeat_at` by the given duration.
+    async fn backdate_task_heartbeat(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        duration: std::time::Duration,
+    );
+
     /// Creates commitment scaffolding for a relation batch: a
     /// `prompt_version` row and a completed `job` row with
     /// `committed_batch_id = batch_id`.
@@ -160,6 +169,23 @@ impl SeedRepository for PgSeedRepository {
             .expect("seed: backdate relations");
     }
 
+    async fn backdate_task_heartbeat(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        duration: std::time::Duration,
+    ) {
+        let secs = duration.as_secs_f64();
+        sqlx::query(
+            "UPDATE tasks SET heartbeat_at = now() - make_interval(secs => $1) WHERE id = $2",
+        )
+        .bind(secs)
+        .bind(id.inner())
+        .execute(&mut *conn)
+        .await
+        .expect("seed: backdate task heartbeat");
+    }
+
     async fn commit_relation_batch(
         &self,
         conn: &mut PgConnection,
@@ -204,6 +230,20 @@ impl SeedRepository for PgSeedRepository {
 // ---------------------------------------------------------------------------
 // Public helper
 // ---------------------------------------------------------------------------
+
+/// Backdates a task's `heartbeat_at` by the given duration.
+///
+/// Intended for simulating stale heartbeats in tests that exercise
+/// the reclaim sweep and startup reclaim paths.
+pub async fn backdate_task_heartbeat(
+    conn: &mut PgConnection,
+    id: TaskId,
+    duration: std::time::Duration,
+) {
+    PgSeedRepository
+        .backdate_task_heartbeat(conn, id, duration)
+        .await;
+}
 
 /// Creates commitment scaffolding for a relation batch: a
 /// `prompt_version` row and a completed `job` row with
