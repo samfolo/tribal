@@ -504,15 +504,13 @@ async fn insert_task_with_status(
     task_type: &str,
     status: &str,
 ) {
-    sqlx::query(
-        "INSERT INTO tasks (job_id, task_type, status) VALUES ($1, $2, $3)",
-    )
-    .bind(job_id.inner())
-    .bind(task_type)
-    .bind(status)
-    .execute(&mut *txn)
-    .await
-    .expect("insert task");
+    sqlx::query("INSERT INTO tasks (job_id, task_type, status) VALUES ($1, $2, $3)")
+        .bind(job_id.inner())
+        .bind(task_type)
+        .bind(status)
+        .execute(&mut *txn)
+        .await
+        .expect("insert task");
 }
 
 #[tokio::test]
