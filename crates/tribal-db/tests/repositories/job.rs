@@ -1,5 +1,4 @@
 use chrono::{SubsecRound, Utc};
-use sqlx::Row;
 use tribal_db::{
     DbError, JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
     PrincipalRepository, ProjectRepository,

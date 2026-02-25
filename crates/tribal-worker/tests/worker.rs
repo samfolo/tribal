@@ -28,7 +28,7 @@ use tribal_domain::{
 use tribal_inference::{ProviderKey, ProviderLimits, ProviderRegistry, RequestClass};
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, TestContext, a_new_job, a_new_principal,
-    a_new_project, a_new_task, serial_lock, test_context,
+    a_new_project, a_new_task, backdate_task_heartbeat, serial_lock, test_context,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -452,6 +452,310 @@ async fn test_concurrency_limit_respected() {
     // Verify at least one task was dispatched (otherwise the assertion
     // above is vacuously true).
     assert!(peak > 0, "worker should have processed at least one task");
+
+    teardown(ctx).await;
+}
+
+/// Verifies that the reclaim sweep requeues a task whose heartbeat
+/// has expired and increments its retry count.
+#[tokio::test]
+async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "reclaim-requeue").await;
+
+    let task_id = {
+        let mut conn = raw_conn(ctx).await;
+        let job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_prompt_version_id(pv_id)
+                    .triage_prompt_version_id(pv_id)
+                    .relation_prompt_version_id(pv_id)
+                    .build(),
+            )
+            .await
+            .expect("insert job");
+        let task = PgTaskRepository
+            .insert(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job.id())
+                    .task_type(TaskType::Extraction)
+                    .build(),
+            )
+            .await
+            .expect("insert task");
+
+        // Claim the task via the repository (simulating a previous
+        // worker instance) and immediately backdate the heartbeat
+        // beyond the task_timeout to trigger reclaim.
+        let claimed = PgTaskRepository
+            .claim(&mut conn, 1, "crashed-worker")
+            .await
+            .expect("claim");
+        assert_eq!(claimed.len(), 1);
+
+        backdate_task_heartbeat(
+            &mut conn,
+            task.id(),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
+
+        task.id()
+    };
+
+    let config = test_config();
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool, token.clone(), config);
+
+    let worker_handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    // Let the reclaim loop run (reclaim_interval = 1s in test config).
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    token.cancel();
+    let _ = worker_handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+    let task = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("find task");
+
+    assert_eq!(
+        task.status(),
+        TaskStatus::Queued,
+        "task should be requeued after reclaim",
+    );
+    assert_eq!(task.retry_count(), 1, "retry count should be incremented");
+    assert_eq!(
+        task.error_kind(),
+        Some(TaskErrorKind::HeartbeatExpired),
+        "error kind should be heartbeat_expired",
+    );
+    assert_eq!(
+        task.error_message(),
+        Some("heartbeat_expired"),
+        "error message should be heartbeat_expired",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies that the reclaim sweep dead-letters a task whose retry
+/// budget is exhausted and transitions the parent job to Failed.
+#[tokio::test]
+async fn test_reclaim_sweep_dead_letters_exhausted_task() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let config = test_config();
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "reclaim-dead-letter").await;
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        let job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_prompt_version_id(pv_id)
+                    .triage_prompt_version_id(pv_id)
+                    .relation_prompt_version_id(pv_id)
+                    .build(),
+            )
+            .await
+            .expect("insert job");
+        let task = PgTaskRepository
+            .insert(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job.id())
+                    .task_type(TaskType::Extraction)
+                    .build(),
+            )
+            .await
+            .expect("insert task");
+
+        // Pre-set retry_count to max_retries so reclaim triggers
+        // dead-lettering.
+        sqlx::query("UPDATE tasks SET retry_count = $1 WHERE id = $2")
+            .bind(i32::try_from(config.task_max_retries).unwrap())
+            .bind(task.id().inner())
+            .execute(&mut conn)
+            .await
+            .expect("set retry_count");
+
+        // Claim and backdate heartbeat.
+        let claimed = PgTaskRepository
+            .claim(&mut conn, 1, "crashed-worker")
+            .await
+            .expect("claim");
+        assert_eq!(claimed.len(), 1);
+
+        backdate_task_heartbeat(
+            &mut conn,
+            task.id(),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
+
+        (job.id(), task.id())
+    };
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool, token.clone(), config);
+
+    let worker_handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    token.cancel();
+    let _ = worker_handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+
+    let task = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("find task");
+
+    assert_eq!(
+        task.status(),
+        TaskStatus::DeadLetter,
+        "task should be dead-lettered",
+    );
+    assert_eq!(
+        task.error_kind(),
+        Some(TaskErrorKind::HeartbeatExpired),
+        "error kind should be heartbeat_expired",
+    );
+    assert_eq!(
+        task.error_message(),
+        Some("heartbeat_expired"),
+        "error message should be heartbeat_expired",
+    );
+
+    // The reclaim loop should have transitioned the parent job to
+    // Failed via fail_stale_dead_lettered_jobs.
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+
+    assert_eq!(job.status(), JobStatus::Failed, "job should be failed");
+    assert_eq!(
+        job.outcome(),
+        Some(JobOutcome::Failure),
+        "job outcome should be Failure",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies that `startup_reclaim` recovers an orphaned task left
+/// by a crashed worker instance.
+#[tokio::test]
+async fn test_startup_reclaim_recovers_orphaned_task() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "startup-reclaim").await;
+
+    let task_id = {
+        let mut conn = raw_conn(ctx).await;
+        let job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_prompt_version_id(pv_id)
+                    .triage_prompt_version_id(pv_id)
+                    .relation_prompt_version_id(pv_id)
+                    .build(),
+            )
+            .await
+            .expect("insert job");
+        let task = PgTaskRepository
+            .insert(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job.id())
+                    .task_type(TaskType::Extraction)
+                    .build(),
+            )
+            .await
+            .expect("insert task");
+
+        // Claim and backdate heartbeat (simulating crash).
+        let claimed = PgTaskRepository
+            .claim(&mut conn, 1, "crashed-worker")
+            .await
+            .expect("claim");
+        assert_eq!(claimed.len(), 1);
+
+        backdate_task_heartbeat(
+            &mut conn,
+            task.id(),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
+
+        task.id()
+    };
+
+    let config = test_config();
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool, token.clone(), config);
+
+    // Call startup_reclaim directly — no worker loop needed.
+    let reclaimed = worker
+        .startup_reclaim()
+        .await
+        .expect("startup reclaim");
+
+    assert_eq!(reclaimed, 1, "should reclaim exactly one orphaned task");
+
+    let mut conn = raw_conn(ctx).await;
+    let task = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("find task");
+
+    assert_eq!(
+        task.status(),
+        TaskStatus::Queued,
+        "task should be requeued after startup reclaim",
+    );
+    assert_eq!(task.retry_count(), 1, "retry count should be incremented");
+    assert_eq!(
+        task.error_kind(),
+        Some(TaskErrorKind::StartupReclaim),
+        "error kind should be startup_reclaim",
+    );
+    assert_eq!(
+        task.error_message(),
+        Some("startup_reclaim"),
+        "error message should be startup_reclaim",
+    );
 
     teardown(ctx).await;
 }
