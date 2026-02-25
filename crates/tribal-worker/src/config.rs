@@ -109,6 +109,12 @@ impl WorkerConfig {
                 reason: "must be greater than zero",
             });
         }
+        if self.poll_interval_seconds == 0 {
+            return Err(ConfigError::InvalidField {
+                field: "poll_interval_seconds",
+                reason: "must be greater than zero",
+            });
+        }
         if self.task_timeout_seconds == 0 {
             return Err(ConfigError::InvalidField {
                 field: "task_timeout_seconds",
@@ -245,6 +251,16 @@ mod tests {
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("max_concurrent_tasks"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_poll_interval() {
+        let config = WorkerConfig {
+            poll_interval_seconds: 0,
+            ..WorkerConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("poll_interval_seconds"));
     }
 
     #[test]

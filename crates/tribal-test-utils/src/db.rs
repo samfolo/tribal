@@ -158,7 +158,7 @@ impl TestContext {
     ///
     /// # Errors
     ///
-    /// Returns [`TestDbError::TransactionBegin`] if the connection
+    /// Returns [`TestDbError::ConnectionFailed`] if the connection
     /// cannot be established.
     pub async fn raw_connection(&self) -> Result<PgConnection, TestDbError> {
         PgConnection::connect(&self.database_url)
