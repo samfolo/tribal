@@ -166,6 +166,30 @@ impl TestContext {
             .map_err(|source| TestDbError::TransactionBegin { source })
     }
 
+    /// Creates an independent connection pool to the test database.
+    ///
+    /// Each call creates a fresh pool with new TCP connections, isolated
+    /// from the shared [`pool`](Self::pool).  Use this in tests whose
+    /// code-under-test holds pool connections across spawned tasks —
+    /// a per-test pool avoids cross-test connection leaks caused by
+    /// `PoolConnection::drop` under `#[tokio::test]`'s `current_thread`
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestDbError::PoolCreation`] if the pool cannot connect.
+    pub async fn create_pool(&self) -> Result<PgPool, TestDbError> {
+        PgPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&self.database_url)
+            .await
+            .map_err(|source| TestDbError::PoolCreation {
+                context: "creating per-test pool".into(),
+                source,
+            })
+    }
+
     /// Begins a new test transaction.
     ///
     /// Opens a raw connection to the test database and sends `BEGIN`.
