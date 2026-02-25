@@ -694,7 +694,14 @@ async fn test_reclaim_stale_heartbeat_expired() {
         .expect("backdate heartbeat");
 
     let count = repo
-        .reclaim_stale(&mut txn, 30, 3, 10, TaskErrorKind::HeartbeatExpired)
+        .reclaim_stale(
+            &mut txn,
+            30,
+            3,
+            10,
+            TaskErrorKind::HeartbeatExpired,
+            "heartbeat lapsed",
+        )
         .await
         .expect("reclaim_stale");
 
@@ -708,7 +715,7 @@ async fn test_reclaim_stale_heartbeat_expired() {
     assert_eq!(found.status(), TaskStatus::Queued);
     assert_eq!(found.retry_count(), 1);
     assert_eq!(found.error_kind(), Some(TaskErrorKind::HeartbeatExpired));
-    assert_eq!(found.error_message(), Some("heartbeat_expired"));
+    assert_eq!(found.error_message(), Some("heartbeat lapsed"));
     assert!(found.claim_token().is_none());
     assert!(found.claimed_by().is_none());
     assert!(found.claimed_at().is_none());
@@ -748,7 +755,14 @@ async fn test_reclaim_stale_startup_reclaim() {
         .expect("backdate heartbeat");
 
     let count = repo
-        .reclaim_stale(&mut txn, 30, 3, 10, TaskErrorKind::StartupReclaim)
+        .reclaim_stale(
+            &mut txn,
+            30,
+            3,
+            10,
+            TaskErrorKind::StartupReclaim,
+            "reclaimed during startup",
+        )
         .await
         .expect("reclaim_stale");
 
@@ -762,7 +776,7 @@ async fn test_reclaim_stale_startup_reclaim() {
     assert_eq!(found.status(), TaskStatus::Queued);
     assert_eq!(found.retry_count(), 1);
     assert_eq!(found.error_kind(), Some(TaskErrorKind::StartupReclaim));
-    assert_eq!(found.error_message(), Some("startup_reclaim"));
+    assert_eq!(found.error_message(), Some("reclaimed during startup"));
     assert!(found.claim_token().is_none());
     assert!(found.claimed_by().is_none());
     assert!(found.claimed_at().is_none());
@@ -816,7 +830,14 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
         .available_at();
 
     let count = repo
-        .reclaim_stale(&mut txn, 30, 3, 10, TaskErrorKind::HeartbeatExpired)
+        .reclaim_stale(
+            &mut txn,
+            30,
+            3,
+            10,
+            TaskErrorKind::HeartbeatExpired,
+            "heartbeat lapsed",
+        )
         .await
         .expect("reclaim_stale");
 
@@ -830,7 +851,7 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
     assert_eq!(found.status(), TaskStatus::DeadLetter);
     assert_eq!(found.retry_count(), 4);
     assert_eq!(found.error_kind(), Some(TaskErrorKind::HeartbeatExpired));
-    assert_eq!(found.error_message(), Some("heartbeat_expired"));
+    assert_eq!(found.error_message(), Some("heartbeat lapsed"));
     assert!(found.claim_token().is_none());
     assert!(found.claimed_by().is_none());
     assert!(found.claimed_at().is_none());
