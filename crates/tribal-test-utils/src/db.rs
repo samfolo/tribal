@@ -163,7 +163,7 @@ impl TestContext {
     pub async fn raw_connection(&self) -> Result<PgConnection, TestDbError> {
         PgConnection::connect(&self.database_url)
             .await
-            .map_err(|source| TestDbError::TransactionBegin { source })
+            .map_err(|source| TestDbError::ConnectionFailed { source })
     }
 
     /// Creates an independent connection pool to the test database.

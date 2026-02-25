@@ -58,6 +58,14 @@ pub enum TestDbError {
         source: sqlx::Error,
     },
 
+    /// Failed to open a raw (non-pooled) connection.
+    #[error("failed to open raw connection")]
+    ConnectionFailed {
+        /// The underlying sqlx error.
+        #[source]
+        source: sqlx::Error,
+    },
+
     /// Failed to begin a test transaction.
     #[error("failed to begin test transaction")]
     TransactionBegin {
