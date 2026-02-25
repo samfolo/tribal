@@ -346,8 +346,25 @@ impl Worker {
         // claim-time status change.
         self.notify_job_state(job_id);
 
+        let Some(claim_token) = task.claim_token() else {
+            tracing::error!(task_id = %task.id(), "task has no claim token after claiming");
+            return;
+        };
+
+        let HeartbeatHandle {
+            mut ownership_lost_rx,
+            abort_handle,
+        } = spawn_heartbeat(
+            self.pool.clone(),
+            task.id(),
+            claim_token,
+            self.config.heartbeat_interval(),
+            self.cancellation_token.clone(),
+        );
+
         let stage_result = tokio::select! {
             () = self.cancellation_token.cancelled() => {
+                abort_handle.abort();
                 tracing::info!(task_id = %task.id(), "task cancelled mid-execution");
                 return;
             }
@@ -355,6 +372,9 @@ impl Worker {
                 Err(StageError::Timeout {
                     timeout_seconds: self.config.task_timeout_seconds,
                 })
+            }
+            Ok(()) = &mut ownership_lost_rx => {
+                Err(StageError::OwnershipLost)
             }
             result = self.dispatch_stage(&job, &task) => {
                 result
@@ -366,6 +386,7 @@ impl Worker {
                 self.record_token_usage(&job, &task, &output.usages).await;
 
                 if self.cancellation_token.is_cancelled() {
+                    abort_handle.abort();
                     tracing::info!(
                         task_id = %task.id(),
                         "cancellation detected after stage; skipping commit",
@@ -381,6 +402,8 @@ impl Worker {
                 self.handle_stage_failure(&task, &e).await;
             }
         }
+
+        abort_handle.abort();
     }
 
     /// Routes to the correct stage based on task type.
