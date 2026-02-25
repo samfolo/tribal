@@ -208,9 +208,15 @@ impl Worker {
         let mut poll_interval = self.config.poll_interval();
         let mut in_flight = tokio::task::JoinSet::new();
 
+        let reclaim_worker = Arc::clone(self);
+        let reclaim_handle = tokio::spawn(async move {
+            reclaim_worker.run_reclaim_loop().await;
+        });
+
         loop {
             tokio::select! {
                 () = self.cancellation_token.cancelled() => {
+                    reclaim_handle.abort();
                     tracing::info!(instance_id = %self.instance_id, "worker cancelled, draining in-flight tasks");
                     while in_flight.join_next().await.is_some() {}
                     return Err(WorkerError::Cancelled);
@@ -699,6 +705,83 @@ impl Worker {
     fn notify_job_state(&self, job_id: JobId) {
         if let Some(tx) = self.job_state_txs.get(&job_id) {
             let _ = tx.send(());
+        }
+    }
+
+    /// Runs the periodic reclaim sweep until cancellation.
+    ///
+    /// Sweeps for stale heartbeats every `reclaim_interval`, requeuing
+    /// or dead-lettering abandoned tasks.  When dead-lettered tasks are
+    /// found, transitions their parent jobs to `Failed` if appropriate.
+    async fn run_reclaim_loop(&self) {
+        let mut ticker = tokio::time::interval(self.config.reclaim_interval());
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await; // skip first immediate tick
+
+        let limit = clamp_to_u32(self.config.max_concurrent_tasks.saturating_mul(2));
+
+        loop {
+            tokio::select! {
+                () = self.cancellation_token.cancelled() => {
+                    return;
+                }
+                _ = ticker.tick() => {}
+            }
+
+            match run_reclaim_sweep(
+                &self.pool,
+                self.config.task_timeout(),
+                self.config.task_max_retries,
+                limit,
+            )
+            .await
+            {
+                Ok(stats) => {
+                    if stats.dead_lettered > 0 {
+                        tracing::warn!(
+                            requeued = stats.requeued,
+                            dead_lettered = stats.dead_lettered,
+                            "reclaim sweep dead-lettered tasks",
+                        );
+                    } else if stats.requeued > 0 {
+                        tracing::info!(
+                            requeued = stats.requeued,
+                            "reclaim sweep requeued stale tasks",
+                        );
+                    }
+
+                    if stats.dead_lettered > 0 {
+                        if let Ok(mut conn) = self.pool.acquire().await {
+                            match PgJobRepository
+                                .fail_stale_dead_lettered_jobs(&mut conn)
+                                .await
+                            {
+                                Ok(job_ids) => {
+                                    for job_id in &job_ids {
+                                        self.notify_job_state(*job_id);
+                                        self.job_state_txs.remove(job_id);
+                                    }
+                                    if !job_ids.is_empty() {
+                                        tracing::warn!(
+                                            count = job_ids.len(),
+                                            "transitioned stuck jobs to failed after reclaim",
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "failed to transition dead-lettered jobs",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "reclaim sweep failed");
+                }
+            }
         }
     }
 }
