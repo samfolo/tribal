@@ -208,6 +208,7 @@ pub trait TaskRepository {
         max_retries: u32,
         limit: u32,
         error_kind: TaskErrorKind,
+        error_message: &str,
     ) -> Result<u64, DbError>;
 }
 
@@ -439,6 +440,7 @@ impl TaskRepository for PgTaskRepository {
         max_retries: u32,
         limit: u32,
         error_kind: TaskErrorKind,
+        error_message: &str,
     ) -> Result<u64, DbError> {
         let timeout_f64 = f64::from(timeout_seconds);
         let max_retries_i32 = i32::try_from(max_retries).expect(MAX_RETRIES_EXCEEDS_I32);
@@ -473,7 +475,7 @@ impl TaskRepository for PgTaskRepository {
                  claimed_at = NULL, \
                  heartbeat_at = NULL, \
                  error_kind = $4, \
-                 error_message = $4, \
+                 error_message = $5, \
                  updated_at = now() \
              FROM stale s \
              WHERE t.id = s.id",
@@ -482,6 +484,7 @@ impl TaskRepository for PgTaskRepository {
         .bind(max_retries_i32)
         .bind(limit_i64)
         .bind(error_kind_str)
+        .bind(error_message)
         .execute(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {

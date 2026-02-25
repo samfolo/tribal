@@ -2,8 +2,13 @@
 //!
 //! Uses exponential backoff capped at [`BACKOFF_CAP_SECS`] seconds.
 //! Jitter is applied as ±[`JITTER_FRACTION`] of the base duration using
-//! a deterministic hash (no RNG dependency) so that backoff values are
-//! reproducible for a given retry count.
+//! a deterministic hash seeded by both the retry count and a caller-
+//! provided seed (typically derived from the task ID).  This ensures
+//! different tasks at the same retry count receive different jitter,
+//! avoiding thundering-herd scheduling.
+//!
+//! Internally, jitter is computed in milliseconds so that low base
+//! durations (2 s, 4 s) still produce non-zero jitter.
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,21 +62,26 @@ const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
 ///
 /// `retry_count` is the post-increment value (i.e. the retry that just
 /// happened, starting at 1 for the first failure).
-pub(crate) fn backoff_duration(retry_count: u32) -> chrono::Duration {
+///
+/// `seed` should be unique per task (e.g. derived from the task ID) so
+/// that different tasks at the same retry count receive different
+/// jitter, preventing thundering-herd scheduling.
+pub(crate) fn backoff_duration(retry_count: u32, seed: u64) -> chrono::Duration {
     let base_secs = 2u64.saturating_pow(retry_count).min(BACKOFF_CAP_SECS);
-    let jitter_range = base_secs / JITTER_DIVISOR;
-    // Safe: jitter_range ≤ 12 (60 / 5), base_secs ≤ 60; both fit in i64.
+    let base_ms = base_secs * 1000;
+    let jitter_range_ms = base_ms / JITTER_DIVISOR;
+    // Safe: jitter_range_ms ≤ 12_000 (60_000 / 5), base_ms ≤ 60_000; both fit in i64.
     #[allow(clippy::cast_possible_wrap)]
-    let jitter = if jitter_range > 0 {
-        let offset = deterministic_jitter(retry_count, jitter_range);
-        i64::from(offset) - (jitter_range as i64)
+    let jitter_ms = if jitter_range_ms > 0 {
+        let offset = deterministic_jitter(retry_count, jitter_range_ms, seed);
+        i64::from(offset) - (jitter_range_ms as i64)
     } else {
         0
     };
 
     #[allow(clippy::cast_possible_wrap)]
-    let total_secs = (base_secs as i64) + jitter;
-    chrono::Duration::seconds(total_secs.max(1))
+    let total_ms = (base_ms as i64) + jitter_ms;
+    chrono::Duration::milliseconds(total_ms.max(1000))
 }
 
 // ---------------------------------------------------------------------------
@@ -79,10 +89,11 @@ pub(crate) fn backoff_duration(retry_count: u32) -> chrono::Duration {
 // ---------------------------------------------------------------------------
 
 /// Produces a deterministic value in `[0, range * 2]` from the retry
-/// count, using a single LCG step.  This avoids an RNG dependency
-/// while still distributing jitter across the range.
-fn deterministic_jitter(retry_count: u32, range: u64) -> u32 {
-    let hash = u64::from(retry_count)
+/// count and a per-task seed, using a single LCG step.  This avoids
+/// an RNG dependency while distributing jitter across both the retry
+/// count and the task identity.
+fn deterministic_jitter(retry_count: u32, range: u64, seed: u64) -> u32 {
+    let hash = (u64::from(retry_count) ^ seed)
         .wrapping_mul(LCG_MULTIPLIER)
         .wrapping_add(LCG_INCREMENT);
     #[allow(clippy::cast_possible_truncation)]
@@ -111,13 +122,13 @@ mod tests {
 
     #[test]
     fn test_backoff_capped_at_60s() {
-        let cap_with_jitter = (BACKOFF_CAP_SECS as f64 * UPPER_BOUND).ceil() as i64;
+        let cap_ms = (BACKOFF_CAP_SECS as f64 * 1000.0 * UPPER_BOUND).ceil() as i64;
         for retry in 7..=15 {
-            let duration = backoff_duration(retry);
-            let secs = duration.num_seconds();
+            let duration = backoff_duration(retry, 0);
+            let ms = duration.num_milliseconds();
             assert!(
-                secs <= cap_with_jitter,
-                "retry {retry}: got {secs}, expected <= {cap_with_jitter}",
+                ms <= cap_ms,
+                "retry {retry}: got {ms}ms, expected <= {cap_ms}ms",
             );
         }
     }
@@ -125,16 +136,39 @@ mod tests {
     #[test]
     fn test_backoff_jitter_within_bounds() {
         for retry in 1..=100 {
-            let duration = backoff_duration(retry);
-            let base = 2u64.saturating_pow(retry).min(BACKOFF_CAP_SECS);
-            let lower = (base as f64 * LOWER_BOUND).floor() as i64;
-            let upper = (base as f64 * UPPER_BOUND).ceil() as i64;
-            let secs = duration.num_seconds();
+            let duration = backoff_duration(retry, 0);
+            let base_ms = 2u64.saturating_pow(retry).min(BACKOFF_CAP_SECS) * 1000;
+            let lower = (base_ms as f64 * LOWER_BOUND).floor() as i64;
+            let upper = (base_ms as f64 * UPPER_BOUND).ceil() as i64;
+            let ms = duration.num_milliseconds();
             assert!(
-                secs >= lower.max(1) && secs <= upper,
-                "retry {retry}: expected [{}, {upper}], got {secs}",
-                lower.max(1),
+                ms >= lower.max(1000) && ms <= upper,
+                "retry {retry}: expected [{}, {upper}]ms, got {ms}ms",
+                lower.max(1000),
             );
         }
+    }
+
+    #[test]
+    fn test_backoff_varies_with_seed() {
+        let d1 = backoff_duration(3, 1);
+        let d2 = backoff_duration(3, 42);
+        let d3 = backoff_duration(3, 9999);
+        assert!(
+            d1 != d2 || d2 != d3,
+            "different seeds should produce different jitter",
+        );
+    }
+
+    #[test]
+    fn test_backoff_has_jitter_at_low_retry_counts() {
+        let base_1_ms = 2000;
+        let base_2_ms = 4000;
+        let d1 = backoff_duration(1, 42).num_milliseconds();
+        let d2 = backoff_duration(2, 42).num_milliseconds();
+        assert!(
+            d1 != base_1_ms || d2 != base_2_ms,
+            "jitter should be non-zero at low retry counts",
+        );
     }
 }

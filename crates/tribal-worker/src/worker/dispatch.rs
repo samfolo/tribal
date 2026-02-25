@@ -164,8 +164,9 @@ impl Worker {
     /// # Errors
     ///
     /// Returns [`WorkerError::Cancelled`] when the cancellation token
-    /// is triggered.  Returns [`WorkerError::PoolExhausted`] if the
-    /// connection pool cannot provide a connection.
+    /// is triggered.  Transient errors (pool exhaustion, claim failures)
+    /// are handled internally via backoff — they do not terminate the
+    /// loop.
     pub async fn run(self: &Arc<Self>) -> Result<(), WorkerError> {
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_tasks));
         let mut poll_interval = self.config.poll_interval();
@@ -191,16 +192,18 @@ impl Worker {
 
             let limit = clamp_to_u32(available);
 
-            let claim_result = {
-                let mut conn = self
-                    .pool
-                    .acquire()
-                    .await
-                    .map_err(|e| WorkerError::PoolExhausted { source: e })?;
-                PgTaskRepository
-                    .claim(&mut conn, limit, &self.instance_id)
-                    .await
+            let mut conn = match self.pool.acquire().await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "pool acquire failed, backing off");
+                    poll_interval = next_claim_backoff(poll_interval);
+                    continue;
+                }
             };
+
+            let claim_result = PgTaskRepository
+                .claim(&mut conn, limit, &self.instance_id)
+                .await;
 
             match claim_result {
                 Ok(tasks) => {
@@ -295,13 +298,9 @@ impl Worker {
                 .await;
         }
 
-        // Notify job-state watch subscribers.  Each job has an optional
-        // `watch::Sender` in `job_state_txs`; sending `()` wakes any
-        // receivers waiting for status changes (used by integration
-        // tests and future SSE endpoints).
-        if let Some(tx) = self.job_state_txs.get(&job_id) {
-            let _ = tx.send(());
-        }
+        // Notify job-state watch subscribers so they can observe the
+        // claim-time status change.
+        self.notify_job_state(job_id);
 
         let stage_result = tokio::select! {
             () = self.cancellation_token.cancelled() => {
@@ -320,7 +319,7 @@ impl Worker {
 
         match stage_result {
             Ok(output) => {
-                self.record_token_usage(&output.usages);
+                self.record_token_usage(&job, &task, &output.usages).await;
 
                 if self.cancellation_token.is_cancelled() {
                     tracing::info!(
@@ -365,8 +364,15 @@ impl Worker {
         let error_kind = error.to_error_kind();
         let error_message = error.to_string();
         let post_increment_retry = task.retry_count() + 1;
-        let available_at = Utc::now() + backoff_duration(post_increment_retry);
+        #[allow(clippy::cast_possible_truncation)]
+        let task_seed = task.id().inner().as_u128() as u64;
+        let available_at = Utc::now() + backoff_duration(post_increment_retry, task_seed);
         let is_dead_lettered = post_increment_retry > self.config.task_max_retries;
+
+        // Determine upfront whether the job should fail — needed after
+        // commit to decide whether to notify and clean up the watch map.
+        let job_failed = is_dead_lettered
+            && matches!(task.task_type(), TaskType::Extraction | TaskType::Relation);
 
         let mut conn = match self.pool.acquire().await {
             Ok(c) => c,
@@ -423,32 +429,36 @@ impl Worker {
         // Triage failures are non-fatal: remaining triage tasks can
         // still succeed, and the relation stage runs on whatever
         // triage results are available.
-        if is_dead_lettered {
-            let should_fail_job =
-                matches!(task.task_type(), TaskType::Extraction | TaskType::Relation);
-            if should_fail_job {
-                let transition = JobStatusTransition::builder()
-                    .status(JobStatus::Failed)
-                    .outcome(Some(JobOutcome::Failure))
-                    .error_message(Some(error_message))
-                    .completed_at(Some(Utc::now()))
-                    .build();
-                if let Err(e) = PgJobRepository
-                    .update_status(&mut txn, task.job_id(), &transition)
-                    .await
-                {
-                    tracing::error!(
-                        error = %e,
-                        job_id = %task.job_id(),
-                        "failed to transition job to Failed on dead-letter",
-                    );
-                    return;
-                }
+        if job_failed {
+            let transition = JobStatusTransition::builder()
+                .status(JobStatus::Failed)
+                .outcome(Some(JobOutcome::Failure))
+                .error_message(Some(error_message))
+                .completed_at(Some(Utc::now()))
+                .build();
+            if let Err(e) = PgJobRepository
+                .update_status(&mut txn, task.job_id(), &transition)
+                .await
+            {
+                tracing::error!(
+                    error = %e,
+                    job_id = %task.job_id(),
+                    "failed to transition job to Failed on dead-letter",
+                );
+                return;
             }
         }
 
-        if let Err(e) = txn.commit().await {
-            tracing::error!(error = %e, "failed to commit failure transaction");
+        match txn.commit().await {
+            Ok(()) => {
+                if job_failed {
+                    self.notify_job_state(task.job_id());
+                    self.job_state_txs.remove(&task.job_id());
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to commit failure transaction");
+            }
         }
     }
 
@@ -493,6 +503,10 @@ impl Worker {
         batch_size: u32,
         original_count: u32,
     ) -> Result<(), StageError> {
+        let Some(claim_token) = task.claim_token() else {
+            return Err(StageError::OwnershipLost);
+        };
+
         let mut conn = self
             .pool
             .acquire()
@@ -575,10 +589,6 @@ impl Worker {
                 source: e,
             })?;
 
-        let Some(claim_token) = task.claim_token() else {
-            return Err(StageError::OwnershipLost);
-        };
-
         let rows = PgTaskRepository
             .complete(&mut txn, task.id(), claim_token)
             .await
@@ -601,13 +611,28 @@ impl Worker {
             },
         })?;
 
+        // Notify watch subscribers of the job state change.
+        self.notify_job_state(task.job_id());
+
+        // Clean up watch channel entry for terminal job transitions.
+        if is_empty {
+            self.job_state_txs.remove(&task.job_id());
+        }
+
         Ok(())
     }
 
     /// Records token usage for a completed stage.
-    #[allow(clippy::unused_self)]
-    fn record_token_usage(&self, _usages: &[Usage]) {
+    #[allow(clippy::unused_self, clippy::unused_async)]
+    async fn record_token_usage(&self, _job: &Job, _task: &Task, _usages: &[Usage]) {
         // Implemented by ticket 4.6
+    }
+
+    /// Sends a wake-up signal to any watch subscribers for the given job.
+    fn notify_job_state(&self, job_id: JobId) {
+        if let Some(tx) = self.job_state_txs.get(&job_id) {
+            let _ = tx.send(());
+        }
     }
 }
 
