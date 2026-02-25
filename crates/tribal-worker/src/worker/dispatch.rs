@@ -20,6 +20,7 @@ use tribal_inference::{
 };
 
 use super::backoff::{BACKOFF_CAP_SECS, backoff_duration};
+use super::heartbeat::{HeartbeatHandle, run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat};
 use crate::{
     config::WorkerConfig,
     error::{StageError, WorkerError},
@@ -135,10 +136,49 @@ impl Worker {
     /// # Errors
     ///
     /// Returns [`WorkerError`] on database failures.
-    #[allow(clippy::unused_async)]
     pub async fn startup_reclaim(&self) -> Result<u32, WorkerError> {
-        // Implemented by ticket 4.2
-        Ok(0)
+        let stats = run_startup_reclaim(
+            &self.pool,
+            self.config.task_timeout(),
+            self.config.task_max_retries,
+        )
+        .await?;
+
+        if stats.total() > 0 {
+            tracing::info!(
+                requeued = stats.requeued,
+                dead_lettered = stats.dead_lettered,
+                "startup reclaim recovered orphaned tasks",
+            );
+        }
+
+        // Heal any jobs left stuck from a previous instance that
+        // crashed between reclaim-sweep dead-lettering and the job
+        // failure transition.
+        if let Ok(mut conn) = self.pool.acquire().await {
+            match PgJobRepository
+                .fail_stale_dead_lettered_jobs(&mut conn)
+                .await
+            {
+                Ok(job_ids) => {
+                    for job_id in &job_ids {
+                        self.notify_job_state(*job_id);
+                        self.job_state_txs.remove(job_id);
+                    }
+                    if !job_ids.is_empty() {
+                        tracing::warn!(
+                            count = job_ids.len(),
+                            "transitioned stuck jobs to failed after startup reclaim",
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to transition dead-lettered jobs during startup");
+                }
+            }
+        }
+
+        Ok(stats.total())
     }
 
     /// Runs the main poll-claim-dispatch loop until cancellation.
