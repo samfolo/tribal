@@ -464,8 +464,7 @@ async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, pv_id) =
-        setup_prerequisites(ctx, "reclaim-requeue").await;
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "reclaim-requeue").await;
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
@@ -502,12 +501,7 @@ async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
             .expect("claim");
         assert_eq!(claimed.len(), 1);
 
-        backdate_task_heartbeat(
-            &mut conn,
-            task.id(),
-            std::time::Duration::from_secs(120),
-        )
-        .await;
+        backdate_task_heartbeat(&mut conn, task.id(), std::time::Duration::from_secs(120)).await;
 
         task.id()
     };
@@ -561,8 +555,7 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
-    let (principal_id, project_id, pv_id) =
-        setup_prerequisites(ctx, "reclaim-dead-letter").await;
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "reclaim-dead-letter").await;
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
@@ -606,12 +599,7 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
             .expect("claim");
         assert_eq!(claimed.len(), 1);
 
-        backdate_task_heartbeat(
-            &mut conn,
-            task.id(),
-            std::time::Duration::from_secs(120),
-        )
-        .await;
+        backdate_task_heartbeat(&mut conn, task.id(), std::time::Duration::from_secs(120)).await;
 
         (job.id(), task.id())
     };
@@ -676,8 +664,7 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, pv_id) =
-        setup_prerequisites(ctx, "startup-reclaim").await;
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "startup-reclaim").await;
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
@@ -712,12 +699,7 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
             .expect("claim");
         assert_eq!(claimed.len(), 1);
 
-        backdate_task_heartbeat(
-            &mut conn,
-            task.id(),
-            std::time::Duration::from_secs(120),
-        )
-        .await;
+        backdate_task_heartbeat(&mut conn, task.id(), std::time::Duration::from_secs(120)).await;
 
         task.id()
     };
@@ -727,10 +709,7 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
     let worker = build_test_worker(pool, token.clone(), config);
 
     // Call startup_reclaim directly — no worker loop needed.
-    let reclaimed = worker
-        .startup_reclaim()
-        .await
-        .expect("startup reclaim");
+    let reclaimed = worker.startup_reclaim().await.expect("startup reclaim");
 
     assert_eq!(reclaimed, 1, "should reclaim exactly one orphaned task");
 

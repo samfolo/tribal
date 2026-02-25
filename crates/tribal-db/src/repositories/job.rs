@@ -423,7 +423,10 @@ impl JobRepository for PgJobRepository {
             source: e,
         })?;
 
-        Ok(rows.iter().map(|r| JobId::from(r.get::<uuid::Uuid, _>("id"))).collect())
+        Ok(rows
+            .iter()
+            .map(|r| JobId::from(r.get::<uuid::Uuid, _>("id")))
+            .collect())
     }
 }
 

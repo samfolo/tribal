@@ -19,8 +19,10 @@ use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
 
-use super::backoff::{BACKOFF_CAP_SECS, backoff_duration};
-use super::heartbeat::{HeartbeatHandle, run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat};
+use super::{
+    backoff::{BACKOFF_CAP_SECS, backoff_duration},
+    heartbeat::{HeartbeatHandle, run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
+};
 use crate::{
     config::WorkerConfig,
     error::{StageError, WorkerError},
@@ -750,30 +752,30 @@ impl Worker {
                         );
                     }
 
-                    if stats.dead_lettered > 0 {
-                        if let Ok(mut conn) = self.pool.acquire().await {
-                            match PgJobRepository
-                                .fail_stale_dead_lettered_jobs(&mut conn)
-                                .await
-                            {
-                                Ok(job_ids) => {
-                                    for job_id in &job_ids {
-                                        self.notify_job_state(*job_id);
-                                        self.job_state_txs.remove(job_id);
-                                    }
-                                    if !job_ids.is_empty() {
-                                        tracing::warn!(
-                                            count = job_ids.len(),
-                                            "transitioned stuck jobs to failed after reclaim",
-                                        );
-                                    }
+                    if stats.dead_lettered > 0
+                        && let Ok(mut conn) = self.pool.acquire().await
+                    {
+                        match PgJobRepository
+                            .fail_stale_dead_lettered_jobs(&mut conn)
+                            .await
+                        {
+                            Ok(job_ids) => {
+                                for job_id in &job_ids {
+                                    self.notify_job_state(*job_id);
+                                    self.job_state_txs.remove(job_id);
                                 }
-                                Err(e) => {
+                                if !job_ids.is_empty() {
                                     tracing::warn!(
-                                        error = %e,
-                                        "failed to transition dead-lettered jobs",
+                                        count = job_ids.len(),
+                                        "transitioned stuck jobs to failed after reclaim",
                                     );
                                 }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to transition dead-lettered jobs",
+                                );
                             }
                         }
                     }

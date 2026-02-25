@@ -7,8 +7,7 @@
 use std::time::Duration;
 
 use sqlx::PgPool;
-use tokio::sync::oneshot;
-use tokio::time::MissedTickBehavior;
+use tokio::{sync::oneshot, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tribal_db::{PgTaskRepository, ReclaimOutcome, TaskRepository};
 use tribal_domain::{TaskErrorKind, TaskId};
@@ -116,7 +115,10 @@ pub(crate) fn spawn_heartbeat(
                 }
             };
 
-            match PgTaskRepository.heartbeat(&mut conn, task_id, claim_token).await {
+            match PgTaskRepository
+                .heartbeat(&mut conn, task_id, claim_token)
+                .await
+            {
                 Ok(0) => {
                     tracing::warn!(task_id = %task_id, "heartbeat detected ownership loss");
                     if let Some(tx) = ownership_lost_tx.take() {
@@ -158,13 +160,16 @@ pub(crate) async fn run_reclaim_sweep(
 ) -> Result<ReclaimStats, WorkerError> {
     let timeout_seconds = u32::try_from(heartbeat_timeout.as_secs()).unwrap_or(u32::MAX);
 
-    let mut conn = pool.acquire().await.map_err(|e| WorkerError::ReclaimFailed {
-        context: "periodic reclaim sweep".into(),
-        source: tribal_db::DbError::QueryFailed {
-            context: "pool acquire".into(),
-            source: e,
-        },
-    })?;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| WorkerError::ReclaimFailed {
+            context: "periodic reclaim sweep".into(),
+            source: tribal_db::DbError::QueryFailed {
+                context: "pool acquire".into(),
+                source: e,
+            },
+        })?;
 
     let outcome = PgTaskRepository
         .reclaim_stale(
@@ -198,13 +203,16 @@ pub(crate) async fn run_startup_reclaim(
 ) -> Result<ReclaimStats, WorkerError> {
     let timeout_seconds = u32::try_from(heartbeat_timeout.as_secs()).unwrap_or(u32::MAX);
 
-    let mut conn = pool.acquire().await.map_err(|e| WorkerError::ReclaimFailed {
-        context: "startup reclaim".into(),
-        source: tribal_db::DbError::QueryFailed {
-            context: "pool acquire".into(),
-            source: e,
-        },
-    })?;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| WorkerError::ReclaimFailed {
+            context: "startup reclaim".into(),
+            source: tribal_db::DbError::QueryFailed {
+                context: "pool acquire".into(),
+                source: e,
+            },
+        })?;
 
     let outcome = PgTaskRepository
         .reclaim_stale(
