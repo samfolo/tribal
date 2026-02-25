@@ -196,6 +196,20 @@ pub trait JobRepository {
         id: JobId,
         batch_id: RelationBatchId,
     ) -> Result<Job, DbError>;
+
+    /// Transitions jobs to `Failed` when they have dead-lettered
+    /// extraction or relation tasks, and the job is not already
+    /// terminal.  Returns the IDs of the transitioned jobs.
+    ///
+    /// Idempotent — already-failed or completed jobs are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn fail_stale_dead_lettered_jobs(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<JobId>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +395,35 @@ impl JobRepository for PgJobRepository {
             })?;
 
         Ok(map_job_row(&row))
+    }
+
+    async fn fail_stale_dead_lettered_jobs(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<JobId>, DbError> {
+        let rows = sqlx::query(
+            "UPDATE jobs \
+             SET status = 'failed', \
+                 outcome = 'failure', \
+                 error_message = 'task dead-lettered during reclaim', \
+                 completed_at = now(), \
+                 updated_at = now() \
+             WHERE id IN ( \
+                 SELECT DISTINCT t.job_id FROM tasks t \
+                 WHERE t.status = 'dead_letter' \
+                 AND t.task_type IN ('extraction', 'relation') \
+             ) \
+             AND status NOT IN ('failed', 'completed') \
+             RETURNING id",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "failing jobs with dead-lettered tasks".to_owned(),
+            source: e,
+        })?;
+
+        Ok(rows.iter().map(|r| JobId::from(r.get::<uuid::Uuid, _>("id"))).collect())
     }
 }
 
