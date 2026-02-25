@@ -51,6 +51,20 @@ async fn raw_conn(ctx: &TestContext) -> sqlx::PgConnection {
     ctx.raw_connection().await.expect("raw connection")
 }
 
+/// Removes committed work data so the next serialised test starts
+/// with a clean claim surface.  Called at the end of each test.
+async fn teardown(ctx: &TestContext) {
+    let mut conn = raw_conn(ctx).await;
+    sqlx::query("DELETE FROM token_usage")
+        .execute(&mut conn)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM tasks")
+        .execute(&mut conn)
+        .await
+        .ok();
+}
+
 /// Inserts a principal, project, and prompt_version, returning the IDs
 /// needed to create a job.
 async fn setup_prerequisites(
@@ -172,7 +186,7 @@ fn test_config() -> WorkerConfig {
 async fn test_retry_path_increments_retry_count() {
     let _guard = serial_lock().await;
     let ctx = test_context().await;
-    let pool = ctx.pool().clone();
+    let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "retry").await;
 
@@ -251,6 +265,8 @@ async fn test_retry_path_increments_retry_count() {
         JobStatus::Failed,
         "job should not be failed after first retry",
     );
+
+    teardown(ctx).await;
 }
 
 /// Verifies that a task at its retry limit is dead-lettered and the
@@ -259,7 +275,7 @@ async fn test_retry_path_increments_retry_count() {
 async fn test_dead_letter_path_transitions_task_and_job() {
     let _guard = serial_lock().await;
     let ctx = test_context().await;
-    let pool = ctx.pool().clone();
+    let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
     let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "dead-letter").await;
@@ -351,6 +367,8 @@ async fn test_dead_letter_path_transitions_task_and_job() {
         job.completed_at().is_some(),
         "job completed_at should be set",
     );
+
+    teardown(ctx).await;
 }
 
 /// Verifies that the worker never exceeds `max_concurrent_tasks`
@@ -360,7 +378,7 @@ async fn test_dead_letter_path_transitions_task_and_job() {
 async fn test_concurrency_limit_respected() {
     let _guard = serial_lock().await;
     let ctx = test_context().await;
-    let pool = ctx.pool().clone();
+    let pool = ctx.create_pool().await.expect("create pool");
     let max_concurrent = 2_usize;
 
     let config = WorkerConfig {
@@ -434,4 +452,6 @@ async fn test_concurrency_limit_respected() {
     // Verify at least one task was dispatched (otherwise the assertion
     // above is vacuously true).
     assert!(peak > 0, "worker should have processed at least one task");
+
+    teardown(ctx).await;
 }
