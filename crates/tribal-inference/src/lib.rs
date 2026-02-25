@@ -19,7 +19,7 @@ pub use anthropic::AnthropicInferenceProvider;
 pub use error::InferenceError;
 pub use ollama::{OllamaEmbeddingProvider, OllamaInferenceProvider};
 pub use openai::{OpenAiEmbeddingProvider, OpenAiInferenceProvider};
-pub use provider::{EmbeddingProvider, InferenceProvider};
+pub use provider::{EmbeddingProvider, InferenceProvider, ProviderIdentity};
 pub use registry::{
     ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError, RequestClass,
 };

@@ -25,6 +25,12 @@ Identify every design document section referenced in the ticket's Design Constra
 
 Also read the corresponding issue row in `docs/internal/milestones.md` to verify the ticket covers the intended scope.
 
+### Milestone-specific documents
+
+These are documents specific to particular milestones. They serve as higher-fidelity sources of truth for specific concerns and should be consulted if the ticket falls under the milestone:
+
+- **4.x Write Path Pipeline** — `docs/draft/write_path_pipeline.md`
+
 ## 3. Review
 
 Check the following and report your findings:

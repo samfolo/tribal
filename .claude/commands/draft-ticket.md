@@ -24,6 +24,12 @@ Trace every design ref listed in the "Refs" column. Use the Read tool to read th
 - **Tool Surface** — `docs/internal/mcp_tool_surface.md`
 - **Conventions** — `docs/internal/conventions.md`
 
+### Milestone-specific documents
+
+These are documents specific to particular milestones. They serve as higher-fidelity sources of truth for specific concerns and should be consulted if the ticket falls under the milestone:
+
+- **4.x Write Path Pipeline** — `docs/draft/write_path_pipeline.md`
+
 Read enough surrounding context in each referenced section to fully understand the constraints, data structures, and invariants.
 
 If the issue has blocked-by dependencies, cross-reference each dependency's title from the milestones table against the `gh issue list` output from step 1. Note any that are still open — mention this in the ticket.
