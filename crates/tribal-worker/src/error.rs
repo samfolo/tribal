@@ -9,16 +9,16 @@ use tribal_domain::TaskErrorKind;
 /// Errors produced by the worker loop itself (not by individual stages).
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
-    /// The connection pool has no available connections.
-    #[error("connection pool exhausted")]
+    /// The database pool could not be acquired.
+    #[error("worker pool acquisition failed: {source}")]
     PoolExhausted {
         /// The underlying sqlx error.
         #[source]
         source: sqlx::Error,
     },
 
-    /// A task claim operation failed.
-    #[error("claim failed: {context}")]
+    /// The claim query failed.
+    #[error("claim query failed: {context}")]
     ClaimFailed {
         /// Human-readable description of what the claim was trying to do.
         context: String,
@@ -175,7 +175,12 @@ mod tests {
         let pool = WorkerError::PoolExhausted {
             source: sqlx::Error::PoolTimedOut,
         };
-        assert_eq!(pool.to_string(), "connection pool exhausted");
+        assert!(
+            pool.to_string()
+                .starts_with("worker pool acquisition failed:"),
+            "unexpected display: {}",
+            pool,
+        );
 
         let claim = WorkerError::ClaimFailed {
             context: "claiming tasks".into(),
@@ -184,6 +189,6 @@ mod tests {
                 id: "test".into(),
             },
         };
-        assert_eq!(claim.to_string(), "claim failed: claiming tasks");
+        assert_eq!(claim.to_string(), "claim query failed: claiming tasks");
     }
 }
