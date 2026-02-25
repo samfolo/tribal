@@ -7,6 +7,7 @@
 //! signalled via a [`CancellationToken`](tokio_util::sync::CancellationToken).
 
 mod backoff;
+mod heartbeat;
 mod dispatch;
 
 pub use dispatch::Worker;
