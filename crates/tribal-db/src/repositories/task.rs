@@ -48,6 +48,16 @@ const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data co
 const RETRY_COUNT_OVERFLOW: &str = "negative retry_count in database — data corruption";
 const MAX_RETRIES_EXCEEDS_I32: &str = "max_retries exceeds i32::MAX";
 
+/// Result of a [`TaskRepository::reclaim_stale`] operation, breaking
+/// down the total affected rows by their post-reclaim status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReclaimOutcome {
+    /// Tasks reset to `queued` for another attempt.
+    pub requeued: u64,
+    /// Tasks moved to `dead_letter` (retry budget exhausted).
+    pub dead_lettered: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
@@ -196,7 +206,8 @@ pub trait TaskRepository {
     /// `StartupReclaim`).  Tasks exceeding `max_retries` are
     /// dead-lettered.
     ///
-    /// Returns the number of tasks reclaimed.
+    /// Returns a [`ReclaimOutcome`] with the count of requeued and
+    /// dead-lettered tasks.
     ///
     /// # Errors
     ///
@@ -209,7 +220,7 @@ pub trait TaskRepository {
         limit: u32,
         error_kind: TaskErrorKind,
         error_message: &str,
-    ) -> Result<u64, DbError>;
+    ) -> Result<ReclaimOutcome, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -441,13 +452,13 @@ impl TaskRepository for PgTaskRepository {
         limit: u32,
         error_kind: TaskErrorKind,
         error_message: &str,
-    ) -> Result<u64, DbError> {
+    ) -> Result<ReclaimOutcome, DbError> {
         let timeout_f64 = f64::from(timeout_seconds);
         let max_retries_i32 = i32::try_from(max_retries).expect(MAX_RETRIES_EXCEEDS_I32);
         let limit_i64 = i64::from(limit);
         let error_kind_str = error_kind.as_str();
 
-        let result = sqlx::query(
+        let rows = sqlx::query(
             "WITH stale AS ( \
                  SELECT id, retry_count FROM tasks \
                  WHERE status = 'claimed' \
@@ -478,21 +489,35 @@ impl TaskRepository for PgTaskRepository {
                  error_message = $5, \
                  updated_at = now() \
              FROM stale s \
-             WHERE t.id = s.id",
+             WHERE t.id = s.id \
+             RETURNING t.status",
         )
         .bind(timeout_f64)
         .bind(max_retries_i32)
         .bind(limit_i64)
         .bind(error_kind_str)
         .bind(error_message)
-        .execute(&mut *conn)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
             context: "reclaiming stale tasks".to_owned(),
             source: e,
         })?;
 
-        Ok(result.rows_affected())
+        let mut requeued: u64 = 0;
+        let mut dead_lettered: u64 = 0;
+        for row in &rows {
+            match row.get::<String, _>("status").as_str() {
+                "queued" => requeued += 1,
+                "dead_letter" => dead_lettered += 1,
+                _ => {}
+            }
+        }
+
+        Ok(ReclaimOutcome {
+            requeued,
+            dead_lettered,
+        })
     }
 }
 

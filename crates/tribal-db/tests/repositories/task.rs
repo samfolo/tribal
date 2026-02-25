@@ -693,7 +693,7 @@ async fn test_reclaim_stale_heartbeat_expired() {
         .await
         .expect("backdate heartbeat");
 
-    let count = repo
+    let result = repo
         .reclaim_stale(
             &mut txn,
             30,
@@ -705,7 +705,8 @@ async fn test_reclaim_stale_heartbeat_expired() {
         .await
         .expect("reclaim_stale");
 
-    assert_eq!(count, 1);
+    assert_eq!(result.requeued, 1);
+    assert_eq!(result.dead_lettered, 0);
 
     let found = repo
         .find_by_id(&mut txn, task.id())
@@ -754,7 +755,7 @@ async fn test_reclaim_stale_startup_reclaim() {
         .await
         .expect("backdate heartbeat");
 
-    let count = repo
+    let result = repo
         .reclaim_stale(
             &mut txn,
             30,
@@ -766,7 +767,8 @@ async fn test_reclaim_stale_startup_reclaim() {
         .await
         .expect("reclaim_stale");
 
-    assert_eq!(count, 1);
+    assert_eq!(result.requeued, 1);
+    assert_eq!(result.dead_lettered, 0);
 
     let found = repo
         .find_by_id(&mut txn, task.id())
@@ -829,7 +831,7 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
         .expect("find_by_id")
         .available_at();
 
-    let count = repo
+    let result = repo
         .reclaim_stale(
             &mut txn,
             30,
@@ -841,7 +843,8 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
         .await
         .expect("reclaim_stale");
 
-    assert_eq!(count, 1);
+    assert_eq!(result.requeued, 0);
+    assert_eq!(result.dead_lettered, 1);
 
     let found = repo
         .find_by_id(&mut txn, task.id())
