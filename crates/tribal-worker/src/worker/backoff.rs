@@ -16,7 +16,7 @@
 
 /// Maximum backoff duration in seconds.  `2^retry_count` is clamped to
 /// this value before jitter is applied.
-const BACKOFF_CAP_SECS: u64 = 60;
+pub(crate) const BACKOFF_CAP_SECS: u64 = 60;
 
 /// Fractional jitter range applied to the base backoff.  A value of
 /// `0.2` means ±20%, so the final duration falls within

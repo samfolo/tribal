@@ -19,7 +19,7 @@ use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
 
-use super::backoff::backoff_duration;
+use super::backoff::{BACKOFF_CAP_SECS, backoff_duration};
 use crate::{
     config::WorkerConfig,
     error::{StageError, WorkerError},
@@ -34,11 +34,6 @@ const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
 
 const STAGE_PRE_DISPATCH: &str = "pre-dispatch";
 const STAGE_EXTRACTION: &str = "extraction";
-
-/// Maximum backoff duration in seconds when claim cycles fail
-/// repeatedly.  The poll interval doubles on each failure until it
-/// reaches this cap, then resets on the next successful claim.
-const MAX_CLAIM_BACKOFF_SECS: u64 = 60;
 
 // ---------------------------------------------------------------------------
 // Worker
@@ -655,10 +650,10 @@ fn clamp_to_u32(value: usize) -> u32 {
 }
 
 /// Computes the next claim-cycle backoff by doubling the current poll
-/// interval, capping at [`MAX_CLAIM_BACKOFF_SECS`], and flooring at 1 s.
+/// interval, capping at [`BACKOFF_CAP_SECS`], and flooring at 1 s.
 fn next_claim_backoff(current: std::time::Duration) -> std::time::Duration {
     let doubled = current.as_secs().saturating_mul(2);
-    let capped = doubled.min(MAX_CLAIM_BACKOFF_SECS);
+    let capped = doubled.min(BACKOFF_CAP_SECS);
     std::time::Duration::from_secs(capped.max(1))
 }
 
@@ -702,18 +697,18 @@ mod tests {
             std::time::Duration::from_secs(4)
         );
 
-        // Caps at MAX_CLAIM_BACKOFF_SECS.
-        let near_cap = std::time::Duration::from_secs(MAX_CLAIM_BACKOFF_SECS - 1);
+        // Caps at BACKOFF_CAP_SECS.
+        let near_cap = std::time::Duration::from_secs(BACKOFF_CAP_SECS - 1);
         assert_eq!(
             next_claim_backoff(near_cap),
-            std::time::Duration::from_secs(MAX_CLAIM_BACKOFF_SECS),
+            std::time::Duration::from_secs(BACKOFF_CAP_SECS),
         );
 
         // Already at cap stays at cap.
-        let at_cap = std::time::Duration::from_secs(MAX_CLAIM_BACKOFF_SECS);
+        let at_cap = std::time::Duration::from_secs(BACKOFF_CAP_SECS);
         assert_eq!(
             next_claim_backoff(at_cap),
-            std::time::Duration::from_secs(MAX_CLAIM_BACKOFF_SECS),
+            std::time::Duration::from_secs(BACKOFF_CAP_SECS),
         );
 
         // Zero-second interval floors at 1 s (not 0).
