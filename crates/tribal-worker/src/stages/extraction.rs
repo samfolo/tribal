@@ -29,7 +29,7 @@ pub(crate) enum StageCommit {
     Extraction {
         /// The extraction result to insert.
         extraction_result: NewExtractionResult,
-        /// Triage tasks to create (one per batch).
+        /// Triage tasks to create (one per candidate in the batch).
         triage_tasks: Vec<NewTask>,
         /// Capped candidate count.
         batch_size: u32,

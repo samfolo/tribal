@@ -178,8 +178,7 @@ mod tests {
         assert!(
             pool.to_string()
                 .starts_with("worker pool acquisition failed:"),
-            "unexpected display: {}",
-            pool,
+            "unexpected display: {pool}",
         );
 
         let claim = WorkerError::ClaimFailed {

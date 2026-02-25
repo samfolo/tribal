@@ -32,6 +32,7 @@ use crate::{
 
 const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
 
+const STAGE_PRE_DISPATCH: &str = "pre-dispatch";
 const STAGE_EXTRACTION: &str = "extraction";
 
 /// Maximum backoff duration in seconds when claim cycles fail
@@ -266,7 +267,15 @@ impl Worker {
             let mut conn = match self.pool.acquire().await {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::error!(error = %e, "failed to acquire connection for task");
+                    let stage_err = StageError::Database {
+                        stage: STAGE_PRE_DISPATCH.into(),
+                        context: format!("acquiring connection for job {job_id}"),
+                        source: tribal_db::DbError::QueryFailed {
+                            context: "pool acquire".into(),
+                            source: e,
+                        },
+                    };
+                    self.handle_stage_failure(&task, &stage_err).await;
                     return;
                 }
             };
@@ -274,7 +283,7 @@ impl Worker {
                 Ok(j) => j,
                 Err(e) => {
                     let stage_err = StageError::Database {
-                        stage: "pre-dispatch".into(),
+                        stage: STAGE_PRE_DISPATCH.into(),
                         context: format!("loading job {job_id}"),
                         source: e,
                     };
