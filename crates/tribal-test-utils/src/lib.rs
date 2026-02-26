@@ -6,6 +6,7 @@
 //! and assertion helpers.
 
 mod db;
+pub mod duration;
 mod error;
 mod factories;
 mod lifecycle;
