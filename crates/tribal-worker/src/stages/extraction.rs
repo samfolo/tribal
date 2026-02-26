@@ -1,7 +1,7 @@
 //! Extraction stage: LLM-based candidate extraction from raw input.
 
 use tribal_db::{NewExtractionResult, NewTask};
-use tribal_inference::{InferenceError, Usage};
+use tribal_inference::{CompletionRequest, InferenceError, Usage};
 
 use crate::{error::StageError, worker::Worker};
 
@@ -48,13 +48,23 @@ impl Worker {
     /// # Errors
     ///
     /// Returns [`StageError::Provider`] — stub always fails.
-    #[allow(clippy::unused_async)]
     pub(crate) async fn run_extraction(
         &self,
         _job: &tribal_domain::Job,
         _task: &tribal_domain::Task,
     ) -> Result<StageOutput, StageError> {
-        // Replaced by ticket 4.3
+        // Calls provider to honour mock delays; replaced by ticket 4.3.
+        let _ = self
+            .extraction_provider()
+            .complete(CompletionRequest {
+                system: Some("extraction stub".into()),
+                messages: vec![],
+                temperature: None,
+                max_tokens: None,
+                response_format: None,
+            })
+            .await;
+
         Err(StageError::Provider {
             context: "extraction stage not yet implemented".into(),
             source: InferenceError::ProviderUnavailable {

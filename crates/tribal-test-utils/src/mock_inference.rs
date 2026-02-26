@@ -9,7 +9,7 @@ mod matcher;
 mod provider;
 mod responses;
 
-pub use core::ExhaustBehaviour;
+pub use core::{ExhaustBehaviour, MockProviderOptions};
 
 pub use matcher::{CompletionMatcher, EmbeddingMatcher};
 pub use provider::{
