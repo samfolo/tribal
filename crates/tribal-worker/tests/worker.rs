@@ -12,7 +12,7 @@
 //! rather than pool connections to avoid the `PoolConnection::drop`
 //! spawn issue that leaks connections across serialised tests.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use tokio::sync::watch;
@@ -34,7 +34,12 @@ use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions,
     TestContext, a_candidate, a_completion_response, a_new_job, a_new_principal, a_new_project,
     a_new_prompt_version, a_new_task, a_relation_hint, backdate_task_heartbeat,
-    insert_prompt_version, serial_lock, set_retry_count, test_context, truncate_all_tables,
+    duration::{
+        CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
+        POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
+    },
+    insert_prompt_version, seed_extraction_job, serial_lock, set_retry_count, test_context,
+    truncate_all_tables,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -169,6 +174,18 @@ fn build_test_worker(
     ))
 }
 
+/// Spawns a worker, lets it run for the given settle duration, then
+/// cancels and awaits shutdown.
+async fn run_worker_briefly(worker: Arc<Worker>, token: CancellationToken, settle: Duration) {
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+    tokio::time::sleep(settle).await;
+    token.cancel();
+    let _ = handle.await;
+}
+
 /// Returns a [`WorkerConfig`] with aggressive timeouts for fast tests.
 fn test_config() -> WorkerConfig {
     WorkerConfig {
@@ -201,43 +218,12 @@ async fn test_retry_path_increments_retry_count() {
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
-        (job.id(), task.id())
+        seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await
     };
 
     let token = CancellationToken::new();
     let worker = build_test_worker(pool, token.clone(), test_config(), None, None);
-
-    let worker_handle = {
-        let w = Arc::clone(&worker);
-        tokio::spawn(async move { w.run().await })
-    };
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    token.cancel();
-    let _ = worker_handle.await;
+    run_worker_briefly(worker, token, POLL_SETTLE).await;
 
     let mut conn = raw_conn(ctx).await;
     let task = PgTaskRepository
@@ -291,48 +277,19 @@ async fn test_dead_letter_path_transitions_task_and_job() {
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
+        let (job_id, task_id) =
+            seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await;
 
         // Pre-set retry_count to max_retries so the next failure
         // triggers dead-lettering.
-        set_retry_count(&mut conn, task.id(), config.task_max_retries).await;
+        set_retry_count(&mut conn, task_id, config.task_max_retries).await;
 
-        (job.id(), task.id())
+        (job_id, task_id)
     };
 
     let token = CancellationToken::new();
     let worker = build_test_worker(pool, token.clone(), config, None, None);
-
-    let worker_handle = {
-        let w = Arc::clone(&worker);
-        tokio::spawn(async move { w.run().await })
-    };
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    token.cancel();
-    let _ = worker_handle.await;
+    run_worker_briefly(worker, token, POLL_SETTLE).await;
 
     let mut conn = raw_conn(ctx).await;
 
@@ -440,7 +397,7 @@ async fn test_concurrency_limit_respected() {
     };
 
     // Let the worker run through a couple of cycles.
-    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    tokio::time::sleep(MULTI_CYCLE_SETTLE).await;
     token.cancel();
     let _ = worker_handle.await;
 
@@ -472,29 +429,8 @@ async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
+        let (_job_id, task_id) =
+            seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await;
 
         // Claim the task via the repository (simulating a previous
         // worker instance) and immediately backdate the heartbeat
@@ -505,24 +441,15 @@ async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
             .expect("claim");
         assert_eq!(claimed.len(), 1);
 
-        backdate_task_heartbeat(&mut conn, task.id(), std::time::Duration::from_secs(120)).await;
+        backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
 
-        task.id()
+        task_id
     };
 
     let config = test_config();
     let token = CancellationToken::new();
     let worker = build_test_worker(pool, token.clone(), config, None, None);
-
-    let worker_handle = {
-        let w = Arc::clone(&worker);
-        tokio::spawn(async move { w.run().await })
-    };
-
-    // Let the reclaim loop run (reclaim_interval = 1s in test config).
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    token.cancel();
-    let _ = worker_handle.await;
+    run_worker_briefly(worker, token, POLL_SETTLE).await;
 
     let mut conn = raw_conn(ctx).await;
     let task = PgTaskRepository
@@ -560,33 +487,12 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
+        let (job_id, task_id) =
+            seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await;
 
         // Pre-set retry_count to max_retries so reclaim triggers
         // dead-lettering.
-        set_retry_count(&mut conn, task.id(), config.task_max_retries).await;
+        set_retry_count(&mut conn, task_id, config.task_max_retries).await;
 
         // Claim and backdate heartbeat.
         let claimed = PgTaskRepository
@@ -595,22 +501,14 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
             .expect("claim");
         assert_eq!(claimed.len(), 1);
 
-        backdate_task_heartbeat(&mut conn, task.id(), std::time::Duration::from_secs(120)).await;
+        backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
 
-        (job.id(), task.id())
+        (job_id, task_id)
     };
 
     let token = CancellationToken::new();
     let worker = build_test_worker(pool, token.clone(), config, None, None);
-
-    let worker_handle = {
-        let w = Arc::clone(&worker);
-        tokio::spawn(async move { w.run().await })
-    };
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    token.cancel();
-    let _ = worker_handle.await;
+    run_worker_briefly(worker, token, POLL_SETTLE).await;
 
     let mut conn = raw_conn(ctx).await;
 
@@ -664,29 +562,8 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
+        let (_job_id, task_id) =
+            seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await;
 
         // Claim and backdate heartbeat (simulating crash).
         let claimed = PgTaskRepository
@@ -695,9 +572,9 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
             .expect("claim");
         assert_eq!(claimed.len(), 1);
 
-        backdate_task_heartbeat(&mut conn, task.id(), std::time::Duration::from_secs(120)).await;
+        backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
 
-        task.id()
+        task_id
     };
 
     let config = test_config();
@@ -748,30 +625,9 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
-        task.id()
+        let (_job_id, task_id) =
+            seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await;
+        task_id
     };
 
     // Mock with a long delay keeps the extraction stage in-flight long
@@ -781,7 +637,7 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
             .on_complete(
                 a_completion_response("delayed"),
                 Some(MockProviderOptions {
-                    delay: Some(std::time::Duration::from_secs(30)),
+                    delay: Some(LONG_PROVIDER_DELAY),
                 }),
             )
             .on_exhaust(ExhaustBehaviour::RepeatLast)
@@ -817,9 +673,10 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         tokio::spawn(async move { w.run().await })
     };
 
-    // Wait for the worker to claim and begin dispatching.  After 2s
-    // the extraction stage should be blocked inside the 30s mock delay.
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Wait for the worker to claim and begin dispatching.  After the
+    // claim settle period the extraction stage should be blocked inside
+    // the long mock delay.
+    tokio::time::sleep(CLAIM_SETTLE).await;
     assert!(
         inference_ref.call_count() >= 1,
         "extraction stage should have called the provider",
@@ -831,7 +688,7 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     // return 0 rows and fire the ownership_lost signal.
     {
         let mut conn = raw_conn(ctx).await;
-        backdate_task_heartbeat(&mut conn, task_id, std::time::Duration::from_secs(120)).await;
+        backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
 
         // Use a large flat backoff so the requeued task's available_at
         // is far in the future, preventing the worker's poll loop from
@@ -851,18 +708,18 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     }
 
     // Heartbeat interval is 1s — give it time to detect the loss.
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    tokio::time::sleep(HEARTBEAT_DETECT).await;
     token.cancel();
     let _ = worker_handle.await;
 
     let elapsed = start.elapsed();
 
-    // If ownership loss was NOT detected, the 30s mock delay would
+    // If ownership loss was NOT detected, the long mock delay would
     // have to complete before the worker moved on.  The total test
-    // time being well under 30s proves the heartbeat interrupted the
-    // stage early.
+    // time being well under the delay proves the heartbeat interrupted
+    // the stage early.
     assert!(
-        elapsed < std::time::Duration::from_secs(15),
+        elapsed < EARLY_ABORT_BOUND,
         "expected ownership loss to abort the stage early, but test took {elapsed:?}",
     );
 
@@ -925,30 +782,7 @@ async fn test_extraction_happy_path() {
 
     let (job_id, _task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
-        (job.id(), task.id())
+        seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await
     };
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
@@ -960,15 +794,7 @@ async fn test_extraction_happy_path() {
 
     let token = CancellationToken::new();
     let worker = build_test_worker(pool, token.clone(), test_config(), Some(inference), None);
-
-    let worker_handle = {
-        let w = Arc::clone(&worker);
-        tokio::spawn(async move { w.run().await })
-    };
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    token.cancel();
-    let _ = worker_handle.await;
+    run_worker_briefly(worker, token, POLL_SETTLE).await;
 
     let mut conn = raw_conn(ctx).await;
 
@@ -1028,30 +854,7 @@ async fn test_extraction_zero_candidates() {
 
     let (job_id, _task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
-        (job.id(), task.id())
+        seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await
     };
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
@@ -1063,15 +866,7 @@ async fn test_extraction_zero_candidates() {
 
     let token = CancellationToken::new();
     let worker = build_test_worker(pool, token.clone(), test_config(), Some(inference), None);
-
-    let worker_handle = {
-        let w = Arc::clone(&worker);
-        tokio::spawn(async move { w.run().await })
-    };
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    token.cancel();
-    let _ = worker_handle.await;
+    run_worker_briefly(worker, token, POLL_SETTLE).await;
 
     let mut conn = raw_conn(ctx).await;
 
@@ -1089,10 +884,7 @@ async fn test_extraction_zero_candidates() {
         Some(JobOutcome::Empty),
         "outcome should be Empty",
     );
-    assert!(
-        job.completed_at().is_some(),
-        "completed_at should be set",
-    );
+    assert!(job.completed_at().is_some(), "completed_at should be set",);
     assert_eq!(job.batch_size(), Some(0), "batch_size should be 0");
 
     // No triage tasks should have been created.
@@ -1118,51 +910,21 @@ async fn test_extraction_capping() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, pv_id) =
-        setup_prerequisites(ctx, "extraction-capping").await;
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "extraction-capping").await;
 
     // Build 5 candidates and hints that span all 5 indices.
     let candidates: Vec<_> = (0..5)
         .map(|i| a_candidate().content(format!("candidate {i}")).build())
         .collect();
     let hints = vec![
-        a_relation_hint()
-            .source_index(0)
-            .target_index(1)
-            .build(),
-        a_relation_hint()
-            .source_index(2)
-            .target_index(4)
-            .build(),
+        a_relation_hint().source_index(0).target_index(1).build(),
+        a_relation_hint().source_index(2).target_index(4).build(),
     ];
     let response_json = extraction_response_json(&candidates, &hints);
 
     let (job_id, _task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
-        (job.id(), task.id())
+        seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await
     };
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
@@ -1180,15 +942,7 @@ async fn test_extraction_capping() {
 
     let token = CancellationToken::new();
     let worker = build_test_worker(pool, token.clone(), config, Some(inference), None);
-
-    let worker_handle = {
-        let w = Arc::clone(&worker);
-        tokio::spawn(async move { w.run().await })
-    };
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    token.cancel();
-    let _ = worker_handle.await;
+    run_worker_briefly(worker, token, POLL_SETTLE).await;
 
     let mut conn = raw_conn(ctx).await;
 
@@ -1197,7 +951,11 @@ async fn test_extraction_capping() {
         .await
         .expect("find job");
     assert_eq!(job.status(), JobStatus::Triaging, "job should be triaging");
-    assert_eq!(job.batch_size(), Some(2), "batch_size should be capped to 2");
+    assert_eq!(
+        job.batch_size(),
+        Some(2),
+        "batch_size should be capped to 2"
+    );
     assert_eq!(
         job.extraction_original_count(),
         Some(5),
@@ -1246,30 +1004,7 @@ async fn test_extraction_parse_failure() {
 
     let (_job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let job = PgJobRepository
-            .insert(
-                &mut conn,
-                &a_new_job()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .extraction_prompt_version_id(pv_id)
-                    .triage_prompt_version_id(pv_id)
-                    .relation_prompt_version_id(pv_id)
-                    .build(),
-            )
-            .await
-            .expect("insert job");
-        let task = PgTaskRepository
-            .insert(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job.id())
-                    .task_type(TaskType::Extraction)
-                    .build(),
-            )
-            .await
-            .expect("insert task");
-        (job.id(), task.id())
+        seed_extraction_job(&mut conn, principal_id, project_id, pv_id).await
     };
 
     // Return text that is not valid ExtractionOutput JSON.
@@ -1285,15 +1020,7 @@ async fn test_extraction_parse_failure() {
 
     let token = CancellationToken::new();
     let worker = build_test_worker(pool, token.clone(), test_config(), Some(inference), None);
-
-    let worker_handle = {
-        let w = Arc::clone(&worker);
-        tokio::spawn(async move { w.run().await })
-    };
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    token.cancel();
-    let _ = worker_handle.await;
+    run_worker_briefly(worker, token, POLL_SETTLE).await;
 
     let mut conn = raw_conn(ctx).await;
     let task = PgTaskRepository
