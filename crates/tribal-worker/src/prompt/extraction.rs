@@ -10,9 +10,6 @@ use crate::{error::StageError, parsing::ExtractionOutput};
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Tera context variable: the raw input text.
-const VAR_RAW_INPUT: &str = "raw_input";
-
 /// Tera context variable: the tag registry as a list of strings.
 const VAR_TAGS: &str = "tags";
 
@@ -25,10 +22,10 @@ const VAR_SCHEMA: &str = "schema";
 
 /// Assembles a [`CompletionRequest`] for the extraction stage.
 ///
-/// Renders the Tera template with the [`VAR_RAW_INPUT`], [`VAR_TAGS`]
-/// (from the tag registry), and [`VAR_SCHEMA`] (JSON Schema for
-/// [`ExtractionOutput`]) context variables. The rendered text becomes
-/// the system prompt; the raw input is sent as a user message.
+/// Renders the Tera template with the [`VAR_TAGS`] (from the tag
+/// registry) and [`VAR_SCHEMA`] (JSON Schema for [`ExtractionOutput`])
+/// context variables. The rendered text becomes the system prompt; the
+/// raw input is sent as a user message.
 ///
 /// # Errors
 ///
@@ -48,7 +45,6 @@ pub(crate) fn assemble_extraction_prompt(
     let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
 
     let mut context = tera::Context::new();
-    context.insert(VAR_RAW_INPUT, raw_input);
     context.insert(VAR_TAGS, &tags);
     context.insert(VAR_SCHEMA, &schema_pretty);
 
