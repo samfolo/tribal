@@ -6,9 +6,10 @@ use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType};
 use tribal_inference::Usage;
 
-use super::common::SEMAPHORE_CLOSED;
 use crate::{
-    error::StageError, parsing::parse_extraction_response, prompt::assemble_extraction_prompt,
+    error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, StageError},
+    parsing::parse_extraction_response,
+    prompt::assemble_extraction_prompt,
     worker::Worker,
 };
 
@@ -16,7 +17,6 @@ use crate::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const STAGE_EXTRACTION: &str = "extraction";
 const CANDIDATES_SERIALISE: &str = "candidates serialise to JSON";
 const HINTS_SERIALISE: &str = "relation hints serialise to JSON";
 
