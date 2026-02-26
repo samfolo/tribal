@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 tribal-domain.workspace = true
-tribal-db.workspace = true
+tribal-db = { workspace = true, features = ["test-helpers"] }
 tribal-inference.workspace = true
 async-trait.workspace = true
 chrono = { workspace = true }
@@ -20,6 +20,7 @@ testcontainers.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+pgvector.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
