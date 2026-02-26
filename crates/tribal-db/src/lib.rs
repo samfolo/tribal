@@ -36,3 +36,6 @@ pub use repositories::{
     TaskRepository, TokenUsageRepository, TokenUsageStage, TraversalNode, TraversalResponse,
     TriageResultRepository, TriageSimilarItemDecisionRepository,
 };
+
+#[cfg(feature = "test-helpers")]
+pub use repositories::JobStateOverride;
