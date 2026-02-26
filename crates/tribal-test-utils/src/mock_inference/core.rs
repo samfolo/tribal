@@ -20,12 +20,12 @@ use crate::text::truncate;
 pub(crate) const MUTEX_POISONED: &str = "mock provider mutex poisoned";
 
 // ---------------------------------------------------------------------------
-// MockOptions
+// MockProviderOptions
 // ---------------------------------------------------------------------------
 
 /// Per-response options for mock provider entries.
 #[derive(Debug, Clone, Default)]
-pub struct MockOptions {
+pub struct MockProviderOptions {
     /// Delay applied before returning the response.
     pub delay: Option<Duration>,
 }
