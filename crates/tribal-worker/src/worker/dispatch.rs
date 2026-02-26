@@ -49,7 +49,6 @@ const STAGE_EXTRACTION: &str = "extraction";
 /// cancellation token is triggered.
 pub struct Worker {
     pool: PgPool,
-    #[allow(dead_code)]
     provider_registry: Arc<ProviderRegistry>,
     extraction_provider: Arc<dyn InferenceProvider>,
     #[allow(dead_code)]
@@ -58,7 +57,6 @@ pub struct Worker {
     relation_provider: Arc<dyn InferenceProvider>,
     #[allow(dead_code)]
     embedding_provider: Arc<dyn EmbeddingProvider>,
-    #[allow(dead_code)]
     extraction_key: ProviderKey,
     #[allow(dead_code)]
     triage_inference_key: ProviderKey,
@@ -124,9 +122,19 @@ impl Worker {
         &self.config
     }
 
+    /// Returns a reference to the provider registry.
+    pub(crate) fn provider_registry(&self) -> &Arc<ProviderRegistry> {
+        &self.provider_registry
+    }
+
     /// Returns a reference to the extraction inference provider.
     pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
         &self.extraction_provider
+    }
+
+    /// Returns the extraction provider key.
+    pub(crate) fn extraction_key(&self) -> &ProviderKey {
+        &self.extraction_key
     }
 
     /// Returns the high-water mark of simultaneously in-flight tasks
