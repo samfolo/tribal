@@ -15,8 +15,8 @@ use tribal_inference::{
 
 use super::{
     core::{
-        ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED, MockProviderOptions,
-        MockProviderCore, QueueEntry,
+        ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED, MockProviderCore,
+        MockProviderOptions, QueueEntry,
     },
     matcher::{CompletionMatcher, EmbeddingMatcher},
 };
@@ -369,7 +369,11 @@ impl MockEmbeddingProviderBuilder {
     }
 
     /// Enqueues a successful embedding response (FIFO).
-    pub fn on_embed(mut self, response: EmbeddingResponse, options: Option<MockProviderOptions>) -> Self {
+    pub fn on_embed(
+        mut self,
+        response: EmbeddingResponse,
+        options: Option<MockProviderOptions>,
+    ) -> Self {
         let delay = options.and_then(|o| o.delay);
         self.queue.push_back(QueueEntry::Ok(response, delay));
         self
