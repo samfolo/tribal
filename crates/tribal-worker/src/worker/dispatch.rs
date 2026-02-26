@@ -122,6 +122,11 @@ impl Worker {
         &self.config
     }
 
+    /// Returns a reference to the database pool.
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Returns a reference to the provider registry.
     pub(crate) fn provider_registry(&self) -> &Arc<ProviderRegistry> {
         &self.provider_registry

@@ -34,7 +34,7 @@ impl Worker {
         &self,
         stage: &str,
     ) -> Result<Vec<TagRegistryEntry>, StageError> {
-        let mut conn = self.pool.acquire().await.map_err(|e| StageError::Database {
+        let mut conn = self.pool().acquire().await.map_err(|e| StageError::Database {
             stage: stage.into(),
             context: "acquiring connection for tag registry".into(),
             source: tribal_db::DbError::QueryFailed {
@@ -62,7 +62,7 @@ impl Worker {
         stage: &str,
         id: PromptVersionId,
     ) -> Result<PromptVersion, StageError> {
-        let mut conn = self.pool.acquire().await.map_err(|e| StageError::Database {
+        let mut conn = self.pool().acquire().await.map_err(|e| StageError::Database {
             stage: stage.into(),
             context: "acquiring connection for prompt version".into(),
             source: tribal_db::DbError::QueryFailed {
