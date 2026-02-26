@@ -121,6 +121,12 @@ impl WorkerConfig {
                 reason: "must be greater than zero",
             });
         }
+        if self.heartbeat_interval_seconds == 0 {
+            return Err(ConfigError::InvalidField {
+                field: "heartbeat_interval_seconds",
+                reason: "must be greater than zero",
+            });
+        }
         if self.heartbeat_interval_seconds >= self.task_timeout_seconds {
             return Err(ConfigError::InvalidField {
                 field: "heartbeat_interval_seconds",
@@ -271,6 +277,16 @@ mod tests {
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("task_timeout_seconds"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_heartbeat_interval() {
+        let config = WorkerConfig {
+            heartbeat_interval_seconds: 0,
+            ..WorkerConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("heartbeat_interval_seconds"));
     }
 
     #[test]
