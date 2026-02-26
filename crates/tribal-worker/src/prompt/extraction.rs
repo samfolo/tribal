@@ -4,8 +4,7 @@ use schemars::schema_for;
 use tribal_domain::TagRegistryEntry;
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
-use crate::error::StageError;
-use crate::parsing::ExtractionOutput;
+use crate::{error::StageError, parsing::ExtractionOutput};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,7 +45,7 @@ pub(crate) fn assemble_extraction_prompt(
     let schema_pretty =
         serde_json::to_string_pretty(&schema).expect("schema_for! produces serialisable output");
 
-    let tags: Vec<&str> = tag_registry.iter().map(|e| e.tag()).collect();
+    let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
 
     let mut context = tera::Context::new();
     context.insert(VAR_RAW_INPUT, raw_input);
@@ -87,11 +86,8 @@ mod tests {
 
     #[test]
     fn test_invalid_template_returns_template_render_error() {
-        let result = assemble_extraction_prompt(
-            "{{ invalid | nonexistent_filter }}",
-            "some input",
-            &[],
-        );
+        let result =
+            assemble_extraction_prompt("{{ invalid | nonexistent_filter }}", "some input", &[]);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.to_error_kind(), TaskErrorKind::InternalError);
@@ -121,7 +117,10 @@ mod tests {
         assert!(result.is_ok());
         let request = result.unwrap();
         assert!(
-            matches!(request.response_format, Some(ResponseFormat::JsonSchema { .. })),
+            matches!(
+                request.response_format,
+                Some(ResponseFormat::JsonSchema { .. })
+            ),
             "expected JsonSchema response format",
         );
     }

@@ -68,7 +68,7 @@ impl Candidate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SuggestedReference {
-    /// Free-form reference type (e.g. "url", "file_path").
+    /// Free-form reference type (e.g. `"url"`, `"file_path"`).
     reference_type: String,
     /// The reference value.
     value: String,
