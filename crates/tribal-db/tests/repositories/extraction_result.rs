@@ -3,9 +3,9 @@ use tribal_db::{
     PgJobRepository, PgPrincipalRepository, PgProjectRepository, PrincipalRepository,
     ProjectRepository,
 };
-use tribal_domain::PromptVersionId;
 use tribal_test_utils::{
-    a_new_extraction_result, a_new_job, a_new_principal, a_new_project, test_context,
+    a_new_extraction_result, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
+    insert_prompt_version, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -35,17 +35,8 @@ async fn setup_job(txn: &mut sqlx::PgConnection, suffix: &str) -> tribal_domain:
         .await
         .expect("insert project");
 
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut *txn)
-    .await
-    .expect("insert prompt_version");
+    let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
 
-    let pv_id = PromptVersionId::from(prompt_version_id);
     let job = PgJobRepository
         .insert(
             txn,

@@ -581,6 +581,10 @@ impl PgTaskRepository {
     /// Inserts a task with a caller-controlled status, bypassing the
     /// production `insert()` which always creates `queued` tasks.
     ///
+    /// # Panics
+    ///
+    /// Panics if `batch_index` exceeds `i32::MAX`.
+    ///
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.

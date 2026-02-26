@@ -19,6 +19,8 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 
 pub use error::DbError;
 pub use pool::create_pool;
+#[cfg(feature = "test-helpers")]
+pub use repositories::JobStateOverride;
 pub use repositories::{
     AuthTokenRepository, EmbeddingRepository, ExtractionResultRepository,
     ItemObservationRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,
@@ -36,6 +38,3 @@ pub use repositories::{
     TaskRepository, TokenUsageRepository, TokenUsageStage, TraversalNode, TraversalResponse,
     TriageResultRepository, TriageSimilarItemDecisionRepository,
 };
-
-#[cfg(feature = "test-helpers")]
-pub use repositories::JobStateOverride;

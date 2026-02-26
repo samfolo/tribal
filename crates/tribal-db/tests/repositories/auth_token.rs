@@ -3,7 +3,7 @@ use tribal_db::{
     AuthTokenRepository, DbError, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
 };
 use tribal_domain::{AuthTokenId, PrincipalId};
-use tribal_test_utils::{a_new_auth_token, a_new_principal, test_context};
+use tribal_test_utils::{a_new_auth_token, a_new_principal, shift_timestamp_by_id, test_context};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -147,11 +147,14 @@ async fn test_find_by_principal_id_returns_tokens_ordered() {
         .expect("first insert");
 
     // Backdate the first token so ordering is deterministic.
-    sqlx::query("UPDATE auth_tokens SET created_at = created_at - interval '1 hour' WHERE id = $1")
-        .bind(first.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate");
+    shift_timestamp_by_id(
+        &mut txn,
+        "auth_tokens",
+        "created_at",
+        *first.id().inner(),
+        chrono::Duration::hours(-1),
+    )
+    .await;
 
     let _second = repo
         .insert(

@@ -31,8 +31,9 @@ use tribal_inference::{
 };
 use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions,
-    TestContext, a_completion_response, a_new_job, a_new_principal, a_new_project, a_new_task,
-    backdate_task_heartbeat, serial_lock, set_retry_count, test_context,
+    TestContext, a_completion_response, a_new_job, a_new_principal, a_new_project,
+    a_new_prompt_version, a_new_task, backdate_task_heartbeat, insert_prompt_version, serial_lock,
+    set_retry_count, test_context, truncate_all_tables,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -59,14 +60,7 @@ async fn raw_conn(ctx: &TestContext) -> sqlx::PgConnection {
 /// with a clean claim surface.  Called at the end of each test.
 async fn teardown(ctx: &TestContext) {
     let mut conn = raw_conn(ctx).await;
-    sqlx::query("DELETE FROM token_usage")
-        .execute(&mut conn)
-        .await
-        .ok();
-    sqlx::query("DELETE FROM tasks")
-        .execute(&mut conn)
-        .await
-        .ok();
+    truncate_all_tables(&mut conn).await;
 }
 
 /// Inserts a principal, project, and prompt_version, returning the IDs
@@ -97,17 +91,9 @@ async fn setup_prerequisites(
         .await
         .expect("insert project");
 
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let pv_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test prompt') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut conn)
-    .await
-    .expect("insert prompt_version");
+    let pv_id = insert_prompt_version(&mut conn, &a_new_prompt_version().build()).await;
 
-    (principal.id(), project.id(), PromptVersionId::from(pv_id))
+    (principal.id(), project.id(), pv_id)
 }
 
 /// Builds a [`Worker`] with mock providers and short timeouts suitable

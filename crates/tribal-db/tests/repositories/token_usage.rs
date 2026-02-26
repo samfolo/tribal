@@ -1,11 +1,12 @@
 use tribal_db::{
-    PgPrincipalRepository, PgProjectRepository, PgPromptVersionRepository, PgTokenUsageRepository,
-    PrincipalRepository, ProjectRepository, PromptVersionRepository, TokenUsageRepository,
+    JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
+    PgTokenUsageRepository, PrincipalRepository, ProjectRepository, TokenUsageRepository,
     TokenUsageStage,
 };
 use tribal_domain::{EmbeddingPurpose, JobId, PipelineStage, PrincipalId, ProjectId};
 use tribal_test_utils::{
-    a_new_principal, a_new_project, a_new_prompt_version, a_new_token_usage, test_context,
+    a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_token_usage,
+    insert_prompt_version, shift_timestamp_by_id, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -41,46 +42,31 @@ async fn setup_prerequisites(
 }
 
 /// Inserts a prompt version and returns its ID.
-async fn setup_prompt_version(
-    txn: &mut sqlx::PgConnection,
-    content_hash: &str,
-) -> tribal_domain::PromptVersionId {
-    PgPromptVersionRepository
-        .upsert(
-            txn,
-            &a_new_prompt_version()
-                .content_hash(content_hash.to_owned())
-                .build(),
-        )
-        .await
-        .expect("upsert prompt version")
-        .id()
+async fn setup_prompt_version(txn: &mut sqlx::PgConnection) -> tribal_domain::PromptVersionId {
+    insert_prompt_version(txn, &a_new_prompt_version().build()).await
 }
 
-/// Inserts a job via raw SQL and returns its ID.
+/// Inserts a queued job and returns its ID.
 async fn setup_job(
     txn: &mut sqlx::PgConnection,
     project_id: ProjectId,
     principal_id: PrincipalId,
     pv_id: tribal_domain::PromptVersionId,
 ) -> JobId {
-    let job_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO jobs \
-             (project_id, principal_id, source_context, \
-              extraction_prompt_version_id, triage_prompt_version_id, \
-              relation_prompt_version_id) \
-         VALUES ($1, $2, $3, $4, $4, $4) \
-         RETURNING id",
-    )
-    .bind(project_id.inner())
-    .bind(principal_id.inner())
-    .bind(serde_json::json!({}))
-    .bind(pv_id.inner())
-    .fetch_one(&mut *txn)
-    .await
-    .expect("insert job");
-
-    JobId::from(job_id)
+    PgJobRepository
+        .insert(
+            txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
+                .build(),
+        )
+        .await
+        .expect("insert job")
+        .id()
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +80,7 @@ async fn test_insert_returns_populated_token_usage() {
     let repo = PgTokenUsageRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "insert").await;
-    let pv_id = setup_prompt_version(&mut txn, &"a".repeat(64)).await;
+    let pv_id = setup_prompt_version(&mut txn).await;
     let job_id = setup_job(&mut txn, project_id, principal_id, pv_id).await;
 
     let new = a_new_token_usage()
@@ -201,7 +187,7 @@ async fn test_find_by_job_id_returns_records_ordered() {
     let repo = PgTokenUsageRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "find-job").await;
-    let pv_id = setup_prompt_version(&mut txn, &"b".repeat(64)).await;
+    let pv_id = setup_prompt_version(&mut txn).await;
     let job_id = setup_job(&mut txn, project_id, principal_id, pv_id).await;
 
     let first = a_new_token_usage()
@@ -220,11 +206,14 @@ async fn test_find_by_job_id_returns_records_ordered() {
     let first_tu = repo.insert(&mut txn, &first).await.expect("insert first");
 
     // Backdate the first record so ordering is deterministic.
-    sqlx::query("UPDATE token_usage SET created_at = created_at - interval '1 hour' WHERE id = $1")
-        .bind(first_tu.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate");
+    shift_timestamp_by_id(
+        &mut txn,
+        "token_usage",
+        "created_at",
+        *first_tu.id().inner(),
+        chrono::Duration::hours(-1),
+    )
+    .await;
 
     repo.insert(&mut txn, &second).await.expect("insert second");
 

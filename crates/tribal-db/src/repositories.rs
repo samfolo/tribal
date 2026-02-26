@@ -33,9 +33,9 @@ pub use extraction_result::{
 pub use item_observation::{
     ItemObservationRepository, NewItemObservation, PgItemObservationRepository,
 };
-pub use job::{JobRepository, JobStatusTransition, NewJob, PgJobRepository};
 #[cfg(feature = "test-helpers")]
 pub use job::JobStateOverride;
+pub use job::{JobRepository, JobStatusTransition, NewJob, PgJobRepository};
 pub use knowledge_item::{
     KnowledgeItemRepository, NewKnowledgeItem, PgKnowledgeItemRepository, SemanticSearchParams,
     SemanticSearchResponse, SemanticSearchResult,

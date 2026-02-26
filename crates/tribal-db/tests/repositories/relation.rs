@@ -7,7 +7,7 @@ use tribal_domain::{
 };
 use tribal_test_utils::{
     a_new_knowledge_item, a_new_knowledge_item_relation, a_new_principal, a_new_project,
-    test_context,
+    commit_relation_batch, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -75,43 +75,6 @@ async fn setup_item(
         .await
         .expect("insert knowledge item")
         .id()
-}
-
-/// Creates a prompt_version row and a completed job with the given
-/// `committed_batch_id`, satisfying FK constraints.
-///
-/// A single prompt_version ID is reused for all three job FK columns.
-async fn commit_batch(
-    txn: &mut sqlx::PgConnection,
-    project_id: ProjectId,
-    principal_id: PrincipalId,
-    batch_id: RelationBatchId,
-) {
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut *txn)
-    .await
-    .expect("insert prompt_version");
-
-    sqlx::query(
-        "INSERT INTO jobs \
-         (project_id, principal_id, source_context, status, outcome, \
-          committed_batch_id, extraction_prompt_version_id, \
-          triage_prompt_version_id, relation_prompt_version_id) \
-         VALUES ($1, $2, $3, 'completed', 'success', $4, $5, $5, $5)",
-    )
-    .bind(project_id.inner())
-    .bind(principal_id.inner())
-    .bind(serde_json::json!({}))
-    .bind(batch_id.inner())
-    .bind(prompt_version_id)
-    .execute(&mut *txn)
-    .await
-    .expect("insert job");
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +195,7 @@ async fn test_find_inbound_returns_committed_relations() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let found = repo
         .find_inbound(&mut txn, item_b, None)
@@ -278,7 +241,7 @@ async fn test_find_inbound_with_type_filter() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let found = repo
         .find_inbound(&mut txn, anchor, Some(&[RelationKind::Supports]))
@@ -361,7 +324,7 @@ async fn test_find_outbound_returns_committed_relations() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let found = repo
         .find_outbound(&mut txn, item_a, None)
@@ -407,7 +370,7 @@ async fn test_find_outbound_with_type_filter() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let found = repo
         .find_outbound(&mut txn, anchor, Some(&[RelationKind::DerivedFrom]))
@@ -534,7 +497,7 @@ async fn test_traverse_inbound_multi_depth() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let response = repo
         .traverse(&mut txn, item_a, Direction::Inbound, 2, 10, None)
@@ -601,7 +564,7 @@ async fn test_traverse_outbound_multi_depth() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let response = repo
         .traverse(&mut txn, item_a, Direction::Outbound, 2, 10, None)
@@ -674,7 +637,7 @@ async fn test_traverse_both_merges_directions_multi_depth() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let response = repo
         .traverse(&mut txn, item_a, Direction::Both, 2, 10, None)
@@ -752,7 +715,7 @@ async fn test_traverse_cycle_terminates() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     // Outbound from A with generous depth — should not loop forever.
     let response = repo
@@ -811,7 +774,7 @@ async fn test_traverse_respects_depth_limit() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let response = repo
         .traverse(&mut txn, item_a, Direction::Inbound, 1, 10, None)
@@ -858,7 +821,7 @@ async fn test_traverse_sets_exact_false_when_limit_reached() {
         .await
         .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let response = repo
         .traverse(&mut txn, anchor, Direction::Inbound, 1, 2, None)
@@ -893,7 +856,7 @@ async fn test_traverse_sets_exact_true_when_all_returned() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let response = repo
         .traverse(&mut txn, anchor, Direction::Inbound, 1, 10, None)
@@ -942,7 +905,7 @@ async fn test_traverse_with_type_filter() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let response = repo
         .traverse(
@@ -1003,7 +966,7 @@ async fn test_traverse_with_multiple_type_filter_uses_or() {
     .await
     .expect("batch_insert");
 
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     // Filter to Supports OR Contradicts — DerivedFrom should be excluded.
     let response = repo
