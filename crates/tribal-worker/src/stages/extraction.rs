@@ -8,9 +8,7 @@ use tribal_inference::Usage;
 
 use super::common::SEMAPHORE_CLOSED;
 use crate::{
-    error::StageError,
-    parsing::parse_extraction_response,
-    prompt::assemble_extraction_prompt,
+    error::StageError, parsing::parse_extraction_response, prompt::assemble_extraction_prompt,
     worker::Worker,
 };
 
@@ -117,11 +115,8 @@ impl Worker {
         })?
         .expect(SEMAPHORE_CLOSED);
 
-        let request = assemble_extraction_prompt(
-            prompt_version.content(),
-            job.raw_input(),
-            &tag_registry,
-        )?;
+        let request =
+            assemble_extraction_prompt(prompt_version.content(), job.raw_input(), &tag_registry)?;
 
         let response = self
             .extraction_provider()
@@ -137,8 +132,7 @@ impl Worker {
         #[allow(clippy::cast_possible_truncation)]
         let original_count = output.candidates.len() as u32;
         let max = self.config().max_candidates_per_job as usize;
-        let capped_candidates: Vec<Candidate> =
-            output.candidates.into_iter().take(max).collect();
+        let capped_candidates: Vec<Candidate> = output.candidates.into_iter().take(max).collect();
         #[allow(clippy::cast_possible_truncation)]
         let batch_size = capped_candidates.len() as u32;
 

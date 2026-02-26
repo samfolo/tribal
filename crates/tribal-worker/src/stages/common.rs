@@ -2,15 +2,14 @@
 
 use std::sync::Arc;
 
+use tokio::sync::Semaphore;
 use tribal_db::{
     PgPromptVersionRepository, PgTagRegistryRepository, PromptVersionRepository,
     TagRegistryRepository,
 };
 use tribal_domain::{PromptVersion, PromptVersionId, TagRegistryEntry};
-use tokio::sync::Semaphore;
 
-use crate::error::StageError;
-use crate::worker::Worker;
+use crate::{error::StageError, worker::Worker};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -34,14 +33,18 @@ impl Worker {
         &self,
         stage: &str,
     ) -> Result<Vec<TagRegistryEntry>, StageError> {
-        let mut conn = self.pool().acquire().await.map_err(|e| StageError::Database {
-            stage: stage.into(),
-            context: "acquiring connection for tag registry".into(),
-            source: tribal_db::DbError::QueryFailed {
-                context: "pool acquire".into(),
-                source: e,
-            },
-        })?;
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: stage.into(),
+                context: "acquiring connection for tag registry".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
         PgTagRegistryRepository
             .find_all(&mut conn)
             .await
@@ -62,14 +65,18 @@ impl Worker {
         stage: &str,
         id: PromptVersionId,
     ) -> Result<PromptVersion, StageError> {
-        let mut conn = self.pool().acquire().await.map_err(|e| StageError::Database {
-            stage: stage.into(),
-            context: "acquiring connection for prompt version".into(),
-            source: tribal_db::DbError::QueryFailed {
-                context: "pool acquire".into(),
-                source: e,
-            },
-        })?;
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: stage.into(),
+                context: "acquiring connection for prompt version".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
         PgPromptVersionRepository
             .find_by_id(&mut conn, id)
             .await
