@@ -246,7 +246,7 @@ async fn test_retry_path_increments_retry_count() {
         tokio::spawn(async move { w.run().await })
     };
 
-    let task = poll_task_status(&pool, task_id, TaskStatus::Queued, POLL_SETTLE).await;
+    let task = poll_task_requeued_with_retry(&pool, task_id, POLL_SETTLE).await;
     token.cancel();
     let _ = handle.await;
 
