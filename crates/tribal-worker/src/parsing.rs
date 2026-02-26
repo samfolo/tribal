@@ -2,4 +2,4 @@
 
 mod extraction;
 
-pub(crate) use extraction::parse_extraction_response;
+pub(crate) use extraction::{ExtractionOutput, parse_extraction_response};

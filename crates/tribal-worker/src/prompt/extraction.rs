@@ -5,7 +5,7 @@ use tribal_domain::TagRegistryEntry;
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
 use crate::error::StageError;
-use crate::stages::extraction::ExtractionOutput;
+use crate::parsing::ExtractionOutput;
 
 // ---------------------------------------------------------------------------
 // Constants

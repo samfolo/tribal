@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use serde::Deserialize;
 use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType};
 use tribal_inference::Usage;
@@ -71,23 +70,6 @@ pub(crate) struct ExtractionContext {
 }
 
 // ---------------------------------------------------------------------------
-// ExtractionOutput
-// ---------------------------------------------------------------------------
-
-/// The deserialised output from the extraction LLM call.
-///
-/// Lenient serde — unknown fields are silently ignored so the LLM
-/// can return extra keys without breaking parsing.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-pub(crate) struct ExtractionOutput {
-    /// Extracted knowledge item candidates.
-    pub candidates: Vec<Candidate>,
-    /// Intra-batch relation hints between candidates.
-    #[serde(default)]
-    pub relation_hints: Vec<RelationHint>,
-}
-
-// ---------------------------------------------------------------------------
 // Stage implementation
 // ---------------------------------------------------------------------------
 
@@ -131,7 +113,7 @@ impl Worker {
         )
         .await
         .map_err(|_| StageError::SemaphoreTimeout {
-            provider_key: self.extraction_key().to_string(),
+            provider_key: format!("{:?}", self.extraction_key()),
         })?
         .expect(SEMAPHORE_CLOSED);
 
@@ -154,7 +136,7 @@ impl Worker {
 
         #[allow(clippy::cast_possible_truncation)]
         let original_count = output.candidates.len() as u32;
-        let max = self.config.max_candidates_per_job as usize;
+        let max = self.config().max_candidates_per_job as usize;
         let capped_candidates: Vec<Candidate> =
             output.candidates.into_iter().take(max).collect();
         #[allow(clippy::cast_possible_truncation)]
@@ -163,7 +145,9 @@ impl Worker {
         let capped_hints: Vec<RelationHint> = output
             .relation_hints
             .into_iter()
-            .filter(|h| h.source_index() < batch_size && h.target_index() < batch_size)
+            .filter(|h: &RelationHint| {
+                h.source_index() < batch_size && h.target_index() < batch_size
+            })
             .collect();
 
         let triage_tasks: Vec<NewTask> = (0..batch_size)

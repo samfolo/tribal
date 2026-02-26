@@ -1,9 +1,27 @@
-//! Extraction response parsing.
+//! Extraction response parsing and output type.
 
+use serde::Deserialize;
+use tribal_domain::{Candidate, RelationHint};
 use tribal_inference::CompletionResponse;
 
 use crate::error::StageError;
-use crate::stages::extraction::ExtractionOutput;
+
+// ---------------------------------------------------------------------------
+// ExtractionOutput
+// ---------------------------------------------------------------------------
+
+/// The deserialised output from the extraction LLM call.
+///
+/// Lenient serde — unknown fields are silently ignored so the LLM
+/// can return extra keys without breaking parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+pub(crate) struct ExtractionOutput {
+    /// Extracted knowledge item candidates.
+    pub candidates: Vec<Candidate>,
+    /// Intra-batch relation hints between candidates.
+    #[serde(default)]
+    pub relation_hints: Vec<RelationHint>,
+}
 
 // ---------------------------------------------------------------------------
 // Public API
