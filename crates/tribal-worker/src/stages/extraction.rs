@@ -3,13 +3,11 @@
 use std::sync::Arc;
 
 use serde::Deserialize;
-use tribal_db::{
-    NewExtractionResult, NewTask, PgPromptVersionRepository, PgTagRegistryRepository,
-    PromptVersionRepository, TagRegistryRepository,
-};
+use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType};
 use tribal_inference::Usage;
 
+use super::common::SEMAPHORE_CLOSED;
 use crate::{
     error::StageError,
     parsing::parse_extraction_response,
@@ -22,7 +20,8 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const STAGE_EXTRACTION: &str = "extraction";
-const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
+const CANDIDATES_SERIALISE: &str = "candidates serialise to JSON";
+const HINTS_SERIALISE: &str = "relation hints serialise to JSON";
 
 // ---------------------------------------------------------------------------
 // StageOutput
@@ -61,9 +60,6 @@ pub(crate) enum StageCommit {
 // ---------------------------------------------------------------------------
 
 /// Context assembled before running the extraction stage.
-///
-/// Groups the job, task, and tag registry into a single struct,
-/// establishing the pattern for `TriageContext` and `RelationContext`.
 #[allow(dead_code)]
 pub(crate) struct ExtractionContext {
     /// The parent job.
@@ -116,58 +112,19 @@ impl Worker {
     /// # Panics
     ///
     /// Panics if the extraction provider key is not registered in the
-    /// provider registry (startup configuration error) or if the
-    /// semaphore is unexpectedly closed.
+    /// provider registry or if the semaphore is unexpectedly closed.
     pub(crate) async fn run_extraction(
         &self,
         job: &Job,
         task: &Task,
     ) -> Result<StageOutput, StageError> {
-        // 1. Load tag registry.
-        let tag_registry = {
-            let mut conn = self.pool.acquire().await.map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "acquiring connection for tag registry".into(),
-                source: tribal_db::DbError::QueryFailed {
-                    context: "pool acquire".into(),
-                    source: e,
-                },
-            })?;
-            PgTagRegistryRepository
-                .find_all(&mut conn)
-                .await
-                .map_err(|e| StageError::Database {
-                    stage: STAGE_EXTRACTION.into(),
-                    context: "loading tag registry".into(),
-                    source: e,
-                })?
-        };
+        let tag_registry = self.load_tag_registry(STAGE_EXTRACTION).await?;
 
-        // 2. Load prompt template.
-        let prompt_version = {
-            let mut conn = self.pool.acquire().await.map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "acquiring connection for prompt version".into(),
-                source: tribal_db::DbError::QueryFailed {
-                    context: "pool acquire".into(),
-                    source: e,
-                },
-            })?;
-            PgPromptVersionRepository
-                .find_by_id(&mut conn, job.extraction_prompt_version_id())
-                .await
-                .map_err(|e| StageError::Database {
-                    stage: STAGE_EXTRACTION.into(),
-                    context: "loading prompt version".into(),
-                    source: e,
-                })?
-        };
+        let prompt_version = self
+            .load_prompt_version(STAGE_EXTRACTION, job.extraction_prompt_version_id())
+            .await?;
 
-        // 3. Acquire semaphore permit.
-        let semaphore = self
-            .provider_registry
-            .semaphore(&self.extraction_key)
-            .expect("extraction key registered at startup");
+        let semaphore = self.extraction_semaphore();
         let _permit = tokio::time::timeout(
             self.config.task_timeout(),
             Arc::clone(semaphore).acquire_owned(),
@@ -178,14 +135,12 @@ impl Worker {
         })?
         .expect(SEMAPHORE_CLOSED);
 
-        // 4. Assemble prompt.
         let request = assemble_extraction_prompt(
             prompt_version.content(),
             job.raw_input(),
             &tag_registry,
         )?;
 
-        // 5. Call the LLM.
         let response = self
             .extraction_provider()
             .complete(request)
@@ -195,10 +150,8 @@ impl Worker {
                 source: e,
             })?;
 
-        // 6. Parse response.
         let output = parse_extraction_response(&response)?;
 
-        // 7. Cap candidates.
         #[allow(clippy::cast_possible_truncation)]
         let original_count = output.candidates.len() as u32;
         let max = self.config.max_candidates_per_job as usize;
@@ -207,14 +160,12 @@ impl Worker {
         #[allow(clippy::cast_possible_truncation)]
         let batch_size = capped_candidates.len() as u32;
 
-        // 8. Filter relation hints to only reference retained candidates.
         let capped_hints: Vec<RelationHint> = output
             .relation_hints
             .into_iter()
             .filter(|h| h.source_index() < batch_size && h.target_index() < batch_size)
             .collect();
 
-        // 9. Build triage tasks.
         let triage_tasks: Vec<NewTask> = (0..batch_size)
             .map(|i| {
                 NewTask::builder()
@@ -225,18 +176,12 @@ impl Worker {
             })
             .collect();
 
-        // 10. Build extraction result.
         let extraction_result = NewExtractionResult::builder()
             .job_id(task.job_id())
-            .candidates(
-                serde_json::to_value(&capped_candidates).expect("candidates serialise to JSON"),
-            )
-            .relation_hints(
-                serde_json::to_value(&capped_hints).expect("relation hints serialise to JSON"),
-            )
+            .candidates(serde_json::to_value(&capped_candidates).expect(CANDIDATES_SERIALISE))
+            .relation_hints(serde_json::to_value(&capped_hints).expect(HINTS_SERIALISE))
             .build();
 
-        // 11. Return stage output.
         Ok(StageOutput {
             commit: StageCommit::Extraction {
                 extraction_result,
