@@ -506,7 +506,7 @@ fn map_job_row(r: &sqlx::postgres::PgRow) -> Job {
 ///     .build()
 /// ```
 #[cfg(feature = "test-helpers")]
-#[derive(Debug, Clone, Default, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct JobStateOverride {
     #[builder(default = JobStatus::Queued)]
     pub status: JobStatus,
@@ -516,6 +516,18 @@ pub struct JobStateOverride {
     pub committed_batch_id: Option<RelationBatchId>,
     #[builder(default)]
     pub error_message: Option<String>,
+}
+
+#[cfg(feature = "test-helpers")]
+impl Default for JobStateOverride {
+    fn default() -> Self {
+        Self {
+            status: JobStatus::Queued,
+            outcome: None,
+            committed_batch_id: None,
+            error_message: None,
+        }
+    }
 }
 
 #[cfg(feature = "test-helpers")]
