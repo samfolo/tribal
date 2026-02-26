@@ -498,19 +498,26 @@ async fn test_set_committed_batch_id_not_found() {
 // ---------------------------------------------------------------------------
 
 /// Inserts a task row with the given status and task type for a job.
+///
+/// For triage tasks, sets `batch_index = 0` to satisfy the
+/// `triage_requires_batch_index` check constraint.
 async fn insert_task_with_status(
     txn: &mut sqlx::PgConnection,
     job_id: JobId,
     task_type: &str,
     status: &str,
 ) {
-    sqlx::query("INSERT INTO tasks (job_id, task_type, status) VALUES ($1, $2, $3)")
-        .bind(job_id.inner())
-        .bind(task_type)
-        .bind(status)
-        .execute(&mut *txn)
-        .await
-        .expect("insert task");
+    let batch_index: Option<i32> = if task_type == "triage" { Some(0) } else { None };
+    sqlx::query(
+        "INSERT INTO tasks (job_id, task_type, status, batch_index) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(job_id.inner())
+    .bind(task_type)
+    .bind(status)
+    .bind(batch_index)
+    .execute(&mut *txn)
+    .await
+    .expect("insert task");
 }
 
 #[tokio::test]
