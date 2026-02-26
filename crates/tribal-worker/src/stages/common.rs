@@ -17,8 +17,6 @@ use crate::{error::StageError, worker::Worker};
 
 const EXPECT_EXTRACTION_KEY: &str = "extraction key registered at startup";
 
-pub(crate) const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
-
 // ---------------------------------------------------------------------------
 // Shared loaders
 // ---------------------------------------------------------------------------

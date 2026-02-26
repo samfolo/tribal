@@ -3,6 +3,14 @@
 use tribal_domain::TaskErrorKind;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+pub(crate) const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
+pub(crate) const STAGE_PRE_DISPATCH: &str = "pre-dispatch";
+pub(crate) const STAGE_EXTRACTION: &str = "extraction";
+
+// ---------------------------------------------------------------------------
 // WorkerError
 // ---------------------------------------------------------------------------
 

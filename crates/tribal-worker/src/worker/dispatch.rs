@@ -25,18 +25,9 @@ use super::{
 };
 use crate::{
     config::WorkerConfig,
-    error::{StageError, WorkerError},
+    error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, STAGE_PRE_DISPATCH, StageError, WorkerError},
     stages::{StageCommit, StageOutput},
 };
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
-
-const STAGE_PRE_DISPATCH: &str = "pre-dispatch";
-const STAGE_EXTRACTION: &str = "extraction";
 
 // ---------------------------------------------------------------------------
 // Worker

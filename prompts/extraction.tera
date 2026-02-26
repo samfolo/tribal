@@ -17,6 +17,4 @@ The following tags already exist in the registry. Prefer reusing these where app
 
 Respond with valid JSON matching this schema:
 
-{% raw %}{{% endraw %}
 {{ schema }}
-{% raw %}}{% endraw %}
