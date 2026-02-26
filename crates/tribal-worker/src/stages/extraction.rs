@@ -108,7 +108,7 @@ impl Worker {
 
         let semaphore = self.extraction_semaphore();
         let _permit = tokio::time::timeout(
-            self.config.task_timeout(),
+            self.config().task_timeout(),
             Arc::clone(semaphore).acquire_owned(),
         )
         .await
