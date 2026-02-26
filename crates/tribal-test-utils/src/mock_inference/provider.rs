@@ -15,8 +15,8 @@ use tribal_inference::{
 
 use super::{
     core::{
-        ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED, MockProviderCore,
-        QueueEntry,
+        ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MockOptions, MUTEX_POISONED,
+        MockProviderCore, QueueEntry,
     },
     matcher::{CompletionMatcher, EmbeddingMatcher},
 };
@@ -110,7 +110,11 @@ impl InferenceProvider for MockInferenceProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, InferenceError> {
-        let result = self.core.dispatch(&request)?;
+        let (result, delay) = self.core.dispatch(&request);
+        if let Some(d) = delay {
+            tokio::time::sleep(d).await;
+        }
+        let result = result?;
         let mut usage = self.usage.lock().expect(MUTEX_POISONED);
         usage.total_input_tokens += u64::from(result.usage.input_tokens);
         usage.total_output_tokens += u64::from(result.usage.output_tokens);
@@ -155,8 +159,13 @@ impl MockInferenceProviderBuilder {
     }
 
     /// Enqueues a successful completion response (FIFO).
-    pub fn on_complete(mut self, response: CompletionResponse) -> Self {
-        self.queue.push_back(QueueEntry::Ok(response));
+    pub fn on_complete(
+        mut self,
+        response: CompletionResponse,
+        options: Option<MockOptions>,
+    ) -> Self {
+        let delay = options.and_then(|o| o.delay);
+        self.queue.push_back(QueueEntry::Ok(response, delay));
         self
     }
 
@@ -164,8 +173,11 @@ impl MockInferenceProviderBuilder {
     pub fn on_complete_error(
         mut self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
+        options: Option<MockOptions>,
     ) -> Self {
-        self.queue.push_back(QueueEntry::Err(Box::new(factory)));
+        let delay = options.and_then(|o| o.delay);
+        self.queue
+            .push_back(QueueEntry::Err(Box::new(factory), delay));
         self
     }
 
@@ -217,11 +229,16 @@ pub struct ConditionalCompletionBuilder {
 
 impl ConditionalCompletionBuilder {
     /// Registers a successful response for this conditional.
-    pub fn respond_with(self, response: CompletionResponse) -> MockInferenceProviderBuilder {
+    pub fn respond_with(
+        self,
+        response: CompletionResponse,
+        options: Option<MockOptions>,
+    ) -> MockInferenceProviderBuilder {
+        let delay = options.and_then(|o| o.delay);
         let mut parent = self.parent;
         parent.conditionals.push(ConditionalEntry {
             matcher: Box::new(move |req| self.matcher.matches(req)),
-            outcome: ConditionalOutcome::Ok(response),
+            outcome: ConditionalOutcome::Ok(response, delay),
         });
         parent
     }
@@ -230,11 +247,13 @@ impl ConditionalCompletionBuilder {
     pub fn respond_with_error(
         self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
+        options: Option<MockOptions>,
     ) -> MockInferenceProviderBuilder {
+        let delay = options.and_then(|o| o.delay);
         let mut parent = self.parent;
         parent.conditionals.push(ConditionalEntry {
             matcher: Box::new(move |req| self.matcher.matches(req)),
-            outcome: ConditionalOutcome::Err(Box::new(factory)),
+            outcome: ConditionalOutcome::Err(Box::new(factory), delay),
         });
         parent
     }
@@ -302,7 +321,11 @@ impl MockEmbeddingProvider {
 #[async_trait]
 impl EmbeddingProvider for MockEmbeddingProvider {
     async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, InferenceError> {
-        let result = self.core.dispatch(&request)?;
+        let (result, delay) = self.core.dispatch(&request);
+        if let Some(d) = delay {
+            tokio::time::sleep(d).await;
+        }
+        let result = result?;
         let mut usage = self.usage.lock().expect(MUTEX_POISONED);
         usage.total_tokens += u64::from(result.usage.total_tokens);
         Ok(result)
@@ -346,8 +369,13 @@ impl MockEmbeddingProviderBuilder {
     }
 
     /// Enqueues a successful embedding response (FIFO).
-    pub fn on_embed(mut self, response: EmbeddingResponse) -> Self {
-        self.queue.push_back(QueueEntry::Ok(response));
+    pub fn on_embed(
+        mut self,
+        response: EmbeddingResponse,
+        options: Option<MockOptions>,
+    ) -> Self {
+        let delay = options.and_then(|o| o.delay);
+        self.queue.push_back(QueueEntry::Ok(response, delay));
         self
     }
 
@@ -355,8 +383,11 @@ impl MockEmbeddingProviderBuilder {
     pub fn on_embed_error(
         mut self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
+        options: Option<MockOptions>,
     ) -> Self {
-        self.queue.push_back(QueueEntry::Err(Box::new(factory)));
+        let delay = options.and_then(|o| o.delay);
+        self.queue
+            .push_back(QueueEntry::Err(Box::new(factory), delay));
         self
     }
 
@@ -408,11 +439,16 @@ pub struct ConditionalEmbeddingBuilder {
 
 impl ConditionalEmbeddingBuilder {
     /// Registers a successful response for this conditional.
-    pub fn respond_with(self, response: EmbeddingResponse) -> MockEmbeddingProviderBuilder {
+    pub fn respond_with(
+        self,
+        response: EmbeddingResponse,
+        options: Option<MockOptions>,
+    ) -> MockEmbeddingProviderBuilder {
+        let delay = options.and_then(|o| o.delay);
         let mut parent = self.parent;
         parent.conditionals.push(ConditionalEntry {
             matcher: Box::new(move |req| self.matcher.matches(req)),
-            outcome: ConditionalOutcome::Ok(response),
+            outcome: ConditionalOutcome::Ok(response, delay),
         });
         parent
     }
@@ -421,11 +457,13 @@ impl ConditionalEmbeddingBuilder {
     pub fn respond_with_error(
         self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
+        options: Option<MockOptions>,
     ) -> MockEmbeddingProviderBuilder {
+        let delay = options.and_then(|o| o.delay);
         let mut parent = self.parent;
         parent.conditionals.push(ConditionalEntry {
             matcher: Box::new(move |req| self.matcher.matches(req)),
-            outcome: ConditionalOutcome::Err(Box::new(factory)),
+            outcome: ConditionalOutcome::Err(Box::new(factory), delay),
         });
         parent
     }
@@ -472,9 +510,9 @@ mod tests {
     #[tokio::test]
     async fn test_sequential_responses_returned_in_fifo_order() {
         let provider = MockInferenceProvider::builder()
-            .on_complete(a_completion_response("first"))
-            .on_complete(a_completion_response("second"))
-            .on_complete(a_completion_response("third"))
+            .on_complete(a_completion_response("first"), None)
+            .on_complete(a_completion_response("second"), None)
+            .on_complete(a_completion_response("third"), None)
             .build();
 
         let r1 = provider.complete(a_request("sys")).await.unwrap();
@@ -489,9 +527,9 @@ mod tests {
     #[tokio::test]
     async fn test_conditional_match_takes_priority_over_sequential() {
         let provider = MockInferenceProvider::builder()
-            .on_complete(a_completion_response("sequential"))
+            .on_complete(a_completion_response("sequential"), None)
             .when(CompletionMatcher::system_contains("special"))
-            .respond_with(a_completion_response("conditional"))
+            .respond_with(a_completion_response("conditional"), None)
             .build();
 
         // Conditional matches first despite sequential entry existing.
@@ -507,7 +545,7 @@ mod tests {
     async fn test_conditional_entries_fire_repeatedly() {
         let provider = MockInferenceProvider::builder()
             .when(CompletionMatcher::system_contains("repeat"))
-            .respond_with(a_completion_response("again"))
+            .respond_with(a_completion_response("again"), None)
             .build();
 
         for i in 0..5 {
@@ -524,7 +562,7 @@ mod tests {
     async fn test_conditional_error_response() {
         let provider = MockInferenceProvider::builder()
             .when(CompletionMatcher::system_contains("fail"))
-            .respond_with_error(a_provider_unavailable("conditional failure"))
+            .respond_with_error(a_provider_unavailable("conditional failure"), None)
             .build();
 
         let err = provider.complete(a_request("fail")).await.unwrap_err();
@@ -540,7 +578,7 @@ mod tests {
     async fn test_conditional_only_no_match_triggers_exhaustion() {
         let provider = MockInferenceProvider::builder()
             .when(CompletionMatcher::system_contains("specific"))
-            .respond_with(a_completion_response("match"))
+            .respond_with(a_completion_response("match"), None)
             .build();
 
         let _ = provider.complete(a_request("other")).await;
@@ -556,7 +594,7 @@ mod tests {
     #[tokio::test]
     async fn test_exhaust_repeat_last_clones_last_success() {
         let provider = MockInferenceProvider::builder()
-            .on_complete(a_completion_response("only"))
+            .on_complete(a_completion_response("only"), None)
             .on_exhaust(ExhaustBehaviour::RepeatLast)
             .build();
 
@@ -609,8 +647,8 @@ mod tests {
     #[tokio::test]
     async fn test_error_injection_via_on_complete_error() {
         let provider = MockInferenceProvider::builder()
-            .on_complete_error(a_provider_unavailable("first fails"))
-            .on_complete(a_completion_response("retry succeeds"))
+            .on_complete_error(a_provider_unavailable("first fails"), None)
+            .on_complete(a_completion_response("retry succeeds"), None)
             .build();
 
         let err = provider.complete(a_request("sys")).await.unwrap_err();
@@ -627,8 +665,8 @@ mod tests {
     #[tokio::test]
     async fn test_call_history_records_all_requests() {
         let provider = MockInferenceProvider::builder()
-            .on_complete(a_completion_response("ok"))
-            .on_complete_error(a_provider_unavailable("fail"))
+            .on_complete(a_completion_response("ok"), None)
+            .on_complete_error(a_provider_unavailable("fail"), None)
             .build();
 
         let _ = provider.complete(a_request("sys-a")).await;
@@ -643,9 +681,9 @@ mod tests {
     #[tokio::test]
     async fn test_usage_accounting_only_counts_successes() {
         let provider = MockInferenceProvider::builder()
-            .on_complete_error(a_provider_unavailable("fail"))
-            .on_complete(a_completion_response("ok"))
-            .on_complete(a_completion_response("ok2"))
+            .on_complete_error(a_provider_unavailable("fail"), None)
+            .on_complete(a_completion_response("ok"), None)
+            .on_complete(a_completion_response("ok2"), None)
             .build();
 
         let _ = provider.complete(a_request("sys")).await; // error — no usage
@@ -662,8 +700,8 @@ mod tests {
     #[should_panic(expected = "sequential responses consumed")]
     async fn test_assert_exhausted_panics_with_remaining() {
         let provider = MockInferenceProvider::builder()
-            .on_complete(a_completion_response("a"))
-            .on_complete(a_completion_response("b"))
+            .on_complete(a_completion_response("a"), None)
+            .on_complete(a_completion_response("b"), None)
             .build();
 
         let _ = provider.complete(a_request("sys")).await;
@@ -673,7 +711,7 @@ mod tests {
     #[tokio::test]
     async fn test_assert_exhausted_passes_when_fully_consumed() {
         let provider = MockInferenceProvider::builder()
-            .on_complete(a_completion_response("only"))
+            .on_complete(a_completion_response("only"), None)
             .build();
 
         let _ = provider.complete(a_request("sys")).await;
@@ -694,8 +732,8 @@ mod tests {
     #[tokio::test]
     async fn test_embedding_sequential_delivery() {
         let provider = MockEmbeddingProvider::builder()
-            .on_embed(an_embedding_response(vec![0.1, 0.2]))
-            .on_embed(an_embedding_response(vec![0.3, 0.4]))
+            .on_embed(an_embedding_response(vec![0.1, 0.2]), None)
+            .on_embed(an_embedding_response(vec![0.3, 0.4]), None)
             .build();
 
         let r1 = provider.embed(an_embed_request("first")).await.unwrap();
@@ -710,9 +748,9 @@ mod tests {
     #[tokio::test]
     async fn test_embedding_usage_accounting() {
         let provider = MockEmbeddingProvider::builder()
-            .on_embed_error(a_provider_unavailable("fail"))
-            .on_embed(an_embedding_response(vec![0.1]))
-            .on_embed(an_embedding_response(vec![0.2]))
+            .on_embed_error(a_provider_unavailable("fail"), None)
+            .on_embed(an_embedding_response(vec![0.1]), None)
+            .on_embed(an_embedding_response(vec![0.2]), None)
             .build();
 
         let _ = provider.embed(an_embed_request("a")).await; // error — no usage
@@ -728,8 +766,8 @@ mod tests {
     async fn test_embedding_conditional_with_has_purpose() {
         let provider = MockEmbeddingProvider::builder()
             .when(EmbeddingMatcher::has_purpose(EmbeddingPurpose::Query))
-            .respond_with(an_embedding_response(vec![1.0, 0.0]))
-            .on_embed(an_embedding_response(vec![0.0, 1.0]))
+            .respond_with(an_embedding_response(vec![1.0, 0.0]), None)
+            .on_embed(an_embedding_response(vec![0.0, 1.0]), None)
             .build();
 
         // Query purpose matches the conditional.
@@ -755,5 +793,69 @@ mod tests {
 
         let provider = MockEmbeddingProvider::builder().build();
         let _arc: Arc<dyn EmbeddingProvider> = Arc::new(provider);
+    }
+
+    // -- Delay tests -------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_no_delay_when_options_are_none() {
+        let provider = MockInferenceProvider::builder()
+            .on_complete(a_completion_response("instant"), None)
+            .build();
+
+        let start = std::time::Instant::now();
+        let resp = provider.complete(a_request("sys")).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(resp.text, "instant");
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "expected near-zero delay, got {elapsed:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sequential_delay_applied() {
+        let provider = MockInferenceProvider::builder()
+            .on_complete(
+                a_completion_response("delayed"),
+                Some(MockOptions {
+                    delay: Some(std::time::Duration::from_millis(50)),
+                }),
+            )
+            .build();
+
+        let start = std::time::Instant::now();
+        let resp = provider.complete(a_request("sys")).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(resp.text, "delayed");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(50),
+            "expected >= 50ms delay, got {elapsed:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_conditional_delay_applied() {
+        let provider = MockInferenceProvider::builder()
+            .when(CompletionMatcher::system_contains("slow"))
+            .respond_with(
+                a_completion_response("slow-response"),
+                Some(MockOptions {
+                    delay: Some(std::time::Duration::from_millis(50)),
+                }),
+            )
+            .build();
+
+        let start = std::time::Instant::now();
+        let resp = provider.complete(a_request("slow")).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(resp.text, "slow-response");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(50),
+            "expected >= 50ms delay, got {elapsed:?}",
+        );
     }
 }
