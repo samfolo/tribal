@@ -5,6 +5,8 @@
 
 mod config;
 mod error;
+mod parsing;
+mod prompt;
 mod stages;
 mod worker;
 
