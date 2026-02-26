@@ -11,6 +11,8 @@ use tribal_test_utils::{
     a_job_status_transition, a_new_job, a_new_principal, a_new_project, test_context,
 };
 
+use super::task::{TestTaskType, insert_task_with_status};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -497,29 +499,6 @@ async fn test_set_committed_batch_id_not_found() {
 // fail_stale_dead_lettered_jobs
 // ---------------------------------------------------------------------------
 
-/// Inserts a task row with the given status and task type for a job.
-///
-/// For triage tasks, sets `batch_index = 0` to satisfy the
-/// `triage_requires_batch_index` check constraint.
-async fn insert_task_with_status(
-    txn: &mut sqlx::PgConnection,
-    job_id: JobId,
-    task_type: &str,
-    status: &str,
-) {
-    let batch_index: Option<i32> = if task_type == "triage" { Some(0) } else { None };
-    sqlx::query(
-        "INSERT INTO tasks (job_id, task_type, status, batch_index) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(job_id.inner())
-    .bind(task_type)
-    .bind(status)
-    .bind(batch_index)
-    .execute(&mut *txn)
-    .await
-    .expect("insert task");
-}
-
 #[tokio::test]
 async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
     let ctx = test_context().await;
@@ -552,7 +531,7 @@ async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
         .expect("update status");
 
     // Insert a dead-lettered extraction task.
-    insert_task_with_status(&mut txn, job.id(), "extraction", "dead_letter").await;
+    insert_task_with_status(&mut txn, job.id(), TestTaskType::Extraction, "dead_letter").await;
 
     let failed_ids = repo
         .fail_stale_dead_lettered_jobs(&mut txn)
@@ -607,7 +586,13 @@ async fn test_fail_stale_dead_lettered_jobs_skips_triage() {
         .expect("update status");
 
     // Dead-lettered triage task — should NOT trigger job failure.
-    insert_task_with_status(&mut txn, job.id(), "triage", "dead_letter").await;
+    insert_task_with_status(
+        &mut txn,
+        job.id(),
+        TestTaskType::Triage { batch_index: 0 },
+        "dead_letter",
+    )
+    .await;
 
     let failed_ids = repo
         .fail_stale_dead_lettered_jobs(&mut txn)
@@ -658,7 +643,7 @@ async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
         .await
         .expect("update status");
 
-    insert_task_with_status(&mut txn, job.id(), "extraction", "dead_letter").await;
+    insert_task_with_status(&mut txn, job.id(), TestTaskType::Extraction, "dead_letter").await;
 
     let failed_ids = repo
         .fail_stale_dead_lettered_jobs(&mut txn)

@@ -9,8 +9,62 @@ use tribal_test_utils::{
 };
 
 // ---------------------------------------------------------------------------
+// TestTaskType
+// ---------------------------------------------------------------------------
+
+/// Task type for raw SQL insertion in tests.
+///
+/// Mirrors [`tribal_domain::TaskType`] but carries `batch_index` on
+/// the `Triage` variant so the `triage_requires_batch_index` check
+/// constraint is satisfied by construction.
+pub(super) enum TestTaskType {
+    Extraction,
+    Triage {
+        batch_index: i32,
+    },
+    #[allow(dead_code)]
+    Relation,
+}
+
+impl TestTaskType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Extraction => "extraction",
+            Self::Triage { .. } => "triage",
+            Self::Relation => "relation",
+        }
+    }
+
+    fn batch_index(&self) -> Option<i32> {
+        match self {
+            Self::Triage { batch_index } => Some(*batch_index),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Inserts a task row with the given status and task type for a job.
+pub(super) async fn insert_task_with_status(
+    txn: &mut sqlx::PgConnection,
+    job_id: JobId,
+    task_type: TestTaskType,
+    status: &str,
+) {
+    sqlx::query(
+        "INSERT INTO tasks (job_id, task_type, status, batch_index) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(job_id.inner())
+    .bind(task_type.as_str())
+    .bind(status)
+    .bind(task_type.batch_index())
+    .execute(&mut *txn)
+    .await
+    .expect("insert task");
+}
 
 /// Inserts a principal, project, prompt_version, and a job, returning
 /// the job ID for creating tasks.
