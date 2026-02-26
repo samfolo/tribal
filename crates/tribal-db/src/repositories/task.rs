@@ -571,3 +571,51 @@ fn map_task_row(r: &sqlx::postgres::PgRow) -> Task {
         .updated_at(r.get("updated_at"))
         .build()
 }
+
+// ---------------------------------------------------------------------------
+// Test helpers (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-helpers")]
+impl PgTaskRepository {
+    /// Inserts a task with a caller-controlled status, bypassing the
+    /// production `insert()` which always creates `queued` tasks.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `batch_index` exceeds `i32::MAX`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn insert_for_test(
+        &self,
+        conn: &mut PgConnection,
+        new_task: &NewTask,
+        status: TaskStatus,
+    ) -> Result<Task, DbError> {
+        let batch_index_i32 = new_task
+            .batch_index
+            .map(|v| i32::try_from(v).expect(BATCH_INDEX_EXCEEDS_I32));
+
+        let sql = format!(
+            "INSERT INTO tasks (job_id, task_type, batch_index, status) \
+             VALUES ($1, $2, $3, $4) \
+             RETURNING {COLUMNS}",
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(new_task.job_id.inner())
+            .bind(new_task.task_type.as_str())
+            .bind(batch_index_i32)
+            .bind(status.as_str())
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "inserting task (test helper)".to_owned(),
+                source: e,
+            })?;
+
+        Ok(map_task_row(&row))
+    }
+}

@@ -4,13 +4,11 @@ use tribal_db::{
     PgProjectRepository, PgTriageResultRepository, PrincipalRepository, ProjectRepository,
     TriageResultRepository,
 };
-use tribal_domain::{
-    JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, TriageOutcome,
-};
+use tribal_domain::{JobId, KnowledgeItemId, PrincipalId, ProjectId, TriageOutcome};
 use tribal_test_utils::{
     a_new_item_observation, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project,
-    a_new_triage_result_created, a_new_triage_result_duplicate, a_new_triage_result_failed,
-    test_context,
+    a_new_prompt_version, a_new_triage_result_created, a_new_triage_result_duplicate,
+    a_new_triage_result_failed, insert_prompt_version, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,17 +41,8 @@ async fn setup_prerequisites(
         .await
         .expect("insert project");
 
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut *txn)
-    .await
-    .expect("insert prompt_version");
+    let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
 
-    let pv_id = PromptVersionId::from(prompt_version_id);
     let job = tribal_db::PgJobRepository
         .insert(
             txn,

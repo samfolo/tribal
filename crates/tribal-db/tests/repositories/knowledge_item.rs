@@ -1,11 +1,17 @@
 use tribal_db::{
-    DbError, KnowledgeItemRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
-    PgProjectRepository, PrincipalRepository, ProjectRepository, SemanticSearchParams,
+    DbError, JobStateOverride, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
+    PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
+    SemanticSearchParams,
 };
 use tribal_domain::{
-    Confidence, EpisodeId, KnowledgeItemId, KnowledgeKind, PrincipalId, ProjectId,
+    Confidence, EpisodeId, JobOutcome, JobStatus, KnowledgeItemId, KnowledgeKind, PrincipalId,
+    ProjectId, RelationBatchId, RelationKind,
 };
-use tribal_test_utils::{a_new_knowledge_item, a_new_principal, a_new_project, test_context};
+use tribal_test_utils::{
+    a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
+    insert_committed_relation, insert_embedding, insert_prompt_version, set_timestamp,
+    test_context,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -42,28 +48,6 @@ async fn setup_prerequisites(
     (principal.id(), project.id())
 }
 
-/// Inserts an embedding row for the given knowledge item.
-async fn insert_embedding(
-    txn: &mut sqlx::PgConnection,
-    knowledge_item_id: KnowledgeItemId,
-    model: &str,
-    embedding: Vec<f32>,
-) {
-    let dimensions = i32::try_from(embedding.len()).expect("dimensions fit i32");
-    let vector = pgvector::Vector::from(embedding);
-    sqlx::query(
-        "INSERT INTO embeddings (knowledge_item_id, model, dimensions, embedding) \
-         VALUES ($1, $2, $3, $4)",
-    )
-    .bind(knowledge_item_id.inner())
-    .bind(model)
-    .bind(dimensions)
-    .bind(vector)
-    .execute(&mut *txn)
-    .await
-    .expect("insert embedding");
-}
-
 /// Creates a committed supersedes relation from `source_id` to `target_id`.
 ///
 /// Sets up the required prompt_version → job → relation chain so that
@@ -75,47 +59,37 @@ async fn insert_supersedes_relation(
     principal_id: PrincipalId,
     project_id: ProjectId,
 ) {
-    // A prompt_version is needed for the job's three FK columns.
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut *txn)
-    .await
-    .expect("insert prompt_version");
+    let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
+    let batch_id = RelationBatchId::new();
 
-    let batch_id = uuid::Uuid::new_v4();
+    PgJobRepository
+        .insert_for_test(
+            txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
+                .build(),
+            &JobStateOverride::builder()
+                .status(JobStatus::Completed)
+                .outcome(Some(JobOutcome::Success))
+                .committed_batch_id(Some(batch_id))
+                .build(),
+        )
+        .await
+        .expect("insert completed job");
 
-    sqlx::query(
-        "INSERT INTO jobs \
-         (project_id, principal_id, source_context, status, outcome, \
-          committed_batch_id, extraction_prompt_version_id, \
-          triage_prompt_version_id, relation_prompt_version_id) \
-         VALUES ($1, $2, $3, 'completed', 'success', $4, $5, $5, $5)",
+    insert_committed_relation(
+        txn,
+        batch_id,
+        source_id,
+        target_id,
+        RelationKind::Supersedes,
+        principal_id,
     )
-    .bind(project_id.inner())
-    .bind(principal_id.inner())
-    .bind(serde_json::json!({}))
-    .bind(batch_id)
-    .bind(prompt_version_id)
-    .execute(&mut *txn)
-    .await
-    .expect("insert job");
-
-    sqlx::query(
-        "INSERT INTO knowledge_item_relations \
-         (relation_batch_id, source_id, target_id, relation_type, principal_id) \
-         VALUES ($1, $2, $3, 'supersedes', $4)",
-    )
-    .bind(batch_id)
-    .bind(source_id.inner())
-    .bind(target_id.inner())
-    .bind(principal_id.inner())
-    .execute(&mut *txn)
-    .await
-    .expect("insert supersedes relation");
+    .await;
 }
 
 /// Creates a 768-dimensional unit vector with 1.0 at the given index.
@@ -625,12 +599,14 @@ async fn test_semantic_search_filters_by_time_range_from() {
     // Shift "early" 10 seconds into the past so we can filter by time.
     let cutoff = early.created_at() - chrono::Duration::seconds(5);
     let backdated = early.created_at() - chrono::Duration::seconds(10);
-    sqlx::query("UPDATE knowledge_items SET created_at = $1 WHERE id = $2")
-        .bind(backdated)
-        .bind(early.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate early");
+    set_timestamp(
+        &mut txn,
+        "knowledge_items",
+        "created_at",
+        *early.id().inner(),
+        backdated,
+    )
+    .await;
 
     // Only items after cutoff (excludes the backdated early item).
     let params = SemanticSearchParams::builder()
@@ -686,12 +662,14 @@ async fn test_semantic_search_filters_by_time_range_to() {
     // Push "late" 10 seconds into the future so we can filter by upper bound.
     let cutoff = late.created_at() + chrono::Duration::seconds(5);
     let forwarded = late.created_at() + chrono::Duration::seconds(10);
-    sqlx::query("UPDATE knowledge_items SET created_at = $1 WHERE id = $2")
-        .bind(forwarded)
-        .bind(late.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("forward late");
+    set_timestamp(
+        &mut txn,
+        "knowledge_items",
+        "created_at",
+        *late.id().inner(),
+        forwarded,
+    )
+    .await;
 
     // Only items before cutoff (excludes the forwarded late item).
     let params = SemanticSearchParams::builder()

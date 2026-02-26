@@ -5,7 +5,8 @@ use tribal_db::{
 };
 use tribal_domain::{KnowledgeItemId, PrincipalId, SourceType};
 use tribal_test_utils::{
-    a_new_item_observation, a_new_knowledge_item, a_new_principal, a_new_project, test_context,
+    a_new_item_observation, a_new_knowledge_item, a_new_principal, a_new_project,
+    shift_timestamp_by_id, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -121,14 +122,14 @@ async fn test_find_by_knowledge_item_id_returns_observations_ordered_by_observed
 
     // Force the second observation to have an *earlier* timestamp so we
     // can verify the query orders by observed_at, not insertion order.
-    sqlx::query(
-        "UPDATE item_observations SET observed_at = observed_at - interval '1 hour' \
-         WHERE id = $1",
+    shift_timestamp_by_id(
+        &mut txn,
+        "item_observations",
+        "observed_at",
+        *second.id().inner(),
+        chrono::Duration::hours(-1),
     )
-    .bind(second.id().inner())
-    .execute(&mut *txn)
-    .await
-    .expect("backdate second observation");
+    .await;
 
     let results = repo
         .find_by_knowledge_item_id(&mut txn, item_id)

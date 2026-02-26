@@ -6,6 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+test-helpers = []
+
 [dependencies]
 tribal-domain.workspace = true
 sqlx = { workspace = true, features = ["migrate", "macros"] }
