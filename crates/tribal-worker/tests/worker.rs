@@ -1,8 +1,8 @@
 //! Integration tests for the worker poll-claim-dispatch loop.
 //!
 //! Each test seeds data via committed raw connections (not pooled),
-//! constructs a [`Worker`] with mock providers (whose stubs always
-//! fail), runs the worker briefly, then asserts on task and job state.
+//! constructs a [`Worker`] with mock providers, runs the worker
+//! briefly, then asserts on task and job state.
 //!
 //! Tests are serialised via [`serial_lock`] because all workers claim
 //! from the same `tasks` table — parallel execution causes cross-test
@@ -18,8 +18,9 @@ use dashmap::DashMap;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
-    JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository, PgTaskRepository,
-    PrincipalRepository, ProjectRepository, TaskRepository,
+    ExtractionResultRepository, JobRepository, PgExtractionResultRepository, PgJobRepository,
+    PgPrincipalRepository, PgProjectRepository, PgTaskRepository, PrincipalRepository,
+    ProjectRepository, TaskRepository,
 };
 use tribal_domain::{
     JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId, TaskErrorKind,
@@ -31,9 +32,9 @@ use tribal_inference::{
 };
 use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions,
-    TestContext, a_completion_response, a_new_job, a_new_principal, a_new_project,
-    a_new_prompt_version, a_new_task, backdate_task_heartbeat, insert_prompt_version, serial_lock,
-    set_retry_count, test_context, truncate_all_tables,
+    TestContext, a_candidate, a_completion_response, a_new_job, a_new_principal, a_new_project,
+    a_new_prompt_version, a_new_task, a_relation_hint, backdate_task_heartbeat,
+    insert_prompt_version, serial_lock, set_retry_count, test_context, truncate_all_tables,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -883,6 +884,436 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         task.error_kind(),
         Some(TaskErrorKind::HeartbeatExpired),
         "error kind should reflect the reclaim",
+    );
+
+    teardown(ctx).await;
+}
+
+// ---------------------------------------------------------------------------
+// Extraction stage tests
+// ---------------------------------------------------------------------------
+
+/// Helper: builds an extraction-output JSON string from candidates and hints.
+fn extraction_response_json(
+    candidates: &[tribal_domain::Candidate],
+    hints: &[tribal_domain::RelationHint],
+) -> String {
+    serde_json::json!({
+        "candidates": serde_json::to_value(candidates).unwrap(),
+        "relation_hints": serde_json::to_value(hints).unwrap(),
+    })
+    .to_string()
+}
+
+/// Verifies the happy path: the extraction stage parses a multi-candidate
+/// response, creates triage tasks, persists an extraction result, and
+/// transitions the job to Triaging.
+#[tokio::test]
+async fn test_extraction_happy_path() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "extraction-happy").await;
+
+    let candidates = vec![
+        a_candidate().content("first".to_owned()).build(),
+        a_candidate().content("second".to_owned()).build(),
+    ];
+    let hints = vec![a_relation_hint().build()];
+    let response_json = extraction_response_json(&candidates, &hints);
+
+    let (job_id, _task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        let job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_prompt_version_id(pv_id)
+                    .triage_prompt_version_id(pv_id)
+                    .relation_prompt_version_id(pv_id)
+                    .build(),
+            )
+            .await
+            .expect("insert job");
+        let task = PgTaskRepository
+            .insert(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job.id())
+                    .task_type(TaskType::Extraction)
+                    .build(),
+            )
+            .await
+            .expect("insert task");
+        (job.id(), task.id())
+    };
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(&response_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool, token.clone(), test_config(), Some(inference), None);
+
+    let worker_handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    token.cancel();
+    let _ = worker_handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+
+    // Job should be Triaging with correct batch size.
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+    assert_eq!(job.status(), JobStatus::Triaging, "job should be triaging");
+    assert_eq!(job.batch_size(), Some(2), "batch_size should be 2");
+    assert_eq!(
+        job.extraction_original_count(),
+        Some(2),
+        "original count should be 2",
+    );
+
+    // Extraction result should be persisted.
+    let extraction = PgExtractionResultRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find extraction result");
+    assert!(
+        extraction.is_some(),
+        "extraction result should be persisted",
+    );
+    let extraction = extraction.unwrap();
+    let persisted_candidates: Vec<serde_json::Value> =
+        serde_json::from_value(extraction.candidates().clone()).expect("parse candidates");
+    assert_eq!(persisted_candidates.len(), 2);
+
+    // Two triage tasks should exist.
+    let tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find tasks");
+    let triage_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Triage)
+        .collect();
+    assert_eq!(triage_tasks.len(), 2, "should create 2 triage tasks");
+
+    teardown(ctx).await;
+}
+
+/// Verifies that zero candidates causes the job to complete immediately
+/// with an Empty outcome, and no triage tasks are created.
+#[tokio::test]
+async fn test_extraction_zero_candidates() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "extraction-zero-candidates").await;
+
+    let response_json = extraction_response_json(&[], &[]);
+
+    let (job_id, _task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        let job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_prompt_version_id(pv_id)
+                    .triage_prompt_version_id(pv_id)
+                    .relation_prompt_version_id(pv_id)
+                    .build(),
+            )
+            .await
+            .expect("insert job");
+        let task = PgTaskRepository
+            .insert(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job.id())
+                    .task_type(TaskType::Extraction)
+                    .build(),
+            )
+            .await
+            .expect("insert task");
+        (job.id(), task.id())
+    };
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(&response_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool, token.clone(), test_config(), Some(inference), None);
+
+    let worker_handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    token.cancel();
+    let _ = worker_handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+    assert_eq!(
+        job.status(),
+        JobStatus::Completed,
+        "job should be completed",
+    );
+    assert_eq!(
+        job.outcome(),
+        Some(JobOutcome::Empty),
+        "outcome should be Empty",
+    );
+    assert!(
+        job.completed_at().is_some(),
+        "completed_at should be set",
+    );
+    assert_eq!(job.batch_size(), Some(0), "batch_size should be 0");
+
+    // No triage tasks should have been created.
+    let tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find tasks");
+    let triage_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Triage)
+        .collect();
+    assert!(triage_tasks.is_empty(), "should create no triage tasks");
+
+    teardown(ctx).await;
+}
+
+/// Verifies that candidates exceeding `max_candidates_per_job` are
+/// capped, relation hints referencing out-of-range indices are
+/// filtered, and the original count reflects the pre-cap total.
+#[tokio::test]
+async fn test_extraction_capping() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "extraction-capping").await;
+
+    // Build 5 candidates and hints that span all 5 indices.
+    let candidates: Vec<_> = (0..5)
+        .map(|i| a_candidate().content(format!("candidate {i}")).build())
+        .collect();
+    let hints = vec![
+        a_relation_hint()
+            .source_index(0)
+            .target_index(1)
+            .build(),
+        a_relation_hint()
+            .source_index(2)
+            .target_index(4)
+            .build(),
+    ];
+    let response_json = extraction_response_json(&candidates, &hints);
+
+    let (job_id, _task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        let job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_prompt_version_id(pv_id)
+                    .triage_prompt_version_id(pv_id)
+                    .relation_prompt_version_id(pv_id)
+                    .build(),
+            )
+            .await
+            .expect("insert job");
+        let task = PgTaskRepository
+            .insert(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job.id())
+                    .task_type(TaskType::Extraction)
+                    .build(),
+            )
+            .await
+            .expect("insert task");
+        (job.id(), task.id())
+    };
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(&response_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    // Cap at 2 candidates.
+    let config = WorkerConfig {
+        max_candidates_per_job: 2,
+        ..test_config()
+    };
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool, token.clone(), config, Some(inference), None);
+
+    let worker_handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    token.cancel();
+    let _ = worker_handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+    assert_eq!(job.status(), JobStatus::Triaging, "job should be triaging");
+    assert_eq!(job.batch_size(), Some(2), "batch_size should be capped to 2");
+    assert_eq!(
+        job.extraction_original_count(),
+        Some(5),
+        "original count should reflect pre-cap total of 5",
+    );
+
+    // Only 2 triage tasks.
+    let tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find tasks");
+    let triage_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Triage)
+        .collect();
+    assert_eq!(triage_tasks.len(), 2, "should create 2 triage tasks");
+
+    // Relation hints should be filtered: hint (0,1) is within range,
+    // hint (2,4) is out of range for batch_size=2.
+    let extraction = PgExtractionResultRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find extraction result")
+        .expect("extraction result should exist");
+    let persisted_hints: Vec<serde_json::Value> =
+        serde_json::from_value(extraction.relation_hints().clone()).expect("parse hints");
+    assert_eq!(
+        persisted_hints.len(),
+        1,
+        "only hint within capped range should be persisted",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies that an unparseable LLM response causes the extraction
+/// task to be requeued with a ParseError error kind.
+#[tokio::test]
+async fn test_extraction_parse_failure() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "extraction-parse-failure").await;
+
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        let job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_prompt_version_id(pv_id)
+                    .triage_prompt_version_id(pv_id)
+                    .relation_prompt_version_id(pv_id)
+                    .build(),
+            )
+            .await
+            .expect("insert job");
+        let task = PgTaskRepository
+            .insert(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job.id())
+                    .task_type(TaskType::Extraction)
+                    .build(),
+            )
+            .await
+            .expect("insert task");
+        (job.id(), task.id())
+    };
+
+    // Return text that is not valid ExtractionOutput JSON.
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                a_completion_response("this is not valid json for extraction"),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool, token.clone(), test_config(), Some(inference), None);
+
+    let worker_handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    token.cancel();
+    let _ = worker_handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+    let task = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("find task");
+
+    assert_eq!(
+        task.status(),
+        TaskStatus::Queued,
+        "task should be requeued after parse failure",
+    );
+    assert_eq!(
+        task.error_kind(),
+        Some(TaskErrorKind::ParseError),
+        "error kind should be parse_error",
+    );
+    assert!(
+        task.error_message().is_some(),
+        "error message should be set",
     );
 
     teardown(ctx).await;
