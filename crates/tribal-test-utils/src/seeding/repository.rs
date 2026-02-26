@@ -1,63 +1,21 @@
 //! Test-only repository for seed infrastructure operations.
 //!
-//! Centralises all raw SQL used by the seed executor: timestamp
-//! backdating and relation commitment scaffolding. Consolidating
-//! these operations in one place means schema changes to the
-//! underlying tables only need updating here.
+//! Centralises raw SQL used by the seed executor for timestamp
+//! backdating, plus delegates to the setup module and production
+//! repositories for relation commitment scaffolding.
 //!
-//! Uses raw `sqlx::query()` because the operations (backdating
-//! timestamps, inserting structural scaffolding) sit outside the
-//! regular repository layer.
-
-use std::fmt;
+//! Backdating uses raw `sqlx::query()` because the operations sit
+//! outside the regular repository layer.
 
 use async_trait::async_trait;
 use sqlx::PgConnection;
+use tribal_db::{JobStateOverride, PgJobRepository};
 use tribal_domain::{
-    ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationId,
+    ItemObservationId, JobId, JobOutcome, JobStatus, KnowledgeItemId, PrincipalId, ProjectId,
+    RelationBatchId, RelationId,
 };
 
-// ---------------------------------------------------------------------------
-// Column formatting
-// ---------------------------------------------------------------------------
-
-/// A static list of column names for SQL query formatting.
-struct Columns(&'static [&'static str]);
-
-impl fmt::Display for Columns {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut iter = self.0.iter();
-        if let Some(first) = iter.next() {
-            write!(f, "{first}")?;
-            for col in iter {
-                write!(f, ", {col}")?;
-            }
-        }
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Columns inserted when creating commitment scaffolding for a
-/// `prompt_version` row.
-const PROMPT_VERSION_INSERT_COLUMNS: Columns = Columns(&["stage", "content_hash", "content"]);
-
-/// Columns inserted when creating a completed `job` row for relation
-/// batch commitment.
-const JOB_INSERT_COLUMNS: Columns = Columns(&[
-    "project_id",
-    "principal_id",
-    "source_context",
-    "status",
-    "outcome",
-    "committed_batch_id",
-    "extraction_prompt_version_id",
-    "triage_prompt_version_id",
-    "relation_prompt_version_id",
-]);
+use crate::{a_new_job, a_new_prompt_version, insert_prompt_version};
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -167,37 +125,28 @@ impl SeedRepository for PgSeedRepository {
         principal_id: PrincipalId,
         batch_id: RelationBatchId,
     ) -> JobId {
-        let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
+        let pv_id = insert_prompt_version(conn, &a_new_prompt_version().build()).await;
 
-        let pv_sql = format!(
-            "INSERT INTO prompt_versions ({PROMPT_VERSION_INSERT_COLUMNS}) \
-             VALUES ($1, $2, $3) RETURNING id"
-        );
-        let prompt_version_id: uuid::Uuid = sqlx::query_scalar(&pv_sql)
-            .bind("extraction")
-            .bind(&content_hash)
-            .bind("test")
-            .fetch_one(&mut *conn)
+        let job = PgJobRepository
+            .insert_for_test(
+                conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_prompt_version_id(pv_id)
+                    .triage_prompt_version_id(pv_id)
+                    .relation_prompt_version_id(pv_id)
+                    .build(),
+                &JobStateOverride::builder()
+                    .status(JobStatus::Completed)
+                    .outcome(Some(JobOutcome::Success))
+                    .committed_batch_id(Some(batch_id))
+                    .build(),
+            )
             .await
-            .expect("seed: insert prompt_version");
+            .expect("seed: insert completed job");
 
-        let job_sql = format!(
-            "INSERT INTO jobs ({JOB_INSERT_COLUMNS}) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7) RETURNING id"
-        );
-        let job_id: uuid::Uuid = sqlx::query_scalar(&job_sql)
-            .bind(project_id.inner())
-            .bind(principal_id.inner())
-            .bind(serde_json::json!({}))
-            .bind("completed")
-            .bind("success")
-            .bind(batch_id.inner())
-            .bind(prompt_version_id)
-            .fetch_one(&mut *conn)
-            .await
-            .expect("seed: insert job");
-
-        JobId::from(job_id)
+        job.id()
     }
 }
 
