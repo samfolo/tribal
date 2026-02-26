@@ -5,7 +5,7 @@
 //! tracing. It is generic over request and response types but hardcoded
 //! to [`InferenceError`].
 
-use std::{collections::VecDeque, fmt, sync::Mutex};
+use std::{collections::VecDeque, fmt, sync::Mutex, time::Duration};
 
 use tracing::debug;
 use tribal_inference::{CompletionRequest, EmbeddingRequest, InferenceError};
@@ -18,6 +18,17 @@ use crate::text::truncate;
 // ---------------------------------------------------------------------------
 
 pub(crate) const MUTEX_POISONED: &str = "mock provider mutex poisoned";
+
+// ---------------------------------------------------------------------------
+// MockOptions
+// ---------------------------------------------------------------------------
+
+/// Per-response options for mock provider entries.
+#[derive(Debug, Clone, Default)]
+pub struct MockOptions {
+    /// Delay applied before returning the response.
+    pub delay: Option<Duration>,
+}
 
 // ---------------------------------------------------------------------------
 // MockRequest trait
@@ -80,14 +91,14 @@ pub enum ExhaustBehaviour {
 
 /// A single entry in the sequential response queue.
 pub(crate) enum QueueEntry<Resp> {
-    Ok(Resp),
-    Err(ErrorFactory),
+    Ok(Resp, Option<Duration>),
+    Err(ErrorFactory, Option<Duration>),
 }
 
 /// The outcome of a conditional match.
 pub(crate) enum ConditionalOutcome<Resp> {
-    Ok(Resp),
-    Err(ErrorFactory),
+    Ok(Resp, Option<Duration>),
+    Err(ErrorFactory, Option<Duration>),
 }
 
 /// A conditional entry: a predicate paired with a response or error.
@@ -146,7 +157,14 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
 
     /// Dispatches a request through the conditional → sequential →
     /// exhaustion resolution chain.
-    pub fn dispatch(&self, request: &Req) -> Result<Resp, InferenceError> {
+    ///
+    /// Returns the result alongside an optional delay that the caller
+    /// should apply (via `tokio::time::sleep`) before returning the
+    /// response.
+    pub fn dispatch(
+        &self,
+        request: &Req,
+    ) -> (Result<Resp, InferenceError>, Option<Duration>) {
         let mut state = self.state.lock().expect(MUTEX_POISONED);
 
         state.history.push(request.clone());
@@ -156,23 +174,23 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
         for (idx, entry) in self.conditionals.iter().enumerate() {
             if (entry.matcher)(request) {
                 return match &entry.outcome {
-                    ConditionalOutcome::Ok(resp) => {
+                    ConditionalOutcome::Ok(resp, delay) => {
                         let result = resp.clone();
                         debug!(
                             provider = self.provider_name,
                             call = call_number,
                             "conditional #{idx} matched"
                         );
-                        Ok(result)
+                        (Ok(result), *delay)
                     }
-                    ConditionalOutcome::Err(factory) => {
+                    ConditionalOutcome::Err(factory, delay) => {
                         let err = factory();
                         debug!(
                             provider = self.provider_name,
                             call = call_number,
                             "conditional #{idx} error"
                         );
-                        Err(err)
+                        (Err(err), *delay)
                     }
                 };
             }
@@ -182,7 +200,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
         if let Some(entry) = state.queue.pop_front() {
             let consumed = state.sequential_count - state.queue.len();
             return match entry {
-                QueueEntry::Ok(resp) => {
+                QueueEntry::Ok(resp, delay) => {
                     let result = resp.clone();
                     state.last_ok_response = Some(resp);
                     debug!(
@@ -191,9 +209,9 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                         "sequential queue pop ({consumed} of {total})",
                         total = state.sequential_count,
                     );
-                    Ok(result)
+                    (Ok(result), delay)
                 }
-                QueueEntry::Err(factory) => {
+                QueueEntry::Err(factory, delay) => {
                     let err = factory();
                     debug!(
                         provider = self.provider_name,
@@ -201,13 +219,16 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                         "sequential queue pop ({consumed} of {total}), error",
                         total = state.sequential_count,
                     );
-                    Err(err)
+                    (Err(err), delay)
                 }
             };
         }
 
-        // Queue exhausted — apply exhaustion behaviour.
-        self.handle_exhaustion(&mut state, request, call_number)
+        // Queue exhausted — apply exhaustion behaviour (no delay).
+        (
+            self.handle_exhaustion(&mut state, request, call_number),
+            None,
+        )
     }
 
     /// Returns the number of calls dispatched so far.
