@@ -201,10 +201,10 @@ pub trait TaskRepository {
     ///
     /// Sweeps tasks with `status = 'claimed'` and
     /// `heartbeat_at < now() - timeout_seconds`.  Tasks within their
-    /// retry budget are re-queued with exponential backoff (for
-    /// `HeartbeatExpired`) or flat 1-second backoff (for
-    /// `StartupReclaim`).  Tasks exceeding `max_retries` are
-    /// dead-lettered.
+    /// retry budget are re-queued with either a flat backoff (when
+    /// `flat_backoff_seconds` is `Some`) or exponential backoff
+    /// (`2^retry_count` seconds, when `None`).  Tasks exceeding
+    /// `max_retries` are dead-lettered.
     ///
     /// Returns a [`ReclaimOutcome`] with the count of requeued and
     /// dead-lettered tasks.
@@ -220,6 +220,7 @@ pub trait TaskRepository {
         limit: u32,
         error_kind: TaskErrorKind,
         error_message: &str,
+        flat_backoff_seconds: Option<u32>,
     ) -> Result<ReclaimOutcome, DbError>;
 }
 
@@ -452,12 +453,21 @@ impl TaskRepository for PgTaskRepository {
         limit: u32,
         error_kind: TaskErrorKind,
         error_message: &str,
+        flat_backoff_seconds: Option<u32>,
     ) -> Result<ReclaimOutcome, DbError> {
         let timeout_f64 = f64::from(timeout_seconds);
         let max_retries_i32 = i32::try_from(max_retries).expect(MAX_RETRIES_EXCEEDS_I32);
         let limit_i64 = i64::from(limit);
         let error_kind_str = error_kind.as_str();
+        let flat_backoff_f64 = flat_backoff_seconds.map(f64::from);
 
+        // Backoff: when `flat_backoff_seconds` ($6) is provided, all
+        // requeued tasks use that flat delay.  Otherwise, exponential
+        // backoff `2^retry_count` is applied using the pre-increment
+        // count (so the first reclaim backoff is `2^0 = 1s`).  This
+        // is intentionally lower than the Rust-side `backoff_duration`
+        // which uses the post-increment count (`2^1 = 2s` for first
+        // inline failure) — reclaim recovery should retry sooner.
         let rows = sqlx::query(
             "WITH stale AS ( \
                  SELECT id, retry_count FROM tasks \
@@ -475,8 +485,8 @@ impl TaskRepository for PgTaskRepository {
                  END, \
                  available_at = CASE \
                      WHEN s.retry_count + 1 > $2 THEN t.available_at \
-                     WHEN $4 = 'startup_reclaim' \
-                         THEN now() + interval '1 second' \
+                     WHEN $6 IS NOT NULL \
+                         THEN now() + make_interval(secs => $6) \
                      ELSE now() + make_interval( \
                          secs => power(2, s.retry_count)::double precision \
                      ) \
@@ -497,6 +507,7 @@ impl TaskRepository for PgTaskRepository {
         .bind(limit_i64)
         .bind(error_kind_str)
         .bind(error_message)
+        .bind(flat_backoff_f64)
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
