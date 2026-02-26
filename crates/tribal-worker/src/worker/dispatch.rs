@@ -161,26 +161,31 @@ impl Worker {
         // Heal any jobs left stuck from a previous instance that
         // crashed between reclaim-sweep dead-lettering and the job
         // failure transition.
-        if let Ok(mut conn) = self.pool.acquire().await {
-            match PgJobRepository
-                .fail_stale_dead_lettered_jobs(&mut conn)
-                .await
-            {
-                Ok(job_ids) => {
-                    for job_id in &job_ids {
-                        self.notify_job_state(*job_id);
-                        self.job_state_txs.remove(job_id);
+        match self.pool.acquire().await {
+            Ok(mut conn) => {
+                match PgJobRepository
+                    .fail_stale_dead_lettered_jobs(&mut conn)
+                    .await
+                {
+                    Ok(job_ids) => {
+                        for job_id in &job_ids {
+                            self.notify_job_state(*job_id);
+                            self.job_state_txs.remove(job_id);
+                        }
+                        if !job_ids.is_empty() {
+                            tracing::warn!(
+                                count = job_ids.len(),
+                                "transitioned stuck jobs to failed after startup reclaim",
+                            );
+                        }
                     }
-                    if !job_ids.is_empty() {
-                        tracing::warn!(
-                            count = job_ids.len(),
-                            "transitioned stuck jobs to failed after startup reclaim",
-                        );
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to transition dead-lettered jobs during startup");
                     }
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to transition dead-lettered jobs during startup");
-                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "pool acquire failed for startup job healing");
             }
         }
 
@@ -756,29 +761,37 @@ impl Worker {
                         );
                     }
 
-                    if stats.dead_lettered > 0
-                        && let Ok(mut conn) = self.pool.acquire().await
-                    {
-                        match PgJobRepository
-                            .fail_stale_dead_lettered_jobs(&mut conn)
-                            .await
-                        {
-                            Ok(job_ids) => {
-                                for job_id in &job_ids {
-                                    self.notify_job_state(*job_id);
-                                    self.job_state_txs.remove(job_id);
-                                }
-                                if !job_ids.is_empty() {
-                                    tracing::warn!(
-                                        count = job_ids.len(),
-                                        "transitioned stuck jobs to failed after reclaim",
-                                    );
+                    if stats.dead_lettered > 0 {
+                        match self.pool.acquire().await {
+                            Ok(mut conn) => {
+                                match PgJobRepository
+                                    .fail_stale_dead_lettered_jobs(&mut conn)
+                                    .await
+                                {
+                                    Ok(job_ids) => {
+                                        for job_id in &job_ids {
+                                            self.notify_job_state(*job_id);
+                                            self.job_state_txs.remove(job_id);
+                                        }
+                                        if !job_ids.is_empty() {
+                                            tracing::warn!(
+                                                count = job_ids.len(),
+                                                "transitioned stuck jobs to failed after reclaim",
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "failed to transition dead-lettered jobs",
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {
                                 tracing::warn!(
                                     error = %e,
-                                    "failed to transition dead-lettered jobs",
+                                    "pool acquire failed for reclaim job healing",
                                 );
                             }
                         }
