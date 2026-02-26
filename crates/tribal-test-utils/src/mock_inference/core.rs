@@ -161,10 +161,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
     /// Returns the result alongside an optional delay that the caller
     /// should apply (via `tokio::time::sleep`) before returning the
     /// response.
-    pub fn dispatch(
-        &self,
-        request: &Req,
-    ) -> (Result<Resp, InferenceError>, Option<Duration>) {
+    pub fn dispatch(&self, request: &Req) -> (Result<Resp, InferenceError>, Option<Duration>) {
         let mut state = self.state.lock().expect(MUTEX_POISONED);
 
         state.history.push(request.clone());
