@@ -1,12 +1,14 @@
-//! Task lifecycle helpers for test setup.
+//! Lifecycle helpers for test setup.
 //!
-//! Functions in this module manipulate task state that sits outside the
-//! normal repository layer: backdating heartbeats, overriding retry
-//! counts, etc.  They use raw `sqlx::query()` to avoid coupling to the
-//! production repository API.
+//! Functions in this module manipulate state that sits outside the
+//! normal repository layer: shifting timestamps, overriding retry
+//! counts, truncating tables, etc.  They use raw `sqlx::query()` to
+//! avoid coupling to the production repository API.
 
+use chrono::Duration;
 use sqlx::PgConnection;
-use tribal_domain::TaskId;
+use tribal_db::APPLICATION_TABLES;
+use tribal_domain::{RelationBatchId, TaskId};
 
 // ---------------------------------------------------------------------------
 // backdate_task_heartbeat
@@ -54,4 +56,164 @@ pub async fn set_retry_count(conn: &mut PgConnection, id: TaskId, count: u32) {
         .execute(&mut *conn)
         .await
         .expect("lifecycle: set retry count");
+}
+
+// ---------------------------------------------------------------------------
+// truncate_all_tables
+// ---------------------------------------------------------------------------
+
+/// Truncates every application table, cascading foreign keys.
+///
+/// Uses the `APPLICATION_TABLES` constant to build a single
+/// `TRUNCATE … CASCADE` statement.
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn truncate_all_tables(conn: &mut PgConnection) {
+    let tables = APPLICATION_TABLES.join(", ");
+    let sql = format!("TRUNCATE {tables} CASCADE");
+    sqlx::query(&sql)
+        .execute(&mut *conn)
+        .await
+        .expect("lifecycle: truncate all tables");
+}
+
+// ---------------------------------------------------------------------------
+// shift_timestamp
+// ---------------------------------------------------------------------------
+
+/// Shifts a timestamp column by the given offset.
+///
+/// Positive offsets move the timestamp forward; negative offsets move
+/// it backward.  The `where_column` parameter controls which column
+/// is used in the `WHERE` clause.
+///
+/// # Panics
+///
+/// Panics if `table` is not in `APPLICATION_TABLES` (debug builds) or
+/// if the database query fails.
+pub async fn shift_timestamp(
+    conn: &mut PgConnection,
+    table: &str,
+    set_column: &str,
+    where_column: &str,
+    where_value: uuid::Uuid,
+    offset: Duration,
+) {
+    debug_assert!(
+        APPLICATION_TABLES.contains(&table),
+        "shift_timestamp: unknown table {table}",
+    );
+    let secs = offset.num_seconds() as f64;
+    let sql = format!(
+        "UPDATE {table} \
+         SET {set_column} = {set_column} + make_interval(secs => $1) \
+         WHERE {where_column} = $2",
+    );
+    sqlx::query(&sql)
+        .bind(secs)
+        .bind(where_value)
+        .execute(&mut *conn)
+        .await
+        .expect("lifecycle: shift timestamp");
+}
+
+// ---------------------------------------------------------------------------
+// shift_timestamp_by_id
+// ---------------------------------------------------------------------------
+
+/// Shifts a timestamp column on a row identified by its `id`.
+///
+/// Convenience wrapper around [`shift_timestamp`] with
+/// `where_column = "id"`.
+///
+/// # Panics
+///
+/// Panics if `table` is not in `APPLICATION_TABLES` (debug builds) or
+/// if the database query fails.
+pub async fn shift_timestamp_by_id(
+    conn: &mut PgConnection,
+    table: &str,
+    column: &str,
+    id: uuid::Uuid,
+    offset: Duration,
+) {
+    shift_timestamp(conn, table, column, "id", id, offset).await;
+}
+
+// ---------------------------------------------------------------------------
+// shift_relations_timestamp_by_batch
+// ---------------------------------------------------------------------------
+
+/// Shifts `created_at` on knowledge item relations matching a batch ID.
+///
+/// Convenience wrapper around [`shift_timestamp`] for the standing.rs
+/// pattern that backdates relations by batch.
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn shift_relations_timestamp_by_batch(
+    conn: &mut PgConnection,
+    batch_id: RelationBatchId,
+    offset: Duration,
+) {
+    shift_timestamp(
+        conn,
+        "knowledge_item_relations",
+        "created_at",
+        "relation_batch_id",
+        *batch_id.inner(),
+        offset,
+    )
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// set_timestamp
+// ---------------------------------------------------------------------------
+
+/// Sets a timestamp column to an absolute value on a row identified
+/// by its `id`.
+///
+/// # Panics
+///
+/// Panics if `table` is not in `APPLICATION_TABLES` (debug builds) or
+/// if the database query fails.
+pub async fn set_timestamp(
+    conn: &mut PgConnection,
+    table: &str,
+    column: &str,
+    id: uuid::Uuid,
+    ts: chrono::DateTime<chrono::Utc>,
+) {
+    debug_assert!(
+        APPLICATION_TABLES.contains(&table),
+        "set_timestamp: unknown table {table}",
+    );
+    let sql = format!("UPDATE {table} SET {column} = $1 WHERE id = $2");
+    sqlx::query(&sql)
+        .bind(ts)
+        .bind(id)
+        .execute(&mut *conn)
+        .await
+        .expect("lifecycle: set timestamp");
+}
+
+// ---------------------------------------------------------------------------
+// count_tasks_by_status
+// ---------------------------------------------------------------------------
+
+/// Counts tasks with a given status.
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn count_tasks_by_status(conn: &mut PgConnection, status: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM tasks WHERE status = $1")
+        .bind(status)
+        .fetch_one(&mut *conn)
+        .await
+        .expect("lifecycle: count tasks by status")
 }
