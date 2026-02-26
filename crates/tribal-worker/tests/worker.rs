@@ -38,8 +38,9 @@ use tribal_test_utils::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
     },
-    insert_prompt_version, seed_extraction_job, serial_lock, set_retry_count, test_context,
-    truncate_all_tables,
+    insert_prompt_version,
+    polling::{poll_job_status, poll_task_status, poll_until},
+    seed_extraction_job, serial_lock, set_retry_count, test_context, truncate_all_tables,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -140,14 +141,14 @@ fn build_test_worker(
                 key(RequestClass::Inference),
                 ProviderLimits {
                     max_in_flight: 10,
-                    request_timeout: std::time::Duration::from_secs(30),
+                    request_timeout: Duration::from_secs(30),
                 },
             ),
             (
                 key(RequestClass::Embedding),
                 ProviderLimits {
                     max_in_flight: 10,
-                    request_timeout: std::time::Duration::from_secs(30),
+                    request_timeout: Duration::from_secs(30),
                 },
             ),
         ])
@@ -174,27 +175,44 @@ fn build_test_worker(
     ))
 }
 
-/// Spawns a worker, lets it run for the given settle duration, then
-/// cancels and awaits shutdown.
-async fn run_worker_briefly(worker: Arc<Worker>, token: CancellationToken, settle: Duration) {
-    let handle = {
-        let w = Arc::clone(&worker);
-        tokio::spawn(async move { w.run().await })
-    };
-    tokio::time::sleep(settle).await;
-    token.cancel();
-    let _ = handle.await;
+/// Polls until a task is requeued with at least one retry.
+///
+/// Used by reclaim and heartbeat tests where the exact retry count
+/// depends on timing.
+async fn poll_task_requeued_with_retry(
+    pool: &sqlx::PgPool,
+    task_id: tribal_domain::TaskId,
+    timeout: Duration,
+) -> tribal_domain::Task {
+    poll_until(
+        "task requeued with retry",
+        Duration::from_millis(50),
+        timeout,
+        || {
+            let pool = pool.clone();
+            async move {
+                let mut conn = pool.acquire().await.ok()?;
+                let task = PgTaskRepository.find_by_id(&mut conn, task_id).await.ok()?;
+                if task.status() == TaskStatus::Queued && task.retry_count() >= 1 {
+                    Some(task)
+                } else {
+                    None
+                }
+            }
+        },
+    )
+    .await
 }
 
-/// Returns a [`WorkerConfig`] with aggressive timeouts for fast tests.
+/// Returns a [`WorkerConfig`] with sub-second intervals for fast tests.
 fn test_config() -> WorkerConfig {
     WorkerConfig {
         max_concurrent_tasks: 4,
-        poll_interval_seconds: 1,
-        task_timeout_seconds: 10,
+        poll_interval_millis: 100,
+        task_timeout_millis: 5_000,
         task_max_retries: 3,
-        heartbeat_interval_seconds: 5,
-        reclaim_interval_seconds: 1,
+        heartbeat_interval_millis: 200,
+        reclaim_interval_millis: 100,
         max_candidates_per_job: 20,
         triage_search_limit: 10,
         include_llm_content: false,
@@ -222,20 +240,16 @@ async fn test_retry_path_increments_retry_count() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), test_config(), None, None);
-    run_worker_briefly(worker, token, POLL_SETTLE).await;
+    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None);
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
 
-    let mut conn = raw_conn(ctx).await;
-    let task = PgTaskRepository
-        .find_by_id(&mut conn, task_id)
-        .await
-        .expect("find task");
+    let task = poll_task_status(&pool, task_id, TaskStatus::Queued, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
 
-    assert_eq!(
-        task.status(),
-        TaskStatus::Queued,
-        "task should be re-queued"
-    );
     assert_eq!(task.retry_count(), 1, "retry count should be incremented");
     assert_eq!(
         task.error_kind(),
@@ -251,6 +265,7 @@ async fn test_retry_path_increments_retry_count() {
         "available_at should be in the future (backoff)",
     );
 
+    let mut conn = raw_conn(ctx).await;
     let job = PgJobRepository
         .find_by_id(&mut conn, job_id)
         .await
@@ -288,33 +303,24 @@ async fn test_dead_letter_path_transitions_task_and_job() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), config, None, None);
-    run_worker_briefly(worker, token, POLL_SETTLE).await;
+    let worker = build_test_worker(pool.clone(), token.clone(), config, None, None);
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
 
-    let mut conn = raw_conn(ctx).await;
+    let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
 
-    let task = PgTaskRepository
-        .find_by_id(&mut conn, task_id)
-        .await
-        .expect("find task");
-
-    assert_eq!(
-        task.status(),
-        TaskStatus::DeadLetter,
-        "task should be dead-lettered",
-    );
     assert_eq!(
         task.error_kind(),
         Some(TaskErrorKind::ProviderError),
         "error kind should be provider_error",
     );
 
-    let job = PgJobRepository
-        .find_by_id(&mut conn, job_id)
-        .await
-        .expect("find job");
+    let job = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
 
-    assert_eq!(job.status(), JobStatus::Failed, "job should be failed");
     assert_eq!(
         job.outcome(),
         Some(JobOutcome::Failure),
@@ -344,14 +350,7 @@ async fn test_concurrency_limit_respected() {
 
     let config = WorkerConfig {
         max_concurrent_tasks: max_concurrent,
-        poll_interval_seconds: 1,
-        task_timeout_seconds: 10,
-        task_max_retries: 3,
-        heartbeat_interval_seconds: 5,
-        reclaim_interval_seconds: 1,
-        max_candidates_per_job: 20,
-        triage_search_limit: 10,
-        include_llm_content: false,
+        ..test_config()
     };
 
     let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "concurrency").await;
@@ -446,29 +445,26 @@ async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
         task_id
     };
 
-    let config = test_config();
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), config, None, None);
-    run_worker_briefly(worker, token, POLL_SETTLE).await;
+    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None);
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
 
-    let mut conn = raw_conn(ctx).await;
-    let task = PgTaskRepository
-        .find_by_id(&mut conn, task_id)
-        .await
-        .expect("find task");
+    // Reclaim requeues the task (retry_count=1). The worker's poll
+    // loop may re-dispatch it before we observe the intermediate
+    // state — the extraction stub fails, handle_stage_failure requeues
+    // again (retry_count=2). Both outcomes prove reclaim ran.
+    let task = poll_task_requeued_with_retry(&pool, task_id, POLL_SETTLE).await;
 
-    // Reclaim requeues the task (retry_count=1).  The worker's poll
-    // loop may subsequently re-dispatch it before we assert — the
-    // extraction stub fails, handle_stage_failure requeues again
-    // (retry_count=2).  Both outcomes prove reclaim ran.
+    token.cancel();
+    let _ = handle.await;
+
     assert_eq!(
         task.status(),
         TaskStatus::Queued,
         "task should be requeued after reclaim",
-    );
-    assert!(
-        task.retry_count() >= 1,
-        "retry count should be at least 1 (reclaim incremented it)",
     );
 
     teardown(ctx).await;
@@ -507,21 +503,16 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), config, None, None);
-    run_worker_briefly(worker, token, POLL_SETTLE).await;
+    let worker = build_test_worker(pool.clone(), token.clone(), config, None, None);
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
 
-    let mut conn = raw_conn(ctx).await;
+    let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
 
-    let task = PgTaskRepository
-        .find_by_id(&mut conn, task_id)
-        .await
-        .expect("find task");
-
-    assert_eq!(
-        task.status(),
-        TaskStatus::DeadLetter,
-        "task should be dead-lettered",
-    );
     assert_eq!(
         task.error_kind(),
         Some(TaskErrorKind::HeartbeatExpired),
@@ -533,14 +524,8 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
         "error message should be heartbeat_expired",
     );
 
-    // The reclaim loop should have transitioned the parent job to
-    // Failed via fail_stale_dead_lettered_jobs.
-    let job = PgJobRepository
-        .find_by_id(&mut conn, job_id)
-        .await
-        .expect("find job");
+    let job = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
 
-    assert_eq!(job.status(), JobStatus::Failed, "job should be failed");
     assert_eq!(
         job.outcome(),
         Some(JobOutcome::Failure),
@@ -647,19 +632,16 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
 
     let config = WorkerConfig {
         max_concurrent_tasks: 1,
-        poll_interval_seconds: 1,
-        task_timeout_seconds: 60,
-        task_max_retries: 3,
-        heartbeat_interval_seconds: 1,
-        reclaim_interval_seconds: 120,
-        max_candidates_per_job: 20,
-        triage_search_limit: 10,
-        include_llm_content: false,
+        heartbeat_interval_millis: 100,
+        // Disable reclaim sweep so it does not interfere with the
+        // manual reclaim injection below.
+        reclaim_interval_millis: 120_000,
+        ..test_config()
     };
 
     let token = CancellationToken::new();
     let worker = build_test_worker(
-        pool,
+        pool.clone(),
         token.clone(),
         config,
         Some(inference as Arc<dyn InferenceProvider>),
@@ -673,14 +655,18 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         tokio::spawn(async move { w.run().await })
     };
 
-    // Wait for the worker to claim and begin dispatching.  After the
-    // claim settle period the extraction stage should be blocked inside
-    // the long mock delay.
-    tokio::time::sleep(CLAIM_SETTLE).await;
-    assert!(
-        inference_ref.call_count() >= 1,
-        "extraction stage should have called the provider",
-    );
+    // Poll until the mock provider has been called, confirming the
+    // extraction stage is in-flight.
+    poll_until(
+        "provider called at least once",
+        Duration::from_millis(50),
+        CLAIM_SETTLE,
+        || {
+            let count = inference_ref.call_count();
+            async move { if count >= 1 { Some(()) } else { None } }
+        },
+    )
+    .await;
 
     // Simulate external reclaim: backdate the heartbeat far beyond the
     // timeout window, then call reclaim_stale to requeue the task.
@@ -707,8 +693,10 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
             .expect("reclaim stale");
     }
 
-    // Heartbeat interval is 1s — give it time to detect the loss.
-    tokio::time::sleep(HEARTBEAT_DETECT).await;
+    // Poll until the heartbeat detects ownership loss and the task
+    // is requeued.
+    poll_task_requeued_with_retry(&pool, task_id, HEARTBEAT_DETECT).await;
+
     token.cancel();
     let _ = worker_handle.await;
 
@@ -729,10 +717,6 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         .await
         .expect("find task");
 
-    // The task retains the state set by reclaim_stale — Queued with
-    // retry_count incremented and error_kind=HeartbeatExpired.
-    // handle_stage_failure detected the claim_token mismatch (0 rows
-    // affected) and correctly declined to overwrite.
     assert!(
         task.retry_count() >= 1,
         "task should have been reclaimed at least once",
@@ -793,17 +777,22 @@ async fn test_extraction_happy_path() {
     );
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), test_config(), Some(inference), None);
-    run_worker_briefly(worker, token, POLL_SETTLE).await;
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
 
-    let mut conn = raw_conn(ctx).await;
+    let job = poll_job_status(&pool, job_id, JobStatus::Triaging, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
 
-    // Job should be Triaging with correct batch size.
-    let job = PgJobRepository
-        .find_by_id(&mut conn, job_id)
-        .await
-        .expect("find job");
-    assert_eq!(job.status(), JobStatus::Triaging, "job should be triaging");
     assert_eq!(job.batch_size(), Some(2), "batch_size should be 2");
     assert_eq!(
         job.extraction_original_count(),
@@ -812,6 +801,7 @@ async fn test_extraction_happy_path() {
     );
 
     // Extraction result should be persisted.
+    let mut conn = raw_conn(ctx).await;
     let extraction = PgExtractionResultRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -865,29 +855,32 @@ async fn test_extraction_zero_candidates() {
     );
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), test_config(), Some(inference), None);
-    run_worker_briefly(worker, token, POLL_SETTLE).await;
-
-    let mut conn = raw_conn(ctx).await;
-
-    let job = PgJobRepository
-        .find_by_id(&mut conn, job_id)
-        .await
-        .expect("find job");
-    assert_eq!(
-        job.status(),
-        JobStatus::Completed,
-        "job should be completed",
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
     );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let job = poll_job_status(&pool, job_id, JobStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
     assert_eq!(
         job.outcome(),
         Some(JobOutcome::Empty),
         "outcome should be Empty",
     );
-    assert!(job.completed_at().is_some(), "completed_at should be set",);
+    assert!(job.completed_at().is_some(), "completed_at should be set");
     assert_eq!(job.batch_size(), Some(0), "batch_size should be 0");
 
     // No triage tasks should have been created.
+    let mut conn = raw_conn(ctx).await;
     let tasks = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -941,16 +934,16 @@ async fn test_extraction_capping() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), config, Some(inference), None);
-    run_worker_briefly(worker, token, POLL_SETTLE).await;
+    let worker = build_test_worker(pool.clone(), token.clone(), config, Some(inference), None);
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
 
-    let mut conn = raw_conn(ctx).await;
+    let job = poll_job_status(&pool, job_id, JobStatus::Triaging, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
 
-    let job = PgJobRepository
-        .find_by_id(&mut conn, job_id)
-        .await
-        .expect("find job");
-    assert_eq!(job.status(), JobStatus::Triaging, "job should be triaging");
     assert_eq!(
         job.batch_size(),
         Some(2),
@@ -963,6 +956,7 @@ async fn test_extraction_capping() {
     );
 
     // Only 2 triage tasks.
+    let mut conn = raw_conn(ctx).await;
     let tasks = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
         .await
@@ -1019,20 +1013,43 @@ async fn test_extraction_parse_failure() {
     );
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), test_config(), Some(inference), None);
-    run_worker_briefly(worker, token, POLL_SETTLE).await;
-
-    let mut conn = raw_conn(ctx).await;
-    let task = PgTaskRepository
-        .find_by_id(&mut conn, task_id)
-        .await
-        .expect("find task");
-
-    assert_eq!(
-        task.status(),
-        TaskStatus::Queued,
-        "task should be requeued after parse failure",
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
     );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    // Poll for the task to be requeued with a ParseError.
+    let task = poll_until(
+        "task requeued with parse error",
+        Duration::from_millis(50),
+        POLL_SETTLE,
+        || {
+            let pool = pool.clone();
+            async move {
+                let mut conn = pool.acquire().await.ok()?;
+                let task = PgTaskRepository.find_by_id(&mut conn, task_id).await.ok()?;
+                if task.status() == TaskStatus::Queued
+                    && task.error_kind() == Some(TaskErrorKind::ParseError)
+                {
+                    Some(task)
+                } else {
+                    None
+                }
+            }
+        },
+    )
+    .await;
+
+    token.cancel();
+    let _ = handle.await;
+
     assert_eq!(
         task.error_kind(),
         Some(TaskErrorKind::ParseError),

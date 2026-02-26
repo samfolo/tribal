@@ -42,9 +42,10 @@ where
         if let Some(value) = f().await {
             return value;
         }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("poll_until timed out: {description}");
-        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "poll_until timed out: {description}",
+        );
         tokio::time::sleep(interval).await;
     }
 }
