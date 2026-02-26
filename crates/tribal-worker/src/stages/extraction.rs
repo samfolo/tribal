@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
+use tracing::Instrument;
 use tribal_db::{NewExtractionResult, NewTask};
-use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType};
+use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
 use tribal_inference::Usage;
 
 use crate::{
@@ -98,76 +99,110 @@ impl Worker {
         job: &Job,
         task: &Task,
     ) -> Result<StageOutput, StageError> {
-        let tag_registry = self.load_tag_registry(STAGE_EXTRACTION).await?;
+        let span = tracing::info_span!(
+            "tribal.task.extraction",
+            { span_attrs::TASK_ID } = %task.id(),
+            { span_attrs::LLM_STAGE } = "extraction",
+            { span_attrs::RETRY_COUNT } = task.retry_count(),
+        );
 
-        let prompt_version = self
-            .load_prompt_version(STAGE_EXTRACTION, job.extraction_prompt_version_id())
-            .await?;
+        async {
+            let tag_registry = self.load_tag_registry(STAGE_EXTRACTION).await?;
 
-        let semaphore = self.extraction_semaphore();
-        let _permit = tokio::time::timeout(
-            self.config().task_timeout(),
-            Arc::clone(semaphore).acquire_owned(),
-        )
-        .await
-        .map_err(|_| StageError::SemaphoreTimeout {
-            provider_key: format!("{:?}", self.extraction_key()),
-        })?
-        .expect(SEMAPHORE_CLOSED);
+            let prompt_version = self
+                .load_prompt_version(STAGE_EXTRACTION, job.extraction_prompt_version_id())
+                .await?;
 
-        let request =
-            assemble_extraction_prompt(prompt_version.content(), job.raw_input(), &tag_registry)?;
-
-        let response = self
-            .extraction_provider()
-            .complete(request)
+            let semaphore = self.extraction_semaphore();
+            let _permit = tokio::time::timeout(
+                self.config().task_timeout(),
+                Arc::clone(semaphore).acquire_owned(),
+            )
             .await
-            .map_err(|e| StageError::Provider {
-                context: "extraction LLM call".into(),
-                source: e,
-            })?;
+            .map_err(|_| StageError::SemaphoreTimeout {
+                provider_key: format!("{:?}", self.extraction_key()),
+            })?
+            .expect(SEMAPHORE_CLOSED);
 
-        let output = parse_extraction_response(&response)?;
+            let request = assemble_extraction_prompt(
+                prompt_version.content(),
+                job.raw_input(),
+                &tag_registry,
+            )?;
 
-        #[allow(clippy::cast_possible_truncation)]
-        let original_count = output.candidates.len() as u32;
-        let max = self.config().max_candidates_per_job as usize;
-        let capped_candidates: Vec<Candidate> = output.candidates.into_iter().take(max).collect();
-        #[allow(clippy::cast_possible_truncation)]
-        let batch_size = capped_candidates.len() as u32;
+            if self.config().include_llm_content {
+                tracing::debug!(
+                    prompt = %request.system.as_deref().unwrap_or(""),
+                    "extraction prompt assembled",
+                );
+            }
 
-        let capped_hints: Vec<RelationHint> = output
-            .relation_hints
-            .into_iter()
-            .filter(|h: &RelationHint| {
-                h.source_index() < batch_size && h.target_index() < batch_size
+            let response = self
+                .extraction_provider()
+                .complete(request)
+                .await
+                .map_err(|e| StageError::Provider {
+                    context: "extraction LLM call".into(),
+                    source: e,
+                })?;
+
+            if self.config().include_llm_content {
+                tracing::debug!(
+                    response = %response.text,
+                    "extraction response received",
+                );
+            }
+
+            let output = {
+                let _parse_span = tracing::info_span!("tribal.extraction.parse").entered();
+                parse_extraction_response(&response)?
+            };
+
+            #[allow(clippy::cast_possible_truncation)]
+            let original_count = output.candidates.len() as u32;
+            let max = self.config().max_candidates_per_job as usize;
+            let capped_candidates: Vec<Candidate> =
+                output.candidates.into_iter().take(max).collect();
+            #[allow(clippy::cast_possible_truncation)]
+            let batch_size = capped_candidates.len() as u32;
+
+            let capped_hints: Vec<RelationHint> = output
+                .relation_hints
+                .into_iter()
+                .filter(|h: &RelationHint| {
+                    h.source_index() < batch_size && h.target_index() < batch_size
+                })
+                .collect();
+
+            let triage_tasks: Vec<NewTask> = (0..batch_size)
+                .map(|i| {
+                    NewTask::builder()
+                        .job_id(task.job_id())
+                        .task_type(TaskType::Triage)
+                        .batch_index(Some(i))
+                        .build()
+                })
+                .collect();
+
+            let extraction_result = NewExtractionResult::builder()
+                .job_id(task.job_id())
+                .candidates(
+                    serde_json::to_value(&capped_candidates).expect(CANDIDATES_SERIALISE),
+                )
+                .relation_hints(serde_json::to_value(&capped_hints).expect(HINTS_SERIALISE))
+                .build();
+
+            Ok(StageOutput {
+                commit: StageCommit::Extraction {
+                    extraction_result,
+                    triage_tasks,
+                    batch_size,
+                    original_count,
+                },
+                usages: vec![Usage::Completion(response.usage)],
             })
-            .collect();
-
-        let triage_tasks: Vec<NewTask> = (0..batch_size)
-            .map(|i| {
-                NewTask::builder()
-                    .job_id(task.job_id())
-                    .task_type(TaskType::Triage)
-                    .batch_index(Some(i))
-                    .build()
-            })
-            .collect();
-
-        let extraction_result = NewExtractionResult::builder()
-            .job_id(task.job_id())
-            .candidates(serde_json::to_value(&capped_candidates).expect(CANDIDATES_SERIALISE))
-            .relation_hints(serde_json::to_value(&capped_hints).expect(HINTS_SERIALISE))
-            .build();
-
-        Ok(StageOutput {
-            commit: StageCommit::Extraction {
-                extraction_result,
-                triage_tasks,
-                batch_size,
-                original_count,
-            },
-            usages: vec![Usage::Completion(response.usage)],
-        })
+        }
+        .instrument(span)
+        .await
     }
 }
