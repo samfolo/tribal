@@ -11,6 +11,20 @@ use tribal_db::APPLICATION_TABLES;
 use tribal_domain::{RelationBatchId, TaskId};
 
 // ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+/// Panics if `value` is not a valid SQL identifier (`[a-zA-Z_][a-zA-Z0-9_]*`).
+fn assert_identifier(value: &str, label: &str) {
+    assert!(
+        !value.is_empty()
+            && value.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        "lifecycle: {label} is not a valid SQL identifier: {value}",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // backdate_task_heartbeat
 // ---------------------------------------------------------------------------
 
@@ -91,8 +105,9 @@ pub async fn truncate_all_tables(conn: &mut PgConnection) {
 ///
 /// # Panics
 ///
-/// Panics if `table` is not in `APPLICATION_TABLES` (debug builds) or
-/// if the database query fails.
+/// Panics if `table` is not in `APPLICATION_TABLES`, if `set_column`
+/// or `where_column` is not a valid SQL identifier, or if the database
+/// query fails.
 pub async fn shift_timestamp(
     conn: &mut PgConnection,
     table: &str,
@@ -101,10 +116,12 @@ pub async fn shift_timestamp(
     where_value: uuid::Uuid,
     offset: Duration,
 ) {
-    debug_assert!(
+    assert!(
         APPLICATION_TABLES.contains(&table),
         "shift_timestamp: unknown table {table}",
     );
+    assert_identifier(set_column, "set_column");
+    assert_identifier(where_column, "where_column");
     #[allow(clippy::cast_precision_loss)]
     let secs = offset.num_seconds() as f64;
     let sql = format!(
@@ -131,8 +148,8 @@ pub async fn shift_timestamp(
 ///
 /// # Panics
 ///
-/// Panics if `table` is not in `APPLICATION_TABLES` (debug builds) or
-/// if the database query fails.
+/// Panics if `table` is not in `APPLICATION_TABLES`, if `column` is
+/// not a valid SQL identifier, or if the database query fails.
 pub async fn shift_timestamp_by_id(
     conn: &mut PgConnection,
     table: &str,
@@ -180,8 +197,8 @@ pub async fn shift_relations_timestamp_by_batch(
 ///
 /// # Panics
 ///
-/// Panics if `table` is not in `APPLICATION_TABLES` (debug builds) or
-/// if the database query fails.
+/// Panics if `table` is not in `APPLICATION_TABLES`, if `column` is
+/// not a valid SQL identifier, or if the database query fails.
 pub async fn set_timestamp(
     conn: &mut PgConnection,
     table: &str,
@@ -189,10 +206,11 @@ pub async fn set_timestamp(
     id: uuid::Uuid,
     ts: chrono::DateTime<chrono::Utc>,
 ) {
-    debug_assert!(
+    assert!(
         APPLICATION_TABLES.contains(&table),
         "set_timestamp: unknown table {table}",
     );
+    assert_identifier(column, "column");
     let sql = format!("UPDATE {table} SET {column} = $1 WHERE id = $2");
     sqlx::query(&sql)
         .bind(ts)
