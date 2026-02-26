@@ -30,9 +30,9 @@ use tribal_inference::{
     RequestClass,
 };
 use tribal_test_utils::{
-    ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, TestContext,
-    a_completion_response, a_new_job, a_new_principal, a_new_project, a_new_task,
-    backdate_task_heartbeat, serial_lock, test_context,
+    ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions,
+    TestContext, a_completion_response, a_new_job, a_new_principal, a_new_project, a_new_task,
+    backdate_task_heartbeat, serial_lock, set_retry_count, test_context,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -330,12 +330,7 @@ async fn test_dead_letter_path_transitions_task_and_job() {
 
         // Pre-set retry_count to max_retries so the next failure
         // triggers dead-lettering.
-        sqlx::query("UPDATE tasks SET retry_count = $1 WHERE id = $2")
-            .bind(i32::try_from(config.task_max_retries).unwrap())
-            .bind(task.id().inner())
-            .execute(&mut conn)
-            .await
-            .expect("set retry_count");
+        set_retry_count(&mut conn, task.id(), config.task_max_retries).await;
 
         (job.id(), task.id())
     };
@@ -604,12 +599,7 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
 
         // Pre-set retry_count to max_retries so reclaim triggers
         // dead-lettering.
-        sqlx::query("UPDATE tasks SET retry_count = $1 WHERE id = $2")
-            .bind(i32::try_from(config.task_max_retries).unwrap())
-            .bind(task.id().inner())
-            .execute(&mut conn)
-            .await
-            .expect("set retry_count");
+        set_retry_count(&mut conn, task.id(), config.task_max_retries).await;
 
         // Claim and backdate heartbeat.
         let claimed = PgTaskRepository

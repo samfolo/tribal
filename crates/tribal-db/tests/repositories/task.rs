@@ -5,7 +5,8 @@ use tribal_db::{
 };
 use tribal_domain::{JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use tribal_test_utils::{
-    a_new_job, a_new_principal, a_new_project, a_new_task, backdate_task_heartbeat, test_context,
+    a_new_job, a_new_principal, a_new_project, a_new_task, backdate_task_heartbeat,
+    set_retry_count, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -648,11 +649,7 @@ async fn test_fail_dead_letters_when_exceeding_max_retries() {
         .expect("insert");
 
     // Set retry_count to max_retries so next fail triggers dead-letter.
-    sqlx::query("UPDATE tasks SET retry_count = 3 WHERE id = $1")
-        .bind(inserted.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("set retry_count");
+    set_retry_count(&mut txn, inserted.id(), 3).await;
 
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
@@ -857,11 +854,7 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
         .expect("insert");
 
     // Set retry_count to max so reclaim triggers dead-letter.
-    sqlx::query("UPDATE tasks SET retry_count = 3 WHERE id = $1")
-        .bind(inserted.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("set retry_count");
+    set_retry_count(&mut txn, inserted.id(), 3).await;
 
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];

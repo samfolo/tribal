@@ -12,5 +12,5 @@ mod repository;
 pub mod scenarios;
 mod types;
 
-pub use repository::{backdate_task_heartbeat, commit_relation_batch};
+pub use repository::commit_relation_batch;
 pub use types::{Seed, SeedItemSpec, SeedReferenceSpec, SeedResult, item, reference};
