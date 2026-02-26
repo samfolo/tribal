@@ -5,67 +5,14 @@ use tribal_db::{
 };
 use tribal_domain::{JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use tribal_test_utils::{
-    a_new_job, a_new_principal, a_new_project, a_new_task, backdate_task_heartbeat,
-    set_retry_count, test_context,
+    a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_task,
+    backdate_task_heartbeat, count_tasks_by_status, insert_prompt_version, set_retry_count,
+    shift_timestamp_by_id, test_context,
 };
-
-// ---------------------------------------------------------------------------
-// TestTaskType
-// ---------------------------------------------------------------------------
-
-/// Task type for raw SQL insertion in tests.
-///
-/// Mirrors [`tribal_domain::TaskType`] but carries `batch_index` on
-/// the `Triage` variant so the `triage_requires_batch_index` check
-/// constraint is satisfied by construction.
-pub(super) enum TestTaskType {
-    Extraction,
-    Triage {
-        batch_index: i32,
-    },
-    #[allow(dead_code)]
-    Relation,
-}
-
-impl TestTaskType {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Extraction => "extraction",
-            Self::Triage { .. } => "triage",
-            Self::Relation => "relation",
-        }
-    }
-
-    fn batch_index(&self) -> Option<i32> {
-        match self {
-            Self::Triage { batch_index } => Some(*batch_index),
-            _ => None,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Inserts a task row with the given status and task type for a job.
-pub(super) async fn insert_task_with_status(
-    txn: &mut sqlx::PgConnection,
-    job_id: JobId,
-    task_type: TestTaskType,
-    status: &str,
-) {
-    sqlx::query(
-        "INSERT INTO tasks (job_id, task_type, status, batch_index) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(job_id.inner())
-    .bind(task_type.as_str())
-    .bind(status)
-    .bind(task_type.batch_index())
-    .execute(&mut *txn)
-    .await
-    .expect("insert task");
-}
 
 /// Inserts a principal, project, prompt_version, and a job, returning
 /// the job ID for creating tasks.
@@ -90,17 +37,7 @@ async fn setup_task_prerequisites(txn: &mut sqlx::PgConnection, suffix: &str) ->
         .await
         .expect("insert project");
 
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test prompt') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut *txn)
-    .await
-    .expect("insert prompt_version");
-
-    let pv_id = tribal_domain::PromptVersionId::from(prompt_version_id);
+    let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
 
     let job = PgJobRepository
         .insert(
@@ -439,11 +376,14 @@ async fn test_claim_skips_future_available_at() {
         .expect("insert");
 
     // Push available_at into the future.
-    sqlx::query("UPDATE tasks SET available_at = now() + interval '1 hour' WHERE id = $1")
-        .bind(task.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("update available_at");
+    shift_timestamp_by_id(
+        &mut txn,
+        "tasks",
+        "available_at",
+        *task.id().inner(),
+        chrono::Duration::hours(1),
+    )
+    .await;
 
     let claimed = repo.claim(&mut txn, 10, "worker-1").await.expect("claim");
 
@@ -945,11 +885,7 @@ async fn test_reclaim_stale_respects_limit() {
     assert_eq!(result.dead_lettered, 0);
 
     // Count remaining claimed tasks across all jobs.
-    let still_claimed: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE status = 'claimed'")
-            .fetch_one(&mut *txn)
-            .await
-            .expect("count claimed");
+    let still_claimed = count_tasks_by_status(&mut txn, "claimed").await;
 
     assert_eq!(still_claimed, 2, "2 tasks should still be claimed");
 

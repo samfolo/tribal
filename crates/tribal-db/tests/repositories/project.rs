@@ -1,6 +1,6 @@
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
 use tribal_domain::ProjectId;
-use tribal_test_utils::{a_new_project, test_context};
+use tribal_test_utils::{a_new_project, set_timestamp, test_context};
 
 #[tokio::test]
 async fn test_insert_with_none_optional_fields_returns_none() {
@@ -153,12 +153,14 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
     // transaction_timestamp()).  Shift the second project's created_at
     // backward so it should sort before the first.
     let backdated = first.created_at() - chrono::Duration::seconds(10);
-    sqlx::query("UPDATE projects SET created_at = $1 WHERE id = $2")
-        .bind(backdated)
-        .bind(second.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate second");
+    set_timestamp(
+        &mut txn,
+        "projects",
+        "created_at",
+        *second.id().inner(),
+        backdated,
+    )
+    .await;
 
     let projects = repo.list(&mut txn).await.expect("list");
 

@@ -105,6 +105,7 @@ pub async fn shift_timestamp(
         APPLICATION_TABLES.contains(&table),
         "shift_timestamp: unknown table {table}",
     );
+    #[allow(clippy::cast_precision_loss)]
     let secs = offset.num_seconds() as f64;
     let sql = format!(
         "UPDATE {table} \

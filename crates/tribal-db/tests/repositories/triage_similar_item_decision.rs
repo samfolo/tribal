@@ -3,12 +3,10 @@ use tribal_db::{
     PgPrincipalRepository, PgProjectRepository, PgTriageSimilarItemDecisionRepository,
     PrincipalRepository, ProjectRepository, TriageSimilarItemDecisionRepository,
 };
-use tribal_domain::{
-    JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, RelationSuggestion,
-};
+use tribal_domain::{JobId, KnowledgeItemId, PrincipalId, ProjectId, RelationSuggestion};
 use tribal_test_utils::{
-    a_new_job, a_new_knowledge_item, a_new_principal, a_new_project,
-    a_new_triage_similar_item_decision, test_context,
+    a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
+    a_new_triage_similar_item_decision, insert_prompt_version, shift_timestamp_by_id, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -41,17 +39,8 @@ async fn setup_prerequisites(
         .await
         .expect("insert project");
 
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut *txn)
-    .await
-    .expect("insert prompt_version");
+    let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
 
-    let pv_id = PromptVersionId::from(prompt_version_id);
     let job = tribal_db::PgJobRepository
         .insert(
             txn,
@@ -271,15 +260,14 @@ async fn test_find_by_job_id_and_batch_index_returns_matching_ordered_by_created
     let inserted = repo.batch_insert(&mut txn, &batch).await.expect("insert");
 
     // Backdate item_b's decision so it sorts before item_a's by created_at.
-    sqlx::query(
-        "UPDATE triage_similar_item_decisions \
-         SET created_at = created_at - interval '1 hour' \
-         WHERE id = $1",
+    shift_timestamp_by_id(
+        &mut txn,
+        "triage_similar_item_decisions",
+        "created_at",
+        *inserted[1].id().inner(),
+        chrono::Duration::hours(-1),
     )
-    .bind(inserted[1].id().inner())
-    .execute(&mut *txn)
-    .await
-    .expect("backdate decision");
+    .await;
 
     let results = repo
         .find_by_job_id_and_batch_index(&mut txn, job_id, 0)
