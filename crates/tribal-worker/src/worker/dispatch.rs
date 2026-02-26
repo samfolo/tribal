@@ -10,11 +10,11 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use tribal_db::{
     ExtractionResultRepository, JobRepository, JobStatusTransition, NewExtractionResult, NewTask,
     PgExtractionResultRepository, PgJobRepository, PgTaskRepository, TaskRepository,
 };
-use tracing::Instrument;
 use tribal_domain::{Job, JobId, JobOutcome, JobStatus, Task, TaskErrorKind, TaskType, span_attrs};
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
@@ -620,8 +620,7 @@ impl Worker {
 
         async {
             tracing::Span::current().record(span_attrs::BATCH_SIZE, batch_size);
-            tracing::Span::current()
-                .record(span_attrs::EXTRACTION_ORIGINAL_COUNT, original_count);
+            tracing::Span::current().record(span_attrs::EXTRACTION_ORIGINAL_COUNT, original_count);
 
             let Some(claim_token) = task.claim_token() else {
                 return Err(StageError::OwnershipLost);

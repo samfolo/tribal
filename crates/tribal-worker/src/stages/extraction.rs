@@ -186,9 +186,7 @@ impl Worker {
 
             let extraction_result = NewExtractionResult::builder()
                 .job_id(task.job_id())
-                .candidates(
-                    serde_json::to_value(&capped_candidates).expect(CANDIDATES_SERIALISE),
-                )
+                .candidates(serde_json::to_value(&capped_candidates).expect(CANDIDATES_SERIALISE))
                 .relation_hints(serde_json::to_value(&capped_hints).expect(HINTS_SERIALISE))
                 .build();
 
