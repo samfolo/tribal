@@ -4,6 +4,11 @@
 //! should be defined here with a name that explains *why* the value
 //! was chosen, not just how long it is.  This makes it easy to tune
 //! timeouts if default test configuration changes or if CI flakes.
+//!
+//! With the poll-until test pattern these constants serve as
+//! **timeout upper bounds** rather than exact sleep durations.  Values
+//! include headroom above the theoretical minimum to avoid flakes
+//! under CI load.
 
 use std::time::Duration;
 
@@ -11,28 +16,35 @@ use std::time::Duration;
 // Worker cycle durations
 // ---------------------------------------------------------------------------
 
-/// Time for a worker to complete at least one poll-claim-dispatch cycle.
+/// Timeout for a worker to complete at least one poll-claim-dispatch
+/// cycle.
 ///
-/// Given `test_config().poll_interval_millis = 100`, 500 ms provides
-/// ample room for claim, stage dispatch, and commit.
-pub const POLL_SETTLE: Duration = Duration::from_millis(500);
+/// Theoretical minimum: `poll_interval` (100 ms) + claim + stage
+/// dispatch + commit ≈ 400 ms.  Set to 1 s for headroom.
+pub const POLL_SETTLE: Duration = Duration::from_secs(1);
 
-/// Time for a worker to process multiple tasks across several poll
+/// Timeout for a worker to process multiple tasks across several poll
 /// cycles.  Used in concurrency tests that need more than two claim
 /// rounds to exercise the concurrency limit.
-pub const MULTI_CYCLE_SETTLE: Duration = Duration::from_secs(1);
-
-/// Time for a worker to claim a task and begin dispatching, but
-/// before a long-running stage completes.  Used to inject external
-/// state changes (reclaim, heartbeat loss) while a mock provider
-/// delay is still in flight.
-pub const CLAIM_SETTLE: Duration = Duration::from_millis(300);
-
-/// Time for the heartbeat loop to detect an externally-reclaimed task.
 ///
-/// Given `test_config().heartbeat_interval_millis = 200`, 600 ms
-/// gives the heartbeat at least two chances to observe the loss.
-pub const HEARTBEAT_DETECT: Duration = Duration::from_millis(600);
+/// Multiple 100 ms poll cycles + dispatch overhead.  Set to 2 s.
+pub const MULTI_CYCLE_SETTLE: Duration = Duration::from_secs(2);
+
+/// Timeout for a worker to claim a task and begin dispatching, but
+/// before a long-running stage completes.  Used to confirm the
+/// provider has been called while a mock delay is still in flight.
+///
+/// Theoretical minimum: `poll_interval` (100 ms) + claim + DB loads
+/// for tag registry and prompt version ≈ 300 ms.  Set to 500 ms for
+/// headroom.
+pub const CLAIM_SETTLE: Duration = Duration::from_millis(500);
+
+/// Timeout for the heartbeat loop to detect an externally-reclaimed
+/// task.
+///
+/// Given `test_config().heartbeat_interval_millis = 200`, 1 s gives
+/// the heartbeat at least four chances to observe the loss.
+pub const HEARTBEAT_DETECT: Duration = Duration::from_secs(1);
 
 // ---------------------------------------------------------------------------
 // Simulated staleness
