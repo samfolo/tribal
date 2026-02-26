@@ -19,7 +19,10 @@ use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
 
-use super::backoff::{BACKOFF_CAP_SECS, backoff_duration};
+use super::{
+    backoff::{BACKOFF_CAP_SECS, backoff_duration},
+    heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
+};
 use crate::{
     config::WorkerConfig,
     error::{StageError, WorkerError},
@@ -48,7 +51,6 @@ pub struct Worker {
     pool: PgPool,
     #[allow(dead_code)]
     provider_registry: Arc<ProviderRegistry>,
-    #[allow(dead_code)]
     extraction_provider: Arc<dyn InferenceProvider>,
     #[allow(dead_code)]
     triage_provider: Arc<dyn InferenceProvider>,
@@ -122,6 +124,11 @@ impl Worker {
         &self.config
     }
 
+    /// Returns a reference to the extraction inference provider.
+    pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
+        &self.extraction_provider
+    }
+
     /// Returns the high-water mark of simultaneously in-flight tasks
     /// observed since the worker was created.
     #[must_use]
@@ -135,10 +142,25 @@ impl Worker {
     /// # Errors
     ///
     /// Returns [`WorkerError`] on database failures.
-    #[allow(clippy::unused_async)]
     pub async fn startup_reclaim(&self) -> Result<u32, WorkerError> {
-        // Implemented by ticket 4.2
-        Ok(0)
+        let stats = run_startup_reclaim(
+            &self.pool,
+            self.config.task_timeout(),
+            self.config.task_max_retries,
+        )
+        .await?;
+
+        if stats.total() > 0 {
+            tracing::info!(
+                requeued = stats.requeued,
+                dead_lettered = stats.dead_lettered,
+                "startup reclaim recovered orphaned tasks",
+            );
+        }
+
+        self.heal_dead_lettered_jobs().await;
+
+        Ok(stats.total())
     }
 
     /// Runs the main poll-claim-dispatch loop until cancellation.
@@ -168,9 +190,15 @@ impl Worker {
         let mut poll_interval = self.config.poll_interval();
         let mut in_flight = tokio::task::JoinSet::new();
 
+        let reclaim_worker = Arc::clone(self);
+        let reclaim_handle = tokio::spawn(async move {
+            reclaim_worker.run_reclaim_loop().await;
+        });
+
         loop {
             tokio::select! {
                 () = self.cancellation_token.cancelled() => {
+                    reclaim_handle.abort();
                     tracing::info!(instance_id = %self.instance_id, "worker cancelled, draining in-flight tasks");
                     while in_flight.join_next().await.is_some() {}
                     return Err(WorkerError::Cancelled);
@@ -306,8 +334,22 @@ impl Worker {
         // claim-time status change.
         self.notify_job_state(job_id);
 
+        let Some(claim_token) = task.claim_token() else {
+            tracing::error!(task_id = %task.id(), "task has no claim token after claiming");
+            return;
+        };
+
+        let mut heartbeat = spawn_heartbeat(
+            self.pool.clone(),
+            task.id(),
+            claim_token,
+            self.config.heartbeat_interval(),
+            self.cancellation_token.clone(),
+        );
+
         let stage_result = tokio::select! {
             () = self.cancellation_token.cancelled() => {
+                heartbeat.abort();
                 tracing::info!(task_id = %task.id(), "task cancelled mid-execution");
                 return;
             }
@@ -315,6 +357,9 @@ impl Worker {
                 Err(StageError::Timeout {
                     timeout_seconds: self.config.task_timeout_seconds,
                 })
+            }
+            Ok(()) = &mut heartbeat.ownership_lost_rx => {
+                Err(StageError::OwnershipLost)
             }
             result = self.dispatch_stage(&job, &task) => {
                 result
@@ -326,6 +371,7 @@ impl Worker {
                 self.record_token_usage(&job, &task, &output.usages).await;
 
                 if self.cancellation_token.is_cancelled() {
+                    heartbeat.abort();
                     tracing::info!(
                         task_id = %task.id(),
                         "cancellation detected after stage; skipping commit",
@@ -341,6 +387,8 @@ impl Worker {
                 self.handle_stage_failure(&task, &e).await;
             }
         }
+
+        heartbeat.abort();
     }
 
     /// Routes to the correct stage based on task type.
@@ -636,6 +684,90 @@ impl Worker {
     fn notify_job_state(&self, job_id: JobId) {
         if let Some(tx) = self.job_state_txs.get(&job_id) {
             let _ = tx.send(());
+        }
+    }
+
+    /// Transitions jobs with dead-lettered extraction or relation tasks
+    /// to `Failed`, notifies watch subscribers, and cleans up the watch
+    /// map.  Best-effort — failures are logged but not propagated.
+    async fn heal_dead_lettered_jobs(&self) {
+        let mut conn = match self.pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "pool acquire failed for job healing");
+                return;
+            }
+        };
+
+        match PgJobRepository
+            .fail_stale_dead_lettered_jobs(&mut conn)
+            .await
+        {
+            Ok(job_ids) => {
+                for job_id in &job_ids {
+                    self.notify_job_state(*job_id);
+                    self.job_state_txs.remove(job_id);
+                }
+                if !job_ids.is_empty() {
+                    tracing::warn!(count = job_ids.len(), "transitioned stuck jobs to failed",);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to transition dead-lettered jobs");
+            }
+        }
+    }
+
+    /// Runs the periodic reclaim sweep until cancellation.
+    ///
+    /// Sweeps for stale heartbeats every `reclaim_interval`, requeuing
+    /// or dead-lettering abandoned tasks.  When dead-lettered tasks are
+    /// found, transitions their parent jobs to `Failed` if appropriate.
+    async fn run_reclaim_loop(&self) {
+        let mut ticker = tokio::time::interval(self.config.reclaim_interval());
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await; // skip first immediate tick
+
+        let limit = clamp_to_u32(self.config.max_concurrent_tasks.saturating_mul(2));
+
+        loop {
+            tokio::select! {
+                () = self.cancellation_token.cancelled() => {
+                    return;
+                }
+                _ = ticker.tick() => {}
+            }
+
+            match run_reclaim_sweep(
+                &self.pool,
+                self.config.task_timeout(),
+                self.config.task_max_retries,
+                limit,
+            )
+            .await
+            {
+                Ok(stats) => {
+                    if stats.dead_lettered > 0 {
+                        tracing::warn!(
+                            requeued = stats.requeued,
+                            dead_lettered = stats.dead_lettered,
+                            "reclaim sweep dead-lettered tasks",
+                        );
+                    } else if stats.requeued > 0 {
+                        tracing::info!(
+                            requeued = stats.requeued,
+                            "reclaim sweep requeued stale tasks",
+                        );
+                    }
+
+                    if stats.dead_lettered > 0 {
+                        self.heal_dead_lettered_jobs().await;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "reclaim sweep failed");
+                }
+            }
         }
     }
 }

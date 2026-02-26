@@ -8,5 +8,6 @@
 
 mod backoff;
 mod dispatch;
+mod heartbeat;
 
 pub use dispatch::Worker;

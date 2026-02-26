@@ -4,11 +4,68 @@ use tribal_db::{
     PgTaskRepository, PrincipalRepository, ProjectRepository, TaskRepository,
 };
 use tribal_domain::{JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
-use tribal_test_utils::{a_new_job, a_new_principal, a_new_project, a_new_task, test_context};
+use tribal_test_utils::{
+    a_new_job, a_new_principal, a_new_project, a_new_task, backdate_task_heartbeat,
+    set_retry_count, test_context,
+};
+
+// ---------------------------------------------------------------------------
+// TestTaskType
+// ---------------------------------------------------------------------------
+
+/// Task type for raw SQL insertion in tests.
+///
+/// Mirrors [`tribal_domain::TaskType`] but carries `batch_index` on
+/// the `Triage` variant so the `triage_requires_batch_index` check
+/// constraint is satisfied by construction.
+pub(super) enum TestTaskType {
+    Extraction,
+    Triage {
+        batch_index: i32,
+    },
+    #[allow(dead_code)]
+    Relation,
+}
+
+impl TestTaskType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Extraction => "extraction",
+            Self::Triage { .. } => "triage",
+            Self::Relation => "relation",
+        }
+    }
+
+    fn batch_index(&self) -> Option<i32> {
+        match self {
+            Self::Triage { batch_index } => Some(*batch_index),
+            _ => None,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Inserts a task row with the given status and task type for a job.
+pub(super) async fn insert_task_with_status(
+    txn: &mut sqlx::PgConnection,
+    job_id: JobId,
+    task_type: TestTaskType,
+    status: &str,
+) {
+    sqlx::query(
+        "INSERT INTO tasks (job_id, task_type, status, batch_index) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(job_id.inner())
+    .bind(task_type.as_str())
+    .bind(status)
+    .bind(task_type.batch_index())
+    .execute(&mut *txn)
+    .await
+    .expect("insert task");
+}
 
 /// Inserts a principal, project, prompt_version, and a job, returning
 /// the job ID for creating tasks.
@@ -592,11 +649,7 @@ async fn test_fail_dead_letters_when_exceeding_max_retries() {
         .expect("insert");
 
     // Set retry_count to max_retries so next fail triggers dead-letter.
-    sqlx::query("UPDATE tasks SET retry_count = 3 WHERE id = $1")
-        .bind(inserted.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("set retry_count");
+    set_retry_count(&mut txn, inserted.id(), 3).await;
 
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
@@ -686,14 +739,9 @@ async fn test_reclaim_stale_heartbeat_expired() {
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
 
-    // Push heartbeat_at into the past beyond the timeout.
-    sqlx::query("UPDATE tasks SET heartbeat_at = now() - interval '120 seconds' WHERE id = $1")
-        .bind(task.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate heartbeat");
+    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_secs(120)).await;
 
-    let count = repo
+    let result = repo
         .reclaim_stale(
             &mut txn,
             30,
@@ -701,11 +749,13 @@ async fn test_reclaim_stale_heartbeat_expired() {
             10,
             TaskErrorKind::HeartbeatExpired,
             "heartbeat lapsed",
+            None,
         )
         .await
         .expect("reclaim_stale");
 
-    assert_eq!(count, 1);
+    assert_eq!(result.requeued, 1);
+    assert_eq!(result.dead_lettered, 0);
 
     let found = repo
         .find_by_id(&mut txn, task.id())
@@ -747,14 +797,9 @@ async fn test_reclaim_stale_startup_reclaim() {
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
 
-    // Push heartbeat_at into the past.
-    sqlx::query("UPDATE tasks SET heartbeat_at = now() - interval '120 seconds' WHERE id = $1")
-        .bind(task.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate heartbeat");
+    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_secs(120)).await;
 
-    let count = repo
+    let result = repo
         .reclaim_stale(
             &mut txn,
             30,
@@ -762,11 +807,13 @@ async fn test_reclaim_stale_startup_reclaim() {
             10,
             TaskErrorKind::StartupReclaim,
             "reclaimed during startup",
+            Some(1),
         )
         .await
         .expect("reclaim_stale");
 
-    assert_eq!(count, 1);
+    assert_eq!(result.requeued, 1);
+    assert_eq!(result.dead_lettered, 0);
 
     let found = repo
         .find_by_id(&mut txn, task.id())
@@ -807,21 +854,13 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
         .expect("insert");
 
     // Set retry_count to max so reclaim triggers dead-letter.
-    sqlx::query("UPDATE tasks SET retry_count = 3 WHERE id = $1")
-        .bind(inserted.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("set retry_count");
+    set_retry_count(&mut txn, inserted.id(), 3).await;
 
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
 
     // Push heartbeat_at into the past.
-    sqlx::query("UPDATE tasks SET heartbeat_at = now() - interval '120 seconds' WHERE id = $1")
-        .bind(task.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate heartbeat");
+    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_secs(120)).await;
 
     let pre_reclaim_available_at = repo
         .find_by_id(&mut txn, task.id())
@@ -829,7 +868,7 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
         .expect("find_by_id")
         .available_at();
 
-    let count = repo
+    let result = repo
         .reclaim_stale(
             &mut txn,
             30,
@@ -837,11 +876,13 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
             10,
             TaskErrorKind::HeartbeatExpired,
             "heartbeat lapsed",
+            None,
         )
         .await
         .expect("reclaim_stale");
 
-    assert_eq!(count, 1);
+    assert_eq!(result.requeued, 0);
+    assert_eq!(result.dead_lettered, 1);
 
     let found = repo
         .find_by_id(&mut txn, task.id())
@@ -858,4 +899,74 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
     assert!(found.heartbeat_at().is_none());
     // Dead-letter preserves original available_at.
     assert_eq!(found.available_at(), pre_reclaim_available_at);
+}
+
+#[tokio::test]
+async fn test_reclaim_stale_respects_limit() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTaskRepository;
+
+    // Each task needs its own job due to the unique constraint on
+    // (job_id, task_type).
+    let mut task_ids = Vec::new();
+    for i in 0..5 {
+        let job_id = setup_task_prerequisites(&mut txn, &format!("reclaim-limit-{i}")).await;
+        let task = repo
+            .insert(&mut txn, &a_new_task().job_id(job_id).build())
+            .await
+            .expect("insert");
+        task_ids.push(task.id());
+    }
+
+    // Claim all 5 and backdate their heartbeats.
+    let claimed = repo.claim(&mut txn, 5, "worker-1").await.expect("claim");
+    assert_eq!(claimed.len(), 5);
+
+    for id in &task_ids {
+        backdate_task_heartbeat(&mut txn, *id, std::time::Duration::from_secs(120)).await;
+    }
+
+    // Reclaim with limit = 3 — only 3 of 5 should be reclaimed.
+    let result = repo
+        .reclaim_stale(
+            &mut txn,
+            30,
+            3,
+            3,
+            TaskErrorKind::HeartbeatExpired,
+            "heartbeat lapsed",
+            None,
+        )
+        .await
+        .expect("reclaim_stale");
+
+    assert_eq!(result.requeued, 3, "only 3 tasks should be reclaimed");
+    assert_eq!(result.dead_lettered, 0);
+
+    // Count remaining claimed tasks across all jobs.
+    let still_claimed: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE status = 'claimed'")
+            .fetch_one(&mut *txn)
+            .await
+            .expect("count claimed");
+
+    assert_eq!(still_claimed, 2, "2 tasks should still be claimed");
+
+    // Reclaim again with a higher limit — should pick up the remaining 2.
+    let result = repo
+        .reclaim_stale(
+            &mut txn,
+            30,
+            3,
+            10,
+            TaskErrorKind::HeartbeatExpired,
+            "heartbeat lapsed",
+            None,
+        )
+        .await
+        .expect("reclaim_stale");
+
+    assert_eq!(result.requeued, 2, "remaining 2 tasks should be reclaimed");
+    assert_eq!(result.dead_lettered, 0);
 }

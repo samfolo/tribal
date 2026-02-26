@@ -8,6 +8,7 @@
 mod db;
 mod error;
 mod factories;
+mod lifecycle;
 mod mock_inference;
 mod seeding;
 mod text;
@@ -15,5 +16,6 @@ mod text;
 pub use db::{TestContext, TestTransaction, serial_lock, test_context};
 pub use error::TestDbError;
 pub use factories::*;
+pub use lifecycle::*;
 pub use mock_inference::*;
 pub use seeding::*;

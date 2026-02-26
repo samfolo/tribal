@@ -30,6 +30,16 @@ pub enum WorkerError {
     /// The worker was cancelled via its cancellation token.
     #[error("worker cancelled")]
     Cancelled,
+
+    /// A reclaim operation (startup or periodic sweep) failed.
+    #[error("reclaim failed: {context}")]
+    ReclaimFailed {
+        /// Human-readable description of the reclaim operation.
+        context: String,
+        /// The underlying database error.
+        #[source]
+        source: tribal_db::DbError,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -189,5 +199,14 @@ mod tests {
             },
         };
         assert_eq!(claim.to_string(), "claim query failed: claiming tasks");
+
+        let reclaim = WorkerError::ReclaimFailed {
+            context: "startup reclaim".into(),
+            source: tribal_db::DbError::NotFound {
+                entity: "task",
+                id: "test".into(),
+            },
+        };
+        assert_eq!(reclaim.to_string(), "reclaim failed: startup reclaim");
     }
 }

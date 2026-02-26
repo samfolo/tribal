@@ -48,6 +48,16 @@ const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data co
 const RETRY_COUNT_OVERFLOW: &str = "negative retry_count in database — data corruption";
 const MAX_RETRIES_EXCEEDS_I32: &str = "max_retries exceeds i32::MAX";
 
+/// Result of a [`TaskRepository::reclaim_stale`] operation, breaking
+/// down the total affected rows by their post-reclaim status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReclaimOutcome {
+    /// Tasks reset to `queued` for another attempt.
+    pub requeued: u64,
+    /// Tasks moved to `dead_letter` (retry budget exhausted).
+    pub dead_lettered: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
@@ -191,16 +201,18 @@ pub trait TaskRepository {
     ///
     /// Sweeps tasks with `status = 'claimed'` and
     /// `heartbeat_at < now() - timeout_seconds`.  Tasks within their
-    /// retry budget are re-queued with exponential backoff (for
-    /// `HeartbeatExpired`) or flat 1-second backoff (for
-    /// `StartupReclaim`).  Tasks exceeding `max_retries` are
-    /// dead-lettered.
+    /// retry budget are re-queued with either a flat backoff (when
+    /// `flat_backoff_seconds` is `Some`) or exponential backoff
+    /// (`2^retry_count` seconds, when `None`).  Tasks exceeding
+    /// `max_retries` are dead-lettered.
     ///
-    /// Returns the number of tasks reclaimed.
+    /// Returns a [`ReclaimOutcome`] with the count of requeued and
+    /// dead-lettered tasks.
     ///
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
+    #[allow(clippy::too_many_arguments)]
     async fn reclaim_stale(
         &self,
         conn: &mut PgConnection,
@@ -209,7 +221,8 @@ pub trait TaskRepository {
         limit: u32,
         error_kind: TaskErrorKind,
         error_message: &str,
-    ) -> Result<u64, DbError>;
+        flat_backoff_seconds: Option<u32>,
+    ) -> Result<ReclaimOutcome, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -441,13 +454,22 @@ impl TaskRepository for PgTaskRepository {
         limit: u32,
         error_kind: TaskErrorKind,
         error_message: &str,
-    ) -> Result<u64, DbError> {
+        flat_backoff_seconds: Option<u32>,
+    ) -> Result<ReclaimOutcome, DbError> {
         let timeout_f64 = f64::from(timeout_seconds);
         let max_retries_i32 = i32::try_from(max_retries).expect(MAX_RETRIES_EXCEEDS_I32);
         let limit_i64 = i64::from(limit);
         let error_kind_str = error_kind.as_str();
+        let flat_backoff_f64 = flat_backoff_seconds.map(f64::from);
 
-        let result = sqlx::query(
+        // Backoff: when `flat_backoff_seconds` is provided, all
+        // requeued tasks use that flat delay.  Otherwise, exponential
+        // backoff `2^retry_count` is applied using the pre-increment
+        // count (so the first reclaim backoff is `2^0 = 1s`).  This
+        // is intentionally lower than the Rust-side `backoff_duration`
+        // which uses the post-increment count (`2^1 = 2s` for first
+        // inline failure) — reclaim recovery should retry sooner.
+        let rows = sqlx::query(
             "WITH stale AS ( \
                  SELECT id, retry_count FROM tasks \
                  WHERE status = 'claimed' \
@@ -464,8 +486,8 @@ impl TaskRepository for PgTaskRepository {
                  END, \
                  available_at = CASE \
                      WHEN s.retry_count + 1 > $2 THEN t.available_at \
-                     WHEN $4 = 'startup_reclaim' \
-                         THEN now() + interval '1 second' \
+                     WHEN $6 IS NOT NULL \
+                         THEN now() + make_interval(secs => $6) \
                      ELSE now() + make_interval( \
                          secs => power(2, s.retry_count)::double precision \
                      ) \
@@ -478,21 +500,36 @@ impl TaskRepository for PgTaskRepository {
                  error_message = $5, \
                  updated_at = now() \
              FROM stale s \
-             WHERE t.id = s.id",
+             WHERE t.id = s.id \
+             RETURNING t.status",
         )
         .bind(timeout_f64)
         .bind(max_retries_i32)
         .bind(limit_i64)
         .bind(error_kind_str)
         .bind(error_message)
-        .execute(&mut *conn)
+        .bind(flat_backoff_f64)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
             context: "reclaiming stale tasks".to_owned(),
             source: e,
         })?;
 
-        Ok(result.rows_affected())
+        let mut requeued: u64 = 0;
+        let mut dead_lettered: u64 = 0;
+        for row in &rows {
+            match row.get::<String, _>("status").as_str() {
+                "queued" => requeued += 1,
+                "dead_letter" => dead_lettered += 1,
+                other => debug_assert!(false, "unexpected reclaim status: {other}"),
+            }
+        }
+
+        Ok(ReclaimOutcome {
+            requeued,
+            dead_lettered,
+        })
     }
 }
 

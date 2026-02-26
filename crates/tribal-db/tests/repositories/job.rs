@@ -11,6 +11,8 @@ use tribal_test_utils::{
     a_job_status_transition, a_new_job, a_new_principal, a_new_project, test_context,
 };
 
+use super::task::{TestTaskType, insert_task_with_status};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -491,4 +493,162 @@ async fn test_set_committed_batch_id_not_found() {
         result,
         Err(DbError::NotFound { entity: "job", .. })
     ));
+}
+
+// ---------------------------------------------------------------------------
+// fail_stale_dead_lettered_jobs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let (principal_id, project_id, pv_id) =
+        setup_job_prerequisites(&mut txn, "fail-dead-letter").await;
+
+    let job = repo
+        .insert(
+            &mut txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
+                .build(),
+        )
+        .await
+        .expect("insert job");
+
+    // Transition job to extracting.
+    let transition = a_job_status_transition()
+        .status(JobStatus::Extracting)
+        .build();
+    repo.update_status(&mut txn, job.id(), &transition)
+        .await
+        .expect("update status");
+
+    // Insert a dead-lettered extraction task.
+    insert_task_with_status(&mut txn, job.id(), TestTaskType::Extraction, "dead_letter").await;
+
+    let failed_ids = repo
+        .fail_stale_dead_lettered_jobs(&mut txn)
+        .await
+        .expect("fail_stale_dead_lettered_jobs");
+
+    assert_eq!(failed_ids.len(), 1);
+    assert_eq!(failed_ids[0], job.id());
+
+    let found = repo
+        .find_by_id(&mut txn, job.id())
+        .await
+        .expect("find_by_id");
+
+    assert_eq!(found.status(), JobStatus::Failed);
+    assert_eq!(found.outcome(), Some(JobOutcome::Failure));
+    assert_eq!(
+        found.error_message(),
+        Some("task dead-lettered during reclaim"),
+    );
+    assert!(found.completed_at().is_some());
+}
+
+#[tokio::test]
+async fn test_fail_stale_dead_lettered_jobs_skips_triage() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let (principal_id, project_id, pv_id) =
+        setup_job_prerequisites(&mut txn, "fail-skip-triage").await;
+
+    let job = repo
+        .insert(
+            &mut txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
+                .build(),
+        )
+        .await
+        .expect("insert job");
+
+    let transition = a_job_status_transition()
+        .status(JobStatus::Triaging)
+        .build();
+    repo.update_status(&mut txn, job.id(), &transition)
+        .await
+        .expect("update status");
+
+    // Dead-lettered triage task — should NOT trigger job failure.
+    insert_task_with_status(
+        &mut txn,
+        job.id(),
+        TestTaskType::Triage { batch_index: 0 },
+        "dead_letter",
+    )
+    .await;
+
+    let failed_ids = repo
+        .fail_stale_dead_lettered_jobs(&mut txn)
+        .await
+        .expect("fail_stale_dead_lettered_jobs");
+
+    assert!(failed_ids.is_empty());
+
+    let found = repo
+        .find_by_id(&mut txn, job.id())
+        .await
+        .expect("find_by_id");
+
+    assert_eq!(found.status(), JobStatus::Triaging);
+}
+
+#[tokio::test]
+async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let (principal_id, project_id, pv_id) =
+        setup_job_prerequisites(&mut txn, "fail-already-failed").await;
+
+    let job = repo
+        .insert(
+            &mut txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
+                .build(),
+        )
+        .await
+        .expect("insert job");
+
+    // Transition job to failed directly.
+    let transition = a_job_status_transition()
+        .status(JobStatus::Failed)
+        .outcome(Some(JobOutcome::Failure))
+        .error_message(Some("already failed".into()))
+        .completed_at(Some(Utc::now()))
+        .build();
+    repo.update_status(&mut txn, job.id(), &transition)
+        .await
+        .expect("update status");
+
+    insert_task_with_status(&mut txn, job.id(), TestTaskType::Extraction, "dead_letter").await;
+
+    let failed_ids = repo
+        .fail_stale_dead_lettered_jobs(&mut txn)
+        .await
+        .expect("fail_stale_dead_lettered_jobs");
+
+    assert!(failed_ids.is_empty());
 }
