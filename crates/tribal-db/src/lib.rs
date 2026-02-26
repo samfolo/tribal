@@ -6,6 +6,9 @@
 mod error;
 mod pool;
 mod repositories;
+mod tables;
+
+pub use tables::APPLICATION_TABLES;
 
 /// Compiled migrations for the Tribal database schema.
 ///
