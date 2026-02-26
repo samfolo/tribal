@@ -701,6 +701,7 @@ async fn test_reclaim_stale_heartbeat_expired() {
             10,
             TaskErrorKind::HeartbeatExpired,
             "heartbeat lapsed",
+            None,
         )
         .await
         .expect("reclaim_stale");
@@ -763,6 +764,7 @@ async fn test_reclaim_stale_startup_reclaim() {
             10,
             TaskErrorKind::StartupReclaim,
             "reclaimed during startup",
+            Some(1),
         )
         .await
         .expect("reclaim_stale");
@@ -839,6 +841,7 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
             10,
             TaskErrorKind::HeartbeatExpired,
             "heartbeat lapsed",
+            None,
         )
         .await
         .expect("reclaim_stale");

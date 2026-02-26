@@ -179,6 +179,7 @@ pub(crate) async fn run_reclaim_sweep(
             limit,
             TaskErrorKind::HeartbeatExpired,
             HEARTBEAT_EXPIRED_MESSAGE,
+            None,
         )
         .await
         .map_err(|e| WorkerError::ReclaimFailed {
@@ -222,6 +223,7 @@ pub(crate) async fn run_startup_reclaim(
             STARTUP_RECLAIM_LIMIT,
             TaskErrorKind::StartupReclaim,
             STARTUP_RECLAIM_MESSAGE,
+            Some(1),
         )
         .await
         .map_err(|e| WorkerError::ReclaimFailed {
