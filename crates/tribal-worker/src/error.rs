@@ -90,6 +90,16 @@ pub(crate) enum StageError {
         timeout_seconds: u64,
     },
 
+    /// A prompt template could not be rendered.
+    #[error("template render failed: {context}")]
+    TemplateRender {
+        /// Human-readable description of what was being rendered.
+        context: String,
+        /// The underlying Tera error.
+        #[source]
+        source: tera::Error,
+    },
+
     /// A database operation failed during stage execution.
     #[error("database error in {stage}: {context}")]
     Database {
@@ -113,6 +123,7 @@ impl StageError {
             Self::Parse { .. } => TaskErrorKind::ParseError,
             Self::OwnershipLost => TaskErrorKind::OwnershipLost,
             Self::Timeout { .. } => TaskErrorKind::Timeout,
+            Self::TemplateRender { .. } => TaskErrorKind::InternalError,
             Self::Database { .. } => TaskErrorKind::DatabaseError,
         }
     }
@@ -158,6 +169,13 @@ mod tests {
                     timeout_seconds: 300,
                 },
                 TaskErrorKind::Timeout,
+            ),
+            (
+                StageError::TemplateRender {
+                    context: "rendering extraction prompt".into(),
+                    source: tera::Error::msg("unknown variable"),
+                },
+                TaskErrorKind::InternalError,
             ),
             (
                 StageError::Database {
