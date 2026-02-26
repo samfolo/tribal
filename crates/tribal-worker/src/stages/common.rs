@@ -1,10 +1,13 @@
 //! Shared utilities for pipeline stage implementations.
 
+use std::sync::Arc;
+
 use tribal_db::{
     PgPromptVersionRepository, PgTagRegistryRepository, PromptVersionRepository,
     TagRegistryRepository,
 };
 use tribal_domain::{PromptVersion, PromptVersionId, TagRegistryEntry};
+use tokio::sync::Semaphore;
 
 use crate::error::StageError;
 use crate::worker::Worker;
@@ -18,7 +21,7 @@ const EXPECT_EXTRACTION_KEY: &str = "extraction key registered at startup";
 pub(crate) const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
 
 // ---------------------------------------------------------------------------
-// Tag registry
+// Shared loaders
 // ---------------------------------------------------------------------------
 
 impl Worker {
@@ -82,10 +85,10 @@ impl Worker {
     /// # Panics
     ///
     /// Panics if the extraction key is not registered in the provider
-    /// registry (startup configuration error).
-    pub(crate) fn extraction_semaphore(&self) -> &std::sync::Arc<tokio::sync::Semaphore> {
-        self.provider_registry
-            .semaphore(&self.extraction_key)
+    /// registry.
+    pub(crate) fn extraction_semaphore(&self) -> &Arc<Semaphore> {
+        self.provider_registry()
+            .semaphore(self.extraction_key())
             .expect(EXPECT_EXTRACTION_KEY)
     }
 }

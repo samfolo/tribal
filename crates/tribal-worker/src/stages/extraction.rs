@@ -131,7 +131,7 @@ impl Worker {
         )
         .await
         .map_err(|_| StageError::SemaphoreTimeout {
-            provider_key: self.extraction_key.to_string(),
+            provider_key: self.extraction_key().to_string(),
         })?
         .expect(SEMAPHORE_CLOSED);
 
