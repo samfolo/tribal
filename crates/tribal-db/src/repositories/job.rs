@@ -487,3 +487,85 @@ fn map_job_row(r: &sqlx::postgres::PgRow) -> Job {
         .updated_at(r.get("updated_at"))
         .build()
 }
+
+// ---------------------------------------------------------------------------
+// Test helpers (feature-gated)
+// ---------------------------------------------------------------------------
+
+/// Test-only overrides for job fields that the production `insert()`
+/// does not expose.
+///
+/// `Default` produces a queued job with no extras.  Use `TypedBuilder`
+/// for specific overrides:
+///
+/// ```ignore
+/// JobStateOverride::builder()
+///     .status(JobStatus::Completed)
+///     .outcome(Some(JobOutcome::Success))
+///     .committed_batch_id(Some(batch_id))
+///     .build()
+/// ```
+#[cfg(feature = "test-helpers")]
+#[derive(Debug, Clone, Default, TypedBuilder)]
+pub struct JobStateOverride {
+    #[builder(default = JobStatus::Queued)]
+    pub status: JobStatus,
+    #[builder(default)]
+    pub outcome: Option<JobOutcome>,
+    #[builder(default)]
+    pub committed_batch_id: Option<RelationBatchId>,
+    #[builder(default)]
+    pub error_message: Option<String>,
+}
+
+#[cfg(feature = "test-helpers")]
+impl PgJobRepository {
+    /// Inserts a job with caller-controlled status, outcome, batch ID,
+    /// and error message — fields the production `insert()` does not
+    /// expose.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn insert_for_test(
+        &self,
+        conn: &mut PgConnection,
+        new_job: &NewJob,
+        overrides: &JobStateOverride,
+    ) -> Result<Job, DbError> {
+        let sql = format!(
+            "INSERT INTO jobs \
+                 (correlation_id, project_id, principal_id, actor_id, \
+                  source_context, raw_input, extraction_prompt_version_id, \
+                  triage_prompt_version_id, relation_prompt_version_id, \
+                  trace_context, status, outcome, committed_batch_id, \
+                  error_message) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+             RETURNING {COLUMNS}",
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(new_job.correlation_id.map(|id| *id.inner()))
+            .bind(new_job.project_id.inner())
+            .bind(new_job.principal_id.inner())
+            .bind(new_job.actor_id.map(|id| *id.inner()))
+            .bind(&new_job.source_context)
+            .bind(&new_job.raw_input)
+            .bind(new_job.extraction_prompt_version_id.inner())
+            .bind(new_job.triage_prompt_version_id.inner())
+            .bind(new_job.relation_prompt_version_id.inner())
+            .bind(&new_job.trace_context)
+            .bind(overrides.status.as_str())
+            .bind(overrides.outcome.map(|o| o.as_str().to_owned()))
+            .bind(overrides.committed_batch_id.map(|id| *id.inner()))
+            .bind(&overrides.error_message)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "inserting job (test helper)".to_owned(),
+                source: e,
+            })?;
+
+        Ok(map_job_row(&row))
+    }
+}
