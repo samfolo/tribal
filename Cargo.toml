@@ -69,6 +69,12 @@ dashmap = "6"
 # Async traits
 async-trait = "0.1"
 
+# Template rendering
+tera = "1"
+
+# JSON Schema generation
+schemars = "0.8"
+
 # Testing
 tempfile = "3"
 testcontainers = "0.27"
