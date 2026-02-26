@@ -710,16 +710,11 @@ async fn test_reclaim_stale_heartbeat_expired() {
     assert!(found.claimed_by().is_none());
     assert!(found.claimed_at().is_none());
     assert!(found.heartbeat_at().is_none());
-    // Exponential backoff: power(2, 0) = 1 second from now.
-    let now = chrono::Utc::now();
-    assert!(
-        found.available_at() > now,
-        "available_at should be in the future (exponential backoff applied)"
-    );
-    assert!(
-        found.available_at() < now + chrono::Duration::seconds(5),
-        "backoff should be within expected range"
-    );
+    // Exponential backoff: power(2, 0) = 1 second. Both available_at and
+    // updated_at use the same Postgres now(), so the difference is the
+    // exact backoff duration with no wall-clock race.
+    let backoff = found.available_at() - found.updated_at();
+    assert_eq!(backoff, chrono::Duration::seconds(1));
 }
 
 #[tokio::test]
@@ -768,16 +763,11 @@ async fn test_reclaim_stale_startup_reclaim() {
     assert!(found.claimed_by().is_none());
     assert!(found.claimed_at().is_none());
     assert!(found.heartbeat_at().is_none());
-    // Startup reclaim: flat 1-second backoff.
-    let now = chrono::Utc::now();
-    assert!(
-        found.available_at() > now,
-        "available_at should be in the future (flat 1-second backoff)"
-    );
-    assert!(
-        found.available_at() < now + chrono::Duration::seconds(5),
-        "startup_reclaim backoff should be close to 1 second"
-    );
+    // Startup reclaim: flat 1-second backoff. Both available_at and
+    // updated_at use the same Postgres now(), so the difference is the
+    // exact backoff duration with no wall-clock race.
+    let backoff = found.available_at() - found.updated_at();
+    assert_eq!(backoff, chrono::Duration::seconds(1));
 }
 
 #[tokio::test]
