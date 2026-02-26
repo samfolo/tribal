@@ -4,7 +4,9 @@ use tribal_db::{
     PgTaskRepository, PrincipalRepository, ProjectRepository, TaskRepository,
 };
 use tribal_domain::{JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
-use tribal_test_utils::{a_new_job, a_new_principal, a_new_project, a_new_task, test_context};
+use tribal_test_utils::{
+    a_new_job, a_new_principal, a_new_project, a_new_task, backdate_task_heartbeat, test_context,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -686,12 +688,7 @@ async fn test_reclaim_stale_heartbeat_expired() {
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
 
-    // Push heartbeat_at into the past beyond the timeout.
-    sqlx::query("UPDATE tasks SET heartbeat_at = now() - interval '120 seconds' WHERE id = $1")
-        .bind(task.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate heartbeat");
+    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_secs(120)).await;
 
     let result = repo
         .reclaim_stale(
@@ -749,12 +746,7 @@ async fn test_reclaim_stale_startup_reclaim() {
     let claimed = repo.claim(&mut txn, 1, "worker-1").await.expect("claim");
     let task = &claimed[0];
 
-    // Push heartbeat_at into the past.
-    sqlx::query("UPDATE tasks SET heartbeat_at = now() - interval '120 seconds' WHERE id = $1")
-        .bind(task.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate heartbeat");
+    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_secs(120)).await;
 
     let result = repo
         .reclaim_stale(
@@ -821,11 +813,7 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
     let task = &claimed[0];
 
     // Push heartbeat_at into the past.
-    sqlx::query("UPDATE tasks SET heartbeat_at = now() - interval '120 seconds' WHERE id = $1")
-        .bind(task.id().inner())
-        .execute(&mut *txn)
-        .await
-        .expect("backdate heartbeat");
+    backdate_task_heartbeat(&mut txn, task.id(), std::time::Duration::from_secs(120)).await;
 
     let pre_reclaim_available_at = repo
         .find_by_id(&mut txn, task.id())
@@ -864,4 +852,75 @@ async fn test_reclaim_stale_dead_letters_exhausted_budget() {
     assert!(found.heartbeat_at().is_none());
     // Dead-letter preserves original available_at.
     assert_eq!(found.available_at(), pre_reclaim_available_at);
+}
+
+#[tokio::test]
+async fn test_reclaim_stale_respects_limit() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTaskRepository;
+
+    let job_id = setup_task_prerequisites(&mut txn, "reclaim-limit").await;
+
+    // Insert 5 tasks for the same job.
+    let mut task_ids = Vec::new();
+    for _ in 0..5 {
+        let task = repo
+            .insert(&mut txn, &a_new_task().job_id(job_id).build())
+            .await
+            .expect("insert");
+        task_ids.push(task.id());
+    }
+
+    // Claim all 5 and backdate their heartbeats.
+    let claimed = repo.claim(&mut txn, 5, "worker-1").await.expect("claim");
+    assert_eq!(claimed.len(), 5);
+
+    for id in &task_ids {
+        backdate_task_heartbeat(&mut txn, *id, std::time::Duration::from_secs(120)).await;
+    }
+
+    // Reclaim with limit = 3 — only 3 of 5 should be reclaimed.
+    let result = repo
+        .reclaim_stale(
+            &mut txn,
+            30,
+            3,
+            3,
+            TaskErrorKind::HeartbeatExpired,
+            "heartbeat lapsed",
+            None,
+        )
+        .await
+        .expect("reclaim_stale");
+
+    assert_eq!(result.requeued, 3, "only 3 tasks should be reclaimed");
+    assert_eq!(result.dead_lettered, 0);
+
+    // Count remaining claimed tasks.
+    let still_claimed: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE job_id = $1 AND status = 'claimed'")
+            .bind(job_id.inner())
+            .fetch_one(&mut *txn)
+            .await
+            .expect("count claimed");
+
+    assert_eq!(still_claimed, 2, "2 tasks should still be claimed");
+
+    // Reclaim again with a higher limit — should pick up the remaining 2.
+    let result = repo
+        .reclaim_stale(
+            &mut txn,
+            30,
+            3,
+            10,
+            TaskErrorKind::HeartbeatExpired,
+            "heartbeat lapsed",
+            None,
+        )
+        .await
+        .expect("reclaim_stale");
+
+    assert_eq!(result.requeued, 2, "remaining 2 tasks should be reclaimed");
+    assert_eq!(result.dead_lettered, 0);
 }
