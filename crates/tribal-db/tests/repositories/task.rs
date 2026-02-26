@@ -860,11 +860,11 @@ async fn test_reclaim_stale_respects_limit() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTaskRepository;
 
-    let job_id = setup_task_prerequisites(&mut txn, "reclaim-limit").await;
-
-    // Insert 5 tasks for the same job.
+    // Each task needs its own job due to the unique constraint on
+    // (job_id, task_type).
     let mut task_ids = Vec::new();
-    for _ in 0..5 {
+    for i in 0..5 {
+        let job_id = setup_task_prerequisites(&mut txn, &format!("reclaim-limit-{i}")).await;
         let task = repo
             .insert(&mut txn, &a_new_task().job_id(job_id).build())
             .await
@@ -897,10 +897,9 @@ async fn test_reclaim_stale_respects_limit() {
     assert_eq!(result.requeued, 3, "only 3 tasks should be reclaimed");
     assert_eq!(result.dead_lettered, 0);
 
-    // Count remaining claimed tasks.
+    // Count remaining claimed tasks across all jobs.
     let still_claimed: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE job_id = $1 AND status = 'claimed'")
-            .bind(job_id.inner())
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE status = 'claimed'")
             .fetch_one(&mut *txn)
             .await
             .expect("count claimed");
