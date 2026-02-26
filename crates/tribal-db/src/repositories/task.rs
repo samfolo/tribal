@@ -462,7 +462,7 @@ impl TaskRepository for PgTaskRepository {
         let error_kind_str = error_kind.as_str();
         let flat_backoff_f64 = flat_backoff_seconds.map(f64::from);
 
-        // Backoff: when `flat_backoff_seconds` ($6) is provided, all
+        // Backoff: when `flat_backoff_seconds` is provided, all
         // requeued tasks use that flat delay.  Otherwise, exponential
         // backoff `2^retry_count` is applied using the pre-increment
         // count (so the first reclaim backoff is `2^0 = 1s`).  This

@@ -15,7 +15,7 @@ use tribal_inference::{
 
 use super::{
     core::{
-        ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED, MockOptions,
+        ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED, MockProviderOptions,
         MockProviderCore, QueueEntry,
     },
     matcher::{CompletionMatcher, EmbeddingMatcher},
@@ -162,7 +162,7 @@ impl MockInferenceProviderBuilder {
     pub fn on_complete(
         mut self,
         response: CompletionResponse,
-        options: Option<MockOptions>,
+        options: Option<MockProviderOptions>,
     ) -> Self {
         let delay = options.and_then(|o| o.delay);
         self.queue.push_back(QueueEntry::Ok(response, delay));
@@ -173,7 +173,7 @@ impl MockInferenceProviderBuilder {
     pub fn on_complete_error(
         mut self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
-        options: Option<MockOptions>,
+        options: Option<MockProviderOptions>,
     ) -> Self {
         let delay = options.and_then(|o| o.delay);
         self.queue
@@ -232,7 +232,7 @@ impl ConditionalCompletionBuilder {
     pub fn respond_with(
         self,
         response: CompletionResponse,
-        options: Option<MockOptions>,
+        options: Option<MockProviderOptions>,
     ) -> MockInferenceProviderBuilder {
         let delay = options.and_then(|o| o.delay);
         let mut parent = self.parent;
@@ -247,7 +247,7 @@ impl ConditionalCompletionBuilder {
     pub fn respond_with_error(
         self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
-        options: Option<MockOptions>,
+        options: Option<MockProviderOptions>,
     ) -> MockInferenceProviderBuilder {
         let delay = options.and_then(|o| o.delay);
         let mut parent = self.parent;
@@ -369,7 +369,7 @@ impl MockEmbeddingProviderBuilder {
     }
 
     /// Enqueues a successful embedding response (FIFO).
-    pub fn on_embed(mut self, response: EmbeddingResponse, options: Option<MockOptions>) -> Self {
+    pub fn on_embed(mut self, response: EmbeddingResponse, options: Option<MockProviderOptions>) -> Self {
         let delay = options.and_then(|o| o.delay);
         self.queue.push_back(QueueEntry::Ok(response, delay));
         self
@@ -379,7 +379,7 @@ impl MockEmbeddingProviderBuilder {
     pub fn on_embed_error(
         mut self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
-        options: Option<MockOptions>,
+        options: Option<MockProviderOptions>,
     ) -> Self {
         let delay = options.and_then(|o| o.delay);
         self.queue
@@ -438,7 +438,7 @@ impl ConditionalEmbeddingBuilder {
     pub fn respond_with(
         self,
         response: EmbeddingResponse,
-        options: Option<MockOptions>,
+        options: Option<MockProviderOptions>,
     ) -> MockEmbeddingProviderBuilder {
         let delay = options.and_then(|o| o.delay);
         let mut parent = self.parent;
@@ -453,7 +453,7 @@ impl ConditionalEmbeddingBuilder {
     pub fn respond_with_error(
         self,
         factory: impl Fn() -> InferenceError + Send + Sync + 'static,
-        options: Option<MockOptions>,
+        options: Option<MockProviderOptions>,
     ) -> MockEmbeddingProviderBuilder {
         let delay = options.and_then(|o| o.delay);
         let mut parent = self.parent;
@@ -815,7 +815,7 @@ mod tests {
         let provider = MockInferenceProvider::builder()
             .on_complete(
                 a_completion_response("delayed"),
-                Some(MockOptions {
+                Some(MockProviderOptions {
                     delay: Some(std::time::Duration::from_millis(50)),
                 }),
             )
@@ -838,7 +838,7 @@ mod tests {
             .when(CompletionMatcher::system_contains("slow"))
             .respond_with(
                 a_completion_response("slow-response"),
-                Some(MockOptions {
+                Some(MockProviderOptions {
                     delay: Some(std::time::Duration::from_millis(50)),
                 }),
             )

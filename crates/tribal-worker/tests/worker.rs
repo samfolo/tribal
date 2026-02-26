@@ -30,7 +30,7 @@ use tribal_inference::{
     RequestClass,
 };
 use tribal_test_utils::{
-    ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockOptions, TestContext,
+    ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, TestContext,
     a_completion_response, a_new_job, a_new_principal, a_new_project, a_new_task,
     backdate_task_heartbeat, serial_lock, test_context,
 };
@@ -803,7 +803,7 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         MockInferenceProvider::builder()
             .on_complete(
                 a_completion_response("delayed"),
-                Some(MockOptions {
+                Some(MockProviderOptions {
                     delay: Some(std::time::Duration::from_secs(30)),
                 }),
             )
