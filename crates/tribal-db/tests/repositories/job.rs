@@ -1,17 +1,16 @@
 use chrono::{SubsecRound, Utc};
 use tribal_db::{
     DbError, JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
-    PrincipalRepository, ProjectRepository,
+    PgTaskRepository, PrincipalRepository, ProjectRepository,
 };
 use tribal_domain::{
     EpisodeId, JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId,
-    RelationBatchId,
+    RelationBatchId, TaskStatus, TaskType,
 };
 use tribal_test_utils::{
-    a_job_status_transition, a_new_job, a_new_principal, a_new_project, test_context,
+    a_job_status_transition, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
+    a_new_task, insert_prompt_version, test_context,
 };
-
-use super::task::{TestTaskType, insert_task_with_status};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,21 +44,9 @@ async fn setup_job_prerequisites(
         .await
         .expect("insert project");
 
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test prompt') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut *txn)
-    .await
-    .expect("insert prompt_version");
+    let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
 
-    (
-        principal.id(),
-        project.id(),
-        PromptVersionId::from(prompt_version_id),
-    )
+    (principal.id(), project.id(), pv_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -531,7 +518,17 @@ async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
         .expect("update status");
 
     // Insert a dead-lettered extraction task.
-    insert_task_with_status(&mut txn, job.id(), TestTaskType::Extraction, "dead_letter").await;
+    PgTaskRepository
+        .insert_for_test(
+            &mut txn,
+            &a_new_task()
+                .job_id(job.id())
+                .task_type(TaskType::Extraction)
+                .build(),
+            TaskStatus::DeadLetter,
+        )
+        .await
+        .expect("insert dead-lettered task");
 
     let failed_ids = repo
         .fail_stale_dead_lettered_jobs(&mut txn)
@@ -586,13 +583,18 @@ async fn test_fail_stale_dead_lettered_jobs_skips_triage() {
         .expect("update status");
 
     // Dead-lettered triage task — should NOT trigger job failure.
-    insert_task_with_status(
-        &mut txn,
-        job.id(),
-        TestTaskType::Triage { batch_index: 0 },
-        "dead_letter",
-    )
-    .await;
+    PgTaskRepository
+        .insert_for_test(
+            &mut txn,
+            &a_new_task()
+                .job_id(job.id())
+                .task_type(TaskType::Triage)
+                .batch_index(Some(0))
+                .build(),
+            TaskStatus::DeadLetter,
+        )
+        .await
+        .expect("insert dead-lettered triage task");
 
     let failed_ids = repo
         .fail_stale_dead_lettered_jobs(&mut txn)
@@ -643,7 +645,17 @@ async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
         .await
         .expect("update status");
 
-    insert_task_with_status(&mut txn, job.id(), TestTaskType::Extraction, "dead_letter").await;
+    PgTaskRepository
+        .insert_for_test(
+            &mut txn,
+            &a_new_task()
+                .job_id(job.id())
+                .task_type(TaskType::Extraction)
+                .build(),
+            TaskStatus::DeadLetter,
+        )
+        .await
+        .expect("insert dead-lettered task");
 
     let failed_ids = repo
         .fail_stale_dead_lettered_jobs(&mut txn)

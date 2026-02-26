@@ -6,6 +6,9 @@
 mod error;
 mod pool;
 mod repositories;
+mod tables;
+
+pub use tables::APPLICATION_TABLES;
 
 /// Compiled migrations for the Tribal database schema.
 ///
@@ -16,6 +19,8 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 
 pub use error::DbError;
 pub use pool::create_pool;
+#[cfg(feature = "test-helpers")]
+pub use repositories::JobStateOverride;
 pub use repositories::{
     AuthTokenRepository, EmbeddingRepository, ExtractionResultRepository,
     ItemObservationRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,

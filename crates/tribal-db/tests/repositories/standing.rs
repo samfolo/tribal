@@ -9,7 +9,7 @@ use tribal_domain::{
 };
 use tribal_test_utils::{
     a_new_item_observation, a_new_knowledge_item, a_new_knowledge_item_relation, a_new_principal,
-    a_new_project, test_context,
+    a_new_project, commit_relation_batch, shift_relations_timestamp_by_batch, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -63,41 +63,6 @@ async fn setup_item(
         .id()
 }
 
-/// Creates a prompt_version row and a completed job with the given
-/// `committed_batch_id`, satisfying FK constraints.
-async fn commit_batch(
-    txn: &mut sqlx::PgConnection,
-    project_id: ProjectId,
-    principal_id: PrincipalId,
-    batch_id: RelationBatchId,
-) {
-    let content_hash = format!("{:064x}", uuid::Uuid::new_v4().as_u128());
-    let prompt_version_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO prompt_versions (stage, content_hash, content) \
-         VALUES ('extraction', $1, 'test') RETURNING id",
-    )
-    .bind(&content_hash)
-    .fetch_one(&mut *txn)
-    .await
-    .expect("insert prompt_version");
-
-    sqlx::query(
-        "INSERT INTO jobs \
-         (project_id, principal_id, source_context, status, outcome, \
-          committed_batch_id, extraction_prompt_version_id, \
-          triage_prompt_version_id, relation_prompt_version_id) \
-         VALUES ($1, $2, $3, 'completed', 'success', $4, $5, $5, $5)",
-    )
-    .bind(project_id.inner())
-    .bind(principal_id.inner())
-    .bind(serde_json::json!({}))
-    .bind(batch_id.inner())
-    .bind(prompt_version_id)
-    .execute(&mut *txn)
-    .await
-    .expect("insert job");
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -128,7 +93,7 @@ async fn test_compute_returns_standings_in_input_order() {
         )
         .await
         .expect("batch_insert");
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     // Add an observation on C.
     PgItemObservationRepository
@@ -205,7 +170,7 @@ async fn test_compute_excludes_derived_from_relations() {
         )
         .await
         .expect("batch_insert");
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let standings = repo.compute(&mut txn, &[target_id]).await.expect("compute");
 
@@ -368,7 +333,7 @@ async fn test_compute_diversity_metrics() {
         )
         .await
         .expect("batch_insert");
-    commit_batch(&mut txn, project_id_1, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id_1, principal_id, batch_id).await;
 
     let standings = repo.compute(&mut txn, &[target_id]).await.expect("compute");
 
@@ -436,7 +401,7 @@ async fn test_compute_superseded_by() {
         )
         .await
         .expect("batch_insert");
-    commit_batch(&mut txn, project_id, principal_id, batch_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
 
     let standings = repo
         .compute(&mut txn, &[old_item_id])
@@ -483,18 +448,10 @@ async fn test_compute_newest_supporting_and_contradicting() {
         )
         .await
         .expect("batch_insert 1");
-    commit_batch(&mut txn, project_id, principal_id, batch_1_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_1_id).await;
 
     // Backdate the older relations so they are strictly older.
-    sqlx::query(
-        "UPDATE knowledge_item_relations \
-         SET created_at = created_at - interval '1 hour' \
-         WHERE relation_batch_id = $1",
-    )
-    .bind(batch_1_id.inner())
-    .execute(&mut *txn)
-    .await
-    .expect("backdate older relations");
+    shift_relations_timestamp_by_batch(&mut txn, batch_1_id, chrono::Duration::hours(-1)).await;
 
     // Second batch — newer relations.
     let batch_2_id = RelationBatchId::new();
@@ -520,7 +477,7 @@ async fn test_compute_newest_supporting_and_contradicting() {
         )
         .await
         .expect("batch_insert 2");
-    commit_batch(&mut txn, project_id, principal_id, batch_2_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_2_id).await;
 
     let standings = repo.compute(&mut txn, &[target_id]).await.expect("compute");
 
@@ -559,7 +516,7 @@ async fn test_compute_counts_distinct_source_items() {
         )
         .await
         .expect("batch_insert 1");
-    commit_batch(&mut txn, project_id, principal_id, batch_1_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_1_id).await;
 
     let batch_2_id = RelationBatchId::new();
     PgRelationRepository
@@ -575,7 +532,7 @@ async fn test_compute_counts_distinct_source_items() {
         )
         .await
         .expect("batch_insert 2");
-    commit_batch(&mut txn, project_id, principal_id, batch_2_id).await;
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_2_id).await;
 
     let standings = repo.compute(&mut txn, &[target_id]).await.expect("compute");
 
