@@ -64,8 +64,14 @@ impl From<ReclaimOutcome> for ReclaimStats {
 pub(crate) struct HeartbeatHandle {
     /// Fires when heartbeat detects ownership loss (0 rows affected).
     pub(crate) ownership_lost_rx: oneshot::Receiver<()>,
+    abort_handle: tokio::task::AbortHandle,
+}
+
+impl HeartbeatHandle {
     /// Aborts the heartbeat background task.
-    pub(crate) abort_handle: tokio::task::AbortHandle,
+    pub(crate) fn abort(&self) {
+        self.abort_handle.abort();
+    }
 }
 
 // ---------------------------------------------------------------------------

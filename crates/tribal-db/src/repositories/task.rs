@@ -522,7 +522,7 @@ impl TaskRepository for PgTaskRepository {
             match row.get::<String, _>("status").as_str() {
                 "queued" => requeued += 1,
                 "dead_letter" => dead_lettered += 1,
-                _ => {}
+                other => debug_assert!(false, "unexpected reclaim status: {other}"),
             }
         }
 

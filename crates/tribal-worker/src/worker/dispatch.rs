@@ -21,7 +21,7 @@ use tribal_inference::{
 
 use super::{
     backoff::{BACKOFF_CAP_SECS, backoff_duration},
-    heartbeat::{HeartbeatHandle, run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
+    heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
 };
 use crate::{
     config::WorkerConfig,
@@ -158,36 +158,7 @@ impl Worker {
             );
         }
 
-        // Heal any jobs left stuck from a previous instance that
-        // crashed between reclaim-sweep dead-lettering and the job
-        // failure transition.
-        match self.pool.acquire().await {
-            Ok(mut conn) => {
-                match PgJobRepository
-                    .fail_stale_dead_lettered_jobs(&mut conn)
-                    .await
-                {
-                    Ok(job_ids) => {
-                        for job_id in &job_ids {
-                            self.notify_job_state(*job_id);
-                            self.job_state_txs.remove(job_id);
-                        }
-                        if !job_ids.is_empty() {
-                            tracing::warn!(
-                                count = job_ids.len(),
-                                "transitioned stuck jobs to failed after startup reclaim",
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to transition dead-lettered jobs during startup");
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "pool acquire failed for startup job healing");
-            }
-        }
+        self.heal_dead_lettered_jobs().await;
 
         Ok(stats.total())
     }
@@ -368,10 +339,7 @@ impl Worker {
             return;
         };
 
-        let HeartbeatHandle {
-            mut ownership_lost_rx,
-            abort_handle,
-        } = spawn_heartbeat(
+        let mut heartbeat = spawn_heartbeat(
             self.pool.clone(),
             task.id(),
             claim_token,
@@ -381,7 +349,7 @@ impl Worker {
 
         let stage_result = tokio::select! {
             () = self.cancellation_token.cancelled() => {
-                abort_handle.abort();
+                heartbeat.abort();
                 tracing::info!(task_id = %task.id(), "task cancelled mid-execution");
                 return;
             }
@@ -390,7 +358,7 @@ impl Worker {
                     timeout_seconds: self.config.task_timeout_seconds,
                 })
             }
-            Ok(()) = &mut ownership_lost_rx => {
+            Ok(()) = &mut heartbeat.ownership_lost_rx => {
                 Err(StageError::OwnershipLost)
             }
             result = self.dispatch_stage(&job, &task) => {
@@ -403,7 +371,7 @@ impl Worker {
                 self.record_token_usage(&job, &task, &output.usages).await;
 
                 if self.cancellation_token.is_cancelled() {
-                    abort_handle.abort();
+                    heartbeat.abort();
                     tracing::info!(
                         task_id = %task.id(),
                         "cancellation detected after stage; skipping commit",
@@ -420,7 +388,7 @@ impl Worker {
             }
         }
 
-        abort_handle.abort();
+        heartbeat.abort();
     }
 
     /// Routes to the correct stage based on task type.
@@ -719,6 +687,37 @@ impl Worker {
         }
     }
 
+    /// Transitions jobs with dead-lettered extraction or relation tasks
+    /// to `Failed`, notifies watch subscribers, and cleans up the watch
+    /// map.  Best-effort — failures are logged but not propagated.
+    async fn heal_dead_lettered_jobs(&self) {
+        let mut conn = match self.pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "pool acquire failed for job healing");
+                return;
+            }
+        };
+
+        match PgJobRepository
+            .fail_stale_dead_lettered_jobs(&mut conn)
+            .await
+        {
+            Ok(job_ids) => {
+                for job_id in &job_ids {
+                    self.notify_job_state(*job_id);
+                    self.job_state_txs.remove(job_id);
+                }
+                if !job_ids.is_empty() {
+                    tracing::warn!(count = job_ids.len(), "transitioned stuck jobs to failed",);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to transition dead-lettered jobs");
+            }
+        }
+    }
+
     /// Runs the periodic reclaim sweep until cancellation.
     ///
     /// Sweeps for stale heartbeats every `reclaim_interval`, requeuing
@@ -762,39 +761,7 @@ impl Worker {
                     }
 
                     if stats.dead_lettered > 0 {
-                        match self.pool.acquire().await {
-                            Ok(mut conn) => {
-                                match PgJobRepository
-                                    .fail_stale_dead_lettered_jobs(&mut conn)
-                                    .await
-                                {
-                                    Ok(job_ids) => {
-                                        for job_id in &job_ids {
-                                            self.notify_job_state(*job_id);
-                                            self.job_state_txs.remove(job_id);
-                                        }
-                                        if !job_ids.is_empty() {
-                                            tracing::warn!(
-                                                count = job_ids.len(),
-                                                "transitioned stuck jobs to failed after reclaim",
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            error = %e,
-                                            "failed to transition dead-lettered jobs",
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "pool acquire failed for reclaim job healing",
-                                );
-                            }
-                        }
+                        self.heal_dead_lettered_jobs().await;
                     }
                 }
                 Err(e) => {
