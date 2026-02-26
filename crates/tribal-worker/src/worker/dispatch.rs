@@ -14,7 +14,8 @@ use tribal_db::{
     ExtractionResultRepository, JobRepository, JobStatusTransition, NewExtractionResult, NewTask,
     PgExtractionResultRepository, PgJobRepository, PgTaskRepository, TaskRepository,
 };
-use tribal_domain::{Job, JobId, JobOutcome, JobStatus, Task, TaskType};
+use tracing::Instrument;
+use tribal_domain::{Job, JobId, JobOutcome, JobStatus, Task, TaskErrorKind, TaskType, span_attrs};
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
@@ -28,6 +29,21 @@ use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, STAGE_PRE_DISPATCH, StageError, WorkerError},
     stages::{StageCommit, StageOutput},
 };
+
+// ---------------------------------------------------------------------------
+// FailureOutcome
+// ---------------------------------------------------------------------------
+
+/// Data needed to emit lifecycle events after a failure transaction
+/// commits.  Bundled into a struct to avoid passing many parameters.
+struct FailureOutcome<'a> {
+    error: &'a StageError,
+    error_kind: TaskErrorKind,
+    retry_count: u32,
+    available_at: chrono::DateTime<Utc>,
+    is_dead_lettered: bool,
+    job_failed: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Worker
@@ -411,10 +427,10 @@ impl Worker {
     /// All mutations (task fail + optional job transition) are composed
     /// in a single transaction so they commit or roll back atomically.
     async fn handle_stage_failure(&self, task: &Task, error: &StageError) {
-        tracing::warn!(
-            task_id = %task.id(),
-            error = %error,
-            "stage failed",
+        tracing::error!(
+            error_kind = %error.to_error_kind(),
+            error_message = %error,
+            "stage execution failed",
         );
 
         let error_kind = error.to_error_kind();
@@ -506,15 +522,52 @@ impl Worker {
         }
 
         match txn.commit().await {
-            Ok(()) => {
-                if job_failed {
-                    self.notify_job_state(task.job_id());
-                    self.job_state_txs.remove(&task.job_id());
-                }
-            }
+            Ok(()) => self.log_failure_outcome(
+                task,
+                &FailureOutcome {
+                    error,
+                    error_kind,
+                    retry_count: post_increment_retry,
+                    available_at,
+                    is_dead_lettered,
+                    job_failed,
+                },
+            ),
             Err(e) => {
                 tracing::error!(error = %e, "failed to commit failure transaction");
             }
+        }
+    }
+
+    /// Emits lifecycle events after a failure transaction commits and
+    /// notifies job-state subscribers when the job is dead-lettered.
+    fn log_failure_outcome(&self, task: &Task, outcome: &FailureOutcome<'_>) {
+        if outcome.is_dead_lettered {
+            tracing::error!(
+                task_id = %task.id(),
+                task_type = %task.task_type(),
+                job_id = %task.job_id(),
+                error_kind = %outcome.error_kind,
+                error_message = %outcome.error,
+                retry_count = outcome.retry_count,
+                "task.dead_lettered",
+            );
+        } else {
+            tracing::warn!(
+                task_id = %task.id(),
+                task_type = %task.task_type(),
+                job_id = %task.job_id(),
+                error_kind = %outcome.error_kind,
+                error_message = %outcome.error,
+                retry_count = outcome.retry_count,
+                available_at = %outcome.available_at,
+                "task.failed",
+            );
+        }
+
+        if outcome.job_failed {
+            self.notify_job_state(task.job_id());
+            self.job_state_txs.remove(&task.job_id());
         }
     }
 
@@ -559,123 +612,104 @@ impl Worker {
         batch_size: u32,
         original_count: u32,
     ) -> Result<(), StageError> {
-        let Some(claim_token) = task.claim_token() else {
-            return Err(StageError::OwnershipLost);
-        };
+        let span = tracing::info_span!(
+            "tribal.extraction.commit",
+            { span_attrs::BATCH_SIZE } = tracing::field::Empty,
+            { span_attrs::EXTRACTION_ORIGINAL_COUNT } = tracing::field::Empty,
+        );
 
-        let mut conn = self
-            .pool
-            .acquire()
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "acquiring connection".into(),
-                source: tribal_db::DbError::QueryFailed {
-                    context: "pool acquire".into(),
-                    source: e,
-                },
-            })?;
+        async {
+            tracing::Span::current().record(span_attrs::BATCH_SIZE, batch_size);
+            tracing::Span::current()
+                .record(span_attrs::EXTRACTION_ORIGINAL_COUNT, original_count);
 
-        let mut txn =
-            sqlx::Connection::begin(&mut *conn)
+            let Some(claim_token) = task.claim_token() else {
+                return Err(StageError::OwnershipLost);
+            };
+
+            let mut conn = self
+                .pool
+                .acquire()
                 .await
-                .map_err(|e| StageError::Database {
-                    stage: STAGE_EXTRACTION.into(),
-                    context: "beginning transaction".into(),
-                    source: tribal_db::DbError::QueryFailed {
-                        context: "begin".into(),
-                        source: e,
-                    },
-                })?;
+                .map_err(|e| extraction_sqlx_error("acquiring connection", e))?;
 
-        PgExtractionResultRepository
-            .insert(&mut txn, &extraction_result)
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "inserting extraction result".into(),
-                source: e,
-            })?;
+            let mut txn = sqlx::Connection::begin(&mut *conn)
+                .await
+                .map_err(|e| extraction_sqlx_error("beginning transaction", e))?;
 
-        let is_empty = batch_size == 0;
+            PgExtractionResultRepository
+                .insert(&mut txn, &extraction_result)
+                .await
+                .map_err(|e| extraction_db_error("inserting extraction result", e))?;
 
-        if !is_empty {
-            for new_task in &triage_tasks {
-                PgTaskRepository
-                    .insert(&mut txn, new_task)
-                    .await
-                    .map_err(|e| StageError::Database {
-                        stage: STAGE_EXTRACTION.into(),
-                        context: "creating triage task".into(),
-                        source: e,
-                    })?;
+            let is_empty = batch_size == 0;
+
+            if !is_empty {
+                for new_task in &triage_tasks {
+                    PgTaskRepository
+                        .insert(&mut txn, new_task)
+                        .await
+                        .map_err(|e| extraction_db_error("creating triage task", e))?;
+                }
             }
+
+            PgJobRepository
+                .update_batch_size(&mut txn, task.job_id(), batch_size, original_count)
+                .await
+                .map_err(|e| extraction_db_error("updating batch size", e))?;
+
+            // Zero-candidate path: when extraction produces no candidates,
+            // the job completes immediately with an Empty outcome — no
+            // triage or relation stages are needed.
+            let job_transition = if is_empty {
+                JobStatusTransition::builder()
+                    .status(JobStatus::Completed)
+                    .outcome(Some(JobOutcome::Empty))
+                    .completed_at(Some(Utc::now()))
+                    .build()
+            } else {
+                JobStatusTransition::builder()
+                    .status(JobStatus::Triaging)
+                    .build()
+            };
+
+            PgJobRepository
+                .update_status(&mut txn, task.job_id(), &job_transition)
+                .await
+                .map_err(|e| extraction_db_error("transitioning job status", e))?;
+
+            let rows = PgTaskRepository
+                .complete(&mut txn, task.id(), claim_token)
+                .await
+                .map_err(|e| extraction_db_error("completing task", e))?;
+
+            if rows == 0 {
+                return Err(StageError::OwnershipLost);
+            }
+
+            txn.commit()
+                .await
+                .map_err(|e| extraction_sqlx_error("committing transaction", e))?;
+
+            // Notify watch subscribers of the job state change.
+            self.notify_job_state(task.job_id());
+
+            // Clean up watch channel entry for terminal job transitions.
+            if is_empty {
+                self.job_state_txs.remove(&task.job_id());
+            }
+
+            tracing::info!(
+                task_id = %task.id(),
+                task_type = "extraction",
+                job_id = %task.job_id(),
+                "task.completed",
+            );
+
+            Ok(())
         }
-
-        PgJobRepository
-            .update_batch_size(&mut txn, task.job_id(), batch_size, original_count)
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "updating batch size".into(),
-                source: e,
-            })?;
-
-        // Zero-candidate path: when extraction produces no candidates,
-        // the job completes immediately with an Empty outcome — no
-        // triage or relation stages are needed.
-        let job_transition = if is_empty {
-            JobStatusTransition::builder()
-                .status(JobStatus::Completed)
-                .outcome(Some(JobOutcome::Empty))
-                .completed_at(Some(Utc::now()))
-                .build()
-        } else {
-            JobStatusTransition::builder()
-                .status(JobStatus::Triaging)
-                .build()
-        };
-
-        PgJobRepository
-            .update_status(&mut txn, task.job_id(), &job_transition)
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "transitioning job status".into(),
-                source: e,
-            })?;
-
-        let rows = PgTaskRepository
-            .complete(&mut txn, task.id(), claim_token)
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "completing task".into(),
-                source: e,
-            })?;
-
-        if rows == 0 {
-            return Err(StageError::OwnershipLost);
-        }
-
-        txn.commit().await.map_err(|e| StageError::Database {
-            stage: STAGE_EXTRACTION.into(),
-            context: "committing transaction".into(),
-            source: tribal_db::DbError::QueryFailed {
-                context: "commit".into(),
-                source: e,
-            },
-        })?;
-
-        // Notify watch subscribers of the job state change.
-        self.notify_job_state(task.job_id());
-
-        // Clean up watch channel entry for terminal job transitions.
-        if is_empty {
-            self.job_state_txs.remove(&task.job_id());
-        }
-
-        Ok(())
+        .instrument(span)
+        .await
     }
 
     /// Records token usage for a completed stage.
@@ -779,6 +813,27 @@ impl Worker {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Builds a [`StageError::Database`] for the extraction stage.
+fn extraction_db_error(context: &str, source: tribal_db::DbError) -> StageError {
+    StageError::Database {
+        stage: STAGE_EXTRACTION.into(),
+        context: context.into(),
+        source,
+    }
+}
+
+/// Wraps a raw [`sqlx::Error`] into a [`StageError::Database`] for the
+/// extraction stage.
+fn extraction_sqlx_error(context: &str, source: sqlx::Error) -> StageError {
+    extraction_db_error(
+        context,
+        tribal_db::DbError::QueryFailed {
+            context: context.into(),
+            source,
+        },
+    )
+}
 
 /// Clamps a `usize` to `u32`, saturating at [`u32::MAX`].
 fn clamp_to_u32(value: usize) -> u32 {
