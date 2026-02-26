@@ -92,10 +92,10 @@ pub(crate) enum StageError {
     OwnershipLost,
 
     /// The task exceeded its timeout.
-    #[error("task timed out after {timeout_seconds}s")]
+    #[error("task timed out after {timeout_millis}ms")]
     Timeout {
-        /// The timeout that was exceeded, in seconds.
-        timeout_seconds: u64,
+        /// The timeout that was exceeded, in milliseconds.
+        timeout_millis: u64,
     },
 
     /// A prompt template could not be rendered.
@@ -174,7 +174,7 @@ mod tests {
             (StageError::OwnershipLost, TaskErrorKind::OwnershipLost),
             (
                 StageError::Timeout {
-                    timeout_seconds: 300,
+                    timeout_millis: 300_000,
                 },
                 TaskErrorKind::Timeout,
             ),
