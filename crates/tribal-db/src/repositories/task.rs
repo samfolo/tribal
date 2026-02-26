@@ -212,6 +212,7 @@ pub trait TaskRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
+    #[allow(clippy::too_many_arguments)]
     async fn reclaim_stale(
         &self,
         conn: &mut PgConnection,

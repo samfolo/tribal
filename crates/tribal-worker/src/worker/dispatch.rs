@@ -51,7 +51,6 @@ pub struct Worker {
     pool: PgPool,
     #[allow(dead_code)]
     provider_registry: Arc<ProviderRegistry>,
-    #[allow(dead_code)]
     extraction_provider: Arc<dyn InferenceProvider>,
     #[allow(dead_code)]
     triage_provider: Arc<dyn InferenceProvider>,
@@ -123,6 +122,11 @@ impl Worker {
     #[must_use]
     pub fn config(&self) -> &WorkerConfig {
         &self.config
+    }
+
+    /// Returns a reference to the extraction inference provider.
+    pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
+        &self.extraction_provider
     }
 
     /// Returns the high-water mark of simultaneously in-flight tasks
