@@ -8,6 +8,7 @@
 mod db;
 pub mod duration;
 mod error;
+pub mod polling;
 mod factories;
 mod lifecycle;
 mod mock_inference;
