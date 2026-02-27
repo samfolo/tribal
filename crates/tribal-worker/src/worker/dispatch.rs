@@ -10,11 +10,12 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use tribal_db::{
     ExtractionResultRepository, JobRepository, JobStatusTransition, NewExtractionResult, NewTask,
     PgExtractionResultRepository, PgJobRepository, PgTaskRepository, TaskRepository,
 };
-use tribal_domain::{Job, JobId, JobOutcome, JobStatus, Task, TaskType};
+use tribal_domain::{Job, JobId, JobOutcome, JobStatus, Task, TaskErrorKind, TaskType, span_attrs};
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
@@ -24,19 +25,26 @@ use super::{
     heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
 };
 use crate::{
+    common::clamp_to_u32,
     config::WorkerConfig,
-    error::{StageError, WorkerError},
+    error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, STAGE_PRE_DISPATCH, StageError, WorkerError},
     stages::{StageCommit, StageOutput},
 };
 
 // ---------------------------------------------------------------------------
-// Constants
+// FailureOutcome
 // ---------------------------------------------------------------------------
 
-const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
-
-const STAGE_PRE_DISPATCH: &str = "pre-dispatch";
-const STAGE_EXTRACTION: &str = "extraction";
+/// Data needed to emit lifecycle events after a failure transaction
+/// commits.  Bundled into a struct to avoid passing many parameters.
+struct FailureOutcome<'a> {
+    error: &'a StageError,
+    error_kind: TaskErrorKind,
+    retry_count: u32,
+    available_at: chrono::DateTime<Utc>,
+    is_dead_lettered: bool,
+    job_failed: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Worker
@@ -49,7 +57,6 @@ const STAGE_EXTRACTION: &str = "extraction";
 /// cancellation token is triggered.
 pub struct Worker {
     pool: PgPool,
-    #[allow(dead_code)]
     provider_registry: Arc<ProviderRegistry>,
     extraction_provider: Arc<dyn InferenceProvider>,
     #[allow(dead_code)]
@@ -58,7 +65,6 @@ pub struct Worker {
     relation_provider: Arc<dyn InferenceProvider>,
     #[allow(dead_code)]
     embedding_provider: Arc<dyn EmbeddingProvider>,
-    #[allow(dead_code)]
     extraction_key: ProviderKey,
     #[allow(dead_code)]
     triage_inference_key: ProviderKey,
@@ -124,9 +130,24 @@ impl Worker {
         &self.config
     }
 
+    /// Returns a reference to the database pool.
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// Returns a reference to the provider registry.
+    pub(crate) fn provider_registry(&self) -> &Arc<ProviderRegistry> {
+        &self.provider_registry
+    }
+
     /// Returns a reference to the extraction inference provider.
     pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
         &self.extraction_provider
+    }
+
+    /// Returns the extraction provider key.
+    pub(crate) fn extraction_key(&self) -> &ProviderKey {
+        &self.extraction_key
     }
 
     /// Returns the high-water mark of simultaneously in-flight tasks
@@ -233,6 +254,13 @@ impl Worker {
                 Ok(tasks) => {
                     poll_interval = self.config.poll_interval();
                     for task in tasks {
+                        tracing::info!(
+                            task_id = %task.id(),
+                            task_type = %task.task_type(),
+                            job_id = %task.job_id(),
+                            retry_count = task.retry_count(),
+                            "task.claimed",
+                        );
                         let permit = semaphore
                             .clone()
                             .acquire_owned()
@@ -347,6 +375,8 @@ impl Worker {
             self.cancellation_token.clone(),
         );
 
+        let deadline = tokio::time::Instant::now() + self.config.task_timeout();
+
         let stage_result = tokio::select! {
             () = self.cancellation_token.cancelled() => {
                 heartbeat.abort();
@@ -355,13 +385,13 @@ impl Worker {
             }
             () = tokio::time::sleep(self.config.task_timeout()) => {
                 Err(StageError::Timeout {
-                    timeout_seconds: self.config.task_timeout_seconds,
+                    timeout_millis: self.config.task_timeout_millis,
                 })
             }
             Ok(()) = &mut heartbeat.ownership_lost_rx => {
                 Err(StageError::OwnershipLost)
             }
-            result = self.dispatch_stage(&job, &task) => {
+            result = self.dispatch_stage(&job, &task, deadline) => {
                 result
             }
         };
@@ -392,11 +422,16 @@ impl Worker {
     }
 
     /// Routes to the correct stage based on task type.
-    async fn dispatch_stage(&self, job: &Job, task: &Task) -> Result<StageOutput, StageError> {
+    async fn dispatch_stage(
+        &self,
+        job: &Job,
+        task: &Task,
+        deadline: tokio::time::Instant,
+    ) -> Result<StageOutput, StageError> {
         match task.task_type() {
-            TaskType::Extraction => self.run_extraction(job, task).await,
-            TaskType::Triage => self.run_triage(job, task).await,
-            TaskType::Relation => self.run_relation(job, task).await,
+            TaskType::Extraction => self.run_extraction(job, task, deadline).await,
+            TaskType::Triage => self.run_triage(job, task, deadline).await,
+            TaskType::Relation => self.run_relation(job, task, deadline).await,
         }
     }
 
@@ -407,10 +442,13 @@ impl Worker {
     /// All mutations (task fail + optional job transition) are composed
     /// in a single transaction so they commit or roll back atomically.
     async fn handle_stage_failure(&self, task: &Task, error: &StageError) {
-        tracing::warn!(
+        tracing::error!(
             task_id = %task.id(),
-            error = %error,
-            "stage failed",
+            task_type = %task.task_type(),
+            job_id = %task.job_id(),
+            error_kind = %error.to_error_kind(),
+            error_message = %error,
+            "stage execution failed",
         );
 
         let error_kind = error.to_error_kind();
@@ -426,53 +464,70 @@ impl Worker {
         let job_failed = is_dead_lettered
             && matches!(task.task_type(), TaskType::Extraction | TaskType::Relation);
 
-        let mut conn = match self.pool.acquire().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    task_id = %task.id(),
-                    "failed to acquire connection for failure handling",
-                );
-                return;
-            }
+        let outcome = FailureOutcome {
+            error,
+            error_kind,
+            retry_count: post_increment_retry,
+            available_at,
+            is_dead_lettered,
+            job_failed,
         };
 
+        if let Err(e) = self.persist_failure(task, &outcome, &error_message).await {
+            tracing::error!(
+                error = %e,
+                task_id = %task.id(),
+                task_type = %task.task_type(),
+                job_id = %task.job_id(),
+                "failed to persist failure",
+            );
+        }
+    }
+
+    /// Persists the failure state for a task within a single
+    /// transaction: fails the task, optionally transitions the parent
+    /// job to `Failed`, commits, and emits lifecycle events.
+    async fn persist_failure(
+        &self,
+        task: &Task,
+        outcome: &FailureOutcome<'_>,
+        error_message: &str,
+    ) -> Result<(), tribal_db::DbError> {
         let Some(claim_token) = task.claim_token() else {
             tracing::error!(task_id = %task.id(), "task has no claim token");
-            return;
+            return Ok(());
         };
 
-        let mut txn = match sqlx::Connection::begin(&mut *conn).await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to begin failure transaction");
-                return;
-            }
-        };
+        let mut conn =
+            self.pool
+                .acquire()
+                .await
+                .map_err(|source| tribal_db::DbError::QueryFailed {
+                    context: "acquiring connection for failure persistence".to_owned(),
+                    source,
+                })?;
+        let mut txn = sqlx::Connection::begin(&mut *conn)
+            .await
+            .map_err(|source| tribal_db::DbError::QueryFailed {
+                context: "beginning failure transaction".to_owned(),
+                source,
+            })?;
 
-        let rows_affected = match PgTaskRepository
+        let rows_affected = PgTaskRepository
             .fail(
                 &mut txn,
                 task.id(),
                 claim_token,
                 self.config.task_max_retries,
-                available_at,
-                error_kind,
-                &error_message,
+                outcome.available_at,
+                outcome.error_kind,
+                error_message,
             )
-            .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::error!(error = %e, task_id = %task.id(), "failed to fail task");
-                return;
-            }
-        };
+            .await?;
 
         if rows_affected == 0 {
             tracing::warn!(task_id = %task.id(), "ownership lost during failure handling");
-            return;
+            return Ok(());
         }
 
         // When a task exhausts its retry budget, dead-lettering is
@@ -481,36 +536,57 @@ impl Worker {
         // Triage failures are non-fatal: remaining triage tasks can
         // still succeed, and the relation stage runs on whatever
         // triage results are available.
-        if job_failed {
+        if outcome.job_failed {
             let transition = JobStatusTransition::builder()
                 .status(JobStatus::Failed)
                 .outcome(Some(JobOutcome::Failure))
-                .error_message(Some(error_message))
+                .error_message(Some(error_message.to_owned()))
                 .completed_at(Some(Utc::now()))
                 .build();
-            if let Err(e) = PgJobRepository
+            PgJobRepository
                 .update_status(&mut txn, task.job_id(), &transition)
-                .await
-            {
-                tracing::error!(
-                    error = %e,
-                    job_id = %task.job_id(),
-                    "failed to transition job to Failed on dead-letter",
-                );
-                return;
-            }
+                .await?;
         }
 
-        match txn.commit().await {
-            Ok(()) => {
-                if job_failed {
-                    self.notify_job_state(task.job_id());
-                    self.job_state_txs.remove(&task.job_id());
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to commit failure transaction");
-            }
+        txn.commit()
+            .await
+            .map_err(|source| tribal_db::DbError::QueryFailed {
+                context: "committing failure transaction".to_owned(),
+                source,
+            })?;
+        self.log_failure_outcome(task, outcome);
+        Ok(())
+    }
+
+    /// Emits lifecycle events after a failure transaction commits and
+    /// notifies job-state subscribers when the job is dead-lettered.
+    fn log_failure_outcome(&self, task: &Task, outcome: &FailureOutcome<'_>) {
+        if outcome.is_dead_lettered {
+            tracing::error!(
+                task_id = %task.id(),
+                task_type = %task.task_type(),
+                job_id = %task.job_id(),
+                error_kind = %outcome.error_kind,
+                error_message = %outcome.error,
+                retry_count = outcome.retry_count,
+                "task.dead_lettered",
+            );
+        } else {
+            tracing::warn!(
+                task_id = %task.id(),
+                task_type = %task.task_type(),
+                job_id = %task.job_id(),
+                error_kind = %outcome.error_kind,
+                error_message = %outcome.error,
+                retry_count = outcome.retry_count,
+                available_at = %outcome.available_at,
+                "task.failed",
+            );
+        }
+
+        if outcome.job_failed {
+            self.notify_job_state(task.job_id());
+            self.job_state_txs.remove(&task.job_id());
         }
     }
 
@@ -555,123 +631,103 @@ impl Worker {
         batch_size: u32,
         original_count: u32,
     ) -> Result<(), StageError> {
-        let Some(claim_token) = task.claim_token() else {
-            return Err(StageError::OwnershipLost);
-        };
+        let span = tracing::info_span!(
+            "tribal.extraction.commit",
+            { span_attrs::BATCH_SIZE } = tracing::field::Empty,
+            { span_attrs::EXTRACTION_ORIGINAL_COUNT } = tracing::field::Empty,
+        );
 
-        let mut conn = self
-            .pool
-            .acquire()
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "acquiring connection".into(),
-                source: tribal_db::DbError::QueryFailed {
-                    context: "pool acquire".into(),
-                    source: e,
-                },
-            })?;
+        async {
+            tracing::Span::current().record(span_attrs::BATCH_SIZE, batch_size);
+            tracing::Span::current().record(span_attrs::EXTRACTION_ORIGINAL_COUNT, original_count);
 
-        let mut txn =
-            sqlx::Connection::begin(&mut *conn)
+            let Some(claim_token) = task.claim_token() else {
+                return Err(StageError::OwnershipLost);
+            };
+
+            let mut conn = self
+                .pool
+                .acquire()
                 .await
-                .map_err(|e| StageError::Database {
-                    stage: STAGE_EXTRACTION.into(),
-                    context: "beginning transaction".into(),
-                    source: tribal_db::DbError::QueryFailed {
-                        context: "begin".into(),
-                        source: e,
-                    },
-                })?;
+                .map_err(|e| extraction_sqlx_error("acquiring connection", e))?;
 
-        PgExtractionResultRepository
-            .insert(&mut txn, &extraction_result)
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "inserting extraction result".into(),
-                source: e,
-            })?;
+            let mut txn = sqlx::Connection::begin(&mut *conn)
+                .await
+                .map_err(|e| extraction_sqlx_error("beginning transaction", e))?;
 
-        let is_empty = batch_size == 0;
+            PgExtractionResultRepository
+                .insert(&mut txn, &extraction_result)
+                .await
+                .map_err(|e| extraction_db_error("inserting extraction result", e))?;
 
-        if !is_empty {
-            for new_task in &triage_tasks {
-                PgTaskRepository
-                    .insert(&mut txn, new_task)
-                    .await
-                    .map_err(|e| StageError::Database {
-                        stage: STAGE_EXTRACTION.into(),
-                        context: "creating triage task".into(),
-                        source: e,
-                    })?;
+            let is_empty = batch_size == 0;
+
+            if !is_empty {
+                for new_task in &triage_tasks {
+                    PgTaskRepository
+                        .insert(&mut txn, new_task)
+                        .await
+                        .map_err(|e| extraction_db_error("creating triage task", e))?;
+                }
             }
+
+            PgJobRepository
+                .update_batch_size(&mut txn, task.job_id(), batch_size, original_count)
+                .await
+                .map_err(|e| extraction_db_error("updating batch size", e))?;
+
+            // Zero-candidate path: when extraction produces no candidates,
+            // the job completes immediately with an Empty outcome — no
+            // triage or relation stages are needed.
+            let job_transition = if is_empty {
+                JobStatusTransition::builder()
+                    .status(JobStatus::Completed)
+                    .outcome(Some(JobOutcome::Empty))
+                    .completed_at(Some(Utc::now()))
+                    .build()
+            } else {
+                JobStatusTransition::builder()
+                    .status(JobStatus::Triaging)
+                    .build()
+            };
+
+            PgJobRepository
+                .update_status(&mut txn, task.job_id(), &job_transition)
+                .await
+                .map_err(|e| extraction_db_error("transitioning job status", e))?;
+
+            let rows = PgTaskRepository
+                .complete(&mut txn, task.id(), claim_token)
+                .await
+                .map_err(|e| extraction_db_error("completing task", e))?;
+
+            if rows == 0 {
+                return Err(StageError::OwnershipLost);
+            }
+
+            txn.commit()
+                .await
+                .map_err(|e| extraction_sqlx_error("committing transaction", e))?;
+
+            // Notify watch subscribers of the job state change.
+            self.notify_job_state(task.job_id());
+
+            // Clean up watch channel entry for terminal job transitions.
+            if is_empty {
+                self.job_state_txs.remove(&task.job_id());
+            }
+
+            tracing::info!(
+                task_id = %task.id(),
+                task_type = "extraction",
+                job_id = %task.job_id(),
+                "task.completed",
+            );
+
+            Ok(())
         }
-
-        PgJobRepository
-            .update_batch_size(&mut txn, task.job_id(), batch_size, original_count)
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "updating batch size".into(),
-                source: e,
-            })?;
-
-        // Zero-candidate path: when extraction produces no candidates,
-        // the job completes immediately with an Empty outcome — no
-        // triage or relation stages are needed.
-        let job_transition = if is_empty {
-            JobStatusTransition::builder()
-                .status(JobStatus::Completed)
-                .outcome(Some(JobOutcome::Empty))
-                .completed_at(Some(Utc::now()))
-                .build()
-        } else {
-            JobStatusTransition::builder()
-                .status(JobStatus::Triaging)
-                .build()
-        };
-
-        PgJobRepository
-            .update_status(&mut txn, task.job_id(), &job_transition)
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "transitioning job status".into(),
-                source: e,
-            })?;
-
-        let rows = PgTaskRepository
-            .complete(&mut txn, task.id(), claim_token)
-            .await
-            .map_err(|e| StageError::Database {
-                stage: STAGE_EXTRACTION.into(),
-                context: "completing task".into(),
-                source: e,
-            })?;
-
-        if rows == 0 {
-            return Err(StageError::OwnershipLost);
-        }
-
-        txn.commit().await.map_err(|e| StageError::Database {
-            stage: STAGE_EXTRACTION.into(),
-            context: "committing transaction".into(),
-            source: tribal_db::DbError::QueryFailed {
-                context: "commit".into(),
-                source: e,
-            },
-        })?;
-
-        // Notify watch subscribers of the job state change.
-        self.notify_job_state(task.job_id());
-
-        // Clean up watch channel entry for terminal job transitions.
-        if is_empty {
-            self.job_state_txs.remove(&task.job_id());
-        }
-
-        Ok(())
+        .instrument(span)
+        .await
     }
 
     /// Records token usage for a completed stage.
@@ -776,9 +832,25 @@ impl Worker {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Clamps a `usize` to `u32`, saturating at [`u32::MAX`].
-fn clamp_to_u32(value: usize) -> u32 {
-    u32::try_from(value).unwrap_or(u32::MAX)
+/// Builds a [`StageError::Database`] for the extraction stage.
+fn extraction_db_error(context: &str, source: tribal_db::DbError) -> StageError {
+    StageError::Database {
+        stage: STAGE_EXTRACTION.into(),
+        context: context.into(),
+        source,
+    }
+}
+
+/// Wraps a raw [`sqlx::Error`] into a [`StageError::Database`] for the
+/// extraction stage.
+fn extraction_sqlx_error(context: &str, source: sqlx::Error) -> StageError {
+    extraction_db_error(
+        context,
+        tribal_db::DbError::QueryFailed {
+            context: context.into(),
+            source,
+        },
+    )
 }
 
 /// Computes the next claim-cycle backoff by doubling the current poll
@@ -805,17 +877,6 @@ fn job_status_for_task_type(task_type: TaskType) -> JobStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_clamp_to_u32_within_range() {
-        assert_eq!(clamp_to_u32(42), 42);
-        assert_eq!(clamp_to_u32(0), 0);
-    }
-
-    #[test]
-    fn test_clamp_to_u32_saturates() {
-        assert_eq!(clamp_to_u32(usize::MAX), u32::MAX);
-    }
 
     #[test]
     fn test_claim_backoff_doubles_and_caps() {

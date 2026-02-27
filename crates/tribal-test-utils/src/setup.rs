@@ -6,8 +6,16 @@
 //! insertion path (embeddings, committed relations).
 
 use sqlx::PgConnection;
-use tribal_db::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
-use tribal_domain::{KnowledgeItemId, PrincipalId, PromptVersionId, RelationBatchId, RelationKind};
+use tribal_db::{
+    JobRepository, NewPromptVersion, PgJobRepository, PgPromptVersionRepository, PgTaskRepository,
+    PromptVersionRepository, TaskRepository,
+};
+use tribal_domain::{
+    JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, RelationBatchId, RelationKind,
+    TaskId, TaskType,
+};
+
+use crate::{a_new_job, a_new_task};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -106,4 +114,48 @@ pub async fn insert_committed_relation(
     .execute(&mut *conn)
     .await
     .expect("setup: insert committed relation");
+}
+
+// ---------------------------------------------------------------------------
+// seed_extraction_job
+// ---------------------------------------------------------------------------
+
+/// Inserts a job and its extraction task, returning both IDs.
+///
+/// The job uses the same prompt version for all three stages, which
+/// is the common case in integration tests.
+///
+/// # Panics
+///
+/// Panics if either insert fails.
+pub async fn seed_extraction_job(
+    conn: &mut PgConnection,
+    principal_id: PrincipalId,
+    project_id: ProjectId,
+    pv_id: PromptVersionId,
+) -> (JobId, TaskId) {
+    let job = PgJobRepository
+        .insert(
+            conn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
+                .build(),
+        )
+        .await
+        .expect("setup: insert job");
+    let task = PgTaskRepository
+        .insert(
+            conn,
+            &a_new_task()
+                .job_id(job.id())
+                .task_type(TaskType::Extraction)
+                .build(),
+        )
+        .await
+        .expect("setup: insert task");
+    (job.id(), task.id())
 }
