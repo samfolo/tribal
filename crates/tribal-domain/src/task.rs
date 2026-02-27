@@ -56,7 +56,7 @@ pub enum TaskErrorKind {
     StartupReclaim,
     /// Commit rejected because another worker reclaimed the task.
     OwnershipLost,
-    /// Task exceeded `task_timeout_seconds`.
+    /// Task exceeded the configured task timeout.
     Timeout,
     /// Database error during stage execution.
     DatabaseError,
