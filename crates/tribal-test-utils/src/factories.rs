@@ -73,6 +73,7 @@ macro_rules! define_factory {
 // ---------------------------------------------------------------------------
 
 mod auth_token;
+mod candidate;
 mod embedding;
 mod extraction_result;
 mod item_observation;
@@ -91,6 +92,7 @@ mod token_usage;
 mod triage;
 
 pub use auth_token::*;
+pub use candidate::*;
 pub use embedding::*;
 pub use extraction_result::*;
 pub use item_observation::*;

@@ -1,5 +1,6 @@
 //! Pipeline stage implementations (extraction, triage, relation).
 
+mod common;
 mod extraction;
 mod relation;
 mod triage;

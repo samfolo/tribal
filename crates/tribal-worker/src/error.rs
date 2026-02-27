@@ -3,6 +3,14 @@
 use tribal_domain::TaskErrorKind;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+pub(crate) const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
+pub(crate) const STAGE_PRE_DISPATCH: &str = "pre-dispatch";
+pub(crate) const STAGE_EXTRACTION: &str = "extraction";
+
+// ---------------------------------------------------------------------------
 // WorkerError
 // ---------------------------------------------------------------------------
 
@@ -84,10 +92,20 @@ pub(crate) enum StageError {
     OwnershipLost,
 
     /// The task exceeded its timeout.
-    #[error("task timed out after {timeout_seconds}s")]
+    #[error("task timed out after {timeout_millis}ms")]
     Timeout {
-        /// The timeout that was exceeded, in seconds.
-        timeout_seconds: u64,
+        /// The timeout that was exceeded, in milliseconds.
+        timeout_millis: u64,
+    },
+
+    /// A prompt template could not be rendered.
+    #[error("template render failed: {context}")]
+    TemplateRender {
+        /// Human-readable description of what was being rendered.
+        context: String,
+        /// The underlying Tera error.
+        #[source]
+        source: tera::Error,
     },
 
     /// A database operation failed during stage execution.
@@ -113,6 +131,7 @@ impl StageError {
             Self::Parse { .. } => TaskErrorKind::ParseError,
             Self::OwnershipLost => TaskErrorKind::OwnershipLost,
             Self::Timeout { .. } => TaskErrorKind::Timeout,
+            Self::TemplateRender { .. } => TaskErrorKind::InternalError,
             Self::Database { .. } => TaskErrorKind::DatabaseError,
         }
     }
@@ -155,9 +174,16 @@ mod tests {
             (StageError::OwnershipLost, TaskErrorKind::OwnershipLost),
             (
                 StageError::Timeout {
-                    timeout_seconds: 300,
+                    timeout_millis: 300_000,
                 },
                 TaskErrorKind::Timeout,
+            ),
+            (
+                StageError::TemplateRender {
+                    context: "rendering extraction prompt".into(),
+                    source: tera::Error::msg("unknown variable"),
+                },
+                TaskErrorKind::InternalError,
             ),
             (
                 StageError::Database {

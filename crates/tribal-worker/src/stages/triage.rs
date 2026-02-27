@@ -19,6 +19,7 @@ impl Worker {
         &self,
         _job: &tribal_domain::Job,
         _task: &tribal_domain::Task,
+        _deadline: tokio::time::Instant,
     ) -> Result<StageOutput, StageError> {
         // Replaced by ticket 4.4
         Err(StageError::Provider {
