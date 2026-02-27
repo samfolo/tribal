@@ -25,6 +25,7 @@ use super::{
     heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
 };
 use crate::{
+    common::clamp_to_u32,
     config::WorkerConfig,
     error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, STAGE_PRE_DISPATCH, StageError, WorkerError},
     stages::{StageCommit, StageOutput},
@@ -253,6 +254,13 @@ impl Worker {
                 Ok(tasks) => {
                     poll_interval = self.config.poll_interval();
                     for task in tasks {
+                        tracing::info!(
+                            task_id = %task.id(),
+                            task_type = %task.task_type(),
+                            job_id = %task.job_id(),
+                            retry_count = task.retry_count(),
+                            "task.claimed",
+                        );
                         let permit = semaphore
                             .clone()
                             .acquire_owned()
@@ -367,6 +375,8 @@ impl Worker {
             self.cancellation_token.clone(),
         );
 
+        let deadline = tokio::time::Instant::now() + self.config.task_timeout();
+
         let stage_result = tokio::select! {
             () = self.cancellation_token.cancelled() => {
                 heartbeat.abort();
@@ -381,7 +391,7 @@ impl Worker {
             Ok(()) = &mut heartbeat.ownership_lost_rx => {
                 Err(StageError::OwnershipLost)
             }
-            result = self.dispatch_stage(&job, &task) => {
+            result = self.dispatch_stage(&job, &task, deadline) => {
                 result
             }
         };
@@ -412,11 +422,16 @@ impl Worker {
     }
 
     /// Routes to the correct stage based on task type.
-    async fn dispatch_stage(&self, job: &Job, task: &Task) -> Result<StageOutput, StageError> {
+    async fn dispatch_stage(
+        &self,
+        job: &Job,
+        task: &Task,
+        deadline: tokio::time::Instant,
+    ) -> Result<StageOutput, StageError> {
         match task.task_type() {
-            TaskType::Extraction => self.run_extraction(job, task).await,
-            TaskType::Triage => self.run_triage(job, task).await,
-            TaskType::Relation => self.run_relation(job, task).await,
+            TaskType::Extraction => self.run_extraction(job, task, deadline).await,
+            TaskType::Triage => self.run_triage(job, task, deadline).await,
+            TaskType::Relation => self.run_relation(job, task, deadline).await,
         }
     }
 
@@ -428,6 +443,9 @@ impl Worker {
     /// in a single transaction so they commit or roll back atomically.
     async fn handle_stage_failure(&self, task: &Task, error: &StageError) {
         tracing::error!(
+            task_id = %task.id(),
+            task_type = %task.task_type(),
+            job_id = %task.job_id(),
             error_kind = %error.to_error_kind(),
             error_message = %error,
             "stage execution failed",
@@ -446,53 +464,62 @@ impl Worker {
         let job_failed = is_dead_lettered
             && matches!(task.task_type(), TaskType::Extraction | TaskType::Relation);
 
-        let mut conn = match self.pool.acquire().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    task_id = %task.id(),
-                    "failed to acquire connection for failure handling",
-                );
-                return;
-            }
+        let outcome = FailureOutcome {
+            error,
+            error_kind,
+            retry_count: post_increment_retry,
+            available_at,
+            is_dead_lettered,
+            job_failed,
         };
 
+        if let Err(e) = self.persist_failure(task, &outcome, &error_message).await {
+            tracing::error!(
+                error = %e,
+                task_id = %task.id(),
+                task_type = %task.task_type(),
+                job_id = %task.job_id(),
+                "failed to persist failure",
+            );
+        }
+    }
+
+    /// Persists the failure state for a task within a single
+    /// transaction: fails the task, optionally transitions the parent
+    /// job to `Failed`, commits, and emits lifecycle events.
+    async fn persist_failure(
+        &self,
+        task: &Task,
+        outcome: &FailureOutcome<'_>,
+        error_message: &str,
+    ) -> Result<(), sqlx::Error> {
         let Some(claim_token) = task.claim_token() else {
             tracing::error!(task_id = %task.id(), "task has no claim token");
-            return;
+            return Ok(());
         };
 
-        let mut txn = match sqlx::Connection::begin(&mut *conn).await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to begin failure transaction");
-                return;
-            }
-        };
+        let mut conn = self.pool.acquire().await?;
+        let mut txn = sqlx::Connection::begin(&mut *conn).await?;
 
-        let rows_affected = match PgTaskRepository
+        let rows_affected = PgTaskRepository
             .fail(
                 &mut txn,
                 task.id(),
                 claim_token,
                 self.config.task_max_retries,
-                available_at,
-                error_kind,
-                &error_message,
+                outcome.available_at,
+                outcome.error_kind,
+                error_message,
             )
             .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::error!(error = %e, task_id = %task.id(), "failed to fail task");
-                return;
-            }
-        };
+            .map_err(|e| match e {
+                tribal_db::DbError::QueryFailed { source, .. } => source,
+                other => sqlx::Error::Protocol(other.to_string()),
+            })?;
 
         if rows_affected == 0 {
             tracing::warn!(task_id = %task.id(), "ownership lost during failure handling");
-            return;
+            return Ok(());
         }
 
         // When a task exhausts its retry budget, dead-lettering is
@@ -501,42 +528,25 @@ impl Worker {
         // Triage failures are non-fatal: remaining triage tasks can
         // still succeed, and the relation stage runs on whatever
         // triage results are available.
-        if job_failed {
+        if outcome.job_failed {
             let transition = JobStatusTransition::builder()
                 .status(JobStatus::Failed)
                 .outcome(Some(JobOutcome::Failure))
-                .error_message(Some(error_message))
+                .error_message(Some(error_message.to_owned()))
                 .completed_at(Some(Utc::now()))
                 .build();
-            if let Err(e) = PgJobRepository
+            PgJobRepository
                 .update_status(&mut txn, task.job_id(), &transition)
                 .await
-            {
-                tracing::error!(
-                    error = %e,
-                    job_id = %task.job_id(),
-                    "failed to transition job to Failed on dead-letter",
-                );
-                return;
-            }
+                .map_err(|e| match e {
+                    tribal_db::DbError::QueryFailed { source, .. } => source,
+                    other => sqlx::Error::Protocol(other.to_string()),
+                })?;
         }
 
-        match txn.commit().await {
-            Ok(()) => self.log_failure_outcome(
-                task,
-                &FailureOutcome {
-                    error,
-                    error_kind,
-                    retry_count: post_increment_retry,
-                    available_at,
-                    is_dead_lettered,
-                    job_failed,
-                },
-            ),
-            Err(e) => {
-                tracing::error!(error = %e, "failed to commit failure transaction");
-            }
-        }
+        txn.commit().await?;
+        self.log_failure_outcome(task, outcome);
+        Ok(())
     }
 
     /// Emits lifecycle events after a failure transaction commits and
@@ -834,11 +844,6 @@ fn extraction_sqlx_error(context: &str, source: sqlx::Error) -> StageError {
     )
 }
 
-/// Clamps a `usize` to `u32`, saturating at [`u32::MAX`].
-fn clamp_to_u32(value: usize) -> u32 {
-    u32::try_from(value).unwrap_or(u32::MAX)
-}
-
 /// Computes the next claim-cycle backoff by doubling the current poll
 /// interval, capping at [`BACKOFF_CAP_SECS`], and flooring at 1 s.
 fn next_claim_backoff(current: std::time::Duration) -> std::time::Duration {
@@ -863,17 +868,6 @@ fn job_status_for_task_type(task_type: TaskType) -> JobStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_clamp_to_u32_within_range() {
-        assert_eq!(clamp_to_u32(42), 42);
-        assert_eq!(clamp_to_u32(0), 0);
-    }
-
-    #[test]
-    fn test_clamp_to_u32_saturates() {
-        assert_eq!(clamp_to_u32(usize::MAX), u32::MAX);
-    }
 
     #[test]
     fn test_claim_backoff_doubles_and_caps() {

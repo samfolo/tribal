@@ -8,6 +8,7 @@ use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskTy
 use tribal_inference::Usage;
 
 use crate::{
+    common::clamp_to_u32,
     error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, StageError},
     parsing::parse_extraction_response,
     prompt::assemble_extraction_prompt,
@@ -80,12 +81,17 @@ impl Worker {
     /// calls the LLM, parses the response, caps candidates, and
     /// builds the [`StageOutput`] for commit.
     ///
+    /// The `deadline` is the absolute instant by which the outer task
+    /// timeout will fire.  Semaphore acquisition uses the remaining
+    /// time budget so that `SemaphoreTimeout` is reported instead of
+    /// a generic `Timeout` when permits are exhausted.
+    ///
     /// # Errors
     ///
     /// Returns a [`StageError`] variant matching the failure mode:
     /// - [`StageError::Database`] for pool/repository failures.
     /// - [`StageError::SemaphoreTimeout`] if the provider semaphore
-    ///   cannot be acquired within the task timeout.
+    ///   cannot be acquired within the remaining time budget.
     /// - [`StageError::TemplateRender`] if the prompt template is invalid.
     /// - [`StageError::Provider`] if the LLM call fails.
     /// - [`StageError::Parse`] if the LLM response cannot be parsed.
@@ -98,6 +104,7 @@ impl Worker {
         &self,
         job: &Job,
         task: &Task,
+        deadline: tokio::time::Instant,
     ) -> Result<StageOutput, StageError> {
         let span = tracing::info_span!(
             "tribal.task.extraction",
@@ -114,15 +121,13 @@ impl Worker {
                 .await?;
 
             let semaphore = self.extraction_semaphore();
-            let _permit = tokio::time::timeout(
-                self.config().task_timeout(),
-                Arc::clone(semaphore).acquire_owned(),
-            )
-            .await
-            .map_err(|_| StageError::SemaphoreTimeout {
-                provider_key: format!("{:?}", self.extraction_key()),
-            })?
-            .expect(SEMAPHORE_CLOSED);
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
+                .await
+                .map_err(|_| StageError::SemaphoreTimeout {
+                    provider_key: format!("{:?}", self.extraction_key()),
+                })?
+                .expect(SEMAPHORE_CLOSED);
 
             let request = assemble_extraction_prompt(
                 prompt_version.content(),
@@ -158,13 +163,11 @@ impl Worker {
                 parse_extraction_response(&response)?
             };
 
-            #[allow(clippy::cast_possible_truncation)]
-            let original_count = output.candidates.len() as u32;
+            let original_count = clamp_to_u32(output.candidates.len());
             let max = self.config().max_candidates_per_job as usize;
             let capped_candidates: Vec<Candidate> =
                 output.candidates.into_iter().take(max).collect();
-            #[allow(clippy::cast_possible_truncation)]
-            let batch_size = capped_candidates.len() as u32;
+            let batch_size = clamp_to_u32(capped_candidates.len());
 
             let capped_hints: Vec<RelationHint> = output
                 .relation_hints
