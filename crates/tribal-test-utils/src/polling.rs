@@ -61,6 +61,7 @@ where
 /// # Panics
 ///
 /// Panics if the timeout is reached before the task reaches `target`.
+/// Also panics immediately if a database error occurs during polling.
 pub async fn poll_task_status(
     pool: &PgPool,
     task_id: TaskId,
@@ -71,8 +72,11 @@ pub async fn poll_task_status(
     poll_until(&description, ENTITY_POLL_INTERVAL, timeout, || {
         let pool = pool.clone();
         async move {
-            let mut conn = pool.acquire().await.ok()?;
-            let task = PgTaskRepository.find_by_id(&mut conn, task_id).await.ok()?;
+            let mut conn = pool.acquire().await.expect("pool acquire failed");
+            let task = PgTaskRepository
+                .find_by_id(&mut conn, task_id)
+                .await
+                .expect("task query failed");
             if task.status() == target {
                 Some(task)
             } else {
@@ -94,6 +98,7 @@ pub async fn poll_task_status(
 /// # Panics
 ///
 /// Panics if the timeout is reached before the job reaches `target`.
+/// Also panics immediately if a database error occurs during polling.
 pub async fn poll_job_status(
     pool: &PgPool,
     job_id: JobId,
@@ -104,8 +109,11 @@ pub async fn poll_job_status(
     poll_until(&description, ENTITY_POLL_INTERVAL, timeout, || {
         let pool = pool.clone();
         async move {
-            let mut conn = pool.acquire().await.ok()?;
-            let job = PgJobRepository.find_by_id(&mut conn, job_id).await.ok()?;
+            let mut conn = pool.acquire().await.expect("pool acquire failed");
+            let job = PgJobRepository
+                .find_by_id(&mut conn, job_id)
+                .await
+                .expect("job query failed");
             if job.status() == target {
                 Some(job)
             } else {

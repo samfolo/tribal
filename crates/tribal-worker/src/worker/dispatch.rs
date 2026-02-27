@@ -492,14 +492,26 @@ impl Worker {
         task: &Task,
         outcome: &FailureOutcome<'_>,
         error_message: &str,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<(), tribal_db::DbError> {
         let Some(claim_token) = task.claim_token() else {
             tracing::error!(task_id = %task.id(), "task has no claim token");
             return Ok(());
         };
 
-        let mut conn = self.pool.acquire().await?;
-        let mut txn = sqlx::Connection::begin(&mut *conn).await?;
+        let mut conn =
+            self.pool
+                .acquire()
+                .await
+                .map_err(|source| tribal_db::DbError::QueryFailed {
+                    context: "acquiring connection for failure persistence".to_owned(),
+                    source,
+                })?;
+        let mut txn = sqlx::Connection::begin(&mut *conn)
+            .await
+            .map_err(|source| tribal_db::DbError::QueryFailed {
+                context: "beginning failure transaction".to_owned(),
+                source,
+            })?;
 
         let rows_affected = PgTaskRepository
             .fail(
@@ -511,11 +523,7 @@ impl Worker {
                 outcome.error_kind,
                 error_message,
             )
-            .await
-            .map_err(|e| match e {
-                tribal_db::DbError::QueryFailed { source, .. } => source,
-                other => sqlx::Error::Protocol(other.to_string()),
-            })?;
+            .await?;
 
         if rows_affected == 0 {
             tracing::warn!(task_id = %task.id(), "ownership lost during failure handling");
@@ -537,14 +545,15 @@ impl Worker {
                 .build();
             PgJobRepository
                 .update_status(&mut txn, task.job_id(), &transition)
-                .await
-                .map_err(|e| match e {
-                    tribal_db::DbError::QueryFailed { source, .. } => source,
-                    other => sqlx::Error::Protocol(other.to_string()),
-                })?;
+                .await?;
         }
 
-        txn.commit().await?;
+        txn.commit()
+            .await
+            .map_err(|source| tribal_db::DbError::QueryFailed {
+                context: "committing failure transaction".to_owned(),
+                source,
+            })?;
         self.log_failure_outcome(task, outcome);
         Ok(())
     }
