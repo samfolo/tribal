@@ -35,8 +35,11 @@ use super::{
 use crate::{
     common::clamp_to_u32,
     config::WorkerConfig,
-    error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, STAGE_PRE_DISPATCH, StageError, WorkerError},
-    stages::{StageCommit, StageOutput},
+    error::{
+        SEMAPHORE_CLOSED, STAGE_EXTRACTION, STAGE_PRE_DISPATCH, STAGE_TRIAGE, StageError,
+        WorkerError,
+    },
+    stages::{StageCommit, StageOutput, TriageCommitDecision},
 };
 
 // ---------------------------------------------------------------------------
@@ -67,16 +70,12 @@ pub struct Worker {
     pool: PgPool,
     provider_registry: Arc<ProviderRegistry>,
     extraction_provider: Arc<dyn InferenceProvider>,
-    #[allow(dead_code)]
     triage_provider: Arc<dyn InferenceProvider>,
     #[allow(dead_code)]
     relation_provider: Arc<dyn InferenceProvider>,
-    #[allow(dead_code)]
     embedding_provider: Arc<dyn EmbeddingProvider>,
     extraction_key: ProviderKey,
-    #[allow(dead_code)]
     triage_inference_key: ProviderKey,
-    #[allow(dead_code)]
     triage_embedding_key: ProviderKey,
     #[allow(dead_code)]
     relation_key: ProviderKey,
@@ -159,25 +158,21 @@ impl Worker {
     }
 
     /// Returns a reference to the triage inference provider.
-    #[allow(dead_code)]
     pub(crate) fn triage_provider(&self) -> &Arc<dyn InferenceProvider> {
         &self.triage_provider
     }
 
     /// Returns the triage inference provider key.
-    #[allow(dead_code)]
     pub(crate) fn triage_inference_key(&self) -> &ProviderKey {
         &self.triage_inference_key
     }
 
     /// Returns the triage embedding provider key.
-    #[allow(dead_code)]
     pub(crate) fn triage_embedding_key(&self) -> &ProviderKey {
         &self.triage_embedding_key
     }
 
     /// Returns a reference to the embedding provider.
-    #[allow(dead_code)]
     pub(crate) fn embedding_provider(&self) -> &Arc<dyn EmbeddingProvider> {
         &self.embedding_provider
     }
@@ -644,9 +639,22 @@ impl Worker {
                 )
                 .await
             }
-            StageCommit::Triage { .. } => {
-                // Implemented in step 7
-                todo!("commit_triage")
+            StageCommit::Triage {
+                job_id,
+                project_id,
+                batch_index,
+                decision,
+                similar_item_decisions,
+            } => {
+                self.commit_triage(
+                    task,
+                    job_id,
+                    project_id,
+                    batch_index,
+                    decision,
+                    similar_item_decisions,
+                )
+                .await
             }
         }
     }
@@ -756,6 +764,103 @@ impl Worker {
             tracing::info!(
                 task_id = %task.id(),
                 task_type = "extraction",
+                job_id = %task.job_id(),
+                "task.completed",
+            );
+
+            Ok(())
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Commits triage stage effects within a single transaction.
+    ///
+    /// Delegates decision-specific inserts to [`commit_novel`] or
+    /// [`commit_duplicate`], then persists similar-item decisions,
+    /// completes the task, and commits the transaction.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_triage(
+        &self,
+        task: &Task,
+        job_id: JobId,
+        project_id: tribal_domain::ProjectId,
+        batch_index: u32,
+        decision: TriageCommitDecision,
+        similar_item_decisions: Vec<tribal_db::NewTriageSimilarItemDecision>,
+    ) -> Result<(), StageError> {
+        let span = tracing::info_span!(
+            "tribal.triage.commit",
+            { span_attrs::TRIAGE_OUTCOME } = tracing::field::Empty,
+        );
+
+        async {
+            let Some(claim_token) = task.claim_token() else {
+                return Err(StageError::OwnershipLost);
+            };
+
+            let mut conn = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| triage_sqlx_error("acquiring connection", e))?;
+
+            let mut txn = sqlx::Connection::begin(&mut *conn)
+                .await
+                .map_err(|e| triage_sqlx_error("beginning transaction", e))?;
+
+            let outcome = match decision {
+                TriageCommitDecision::Novel {
+                    knowledge_item,
+                    embedding_vector,
+                    embedding_model,
+                    suggested_references,
+                    new_tags,
+                } => {
+                    commit_novel(
+                        &mut txn,
+                        job_id,
+                        project_id,
+                        batch_index,
+                        &knowledge_item,
+                        embedding_vector,
+                        embedding_model,
+                        &suggested_references,
+                        &new_tags,
+                    )
+                    .await?
+                }
+                TriageCommitDecision::Duplicate { observation } => {
+                    commit_duplicate(&mut txn, job_id, batch_index, &observation).await?
+                }
+                TriageCommitDecision::NoOp => "no_op",
+            };
+
+            if !similar_item_decisions.is_empty() {
+                PgTriageSimilarItemDecisionRepository
+                    .batch_insert(&mut txn, &similar_item_decisions)
+                    .await
+                    .map_err(|e| triage_db_error("inserting similar item decisions", e))?;
+            }
+
+            let rows = PgTaskRepository
+                .complete(&mut txn, task.id(), claim_token)
+                .await
+                .map_err(|e| triage_db_error("completing task", e))?;
+
+            if rows == 0 {
+                return Err(StageError::OwnershipLost);
+            }
+
+            txn.commit()
+                .await
+                .map_err(|e| triage_sqlx_error("committing transaction", e))?;
+
+            tracing::Span::current().record(span_attrs::TRIAGE_OUTCOME, outcome);
+
+            tracing::info!(
+                task_id = %task.id(),
+                task_type = "triage",
                 job_id = %task.job_id(),
                 "task.completed",
             );
@@ -881,6 +986,136 @@ fn extraction_db_error(context: &str, source: tribal_db::DbError) -> StageError 
 /// extraction stage.
 fn extraction_sqlx_error(context: &str, source: sqlx::Error) -> StageError {
     extraction_db_error(
+        context,
+        tribal_db::DbError::QueryFailed {
+            context: context.into(),
+            source,
+        },
+    )
+}
+
+/// Inserts the knowledge item, embedding, references, and triage result
+/// for a novel candidate.
+#[allow(clippy::too_many_arguments)]
+async fn commit_novel(
+    txn: &mut sqlx::PgConnection,
+    job_id: JobId,
+    project_id: tribal_domain::ProjectId,
+    batch_index: u32,
+    knowledge_item: &tribal_db::NewKnowledgeItem,
+    embedding_vector: Vec<f32>,
+    embedding_model: String,
+    suggested_references: &[tribal_domain::SuggestedReference],
+    new_tags: &[String],
+) -> Result<&'static str, StageError> {
+    if !new_tags.is_empty() {
+        PgTagRegistryRepository
+            .batch_upsert(txn, new_tags)
+            .await
+            .map_err(|e| triage_db_error("upserting tags", e))?;
+    }
+
+    let item = PgKnowledgeItemRepository
+        .insert(txn, knowledge_item)
+        .await
+        .map_err(|e| triage_db_error("inserting knowledge item", e))?;
+
+    let ki_id = item.id();
+
+    let new_embedding = NewEmbedding::builder()
+        .knowledge_item_id(ki_id)
+        .model(embedding_model)
+        .dimensions(clamp_to_u32(embedding_vector.len()))
+        .embedding(embedding_vector)
+        .build();
+
+    PgEmbeddingRepository
+        .insert(txn, &new_embedding)
+        .await
+        .map_err(|e| triage_db_error("inserting embedding", e))?;
+
+    for suggested_ref in suggested_references {
+        let kind_str = suggested_ref.reference_type().to_lowercase();
+        let Ok(kind) = kind_str.parse::<ReferenceKind>() else {
+            tracing::debug!(
+                reference_type = %suggested_ref.reference_type(),
+                "skipping unrecognised reference type",
+            );
+            continue;
+        };
+
+        let new_ref = NewReference::builder()
+            .knowledge_item_id(ki_id)
+            .kind(kind)
+            .value(suggested_ref.value().to_owned())
+            .description(suggested_ref.description().map(str::to_owned))
+            .project_id(project_id)
+            .build();
+
+        PgReferenceRepository
+            .insert(txn, &new_ref)
+            .await
+            .map_err(|e| triage_db_error("inserting reference", e))?;
+    }
+
+    let triage_result = NewTriageResult::builder()
+        .job_id(job_id)
+        .batch_index(batch_index)
+        .outcome(TriageOutcome::Created { item_id: ki_id })
+        .build();
+
+    PgTriageResultRepository
+        .insert(txn, &triage_result)
+        .await
+        .map_err(|e| triage_db_error("inserting triage result", e))?;
+
+    Ok("created")
+}
+
+/// Inserts an observation and triage result for a duplicate candidate.
+async fn commit_duplicate(
+    txn: &mut sqlx::PgConnection,
+    job_id: JobId,
+    batch_index: u32,
+    observation: &tribal_db::NewItemObservation,
+) -> Result<&'static str, StageError> {
+    let matched_item_id = observation.knowledge_item_id;
+
+    let obs = PgItemObservationRepository
+        .insert(txn, observation)
+        .await
+        .map_err(|e| triage_db_error("inserting observation", e))?;
+
+    let triage_result = NewTriageResult::builder()
+        .job_id(job_id)
+        .batch_index(batch_index)
+        .outcome(TriageOutcome::Duplicate {
+            observation_id: obs.id(),
+            matched_item_id,
+        })
+        .build();
+
+    PgTriageResultRepository
+        .insert(txn, &triage_result)
+        .await
+        .map_err(|e| triage_db_error("inserting triage result", e))?;
+
+    Ok("duplicate")
+}
+
+/// Builds a [`StageError::Database`] for the triage stage.
+fn triage_db_error(context: &str, source: tribal_db::DbError) -> StageError {
+    StageError::Database {
+        stage: STAGE_TRIAGE.into(),
+        context: context.into(),
+        source,
+    }
+}
+
+/// Wraps a raw [`sqlx::Error`] into a [`StageError::Database`] for the
+/// triage stage.
+fn triage_sqlx_error(context: &str, source: sqlx::Error) -> StageError {
+    triage_db_error(
         context,
         tribal_db::DbError::QueryFailed {
             context: context.into(),
