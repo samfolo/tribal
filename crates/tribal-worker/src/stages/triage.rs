@@ -152,8 +152,10 @@ impl Worker {
                 .search_similar_items(&embedding_response.vector, job)
                 .await?;
 
-            let similar_items: Vec<SimilarItemContext> =
-                search_results.iter().map(SimilarItemContext::from).collect();
+            let similar_items: Vec<SimilarItemContext> = search_results
+                .iter()
+                .map(SimilarItemContext::from)
+                .collect();
 
             let (classification, completion_response) = self
                 .classify_candidate(job, &candidate, &similar_items, &tag_registry, deadline)
@@ -166,7 +168,7 @@ impl Worker {
                 job,
                 batch_index,
                 &candidate,
-                classification,
+                &classification,
                 &search_results,
                 embedding_vector,
                 &tag_registry,
@@ -303,11 +305,10 @@ impl Worker {
         );
 
         async {
-            let mut conn = self
-                .pool()
-                .acquire()
-                .await
-                .map_err(|e| triage_sqlx_error("acquiring connection for semantic search", e))?;
+            let mut conn =
+                self.pool().acquire().await.map_err(|e| {
+                    triage_sqlx_error("acquiring connection for semantic search", e)
+                })?;
 
             let params = SemanticSearchParams::builder()
                 .query_embedding(embedding.to_vec())
@@ -385,14 +386,13 @@ impl Worker {
 
         let classification = {
             let _parse_span = tracing::info_span!("tribal.triage.parse").entered();
-            parse_triage_response(&response).map_err(|e| {
+            parse_triage_response(&response).inspect_err(|_| {
                 let preview: String = response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
                 tracing::warn!(
                     response_length = response.text.len(),
                     preview = %preview,
                     "triage response parse failure",
                 );
-                e
             })?
         };
 
@@ -407,7 +407,7 @@ impl Worker {
         job: &Job,
         batch_index: u32,
         candidate: &Candidate,
-        classification: TriageClassification,
+        classification: &TriageClassification,
         search_results: &[SemanticSearchResult],
         embedding_vector: Vec<f32>,
         tag_registry: &[TagRegistryEntry],
@@ -419,7 +419,7 @@ impl Worker {
             search_results,
         );
 
-        let decision = match classification.outcome {
+        let decision = match &classification.outcome {
             TriageDecision::Novel => {
                 let (resolved_tags, new_tags) =
                     resolve_tags(candidate.suggested_tags(), tag_registry);
@@ -457,7 +457,7 @@ impl Worker {
             }
             TriageDecision::Duplicate { matched_item_id } => {
                 let observation = NewItemObservation::builder()
-                    .knowledge_item_id(matched_item_id)
+                    .knowledge_item_id(*matched_item_id)
                     .principal_id(job.principal_id())
                     .source_type(SourceType::AgentMediated)
                     .build();
