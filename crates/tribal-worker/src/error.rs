@@ -9,6 +9,8 @@ use tribal_domain::TaskErrorKind;
 pub(crate) const SEMAPHORE_CLOSED: &str = "semaphore closed unexpectedly";
 pub(crate) const STAGE_PRE_DISPATCH: &str = "pre-dispatch";
 pub(crate) const STAGE_EXTRACTION: &str = "extraction";
+#[allow(dead_code)]
+pub(crate) const STAGE_TRIAGE: &str = "triage";
 
 // ---------------------------------------------------------------------------
 // WorkerError
