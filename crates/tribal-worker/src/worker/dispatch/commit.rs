@@ -242,11 +242,16 @@ impl Worker {
                         .map_err(|e| {
                             stage_db_error(STAGE_TRIAGE, "re-checking triage idempotency", e)
                         })?;
-                    assert!(
-                        existing.is_some(),
-                        "NoOp triage decision without existing triage result \
-                         for job_id={job_id} batch_index={batch_index}",
-                    );
+                    if existing.is_none() {
+                        return Err(stage_db_error(
+                            STAGE_TRIAGE,
+                            "NoOp triage decision without existing triage result",
+                            tribal_db::DbError::NotFound {
+                                entity: "triage_result",
+                                id: format!("{job_id}[{batch_index}]"),
+                            },
+                        ));
+                    }
                     "no_op"
                 }
             };

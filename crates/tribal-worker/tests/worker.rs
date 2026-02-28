@@ -625,7 +625,11 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
 
     let config = WorkerConfig {
         max_concurrent_tasks: 1,
-        heartbeat_interval_millis: 100,
+        // Use a 1 s heartbeat interval to avoid racing with the
+        // manual backdate + reclaim injection below.  A 100 ms
+        // interval can refresh the heartbeat between the backdate
+        // and reclaim_stale calls, silently undoing the backdate.
+        heartbeat_interval_millis: 1_000,
         // Disable reclaim sweep so it does not interfere with the
         // manual reclaim injection below.
         reclaim_interval_millis: 120_000,

@@ -252,11 +252,17 @@ impl Worker {
                 },
             })?;
 
+        let candidates_json = extraction_result.candidates().clone();
         let candidates: Vec<Candidate> =
-            serde_json::from_value(extraction_result.candidates().clone()).map_err(|e| {
+            serde_json::from_value(candidates_json.clone()).map_err(|_| {
+                let raw: String = candidates_json
+                    .to_string()
+                    .chars()
+                    .take(PARSE_PREVIEW_LENGTH)
+                    .collect();
                 StageError::Parse {
                     context: format!("deserialising candidates for job {job_id}"),
-                    raw_response: Some(e.to_string()),
+                    raw_response: Some(raw),
                 }
             })?;
 
@@ -513,21 +519,30 @@ fn build_similar_item_decisions(
 
     classifications
         .iter()
-        .map(|c| {
-            #[allow(clippy::cast_possible_truncation)]
-            let similarity_score = similarity_by_id
-                .get(&c.item_id)
-                .copied()
-                .map_or(0.0, |s| s as f32);
+        .filter_map(|c| {
+            let Some(&similarity) = similarity_by_id.get(&c.item_id) else {
+                tracing::warn!(
+                    matched_item_id = %c.item_id,
+                    %job_id,
+                    %batch_index,
+                    "dropping similar-item classification for item not in search results",
+                );
+                return None;
+            };
 
-            NewTriageSimilarItemDecision::builder()
-                .job_id(job_id)
-                .batch_index(batch_index)
-                .matched_item_id(c.item_id)
-                .similarity_score(similarity_score)
-                .suggested_relation(c.suggested_relation)
-                .justification_text(c.justification.clone())
-                .build()
+            #[allow(clippy::cast_possible_truncation)]
+            let similarity_score = similarity as f32;
+
+            Some(
+                NewTriageSimilarItemDecision::builder()
+                    .job_id(job_id)
+                    .batch_index(batch_index)
+                    .matched_item_id(c.item_id)
+                    .similarity_score(similarity_score)
+                    .suggested_relation(c.suggested_relation)
+                    .justification_text(c.justification.clone())
+                    .build(),
+            )
         })
         .collect()
 }
