@@ -15,14 +15,15 @@ use tracing::{debug, warn};
 use tribal_db::{
     EmbeddingRepository, ItemObservationRepository, KnowledgeItemRepository, NewEmbedding,
     NewItemObservation, NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject,
-    NewReference, PgEmbeddingRepository, PgItemObservationRepository, PgKnowledgeItemRepository,
-    PgPrincipalRepository, PgProjectRepository, PgReferenceRepository, PgRelationRepository,
-    PgTagRegistryRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
-    RelationRepository, TagRegistryRepository,
+    NewPromptVersion, NewReference, PgEmbeddingRepository, PgItemObservationRepository,
+    PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
+    PgPromptVersionRepository, PgReferenceRepository, PgRelationRepository,
+    PgTagRegistryRepository, PrincipalRepository, ProjectRepository, PromptVersionRepository,
+    ReferenceRepository, RelationRepository, TagRegistryRepository,
 };
 use tribal_domain::{
     EmbeddingId, EpisodeId, ItemObservationId, KnowledgeItemId, PrincipalId, ProjectId,
-    ReferenceId, RelationBatchId, RelationId, RelationKind,
+    PromptVersionId, ReferenceId, RelationBatchId, RelationId, RelationKind,
 };
 
 use super::{
@@ -40,6 +41,7 @@ struct ExecutionState {
     // Label → ID mappings
     projects: HashMap<String, ProjectId>,
     principals: HashMap<String, PrincipalId>,
+    prompt_versions: HashMap<String, PromptVersionId>,
     items: IndexMap<String, KnowledgeItemId>,
 
     // Accumulated ID mappings for SeedResult
@@ -71,6 +73,7 @@ struct ExecutionState {
     // Command indices for duplicate-label diagnostics
     project_command_indices: HashMap<String, usize>,
     principal_command_indices: HashMap<String, usize>,
+    prompt_version_command_indices: HashMap<String, usize>,
     item_command_indices: HashMap<String, usize>,
     batch_command_indices: HashMap<String, usize>,
 
@@ -83,6 +86,7 @@ impl ExecutionState {
         Self {
             projects: HashMap::new(),
             principals: HashMap::new(),
+            prompt_versions: HashMap::new(),
             items: IndexMap::new(),
             embeddings: HashMap::new(),
             references: HashMap::new(),
@@ -98,6 +102,7 @@ impl ExecutionState {
             uncommitted_relations: Vec::new(),
             project_command_indices: HashMap::new(),
             principal_command_indices: HashMap::new(),
+            prompt_version_command_indices: HashMap::new(),
             item_command_indices: HashMap::new(),
             batch_command_indices: HashMap::new(),
             item_projects: HashMap::new(),
@@ -157,6 +162,25 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
 
             SeedCommand::SetEmbeddingModel { model, dimensions } => {
                 handle_set_embedding_model(i, model, *dimensions, &mut state);
+                i += 1;
+            }
+
+            SeedCommand::CreatePromptVersion {
+                label,
+                stage,
+                content_hash,
+                content,
+            } => {
+                handle_create_prompt_version(
+                    i,
+                    label,
+                    *stage,
+                    content_hash,
+                    content,
+                    &mut state,
+                    conn,
+                )
+                .await;
                 i += 1;
             }
 
@@ -221,6 +245,7 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
     SeedResult {
         projects: state.projects,
         principals: state.principals,
+        prompt_versions: state.prompt_versions,
         items: state.items,
         embeddings: state.embeddings,
         references: state.references,
@@ -352,6 +377,38 @@ fn handle_switch_principal(idx: usize, label: &str, state: &ExecutionState) {
     }
 
     debug!("seed[{idx}]: SwitchPrincipal label={label:?}");
+}
+
+async fn handle_create_prompt_version(
+    idx: usize,
+    label: &str,
+    prompt_stage: tribal_domain::PromptStage,
+    content_hash: &str,
+    content: &str,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) {
+    if let Some(&prev) = state.prompt_version_command_indices.get(label) {
+        panic!("duplicate prompt version label '{label}' — first defined at command {prev}");
+    }
+    state
+        .prompt_version_command_indices
+        .insert(label.to_owned(), idx);
+
+    debug!("seed[{idx}]: CreatePromptVersion label={label:?} stage={prompt_stage:?}");
+
+    let new = NewPromptVersion::builder()
+        .stage(prompt_stage)
+        .content_hash(content_hash.to_owned())
+        .content(content.to_owned())
+        .build();
+
+    let pv = PgPromptVersionRepository
+        .upsert(&mut *conn, &new)
+        .await
+        .expect("seed: upsert prompt version");
+
+    state.prompt_versions.insert(label.to_owned(), pv.id());
 }
 
 fn handle_relate(
@@ -654,6 +711,7 @@ async fn process_scope_dependents(
             SeedCommand::CreateProject { .. }
             | SeedCommand::CreatePrincipal { .. }
             | SeedCommand::SetEmbeddingModel { .. }
+            | SeedCommand::CreatePromptVersion { .. }
             | SeedCommand::SwitchPrincipal { .. }
             | SeedCommand::BeginProjectScope { .. }
             | SeedCommand::EndProjectScope { .. }
