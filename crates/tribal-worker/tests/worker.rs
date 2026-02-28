@@ -20,9 +20,8 @@ use tokio_util::sync::CancellationToken;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
     KnowledgeItemRepository, PgEmbeddingRepository, PgExtractionResultRepository,
-    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
-    PgProjectRepository, PgReferenceRepository, PgTagRegistryRepository, PgTaskRepository,
-    PgTriageResultRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
+    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
+    PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository, ReferenceRepository,
     TagRegistryRepository, TaskRepository, TriageResultRepository,
 };
 use tribal_domain::{
@@ -36,8 +35,8 @@ use tribal_inference::{
 use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
     TestContext, a_candidate, a_completion_response, a_new_job, a_new_knowledge_item,
-    a_new_principal, a_new_project, a_new_prompt_version, a_new_task, a_new_triage_result_created,
-    a_relation_hint, an_embedding_response, backdate_task_heartbeat,
+    a_new_prompt_version, a_new_task, a_new_triage_result_created, a_relation_hint,
+    an_embedding_response, backdate_task_heartbeat,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,

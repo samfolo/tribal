@@ -10,9 +10,11 @@ use std::collections::HashMap;
 use chrono::Duration;
 use indexmap::IndexMap;
 use sqlx::PgConnection;
+use tribal_db::NewPromptVersion;
 use tribal_domain::{
     Confidence, EmbeddingId, ItemObservationId, JobId, KnowledgeItemId, KnowledgeKind, PrincipalId,
-    ProjectId, ReferenceId, ReferenceKind, RelationBatchId, RelationId, RelationKind, SourceType,
+    ProjectId, PromptStage, PromptVersionId, ReferenceId, ReferenceKind, RelationBatchId,
+    RelationId, RelationKind, SourceType,
 };
 
 use super::executor;
@@ -38,6 +40,12 @@ pub(crate) enum SeedCommand {
     SetEmbeddingModel {
         model: String,
         dimensions: usize,
+    },
+    CreatePromptVersion {
+        label: String,
+        stage: PromptStage,
+        content_hash: String,
+        content: String,
     },
 
     // Active state changes
@@ -305,6 +313,25 @@ impl Seed {
         self
     }
 
+    /// Registers a prompt version with the given label.
+    ///
+    /// The upsert is idempotent — repeated calls with the same
+    /// `(stage, content_hash)` return the existing row.
+    #[must_use]
+    pub fn define_prompt_version(
+        mut self,
+        label: impl Into<String>,
+        new: NewPromptVersion,
+    ) -> Self {
+        self.commands.push(SeedCommand::CreatePromptVersion {
+            label: label.into(),
+            stage: new.stage,
+            content_hash: new.content_hash,
+            content: new.content,
+        });
+        self
+    }
+
     /// Switches the active principal for subsequent operations.
     #[must_use]
     pub fn as_principal(mut self, label: impl Into<String>) -> Self {
@@ -509,6 +536,7 @@ pub(crate) struct CommittedBatch {
 pub struct SeedResult {
     pub(crate) projects: HashMap<String, ProjectId>,
     pub(crate) principals: HashMap<String, PrincipalId>,
+    pub(crate) prompt_versions: HashMap<String, PromptVersionId>,
     pub(crate) items: IndexMap<String, KnowledgeItemId>,
     pub(crate) embeddings: HashMap<String, EmbeddingId>,
     pub(crate) references: HashMap<String, Vec<ReferenceId>>,
@@ -539,6 +567,18 @@ impl SeedResult {
         *self.principals.get(label).unwrap_or_else(|| {
             let defined: Vec<_> = self.principals.keys().collect();
             panic!("unknown principal label '{label}' — defined principals: {defined:?}");
+        })
+    }
+
+    /// Returns the prompt version ID for the given label.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the label was not defined.
+    pub fn prompt_version_id(&self, label: &str) -> PromptVersionId {
+        *self.prompt_versions.get(label).unwrap_or_else(|| {
+            let defined: Vec<_> = self.prompt_versions.keys().collect();
+            panic!("unknown prompt version label '{label}' — defined prompt versions: {defined:?}");
         })
     }
 
@@ -700,6 +740,32 @@ mod tests {
             .define_principal("user", "user:key");
 
         assert_eq!(seed.commands.len(), 2);
+    }
+
+    #[test]
+    fn test_seed_define_prompt_version_accumulates_commands() {
+        let seed = Seed::new()
+            .define_project("proj", "git@example.com:test.git")
+            .define_principal("user", "user:key")
+            .define_prompt_version(
+                "extraction-pv",
+                NewPromptVersion::builder()
+                    .stage(PromptStage::Extraction)
+                    .content_hash("a".repeat(64))
+                    .content("extraction prompt".to_owned())
+                    .build(),
+            )
+            .define_prompt_version(
+                "triage-pv",
+                NewPromptVersion::builder()
+                    .stage(PromptStage::Triage)
+                    .content_hash("b".repeat(64))
+                    .content("triage prompt".to_owned())
+                    .build(),
+            );
+
+        // define_project + define_principal + 2 × define_prompt_version = 4
+        assert_eq!(seed.commands.len(), 4);
     }
 
     #[test]
