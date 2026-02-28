@@ -301,6 +301,8 @@ async fn test_dead_letter_path_transitions_task_and_job() {
     };
 
     let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    let job = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
+
     token.cancel();
     let _ = handle.await;
 
@@ -309,9 +311,6 @@ async fn test_dead_letter_path_transitions_task_and_job() {
         Some(TaskErrorKind::ProviderError),
         "error kind should be provider_error",
     );
-
-    let job = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
-
     assert_eq!(
         job.outcome(),
         Some(JobOutcome::Failure),
