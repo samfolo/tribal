@@ -5,4 +5,4 @@ mod extraction;
 mod relation;
 mod triage;
 
-pub(crate) use extraction::{StageCommit, StageOutput};
+pub(crate) use common::{StageCommit, StageOutput, TriageCommitDecision};

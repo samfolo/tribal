@@ -9,6 +9,7 @@ mod error;
 mod parsing;
 mod prompt;
 mod stages;
+mod tag_resolution;
 mod worker;
 
 pub use config::{ConfigError, WorkerConfig};

@@ -2,13 +2,15 @@
 
 use std::sync::Arc;
 
+use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
-use tribal_inference::Usage;
+use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
+use super::{StageCommit, StageOutput};
 use crate::{
-    common::clamp_to_u32,
+    common::{PARSE_PREVIEW_LENGTH, clamp_to_u32},
     error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, StageError},
     parsing::parse_extraction_response,
     prompt::assemble_extraction_prompt,
@@ -21,38 +23,7 @@ use crate::{
 
 const CANDIDATES_SERIALISE: &str = "candidates serialise to JSON";
 const HINTS_SERIALISE: &str = "relation hints serialise to JSON";
-
-// ---------------------------------------------------------------------------
-// StageOutput
-// ---------------------------------------------------------------------------
-
-/// Output of a successful stage execution, ready for commit.
-pub(crate) struct StageOutput {
-    /// The domain effects to commit transactionally.
-    pub commit: StageCommit,
-    /// Token usage records to persist.
-    pub usages: Vec<Usage>,
-}
-
-// ---------------------------------------------------------------------------
-// StageCommit
-// ---------------------------------------------------------------------------
-
-/// Domain effects produced by a stage, committed transactionally after
-/// the stage completes.
-pub(crate) enum StageCommit {
-    /// Extraction stage effects.
-    Extraction {
-        /// The extraction result to insert.
-        extraction_result: NewExtractionResult,
-        /// Triage tasks to create (one per candidate in the batch).
-        triage_tasks: Vec<NewTask>,
-        /// Capped candidate count.
-        batch_size: u32,
-        /// Pre-cap candidate count.
-        original_count: u32,
-    },
-}
+const EXPECT_EXTRACTION_KEY: &str = "extraction key registered at startup";
 
 // ---------------------------------------------------------------------------
 // ExtractionContext
@@ -67,6 +38,34 @@ pub(crate) struct ExtractionContext {
     pub task: Task,
     /// The current global tag registry.
     pub tag_registry: Vec<TagRegistryEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Extraction accessors
+// ---------------------------------------------------------------------------
+
+impl Worker {
+    /// Returns a reference to the extraction inference provider.
+    pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
+        &self.extraction_provider
+    }
+
+    /// Returns the extraction provider key.
+    pub(crate) fn extraction_key(&self) -> &ProviderKey {
+        &self.extraction_key
+    }
+
+    /// Returns the extraction semaphore from the provider registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the extraction key is not registered in the provider
+    /// registry.
+    pub(crate) fn extraction_semaphore(&self) -> &Arc<Semaphore> {
+        self.provider_registry()
+            .semaphore(self.extraction_key())
+            .expect(EXPECT_EXTRACTION_KEY)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,9 +157,21 @@ impl Worker {
                 );
             }
 
+            let include_llm_content = self.config().include_llm_content;
             let output = {
                 let _parse_span = tracing::info_span!("tribal.extraction.parse").entered();
-                parse_extraction_response(&response)?
+                parse_extraction_response(&response).inspect_err(|_| {
+                    if include_llm_content {
+                        let preview: String =
+                            response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
+                        tracing::debug!(preview = %preview, "parse failure — raw LLM response");
+                    } else {
+                        tracing::debug!(
+                            response_length = response.text.len(),
+                            "parse failure — response details redacted",
+                        );
+                    }
+                })?
             };
 
             let original_count = clamp_to_u32(output.candidates.len());

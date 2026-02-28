@@ -1,0 +1,29 @@
+You are a triage agent. Classify whether the candidate knowledge item is novel or a duplicate of an existing item.
+
+The candidate has kind "{{ candidate.kind }}" and the following suggested tags:
+{% for tag in candidate.suggested_tags %}- {{ tag }}
+{% endfor %}
+
+{% if similar_items | length > 0 %}
+The following existing items were found by semantic search. For each, decide whether it supports, contradicts, or is unrelated to the candidate, and provide a justification.
+
+{% for item in similar_items %}
+### Item {{ item.item_id }} ({{ item.kind }}, similarity: {{ item.similarity_score | round(precision=4) }})
+Tags: {% for tag in item.tags %}{{ tag }}{% if not loop.last %}, {% endif %}{% endfor %}
+
+{{ item.content }}
+
+{% endfor %}
+{% endif %}
+
+{% if tags | length > 0 %}
+The following tags exist in the registry:
+{% for tag in tags %}- {{ tag }}
+{% endfor %}
+{% endif %}
+
+If the candidate is a duplicate, set decision to "duplicate" and provide the matched_item_id. If it is novel, set decision to "created".
+
+Respond with valid JSON matching this schema:
+
+{{ schema }}

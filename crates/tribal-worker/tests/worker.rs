@@ -18,29 +18,33 @@ use dashmap::DashMap;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
-    ExtractionResultRepository, JobRepository, PgExtractionResultRepository, PgJobRepository,
-    PgPrincipalRepository, PgProjectRepository, PgTaskRepository, PrincipalRepository,
-    ProjectRepository, TaskRepository,
+    EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
+    KnowledgeItemRepository, PgEmbeddingRepository, PgExtractionResultRepository,
+    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
+    PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository, ReferenceRepository,
+    TagRegistryRepository, TaskRepository, TriageResultRepository,
 };
 use tribal_domain::{
-    JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId, TaskErrorKind,
-    TaskStatus, TaskType,
+    JobId, JobOutcome, JobStatus, KnowledgeItemId, KnowledgeKind, PrincipalId, ProjectId,
+    PromptVersionId, TaskErrorKind, TaskStatus, TaskType, TriageOutcome,
 };
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry,
     RequestClass,
 };
 use tribal_test_utils::{
-    ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions,
-    TestContext, a_candidate, a_completion_response, a_new_job, a_new_principal, a_new_project,
-    a_new_prompt_version, a_new_task, a_relation_hint, backdate_task_heartbeat,
+    ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
+    TestContext, a_candidate, a_completion_response, a_new_job, a_new_knowledge_item,
+    a_new_prompt_version, a_new_task, a_new_triage_result_created, a_relation_hint,
+    an_embedding_response, backdate_task_heartbeat,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
-        POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
+        POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
     },
-    insert_prompt_version,
+    item,
     polling::{poll_job_status, poll_task_status, poll_until},
-    seed_extraction_job, serial_lock, set_retry_count, test_context, truncate_all_tables,
+    seed_extraction_job, seed_triage_job, serial_lock, set_retry_count, test_context,
+    truncate_all_tables,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -49,6 +53,9 @@ use tribal_worker::{Worker, WorkerConfig};
 // ---------------------------------------------------------------------------
 
 const WORKER_INSTANCE: &str = "test-worker";
+
+/// Batch index used by [`seed_triage_job`] for the single triage task it creates.
+const SEED_TRIAGE_BATCH_INDEX: u32 = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,37 +77,26 @@ async fn teardown(ctx: &TestContext) {
     truncate_all_tables(&mut conn).await;
 }
 
-/// Inserts a principal, project, and prompt_version, returning the IDs
-/// needed to create a job.
+/// Seeds a principal, project, and prompt version via the [`Seed`]
+/// builder, returning the IDs needed to create a job.
 async fn setup_prerequisites(
     ctx: &TestContext,
     suffix: &str,
 ) -> (PrincipalId, ProjectId, PromptVersionId) {
     let mut conn = raw_conn(ctx).await;
 
-    let principal = PgPrincipalRepository
-        .insert(
-            &mut conn,
-            &a_new_principal()
-                .principal_key(format!("user:worker-test-{suffix}"))
-                .build(),
-        )
-        .await
-        .expect("insert principal");
+    let seed_result = Seed::new()
+        .define_project("proj", format!("git@github.com:test/worker-{suffix}.git"))
+        .define_principal("user", format!("user:worker-test-{suffix}"))
+        .define_prompt_version("pv", a_new_prompt_version().build())
+        .execute(&mut conn)
+        .await;
 
-    let project = PgProjectRepository
-        .insert(
-            &mut conn,
-            &a_new_project()
-                .git_remote(format!("git@github.com:test/worker-{suffix}.git"))
-                .build(),
-        )
-        .await
-        .expect("insert project");
-
-    let pv_id = insert_prompt_version(&mut conn, &a_new_prompt_version().build()).await;
-
-    (principal.id(), project.id(), pv_id)
+    (
+        seed_result.principal_id("user"),
+        seed_result.project_id("proj"),
+        seed_result.prompt_version_id("pv"),
+    )
 }
 
 /// Builds a [`Worker`] with mock providers and short timeouts suitable
@@ -184,23 +180,18 @@ async fn poll_task_requeued_with_retry(
     task_id: tribal_domain::TaskId,
     timeout: Duration,
 ) -> tribal_domain::Task {
-    poll_until(
-        "task requeued with retry",
-        Duration::from_millis(50),
-        timeout,
-        || {
-            let pool = pool.clone();
-            async move {
-                let mut conn = pool.acquire().await.ok()?;
-                let task = PgTaskRepository.find_by_id(&mut conn, task_id).await.ok()?;
-                if task.status() == TaskStatus::Queued && task.retry_count() >= 1 {
-                    Some(task)
-                } else {
-                    None
-                }
+    poll_until("task requeued with retry", POLL_INTERVAL, timeout, || {
+        let pool = pool.clone();
+        async move {
+            let mut conn = pool.acquire().await.ok()?;
+            let task = PgTaskRepository.find_by_id(&mut conn, task_id).await.ok()?;
+            if task.status() == TaskStatus::Queued && task.retry_count() >= 1 {
+                Some(task)
+            } else {
+                None
             }
-        },
-    )
+        }
+    })
     .await
 }
 
@@ -310,6 +301,8 @@ async fn test_dead_letter_path_transitions_task_and_job() {
     };
 
     let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    let job = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
+
     token.cancel();
     let _ = handle.await;
 
@@ -318,9 +311,6 @@ async fn test_dead_letter_path_transitions_task_and_job() {
         Some(TaskErrorKind::ProviderError),
         "error kind should be provider_error",
     );
-
-    let job = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
-
     assert_eq!(
         job.outcome(),
         Some(JobOutcome::Failure),
@@ -509,7 +499,13 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
         tokio::spawn(async move { w.run().await })
     };
 
-    let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, MULTI_CYCLE_SETTLE).await;
+
+    // Poll for the job transition before cancelling — cancellation
+    // aborts the reclaim loop, which would prevent
+    // heal_dead_lettered_jobs from running if it hasn't completed.
+    let job = poll_job_status(&pool, job_id, JobStatus::Failed, MULTI_CYCLE_SETTLE).await;
+
     token.cancel();
     let _ = handle.await;
 
@@ -523,9 +519,6 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
         Some("heartbeat_expired"),
         "error message should be heartbeat_expired",
     );
-
-    let job = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
-
     assert_eq!(
         job.outcome(),
         Some(JobOutcome::Failure),
@@ -632,7 +625,11 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
 
     let config = WorkerConfig {
         max_concurrent_tasks: 1,
-        heartbeat_interval_millis: 100,
+        // Use a 1 s heartbeat interval to avoid racing with the
+        // manual backdate + reclaim injection below.  A 100 ms
+        // interval can refresh the heartbeat between the backdate
+        // and reclaim_stale calls, silently undoing the backdate.
+        heartbeat_interval_millis: 1_000,
         // Disable reclaim sweep so it does not interfere with the
         // manual reclaim injection below.
         reclaim_interval_millis: 120_000,
@@ -659,7 +656,7 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     // extraction stage is in-flight.
     poll_until(
         "provider called at least once",
-        Duration::from_millis(50),
+        POLL_INTERVAL,
         CLAIM_SETTLE,
         || {
             let count = inference_ref.call_count();
@@ -1028,7 +1025,7 @@ async fn test_extraction_parse_failure() {
     // Poll for the task to be requeued with a ParseError.
     let task = poll_until(
         "task requeued with parse error",
-        Duration::from_millis(50),
+        POLL_INTERVAL,
         POLL_SETTLE,
         || {
             let pool = pool.clone();
@@ -1058,6 +1055,475 @@ async fn test_extraction_parse_failure() {
     assert!(
         task.error_message().is_some(),
         "error message should be set",
+    );
+
+    teardown(ctx).await;
+}
+
+// ---------------------------------------------------------------------------
+// Triage stage tests
+// ---------------------------------------------------------------------------
+
+/// Helper: builds a triage Novel response JSON string.
+fn triage_novel_response_json() -> String {
+    serde_json::json!({
+        "outcome": { "decision": "created" },
+        "similar_item_decisions": [],
+    })
+    .to_string()
+}
+
+/// Helper: builds a triage Duplicate response JSON string for the given
+/// matched item.
+fn triage_duplicate_response_json(matched_item_id: KnowledgeItemId) -> String {
+    serde_json::json!({
+        "outcome": {
+            "decision": "duplicate",
+            "matched_item_id": matched_item_id.to_string(),
+        },
+        "similar_item_decisions": [],
+    })
+    .to_string()
+}
+
+/// Verifies the novel path: the triage stage classifies a candidate as
+/// novel, creates a knowledge item with embedding and references,
+/// registers new tags, and records a Created triage result.
+#[tokio::test]
+async fn test_triage_novel_path() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "triage-novel").await;
+
+    let candidates = vec![
+        a_candidate()
+            .content("Rust has zero-cost abstractions".to_owned())
+            .suggested_tags(vec!["rust".to_owned(), "performance".to_owned()])
+            .suggested_references(vec![serde_json::json!({
+                "reference_type": "url",
+                "value": "https://example.com/rust",
+                "description": "Rust documentation",
+            })])
+            .build(),
+    ];
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_triage_job(&mut conn, principal_id, project_id, pv_id, &candidates).await
+    };
+
+    let embedding_vector = vec![0.1_f32; 768];
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(embedding_vector), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    // Verify triage result with Created outcome.
+    let mut conn = raw_conn(ctx).await;
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+
+    let TriageOutcome::Created { item_id } = triage_result.outcome() else {
+        panic!(
+            "expected Created outcome, got {:?}",
+            triage_result.outcome()
+        );
+    };
+    let ki_id = *item_id;
+
+    // Verify knowledge item was created with correct content and tags.
+    let item = PgKnowledgeItemRepository
+        .find_by_id(&mut conn, ki_id)
+        .await
+        .expect("find knowledge item");
+    assert_eq!(item.content(), "Rust has zero-cost abstractions");
+    assert_eq!(item.project_id(), project_id);
+    assert!(
+        item.tags().contains(&"rust".to_owned()),
+        "tags should contain 'rust': {:?}",
+        item.tags(),
+    );
+    assert!(
+        item.tags().contains(&"performance".to_owned()),
+        "tags should contain 'performance': {:?}",
+        item.tags(),
+    );
+
+    // Verify embedding was created.
+    let emb = PgEmbeddingRepository
+        .find_by_knowledge_item_id(&mut conn, ki_id, "mock-model")
+        .await
+        .expect("find embedding");
+    assert!(emb.is_some(), "embedding should exist for mock-model");
+
+    // Verify reference was created.
+    let references = PgReferenceRepository
+        .find_by_knowledge_item_id(&mut conn, ki_id)
+        .await
+        .expect("find references");
+    assert_eq!(references.len(), 1, "should have one reference");
+    assert_eq!(references[0].value(), "https://example.com/rust");
+
+    // Verify new tags were registered.
+    let tags = PgTagRegistryRepository
+        .find_all(&mut conn)
+        .await
+        .expect("find tags");
+    let tag_names: Vec<&str> = tags.iter().map(|t| t.tag()).collect();
+    assert!(
+        tag_names.contains(&"rust"),
+        "tag registry should contain 'rust': {tag_names:?}",
+    );
+    assert!(
+        tag_names.contains(&"performance"),
+        "tag registry should contain 'performance': {tag_names:?}",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies the duplicate path: the triage stage classifies a candidate
+/// as a duplicate of an existing knowledge item, creates an observation,
+/// and records a Duplicate triage result.
+#[tokio::test]
+async fn test_triage_duplicate_path() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    // Seed an existing knowledge item with an embedding via the Seed
+    // builder so semantic search returns it as a match.
+    let mut conn = raw_conn(ctx).await;
+    let seed_result = Seed::new()
+        .define_project("proj", "git@github.com:test/triage-dup.git")
+        .define_principal("user", "user:triage-duplicate")
+        .define_prompt_version("pv", a_new_prompt_version().build())
+        .set_embedding_model("mock-model", 768)
+        .as_principal("user")
+        .for_project("proj", |store| {
+            store.add_item("existing", item(KnowledgeKind::Fact, "existing knowledge"));
+        })
+        .execute(&mut conn)
+        .await;
+
+    let principal_id = seed_result.principal_id("user");
+    let project_id = seed_result.project_id("proj");
+    let ki_id = seed_result.item_id("existing");
+    let pv_id = seed_result.prompt_version_id("pv");
+
+    // Read the deterministic embedding vector back from the database so
+    // the mock provider can return the same vector for cosine similarity.
+    let seeded_embedding = PgEmbeddingRepository
+        .find_by_knowledge_item_id(&mut conn, ki_id, "mock-model")
+        .await
+        .expect("find seeded embedding")
+        .expect("seeded embedding should exist");
+    let embedding_vector = seeded_embedding.embedding().to_vec();
+
+    let candidates = vec![
+        a_candidate()
+            .content("duplicate content".to_owned())
+            .build(),
+    ];
+
+    let (job_id, task_id) =
+        seed_triage_job(&mut conn, principal_id, project_id, pv_id, &candidates).await;
+    drop(conn);
+
+    // Mock embedding returns the same vector so cosine similarity is 1.0.
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(embedding_vector), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                a_completion_response(triage_duplicate_response_json(ki_id)),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    // Verify triage result with Duplicate outcome.
+    let mut conn = raw_conn(ctx).await;
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+
+    assert!(
+        matches!(
+            triage_result.outcome(),
+            TriageOutcome::Duplicate { matched_item_id, .. } if *matched_item_id == ki_id
+        ),
+        "expected Duplicate outcome matching {ki_id}, got {:?}",
+        triage_result.outcome(),
+    );
+
+    // Verify observation was created against the matched item.
+    let observations = PgItemObservationRepository
+        .find_by_knowledge_item_id(&mut conn, ki_id)
+        .await
+        .expect("find observations");
+    assert_eq!(observations.len(), 1, "should have one observation");
+
+    teardown(ctx).await;
+}
+
+/// Verifies that an unparseable LLM response causes the triage task
+/// to be requeued with a ParseError error kind.
+#[tokio::test]
+async fn test_triage_parse_failure() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "triage-parse-failure").await;
+
+    let candidates = vec![a_candidate().build()];
+
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_triage_job(&mut conn, principal_id, project_id, pv_id, &candidates).await
+    };
+
+    // Embedding succeeds (called before the LLM).
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    // Inference returns text that is not valid triage JSON.
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response("this is not valid triage json"), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_until(
+        "triage task requeued with parse error",
+        POLL_INTERVAL,
+        POLL_SETTLE,
+        || {
+            let pool = pool.clone();
+            async move {
+                let mut conn = pool.acquire().await.ok()?;
+                let task = PgTaskRepository.find_by_id(&mut conn, task_id).await.ok()?;
+                if task.status() == TaskStatus::Queued
+                    && task.error_kind() == Some(TaskErrorKind::ParseError)
+                {
+                    Some(task)
+                } else {
+                    None
+                }
+            }
+        },
+    )
+    .await;
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(
+        task.error_kind(),
+        Some(TaskErrorKind::ParseError),
+        "error kind should be parse_error",
+    );
+    assert!(
+        task.error_message().is_some(),
+        "error message should be set",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies the idempotency guard: when a triage result already exists
+/// for the `(job_id, batch_index)` pair, the stage returns NoOp without
+/// calling any providers, and the task is completed.
+#[tokio::test]
+async fn test_triage_idempotency_skip() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "triage-idempotency").await;
+
+    let candidates = vec![a_candidate().build()];
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        let (job_id, task_id) =
+            seed_triage_job(&mut conn, principal_id, project_id, pv_id, &candidates).await;
+
+        // Pre-seed a knowledge item so the triage result FK is satisfied.
+        let ki = PgKnowledgeItemRepository
+            .insert(
+                &mut conn,
+                &a_new_knowledge_item()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .build(),
+            )
+            .await
+            .expect("setup: insert knowledge item");
+
+        // Pre-seed a triage result for the seeded batch index.
+        PgTriageResultRepository
+            .insert(
+                &mut conn,
+                &a_new_triage_result_created()
+                    .job_id(job_id)
+                    .batch_index(SEED_TRIAGE_BATCH_INDEX)
+                    .outcome(TriageOutcome::Created { item_id: ki.id() })
+                    .build(),
+            )
+            .await
+            .expect("setup: insert triage result");
+
+        (job_id, task_id)
+    };
+
+    // Neither provider should be called — the idempotency check returns
+    // early before any embedding or inference calls.
+    let inference: Arc<MockInferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::ProviderUnavailable {
+                    provider: "mock".into(),
+                    reason: "inference should not be called".into(),
+                }
+            })))
+            .build(),
+    );
+    let inference_ref = Arc::clone(&inference);
+
+    let embedding: Arc<MockEmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::ProviderUnavailable {
+                    provider: "mock".into(),
+                    reason: "embedding should not be called".into(),
+                }
+            })))
+            .build(),
+    );
+    let embedding_ref = Arc::clone(&embedding);
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference as Arc<dyn InferenceProvider>),
+        Some(embedding as Arc<dyn EmbeddingProvider>),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    // Verify no provider calls were made.
+    assert_eq!(
+        inference_ref.call_count(),
+        0,
+        "inference should not be called",
+    );
+    assert_eq!(
+        embedding_ref.call_count(),
+        0,
+        "embedding should not be called",
+    );
+
+    // Verify no additional triage results were created.
+    let mut conn = raw_conn(ctx).await;
+    let results = PgTriageResultRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find triage results");
+    assert_eq!(
+        results.len(),
+        1,
+        "should have exactly one triage result (pre-seeded)",
     );
 
     teardown(ctx).await;

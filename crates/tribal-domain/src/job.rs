@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{EpisodeId, JobId, PrincipalId, ProjectId, PromptVersionId, RelationBatchId};
+use crate::{EpisodeId, JobId, PrincipalId, ProjectId, PromptVersionId, RelationBatchId, TaskType};
 
 /// The lifecycle status of a job in the ingest pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -45,6 +45,16 @@ pub enum JobOutcome {
     /// Pipeline could not complete; extraction or relation task
     /// dead-lettered.
     Failure,
+}
+
+impl From<TaskType> for JobStatus {
+    fn from(task_type: TaskType) -> Self {
+        match task_type {
+            TaskType::Extraction => Self::Extracting,
+            TaskType::Triage => Self::Triaging,
+            TaskType::Relation => Self::Relating,
+        }
+    }
 }
 
 enum_text_conversions!(JobStatus {
