@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
+use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
-use tribal_inference::Usage;
+use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
 use super::{StageCommit, StageOutput};
 use crate::{
@@ -22,6 +23,7 @@ use crate::{
 
 const CANDIDATES_SERIALISE: &str = "candidates serialise to JSON";
 const HINTS_SERIALISE: &str = "relation hints serialise to JSON";
+const EXPECT_EXTRACTION_KEY: &str = "extraction key registered at startup";
 
 // ---------------------------------------------------------------------------
 // ExtractionContext
@@ -36,6 +38,34 @@ pub(crate) struct ExtractionContext {
     pub task: Task,
     /// The current global tag registry.
     pub tag_registry: Vec<TagRegistryEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Extraction accessors
+// ---------------------------------------------------------------------------
+
+impl Worker {
+    /// Returns a reference to the extraction inference provider.
+    pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
+        &self.extraction_provider
+    }
+
+    /// Returns the extraction provider key.
+    pub(crate) fn extraction_key(&self) -> &ProviderKey {
+        &self.extraction_key
+    }
+
+    /// Returns the extraction semaphore from the provider registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the extraction key is not registered in the provider
+    /// registry.
+    pub(crate) fn extraction_semaphore(&self) -> &Arc<Semaphore> {
+        self.provider_registry()
+            .semaphore(self.extraction_key())
+            .expect(EXPECT_EXTRACTION_KEY)
+    }
 }
 
 // ---------------------------------------------------------------------------

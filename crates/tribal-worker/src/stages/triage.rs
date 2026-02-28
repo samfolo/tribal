@@ -1,8 +1,11 @@
 //! Triage stage: similarity search and LLM-based relevance scoring.
 
+use std::sync::Arc;
+
+use tokio::sync::Semaphore;
 use tribal_db::{NewItemObservation, NewKnowledgeItem, NewTriageSimilarItemDecision};
 use tribal_domain::{Candidate, Job, JobId, SuggestedReference, TagRegistryEntry, Task};
-use tribal_inference::InferenceError;
+use tribal_inference::{InferenceError, InferenceProvider, ProviderKey};
 
 use super::StageOutput;
 use crate::{error::StageError, worker::Worker};
