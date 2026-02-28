@@ -33,7 +33,6 @@ const VAR_SCHEMA: &str = "schema";
 /// Constructed from [`SemanticSearchResult`] by extracting the fields
 /// the template needs to render.
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
 pub(crate) struct SimilarItemContext {
     /// The existing knowledge item identifier.
     pub item_id: KnowledgeItemId,
@@ -74,7 +73,6 @@ impl From<&SemanticSearchResult> for SimilarItemContext {
 ///
 /// Returns [`StageError::TemplateRender`] if the template cannot be
 /// rendered.
-#[allow(dead_code)]
 pub(crate) fn assemble_triage_prompt(
     template_content: &str,
     candidate: &Candidate,

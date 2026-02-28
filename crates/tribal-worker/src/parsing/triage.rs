@@ -12,7 +12,6 @@ use crate::error::StageError;
 
 /// The triage agent's classification of a candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct TriageClassification {
     /// Whether the candidate is novel or a duplicate.
     pub outcome: TriageDecision,
@@ -26,7 +25,6 @@ pub(crate) struct TriageClassification {
 /// to match the wire format (`created`/`duplicate`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "decision")]
-#[allow(dead_code)]
 pub(crate) enum TriageDecision {
     /// The candidate is novel — a new knowledge item should be created.
     #[serde(rename = "created")]
@@ -41,7 +39,6 @@ pub(crate) enum TriageDecision {
 
 /// The triage agent's decision about a single similar item.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-#[allow(dead_code)]
 pub(crate) struct SimilarItemClassification {
     /// The existing item that was compared against.
     pub item_id: KnowledgeItemId,
@@ -62,7 +59,6 @@ pub(crate) struct SimilarItemClassification {
 /// Returns [`StageError::Parse`] if the response text cannot be
 /// deserialised into [`TriageClassification`], with an operator-safe
 /// `context` and the full `raw_response` for debugging.
-#[allow(dead_code)]
 pub(crate) fn parse_triage_response(
     response: &CompletionResponse,
 ) -> Result<TriageClassification, StageError> {
