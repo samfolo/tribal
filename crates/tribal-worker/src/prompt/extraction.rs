@@ -4,17 +4,11 @@ use schemars::schema_for;
 use tribal_domain::TagRegistryEntry;
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
-use crate::{error::StageError, parsing::ExtractionOutput};
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Tera context variable: the tag registry as a list of strings.
-const VAR_TAGS: &str = "tags";
-
-/// Tera context variable: the JSON Schema for the expected output.
-const VAR_SCHEMA: &str = "schema";
+use crate::{
+    error::StageError,
+    parsing::ExtractionOutput,
+    prompt::variables::{VAR_SCHEMA, VAR_TAGS},
+};
 
 // ---------------------------------------------------------------------------
 // Public API
