@@ -41,7 +41,7 @@ use tribal_test_utils::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
     },
-    insert_prompt_version, item,
+    item,
     polling::{poll_job_status, poll_task_status, poll_until},
     seed_extraction_job, seed_triage_job, serial_lock, set_retry_count, test_context,
     truncate_all_tables,
@@ -77,37 +77,26 @@ async fn teardown(ctx: &TestContext) {
     truncate_all_tables(&mut conn).await;
 }
 
-/// Inserts a principal, project, and prompt_version, returning the IDs
-/// needed to create a job.
+/// Seeds a principal, project, and prompt version via the [`Seed`]
+/// builder, returning the IDs needed to create a job.
 async fn setup_prerequisites(
     ctx: &TestContext,
     suffix: &str,
 ) -> (PrincipalId, ProjectId, PromptVersionId) {
     let mut conn = raw_conn(ctx).await;
 
-    let principal = PgPrincipalRepository
-        .insert(
-            &mut conn,
-            &a_new_principal()
-                .principal_key(format!("user:worker-test-{suffix}"))
-                .build(),
-        )
-        .await
-        .expect("insert principal");
+    let seed_result = Seed::new()
+        .define_project("proj", format!("git@github.com:test/worker-{suffix}.git"))
+        .define_principal("user", format!("user:worker-test-{suffix}"))
+        .define_prompt_version("pv", a_new_prompt_version().build())
+        .execute(&mut conn)
+        .await;
 
-    let project = PgProjectRepository
-        .insert(
-            &mut conn,
-            &a_new_project()
-                .git_remote(format!("git@github.com:test/worker-{suffix}.git"))
-                .build(),
-        )
-        .await
-        .expect("insert project");
-
-    let pv_id = insert_prompt_version(&mut conn, &a_new_prompt_version().build()).await;
-
-    (principal.id(), project.id(), pv_id)
+    (
+        seed_result.principal_id("user"),
+        seed_result.project_id("proj"),
+        seed_result.prompt_version_id("pv"),
+    )
 }
 
 /// Builds a [`Worker`] with mock providers and short timeouts suitable
@@ -1236,6 +1225,7 @@ async fn test_triage_duplicate_path() {
     let seed_result = Seed::new()
         .define_project("proj", "git@github.com:test/triage-dup.git")
         .define_principal("user", "user:triage-duplicate")
+        .define_prompt_version("pv", a_new_prompt_version().build())
         .set_embedding_model("mock-model", 768)
         .as_principal("user")
         .for_project("proj", |store| {
@@ -1247,6 +1237,7 @@ async fn test_triage_duplicate_path() {
     let principal_id = seed_result.principal_id("user");
     let project_id = seed_result.project_id("proj");
     let ki_id = seed_result.item_id("existing");
+    let pv_id = seed_result.prompt_version_id("pv");
 
     // Read the deterministic embedding vector back from the database so
     // the mock provider can return the same vector for cosine similarity.
@@ -1256,8 +1247,6 @@ async fn test_triage_duplicate_path() {
         .expect("find seeded embedding")
         .expect("seeded embedding should exist");
     let embedding_vector = seeded_embedding.embedding().to_vec();
-
-    let pv_id = insert_prompt_version(&mut conn, &a_new_prompt_version().build()).await;
 
     let candidates = vec![
         a_candidate()
