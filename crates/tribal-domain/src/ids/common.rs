@@ -44,6 +44,7 @@ macro_rules! define_id {
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
             serde::Serialize, serde::Deserialize,
         )]
+        #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(uuid::Uuid);
 
