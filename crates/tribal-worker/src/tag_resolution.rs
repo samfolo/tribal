@@ -74,9 +74,12 @@ fn exact_match(normalised: &str, registry_tags: &[&str]) -> Option<String> {
 fn fuzzy_match(normalised: &str, registry_tags: &[&str]) -> Option<String> {
     registry_tags
         .iter()
-        .filter(|&&tag| strsim::levenshtein(normalised, tag) <= 2)
-        .min_by_key(|&&tag| strsim::levenshtein(normalised, tag))
-        .map(|&tag| tag.to_owned())
+        .filter_map(|&tag| {
+            let distance = strsim::levenshtein(normalised, tag);
+            (distance <= 2).then_some((distance, tag))
+        })
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, tag)| tag.to_owned())
 }
 
 // ---------------------------------------------------------------------------

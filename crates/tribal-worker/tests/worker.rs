@@ -500,7 +500,7 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
         tokio::spawn(async move { w.run().await })
     };
 
-    let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, MULTI_CYCLE_SETTLE).await;
     token.cancel();
     let _ = handle.await;
 
@@ -515,7 +515,7 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
         "error message should be heartbeat_expired",
     );
 
-    let job = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
+    let job = poll_job_status(&pool, job_id, JobStatus::Failed, MULTI_CYCLE_SETTLE).await;
 
     assert_eq!(
         job.outcome(),

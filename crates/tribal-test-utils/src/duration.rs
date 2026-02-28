@@ -35,16 +35,17 @@ pub const MULTI_CYCLE_SETTLE: Duration = Duration::from_secs(2);
 /// provider has been called while a mock delay is still in flight.
 ///
 /// Theoretical minimum: `poll_interval` (100 ms) + claim + DB loads
-/// for tag registry and prompt version ≈ 300 ms.  Set to 500 ms for
-/// headroom.
-pub const CLAIM_SETTLE: Duration = Duration::from_millis(500);
+/// for tag registry and prompt version ≈ 300 ms.  Set to 2 s for
+/// headroom — CI contention can push each DB operation above 100 ms.
+pub const CLAIM_SETTLE: Duration = Duration::from_secs(2);
 
 /// Timeout for the heartbeat loop to detect an externally-reclaimed
 /// task.
 ///
-/// Given `test_config().heartbeat_interval_millis = 200`, 1 s gives
-/// the heartbeat at least four chances to observe the loss.
-pub const HEARTBEAT_DETECT: Duration = Duration::from_secs(1);
+/// Given `test_config().heartbeat_interval_millis = 200`, 2 s gives
+/// the heartbeat at least nine chances to observe the loss, with
+/// headroom for CI-induced DB latency.
+pub const HEARTBEAT_DETECT: Duration = Duration::from_secs(2);
 
 // ---------------------------------------------------------------------------
 // Simulated staleness

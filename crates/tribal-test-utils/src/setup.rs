@@ -181,6 +181,10 @@ pub async fn seed_triage_job(
     pv_id: PromptVersionId,
     candidates: &[Candidate],
 ) -> (JobId, TaskId) {
+    assert!(
+        !candidates.is_empty(),
+        "seed_triage_job requires at least one candidate",
+    );
     let batch_size = u32::try_from(candidates.len()).expect("candidate count fits u32");
 
     let job = PgJobRepository

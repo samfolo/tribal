@@ -236,12 +236,17 @@ impl Worker {
                     commit_duplicate(&mut txn, job_id, batch_index, &observation).await?
                 }
                 TriageCommitDecision::NoOp => {
-                    PgTriageResultRepository
+                    let existing = PgTriageResultRepository
                         .find_by_job_id_and_batch_index(&mut txn, job_id, batch_index)
                         .await
                         .map_err(|e| {
                             stage_db_error(STAGE_TRIAGE, "re-checking triage idempotency", e)
                         })?;
+                    assert!(
+                        existing.is_some(),
+                        "NoOp triage decision without existing triage result \
+                         for job_id={job_id} batch_index={batch_index}",
+                    );
                     "no_op"
                 }
             };
