@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tribal_db::{NewItemObservation, NewKnowledgeItem, NewTriageSimilarItemDecision};
 use tribal_domain::{Candidate, Job, JobId, SuggestedReference, TagRegistryEntry, Task};
-use tribal_inference::{InferenceError, InferenceProvider, ProviderKey};
+use tribal_inference::InferenceError;
 
 use super::StageOutput;
 use crate::{error::StageError, worker::Worker};
@@ -73,6 +73,47 @@ pub(crate) enum TriageCommitDecision {
     },
     /// Idempotency skip — result already exists for this `(job_id, batch_index)`.
     NoOp,
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+const EXPECT_TRIAGE_INFERENCE_KEY: &str = "triage inference key registered at startup";
+#[allow(dead_code)]
+const EXPECT_TRIAGE_EMBEDDING_KEY: &str = "triage embedding key registered at startup";
+
+// ---------------------------------------------------------------------------
+// Triage accessors
+// ---------------------------------------------------------------------------
+
+impl Worker {
+    /// Returns the triage inference semaphore from the provider registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the triage inference key is not registered in the
+    /// provider registry.
+    #[allow(dead_code)]
+    pub(crate) fn triage_inference_semaphore(&self) -> &Arc<Semaphore> {
+        self.provider_registry()
+            .semaphore(self.triage_inference_key())
+            .expect(EXPECT_TRIAGE_INFERENCE_KEY)
+    }
+
+    /// Returns the triage embedding semaphore from the provider registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the triage embedding key is not registered in the
+    /// provider registry.
+    #[allow(dead_code)]
+    pub(crate) fn triage_embedding_semaphore(&self) -> &Arc<Semaphore> {
+        self.provider_registry()
+            .semaphore(self.triage_embedding_key())
+            .expect(EXPECT_TRIAGE_EMBEDDING_KEY)
+    }
 }
 
 // ---------------------------------------------------------------------------

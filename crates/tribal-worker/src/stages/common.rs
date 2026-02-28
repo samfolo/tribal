@@ -1,13 +1,11 @@
 //! Shared utilities and types for pipeline stage implementations.
 
-use std::sync::Arc;
-
 use tribal_db::{
     NewExtractionResult, NewTask, PgPromptVersionRepository, PgTagRegistryRepository,
     PromptVersionRepository, TagRegistryRepository,
 };
 use tribal_domain::{PromptVersion, PromptVersionId, TagRegistryEntry};
-use tribal_inference::{EmbeddingProvider, Usage};
+use tribal_inference::Usage;
 
 use super::triage::TriageCommitData;
 use crate::{error::StageError, worker::Worker};
@@ -48,17 +46,6 @@ pub(crate) enum StageCommit {
         /// The triage commit data.
         data: TriageCommitData,
     },
-}
-
-// ---------------------------------------------------------------------------
-// Shared accessors
-// ---------------------------------------------------------------------------
-
-impl Worker {
-    /// Returns a reference to the embedding provider.
-    pub(crate) fn embedding_provider(&self) -> &Arc<dyn EmbeddingProvider> {
-        &self.embedding_provider
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
-use tribal_inference::{InferenceProvider, ProviderKey, Usage};
+use tribal_inference::Usage;
 
 use super::{StageCommit, StageOutput};
 use crate::{
@@ -45,16 +45,6 @@ pub(crate) struct ExtractionContext {
 // ---------------------------------------------------------------------------
 
 impl Worker {
-    /// Returns a reference to the extraction inference provider.
-    pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
-        &self.extraction_provider
-    }
-
-    /// Returns the extraction provider key.
-    pub(crate) fn extraction_key(&self) -> &ProviderKey {
-        &self.extraction_key
-    }
-
     /// Returns the extraction semaphore from the provider registry.
     ///
     /// # Panics
