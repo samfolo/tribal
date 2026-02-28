@@ -73,7 +73,7 @@ async-trait = "0.1"
 tera = "1"
 
 # JSON Schema generation
-schemars = "0.8"
+schemars = { version = "0.8", features = ["uuid1"] }
 
 # Testing
 tempfile = "3"

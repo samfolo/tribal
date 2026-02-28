@@ -23,6 +23,7 @@ chrono.workspace = true
 dashmap.workspace = true
 tera.workspace = true
 schemars.workspace = true
+strsim = "0.11"
 
 [dev-dependencies]
 tribal-test-utils.workspace = true
