@@ -6,11 +6,11 @@ use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
-use tribal_inference::Usage;
+use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
 use super::{StageCommit, StageOutput};
 use crate::{
-    common::clamp_to_u32,
+    common::{PARSE_PREVIEW_LENGTH, clamp_to_u32},
     error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, StageError},
     parsing::parse_extraction_response,
     prompt::assemble_extraction_prompt,
@@ -45,6 +45,16 @@ pub(crate) struct ExtractionContext {
 // ---------------------------------------------------------------------------
 
 impl Worker {
+    /// Returns a reference to the extraction inference provider.
+    pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
+        &self.extraction_provider
+    }
+
+    /// Returns the extraction provider key.
+    pub(crate) fn extraction_key(&self) -> &ProviderKey {
+        &self.extraction_key
+    }
+
     /// Returns the extraction semaphore from the provider registry.
     ///
     /// # Panics
@@ -147,9 +157,21 @@ impl Worker {
                 );
             }
 
+            let include_llm_content = self.config().include_llm_content;
             let output = {
                 let _parse_span = tracing::info_span!("tribal.extraction.parse").entered();
-                parse_extraction_response(&response)?
+                parse_extraction_response(&response).inspect_err(|_| {
+                    if include_llm_content {
+                        let preview: String =
+                            response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
+                        tracing::debug!(preview = %preview, "parse failure — raw LLM response");
+                    } else {
+                        tracing::debug!(
+                            response_length = response.text.len(),
+                            "parse failure — response details redacted",
+                        );
+                    }
+                })?
             };
 
             let original_count = clamp_to_u32(output.candidates.len());

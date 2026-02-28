@@ -1,5 +1,7 @@
 //! Shared utilities and types for pipeline stage implementations.
 
+use std::sync::Arc;
+
 use tribal_db::{
     NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
     NewTriageSimilarItemDecision, PgPromptVersionRepository, PgTagRegistryRepository,
@@ -8,7 +10,7 @@ use tribal_db::{
 use tribal_domain::{
     ProjectId, PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry,
 };
-use tribal_inference::Usage;
+use tribal_inference::{EmbeddingProvider, Usage};
 
 use crate::{error::StageError, worker::Worker};
 
@@ -83,6 +85,17 @@ pub(crate) enum TriageCommitDecision {
     },
     /// Idempotency skip — result already exists for this `(job_id, batch_index)`.
     NoOp,
+}
+
+// ---------------------------------------------------------------------------
+// Shared accessors
+// ---------------------------------------------------------------------------
+
+impl Worker {
+    /// Returns a reference to the embedding provider.
+    pub(crate) fn embedding_provider(&self) -> &Arc<dyn EmbeddingProvider> {
+        &self.embedding_provider
+    }
 }
 
 // ---------------------------------------------------------------------------
