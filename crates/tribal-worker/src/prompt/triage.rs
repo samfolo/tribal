@@ -3,12 +3,10 @@
 use schemars::schema_for;
 use serde::Serialize;
 use tribal_db::SemanticSearchResult;
-use tribal_domain::{
-    Candidate, KnowledgeItemId, KnowledgeKind, TagRegistryEntry, span_attrs,
-};
+use tribal_domain::{Candidate, KnowledgeItemId, KnowledgeKind, TagRegistryEntry};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
-use crate::{error::StageError, stages::triage::TriageClassification};
+use crate::{error::StageError, parsing::TriageClassification};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -35,6 +33,7 @@ const VAR_SCHEMA: &str = "schema";
 /// Constructed from [`SemanticSearchResult`] by extracting the fields
 /// the template needs to render.
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub(crate) struct SimilarItemContext {
     /// The existing knowledge item identifier.
     pub item_id: KnowledgeItemId,
@@ -48,9 +47,8 @@ pub(crate) struct SimilarItemContext {
     pub tags: Vec<String>,
 }
 
-impl SimilarItemContext {
-    /// Builds a [`SimilarItemContext`] from a semantic search result.
-    pub fn from_search_result(result: &SemanticSearchResult) -> Self {
+impl From<&SemanticSearchResult> for SimilarItemContext {
+    fn from(result: &SemanticSearchResult) -> Self {
         Self {
             item_id: result.item.id(),
             kind: result.item.kind(),
@@ -76,6 +74,7 @@ impl SimilarItemContext {
 ///
 /// Returns [`StageError::TemplateRender`] if the template cannot be
 /// rendered.
+#[allow(dead_code)]
 pub(crate) fn assemble_triage_prompt(
     template_content: &str,
     candidate: &Candidate,
@@ -198,12 +197,7 @@ mod tests {
 
     #[test]
     fn test_schema_variable_rendered() {
-        let result = assemble_triage_prompt(
-            "Schema: {{ schema }}",
-            &test_candidate(),
-            &[],
-            &[],
-        );
+        let result = assemble_triage_prompt("Schema: {{ schema }}", &test_candidate(), &[], &[]);
         assert!(result.is_ok());
         let request = result.unwrap();
         let system = request.system.unwrap();

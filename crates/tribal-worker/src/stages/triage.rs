@@ -1,11 +1,7 @@
 //! Triage stage: similarity search and LLM-based relevance scoring.
 
-use serde::Deserialize;
 use tribal_db::{NewItemObservation, NewKnowledgeItem, NewTriageSimilarItemDecision};
-use tribal_domain::{
-    Candidate, Job, JobId, KnowledgeItemId, RelationSuggestion, SuggestedReference,
-    TagRegistryEntry, Task,
-};
+use tribal_domain::{Candidate, Job, JobId, SuggestedReference, TagRegistryEntry, Task};
 use tribal_inference::InferenceError;
 
 use super::StageOutput;
@@ -28,51 +24,6 @@ pub(crate) struct TriageContext {
     pub batch_index: u32,
     /// The current global tag registry.
     pub tag_registry: Vec<TagRegistryEntry>,
-}
-
-// ---------------------------------------------------------------------------
-// LLM response types
-// ---------------------------------------------------------------------------
-
-/// The triage agent's classification of a candidate.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-#[allow(dead_code)]
-pub(crate) struct TriageClassification {
-    /// Whether the candidate is novel or a duplicate.
-    pub outcome: TriageDecision,
-    /// Per-similar-item decisions with justifications.
-    pub similar_item_decisions: Vec<SimilarItemClassification>,
-}
-
-/// The triage decision for a candidate.
-///
-/// Uses expressive Rust names (`Novel`/`Duplicate`) with serde renames
-/// to match the wire format (`created`/`duplicate`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "decision")]
-#[allow(dead_code)]
-pub(crate) enum TriageDecision {
-    /// The candidate is novel — a new knowledge item should be created.
-    #[serde(rename = "created")]
-    Novel,
-    /// The candidate duplicates an existing item.
-    #[serde(rename = "duplicate")]
-    Duplicate {
-        /// The existing item the candidate matches.
-        matched_item_id: KnowledgeItemId,
-    },
-}
-
-/// The triage agent's decision about a single similar item.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-#[allow(dead_code)]
-pub(crate) struct SimilarItemClassification {
-    /// The existing item that was compared against.
-    pub item_id: KnowledgeItemId,
-    /// The agent's suggested relation classification.
-    pub suggested_relation: RelationSuggestion,
-    /// The agent's reasoning for the classification.
-    pub justification: String,
 }
 
 // ---------------------------------------------------------------------------

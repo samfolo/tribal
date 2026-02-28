@@ -1,8 +1,55 @@
-//! Triage response parsing.
+//! Triage response parsing and LLM response types.
 
+use serde::Deserialize;
+use tribal_domain::{KnowledgeItemId, RelationSuggestion};
 use tribal_inference::CompletionResponse;
 
-use crate::{error::StageError, stages::triage::TriageClassification};
+use crate::error::StageError;
+
+// ---------------------------------------------------------------------------
+// TriageClassification
+// ---------------------------------------------------------------------------
+
+/// The triage agent's classification of a candidate.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct TriageClassification {
+    /// Whether the candidate is novel or a duplicate.
+    pub outcome: TriageDecision,
+    /// Per-similar-item decisions with justifications.
+    pub similar_item_decisions: Vec<SimilarItemClassification>,
+}
+
+/// The triage decision for a candidate.
+///
+/// Uses expressive Rust names (`Novel`/`Duplicate`) with serde renames
+/// to match the wire format (`created`/`duplicate`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "decision")]
+#[allow(dead_code)]
+pub(crate) enum TriageDecision {
+    /// The candidate is novel — a new knowledge item should be created.
+    #[serde(rename = "created")]
+    Novel,
+    /// The candidate duplicates an existing item.
+    #[serde(rename = "duplicate")]
+    Duplicate {
+        /// The existing item the candidate matches.
+        matched_item_id: KnowledgeItemId,
+    },
+}
+
+/// The triage agent's decision about a single similar item.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct SimilarItemClassification {
+    /// The existing item that was compared against.
+    pub item_id: KnowledgeItemId,
+    /// The agent's suggested relation classification.
+    pub suggested_relation: RelationSuggestion,
+    /// The agent's reasoning for the classification.
+    pub justification: String,
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -15,6 +62,7 @@ use crate::{error::StageError, stages::triage::TriageClassification};
 /// Returns [`StageError::Parse`] if the response text cannot be
 /// deserialised into [`TriageClassification`], with an operator-safe
 /// `context` and the full `raw_response` for debugging.
+#[allow(dead_code)]
 pub(crate) fn parse_triage_response(
     response: &CompletionResponse,
 ) -> Result<TriageClassification, StageError> {
