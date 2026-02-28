@@ -1,13 +1,15 @@
 //! Shared utilities and types for pipeline stage implementations.
 
 use tribal_db::{
-    NewExtractionResult, NewTask, PgPromptVersionRepository, PgTagRegistryRepository,
+    NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
+    NewTriageSimilarItemDecision, PgPromptVersionRepository, PgTagRegistryRepository,
     PromptVersionRepository, TagRegistryRepository,
 };
-use tribal_domain::{PromptVersion, PromptVersionId, TagRegistryEntry};
+use tribal_domain::{
+    JobId, ProjectId, PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry,
+};
 use tribal_inference::Usage;
 
-use super::triage::TriageCommitData;
 use crate::{error::StageError, worker::Worker};
 
 // ---------------------------------------------------------------------------
@@ -41,11 +43,50 @@ pub(crate) enum StageCommit {
         original_count: u32,
     },
     /// Triage stage effects.
-    #[allow(dead_code)]
     Triage {
-        /// The triage commit data.
-        data: TriageCommitData,
+        /// The job this triage belongs to.
+        job_id: JobId,
+        /// The project this triage belongs to.
+        project_id: ProjectId,
+        /// The candidate's position in the extraction batch.
+        batch_index: u32,
+        /// The triage decision with associated data.
+        decision: TriageCommitDecision,
+        /// Per-similar-item decisions for audit persistence.
+        similar_item_decisions: Vec<NewTriageSimilarItemDecision>,
     },
+}
+
+// ---------------------------------------------------------------------------
+// TriageCommitDecision
+// ---------------------------------------------------------------------------
+
+/// The triage decision variant with associated commit data.
+///
+/// Carries raw components rather than pre-constructed DB types because
+/// fields like `knowledge_item_id` are only available after INSERT
+/// RETURNING inside the commit transaction.
+pub(crate) enum TriageCommitDecision {
+    /// Novel candidate — create a new knowledge item with embedding and references.
+    Novel {
+        /// The knowledge item to insert.
+        knowledge_item: Box<NewKnowledgeItem>,
+        /// The candidate's embedding vector.
+        embedding_vector: Vec<f32>,
+        /// The embedding model used.
+        embedding_model: String,
+        /// References suggested by the extraction stage.
+        suggested_references: Vec<SuggestedReference>,
+        /// Tags not found in the registry, to be created via `batch_upsert`.
+        new_tags: Vec<String>,
+    },
+    /// Duplicate candidate — record an observation against the matched item.
+    Duplicate {
+        /// The observation to insert.
+        observation: NewItemObservation,
+    },
+    /// Idempotency skip — result already exists for this `(job_id, batch_index)`.
+    NoOp,
 }
 
 // ---------------------------------------------------------------------------

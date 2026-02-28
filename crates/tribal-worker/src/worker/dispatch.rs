@@ -12,10 +12,18 @@ use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tribal_db::{
-    ExtractionResultRepository, JobRepository, JobStatusTransition, NewExtractionResult, NewTask,
-    PgExtractionResultRepository, PgJobRepository, PgTaskRepository, TaskRepository,
+    EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
+    JobStatusTransition, KnowledgeItemRepository, NewEmbedding, NewExtractionResult, NewReference,
+    NewTask, NewTriageResult, PgEmbeddingRepository, PgExtractionResultRepository,
+    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
+    PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
+    PgTriageSimilarItemDecisionRepository, ReferenceRepository, TagRegistryRepository,
+    TaskRepository, TriageResultRepository, TriageSimilarItemDecisionRepository,
 };
-use tribal_domain::{Job, JobId, JobOutcome, JobStatus, Task, TaskErrorKind, TaskType, span_attrs};
+use tribal_domain::{
+    Job, JobId, JobOutcome, JobStatus, ReferenceKind, Task, TaskErrorKind, TaskType, TriageOutcome,
+    span_attrs,
+};
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
