@@ -6,7 +6,7 @@ use tribal_db::{
     PromptVersionRepository, TagRegistryRepository,
 };
 use tribal_domain::{
-    JobId, ProjectId, PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry,
+    ProjectId, PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry,
 };
 use tribal_inference::Usage;
 
@@ -44,12 +44,8 @@ pub(crate) enum StageCommit {
     },
     /// Triage stage effects.
     Triage {
-        /// The job this triage belongs to.
-        job_id: JobId,
         /// The project this triage belongs to.
         project_id: ProjectId,
-        /// The candidate's position in the extraction batch.
-        batch_index: u32,
         /// The triage decision with associated data.
         decision: TriageCommitDecision,
         /// Per-similar-item decisions for audit persistence.

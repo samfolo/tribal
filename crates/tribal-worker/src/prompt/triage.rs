@@ -6,23 +6,11 @@ use tribal_db::SemanticSearchResult;
 use tribal_domain::{Candidate, KnowledgeItemId, KnowledgeKind, TagRegistryEntry};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
-use crate::{error::StageError, parsing::TriageClassification};
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Tera context variable: the candidate object.
-const VAR_CANDIDATE: &str = "candidate";
-
-/// Tera context variable: similar items from semantic search.
-const VAR_SIMILAR_ITEMS: &str = "similar_items";
-
-/// Tera context variable: the tag registry as a list of strings.
-const VAR_TAGS: &str = "tags";
-
-/// Tera context variable: the JSON Schema for the expected output.
-const VAR_SCHEMA: &str = "schema";
+use crate::{
+    error::StageError,
+    parsing::TriageClassification,
+    prompt::variables::{VAR_CANDIDATE, VAR_SCHEMA, VAR_SIMILAR_ITEMS, VAR_TAGS},
+};
 
 // ---------------------------------------------------------------------------
 // SimilarItemContext

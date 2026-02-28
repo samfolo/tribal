@@ -15,7 +15,7 @@ use tribal_domain::{JobId, JobOutcome, JobStatus, ReferenceKind, Task, TriageOut
 
 use super::Worker;
 use crate::{
-    common::clamp_to_u32,
+    common::{EXPECT_BATCH_INDEX, clamp_to_u32},
     error::{STAGE_EXTRACTION, STAGE_TRIAGE, StageError},
     stages::{StageCommit, TriageCommitDecision},
 };
@@ -48,21 +48,12 @@ impl Worker {
                 .await
             }
             StageCommit::Triage {
-                job_id,
                 project_id,
-                batch_index,
                 decision,
                 similar_item_decisions,
             } => {
-                self.commit_triage(
-                    task,
-                    job_id,
-                    project_id,
-                    batch_index,
-                    decision,
-                    similar_item_decisions,
-                )
-                .await
+                self.commit_triage(task, project_id, decision, similar_item_decisions)
+                    .await
             }
         }
     }
@@ -191,16 +182,15 @@ impl Worker {
     /// then records the triage result.
     ///
     /// **`NoOp`**: completes the task without creating any domain entities.
-    #[allow(clippy::too_many_arguments)]
     async fn commit_triage(
         &self,
         task: &Task,
-        job_id: JobId,
         project_id: tribal_domain::ProjectId,
-        batch_index: u32,
         decision: TriageCommitDecision,
         similar_item_decisions: Vec<tribal_db::NewTriageSimilarItemDecision>,
     ) -> Result<(), StageError> {
+        let job_id = task.job_id();
+        let batch_index = task.batch_index().expect(EXPECT_BATCH_INDEX);
         let span = tracing::info_span!(
             "tribal.triage.commit",
             { span_attrs::TRIAGE_OUTCOME } = tracing::field::Empty,
