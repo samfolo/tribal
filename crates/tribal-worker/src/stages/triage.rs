@@ -13,7 +13,9 @@ use tribal_domain::{
     Candidate, Confidence, EmbeddingPurpose, Job, JobId, SourceType, TagRegistryEntry, Task,
     span_attrs,
 };
-use tribal_inference::{EmbeddingRequest, EmbeddingResponse, Usage};
+use tribal_inference::{
+    EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
+};
 
 use super::{StageCommit, StageOutput, TriageCommitDecision};
 use crate::{
@@ -58,6 +60,21 @@ const EXPECT_TRIAGE_EMBEDDING_KEY: &str = "triage embedding key registered at st
 // ---------------------------------------------------------------------------
 
 impl Worker {
+    /// Returns a reference to the triage inference provider.
+    pub(crate) fn triage_provider(&self) -> &Arc<dyn InferenceProvider> {
+        &self.triage_provider
+    }
+
+    /// Returns the triage inference provider key.
+    pub(crate) fn triage_inference_key(&self) -> &ProviderKey {
+        &self.triage_inference_key
+    }
+
+    /// Returns the triage embedding provider key.
+    pub(crate) fn triage_embedding_key(&self) -> &ProviderKey {
+        &self.triage_embedding_key
+    }
+
     /// Returns the triage inference semaphore from the provider registry.
     ///
     /// # Panics
@@ -381,15 +398,20 @@ impl Worker {
             );
         }
 
+        let include_llm_content = self.config().include_llm_content;
         let classification = {
             let _parse_span = tracing::info_span!("tribal.triage.parse").entered();
             parse_triage_response(&response).inspect_err(|_| {
-                let preview: String = response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
-                tracing::warn!(
-                    response_length = response.text.len(),
-                    preview = %preview,
-                    "triage response parse failure",
-                );
+                if include_llm_content {
+                    let preview: String =
+                        response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
+                    tracing::debug!(preview = %preview, "parse failure — raw LLM response");
+                } else {
+                    tracing::debug!(
+                        response_length = response.text.len(),
+                        "parse failure — response details redacted",
+                    );
+                }
             })?
         };
 
@@ -439,6 +461,7 @@ impl Worker {
                         .tags(all_tags)
                         .confidence(Confidence::Inferred)
                         .source_context(source_context)
+                        .episode_id(job.correlation_id())
                         .build(),
                 );
 

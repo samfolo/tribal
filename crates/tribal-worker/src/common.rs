@@ -4,7 +4,7 @@
 pub(crate) const EXPECT_BATCH_INDEX: &str = "triage tasks always have a batch index";
 
 /// Maximum number of characters to include in parse-failure log previews.
-pub(crate) const PARSE_PREVIEW_LENGTH: usize = 200;
+pub(crate) const PARSE_PREVIEW_LENGTH: usize = 500;
 
 /// Clamps a `usize` to `u32`, saturating at [`u32::MAX`].
 pub(crate) fn clamp_to_u32(value: usize) -> u32 {

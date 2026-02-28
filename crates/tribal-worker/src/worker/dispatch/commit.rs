@@ -235,7 +235,15 @@ impl Worker {
                 TriageCommitDecision::Duplicate { observation } => {
                     commit_duplicate(&mut txn, job_id, batch_index, &observation).await?
                 }
-                TriageCommitDecision::NoOp => "no_op",
+                TriageCommitDecision::NoOp => {
+                    PgTriageResultRepository
+                        .find_by_job_id_and_batch_index(&mut txn, job_id, batch_index)
+                        .await
+                        .map_err(|e| {
+                            stage_db_error(STAGE_TRIAGE, "re-checking triage idempotency", e)
+                        })?;
+                    "no_op"
+                }
             };
 
             if !similar_item_decisions.is_empty() {
@@ -321,7 +329,7 @@ async fn commit_novel(
         .map_err(|e| stage_db_error(STAGE_TRIAGE, "inserting embedding", e))?;
 
     for suggested_ref in suggested_references {
-        let kind_str = suggested_ref.reference_type().to_lowercase();
+        let kind_str = suggested_ref.reference_type().trim().to_ascii_lowercase();
         let Ok(kind) = kind_str.parse::<ReferenceKind>() else {
             tracing::debug!(
                 reference_type = %suggested_ref.reference_type(),

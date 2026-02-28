@@ -38,16 +38,16 @@ use crate::{
 pub struct Worker {
     pool: PgPool,
     provider_registry: Arc<ProviderRegistry>,
-    extraction_provider: Arc<dyn InferenceProvider>,
-    triage_provider: Arc<dyn InferenceProvider>,
+    pub(crate) extraction_provider: Arc<dyn InferenceProvider>,
+    pub(crate) triage_provider: Arc<dyn InferenceProvider>,
     #[allow(dead_code)]
-    relation_provider: Arc<dyn InferenceProvider>,
-    embedding_provider: Arc<dyn EmbeddingProvider>,
-    extraction_key: ProviderKey,
-    triage_inference_key: ProviderKey,
-    triage_embedding_key: ProviderKey,
+    pub(crate) relation_provider: Arc<dyn InferenceProvider>,
+    pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
+    pub(crate) extraction_key: ProviderKey,
+    pub(crate) triage_inference_key: ProviderKey,
+    pub(crate) triage_embedding_key: ProviderKey,
     #[allow(dead_code)]
-    relation_key: ProviderKey,
+    pub(crate) relation_key: ProviderKey,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
     instance_id: String,
@@ -114,36 +114,6 @@ impl Worker {
     /// Returns a reference to the provider registry.
     pub(crate) fn provider_registry(&self) -> &Arc<ProviderRegistry> {
         &self.provider_registry
-    }
-
-    /// Returns a reference to the extraction inference provider.
-    pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
-        &self.extraction_provider
-    }
-
-    /// Returns the extraction provider key.
-    pub(crate) fn extraction_key(&self) -> &ProviderKey {
-        &self.extraction_key
-    }
-
-    /// Returns a reference to the triage inference provider.
-    pub(crate) fn triage_provider(&self) -> &Arc<dyn InferenceProvider> {
-        &self.triage_provider
-    }
-
-    /// Returns the triage inference provider key.
-    pub(crate) fn triage_inference_key(&self) -> &ProviderKey {
-        &self.triage_inference_key
-    }
-
-    /// Returns the triage embedding provider key.
-    pub(crate) fn triage_embedding_key(&self) -> &ProviderKey {
-        &self.triage_embedding_key
-    }
-
-    /// Returns a reference to the embedding provider.
-    pub(crate) fn embedding_provider(&self) -> &Arc<dyn EmbeddingProvider> {
-        &self.embedding_provider
     }
 
     /// Returns the high-water mark of simultaneously in-flight tasks
