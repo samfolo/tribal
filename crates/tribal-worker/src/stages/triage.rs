@@ -17,6 +17,7 @@ use tribal_inference::{EmbeddingRequest, EmbeddingResponse, Usage};
 
 use super::{StageCommit, StageOutput, TriageCommitDecision};
 use crate::{
+    common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
     error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError},
     parsing::{
         SimilarItemClassification, TriageClassification, TriageDecision, parse_triage_response,
@@ -51,8 +52,6 @@ pub(crate) struct TriageContext {
 
 const EXPECT_TRIAGE_INFERENCE_KEY: &str = "triage inference key registered at startup";
 const EXPECT_TRIAGE_EMBEDDING_KEY: &str = "triage embedding key registered at startup";
-const EXPECT_BATCH_INDEX: &str = "triage tasks always have a batch index";
-const PARSE_PREVIEW_LENGTH: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Triage accessors
@@ -133,9 +132,7 @@ impl Worker {
             if self.check_triage_idempotency(job.id(), batch_index).await? {
                 return Ok(StageOutput {
                     commit: StageCommit::Triage {
-                        job_id: job.id(),
                         project_id: job.project_id(),
-                        batch_index,
                         decision: TriageCommitDecision::NoOp,
                         similar_item_decisions: vec![],
                     },
@@ -467,9 +464,7 @@ impl Worker {
         };
 
         StageCommit::Triage {
-            job_id: job.id(),
             project_id: job.project_id(),
-            batch_index,
             decision,
             similar_item_decisions,
         }

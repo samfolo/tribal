@@ -1,5 +1,11 @@
 //! Shared utilities used across the worker crate.
 
+/// Expect message for triage task batch index unwrap.
+pub(crate) const EXPECT_BATCH_INDEX: &str = "triage tasks always have a batch index";
+
+/// Maximum number of characters to include in parse-failure log previews.
+pub(crate) const PARSE_PREVIEW_LENGTH: usize = 200;
+
 /// Clamps a `usize` to `u32`, saturating at [`u32::MAX`].
 pub(crate) fn clamp_to_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
