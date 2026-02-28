@@ -140,16 +140,6 @@ impl Worker {
         &self.provider_registry
     }
 
-    /// Returns a reference to the extraction inference provider.
-    pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
-        &self.extraction_provider
-    }
-
-    /// Returns the extraction provider key.
-    pub(crate) fn extraction_key(&self) -> &ProviderKey {
-        &self.extraction_key
-    }
-
     /// Returns the high-water mark of simultaneously in-flight tasks
     /// observed since the worker was created.
     #[must_use]

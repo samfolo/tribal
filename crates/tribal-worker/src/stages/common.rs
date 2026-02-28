@@ -2,13 +2,12 @@
 
 use std::sync::Arc;
 
-use tokio::sync::Semaphore;
 use tribal_db::{
     NewExtractionResult, NewTask, PgPromptVersionRepository, PgTagRegistryRepository,
     PromptVersionRepository, TagRegistryRepository,
 };
 use tribal_domain::{PromptVersion, PromptVersionId, TagRegistryEntry};
-use tribal_inference::Usage;
+use tribal_inference::{EmbeddingProvider, Usage};
 
 use super::triage::TriageCommitData;
 use crate::{error::StageError, worker::Worker};
@@ -52,10 +51,15 @@ pub(crate) enum StageCommit {
 }
 
 // ---------------------------------------------------------------------------
-// Constants
+// Shared accessors
 // ---------------------------------------------------------------------------
 
-const EXPECT_EXTRACTION_KEY: &str = "extraction key registered at startup";
+impl Worker {
+    /// Returns a reference to the embedding provider.
+    pub(crate) fn embedding_provider(&self) -> &Arc<dyn EmbeddingProvider> {
+        &self.embedding_provider
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Shared loaders
@@ -123,17 +127,5 @@ impl Worker {
                 context: "loading prompt version".into(),
                 source: e,
             })
-    }
-
-    /// Returns the extraction semaphore from the provider registry.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the extraction key is not registered in the provider
-    /// registry.
-    pub(crate) fn extraction_semaphore(&self) -> &Arc<Semaphore> {
-        self.provider_registry()
-            .semaphore(self.extraction_key())
-            .expect(EXPECT_EXTRACTION_KEY)
     }
 }
