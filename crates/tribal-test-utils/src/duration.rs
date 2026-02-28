@@ -73,8 +73,10 @@ pub const LONG_PROVIDER_DELAY: Duration = Duration::from_secs(5);
 /// early.
 ///
 /// Must be well under [`LONG_PROVIDER_DELAY`] to confirm the stage
-/// was interrupted rather than running to completion.
-pub const EARLY_ABORT_BOUND: Duration = Duration::from_secs(2);
+/// was interrupted rather than running to completion.  Set to 3 s
+/// to accommodate heartbeat detection latency (up to 1 s interval)
+/// plus CI overhead.
+pub const EARLY_ABORT_BOUND: Duration = Duration::from_secs(3);
 
 // ---------------------------------------------------------------------------
 // Poll intervals
