@@ -72,3 +72,14 @@ pub const LONG_PROVIDER_DELAY: Duration = Duration::from_secs(5);
 /// Must be well under [`LONG_PROVIDER_DELAY`] to confirm the stage
 /// was interrupted rather than running to completion.
 pub const EARLY_ABORT_BOUND: Duration = Duration::from_secs(2);
+
+// ---------------------------------------------------------------------------
+// Poll intervals
+// ---------------------------------------------------------------------------
+
+/// Interval between successive poll attempts in custom `poll_until` calls.
+///
+/// Matches the interval used internally by `poll_task_status` and
+/// `poll_job_status`.  Kept short for fast reactions, long enough to
+/// avoid excessive database churn.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(50);
