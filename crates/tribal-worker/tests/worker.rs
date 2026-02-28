@@ -501,6 +501,12 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
     };
 
     let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, MULTI_CYCLE_SETTLE).await;
+
+    // Poll for the job transition before cancelling — cancellation
+    // aborts the reclaim loop, which would prevent
+    // heal_dead_lettered_jobs from running if it hasn't completed.
+    let job = poll_job_status(&pool, job_id, JobStatus::Failed, MULTI_CYCLE_SETTLE).await;
+
     token.cancel();
     let _ = handle.await;
 
@@ -514,9 +520,6 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
         Some("heartbeat_expired"),
         "error message should be heartbeat_expired",
     );
-
-    let job = poll_job_status(&pool, job_id, JobStatus::Failed, MULTI_CYCLE_SETTLE).await;
-
     assert_eq!(
         job.outcome(),
         Some(JobOutcome::Failure),
