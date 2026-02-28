@@ -14,13 +14,14 @@ use tribal_domain::TagRegistryEntry;
 ///
 /// Returns `(resolved_tags, new_tags_to_create)` as disjoint sets:
 ///
-/// - **resolved_tags**: tags that matched an existing registry entry
+/// - `resolved_tags`: tags that matched an existing registry entry
 ///   (exact match or fuzzy match for short tags). Uses the registry's
 ///   canonical form.
-/// - **new_tags_to_create**: normalised tags that did not match any
+/// - `new_tags_to_create`: normalised tags that did not match any
 ///   registry entry and should be registered via `batch_upsert`.
 ///
 /// Both lists are deduplicated.
+#[allow(dead_code)]
 pub(crate) fn resolve_tags(
     suggested_tags: &[String],
     registry: &[TagRegistryEntry],
@@ -150,8 +151,10 @@ mod tests {
     #[test]
     fn test_deduplicates_resolved_tags() {
         let reg = registry(&["rust"]);
-        let (resolved, new_tags) =
-            resolve_tags(&["rust".to_owned(), "Rust".to_owned(), "RUST".to_owned()], &reg);
+        let (resolved, new_tags) = resolve_tags(
+            &["rust".to_owned(), "Rust".to_owned(), "RUST".to_owned()],
+            &reg,
+        );
         assert_eq!(resolved, vec!["rust"]);
         assert!(new_tags.is_empty());
     }

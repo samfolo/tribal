@@ -2,7 +2,8 @@
 
 use tribal_inference::InferenceError;
 
-use crate::{error::StageError, stages::StageOutput, worker::Worker};
+use super::StageOutput;
+use crate::{error::StageError, worker::Worker};
 
 // ---------------------------------------------------------------------------
 // Stage implementation

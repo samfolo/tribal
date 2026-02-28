@@ -1,15 +1,55 @@
-//! Shared utilities for pipeline stage implementations.
+//! Shared utilities and types for pipeline stage implementations.
 
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 use tribal_db::{
-    PgPromptVersionRepository, PgTagRegistryRepository, PromptVersionRepository,
-    TagRegistryRepository,
+    NewExtractionResult, NewTask, PgPromptVersionRepository, PgTagRegistryRepository,
+    PromptVersionRepository, TagRegistryRepository,
 };
 use tribal_domain::{PromptVersion, PromptVersionId, TagRegistryEntry};
+use tribal_inference::Usage;
 
+use super::triage::TriageCommitData;
 use crate::{error::StageError, worker::Worker};
+
+// ---------------------------------------------------------------------------
+// StageOutput
+// ---------------------------------------------------------------------------
+
+/// Output of a successful stage execution, ready for commit.
+pub(crate) struct StageOutput {
+    /// The domain effects to commit transactionally.
+    pub commit: StageCommit,
+    /// Token usage records to persist.
+    pub usages: Vec<Usage>,
+}
+
+// ---------------------------------------------------------------------------
+// StageCommit
+// ---------------------------------------------------------------------------
+
+/// Domain effects produced by a stage, committed transactionally after
+/// the stage completes.
+pub(crate) enum StageCommit {
+    /// Extraction stage effects.
+    Extraction {
+        /// The extraction result to insert.
+        extraction_result: NewExtractionResult,
+        /// Triage tasks to create (one per candidate in the batch).
+        triage_tasks: Vec<NewTask>,
+        /// Capped candidate count.
+        batch_size: u32,
+        /// Pre-cap candidate count.
+        original_count: u32,
+    },
+    /// Triage stage effects.
+    #[allow(dead_code)]
+    Triage {
+        /// The triage commit data.
+        data: TriageCommitData,
+    },
+}
 
 // ---------------------------------------------------------------------------
 // Constants

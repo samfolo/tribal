@@ -612,6 +612,10 @@ impl Worker {
                 )
                 .await
             }
+            StageCommit::Triage { .. } => {
+                // Implemented in step 7
+                todo!("commit_triage")
+            }
         }
     }
 

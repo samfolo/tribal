@@ -7,6 +7,7 @@ use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
 use tribal_inference::Usage;
 
+use super::{StageCommit, StageOutput};
 use crate::{
     common::clamp_to_u32,
     error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, StageError},
@@ -21,38 +22,6 @@ use crate::{
 
 const CANDIDATES_SERIALISE: &str = "candidates serialise to JSON";
 const HINTS_SERIALISE: &str = "relation hints serialise to JSON";
-
-// ---------------------------------------------------------------------------
-// StageOutput
-// ---------------------------------------------------------------------------
-
-/// Output of a successful stage execution, ready for commit.
-pub(crate) struct StageOutput {
-    /// The domain effects to commit transactionally.
-    pub commit: StageCommit,
-    /// Token usage records to persist.
-    pub usages: Vec<Usage>,
-}
-
-// ---------------------------------------------------------------------------
-// StageCommit
-// ---------------------------------------------------------------------------
-
-/// Domain effects produced by a stage, committed transactionally after
-/// the stage completes.
-pub(crate) enum StageCommit {
-    /// Extraction stage effects.
-    Extraction {
-        /// The extraction result to insert.
-        extraction_result: NewExtractionResult,
-        /// Triage tasks to create (one per candidate in the batch).
-        triage_tasks: Vec<NewTask>,
-        /// Capped candidate count.
-        batch_size: u32,
-        /// Pre-cap candidate count.
-        original_count: u32,
-    },
-}
 
 // ---------------------------------------------------------------------------
 // ExtractionContext
