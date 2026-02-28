@@ -21,7 +21,6 @@ use tribal_domain::TagRegistryEntry;
 ///   registry entry and should be registered via `batch_upsert`.
 ///
 /// Both lists are deduplicated.
-#[allow(dead_code)]
 pub(crate) fn resolve_tags(
     suggested_tags: &[String],
     registry: &[TagRegistryEntry],
