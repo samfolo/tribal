@@ -63,8 +63,8 @@ pub trait TagEmbeddingRepository {
     /// Returns tags whose embeddings are similar to the given vector,
     /// filtered to results above the threshold.
     ///
-    /// Results are ordered for deterministic selection: similarity
-    /// descending, then usage_count descending, then tag alphabetically.
+    /// Results are ordered for deterministic selection: `similarity`
+    /// descending, then `usage_count` descending, then `tag` alphabetically.
     ///
     /// # Errors
     ///

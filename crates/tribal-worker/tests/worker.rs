@@ -206,6 +206,7 @@ fn test_config() -> WorkerConfig {
         reclaim_interval_millis: 100,
         max_candidates_per_job: 20,
         triage_search_limit: 10,
+        tag_similarity_threshold: 0.85,
         include_llm_content: false,
     }
 }

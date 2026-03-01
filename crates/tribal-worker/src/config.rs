@@ -233,10 +233,7 @@ mod tests {
         assert_eq!(config.reclaim_interval_millis, 10_000);
         assert_eq!(config.max_candidates_per_job, 20);
         assert_eq!(config.triage_search_limit, 10);
-
-        #[allow(clippy::float_cmp)]
-        assert_eq!(config.tag_similarity_threshold, 0.85);
-
+        assert!((config.tag_similarity_threshold - 0.85).abs() < f64::EPSILON);
         assert!(!config.include_llm_content);
     }
 
