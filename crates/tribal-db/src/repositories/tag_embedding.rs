@@ -61,7 +61,7 @@ pub trait TagEmbeddingRepository {
     ) -> Result<(), DbError>;
 
     /// Returns tags whose embeddings are similar to the given vector,
-    /// filtered to results above the threshold.
+    /// filtered to results at or above the threshold.
     ///
     /// Results are ordered for deterministic selection: `similarity`
     /// descending, then `usage_count` descending, then `tag` alphabetically.
@@ -161,7 +161,7 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
              FROM tag_embeddings te \
              INNER JOIN tag_registry tr ON tr.tag = te.tag \
              WHERE te.model = $2 \
-               AND 1.0 - (te.embedding <=> $1::vector) > $3 \
+               AND 1.0 - (te.embedding <=> $1::vector) >= $3 \
              ORDER BY te.embedding <=> $1::vector ASC, \
                       tr.usage_count DESC, \
                       te.tag ASC \

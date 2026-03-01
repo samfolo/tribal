@@ -343,9 +343,12 @@ async fn commit_novel(
             .map_err(|e| stage_db_error(STAGE_TRIAGE, "upserting tag embeddings", e))?;
     }
 
-    if !resolved_tags.is_empty() {
+    let mut all_tags: Vec<String> = resolved_tags.to_vec();
+    all_tags.extend(new_tags.iter().map(|t| t.tag.clone()));
+
+    if !all_tags.is_empty() {
         PgTagRegistryRepository
-            .increment_usage_count(txn, resolved_tags)
+            .increment_usage_count(txn, &all_tags)
             .await
             .map_err(|e| stage_db_error(STAGE_TRIAGE, "incrementing tag usage counts", e))?;
     }
