@@ -84,7 +84,7 @@ pub(crate) async fn resolve_tags(
     registry: &[TagRegistryEntry],
     embedding_provider: &Arc<dyn EmbeddingProvider>,
     semaphore: &Arc<Semaphore>,
-    model: &str,
+    provider_key: &str,
     threshold: f64,
     deadline: tokio::time::Instant,
 ) -> Result<(ResolvedTags, Vec<Usage>), StageError> {
@@ -98,6 +98,7 @@ pub(crate) async fn resolve_tags(
 
     async {
         let tag_count = suggested_tags.len();
+        let model = &embedding_provider.identity().model;
         let registry_tags: HashSet<&str> = registry.iter().map(TagRegistryEntry::tag).collect();
 
         let mut seen_resolved: HashSet<String> = HashSet::with_capacity(tag_count);
@@ -127,7 +128,7 @@ pub(crate) async fn resolve_tags(
 
         for tag in &unmatched {
             let embedding_response =
-                embed_tag(tag, embedding_provider, semaphore, deadline).await?;
+                embed_tag(tag, embedding_provider, semaphore, deadline, provider_key).await?;
 
             usages.push(Usage::Embedding(embedding_response.usage));
 
@@ -196,12 +197,13 @@ async fn embed_tag(
     embedding_provider: &Arc<dyn EmbeddingProvider>,
     semaphore: &Arc<Semaphore>,
     deadline: tokio::time::Instant,
+    provider_key: &str,
 ) -> Result<tribal_inference::EmbeddingResponse, StageError> {
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
     let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
         .await
         .map_err(|_| StageError::SemaphoreTimeout {
-            provider_key: "triage_embedding (tag resolution)".into(),
+            provider_key: provider_key.to_owned(),
         })?
         .expect(SEMAPHORE_CLOSED);
 

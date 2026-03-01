@@ -246,11 +246,13 @@ impl BackfillProcessor {
 
         let upsert_count = clamp_to_u32(embeddings.len());
 
+        // Record token usage for all successful embedding calls regardless
+        // of whether the DB write succeeds — the provider tokens were spent
+        // either way.
+        self.record_token_usage(&usages).await;
+
         match self.store_batch(&embeddings).await {
-            Ok(()) => {
-                self.record_token_usage(&usages).await;
-                (upsert_count, failures)
-            }
+            Ok(()) => (upsert_count, failures),
             Err(e) => {
                 tracing::warn!(
                     error = %e,
