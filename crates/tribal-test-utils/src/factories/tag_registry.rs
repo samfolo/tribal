@@ -6,6 +6,7 @@ define_factory! {
     pub struct TagRegistryEntryFactory for TagRegistryEntry {
         tag: String = "test-tag".to_owned(),
         first_seen_at: chrono::DateTime<Utc> = Utc::now(),
+        usage_count: i32 = 0,
     }
 }
 
