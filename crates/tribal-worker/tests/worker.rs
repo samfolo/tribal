@@ -2017,13 +2017,13 @@ async fn test_triage_semantic_match_determinism() {
             .batch_upsert(
                 &mut conn,
                 &[
-                    tribal_db::NewTagEmbedding::builder()
+                    NewTagEmbedding::builder()
                         .tag("alpha".to_owned())
                         .model("mock-model".to_owned())
                         .dimensions(768)
                         .embedding(embedding_vec.clone())
                         .build(),
-                    tribal_db::NewTagEmbedding::builder()
+                    NewTagEmbedding::builder()
                         .tag("beta".to_owned())
                         .model("mock-model".to_owned())
                         .dimensions(768)
@@ -2051,7 +2051,7 @@ async fn test_triage_semantic_match_determinism() {
             .build(),
     ];
 
-    let (_job_id, task_id) = {
+    let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
         seed_triage_job(&mut conn, principal_id, project_id, pv_id, &candidates).await
     };
@@ -2093,7 +2093,7 @@ async fn test_triage_semantic_match_determinism() {
 
     let mut conn = raw_conn(ctx).await;
     let triage_result = PgTriageResultRepository
-        .find_by_job_id_and_batch_index(&mut conn, _job_id, SEED_TRIAGE_BATCH_INDEX)
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
         .await
         .expect("find triage result")
         .expect("triage result should exist");
