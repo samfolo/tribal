@@ -186,7 +186,7 @@ impl Worker {
                         &tag_registry,
                         self.embedding_provider(),
                         self.triage_embedding_semaphore(),
-                        &self.embedding_provider().identity().model,
+                        &format!("{:?}", self.triage_embedding_key()),
                         self.config().tag_similarity_threshold,
                         deadline,
                     )
