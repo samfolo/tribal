@@ -6,6 +6,7 @@
 //! [`Semaphore`](tokio::sync::Semaphore) and graceful shutdown is
 //! signalled via a [`CancellationToken`](tokio_util::sync::CancellationToken).
 
+pub(crate) mod backfill;
 pub(crate) mod backoff;
 mod dispatch;
 pub(crate) mod heartbeat;

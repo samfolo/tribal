@@ -23,6 +23,7 @@ pub const APPLICATION_TABLES: &[&str] = &[
     "projects",
     "prompt_versions",
     "retrieval_feedback",
+    "tag_embeddings",
     "tag_registry",
     "tasks",
     "token_usage",

@@ -2,7 +2,8 @@
 //!
 //! The tag registry is global (not per-project) and prevents tag drift
 //! across models, versions, and prompts. Tags are normalised to lowercase
-//! during ingest with fuzzy matching against existing entries.
+//! during ingest with embedding-based semantic matching against existing
+//! entries.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,12 +19,28 @@ pub struct TagRegistryEntry {
     tag: String,
     /// When this tag was first encountered.
     first_seen_at: DateTime<Utc>,
+    /// When this tag was last resolved to (exact or semantic match).
+    #[builder(default)]
+    last_seen_at: Option<DateTime<Utc>>,
+    /// Number of times this tag has been resolved to (exact or semantic match).
+    #[builder(default = 0)]
+    usage_count: i32,
 }
 
 impl TagRegistryEntry {
     /// Creates a new tag registry entry.
-    pub fn new(tag: String, first_seen_at: DateTime<Utc>) -> Self {
-        Self { tag, first_seen_at }
+    pub fn new(
+        tag: String,
+        first_seen_at: DateTime<Utc>,
+        last_seen_at: Option<DateTime<Utc>>,
+        usage_count: i32,
+    ) -> Self {
+        Self {
+            tag,
+            first_seen_at,
+            last_seen_at,
+            usage_count,
+        }
     }
 
     /// Returns the canonical tag string.
@@ -34,5 +51,15 @@ impl TagRegistryEntry {
     /// Returns when this tag was first encountered.
     pub fn first_seen_at(&self) -> DateTime<Utc> {
         self.first_seen_at
+    }
+
+    /// Returns when this tag was last resolved to.
+    pub fn last_seen_at(&self) -> Option<DateTime<Utc>> {
+        self.last_seen_at
+    }
+
+    /// Returns the usage count for this tag.
+    pub fn usage_count(&self) -> i32 {
+        self.usage_count
     }
 }

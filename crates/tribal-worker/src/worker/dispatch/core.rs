@@ -21,6 +21,7 @@ use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
     stages::StageOutput,
     worker::{
+        backfill::BackfillProcessor,
         backoff::BACKOFF_CAP_SECS,
         heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
     },
@@ -123,8 +124,22 @@ impl Worker {
         self.peak_concurrent.load(Ordering::SeqCst)
     }
 
+    /// Runs all startup operations: reclaims orphaned tasks, heals
+    /// dead-lettered jobs, and backfills missing data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkerError`] on database failures during reclaim.
+    pub async fn startup(&self) -> Result<(), WorkerError> {
+        tracing::info!(instance_id = %self.instance_id, "worker startup began");
+        self.startup_reclaim().await?;
+        self.run_startup_backfills().await;
+        tracing::info!(instance_id = %self.instance_id, "worker startup complete");
+        Ok(())
+    }
+
     /// Reclaims stale tasks that were left claimed by a previous worker
-    /// instance.
+    /// instance and heals any dead-lettered jobs.
     ///
     /// # Errors
     ///
@@ -148,6 +163,39 @@ impl Worker {
         self.heal_dead_lettered_jobs().await;
 
         Ok(stats.total())
+    }
+
+    /// Runs all startup backfill operations.
+    async fn run_startup_backfills(&self) {
+        let semaphore = self
+            .provider_registry()
+            .semaphore(&self.triage_embedding_key)
+            .cloned();
+
+        let Some(semaphore) = semaphore else {
+            tracing::warn!("triage embedding key not registered, skipping tag backfill");
+            return;
+        };
+
+        let processor = BackfillProcessor::new(
+            self.pool.clone(),
+            Arc::clone(&self.embedding_provider),
+            semaphore,
+            self.cancellation_token.clone(),
+        );
+
+        let outcome = processor.tag_embeddings().await;
+
+        if outcome.cancelled {
+            tracing::info!("tag embedding backfill interrupted by shutdown");
+        } else if !outcome.is_empty() {
+            tracing::info!(
+                processed = outcome.processed,
+                skipped = outcome.skipped,
+                total = outcome.total,
+                "tag embedding backfill complete",
+            );
+        }
     }
 
     /// Runs the main poll-claim-dispatch loop until cancellation.

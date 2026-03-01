@@ -96,6 +96,14 @@ pub(crate) enum SeedCommand {
     Advance {
         delta: Duration,
     },
+
+    // Tag operations
+    DefineTag {
+        tag: String,
+    },
+    DefineTagWithEmbedding {
+        tag: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +417,26 @@ impl Seed {
         self
     }
 
+    /// Registers a tag in the tag registry without an embedding.
+    #[must_use]
+    pub fn define_tag(mut self, tag: impl Into<String>) -> Self {
+        self.commands
+            .push(SeedCommand::DefineTag { tag: tag.into() });
+        self
+    }
+
+    /// Registers a tag in the tag registry and creates a deterministic
+    /// embedding for it.
+    ///
+    /// Requires [`set_embedding_model`](Seed::set_embedding_model) to have
+    /// been called first.
+    #[must_use]
+    pub fn define_tag_with_embedding(mut self, tag: impl Into<String>) -> Self {
+        self.commands
+            .push(SeedCommand::DefineTagWithEmbedding { tag: tag.into() });
+        self
+    }
+
     /// Advances the virtual clock by the given duration.
     #[must_use]
     pub fn advance(mut self, delta: Duration) -> Self {
@@ -543,6 +571,7 @@ pub struct SeedResult {
     pub(crate) observations: HashMap<String, Vec<ItemObservationId>>,
     pub(crate) committed_batches: IndexMap<String, CommittedBatch>,
     pub(crate) uncommitted_relations: Vec<RelationId>,
+    pub(crate) tag_embeddings: HashMap<String, Vec<f32>>,
 }
 
 impl SeedResult {
@@ -663,6 +692,22 @@ impl SeedResult {
     /// Returns the number of committed relation batches.
     pub fn batch_count(&self) -> usize {
         self.committed_batches.len()
+    }
+
+    /// Returns the deterministic embedding vector for a seeded tag.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tag was not defined with
+    /// [`define_tag_with_embedding`](Seed::define_tag_with_embedding).
+    pub fn tag_embedding(&self, tag: &str) -> Vec<f32> {
+        self.tag_embeddings
+            .get(tag)
+            .unwrap_or_else(|| {
+                let defined: Vec<_> = self.tag_embeddings.keys().collect();
+                panic!("no embedding for tag '{tag}' — tags with embeddings: {defined:?}");
+            })
+            .clone()
     }
 }
 

@@ -19,6 +19,7 @@ mod reference;
 mod relation;
 mod retrieval_feedback;
 mod standing;
+mod tag_embedding;
 mod tag_registry;
 mod task;
 mod token_usage;
@@ -52,6 +53,7 @@ pub use retrieval_feedback::{
     NewRetrievalFeedback, PgRetrievalFeedbackRepository, RetrievalFeedbackRepository,
 };
 pub use standing::{PgStandingRepository, StandingRepository};
+pub use tag_embedding::{NewTagEmbedding, PgTagEmbeddingRepository, TagEmbeddingRepository};
 pub use tag_registry::{PgTagRegistryRepository, TagRegistryRepository};
 pub use task::{NewTask, PgTaskRepository, ReclaimOutcome, TaskRepository};
 pub use token_usage::{
