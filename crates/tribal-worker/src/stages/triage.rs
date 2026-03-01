@@ -10,8 +10,7 @@ use tribal_db::{
     PgTriageResultRepository, SemanticSearchParams, SemanticSearchResult, TriageResultRepository,
 };
 use tribal_domain::{
-    Candidate, Confidence, EmbeddingPurpose, Job, JobId, SourceType, TagRegistryEntry, Task,
-    span_attrs,
+    Candidate, Confidence, Job, JobId, SourceType, TagRegistryEntry, Task, span_attrs,
 };
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
@@ -25,7 +24,7 @@ use crate::{
         SimilarItemClassification, TriageClassification, TriageDecision, parse_triage_response,
     },
     prompt::{SimilarItemContext, assemble_triage_prompt},
-    tag_resolution::resolve_tags,
+    tag_resolution::{self, ResolvedTags},
     worker::Worker,
 };
 
@@ -178,6 +177,24 @@ impl Worker {
             let embedding_usage = embedding_response.usage;
             let embedding_vector = embedding_response.vector;
 
+            let (resolved_tags, tag_usages) = match &classification.outcome {
+                TriageDecision::Novel => {
+                    let (resolved, usages) = tag_resolution::resolve_tags(
+                        self.pool(),
+                        candidate.suggested_tags(),
+                        &tag_registry,
+                        self.embedding_provider(),
+                        self.triage_embedding_semaphore(),
+                        &self.embedding_provider().identity().model,
+                        self.config().tag_similarity_threshold,
+                        deadline,
+                    )
+                    .await?;
+                    (Some(resolved), usages)
+                }
+                TriageDecision::Duplicate { .. } => (None, vec![]),
+            };
+
             let commit = self.build_triage_commit(
                 job,
                 batch_index,
@@ -185,16 +202,16 @@ impl Worker {
                 &classification,
                 &search_results,
                 embedding_vector,
-                &tag_registry,
+                resolved_tags,
             );
 
-            Ok(StageOutput {
-                commit,
-                usages: vec![
-                    Usage::Embedding(embedding_usage),
-                    Usage::Completion(completion_response.usage),
-                ],
-            })
+            let mut usages = vec![
+                Usage::Embedding(embedding_usage),
+                Usage::Completion(completion_response.usage),
+            ];
+            usages.extend(tag_usages);
+
+            Ok(StageOutput { commit, usages })
         }
         .instrument(span)
         .await
@@ -435,7 +452,7 @@ impl Worker {
         classification: &TriageClassification,
         search_results: &[SemanticSearchResult],
         embedding_vector: Vec<f32>,
-        tag_registry: &[TagRegistryEntry],
+        resolved_tags: Option<ResolvedTags>,
     ) -> StageCommit {
         let similar_item_decisions = build_similar_item_decisions(
             job.id(),
@@ -446,11 +463,11 @@ impl Worker {
 
         let decision = match &classification.outcome {
             TriageDecision::Novel => {
-                let (resolved_tags, new_tags) =
-                    resolve_tags(candidate.suggested_tags(), tag_registry);
+                let tag_data =
+                    resolved_tags.expect("resolved tags required for Novel classification");
 
-                let mut all_tags = resolved_tags;
-                all_tags.extend(new_tags.iter().cloned());
+                let mut all_tags = tag_data.resolved.clone();
+                all_tags.extend(tag_data.new_tags.iter().map(|t| t.tag.clone()));
 
                 let extraction_identity = self.extraction_provider().identity();
                 let source_context = serde_json::json!({
@@ -478,7 +495,8 @@ impl Worker {
                     embedding_vector,
                     embedding_model: embedding_identity.model.clone(),
                     suggested_references: candidate.suggested_references().to_vec(),
-                    new_tags,
+                    new_tags: tag_data.new_tags,
+                    resolved_tags: tag_data.resolved,
                 }
             }
             TriageDecision::Duplicate { matched_item_id } => {
