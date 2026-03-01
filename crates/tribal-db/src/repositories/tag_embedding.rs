@@ -118,8 +118,7 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
         );
 
         for new in embeddings {
-            let dimensions =
-                i32::try_from(new.dimensions).expect(DIMENSIONS_EXCEEDS_I32);
+            let dimensions = i32::try_from(new.dimensions).expect(DIMENSIONS_EXCEEDS_I32);
             let vector = pgvector::Vector::from(new.embedding.clone());
 
             sqlx::query(&sql)

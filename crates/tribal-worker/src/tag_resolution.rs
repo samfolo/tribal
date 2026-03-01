@@ -6,8 +6,7 @@
 //! results so the commit path can store them without a redundant embedding
 //! call.
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
@@ -127,13 +126,8 @@ pub(crate) async fn resolve_tags(
         let mut best_similarity: Option<f64> = None;
 
         for tag in &unmatched {
-            let embedding_response = embed_tag(
-                tag,
-                embedding_provider,
-                semaphore,
-                deadline,
-            )
-            .await?;
+            let embedding_response =
+                embed_tag(tag, embedding_provider, semaphore, deadline).await?;
 
             usages.push(Usage::Embedding(embedding_response.usage));
 
@@ -177,7 +171,10 @@ pub(crate) async fn resolve_tags(
         let span = tracing::Span::current();
         span.record(span_attrs::TAG_RESOLUTION_RESOLVED, resolved.len());
         span.record(span_attrs::TAG_RESOLUTION_NEW, new_tags.len());
-        span.record(span_attrs::TAG_RESOLUTION_SEMANTIC_MATCHED, semantic_match_count);
+        span.record(
+            span_attrs::TAG_RESOLUTION_SEMANTIC_MATCHED,
+            semantic_match_count,
+        );
         if let Some(sim) = best_similarity {
             span.record(span_attrs::TAG_RESOLUTION_BEST_SIMILARITY, sim);
         }

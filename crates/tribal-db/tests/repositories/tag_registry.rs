@@ -1,5 +1,5 @@
 use tribal_db::{PgTagRegistryRepository, TagRegistryRepository};
-use tribal_test_utils::test_context;
+use tribal_test_utils::{shift_tag_registry_timestamp, test_context};
 
 // ---------------------------------------------------------------------------
 // upsert
@@ -138,7 +138,7 @@ async fn test_increment_usage_count_increments_existing_tags() {
 }
 
 #[tokio::test]
-async fn test_increment_usage_count_updates_last_seen_at() {
+async fn test_increment_usage_count_sets_last_seen_at() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTagRegistryRepository;
@@ -158,6 +158,53 @@ async fn test_increment_usage_count_updates_last_seen_at() {
     assert!(
         rust.last_seen_at().is_some(),
         "last_seen_at should be set after increment",
+    );
+}
+
+#[tokio::test]
+async fn test_increment_usage_count_advances_last_seen_at() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTagRegistryRepository;
+
+    repo.upsert(&mut txn, "rust").await.expect("upsert");
+    repo.increment_usage_count(&mut txn, &["rust".to_owned()])
+        .await
+        .expect("first increment");
+
+    // Backdate last_seen_at so the second increment produces a
+    // distinguishable timestamp (now() is fixed within a transaction).
+    shift_tag_registry_timestamp(
+        &mut txn,
+        "last_seen_at",
+        "rust",
+        chrono::Duration::hours(-1),
+    )
+    .await;
+
+    let all = repo.find_all(&mut txn).await.expect("find_all");
+    let backdated = all
+        .iter()
+        .find(|e| e.tag() == "rust")
+        .expect("find rust")
+        .last_seen_at()
+        .expect("last_seen_at after backdate");
+
+    repo.increment_usage_count(&mut txn, &["rust".to_owned()])
+        .await
+        .expect("second increment");
+
+    let all = repo.find_all(&mut txn).await.expect("find_all");
+    let advanced = all
+        .iter()
+        .find(|e| e.tag() == "rust")
+        .expect("find rust")
+        .last_seen_at()
+        .expect("last_seen_at after second increment");
+
+    assert!(
+        advanced > backdated,
+        "last_seen_at should advance: {advanced} > {backdated}",
     );
 }
 

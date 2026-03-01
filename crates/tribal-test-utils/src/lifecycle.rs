@@ -189,6 +189,41 @@ pub async fn shift_relations_timestamp_by_batch(
 }
 
 // ---------------------------------------------------------------------------
+// shift_tag_registry_timestamp
+// ---------------------------------------------------------------------------
+
+/// Shifts a timestamp column on a tag registry entry.
+///
+/// Convenience wrapper for the tag registry's text primary key,
+/// which cannot use the UUID-based [`shift_timestamp`].
+///
+/// # Panics
+///
+/// Panics if `column` is not a valid SQL identifier, or if the database
+/// query fails.
+pub async fn shift_tag_registry_timestamp(
+    conn: &mut PgConnection,
+    column: &str,
+    tag: &str,
+    offset: Duration,
+) {
+    assert_identifier(column, "column");
+    #[allow(clippy::cast_precision_loss)]
+    let secs = offset.num_seconds() as f64;
+    let sql = format!(
+        "UPDATE tag_registry \
+         SET {column} = {column} + make_interval(secs => $1) \
+         WHERE tag = $2",
+    );
+    sqlx::query(&sql)
+        .bind(secs)
+        .bind(tag)
+        .execute(&mut *conn)
+        .await
+        .expect("lifecycle: shift tag registry timestamp");
+}
+
+// ---------------------------------------------------------------------------
 // set_timestamp
 // ---------------------------------------------------------------------------
 

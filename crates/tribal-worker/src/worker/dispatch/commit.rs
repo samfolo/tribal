@@ -5,10 +5,9 @@ use tracing::Instrument;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
     JobStatusTransition, KnowledgeItemRepository, NewEmbedding, NewExtractionResult, NewReference,
-    NewTagEmbedding, NewTask, NewTriageResult, PgEmbeddingRepository,
-    PgExtractionResultRepository, PgItemObservationRepository, PgJobRepository,
-    PgKnowledgeItemRepository, PgReferenceRepository, PgTagEmbeddingRepository,
-    PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
+    NewTagEmbedding, NewTask, NewTriageResult, PgEmbeddingRepository, PgExtractionResultRepository,
+    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
+    PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
     PgTriageSimilarItemDecisionRepository, ReferenceRepository, TagEmbeddingRepository,
     TagRegistryRepository, TaskRepository, TriageResultRepository,
     TriageSimilarItemDecisionRepository,

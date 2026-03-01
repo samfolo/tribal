@@ -1,5 +1,6 @@
 use tribal_db::{
-    PgTagEmbeddingRepository, PgTagRegistryRepository, TagEmbeddingRepository, TagRegistryRepository,
+    PgTagEmbeddingRepository, PgTagRegistryRepository, TagEmbeddingRepository,
+    TagRegistryRepository,
 };
 use tribal_test_utils::{a_new_tag_embedding, test_context};
 
@@ -65,7 +66,9 @@ async fn test_batch_upsert_empty_is_no_op() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
-    repo.batch_upsert(&mut txn, &[]).await.expect("batch_upsert");
+    repo.batch_upsert(&mut txn, &[])
+        .await
+        .expect("batch_upsert");
 }
 
 #[tokio::test]
