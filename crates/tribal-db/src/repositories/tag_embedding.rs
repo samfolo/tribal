@@ -24,7 +24,7 @@ const DIMENSIONS_EXCEEDS_I32: &str = "dimensions exceeds i32::MAX";
 // ---------------------------------------------------------------------------
 
 /// Input for creating a new tag embedding.
-#[derive(Debug)]
+#[derive(Debug, typed_builder::TypedBuilder)]
 pub struct NewTagEmbedding {
     /// The canonical tag string (must already exist in `tag_registry`).
     pub tag: String,
