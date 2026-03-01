@@ -251,6 +251,12 @@ pub trait TaskRepository {
     /// [`insert`], this keeps the enclosing transaction healthy on
     /// conflict.
     ///
+    /// Only applicable to singleton task types (`extraction`,
+    /// `relation`) — the `ON CONFLICT` clause references the partial
+    /// unique index on `(job_id, task_type) WHERE task_type IN
+    /// ('extraction', 'relation')`.  Triage tasks use a separate
+    /// index that includes `batch_index`.
+    ///
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
