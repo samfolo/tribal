@@ -19,6 +19,7 @@ mod reference;
 mod relation;
 mod retrieval_feedback;
 mod standing;
+mod tag_embedding;
 mod tag_registry;
 mod task;
 mod token_usage;
