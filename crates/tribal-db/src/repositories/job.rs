@@ -210,6 +210,24 @@ pub trait JobRepository {
         &self,
         conn: &mut PgConnection,
     ) -> Result<Vec<JobId>, DbError>;
+
+    /// Detects jobs stuck in `Triaging` where at least one triage task
+    /// exists, all triage tasks have reached terminal state, and no
+    /// relation task exists.
+    ///
+    /// Jobs with zero triage tasks are excluded — these represent data
+    /// integrity issues rather than missed fan-ins.
+    ///
+    /// Returns the IDs of stuck jobs.  The caller is responsible for
+    /// creating relation tasks and transitioning job status.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_stuck_triaging_jobs(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<JobId>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +438,43 @@ impl JobRepository for PgJobRepository {
         .await
         .map_err(|e| DbError::QueryFailed {
             context: "failing jobs with dead-lettered tasks".to_owned(),
+            source: e,
+        })?;
+
+        Ok(rows
+            .iter()
+            .map(|r| JobId::from(r.get::<uuid::Uuid, _>("id")))
+            .collect())
+    }
+
+    async fn find_stuck_triaging_jobs(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<JobId>, DbError> {
+        let rows = sqlx::query(
+            "SELECT j.id FROM jobs j \
+             WHERE j.status = 'triaging' \
+               AND EXISTS ( \
+                   SELECT 1 FROM tasks t \
+                   WHERE t.job_id = j.id \
+                     AND t.task_type = 'triage' \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM tasks t \
+                   WHERE t.job_id = j.id \
+                     AND t.task_type = 'triage' \
+                     AND t.status NOT IN ('completed', 'dead_letter') \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM tasks t \
+                   WHERE t.job_id = j.id \
+                     AND t.task_type = 'relation' \
+               )",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "finding stuck triaging jobs".to_owned(),
             source: e,
         })?;
 

@@ -8,7 +8,7 @@
 use chrono::Duration;
 use sqlx::PgConnection;
 use tribal_db::APPLICATION_TABLES;
-use tribal_domain::{RelationBatchId, TaskId};
+use tribal_domain::{JobId, RelationBatchId, TaskId, TaskStatus, TaskType};
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -270,4 +270,35 @@ pub async fn count_tasks_by_status(conn: &mut PgConnection, status: &str) -> i64
         .fetch_one(&mut *conn)
         .await
         .expect("lifecycle: count tasks by status")
+}
+
+// ---------------------------------------------------------------------------
+// set_task_status_by_job
+// ---------------------------------------------------------------------------
+
+/// Sets the status of all tasks matching a job ID and task type.
+///
+/// Intended for test setup where tasks need to be positioned in a
+/// specific terminal state without going through the normal processing
+/// pipeline (e.g. simulating the reclaim-sweep gap).
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn set_task_status_by_job(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    task_type: TaskType,
+    status: TaskStatus,
+) {
+    sqlx::query(
+        "UPDATE tasks SET status = $1 \
+         WHERE job_id = $2 AND task_type = $3",
+    )
+    .bind(status.as_str())
+    .bind(job_id.inner())
+    .bind(task_type.as_str())
+    .execute(&mut *conn)
+    .await
+    .expect("lifecycle: set task status by job");
 }

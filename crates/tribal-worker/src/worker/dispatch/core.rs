@@ -9,7 +9,9 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
-use tribal_db::{JobRepository, PgJobRepository, PgTaskRepository, TaskRepository};
+use tribal_db::{
+    JobRepository, JobStatusTransition, NewTask, PgJobRepository, PgTaskRepository, TaskRepository,
+};
 use tribal_domain::{Job, JobId, JobStatus, Task, TaskType};
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
@@ -161,6 +163,7 @@ impl Worker {
         }
 
         self.heal_dead_lettered_jobs().await;
+        self.heal_stuck_triaging_jobs().await;
 
         Ok(stats.total())
     }
@@ -500,6 +503,72 @@ impl Worker {
         }
     }
 
+    /// Creates relation tasks for jobs stuck in `Triaging` where all
+    /// triage tasks are terminal but no relation task exists.
+    ///
+    /// Each stuck job is healed in its own transaction so that a
+    /// failure for one job does not block others.  Best-effort —
+    /// failures are logged but not propagated.
+    async fn heal_stuck_triaging_jobs(&self) {
+        let mut conn = match self.pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "pool acquire failed for triaging job healing");
+                return;
+            }
+        };
+
+        let stuck_job_ids = match PgJobRepository.find_stuck_triaging_jobs(&mut conn).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to detect stuck triaging jobs");
+                return;
+            }
+        };
+
+        for job_id in &stuck_job_ids {
+            let Ok(mut txn) = sqlx::Connection::begin(&mut *conn).await else {
+                tracing::warn!(job_id = %job_id, "failed to begin healing transaction");
+                continue;
+            };
+
+            let new_task = NewTask::builder()
+                .job_id(*job_id)
+                .task_type(TaskType::Relation)
+                .build();
+
+            if let Err(e) = PgTaskRepository.upsert(&mut txn, &new_task).await {
+                tracing::warn!(job_id = %job_id, error = %e, "failed to create relation task for stuck job");
+                let _ = txn.rollback().await;
+                continue;
+            }
+
+            let transition = JobStatusTransition::builder()
+                .status(JobStatus::Relating)
+                .build();
+
+            if let Err(e) = PgJobRepository
+                .update_status(&mut txn, *job_id, &transition)
+                .await
+            {
+                tracing::warn!(job_id = %job_id, error = %e, "failed to transition stuck job to relating");
+                let _ = txn.rollback().await;
+                continue;
+            }
+
+            let Ok(()) = txn.commit().await else {
+                tracing::warn!(job_id = %job_id, "failed to commit healing transaction");
+                continue;
+            };
+
+            self.notify_job_state(*job_id);
+        }
+
+        if !stuck_job_ids.is_empty() {
+            tracing::warn!(count = stuck_job_ids.len(), "healed stuck triaging jobs");
+        }
+    }
+
     /// Runs the periodic reclaim sweep until cancellation.
     ///
     /// Sweeps for stale heartbeats every `reclaim_interval`, requeuing
@@ -545,6 +614,8 @@ impl Worker {
                     if stats.dead_lettered > 0 {
                         self.heal_dead_lettered_jobs().await;
                     }
+
+                    self.heal_stuck_triaging_jobs().await;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "reclaim sweep failed");

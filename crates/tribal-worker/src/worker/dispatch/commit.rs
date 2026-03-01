@@ -240,23 +240,7 @@ impl Worker {
                     commit_duplicate(&mut txn, job_id, batch_index, &observation).await?
                 }
                 TriageCommitDecision::NoOp => {
-                    let existing = PgTriageResultRepository
-                        .find_by_job_id_and_batch_index(&mut txn, job_id, batch_index)
-                        .await
-                        .map_err(|e| {
-                            stage_db_error(STAGE_TRIAGE, "re-checking triage idempotency", e)
-                        })?;
-                    if existing.is_none() {
-                        return Err(stage_db_error(
-                            STAGE_TRIAGE,
-                            "NoOp triage decision without existing triage result",
-                            tribal_db::DbError::NotFound {
-                                entity: "triage_result",
-                                id: format!("{job_id}[{batch_index}]"),
-                            },
-                        ));
-                    }
-                    "no_op"
+                    validate_triage_noop(&mut txn, job_id, batch_index).await?
                 }
             };
 
@@ -278,9 +262,18 @@ impl Worker {
                 return Err(StageError::OwnershipLost);
             }
 
+            let fan_in_fired = self
+                .triage_fan_in(&mut txn, job_id, task.id())
+                .await
+                .map_err(|e| stage_db_error(STAGE_TRIAGE, "triage fan-in", e))?;
+
             txn.commit()
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
+
+            if fan_in_fired {
+                self.notify_job_state(job_id);
+            }
 
             tracing::Span::current().record(span_attrs::TRIAGE_OUTCOME, outcome);
 
@@ -295,6 +288,73 @@ impl Worker {
         }
         .instrument(span)
         .await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Triage fan-in
+// ---------------------------------------------------------------------------
+
+impl Worker {
+    /// Checks whether all triage siblings are terminal and, if so,
+    /// creates the relation task and transitions the job to `Relating`.
+    ///
+    /// Must be called within an active transaction.  The
+    /// `current_task_id` is excluded from the sibling count as a
+    /// defensive guard — its updated status is visible on the same
+    /// connection but has not yet been committed to other transactions.
+    ///
+    /// Returns `true` if the fan-in fired (relation task creation was
+    /// attempted), `false` if non-terminal siblings remain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError`] on database errors.
+    pub(super) async fn triage_fan_in(
+        &self,
+        txn: &mut sqlx::PgConnection,
+        job_id: JobId,
+        current_task_id: tribal_domain::TaskId,
+    ) -> Result<bool, tribal_db::DbError> {
+        let remaining = PgTaskRepository
+            .count_siblings_by_status(
+                txn,
+                job_id,
+                tribal_domain::TaskType::Triage,
+                &[
+                    tribal_domain::TaskStatus::Queued,
+                    tribal_domain::TaskStatus::Claimed,
+                ],
+                current_task_id,
+            )
+            .await?;
+
+        if remaining > 0 {
+            return Ok(false);
+        }
+
+        let new_task = tribal_db::NewTask::builder()
+            .job_id(job_id)
+            .task_type(tribal_domain::TaskType::Relation)
+            .build();
+
+        let rows_affected = PgTaskRepository.upsert(txn, &new_task).await?;
+
+        if rows_affected > 0 {
+            tracing::info!(job_id = %job_id, "relation task created (triage fan-in)");
+        } else {
+            tracing::debug!(job_id = %job_id, "relation task already exists for job");
+        }
+
+        let transition = JobStatusTransition::builder()
+            .status(JobStatus::Relating)
+            .build();
+
+        PgJobRepository
+            .update_status(txn, job_id, &transition)
+            .await?;
+
+        Ok(true)
     }
 }
 
@@ -439,6 +499,31 @@ async fn commit_duplicate(
         .map_err(|e| stage_db_error(STAGE_TRIAGE, "inserting triage result", e))?;
 
     Ok("duplicate")
+}
+
+/// Validates that a triage result already exists for a `NoOp` decision.
+async fn validate_triage_noop(
+    txn: &mut sqlx::PgConnection,
+    job_id: JobId,
+    batch_index: u32,
+) -> Result<&'static str, StageError> {
+    let existing = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(txn, job_id, batch_index)
+        .await
+        .map_err(|e| stage_db_error(STAGE_TRIAGE, "re-checking triage idempotency", e))?;
+
+    if existing.is_none() {
+        return Err(stage_db_error(
+            STAGE_TRIAGE,
+            "NoOp triage decision without existing triage result",
+            tribal_db::DbError::NotFound {
+                entity: "triage_result",
+                id: format!("{job_id}[{batch_index}]"),
+            },
+        ));
+    }
+
+    Ok("no_op")
 }
 
 // ---------------------------------------------------------------------------
