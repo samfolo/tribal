@@ -47,6 +47,8 @@ const BATCH_INDEX_EXCEEDS_I32: &str = "batch_index exceeds i32::MAX";
 const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data corruption";
 const RETRY_COUNT_OVERFLOW: &str = "negative retry_count in database — data corruption";
 const MAX_RETRIES_EXCEEDS_I32: &str = "max_retries exceeds i32::MAX";
+const UPSERT_REQUIRES_SINGLETON: &str =
+    "upsert is only valid for singleton task types (extraction, relation)";
 
 /// Result of a [`TaskRepository::reclaim_stale`] operation, breaking
 /// down the total affected rows by their post-reclaim status.
@@ -258,6 +260,11 @@ pub trait TaskRepository {
     /// unique index on `(job_id, task_type) WHERE task_type IN
     /// ('extraction', 'relation')`.  Triage tasks use a separate
     /// index that includes `batch_index`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `new_task.task_type` is not `Extraction` or `Relation`,
+    /// or if `new_task.batch_index` is `Some`.
     ///
     /// # Errors
     ///
@@ -602,6 +609,18 @@ impl TaskRepository for PgTaskRepository {
     }
 
     async fn upsert(&self, conn: &mut PgConnection, new_task: &NewTask) -> Result<u64, DbError> {
+        assert!(
+            matches!(
+                new_task.task_type,
+                TaskType::Extraction | TaskType::Relation,
+            ),
+            "{UPSERT_REQUIRES_SINGLETON}",
+        );
+        assert!(
+            new_task.batch_index.is_none(),
+            "singleton tasks must not have a batch_index",
+        );
+
         let batch_index_i32 = new_task
             .batch_index
             .map(|v| i32::try_from(v).expect(BATCH_INDEX_EXCEEDS_I32));
