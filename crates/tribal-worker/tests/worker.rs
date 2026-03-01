@@ -21,8 +21,9 @@ use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
     KnowledgeItemRepository, PgEmbeddingRepository, PgExtractionResultRepository,
     PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
-    PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository, ReferenceRepository,
-    TagRegistryRepository, TaskRepository, TriageResultRepository,
+    PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
+    ReferenceRepository, TagEmbeddingRepository, TagRegistryRepository, TaskRepository,
+    TriageResultRepository,
 };
 use tribal_domain::{
     JobId, JobOutcome, JobStatus, KnowledgeItemId, KnowledgeKind, PrincipalId, ProjectId,
@@ -35,8 +36,8 @@ use tribal_inference::{
 use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
     TestContext, a_candidate, a_completion_response, a_new_job, a_new_knowledge_item,
-    a_new_prompt_version, a_new_task, a_new_triage_result_created, a_relation_hint,
-    an_embedding_response, backdate_task_heartbeat,
+    a_new_prompt_version, a_new_tag_embedding, a_new_task, a_new_triage_result_created,
+    a_relation_hint, an_embedding_response, backdate_task_heartbeat,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
@@ -1525,6 +1526,276 @@ async fn test_triage_idempotency_skip() {
         results.len(),
         1,
         "should have exactly one triage result (pre-seeded)",
+    );
+
+    teardown(ctx).await;
+}
+
+// ---------------------------------------------------------------------------
+// Tag resolution tests
+// ---------------------------------------------------------------------------
+
+/// Creates a 768-dimensional unit vector with 1.0 at the given index.
+fn make_test_embedding(dominant_index: usize) -> Vec<f32> {
+    let mut v = vec![0.0_f32; 768];
+    v[dominant_index] = 1.0;
+    v
+}
+
+/// Verifies semantic tag resolution during the Novel triage path:
+/// a candidate tag that semantically matches an existing registry entry
+/// resolves to the existing tag, increments its usage count, and stores
+/// embeddings for genuinely new tags.
+#[tokio::test]
+async fn test_triage_novel_semantic_tag_resolution() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "triage-semantic-tags").await;
+
+    // Pre-seed "rust" in the tag registry with an embedding so semantic
+    // matching can find it.
+    {
+        let mut conn = raw_conn(ctx).await;
+        PgTagRegistryRepository
+            .upsert(&mut conn, "rust")
+            .await
+            .expect("upsert tag");
+        PgTagEmbeddingRepository
+            .batch_upsert(
+                &mut conn,
+                &[a_new_tag_embedding()
+                    .tag("rust".to_owned())
+                    .model("mock-model".to_owned())
+                    .embedding(make_test_embedding(0))
+                    .build()],
+            )
+            .await
+            .expect("upsert tag embedding");
+    }
+
+    // "rust programming" should semantically match "rust";
+    // "performance" should be a new tag.
+    let candidates = vec![a_candidate()
+        .content("Rust has zero-cost abstractions".to_owned())
+        .suggested_tags(vec![
+            "rust programming".to_owned(),
+            "performance".to_owned(),
+        ])
+        .build()];
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_triage_job(&mut conn, principal_id, project_id, pv_id, &candidates).await
+    };
+
+    // Embedding calls:
+    // 1. Candidate content (for similarity search)
+    // 2. "rust programming" tag → same vector as "rust" (cosine sim = 1.0)
+    // 3. "performance" tag → orthogonal (no semantic match)
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_embed(an_embedding_response(make_test_embedding(0)), None)
+            .on_embed(an_embedding_response(make_test_embedding(1)), None)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    let mut conn = raw_conn(ctx).await;
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+
+    let TriageOutcome::Created { item_id } = triage_result.outcome() else {
+        panic!(
+            "expected Created outcome, got {:?}",
+            triage_result.outcome()
+        );
+    };
+    let ki_id = *item_id;
+
+    // "rust programming" should resolve to "rust" via semantic match.
+    let item = PgKnowledgeItemRepository
+        .find_by_id(&mut conn, ki_id)
+        .await
+        .expect("find knowledge item");
+    assert!(
+        item.tags().contains(&"rust".to_owned()),
+        "tags should contain 'rust' (semantic match): {:?}",
+        item.tags(),
+    );
+    assert!(
+        !item.tags().contains(&"rust programming".to_owned()),
+        "tags should NOT contain 'rust programming': {:?}",
+        item.tags(),
+    );
+    assert!(
+        item.tags().contains(&"performance".to_owned()),
+        "tags should contain 'performance' (new tag): {:?}",
+        item.tags(),
+    );
+
+    // Usage count should be incremented for the semantically matched tag.
+    let tags = PgTagRegistryRepository
+        .find_all(&mut conn)
+        .await
+        .expect("find tags");
+    let rust_tag = tags.iter().find(|t| t.tag() == "rust").expect("find rust");
+    assert_eq!(
+        rust_tag.usage_count(),
+        1,
+        "usage_count should be incremented for semantic match",
+    );
+
+    // New tag "performance" should have an embedding in tag_embeddings.
+    let missing = PgTagEmbeddingRepository
+        .find_tags_missing_embeddings(&mut conn, "mock-model")
+        .await
+        .expect("find missing");
+    assert!(
+        !missing.contains(&"performance".to_owned()),
+        "performance should have an embedding: missing = {missing:?}",
+    );
+
+    teardown(ctx).await;
+}
+
+// ---------------------------------------------------------------------------
+// Startup backfill tests
+// ---------------------------------------------------------------------------
+
+/// Verifies that startup backfill creates embeddings for tags in the
+/// registry that lack them.
+#[tokio::test]
+async fn test_startup_backfill_embeds_missing_tags() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    // Pre-seed tags without embeddings.
+    {
+        let mut conn = raw_conn(ctx).await;
+        PgTagRegistryRepository
+            .upsert(&mut conn, "alpha")
+            .await
+            .expect("upsert");
+        PgTagRegistryRepository
+            .upsert(&mut conn, "beta")
+            .await
+            .expect("upsert");
+    }
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(make_test_embedding(0)), None)
+            .on_embed(an_embedding_response(make_test_embedding(1)), None)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding));
+
+    worker.startup_reclaim().await.expect("startup reclaim");
+
+    let mut conn = raw_conn(ctx).await;
+    let missing = PgTagEmbeddingRepository
+        .find_tags_missing_embeddings(&mut conn, "mock-model")
+        .await
+        .expect("find missing");
+    assert!(
+        missing.is_empty(),
+        "all tags should have embeddings after backfill: missing = {missing:?}",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies that startup backfill is idempotent: tags that already have
+/// embeddings are not re-embedded.
+#[tokio::test]
+async fn test_startup_backfill_skips_already_embedded_tags() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    // Pre-seed a tag WITH its embedding.
+    {
+        let mut conn = raw_conn(ctx).await;
+        PgTagRegistryRepository
+            .upsert(&mut conn, "alpha")
+            .await
+            .expect("upsert");
+        PgTagEmbeddingRepository
+            .batch_upsert(
+                &mut conn,
+                &[a_new_tag_embedding()
+                    .tag("alpha".to_owned())
+                    .model("mock-model".to_owned())
+                    .embedding(make_test_embedding(0))
+                    .build()],
+            )
+            .await
+            .expect("upsert embedding");
+    }
+
+    // Embedding provider should never be called.
+    let embedding: Arc<MockEmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::ProviderUnavailable {
+                    provider: "mock".into(),
+                    reason: "backfill should not embed already-embedded tags".into(),
+                }
+            })))
+            .build(),
+    );
+    let embedding_ref = Arc::clone(&embedding);
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool,
+        token.clone(),
+        test_config(),
+        None,
+        Some(embedding as Arc<dyn EmbeddingProvider>),
+    );
+
+    worker.startup_reclaim().await.expect("startup reclaim");
+
+    assert_eq!(
+        embedding_ref.call_count(),
+        0,
+        "embedding provider should not be called for already-embedded tags",
     );
 
     teardown(ctx).await;
