@@ -500,7 +500,7 @@ async fn commit_duplicate(
     Ok("duplicate")
 }
 
-/// Validates that a triage result already exists for a NoOp decision.
+/// Validates that a triage result already exists for a `NoOp` decision.
 async fn validate_triage_noop(
     txn: &mut sqlx::PgConnection,
     job_id: JobId,
