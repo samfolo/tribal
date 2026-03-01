@@ -515,10 +515,7 @@ impl Worker {
             return;
         };
 
-        let Ok(stuck_job_ids) = PgJobRepository
-            .find_stuck_triaging_jobs(&mut conn)
-            .await
-        else {
+        let Ok(stuck_job_ids) = PgJobRepository.find_stuck_triaging_jobs(&mut conn).await else {
             tracing::warn!("failed to detect stuck triaging jobs");
             return;
         };

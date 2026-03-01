@@ -260,11 +260,7 @@ pub trait TaskRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn upsert(
-        &self,
-        conn: &mut PgConnection,
-        new_task: &NewTask,
-    ) -> Result<u64, DbError>;
+    async fn upsert(&self, conn: &mut PgConnection, new_task: &NewTask) -> Result<u64, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -603,11 +599,7 @@ impl TaskRepository for PgTaskRepository {
         })
     }
 
-    async fn upsert(
-        &self,
-        conn: &mut PgConnection,
-        new_task: &NewTask,
-    ) -> Result<u64, DbError> {
+    async fn upsert(&self, conn: &mut PgConnection, new_task: &NewTask) -> Result<u64, DbError> {
         let batch_index_i32 = new_task
             .batch_index
             .map(|v| i32::try_from(v).expect(BATCH_INDEX_EXCEEDS_I32));
