@@ -223,6 +223,42 @@ pub trait TaskRepository {
         error_message: &str,
         flat_backoff_seconds: Option<u32>,
     ) -> Result<ReclaimOutcome, DbError>;
+
+    /// Counts sibling tasks of the given type and statuses for a job,
+    /// excluding the specified task.
+    ///
+    /// The exclusion allows callers to run this check within the same
+    /// transaction that transitions the excluded task — its pre-commit
+    /// status would otherwise still be visible under READ COMMITTED.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn count_siblings_by_status(
+        &self,
+        conn: &mut PgConnection,
+        job_id: JobId,
+        task_type: TaskType,
+        statuses: &[TaskStatus],
+        exclude_task_id: TaskId,
+    ) -> Result<i64, DbError>;
+
+    /// Inserts a task idempotently using `ON CONFLICT DO NOTHING`.
+    ///
+    /// Returns the number of rows affected: `1` if the task was
+    /// created, `0` if it already exists (matched by the
+    /// `idx_tasks_unique_singleton` partial unique index).  Unlike
+    /// [`insert`], this keeps the enclosing transaction healthy on
+    /// conflict.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn upsert(
+        &self,
+        conn: &mut PgConnection,
+        new_task: &NewTask,
+    ) -> Result<u64, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +566,67 @@ impl TaskRepository for PgTaskRepository {
             requeued,
             dead_lettered,
         })
+    }
+
+    async fn count_siblings_by_status(
+        &self,
+        conn: &mut PgConnection,
+        job_id: JobId,
+        task_type: TaskType,
+        statuses: &[TaskStatus],
+        exclude_task_id: TaskId,
+    ) -> Result<i64, DbError> {
+        let status_strings: Vec<&str> = statuses.iter().map(TaskStatus::as_str).collect();
+
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tasks \
+             WHERE job_id = $1 \
+               AND task_type = $2 \
+               AND status = ANY($3::text[]) \
+               AND id != $4",
+        )
+        .bind(job_id.inner())
+        .bind(task_type.as_str())
+        .bind(&status_strings)
+        .bind(exclude_task_id.inner())
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("counting {task_type} siblings for job {job_id}"),
+            source: e,
+        })
+    }
+
+    async fn upsert(
+        &self,
+        conn: &mut PgConnection,
+        new_task: &NewTask,
+    ) -> Result<u64, DbError> {
+        let batch_index_i32 = new_task
+            .batch_index
+            .map(|v| i32::try_from(v).expect(BATCH_INDEX_EXCEEDS_I32));
+
+        let result = sqlx::query(
+            "INSERT INTO tasks (job_id, task_type, batch_index) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT (job_id, task_type) \
+                 WHERE task_type IN ('extraction', 'relation') \
+             DO NOTHING",
+        )
+        .bind(new_task.job_id.inner())
+        .bind(new_task.task_type.as_str())
+        .bind(batch_index_i32)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!(
+                "upserting {} task for job {}",
+                new_task.task_type, new_task.job_id,
+            ),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
     }
 }
 
