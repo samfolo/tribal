@@ -420,7 +420,8 @@ impl Seed {
     /// Registers a tag in the tag registry without an embedding.
     #[must_use]
     pub fn define_tag(mut self, tag: impl Into<String>) -> Self {
-        self.commands.push(SeedCommand::DefineTag { tag: tag.into() });
+        self.commands
+            .push(SeedCommand::DefineTag { tag: tag.into() });
         self
     }
 
@@ -431,7 +432,8 @@ impl Seed {
     /// been called first.
     #[must_use]
     pub fn define_tag_with_embedding(mut self, tag: impl Into<String>) -> Self {
-        self.commands.push(SeedCommand::DefineTagWithEmbedding { tag: tag.into() });
+        self.commands
+            .push(SeedCommand::DefineTagWithEmbedding { tag: tag.into() });
         self
     }
 
@@ -703,9 +705,7 @@ impl SeedResult {
             .get(tag)
             .unwrap_or_else(|| {
                 let defined: Vec<_> = self.tag_embeddings.keys().collect();
-                panic!(
-                    "no embedding for tag '{tag}' — tags with embeddings: {defined:?}"
-                );
+                panic!("no embedding for tag '{tag}' — tags with embeddings: {defined:?}");
             })
             .clone()
     }

@@ -276,26 +276,9 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
 // Preamble validation
 // ---------------------------------------------------------------------------
 
-/// Validates that the command list contains project and principal
-/// definitions when project-scoped or relation commands are present.
-///
-/// Tag-only seeds (using [`DefineTag`](SeedCommand::DefineTag) /
-/// [`DefineTagWithEmbedding`](SeedCommand::DefineTagWithEmbedding))
-/// do not require projects or principals.
+/// Validates that the command list contains at least one project and
+/// one principal definition.
 fn validate_preamble(commands: &[SeedCommand]) {
-    let needs_infrastructure = commands.iter().any(|c| {
-        matches!(
-            c,
-            SeedCommand::BeginProjectScope { .. }
-                | SeedCommand::Relate { .. }
-                | SeedCommand::CommitRelations { .. }
-        )
-    });
-
-    if !needs_infrastructure {
-        return;
-    }
-
     let has_project = commands
         .iter()
         .any(|c| matches!(c, SeedCommand::CreateProject { .. }));
