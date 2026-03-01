@@ -98,7 +98,8 @@ pub(crate) async fn resolve_tags(
 
     async {
         let tag_count = suggested_tags.len();
-        let registry_tags: Vec<&str> = registry.iter().map(TagRegistryEntry::tag).collect();
+        let registry_tags: HashSet<&str> =
+            registry.iter().map(TagRegistryEntry::tag).collect();
 
         let mut seen_resolved: HashSet<String> = HashSet::with_capacity(tag_count);
         let mut resolved = Vec::with_capacity(tag_count);
@@ -112,9 +113,9 @@ pub(crate) async fn resolve_tags(
                 continue;
             };
 
-            if let Some(canonical) = exact_match(&normalised, &registry_tags) {
-                if seen_resolved.insert(canonical.clone()) {
-                    resolved.push(canonical);
+            if registry_tags.contains(normalised.as_str()) {
+                if seen_resolved.insert(normalised.clone()) {
+                    resolved.push(normalised);
                 }
             } else if seen_unmatched.insert(normalised.clone()) {
                 unmatched.push(normalised);
@@ -188,14 +189,6 @@ pub(crate) async fn resolve_tags(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Returns the canonical registry form if an exact match exists.
-fn exact_match(normalised: &str, registry_tags: &[&str]) -> Option<String> {
-    registry_tags
-        .iter()
-        .find(|&&tag| tag == normalised)
-        .map(|&tag| tag.to_owned())
-}
 
 /// Embeds a single tag via the embedding provider, acquiring the
 /// semaphore first.
@@ -271,15 +264,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_exact_match_returns_canonical() {
-        let tags = vec!["rust", "python"];
-        assert_eq!(exact_match("rust", &tags), Some("rust".to_owned()));
-    }
-
-    #[test]
-    fn test_exact_match_returns_none_for_no_match() {
-        let tags = vec!["rust", "python"];
-        assert_eq!(exact_match("java", &tags), None);
-    }
 }

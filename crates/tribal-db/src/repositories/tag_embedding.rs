@@ -111,28 +111,35 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
             return Ok(());
         }
 
+        let mut tags = Vec::with_capacity(embeddings.len());
+        let mut models = Vec::with_capacity(embeddings.len());
+        let mut dimensions = Vec::with_capacity(embeddings.len());
+        let mut vectors = Vec::with_capacity(embeddings.len());
+
+        for e in embeddings {
+            tags.push(e.tag.as_str());
+            models.push(e.model.as_str());
+            dimensions.push(i32::try_from(e.dimensions).expect(DIMENSIONS_EXCEEDS_I32));
+            vectors.push(pgvector::Vector::from(e.embedding.clone()));
+        }
+
         let sql = format!(
             "INSERT INTO tag_embeddings ({INSERT_COLUMNS}) \
-             VALUES ($1, $2, $3, $4) \
+             SELECT * FROM UNNEST($1::text[], $2::text[], $3::int[], $4::vector[]) \
              ON CONFLICT (tag, model) DO NOTHING"
         );
 
-        for new in embeddings {
-            let dimensions = i32::try_from(new.dimensions).expect(DIMENSIONS_EXCEEDS_I32);
-            let vector = pgvector::Vector::from(new.embedding.clone());
-
-            sqlx::query(&sql)
-                .bind(&new.tag)
-                .bind(&new.model)
-                .bind(dimensions)
-                .bind(vector)
-                .execute(&mut *conn)
-                .await
-                .map_err(|e| DbError::QueryFailed {
-                    context: format!("upserting tag embedding for {:?}", new.tag),
-                    source: e,
-                })?;
-        }
+        sqlx::query(&sql)
+            .bind(&tags)
+            .bind(&models)
+            .bind(&dimensions)
+            .bind(&vectors)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("batch upserting {} tag embeddings", embeddings.len()),
+                source: e,
+            })?;
 
         Ok(())
     }
