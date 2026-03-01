@@ -5,11 +5,12 @@ use tracing::Instrument;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
     JobStatusTransition, KnowledgeItemRepository, NewEmbedding, NewExtractionResult, NewReference,
-    NewTask, NewTriageResult, PgEmbeddingRepository, PgExtractionResultRepository,
+    NewTagEmbedding, NewTask, NewTriageResult, PgEmbeddingRepository, PgExtractionResultRepository,
     PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
-    PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
-    PgTriageSimilarItemDecisionRepository, ReferenceRepository, TagRegistryRepository,
-    TaskRepository, TriageResultRepository, TriageSimilarItemDecisionRepository,
+    PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
+    PgTriageSimilarItemDecisionRepository, ReferenceRepository, TagEmbeddingRepository,
+    TagRegistryRepository, TaskRepository, TriageResultRepository,
+    TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{JobId, JobOutcome, JobStatus, ReferenceKind, Task, TriageOutcome, span_attrs};
 
@@ -18,6 +19,7 @@ use crate::{
     common::{EXPECT_BATCH_INDEX, clamp_to_u32},
     error::{STAGE_EXTRACTION, STAGE_TRIAGE, StageError},
     stages::{StageCommit, TriageCommitDecision},
+    tag_resolution::NewTagWithEmbedding,
 };
 
 // ---------------------------------------------------------------------------
@@ -218,6 +220,7 @@ impl Worker {
                     embedding_model,
                     suggested_references,
                     new_tags,
+                    resolved_tags,
                 } => {
                     commit_novel(
                         &mut txn,
@@ -229,6 +232,7 @@ impl Worker {
                         embedding_model,
                         &suggested_references,
                         &new_tags,
+                        &resolved_tags,
                     )
                     .await?
                 }
@@ -310,13 +314,43 @@ async fn commit_novel(
     embedding_vector: Vec<f32>,
     embedding_model: String,
     suggested_references: &[tribal_domain::SuggestedReference],
-    new_tags: &[String],
+    new_tags: &[NewTagWithEmbedding],
+    resolved_tags: &[String],
 ) -> Result<&'static str, StageError> {
+    // FK ordering: tag_registry inserts before tag_embeddings inserts.
     if !new_tags.is_empty() {
+        let tag_names: Vec<String> = new_tags.iter().map(|t| t.tag.clone()).collect();
         PgTagRegistryRepository
-            .batch_upsert(txn, new_tags)
+            .batch_upsert(txn, &tag_names)
             .await
             .map_err(|e| stage_db_error(STAGE_TRIAGE, "upserting tags", e))?;
+
+        let new_embeddings: Vec<NewTagEmbedding> = new_tags
+            .iter()
+            .map(|t| {
+                NewTagEmbedding::builder()
+                    .tag(t.tag.clone())
+                    .model(embedding_model.clone())
+                    .dimensions(t.dimensions)
+                    .embedding(t.embedding.clone())
+                    .build()
+            })
+            .collect();
+
+        PgTagEmbeddingRepository
+            .batch_upsert(txn, &new_embeddings)
+            .await
+            .map_err(|e| stage_db_error(STAGE_TRIAGE, "upserting tag embeddings", e))?;
+    }
+
+    let mut all_tags: Vec<String> = resolved_tags.to_vec();
+    all_tags.extend(new_tags.iter().map(|t| t.tag.clone()));
+
+    if !all_tags.is_empty() {
+        PgTagRegistryRepository
+            .increment_usage_count(txn, &all_tags)
+            .await
+            .map_err(|e| stage_db_error(STAGE_TRIAGE, "incrementing tag usage counts", e))?;
     }
 
     let item = PgKnowledgeItemRepository

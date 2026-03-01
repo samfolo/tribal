@@ -70,6 +70,7 @@ mod source_type;
 pub mod span_attrs;
 mod standing;
 mod tag_registry;
+mod tag_similarity_result;
 mod task;
 mod token_usage;
 mod triage;
@@ -107,6 +108,7 @@ pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
 pub use source_type::SourceType;
 pub use standing::{Standing, StandingBuilder};
 pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};
+pub use tag_similarity_result::TagSimilarityResult;
 pub use task::{Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
 pub use token_usage::{TokenUsage, TokenUsageBuilder};
 pub use triage::{
