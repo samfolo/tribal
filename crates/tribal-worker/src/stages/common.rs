@@ -12,6 +12,8 @@ use tribal_domain::{
 };
 use tribal_inference::{EmbeddingProvider, Usage};
 
+use crate::tag_resolution::NewTagWithEmbedding;
+
 use crate::{error::StageError, worker::Worker};
 
 // ---------------------------------------------------------------------------

@@ -6,12 +6,13 @@
 //! results so the commit path can store them without a redundant embedding
 //! call.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
-use tribal_db::{NewTagEmbedding, PgTagEmbeddingRepository, TagEmbeddingRepository};
+use tribal_db::{PgTagEmbeddingRepository, TagEmbeddingRepository};
 use tribal_domain::{EmbeddingPurpose, TagRegistryEntry, span_attrs};
 use tribal_inference::{EmbeddingProvider, EmbeddingRequest, Usage};
 
@@ -83,11 +84,11 @@ pub(crate) fn normalise_tag(raw: &str) -> Option<String> {
 /// Panics if the embedding provider semaphore is unexpectedly closed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_tags(
+    pool: &PgPool,
     suggested_tags: &[String],
     registry: &[TagRegistryEntry],
     embedding_provider: &Arc<dyn EmbeddingProvider>,
     semaphore: &Arc<Semaphore>,
-    pool: &PgPool,
     model: &str,
     threshold: f64,
     deadline: tokio::time::Instant,
@@ -101,11 +102,14 @@ pub(crate) async fn resolve_tags(
     );
 
     async {
+        let tag_count = suggested_tags.len();
         let registry_tags: Vec<&str> = registry.iter().map(TagRegistryEntry::tag).collect();
 
-        let mut resolved = Vec::new();
-        let mut unmatched = Vec::new();
-        let mut usages = Vec::new();
+        let mut seen_resolved: HashSet<String> = HashSet::with_capacity(tag_count);
+        let mut resolved = Vec::with_capacity(tag_count);
+        let mut seen_unmatched: HashSet<String> = HashSet::with_capacity(tag_count);
+        let mut unmatched = Vec::with_capacity(tag_count);
+        let mut usages = Vec::with_capacity(tag_count);
 
         for raw in suggested_tags {
             let Some(normalised) = normalise_tag(raw) else {
@@ -114,15 +118,15 @@ pub(crate) async fn resolve_tags(
             };
 
             if let Some(canonical) = exact_match(&normalised, &registry_tags) {
-                if !resolved.contains(&canonical) {
+                if seen_resolved.insert(canonical.clone()) {
                     resolved.push(canonical);
                 }
-            } else if !unmatched.contains(&normalised) {
+            } else if seen_unmatched.insert(normalised.clone()) {
                 unmatched.push(normalised);
             }
         }
 
-        let mut new_tags = Vec::new();
+        let mut new_tags = Vec::with_capacity(unmatched.len());
         let mut semantic_match_count: u32 = 0;
         let mut best_similarity: Option<f64> = None;
 
@@ -160,7 +164,7 @@ pub(crate) async fn resolve_tags(
                 best_similarity = Some(best_similarity.map_or(sim, |prev: f64| prev.max(sim)));
                 semantic_match_count += 1;
                 let canonical = best.tag().to_owned();
-                if !resolved.contains(&canonical) {
+                if seen_resolved.insert(canonical.clone()) {
                     resolved.push(canonical);
                 }
             } else {
