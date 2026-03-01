@@ -299,6 +299,70 @@ impl Worker {
 }
 
 // ---------------------------------------------------------------------------
+// Triage fan-in
+// ---------------------------------------------------------------------------
+
+impl Worker {
+    /// Checks whether all triage siblings are terminal and, if so,
+    /// creates the relation task and transitions the job to `Relating`.
+    ///
+    /// Must be called within an active transaction.  The
+    /// `current_task_id` is excluded from the sibling count because its
+    /// terminal status has not yet been committed.
+    ///
+    /// Returns `true` if the fan-in fired (relation task creation was
+    /// attempted), `false` if non-terminal siblings remain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError`] on database errors.
+    pub(super) async fn triage_fan_in(
+        &self,
+        txn: &mut sqlx::PgConnection,
+        job_id: JobId,
+        current_task_id: tribal_domain::TaskId,
+    ) -> Result<bool, tribal_db::DbError> {
+        let remaining = PgTaskRepository
+            .count_siblings_by_status(
+                txn,
+                job_id,
+                tribal_domain::TaskType::Triage,
+                &[
+                    tribal_domain::TaskStatus::Queued,
+                    tribal_domain::TaskStatus::Claimed,
+                ],
+                current_task_id,
+            )
+            .await?;
+
+        if remaining > 0 {
+            return Ok(false);
+        }
+
+        let new_task = tribal_db::NewTask::builder()
+            .job_id(job_id)
+            .task_type(tribal_domain::TaskType::Relation)
+            .build();
+
+        let rows_affected = PgTaskRepository.upsert(txn, &new_task).await?;
+
+        if rows_affected > 0 {
+            tracing::info!(job_id = %job_id, "relation task created (triage fan-in)");
+        } else {
+            tracing::debug!(job_id = %job_id, "relation task already exists for job");
+        }
+
+        let transition = JobStatusTransition::builder()
+            .status(JobStatus::Relating)
+            .build();
+
+        PgJobRepository.update_status(txn, job_id, &transition).await?;
+
+        Ok(true)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Triage commit helpers
 // ---------------------------------------------------------------------------
 
