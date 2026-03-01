@@ -211,13 +211,15 @@ pub trait JobRepository {
         conn: &mut PgConnection,
     ) -> Result<Vec<JobId>, DbError>;
 
-    /// Detects jobs stuck in `Triaging` where all triage tasks have
-    /// reached terminal state but no relation task exists.
+    /// Detects jobs stuck in `Triaging` where at least one triage task
+    /// exists, all triage tasks have reached terminal state, and no
+    /// relation task exists.
+    ///
+    /// Jobs with zero triage tasks are excluded — these represent data
+    /// integrity issues rather than missed fan-ins.
     ///
     /// Returns the IDs of stuck jobs.  The caller is responsible for
     /// creating relation tasks and transitioning job status.
-    ///
-    /// Idempotent — jobs that already have a relation task are skipped.
     ///
     /// # Errors
     ///
@@ -452,6 +454,11 @@ impl JobRepository for PgJobRepository {
         let rows = sqlx::query(
             "SELECT j.id FROM jobs j \
              WHERE j.status = 'triaging' \
+               AND EXISTS ( \
+                   SELECT 1 FROM tasks t \
+                   WHERE t.job_id = j.id \
+                     AND t.task_type = 'triage' \
+               ) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM tasks t \
                    WHERE t.job_id = j.id \
