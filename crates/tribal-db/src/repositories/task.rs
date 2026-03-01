@@ -227,9 +227,11 @@ pub trait TaskRepository {
     /// Counts sibling tasks of the given type and statuses for a job,
     /// excluding the specified task.
     ///
-    /// The exclusion allows callers to run this check within the same
-    /// transaction that transitions the excluded task — its pre-commit
-    /// status would otherwise still be visible under READ COMMITTED.
+    /// The exclusion is a defensive guard for callers that run this
+    /// check within the same transaction that transitions the excluded
+    /// task.  On the same connection the updated status is already
+    /// visible, but the exclusion ensures correctness regardless of
+    /// statement ordering within the transaction.
     ///
     /// # Errors
     ///

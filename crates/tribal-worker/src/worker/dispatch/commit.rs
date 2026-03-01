@@ -300,8 +300,9 @@ impl Worker {
     /// creates the relation task and transitions the job to `Relating`.
     ///
     /// Must be called within an active transaction.  The
-    /// `current_task_id` is excluded from the sibling count because its
-    /// terminal status has not yet been committed.
+    /// `current_task_id` is excluded from the sibling count as a
+    /// defensive guard — its updated status is visible on the same
+    /// connection but has not yet been committed to other transactions.
     ///
     /// Returns `true` if the fan-in fired (relation task creation was
     /// attempted), `false` if non-terminal siblings remain.
