@@ -137,3 +137,19 @@ pub const WORKER_INSTANCE_ID: &str = "tribal.worker.instance_id";
 
 /// Span field name indicating the trace context was invalid or unparseable.
 pub const TRACE_CONTEXT_INVALID: &str = "tribal.trace_context.invalid";
+
+// ---------------------------------------------------------------------------
+// Tag resolution spans
+// ---------------------------------------------------------------------------
+
+/// Span field name for the number of tags resolved (exact + semantic matches).
+pub const TAG_RESOLUTION_RESOLVED: &str = "tribal.tag_resolution.resolved";
+
+/// Span field name for the number of new tags created.
+pub const TAG_RESOLUTION_NEW: &str = "tribal.tag_resolution.new";
+
+/// Span field name for the number of tags matched via embedding similarity.
+pub const TAG_RESOLUTION_SEMANTIC_MATCHED: &str = "tribal.tag_resolution.semantic_matched";
+
+/// Span field name for the highest similarity score observed during resolution.
+pub const TAG_RESOLUTION_BEST_SIMILARITY: &str = "tribal.tag_resolution.best_similarity";
