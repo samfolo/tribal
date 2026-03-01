@@ -26,8 +26,7 @@ use tribal_db::{NewTagEmbedding, PgTagEmbeddingRepository, TagEmbeddingRepositor
 use tribal_domain::EmbeddingPurpose;
 use tribal_inference::{EmbeddingProvider, EmbeddingRequest};
 
-use crate::common::clamp_to_u32;
-use crate::error::SEMAPHORE_CLOSED;
+use crate::{common::clamp_to_u32, error::SEMAPHORE_CLOSED};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -153,8 +152,7 @@ impl BackfillProcessor {
                     tokio::time::sleep(INTER_BATCH_DELAY).await;
                 }
 
-                let (batch_ok, batch_skip) =
-                    self.embed_and_store_batch(chunk).await;
+                let (batch_ok, batch_skip) = self.embed_and_store_batch(chunk).await;
 
                 processed += batch_ok;
                 skipped += batch_skip;
@@ -185,12 +183,14 @@ impl BackfillProcessor {
     /// Fetches tags from the registry that have no embedding for the
     /// active model.
     async fn fetch_missing_tags(&self) -> Result<Vec<String>, tribal_db::DbError> {
-        let mut conn = self.pool.acquire().await.map_err(|e| {
-            tribal_db::DbError::QueryFailed {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| tribal_db::DbError::QueryFailed {
                 context: "acquiring connection for tag backfill query".into(),
                 source: e,
-            }
-        })?;
+            })?;
 
         PgTagEmbeddingRepository
             .find_tags_missing_embeddings(&mut conn, self.model())
@@ -263,16 +263,15 @@ impl BackfillProcessor {
     }
 
     /// Upserts a batch of tag embeddings into the database.
-    async fn store_batch(
-        &self,
-        embeddings: &[NewTagEmbedding],
-    ) -> Result<(), tribal_db::DbError> {
-        let mut conn = self.pool.acquire().await.map_err(|e| {
-            tribal_db::DbError::QueryFailed {
+    async fn store_batch(&self, embeddings: &[NewTagEmbedding]) -> Result<(), tribal_db::DbError> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| tribal_db::DbError::QueryFailed {
                 context: "acquiring connection for tag embedding backfill upsert".into(),
                 source: e,
-            }
-        })?;
+            })?;
 
         PgTagEmbeddingRepository
             .batch_upsert(&mut conn, embeddings)

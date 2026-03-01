@@ -35,8 +35,8 @@ pub use repositories::{
     PgTagRegistryRepository, PgTaskRepository, PgTokenUsageRepository, PgTriageResultRepository,
     PgTriageSimilarItemDecisionRepository, PrincipalRepository, ProjectRepository,
     PromptVersionRepository, ReclaimOutcome, ReferenceRepository, RelationRepository,
-    RetrievalFeedbackRepository, SemanticSearchParams, SemanticSearchResponse, SemanticSearchResult,
-    StandingRepository, TagEmbeddingRepository, TagRegistryRepository, TaskRepository,
-    TokenUsageRepository, TokenUsageStage, TraversalNode, TraversalResponse, TriageResultRepository,
-    TriageSimilarItemDecisionRepository,
+    RetrievalFeedbackRepository, SemanticSearchParams, SemanticSearchResponse,
+    SemanticSearchResult, StandingRepository, TagEmbeddingRepository, TagRegistryRepository,
+    TaskRepository, TokenUsageRepository, TokenUsageStage, TraversalNode, TraversalResponse,
+    TriageResultRepository, TriageSimilarItemDecisionRepository,
 };

@@ -53,9 +53,7 @@ pub use retrieval_feedback::{
     NewRetrievalFeedback, PgRetrievalFeedbackRepository, RetrievalFeedbackRepository,
 };
 pub use standing::{PgStandingRepository, StandingRepository};
-pub use tag_embedding::{
-    NewTagEmbedding, PgTagEmbeddingRepository, TagEmbeddingRepository,
-};
+pub use tag_embedding::{NewTagEmbedding, PgTagEmbeddingRepository, TagEmbeddingRepository};
 pub use tag_registry::{PgTagRegistryRepository, TagRegistryRepository};
 pub use task::{NewTask, PgTaskRepository, ReclaimOutcome, TaskRepository};
 pub use token_usage::{
