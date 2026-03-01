@@ -8,7 +8,7 @@
 pub struct TagSimilarityResult {
     /// The canonical tag string from the registry.
     tag: String,
-    /// Cosine similarity score (0.0–1.0).
+    /// Cosine similarity score (-1.0–1.0).
     similarity: f64,
     /// Number of times this tag has been resolved to.
     usage_count: i32,
