@@ -257,3 +257,107 @@ pub async fn seed_triage_job(
 
     (job_id, triage_task.id())
 }
+
+// ---------------------------------------------------------------------------
+// seed_multiple_triage_tasks
+// ---------------------------------------------------------------------------
+
+/// Inserts a job in `Triaging` status with a completed extraction task,
+/// an extraction result containing the given candidates, and one queued
+/// triage task per candidate (`batch_index = 0..candidates.len()`).
+///
+/// Returns `(job_id, triage_task_ids)` where the task IDs are ordered by
+/// batch index.
+///
+/// # Panics
+///
+/// Panics if any insert or status transition fails, or if `candidates`
+/// is empty.
+pub async fn seed_multiple_triage_tasks(
+    conn: &mut PgConnection,
+    principal_id: PrincipalId,
+    project_id: ProjectId,
+    pv_id: PromptVersionId,
+    candidates: &[Candidate],
+) -> (JobId, Vec<TaskId>) {
+    assert!(
+        !candidates.is_empty(),
+        "seed_multiple_triage_tasks requires at least one candidate",
+    );
+    let batch_size = u32::try_from(candidates.len()).expect("candidate count fits u32");
+
+    let job = PgJobRepository
+        .insert(
+            conn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
+                .build(),
+        )
+        .await
+        .expect("setup: insert job");
+
+    let job_id = job.id();
+
+    // Mark extraction as completed.
+    PgTaskRepository
+        .insert_for_test(
+            conn,
+            &a_new_task()
+                .job_id(job_id)
+                .task_type(TaskType::Extraction)
+                .build(),
+            TaskStatus::Completed,
+        )
+        .await
+        .expect("setup: insert extraction task");
+
+    // Persist the extraction result with candidate JSON.
+    PgExtractionResultRepository
+        .insert(
+            conn,
+            &a_new_extraction_result()
+                .job_id(job_id)
+                .candidates(candidates_json(candidates))
+                .build(),
+        )
+        .await
+        .expect("setup: insert extraction result");
+
+    // Update batch size and transition to Triaging.
+    PgJobRepository
+        .update_batch_size(conn, job_id, batch_size, batch_size)
+        .await
+        .expect("setup: update batch size");
+
+    let transition = JobStatusTransition::builder()
+        .status(JobStatus::Triaging)
+        .build();
+    PgJobRepository
+        .update_status(conn, job_id, &transition)
+        .await
+        .expect("setup: transition job to triaging");
+
+    // Create one triage task per candidate.
+    let mut task_ids = Vec::with_capacity(candidates.len());
+    for i in 0..candidates.len() {
+        let batch_index = u32::try_from(i).expect("batch index fits u32");
+        let task = PgTaskRepository
+            .insert(
+                conn,
+                &a_new_task()
+                    .job_id(job_id)
+                    .task_type(TaskType::Triage)
+                    .batch_index(Some(batch_index))
+                    .build(),
+            )
+            .await
+            .expect("setup: insert triage task");
+        task_ids.push(task.id());
+    }
+
+    (job_id, task_ids)
+}
