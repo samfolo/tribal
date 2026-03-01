@@ -240,23 +240,7 @@ impl Worker {
                     commit_duplicate(&mut txn, job_id, batch_index, &observation).await?
                 }
                 TriageCommitDecision::NoOp => {
-                    let existing = PgTriageResultRepository
-                        .find_by_job_id_and_batch_index(&mut txn, job_id, batch_index)
-                        .await
-                        .map_err(|e| {
-                            stage_db_error(STAGE_TRIAGE, "re-checking triage idempotency", e)
-                        })?;
-                    if existing.is_none() {
-                        return Err(stage_db_error(
-                            STAGE_TRIAGE,
-                            "NoOp triage decision without existing triage result",
-                            tribal_db::DbError::NotFound {
-                                entity: "triage_result",
-                                id: format!("{job_id}[{batch_index}]"),
-                            },
-                        ));
-                    }
-                    "no_op"
+                    validate_triage_noop(&mut txn, job_id, batch_index).await?
                 }
             };
 
@@ -365,7 +349,9 @@ impl Worker {
             .status(JobStatus::Relating)
             .build();
 
-        PgJobRepository.update_status(txn, job_id, &transition).await?;
+        PgJobRepository
+            .update_status(txn, job_id, &transition)
+            .await?;
 
         Ok(true)
     }
@@ -512,6 +498,31 @@ async fn commit_duplicate(
         .map_err(|e| stage_db_error(STAGE_TRIAGE, "inserting triage result", e))?;
 
     Ok("duplicate")
+}
+
+/// Validates that a triage result already exists for a NoOp decision.
+async fn validate_triage_noop(
+    txn: &mut sqlx::PgConnection,
+    job_id: JobId,
+    batch_index: u32,
+) -> Result<&'static str, StageError> {
+    let existing = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(txn, job_id, batch_index)
+        .await
+        .map_err(|e| stage_db_error(STAGE_TRIAGE, "re-checking triage idempotency", e))?;
+
+    if existing.is_none() {
+        return Err(stage_db_error(
+            STAGE_TRIAGE,
+            "NoOp triage decision without existing triage result",
+            tribal_db::DbError::NotFound {
+                entity: "triage_result",
+                id: format!("{job_id}[{batch_index}]"),
+            },
+        ));
+    }
+
+    Ok("no_op")
 }
 
 // ---------------------------------------------------------------------------
