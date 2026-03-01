@@ -278,9 +278,18 @@ impl Worker {
                 return Err(StageError::OwnershipLost);
             }
 
+            let fan_in_fired = self
+                .triage_fan_in(&mut txn, job_id, task.id())
+                .await
+                .map_err(|e| stage_db_error(STAGE_TRIAGE, "triage fan-in", e))?;
+
             txn.commit()
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
+
+            if fan_in_fired {
+                self.notify_job_state(job_id);
+            }
 
             tracing::Span::current().record(span_attrs::TRIAGE_OUTCOME, outcome);
 
