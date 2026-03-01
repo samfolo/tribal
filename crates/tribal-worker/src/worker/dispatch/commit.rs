@@ -327,11 +327,13 @@ async fn commit_novel(
 
         let new_embeddings: Vec<NewTagEmbedding> = new_tags
             .iter()
-            .map(|t| NewTagEmbedding {
-                tag: t.tag.clone(),
-                model: embedding_model.clone(),
-                dimensions: t.dimensions,
-                embedding: t.embedding.clone(),
+            .map(|t| {
+                NewTagEmbedding::builder()
+                    .tag(t.tag.clone())
+                    .model(embedding_model.clone())
+                    .dimensions(t.dimensions)
+                    .embedding(t.embedding.clone())
+                    .build()
             })
             .collect();
 

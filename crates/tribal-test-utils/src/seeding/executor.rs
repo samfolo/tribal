@@ -540,12 +540,12 @@ async fn handle_define_tag_with_embedding(
     let (group_index, position) = assigner.assign(&group);
     let vector = make_group_embedding(group_index, position, dimensions);
 
-    let new_tag_embedding = NewTagEmbedding {
-        tag: tag.to_owned(),
-        model: model.clone(),
-        dimensions: u32::try_from(dimensions).expect("dimensions fit in u32"),
-        embedding: vector.clone(),
-    };
+    let new_tag_embedding = NewTagEmbedding::builder()
+        .tag(tag.to_owned())
+        .model(model.clone())
+        .dimensions(u32::try_from(dimensions).expect("dimensions fit in u32"))
+        .embedding(vector.clone())
+        .build();
 
     PgTagEmbeddingRepository
         .batch_upsert(&mut *conn, &[new_tag_embedding])
