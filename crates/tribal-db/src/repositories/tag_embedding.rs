@@ -9,7 +9,15 @@ use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::TagSimilarityResult;
 
+use super::common::columns::Columns;
 use crate::DbError;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const INSERT_COLUMNS: Columns = Columns(&["tag", "model", "dimensions", "embedding"]);
+const DIMENSIONS_EXCEEDS_I32: &str = "dimensions exceeds i32::MAX";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -22,6 +30,8 @@ pub struct NewTagEmbedding {
     pub tag: String,
     /// The embedding model name.
     pub model: String,
+    /// The number of dimensions in the embedding vector.
+    pub dimensions: u32,
     /// The embedding vector.
     pub embedding: Vec<f32>,
 }
@@ -101,23 +111,28 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
             return Ok(());
         }
 
+        let sql = format!(
+            "INSERT INTO tag_embeddings ({INSERT_COLUMNS}) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (tag, model) DO NOTHING"
+        );
+
         for new in embeddings {
+            let dimensions =
+                i32::try_from(new.dimensions).expect(DIMENSIONS_EXCEEDS_I32);
             let vector = pgvector::Vector::from(new.embedding.clone());
 
-            sqlx::query(
-                "INSERT INTO tag_embeddings (tag, model, embedding) \
-                 VALUES ($1, $2, $3) \
-                 ON CONFLICT (tag, model) DO NOTHING",
-            )
-            .bind(&new.tag)
-            .bind(&new.model)
-            .bind(vector)
-            .execute(&mut *conn)
-            .await
-            .map_err(|e| DbError::QueryFailed {
-                context: format!("upserting tag embedding for {:?}", new.tag),
-                source: e,
-            })?;
+            sqlx::query(&sql)
+                .bind(&new.tag)
+                .bind(&new.model)
+                .bind(dimensions)
+                .bind(vector)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: format!("upserting tag embedding for {:?}", new.tag),
+                    source: e,
+                })?;
         }
 
         Ok(())

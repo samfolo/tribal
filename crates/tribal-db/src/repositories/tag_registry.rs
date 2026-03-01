@@ -60,6 +60,20 @@ pub trait TagRegistryRepository {
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<TagRegistryEntry>, DbError>;
+
+    /// Atomically increments `usage_count` and updates `last_seen_at`
+    /// for each tag in the list.
+    ///
+    /// An empty input slice returns without issuing a query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn increment_usage_count(
+        &self,
+        conn: &mut PgConnection,
+        tags: &[String],
+    ) -> Result<(), DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +171,32 @@ impl TagRegistryRepository for PgTagRegistryRepository {
 
         Ok(rows.iter().map(map_tag_registry_entry_row).collect())
     }
+
+    async fn increment_usage_count(
+        &self,
+        conn: &mut PgConnection,
+        tags: &[String],
+    ) -> Result<(), DbError> {
+        if tags.is_empty() {
+            return Ok(());
+        }
+
+        sqlx::query(
+            "UPDATE tag_registry \
+             SET usage_count = usage_count + 1, \
+                 last_seen_at = now() \
+             WHERE tag = ANY($1)",
+        )
+        .bind(tags)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("incrementing usage count for {} tags", tags.len()),
+            source: e,
+        })?;
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -168,5 +208,7 @@ fn map_tag_registry_entry_row(r: &sqlx::postgres::PgRow) -> TagRegistryEntry {
     TagRegistryEntry::builder()
         .tag(r.get("tag"))
         .first_seen_at(r.get("first_seen_at"))
+        .last_seen_at(r.get("last_seen_at"))
+        .usage_count(r.get("usage_count"))
         .build()
 }
