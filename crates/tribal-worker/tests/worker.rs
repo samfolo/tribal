@@ -36,7 +36,7 @@ use tribal_inference::{
 use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
     TestContext, a_candidate, a_completion_response, a_new_job, a_new_knowledge_item,
-    a_new_prompt_version, a_new_tag_embedding, a_new_task, a_new_triage_result_created,
+    a_new_prompt_version, a_new_task, a_new_triage_result_created,
     a_relation_hint, an_embedding_response, backdate_task_heartbeat,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
@@ -1557,24 +1557,15 @@ async fn test_triage_novel_semantic_tag_resolution() {
 
     // Pre-seed "rust" in the tag registry with an embedding so semantic
     // matching can find it.
-    {
+    let rust_embedding = {
         let mut conn = raw_conn(ctx).await;
-        PgTagRegistryRepository
-            .upsert(&mut conn, "rust")
+        Seed::new()
+            .set_embedding_model("mock-model", 768)
+            .define_tag_with_embedding("rust")
+            .execute(&mut conn)
             .await
-            .expect("upsert tag");
-        PgTagEmbeddingRepository
-            .batch_upsert(
-                &mut conn,
-                &[a_new_tag_embedding()
-                    .tag("rust".to_owned())
-                    .model("mock-model".to_owned())
-                    .embedding(make_test_embedding(0))
-                    .build()],
-            )
-            .await
-            .expect("upsert tag embedding");
-    }
+            .tag_embedding("rust")
+    };
 
     // "rust programming" should semantically match "rust";
     // "performance" should be a new tag.
@@ -1598,7 +1589,7 @@ async fn test_triage_novel_semantic_tag_resolution() {
     let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
         MockEmbeddingProvider::builder()
             .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
-            .on_embed(an_embedding_response(make_test_embedding(0)), None)
+            .on_embed(an_embedding_response(rust_embedding), None)
             .on_embed(an_embedding_response(make_test_embedding(1)), None)
             .build(),
     );
@@ -1705,14 +1696,11 @@ async fn test_startup_backfill_embeds_missing_tags() {
     // Pre-seed tags without embeddings.
     {
         let mut conn = raw_conn(ctx).await;
-        PgTagRegistryRepository
-            .upsert(&mut conn, "alpha")
-            .await
-            .expect("upsert");
-        PgTagRegistryRepository
-            .upsert(&mut conn, "beta")
-            .await
-            .expect("upsert");
+        Seed::new()
+            .define_tag("alpha")
+            .define_tag("beta")
+            .execute(&mut conn)
+            .await;
     }
 
     let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
@@ -1725,7 +1713,7 @@ async fn test_startup_backfill_embeds_missing_tags() {
     let token = CancellationToken::new();
     let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding));
 
-    worker.startup_reclaim().await.expect("startup reclaim");
+    worker.startup().await.expect("startup");
 
     let mut conn = raw_conn(ctx).await;
     let missing = PgTagEmbeddingRepository
@@ -1751,21 +1739,11 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
     // Pre-seed a tag WITH its embedding.
     {
         let mut conn = raw_conn(ctx).await;
-        PgTagRegistryRepository
-            .upsert(&mut conn, "alpha")
-            .await
-            .expect("upsert");
-        PgTagEmbeddingRepository
-            .batch_upsert(
-                &mut conn,
-                &[a_new_tag_embedding()
-                    .tag("alpha".to_owned())
-                    .model("mock-model".to_owned())
-                    .embedding(make_test_embedding(0))
-                    .build()],
-            )
-            .await
-            .expect("upsert embedding");
+        Seed::new()
+            .set_embedding_model("mock-model", 768)
+            .define_tag_with_embedding("alpha")
+            .execute(&mut conn)
+            .await;
     }
 
     // Embedding provider should never be called.
@@ -1790,7 +1768,7 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
         Some(embedding as Arc<dyn EmbeddingProvider>),
     );
 
-    worker.startup_reclaim().await.expect("startup reclaim");
+    worker.startup().await.expect("startup");
 
     assert_eq!(
         embedding_ref.call_count(),
