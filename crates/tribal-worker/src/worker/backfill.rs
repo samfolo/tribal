@@ -71,7 +71,6 @@ pub(crate) struct BackfillProcessor {
     pool: PgPool,
     embedding_provider: Arc<dyn EmbeddingProvider>,
     semaphore: Arc<Semaphore>,
-    model: String,
     cancellation_token: CancellationToken,
 }
 
@@ -81,16 +80,19 @@ impl BackfillProcessor {
         pool: PgPool,
         embedding_provider: Arc<dyn EmbeddingProvider>,
         semaphore: Arc<Semaphore>,
-        model: String,
         cancellation_token: CancellationToken,
     ) -> Self {
         Self {
             pool,
             embedding_provider,
             semaphore,
-            model,
             cancellation_token,
         }
+    }
+
+    /// Returns the model name from the embedding provider identity.
+    fn model(&self) -> &str {
+        &self.embedding_provider.identity().model
     }
 
     /// Embeds tag registry entries that lack embeddings for the active
@@ -191,7 +193,7 @@ impl BackfillProcessor {
         })?;
 
         PgTagEmbeddingRepository
-            .find_tags_missing_embeddings(&mut conn, &self.model)
+            .find_tags_missing_embeddings(&mut conn, self.model())
             .await
     }
 
@@ -211,7 +213,7 @@ impl BackfillProcessor {
                     let dimensions = response.vector.len();
                     embeddings.push(NewTagEmbedding {
                         tag: tag.clone(),
-                        model: self.model.clone(),
+                        model: self.model().to_owned(),
                         dimensions: clamp_to_u32(dimensions),
                         embedding: response.vector,
                     });
