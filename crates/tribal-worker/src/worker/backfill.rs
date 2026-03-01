@@ -44,6 +44,11 @@ const BATCH_SIZE: usize = 50;
 /// Delay between batches to avoid saturating the embedding provider.
 const INTER_BATCH_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Timeout for a single embedding call (semaphore acquisition + provider
+/// round-trip).  Generous to accommodate slow providers while preventing
+/// indefinite blocking during startup.
+const EMBED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -218,12 +223,14 @@ impl BackfillProcessor {
             match self.embed_tag(tag).await {
                 Ok(response) => {
                     let dimensions = response.vector.len();
-                    embeddings.push(NewTagEmbedding {
-                        tag: tag.clone(),
-                        model: self.model().to_owned(),
-                        dimensions: clamp_to_u32(dimensions),
-                        embedding: response.vector,
-                    });
+                    embeddings.push(
+                        NewTagEmbedding::builder()
+                            .tag(tag.clone())
+                            .model(self.model().to_owned())
+                            .dimensions(clamp_to_u32(dimensions))
+                            .embedding(response.vector)
+                            .build(),
+                    );
                     usages.push(response.usage);
                 }
                 Err(e) => {
@@ -256,21 +263,34 @@ impl BackfillProcessor {
     }
 
     /// Embeds a single tag, acquiring the semaphore first.
+    ///
+    /// The entire operation (semaphore acquisition + provider call) is
+    /// bounded by [`EMBED_TIMEOUT`] to prevent a hung provider from
+    /// blocking startup indefinitely.
     async fn embed_tag(
         &self,
         tag: &str,
     ) -> Result<tribal_inference::EmbeddingResponse, tribal_inference::InferenceError> {
-        let _permit = Arc::clone(&self.semaphore)
-            .acquire_owned()
-            .await
-            .expect(SEMAPHORE_CLOSED);
+        tokio::time::timeout(EMBED_TIMEOUT, async {
+            let _permit = Arc::clone(&self.semaphore)
+                .acquire_owned()
+                .await
+                .expect(SEMAPHORE_CLOSED);
 
-        let request = EmbeddingRequest {
-            input: tag.to_owned(),
-            purpose: EmbeddingPurpose::Tag,
-        };
+            let request = EmbeddingRequest {
+                input: tag.to_owned(),
+                purpose: EmbeddingPurpose::Tag,
+            };
 
-        self.embedding_provider.embed(request).await
+            self.embedding_provider.embed(request).await
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(tribal_inference::InferenceError::ProviderUnavailable {
+                provider: self.embedding_provider.identity().name.clone(),
+                reason: format!("backfill embed timed out after {EMBED_TIMEOUT:?}"),
+            })
+        })
     }
 
     /// Records token usage for each successful embedding call.
