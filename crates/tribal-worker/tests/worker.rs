@@ -36,8 +36,8 @@ use tribal_inference::{
 use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
     TestContext, a_candidate, a_completion_response, a_new_job, a_new_knowledge_item,
-    a_new_prompt_version, a_new_task, a_new_triage_result_created,
-    a_relation_hint, an_embedding_response, backdate_task_heartbeat,
+    a_new_prompt_version, a_new_task, a_new_triage_result_created, a_relation_hint,
+    an_embedding_response, backdate_task_heartbeat,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
@@ -1552,14 +1552,15 @@ async fn test_triage_novel_semantic_tag_resolution() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, pv_id) =
-        setup_prerequisites(ctx, "triage-semantic-tags").await;
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "triage-semantic-tags").await;
 
     // Pre-seed "rust" in the tag registry with an embedding so semantic
     // matching can find it.
     let rust_embedding = {
         let mut conn = raw_conn(ctx).await;
         Seed::new()
+            .define_project("tag-proj", "git@github.com:test/semantic-tags.git")
+            .define_principal("tag-user", "user:semantic-tags")
             .set_embedding_model("mock-model", 768)
             .define_tag_with_embedding("rust")
             .execute(&mut conn)
@@ -1569,13 +1570,15 @@ async fn test_triage_novel_semantic_tag_resolution() {
 
     // "rust programming" should semantically match "rust";
     // "performance" should be a new tag.
-    let candidates = vec![a_candidate()
-        .content("Rust has zero-cost abstractions".to_owned())
-        .suggested_tags(vec![
-            "rust programming".to_owned(),
-            "performance".to_owned(),
-        ])
-        .build()];
+    let candidates = vec![
+        a_candidate()
+            .content("Rust has zero-cost abstractions".to_owned())
+            .suggested_tags(vec![
+                "rust programming".to_owned(),
+                "performance".to_owned(),
+            ])
+            .build(),
+    ];
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
@@ -1697,6 +1700,8 @@ async fn test_startup_backfill_embeds_missing_tags() {
     {
         let mut conn = raw_conn(ctx).await;
         Seed::new()
+            .define_project("proj", "git@github.com:test/backfill.git")
+            .define_principal("user", "user:backfill")
             .define_tag("alpha")
             .define_tag("beta")
             .execute(&mut conn)
@@ -1740,6 +1745,8 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
     {
         let mut conn = raw_conn(ctx).await;
         Seed::new()
+            .define_project("proj", "git@github.com:test/backfill-skip.git")
+            .define_principal("user", "user:backfill-skip")
             .set_embedding_model("mock-model", 768)
             .define_tag_with_embedding("alpha")
             .execute(&mut conn)
