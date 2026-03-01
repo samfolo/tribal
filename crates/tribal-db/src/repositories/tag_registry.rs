@@ -15,7 +15,7 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: Columns = Columns(&["tag", "first_seen_at"]);
+const COLUMNS: Columns = Columns(&["tag", "first_seen_at", "last_seen_at", "usage_count"]);
 
 // ---------------------------------------------------------------------------
 // Trait
