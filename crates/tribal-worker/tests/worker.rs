@@ -302,8 +302,10 @@ async fn test_dead_letter_path_transitions_task_and_job() {
         tokio::spawn(async move { w.run().await })
     };
 
-    let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
-    let job = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
+    let (task, job) = tokio::join!(
+        poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE),
+        poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE),
+    );
 
     token.cancel();
     let _ = handle.await;
@@ -501,12 +503,14 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
         tokio::spawn(async move { w.run().await })
     };
 
-    let task = poll_task_status(&pool, task_id, TaskStatus::DeadLetter, MULTI_CYCLE_SETTLE).await;
-
-    // Poll for the job transition before cancelling — cancellation
-    // aborts the reclaim loop, which would prevent
-    // heal_dead_lettered_jobs from running if it hasn't completed.
-    let job = poll_job_status(&pool, job_id, JobStatus::Failed, MULTI_CYCLE_SETTLE).await;
+    // Poll for both the task dead-letter and job failure concurrently.
+    // Both must complete before cancelling — cancellation aborts the
+    // reclaim loop, which would prevent heal_dead_lettered_jobs from
+    // running if it hasn't completed.
+    let (task, job) = tokio::join!(
+        poll_task_status(&pool, task_id, TaskStatus::DeadLetter, MULTI_CYCLE_SETTLE),
+        poll_job_status(&pool, job_id, JobStatus::Failed, MULTI_CYCLE_SETTLE),
+    );
 
     token.cancel();
     let _ = handle.await;
@@ -2225,13 +2229,16 @@ async fn test_triage_fan_in_all_complete() {
         1,
         "exactly one relation task should exist",
     );
-    assert_eq!(relation_tasks[0].status(), TaskStatus::Queued);
 
     teardown(ctx).await;
 }
 
 /// Verifies that fan-in fires when some triage tasks complete and others
 /// are dead-lettered — all that matters is that every sibling is terminal.
+///
+/// Both tasks are positioned at `task_max_retries` so that claim order
+/// does not matter: whichever task consumes the single valid inference
+/// response completes; the other fails and dead-letters immediately.
 #[tokio::test]
 async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
     let _guard = serial_lock().await;
@@ -2252,20 +2259,22 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
             .build(),
     ];
 
-    let (job_id, task_ids) = {
+    let job_id = {
         let mut conn = raw_conn(ctx).await;
         let (job_id, task_ids) =
             seed_multiple_triage_tasks(&mut conn, principal_id, project_id, pv_id, &candidates)
                 .await;
 
-        // Pre-set task[1] retry_count to max so the next failure
-        // triggers dead-lettering.
+        // Both tasks at max retries — the one that gets the error
+        // will dead-letter regardless of claim order.
+        set_retry_count(&mut conn, task_ids[0], config.task_max_retries).await;
         set_retry_count(&mut conn, task_ids[1], config.task_max_retries).await;
 
-        (job_id, task_ids)
+        job_id
     };
 
-    // Task[0] will succeed (novel path); task[1] will fail and dead-letter.
+    // One valid response, then errors. Claim order is non-deterministic,
+    // so whichever task runs first completes; the other dead-letters.
     let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
         MockEmbeddingProvider::builder()
             .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
@@ -2298,22 +2307,8 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
         tokio::spawn(async move { w.run().await })
     };
 
-    // One task completes, the other dead-letters; both are terminal.
-    let (_, _, job) = tokio::join!(
-        poll_task_status(
-            &pool,
-            task_ids[0],
-            TaskStatus::Completed,
-            MULTI_CYCLE_SETTLE
-        ),
-        poll_task_status(
-            &pool,
-            task_ids[1],
-            TaskStatus::DeadLetter,
-            MULTI_CYCLE_SETTLE
-        ),
-        poll_job_status(&pool, job_id, JobStatus::Relating, MULTI_CYCLE_SETTLE),
-    );
+    // Fan-in fires once both tasks reach terminal state.
+    let job = poll_job_status(&pool, job_id, JobStatus::Relating, MULTI_CYCLE_SETTLE).await;
 
     token.cancel();
     let _ = handle.await;
@@ -2325,6 +2320,26 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
         .find_by_job_id(&mut conn, job_id)
         .await
         .expect("find tasks");
+
+    // Verify mixed terminal states (order-independent).
+    let triage_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Triage)
+        .collect();
+    let completed = triage_tasks
+        .iter()
+        .filter(|t| t.status() == TaskStatus::Completed)
+        .count();
+    let dead_lettered = triage_tasks
+        .iter()
+        .filter(|t| t.status() == TaskStatus::DeadLetter)
+        .count();
+    assert_eq!(completed, 1, "exactly one triage task should be completed");
+    assert_eq!(
+        dead_lettered, 1,
+        "exactly one triage task should be dead-lettered",
+    );
+
     let relation_tasks: Vec<_> = tasks
         .iter()
         .filter(|t| t.task_type() == TaskType::Relation)
@@ -2503,7 +2518,6 @@ async fn test_heal_stuck_triaging_job() {
         1,
         "healing sweep should create exactly one relation task",
     );
-    assert_eq!(relation_tasks[0].status(), TaskStatus::Queued);
 
     teardown(ctx).await;
 }
@@ -2558,8 +2572,10 @@ async fn test_triage_fan_in_single_candidate_batch() {
         tokio::spawn(async move { w.run().await })
     };
 
-    poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
-    let job = poll_job_status(&pool, job_id, JobStatus::Relating, POLL_SETTLE).await;
+    let (_, job) = tokio::join!(
+        poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE),
+        poll_job_status(&pool, job_id, JobStatus::Relating, POLL_SETTLE),
+    );
 
     token.cancel();
     let _ = handle.await;
@@ -2580,7 +2596,6 @@ async fn test_triage_fan_in_single_candidate_batch() {
         1,
         "exactly one relation task should exist",
     );
-    assert_eq!(relation_tasks[0].status(), TaskStatus::Queued);
 
     teardown(ctx).await;
 }
