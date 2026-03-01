@@ -10,7 +10,8 @@ use tribal_db::{
     PgTriageResultRepository, SemanticSearchParams, SemanticSearchResult, TriageResultRepository,
 };
 use tribal_domain::{
-    Candidate, Confidence, Job, JobId, SourceType, TagRegistryEntry, Task, span_attrs,
+    Candidate, Confidence, EmbeddingPurpose, Job, JobId, SourceType, TagRegistryEntry, Task,
+    span_attrs,
 };
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
