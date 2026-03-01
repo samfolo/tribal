@@ -44,8 +44,8 @@ use tribal_test_utils::{
     },
     item,
     polling::{poll_job_status, poll_task_status, poll_until},
-    seed_extraction_job, seed_triage_job, serial_lock, set_retry_count, test_context,
-    truncate_all_tables,
+    seed_extraction_job, seed_multiple_triage_tasks, seed_triage_job, serial_lock, set_retry_count,
+    set_task_status_by_job, test_context, truncate_all_tables,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -2127,6 +2127,460 @@ async fn test_triage_semantic_match_determinism() {
         "tags should NOT contain 'unknown-tag' (resolved to 'beta'): {:?}",
         item.tags(),
     );
+
+    teardown(ctx).await;
+}
+
+// ---------------------------------------------------------------------------
+// Triage fan-in tests
+// ---------------------------------------------------------------------------
+
+/// Verifies that when all triage tasks complete successfully, the fan-in
+/// creates a relation task and transitions the job to `Relating`.
+#[tokio::test]
+async fn test_triage_fan_in_all_complete() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "fan-in-all-complete").await;
+
+    let candidates = vec![
+        a_candidate()
+            .content("Fan-in candidate one".to_owned())
+            .suggested_tags(vec!["tag-a".to_owned()])
+            .build(),
+        a_candidate()
+            .content("Fan-in candidate two".to_owned())
+            .suggested_tags(vec!["tag-b".to_owned()])
+            .build(),
+    ];
+
+    let (job_id, task_ids) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_multiple_triage_tasks(&mut conn, principal_id, project_id, pv_id, &candidates).await
+    };
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    // Poll until both triage tasks complete and the job reaches Relating.
+    let (_, _, job) = tokio::join!(
+        poll_task_status(
+            &pool,
+            task_ids[0],
+            TaskStatus::Completed,
+            MULTI_CYCLE_SETTLE
+        ),
+        poll_task_status(
+            &pool,
+            task_ids[1],
+            TaskStatus::Completed,
+            MULTI_CYCLE_SETTLE
+        ),
+        poll_job_status(&pool, job_id, JobStatus::Relating, MULTI_CYCLE_SETTLE),
+    );
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(job.status(), JobStatus::Relating);
+
+    // Verify a relation task was created.
+    let mut conn = raw_conn(ctx).await;
+    let tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find tasks");
+    let relation_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Relation)
+        .collect();
+    assert_eq!(
+        relation_tasks.len(),
+        1,
+        "exactly one relation task should exist",
+    );
+    assert_eq!(relation_tasks[0].status(), TaskStatus::Queued);
+
+    teardown(ctx).await;
+}
+
+/// Verifies that fan-in fires when some triage tasks complete and others
+/// are dead-lettered — all that matters is that every sibling is terminal.
+#[tokio::test]
+async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let config = test_config();
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "fan-in-mixed").await;
+
+    let candidates = vec![
+        a_candidate()
+            .content("Mixed candidate one".to_owned())
+            .suggested_tags(vec!["tag-a".to_owned()])
+            .build(),
+        a_candidate()
+            .content("Mixed candidate two".to_owned())
+            .suggested_tags(vec!["tag-b".to_owned()])
+            .build(),
+    ];
+
+    let (job_id, task_ids) = {
+        let mut conn = raw_conn(ctx).await;
+        let (job_id, task_ids) =
+            seed_multiple_triage_tasks(&mut conn, principal_id, project_id, pv_id, &candidates)
+                .await;
+
+        // Pre-set task[1] retry_count to max so the next failure
+        // triggers dead-lettering.
+        set_retry_count(&mut conn, task_ids[1], config.task_max_retries).await;
+
+        (job_id, task_ids)
+    };
+
+    // Task[0] will succeed (novel path); task[1] will fail and dead-letter.
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::ProviderUnavailable {
+                    provider: "mock".into(),
+                    reason: "force dead-letter".into(),
+                }
+            })))
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        config,
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    // One task completes, the other dead-letters; both are terminal.
+    let (_, _, job) = tokio::join!(
+        poll_task_status(
+            &pool,
+            task_ids[0],
+            TaskStatus::Completed,
+            MULTI_CYCLE_SETTLE
+        ),
+        poll_task_status(
+            &pool,
+            task_ids[1],
+            TaskStatus::DeadLetter,
+            MULTI_CYCLE_SETTLE
+        ),
+        poll_job_status(&pool, job_id, JobStatus::Relating, MULTI_CYCLE_SETTLE),
+    );
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(job.status(), JobStatus::Relating);
+
+    let mut conn = raw_conn(ctx).await;
+    let tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find tasks");
+    let relation_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Relation)
+        .collect();
+    assert_eq!(
+        relation_tasks.len(),
+        1,
+        "exactly one relation task should exist",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies the `ON CONFLICT DO NOTHING` guard: even when multiple triage
+/// tasks race to fan-in, exactly one relation task is created.
+#[tokio::test]
+async fn test_triage_fan_in_multi_task_exactly_one_relation() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "fan-in-one-relation").await;
+
+    let candidates = vec![
+        a_candidate()
+            .content("Race candidate one".to_owned())
+            .suggested_tags(vec!["tag-a".to_owned()])
+            .build(),
+        a_candidate()
+            .content("Race candidate two".to_owned())
+            .suggested_tags(vec!["tag-b".to_owned()])
+            .build(),
+        a_candidate()
+            .content("Race candidate three".to_owned())
+            .suggested_tags(vec!["tag-c".to_owned()])
+            .build(),
+    ];
+
+    let (job_id, task_ids) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_multiple_triage_tasks(&mut conn, principal_id, project_id, pv_id, &candidates).await
+    };
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    tokio::join!(
+        poll_task_status(
+            &pool,
+            task_ids[0],
+            TaskStatus::Completed,
+            MULTI_CYCLE_SETTLE
+        ),
+        poll_task_status(
+            &pool,
+            task_ids[1],
+            TaskStatus::Completed,
+            MULTI_CYCLE_SETTLE
+        ),
+        poll_task_status(
+            &pool,
+            task_ids[2],
+            TaskStatus::Completed,
+            MULTI_CYCLE_SETTLE
+        ),
+        poll_job_status(&pool, job_id, JobStatus::Relating, MULTI_CYCLE_SETTLE),
+    );
+
+    token.cancel();
+    let _ = handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+    let tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find tasks");
+    let relation_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Relation)
+        .collect();
+    assert_eq!(
+        relation_tasks.len(),
+        1,
+        "exactly one relation task should exist despite multiple fan-in attempts",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies the healing sweep: a job stuck in `Triaging` with all triage
+/// tasks terminal but no relation task is healed by the reclaim loop.
+#[tokio::test]
+async fn test_heal_stuck_triaging_job() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "heal-stuck-triaging").await;
+
+    let candidates = vec![
+        a_candidate()
+            .content("Stuck candidate one".to_owned())
+            .suggested_tags(vec!["tag-a".to_owned()])
+            .build(),
+        a_candidate()
+            .content("Stuck candidate two".to_owned())
+            .suggested_tags(vec!["tag-b".to_owned()])
+            .build(),
+    ];
+
+    let job_id = {
+        let mut conn = raw_conn(ctx).await;
+        let (job_id, _task_ids) =
+            seed_multiple_triage_tasks(&mut conn, principal_id, project_id, pv_id, &candidates)
+                .await;
+
+        // Mark all triage tasks as completed to simulate the reclaim-sweep
+        // gap where tasks reach terminal state without invoking per-task
+        // fan-in code.
+        set_task_status_by_job(&mut conn, job_id, TaskType::Triage, TaskStatus::Completed).await;
+
+        job_id
+    };
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None);
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    // The healing sweep runs on every reclaim iteration, so MULTI_CYCLE_SETTLE
+    // gives enough time for the sweep to detect and heal the stuck job.
+    let job = poll_job_status(&pool, job_id, JobStatus::Relating, MULTI_CYCLE_SETTLE).await;
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(job.status(), JobStatus::Relating);
+
+    let mut conn = raw_conn(ctx).await;
+    let tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find tasks");
+    let relation_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Relation)
+        .collect();
+    assert_eq!(
+        relation_tasks.len(),
+        1,
+        "healing sweep should create exactly one relation task",
+    );
+    assert_eq!(relation_tasks[0].status(), TaskStatus::Queued);
+
+    teardown(ctx).await;
+}
+
+/// Verifies that fan-in fires correctly for a single-candidate batch
+/// (one triage task).
+#[tokio::test]
+async fn test_triage_fan_in_single_candidate_batch() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "fan-in-single").await;
+
+    let candidates = vec![
+        a_candidate()
+            .content("Solo candidate".to_owned())
+            .suggested_tags(vec!["solo-tag".to_owned()])
+            .build(),
+    ];
+
+    let (job_id, task_ids) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_multiple_triage_tasks(&mut conn, principal_id, project_id, pv_id, &candidates).await
+    };
+    let task_id = task_ids[0];
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    let job = poll_job_status(&pool, job_id, JobStatus::Relating, POLL_SETTLE).await;
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(job.status(), JobStatus::Relating);
+
+    let mut conn = raw_conn(ctx).await;
+    let tasks = PgTaskRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find tasks");
+    let relation_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Relation)
+        .collect();
+    assert_eq!(
+        relation_tasks.len(),
+        1,
+        "exactly one relation task should exist",
+    );
+    assert_eq!(relation_tasks[0].status(), TaskStatus::Queued);
 
     teardown(ctx).await;
 }
