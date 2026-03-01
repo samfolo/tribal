@@ -217,7 +217,7 @@ impl BackfillProcessor {
 
         for tag in tags {
             if self.cancellation_token.is_cancelled() {
-                return (0, failures);
+                break;
             }
 
             match self.embed_tag(tag).await {
