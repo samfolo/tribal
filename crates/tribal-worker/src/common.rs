@@ -11,7 +11,8 @@ pub(crate) fn clamp_to_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-/// Clamps any unsigned integer to `i32`, saturating at [`i32::MAX`].
+/// Attempts to convert a value to `i32`, saturating at [`i32::MAX`]
+/// if the conversion fails.
 pub(crate) fn clamp_to_i32(value: impl TryInto<i32>) -> i32 {
     value.try_into().unwrap_or(i32::MAX)
 }

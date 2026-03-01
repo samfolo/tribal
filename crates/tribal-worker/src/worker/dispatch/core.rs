@@ -131,8 +131,10 @@ impl Worker {
     ///
     /// Returns [`WorkerError`] on database failures during reclaim.
     pub async fn startup(&self) -> Result<(), WorkerError> {
+        tracing::info!(instance_id = %self.instance_id, "worker startup began");
         self.startup_reclaim().await?;
         self.run_startup_backfills().await;
+        tracing::info!(instance_id = %self.instance_id, "worker startup complete");
         Ok(())
     }
 
