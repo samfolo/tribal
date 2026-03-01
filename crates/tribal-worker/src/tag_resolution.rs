@@ -28,10 +28,6 @@ pub(crate) struct ResolvedTags {
     pub resolved: Vec<String>,
     /// Unmatched tags with their pre-computed embedding vectors for storage.
     pub new_tags: Vec<NewTagWithEmbedding>,
-    /// Number of tags matched via embedding similarity (subset of `resolved`).
-    pub semantic_match_count: u32,
-    /// Highest similarity score observed, if any semantic matching occurred.
-    pub best_similarity: Option<f64>,
 }
 
 /// A new tag paired with the embedding vector already computed during
@@ -186,15 +182,7 @@ pub(crate) async fn resolve_tags(
             span.record(span_attrs::TAG_RESOLUTION_BEST_SIMILARITY, sim);
         }
 
-        Ok((
-            ResolvedTags {
-                resolved,
-                new_tags,
-                semantic_match_count,
-                best_similarity,
-            },
-            usages,
-        ))
+        Ok((ResolvedTags { resolved, new_tags }, usages))
     }
     .instrument(span)
     .await
