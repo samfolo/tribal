@@ -65,6 +65,10 @@ pub struct WorkerConfig {
     #[serde(default = "default_triage_search_limit")]
     pub triage_search_limit: u32,
 
+    /// Minimum cosine similarity for semantic tag matching (0.0, 1.0].
+    #[serde(default = "default_tag_similarity_threshold")]
+    pub tag_similarity_threshold: f64,
+
     /// Whether to include raw LLM content in debug log output.
     #[serde(default)]
     pub include_llm_content: bool,
@@ -151,6 +155,12 @@ impl WorkerConfig {
                 reason: "must be greater than zero",
             });
         }
+        if self.tag_similarity_threshold <= 0.0 || self.tag_similarity_threshold > 1.0 {
+            return Err(ConfigError::InvalidField {
+                field: "tag_similarity_threshold",
+                reason: "must be in the range (0.0, 1.0]",
+            });
+        }
         Ok(())
     }
 }
@@ -166,6 +176,7 @@ impl Default for WorkerConfig {
             reclaim_interval_millis: default_reclaim_interval_millis(),
             max_candidates_per_job: default_max_candidates_per_job(),
             triage_search_limit: default_triage_search_limit(),
+            tag_similarity_threshold: default_tag_similarity_threshold(),
             include_llm_content: false,
         }
     }
@@ -199,6 +210,9 @@ const fn default_max_candidates_per_job() -> u32 {
 const fn default_triage_search_limit() -> u32 {
     10
 }
+fn default_tag_similarity_threshold() -> f64 {
+    0.85
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -219,6 +233,10 @@ mod tests {
         assert_eq!(config.reclaim_interval_millis, 10_000);
         assert_eq!(config.max_candidates_per_job, 20);
         assert_eq!(config.triage_search_limit, 10);
+
+        #[allow(clippy::float_cmp)]
+        assert_eq!(config.tag_similarity_threshold, 0.85);
+
         assert!(!config.include_llm_content);
     }
 
@@ -242,6 +260,7 @@ mod tests {
             reclaim_interval_millis: 20_000,
             max_candidates_per_job: 50,
             triage_search_limit: 25,
+            tag_similarity_threshold: 0.9,
             include_llm_content: true,
         };
         let json = serde_json::to_string(&config).unwrap();
@@ -329,6 +348,45 @@ mod tests {
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("max_candidates_per_job"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_tag_similarity_threshold() {
+        let config = WorkerConfig {
+            tag_similarity_threshold: 0.0,
+            ..WorkerConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("tag_similarity_threshold"));
+    }
+
+    #[test]
+    fn test_validate_rejects_negative_tag_similarity_threshold() {
+        let config = WorkerConfig {
+            tag_similarity_threshold: -0.1,
+            ..WorkerConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("tag_similarity_threshold"));
+    }
+
+    #[test]
+    fn test_validate_rejects_tag_similarity_threshold_above_one() {
+        let config = WorkerConfig {
+            tag_similarity_threshold: 1.01,
+            ..WorkerConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("tag_similarity_threshold"));
+    }
+
+    #[test]
+    fn test_validate_accepts_tag_similarity_threshold_of_one() {
+        let config = WorkerConfig {
+            tag_similarity_threshold: 1.0,
+            ..WorkerConfig::default()
+        };
+        assert!(config.validate().is_ok());
     }
 
     #[test]
