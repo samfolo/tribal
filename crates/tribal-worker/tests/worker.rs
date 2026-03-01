@@ -1795,8 +1795,7 @@ async fn test_triage_exact_match_skips_tag_embedding() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, pv_id) =
-        setup_prerequisites(ctx, "triage-exact-match").await;
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "triage-exact-match").await;
 
     // Pre-seed "rust" in the registry with an embedding.
     {
@@ -1882,7 +1881,10 @@ async fn test_triage_exact_match_skips_tag_embedding() {
         .expect("triage result should exist");
 
     let TriageOutcome::Created { item_id } = triage_result.outcome() else {
-        panic!("expected Created outcome, got {:?}", triage_result.outcome());
+        panic!(
+            "expected Created outcome, got {:?}",
+            triage_result.outcome()
+        );
     };
 
     let item = PgKnowledgeItemRepository
@@ -1996,8 +1998,7 @@ async fn test_triage_semantic_match_determinism() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, pv_id) =
-        setup_prerequisites(ctx, "triage-determinism").await;
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "triage-determinism").await;
 
     // Seed two tags with identical embeddings. Give "beta" a higher
     // usage_count so the tie-breaker is exercised.
@@ -2099,7 +2100,10 @@ async fn test_triage_semantic_match_determinism() {
         .expect("triage result should exist");
 
     let TriageOutcome::Created { item_id } = triage_result.outcome() else {
-        panic!("expected Created outcome, got {:?}", triage_result.outcome());
+        panic!(
+            "expected Created outcome, got {:?}",
+            triage_result.outcome()
+        );
     };
 
     let item = PgKnowledgeItemRepository

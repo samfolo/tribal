@@ -98,8 +98,7 @@ pub(crate) async fn resolve_tags(
 
     async {
         let tag_count = suggested_tags.len();
-        let registry_tags: HashSet<&str> =
-            registry.iter().map(TagRegistryEntry::tag).collect();
+        let registry_tags: HashSet<&str> = registry.iter().map(TagRegistryEntry::tag).collect();
 
         let mut seen_resolved: HashSet<String> = HashSet::with_capacity(tag_count);
         let mut resolved = Vec::with_capacity(tag_count);
@@ -263,5 +262,4 @@ mod tests {
             Some("data science".to_owned()),
         );
     }
-
 }
