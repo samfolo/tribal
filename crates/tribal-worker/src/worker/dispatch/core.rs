@@ -124,8 +124,20 @@ impl Worker {
         self.peak_concurrent.load(Ordering::SeqCst)
     }
 
+    /// Runs all startup operations: reclaims orphaned tasks, heals
+    /// dead-lettered jobs, and backfills missing data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkerError`] on database failures during reclaim.
+    pub async fn startup(&self) -> Result<(), WorkerError> {
+        self.startup_reclaim().await?;
+        self.run_startup_backfills().await;
+        Ok(())
+    }
+
     /// Reclaims stale tasks that were left claimed by a previous worker
-    /// instance, then runs startup backfills.
+    /// instance and heals any dead-lettered jobs.
     ///
     /// # Errors
     ///
@@ -147,7 +159,6 @@ impl Worker {
         }
 
         self.heal_dead_lettered_jobs().await;
-        self.run_startup_backfills().await;
 
         Ok(stats.total())
     }
