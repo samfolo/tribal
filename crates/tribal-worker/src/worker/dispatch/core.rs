@@ -510,14 +510,20 @@ impl Worker {
     /// failure for one job does not block others.  Best-effort —
     /// failures are logged but not propagated.
     async fn heal_stuck_triaging_jobs(&self) {
-        let Ok(mut conn) = self.pool.acquire().await else {
-            tracing::warn!("pool acquire failed for triaging job healing");
-            return;
+        let mut conn = match self.pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "pool acquire failed for triaging job healing");
+                return;
+            }
         };
 
-        let Ok(stuck_job_ids) = PgJobRepository.find_stuck_triaging_jobs(&mut conn).await else {
-            tracing::warn!("failed to detect stuck triaging jobs");
-            return;
+        let stuck_job_ids = match PgJobRepository.find_stuck_triaging_jobs(&mut conn).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to detect stuck triaging jobs");
+                return;
+            }
         };
 
         for job_id in &stuck_job_ids {
@@ -533,6 +539,7 @@ impl Worker {
 
             if let Err(e) = PgTaskRepository.upsert(&mut txn, &new_task).await {
                 tracing::warn!(job_id = %job_id, error = %e, "failed to create relation task for stuck job");
+                let _ = txn.rollback().await;
                 continue;
             }
 
@@ -545,6 +552,7 @@ impl Worker {
                 .await
             {
                 tracing::warn!(job_id = %job_id, error = %e, "failed to transition stuck job to relating");
+                let _ = txn.rollback().await;
                 continue;
             }
 
