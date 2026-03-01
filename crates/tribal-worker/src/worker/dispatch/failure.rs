@@ -143,12 +143,26 @@ impl Worker {
                 .await?;
         }
 
+        // When a triage task is dead-lettered, check whether it is the
+        // last non-terminal sibling.  If so, create the relation task
+        // and advance the job to Relating.
+        let fan_in_fired = outcome.is_dead_lettered
+            && task.task_type() == TaskType::Triage
+            && self
+                .triage_fan_in(&mut txn, task.job_id(), task.id())
+                .await?;
+
         txn.commit()
             .await
             .map_err(|source| tribal_db::DbError::QueryFailed {
                 context: "committing failure transaction".to_owned(),
                 source,
             })?;
+
+        if fan_in_fired {
+            self.notify_job_state(task.job_id());
+        }
+
         self.log_failure_outcome(task, outcome);
         Ok(())
     }
