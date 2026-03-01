@@ -19,7 +19,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
-    KnowledgeItemRepository, PgEmbeddingRepository, PgExtractionResultRepository,
+    KnowledgeItemRepository, NewTagEmbedding, PgEmbeddingRepository, PgExtractionResultRepository,
     PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
     PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
     ReferenceRepository, TagEmbeddingRepository, TagRegistryRepository, TaskRepository,
@@ -1781,6 +1781,347 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
         embedding_ref.call_count(),
         0,
         "embedding provider should not be called for already-embedded tags",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies exact match precedence: when a suggested tag matches an
+/// existing registry entry exactly, the embedding provider is NOT
+/// called for tag resolution — only for the candidate content embedding.
+#[tokio::test]
+async fn test_triage_exact_match_skips_tag_embedding() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "triage-exact-match").await;
+
+    // Pre-seed "rust" in the registry with an embedding.
+    {
+        let mut conn = raw_conn(ctx).await;
+        Seed::new()
+            .define_project("tag-proj", "git@github.com:test/exact-match.git")
+            .define_principal("tag-user", "user:exact-match")
+            .set_embedding_model("mock-model", 768)
+            .define_tag_with_embedding("rust")
+            .execute(&mut conn)
+            .await;
+    }
+
+    // Candidate suggests "rust" — should exact-match the registry entry
+    // without any tag-resolution embedding calls.
+    let candidates = vec![
+        a_candidate()
+            .content("Rust has zero-cost abstractions".to_owned())
+            .suggested_tags(vec!["rust".to_owned()])
+            .build(),
+    ];
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_triage_job(&mut conn, principal_id, project_id, pv_id, &candidates).await
+    };
+
+    // Only one embedding call should happen: the candidate content.
+    // If tag resolution tried to embed "rust", the second call would
+    // hit the error exhaust and fail the task.
+    let embedding: Arc<MockEmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::ProviderUnavailable {
+                    provider: "mock".into(),
+                    reason: "tag resolution should not call embedding provider".into(),
+                }
+            })))
+            .build(),
+    );
+    let embedding_ref = Arc::clone(&embedding);
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding as Arc<dyn EmbeddingProvider>),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    // Embedding provider called exactly once (candidate content only).
+    assert_eq!(
+        embedding_ref.call_count(),
+        1,
+        "embedding provider should be called once (candidate content), not for exact-matched tags",
+    );
+
+    // Knowledge item should have the exact-matched tag.
+    let mut conn = raw_conn(ctx).await;
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+
+    let TriageOutcome::Created { item_id } = triage_result.outcome() else {
+        panic!("expected Created outcome, got {:?}", triage_result.outcome());
+    };
+
+    let item = PgKnowledgeItemRepository
+        .find_by_id(&mut conn, *item_id)
+        .await
+        .expect("find knowledge item");
+    assert!(
+        item.tags().contains(&"rust".to_owned()),
+        "tags should contain 'rust' (exact match): {:?}",
+        item.tags(),
+    );
+
+    // Usage count should be incremented for the exact-matched tag.
+    let tags = PgTagRegistryRepository
+        .find_all(&mut conn)
+        .await
+        .expect("find tags");
+    let rust_tag = tags.iter().find(|t| t.tag() == "rust").expect("find rust");
+    assert_eq!(
+        rust_tag.usage_count(),
+        1,
+        "usage_count should be incremented for exact match",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies that an embedding provider failure during tag resolution
+/// surfaces as a retryable `ProviderError`, causing the task to be
+/// requeued for retry.
+#[tokio::test]
+async fn test_triage_tag_resolution_provider_failure_retries() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "triage-tag-provider-fail").await;
+
+    // Candidate with a tag that won't exact-match anything, forcing
+    // semantic resolution and an embedding call that will fail.
+    let candidates = vec![
+        a_candidate()
+            .content("Something about Rust".to_owned())
+            .suggested_tags(vec!["rust-lang".to_owned()])
+            .build(),
+    ];
+
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_triage_job(&mut conn, principal_id, project_id, pv_id, &candidates).await
+    };
+
+    // First embedding call (candidate content) succeeds;
+    // second call (tag "rust-lang") fails with a provider error.
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::ProviderUnavailable {
+                    provider: "mock".into(),
+                    reason: "simulated tag embedding failure".into(),
+                }
+            })))
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_requeued_with_retry(&pool, task_id, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(
+        task.error_kind(),
+        Some(TaskErrorKind::ProviderError),
+        "tag resolution provider failure should surface as ProviderError",
+    );
+    assert!(
+        task.error_message().is_some(),
+        "error message should be set",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies multi-match determinism: when two tags in the registry have
+/// identical similarity to a query, the tag with the higher usage count
+/// is chosen deterministically by `resolve_tags`.
+#[tokio::test]
+async fn test_triage_semantic_match_determinism() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "triage-determinism").await;
+
+    // Seed two tags with identical embeddings. Give "beta" a higher
+    // usage_count so the tie-breaker is exercised.
+    {
+        let mut conn = raw_conn(ctx).await;
+        Seed::new()
+            .define_project("tag-proj", "git@github.com:test/determinism.git")
+            .define_principal("tag-user", "user:determinism")
+            .define_tag("alpha")
+            .define_tag("beta")
+            .execute(&mut conn)
+            .await;
+
+        // Insert identical embeddings for both tags.
+        let embedding_vec = make_test_embedding(0);
+        PgTagEmbeddingRepository
+            .batch_upsert(
+                &mut conn,
+                &[
+                    tribal_db::NewTagEmbedding::builder()
+                        .tag("alpha".to_owned())
+                        .model("mock-model".to_owned())
+                        .dimensions(768)
+                        .embedding(embedding_vec.clone())
+                        .build(),
+                    tribal_db::NewTagEmbedding::builder()
+                        .tag("beta".to_owned())
+                        .model("mock-model".to_owned())
+                        .dimensions(768)
+                        .embedding(embedding_vec)
+                        .build(),
+                ],
+            )
+            .await
+            .expect("seed tag embeddings");
+
+        // Bump beta's usage_count so it wins the tie-breaker.
+        PgTagRegistryRepository
+            .increment_usage_count(&mut conn, &["beta".to_owned()])
+            .await
+            .expect("increment usage count");
+    }
+
+    // Candidate tag "unknown-tag" won't exact-match anything. Its
+    // embedding will be identical to alpha/beta, so both match at
+    // similarity = 1.0. Beta should win (higher usage_count).
+    let candidates = vec![
+        a_candidate()
+            .content("Content about tags".to_owned())
+            .suggested_tags(vec!["unknown-tag".to_owned()])
+            .build(),
+    ];
+
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_triage_job(&mut conn, principal_id, project_id, pv_id, &candidates).await
+    };
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            // 1. Candidate content embedding.
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            // 2. "unknown-tag" tag embedding → same vector as alpha/beta.
+            .on_embed(an_embedding_response(make_test_embedding(0)), None)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    let mut conn = raw_conn(ctx).await;
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, _job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+
+    let TriageOutcome::Created { item_id } = triage_result.outcome() else {
+        panic!("expected Created outcome, got {:?}", triage_result.outcome());
+    };
+
+    let item = PgKnowledgeItemRepository
+        .find_by_id(&mut conn, *item_id)
+        .await
+        .expect("find knowledge item");
+
+    // "beta" should win the tie-breaker (higher usage_count).
+    assert!(
+        item.tags().contains(&"beta".to_owned()),
+        "tags should contain 'beta' (higher usage_count wins tie): {:?}",
+        item.tags(),
+    );
+    assert!(
+        !item.tags().contains(&"alpha".to_owned()),
+        "tags should NOT contain 'alpha' (lost tie-break): {:?}",
+        item.tags(),
+    );
+    assert!(
+        !item.tags().contains(&"unknown-tag".to_owned()),
+        "tags should NOT contain 'unknown-tag' (resolved to 'beta'): {:?}",
+        item.tags(),
     );
 
     teardown(ctx).await;
