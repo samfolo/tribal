@@ -22,11 +22,17 @@ use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
-use tribal_db::{NewTagEmbedding, PgTagEmbeddingRepository, TagEmbeddingRepository};
+use tribal_db::{
+    NewTagEmbedding, NewTokenUsage, PgTagEmbeddingRepository, PgTokenUsageRepository,
+    TagEmbeddingRepository, TokenUsageRepository, TokenUsageStage,
+};
 use tribal_domain::EmbeddingPurpose;
-use tribal_inference::{EmbeddingProvider, EmbeddingRequest};
+use tribal_inference::{EmbeddingProvider, EmbeddingRequest, EmbeddingUsage};
 
-use crate::{common::clamp_to_u32, error::SEMAPHORE_CLOSED};
+use crate::{
+    common::{clamp_to_i32, clamp_to_u32},
+    error::SEMAPHORE_CLOSED,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -201,6 +207,7 @@ impl BackfillProcessor {
     /// them all in one go.  Returns `(successes, failures)`.
     async fn embed_and_store_batch(&self, tags: &[String]) -> (u32, u32) {
         let mut embeddings = Vec::with_capacity(tags.len());
+        let mut usages = Vec::with_capacity(tags.len());
         let mut failures: u32 = 0;
 
         for tag in tags {
@@ -217,6 +224,7 @@ impl BackfillProcessor {
                         dimensions: clamp_to_u32(dimensions),
                         embedding: response.vector,
                     });
+                    usages.push(response.usage);
                 }
                 Err(e) => {
                     tracing::warn!(tag = %tag, error = %e, "skipping tag embedding");
@@ -232,7 +240,10 @@ impl BackfillProcessor {
         let upsert_count = clamp_to_u32(embeddings.len());
 
         match self.store_batch(&embeddings).await {
-            Ok(()) => (upsert_count, failures),
+            Ok(()) => {
+                self.record_token_usage(&usages).await;
+                (upsert_count, failures)
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -260,6 +271,37 @@ impl BackfillProcessor {
         };
 
         self.embedding_provider.embed(request).await
+    }
+
+    /// Records token usage for each successful embedding call.
+    ///
+    /// Best-effort: individual insert failures are logged and skipped.
+    async fn record_token_usage(&self, usages: &[EmbeddingUsage]) {
+        let mut conn = match self.pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to acquire connection for backfill token usage");
+                return;
+            }
+        };
+
+        for usage in usages {
+            let new = NewTokenUsage::builder()
+                .attempt(0)
+                .stage(TokenUsageStage::Embedding {
+                    purpose: EmbeddingPurpose::Tag,
+                })
+                .provider(usage.provider.clone())
+                .model(usage.model.clone())
+                .tokens_input(clamp_to_i32(usage.total_tokens))
+                .tokens_output(0)
+                .latency_ms(clamp_to_i32(usage.latency.as_millis()))
+                .build();
+
+            if let Err(e) = PgTokenUsageRepository.insert(&mut conn, &new).await {
+                tracing::warn!(error = %e, "failed to record backfill token usage");
+            }
+        }
     }
 
     /// Upserts a batch of tag embeddings into the database.
