@@ -5,6 +5,7 @@
 CREATE TABLE tag_embeddings (
     tag        TEXT NOT NULL REFERENCES tag_registry(tag),
     model      TEXT NOT NULL,
+    dimensions INT NOT NULL,
     embedding  vector(768) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT tag_embeddings_pkey PRIMARY KEY (tag, model)
