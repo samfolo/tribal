@@ -15,11 +15,12 @@ use tracing::{debug, warn};
 use tribal_db::{
     EmbeddingRepository, ItemObservationRepository, KnowledgeItemRepository, NewEmbedding,
     NewItemObservation, NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject,
-    NewPromptVersion, NewReference, PgEmbeddingRepository, PgItemObservationRepository,
-    PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
-    PgPromptVersionRepository, PgReferenceRepository, PgRelationRepository,
-    PgTagRegistryRepository, PrincipalRepository, ProjectRepository, PromptVersionRepository,
-    ReferenceRepository, RelationRepository, TagRegistryRepository,
+    NewPromptVersion, NewReference, NewTagEmbedding, PgEmbeddingRepository,
+    PgItemObservationRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
+    PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository, PgRelationRepository,
+    PgTagEmbeddingRepository, PgTagRegistryRepository, PrincipalRepository, ProjectRepository,
+    PromptVersionRepository, ReferenceRepository, RelationRepository, TagEmbeddingRepository,
+    TagRegistryRepository,
 };
 use tribal_domain::{
     EmbeddingId, EpisodeId, ItemObservationId, KnowledgeItemId, PrincipalId, ProjectId,
@@ -79,6 +80,9 @@ struct ExecutionState {
 
     // Item label → project label (for relation scaffolding)
     item_projects: HashMap<String, String>,
+
+    // Tag → deterministic embedding vector
+    tag_embeddings: HashMap<String, Vec<f32>>,
 }
 
 impl ExecutionState {
@@ -106,6 +110,7 @@ impl ExecutionState {
             item_command_indices: HashMap::new(),
             batch_command_indices: HashMap::new(),
             item_projects: HashMap::new(),
+            tag_embeddings: HashMap::new(),
         }
     }
 
@@ -222,6 +227,16 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
                 i += 1;
             }
 
+            SeedCommand::DefineTag { tag } => {
+                handle_define_tag(i, tag, conn).await;
+                i += 1;
+            }
+
+            SeedCommand::DefineTagWithEmbedding { tag } => {
+                handle_define_tag_with_embedding(i, tag, &mut state, conn).await;
+                i += 1;
+            }
+
             // These variants are only emitted inside BeginProjectScope..
             // EndProjectScope pairs and are consumed by
             // handle_project_scope. The builder API (Seed::for_project)
@@ -252,6 +267,7 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
         observations: state.observations,
         committed_batches: state.committed_batches,
         uncommitted_relations: state.uncommitted_relations,
+        tag_embeddings: state.tag_embeddings,
     }
 }
 
@@ -482,6 +498,60 @@ fn handle_advance(idx: usize, delta: Duration, state: &mut ExecutionState) {
         state.virtual_time() + delta
     );
     state.accumulated_offset += delta;
+}
+
+// ---------------------------------------------------------------------------
+// Tag handlers
+// ---------------------------------------------------------------------------
+
+async fn handle_define_tag(idx: usize, tag: &str, conn: &mut PgConnection) {
+    debug!("seed[{idx}]: DefineTag tag={tag:?}");
+
+    PgTagRegistryRepository
+        .batch_upsert(&mut *conn, &[tag.to_owned()])
+        .await
+        .expect("seed: register tag");
+}
+
+async fn handle_define_tag_with_embedding(
+    idx: usize,
+    tag: &str,
+    state: &mut ExecutionState,
+    conn: &mut PgConnection,
+) {
+    let model = state.embedding_model.as_ref().unwrap_or_else(|| {
+        panic!(
+            "define_tag_with_embedding() requires an embedding model — \
+             call set_embedding_model() first"
+        );
+    });
+    let dimensions = state.embedding_dimensions.unwrap();
+    let assigner = state.embedding_group_assigner.as_mut().unwrap();
+
+    debug!("seed[{idx}]: DefineTagWithEmbedding tag={tag:?} model={model:?}");
+
+    PgTagRegistryRepository
+        .batch_upsert(&mut *conn, &[tag.to_owned()])
+        .await
+        .expect("seed: register tag");
+
+    let group = format!("__tag:{tag}");
+    let (group_index, position) = assigner.assign(&group);
+    let vector = make_group_embedding(group_index, position, dimensions);
+
+    let new_tag_embedding = NewTagEmbedding {
+        tag: tag.to_owned(),
+        model: model.clone(),
+        dimensions: u32::try_from(dimensions).expect("dimensions fit in u32"),
+        embedding: vector.clone(),
+    };
+
+    PgTagEmbeddingRepository
+        .batch_upsert(&mut *conn, &[new_tag_embedding])
+        .await
+        .expect("seed: insert tag embedding");
+
+    state.tag_embeddings.insert(tag.to_owned(), vector);
 }
 
 // ---------------------------------------------------------------------------
@@ -717,7 +787,9 @@ async fn process_scope_dependents(
             | SeedCommand::EndProjectScope { .. }
             | SeedCommand::Relate { .. }
             | SeedCommand::CommitRelations { .. }
-            | SeedCommand::Advance { .. } => {
+            | SeedCommand::Advance { .. }
+            | SeedCommand::DefineTag { .. }
+            | SeedCommand::DefineTagWithEmbedding { .. } => {
                 unreachable!(
                     "seed[{idx}]: unexpected command inside project scope '{project_label}'"
                 );
