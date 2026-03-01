@@ -77,8 +77,10 @@ pub(crate) enum TriageCommitDecision {
         embedding_model: String,
         /// References suggested by the extraction stage.
         suggested_references: Vec<SuggestedReference>,
-        /// Tags not found in the registry, to be created via `batch_upsert`.
-        new_tags: Vec<String>,
+        /// New tags with pre-computed embedding vectors for storage.
+        new_tags: Vec<NewTagWithEmbedding>,
+        /// Tags resolved to existing entries, for `usage_count` increment.
+        resolved_tags: Vec<String>,
     },
     /// Duplicate candidate — record an observation against the matched item.
     Duplicate {
