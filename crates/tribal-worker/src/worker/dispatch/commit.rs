@@ -4,21 +4,24 @@ use chrono::Utc;
 use tracing::Instrument;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
-    JobStatusTransition, KnowledgeItemRepository, NewEmbedding, NewExtractionResult, NewReference,
-    NewTagEmbedding, NewTask, NewTriageResult, PgEmbeddingRepository, PgExtractionResultRepository,
-    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
+    JobStatusTransition, KnowledgeItemRepository, NewEmbedding, NewExtractionResult,
+    NewKnowledgeItemRelation, NewReference, NewTagEmbedding, NewTask, NewTriageResult,
+    PgEmbeddingRepository, PgExtractionResultRepository, PgItemObservationRepository,
+    PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository, PgRelationRepository,
     PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
-    PgTriageSimilarItemDecisionRepository, ReferenceRepository, TagEmbeddingRepository,
-    TagRegistryRepository, TaskRepository, TriageResultRepository,
+    PgTriageSimilarItemDecisionRepository, ReferenceRepository, RelationRepository,
+    TagEmbeddingRepository, TagRegistryRepository, TaskRepository, TriageResultRepository,
     TriageSimilarItemDecisionRepository,
 };
-use tribal_domain::{JobId, JobOutcome, JobStatus, ReferenceKind, Task, TriageOutcome, span_attrs};
+use tribal_domain::{
+    JobId, JobOutcome, JobStatus, RelationBatchId, ReferenceKind, Task, TriageOutcome, span_attrs,
+};
 
 use super::Worker;
 use crate::{
     common::{EXPECT_BATCH_INDEX, clamp_to_u32},
-    error::{STAGE_EXTRACTION, STAGE_TRIAGE, StageError},
-    stages::{StageCommit, TriageCommitDecision},
+    error::{STAGE_EXTRACTION, STAGE_RELATION, STAGE_TRIAGE, StageError},
+    stages::{RelationCommitDecision, StageCommit, TriageCommitDecision},
     tag_resolution::NewTagWithEmbedding,
 };
 
@@ -56,6 +59,9 @@ impl Worker {
             } => {
                 self.commit_triage(task, project_id, decision, similar_item_decisions)
                     .await
+            }
+            StageCommit::Relation { decision } => {
+                self.commit_relation(task, decision).await
             }
         }
     }
@@ -288,6 +294,154 @@ impl Worker {
         }
         .instrument(span)
         .await
+    }
+}
+
+    /// Commits relation stage effects within a single transaction.
+    ///
+    /// **`Relate`**: batch-inserts relations, seals the committed batch ID,
+    /// transitions the job to `Completed` with the computed outcome, and
+    /// completes the task.
+    ///
+    /// **`NoOp`**: completes the task without creating any domain entities
+    /// (previous attempt already committed).
+    async fn commit_relation(
+        &self,
+        task: &Task,
+        decision: RelationCommitDecision,
+    ) -> Result<(), StageError> {
+        let job_id = task.job_id();
+        let span = tracing::info_span!(
+            "tribal.relation.commit",
+            { span_attrs::JOB_OUTCOME } = tracing::field::Empty,
+            { span_attrs::RELATION_BATCH_ID } = tracing::field::Empty,
+            { span_attrs::RELATIONS_COMMITTED } = tracing::field::Empty,
+        );
+
+        async {
+            let Some(claim_token) = task.claim_token() else {
+                return Err(StageError::OwnershipLost);
+            };
+
+            let mut conn = self
+                .pool()
+                .acquire()
+                .await
+                .map_err(|e| stage_sqlx_error(STAGE_RELATION, "acquiring connection", e))?;
+
+            let mut txn = sqlx::Connection::begin(&mut *conn)
+                .await
+                .map_err(|e| stage_sqlx_error(STAGE_RELATION, "beginning transaction", e))?;
+
+            match decision {
+                RelationCommitDecision::Relate {
+                    relations,
+                    batch_id,
+                    outcome,
+                } => {
+                    self.commit_relation_relate(
+                        &mut txn,
+                        task,
+                        job_id,
+                        relations,
+                        batch_id,
+                        outcome,
+                        claim_token,
+                    )
+                    .await?;
+                }
+                RelationCommitDecision::NoOp => {
+                    let rows = PgTaskRepository
+                        .complete(&mut txn, task.id(), claim_token)
+                        .await
+                        .map_err(|e| {
+                            stage_db_error(STAGE_RELATION, "completing task (no-op)", e)
+                        })?;
+
+                    if rows == 0 {
+                        return Err(StageError::OwnershipLost);
+                    }
+                }
+            }
+
+            txn.commit()
+                .await
+                .map_err(|e| stage_sqlx_error(STAGE_RELATION, "committing transaction", e))?;
+
+            tracing::info!(
+                task_id = %task.id(),
+                task_type = "relation",
+                job_id = %job_id,
+                "task.completed",
+            );
+
+            Ok(())
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Inner commit path for `RelationCommitDecision::Relate`.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_relation_relate(
+        &self,
+        txn: &mut sqlx::PgConnection,
+        task: &Task,
+        job_id: JobId,
+        relations: Vec<NewKnowledgeItemRelation>,
+        batch_id: RelationBatchId,
+        outcome: JobOutcome,
+        claim_token: uuid::Uuid,
+    ) -> Result<(), StageError> {
+        let relations_count = relations.len();
+
+        if !relations.is_empty() {
+            PgRelationRepository
+                .batch_insert(txn, &relations)
+                .await
+                .map_err(|e| {
+                    stage_db_error(STAGE_RELATION, "batch-inserting relations", e)
+                })?;
+        }
+
+        PgJobRepository
+            .set_committed_batch_id(txn, job_id, batch_id)
+            .await
+            .map_err(|e| {
+                stage_db_error(STAGE_RELATION, "setting committed batch ID", e)
+            })?;
+
+        let transition = JobStatusTransition::builder()
+            .status(JobStatus::Completed)
+            .outcome(Some(outcome))
+            .completed_at(Some(Utc::now()))
+            .build();
+
+        PgJobRepository
+            .update_status(txn, job_id, &transition)
+            .await
+            .map_err(|e| {
+                stage_db_error(STAGE_RELATION, "transitioning job to completed", e)
+            })?;
+
+        let rows = PgTaskRepository
+            .complete(txn, task.id(), claim_token)
+            .await
+            .map_err(|e| stage_db_error(STAGE_RELATION, "completing task", e))?;
+
+        if rows == 0 {
+            return Err(StageError::OwnershipLost);
+        }
+
+        tracing::Span::current().record(span_attrs::JOB_OUTCOME, outcome.as_str());
+        tracing::Span::current()
+            .record(span_attrs::RELATION_BATCH_ID, batch_id.to_string().as_str());
+        tracing::Span::current().record(span_attrs::RELATIONS_COMMITTED, relations_count);
+
+        self.notify_job_state(job_id);
+        self.remove_job_state(job_id);
+
+        Ok(())
     }
 }
 
