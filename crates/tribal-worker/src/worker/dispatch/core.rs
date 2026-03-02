@@ -43,13 +43,11 @@ pub struct Worker {
     provider_registry: Arc<ProviderRegistry>,
     pub(crate) extraction_provider: Arc<dyn InferenceProvider>,
     pub(crate) triage_provider: Arc<dyn InferenceProvider>,
-    #[allow(dead_code)]
     pub(crate) relation_provider: Arc<dyn InferenceProvider>,
     pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
     pub(crate) extraction_key: ProviderKey,
     pub(crate) triage_inference_key: ProviderKey,
     pub(crate) triage_embedding_key: ProviderKey,
-    #[allow(dead_code)]
     pub(crate) relation_key: ProviderKey,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
