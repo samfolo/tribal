@@ -12,6 +12,7 @@ use crate::{KnowledgeItemId, PrincipalId, RelationBatchId, RelationId};
 
 /// The type of a committed relationship between two knowledge items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     /// Source provides evidence for, validates, or reinforces target.
@@ -89,6 +90,9 @@ pub struct KnowledgeItemRelation {
     relation_type: RelationKind,
     /// The principal who created this relation.
     principal_id: PrincipalId,
+    /// The agent's reasoning for creating this relation.
+    #[builder(default)]
+    justification: Option<String>,
     /// When this relation was created.
     created_at: DateTime<Utc>,
 }
@@ -122,6 +126,11 @@ impl KnowledgeItemRelation {
     /// Returns the principal who created this relation.
     pub fn principal_id(&self) -> PrincipalId {
         self.principal_id
+    }
+
+    /// Returns the agent's reasoning for creating this relation.
+    pub fn justification(&self) -> Option<&str> {
+        self.justification.as_deref()
     }
 
     /// Returns when this relation was created.

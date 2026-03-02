@@ -50,6 +50,9 @@ pub struct NewKnowledgeItemRelation {
     pub relation_type: RelationKind,
     /// The principal who created this relation.
     pub principal_id: PrincipalId,
+    /// The agent's reasoning for creating this relation.
+    #[builder(default)]
+    pub justification: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +219,7 @@ async fn find_committed_relations(
 
     let sql = format!(
         "SELECT r.id, r.relation_batch_id, r.source_id, r.target_id, \
-                r.relation_type, r.principal_id, r.created_at \
+                r.relation_type, r.principal_id, r.justification, r.created_at \
          FROM knowledge_item_relations r \
          INNER JOIN jobs j ON j.committed_batch_id = r.relation_batch_id \
          WHERE {anchor_col} = $1 \
@@ -253,6 +256,7 @@ fn map_relation_row(r: &sqlx::postgres::PgRow) -> tribal_domain::KnowledgeItemRe
                 .expect(UNKNOWN_RELATION_KIND_IN_DB),
         )
         .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
+        .justification(r.get::<Option<String>, _>("justification"))
         .created_at(r.get("created_at"))
         .build()
 }
@@ -423,19 +427,22 @@ impl RelationRepository for PgRelationRepository {
             .collect();
         let principal_ids: Vec<uuid::Uuid> =
             batch.iter().map(|r| *r.principal_id.inner()).collect();
+        let justifications: Vec<Option<String>> =
+            batch.iter().map(|r| r.justification.clone()).collect();
 
         let rows = sqlx::query(
             "INSERT INTO knowledge_item_relations \
-                 (relation_batch_id, source_id, target_id, relation_type, principal_id) \
-             SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::uuid[]) \
+                 (relation_batch_id, source_id, target_id, relation_type, principal_id, justification) \
+             SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::uuid[], $6::text[]) \
              RETURNING id, relation_batch_id, source_id, target_id, \
-                       relation_type, principal_id, created_at",
+                       relation_type, principal_id, justification, created_at",
         )
         .bind(&batch_ids)
         .bind(&source_ids)
         .bind(&target_ids)
         .bind(&types)
         .bind(&principal_ids)
+        .bind(&justifications)
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
