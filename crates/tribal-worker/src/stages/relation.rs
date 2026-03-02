@@ -185,10 +185,14 @@ impl Worker {
                 });
             }
 
-            // Load context from database.
-            let (candidates, relation_hints) = self.load_extraction_data(job).await?;
-            let triage_results = self.load_triage_results(job).await?;
-            let similar_item_decisions = self.load_similar_item_decisions(job).await?;
+            let include_llm_content = self.config().include_llm_content;
+
+            let (extraction_data, triage_results, similar_item_decisions) = tokio::try_join!(
+                self.load_extraction_data(job),
+                self.load_triage_results(job),
+                self.load_similar_item_decisions(job),
+            )?;
+            let (candidates, relation_hints) = extraction_data;
 
             // Load prompt version.
             let prompt_version = self
@@ -222,11 +226,10 @@ impl Worker {
                 })?
                 .expect(SEMAPHORE_CLOSED);
 
-            // Assemble and call LLM.
             let request =
                 assemble_relation_prompt(prompt_version.content(), &prompt_context)?;
 
-            if self.config().include_llm_content {
+            if include_llm_content {
                 tracing::debug!(
                     prompt = %request.system.as_deref().unwrap_or(""),
                     "relation prompt assembled",
@@ -242,15 +245,12 @@ impl Worker {
                     source: e,
                 })?;
 
-            if self.config().include_llm_content {
+            if include_llm_content {
                 tracing::debug!(
                     response = %response.text,
                     "relation response received",
                 );
             }
-
-            // Parse response.
-            let include_llm_content = self.config().include_llm_content;
             let output = {
                 let _parse_span = tracing::info_span!("tribal.relation.parse").entered();
                 parse_relation_response(&response).inspect_err(|_| {
@@ -471,11 +471,23 @@ impl Worker {
 
 /// Builds the `CandidateOutcome` list by joining candidates with triage
 /// results by batch index.
+///
+/// # Panics
+///
+/// Panics if `batch_size` exceeds the candidates array length — this
+/// indicates data corruption between the extraction result and the
+/// job's `batch_size` field.
 fn build_candidate_outcomes(
     candidates: &[Candidate],
     triage_results: &[TriageResult],
     batch_size: u32,
 ) -> Vec<CandidateOutcome> {
+    assert!(
+        (batch_size as usize) <= candidates.len(),
+        "batch_size ({batch_size}) exceeds candidates length ({})",
+        candidates.len(),
+    );
+
     let triage_by_index: HashMap<u32, &TriageResult> = triage_results
         .iter()
         .map(|r| (r.batch_index(), r))
@@ -483,10 +495,7 @@ fn build_candidate_outcomes(
 
     (0..batch_size)
         .map(|i| {
-            let candidate = candidates
-                .get(i as usize)
-                .cloned()
-                .unwrap_or_else(|| placeholder_candidate());
+            let candidate = candidates[i as usize].clone();
 
             let (outcome, item_id) = match triage_by_index.get(&i) {
                 Some(result) => match result.outcome() {
@@ -507,17 +516,6 @@ fn build_candidate_outcomes(
             }
         })
         .collect()
-}
-
-/// Returns a placeholder candidate for batch indices that exceed the
-/// candidates array (should not happen in practice).
-fn placeholder_candidate() -> Candidate {
-    serde_json::from_value(serde_json::json!({
-        "kind": "fact",
-        "content": "[unavailable]",
-        "suggested_tags": [],
-    }))
-    .expect("placeholder candidate JSON is valid")
 }
 
 // ---------------------------------------------------------------------------
@@ -555,30 +553,45 @@ fn normalise_edges(
     for edge in edges {
         // Step 1: drop Supersedes.
         if edge.relation_type == RelationKind::Supersedes {
-            tracing::debug!("dropping supersedes edge");
+            tracing::debug!(
+                ?edge.source, ?edge.target,
+                "dropping supersedes edge",
+            );
             continue;
         }
 
         // Step 2+3: resolve targets.
         let Some(source_id) = resolve_target(&edge.source, &triage_by_index) else {
-            tracing::debug!(?edge.source, "dropping edge — unresolvable source");
+            tracing::debug!(
+                ?edge.source, ?edge.target, relation_type = ?edge.relation_type,
+                "dropping edge — unresolvable source",
+            );
             continue;
         };
         let Some(target_id) = resolve_target(&edge.target, &triage_by_index) else {
-            tracing::debug!(?edge.target, "dropping edge — unresolvable target");
+            tracing::debug!(
+                ?edge.source, ?edge.target, relation_type = ?edge.relation_type,
+                "dropping edge — unresolvable target",
+            );
             continue;
         };
 
         // Step 4: drop self-edges.
         if source_id == target_id {
-            tracing::debug!(%source_id, "dropping self-edge");
+            tracing::debug!(
+                %source_id, relation_type = ?edge.relation_type,
+                "dropping self-edge",
+            );
             continue;
         }
 
         // Step 5: deduplicate.
         let triple = (source_id, target_id, edge.relation_type);
         if !seen.insert(triple) {
-            tracing::debug!(?triple, "dropping duplicate edge");
+            tracing::debug!(
+                %source_id, %target_id, relation_type = ?edge.relation_type,
+                "dropping duplicate edge",
+            );
             continue;
         }
 
@@ -748,9 +761,14 @@ mod tests {
 
     #[test]
     fn test_normalise_resolves_duplicate_to_matched_item_id() {
-        let ki_a = ki("aaaa");
-        let ki_match = ki("cccc");
-        let results = vec![created(0, ki_a), duplicate(1, ki_match)];
+        // Candidate 0 was created as ki_created.
+        // Candidate 1 was flagged as a duplicate of ki_existing.
+        // An edge from batch 0 → batch 1 should resolve the
+        // duplicate's target to ki_existing (the matched item),
+        // not to the candidate itself (which was never created).
+        let ki_created = ki("aaaa");
+        let ki_existing = ki("cccc");
+        let results = vec![created(0, ki_created), duplicate(1, ki_existing)];
         let edges = vec![edge(
             RelationTarget::BatchIndex { batch_index: 0 },
             RelationTarget::BatchIndex { batch_index: 1 },
@@ -759,7 +777,8 @@ mod tests {
 
         let normalised = normalise_edges(edges, &results);
         assert_eq!(normalised.len(), 1);
-        assert_eq!(normalised[0].target_id, ki_match);
+        assert_eq!(normalised[0].source_id, ki_created);
+        assert_eq!(normalised[0].target_id, ki_existing);
     }
 
     #[test]
@@ -849,7 +868,11 @@ mod tests {
     }
 
     #[test]
-    fn test_outcome_partial_when_some_dead() {
+    fn test_outcome_partial_when_some_dead_lettered() {
+        // batch_size=2 but only 1 triage result exists — the missing
+        // result means the other triage task was dead-lettered (no
+        // TriageResult row is written for dead-lettered tasks).
+        // With n_created=1 and n_dead=1, the outcome is Partial.
         let results = vec![created(0, ki("aaaa"))];
         assert_eq!(compute_outcome(&results, 2), JobOutcome::Partial);
     }
