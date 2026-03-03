@@ -19,15 +19,17 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
-    KnowledgeItemRepository, NewTagEmbedding, PgEmbeddingRepository, PgExtractionResultRepository,
-    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
+    JobStatusTransition, KnowledgeItemRepository, NewTagEmbedding, PgEmbeddingRepository,
+    PgExtractionResultRepository, PgItemObservationRepository, PgJobRepository,
+    PgKnowledgeItemRepository, PgReferenceRepository, PgRelationRepository,
     PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
-    ReferenceRepository, TagEmbeddingRepository, TagRegistryRepository, TaskRepository,
-    TriageResultRepository,
+    ReferenceRepository, RelationRepository, TagEmbeddingRepository, TagRegistryRepository,
+    TaskRepository, TriageResultRepository,
 };
 use tribal_domain::{
     JobId, JobOutcome, JobStatus, KnowledgeItemId, KnowledgeKind, PrincipalId, ProjectId,
-    PromptVersionId, TaskErrorKind, TaskStatus, TaskType, TriageOutcome,
+    PromptVersionId, RelationBatchId, SourceType, TaskErrorKind, TaskStatus, TaskType,
+    TriageOutcome,
 };
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry,
@@ -35,17 +37,18 @@ use tribal_inference::{
 };
 use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
-    TestContext, a_candidate, a_completion_response, a_new_job, a_new_knowledge_item,
-    a_new_prompt_version, a_new_task, a_new_triage_result_created, a_relation_hint,
-    an_embedding_response, backdate_task_heartbeat,
+    TestContext, a_candidate, a_completion_response, a_new_extraction_result, a_new_job,
+    a_new_knowledge_item, a_new_prompt_version, a_new_task, a_new_triage_result_created,
+    a_new_triage_result_duplicate, a_relation_hint, an_embedding_response, backdate_task_heartbeat,
+    candidates_json,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
     },
     item,
     polling::{poll_job_status, poll_task_status, poll_until},
-    seed_extraction_job, seed_multiple_triage_tasks, seed_triage_job, serial_lock, set_retry_count,
-    set_task_status_by_job, test_context, truncate_all_tables,
+    seed_extraction_job, seed_multiple_triage_tasks, seed_relation_job, seed_triage_job,
+    serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
 };
 use tribal_worker::{Worker, WorkerConfig};
 
@@ -2594,7 +2597,378 @@ async fn test_triage_fan_in_single_candidate_batch() {
     assert_eq!(
         relation_tasks.len(),
         1,
-        "exactly one relation task should exist",
+        "exactly one relation task should exist (fan-in single candidate)",
+    );
+
+    teardown(ctx).await;
+}
+
+// ---------------------------------------------------------------------------
+// Relation stage tests
+// ---------------------------------------------------------------------------
+
+/// Helper: builds a relation response JSON string with a `supports` edge
+/// from the first item to each subsequent item.
+fn relation_response_json(ki_ids: &[KnowledgeItemId]) -> String {
+    let mut relations = Vec::new();
+
+    if ki_ids.len() >= 2 {
+        for ki_id in &ki_ids[1..] {
+            relations.push(serde_json::json!({
+                "source": { "kind": "item_id", "item_id": ki_ids[0].to_string() },
+                "target": { "kind": "item_id", "item_id": ki_id.to_string() },
+                "relation_type": "supports",
+                "justification": "Test relation",
+            }));
+        }
+    }
+
+    serde_json::json!({ "relations": relations }).to_string()
+}
+
+/// Helper: builds an empty relation response JSON string.
+fn empty_relation_response_json() -> String {
+    serde_json::json!({ "relations": [] }).to_string()
+}
+
+/// Verifies the happy path: the relation stage calls the LLM, parses
+/// the response, commits relations, sets `committed_batch_id`, and
+/// transitions the job to `Completed` with a `Success` outcome.
+#[tokio::test]
+async fn test_relation_stage_commits_relations_and_completes_job() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "relation-happy-path").await;
+
+    let candidates = vec![
+        a_candidate()
+            .content("Rust has zero-cost abstractions".to_owned())
+            .build(),
+        a_candidate()
+            .content("Ownership prevents data races".to_owned())
+            .build(),
+    ];
+    let relation_hints = vec![a_relation_hint().build()];
+
+    let (job_id, task_id, ki_ids) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_relation_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            pv_id,
+            &candidates,
+            &relation_hints,
+        )
+        .await
+    };
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(relation_response_json(&ki_ids)), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let (task, job) = tokio::join!(
+        poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE),
+        poll_job_status(&pool, job_id, JobStatus::Completed, POLL_SETTLE),
+    );
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(task.status(), TaskStatus::Completed);
+    assert_eq!(job.status(), JobStatus::Completed);
+    assert_eq!(
+        job.outcome(),
+        Some(JobOutcome::Success),
+        "all candidates were Created so outcome should be Success",
+    );
+    assert!(
+        job.committed_batch_id().is_some(),
+        "committed_batch_id should be set",
+    );
+
+    // Verify relations were committed.
+    let mut conn = raw_conn(ctx).await;
+    let outbound = PgRelationRepository
+        .find_outbound(&mut conn, ki_ids[0], None)
+        .await
+        .expect("find outbound relations");
+    assert_eq!(
+        outbound.len(),
+        1,
+        "should have one outbound relation from first item",
+    );
+    assert_eq!(outbound[0].target_id(), ki_ids[1]);
+
+    teardown(ctx).await;
+}
+
+/// Verifies that when all triage outcomes are duplicates, the job
+/// completes with an `Empty` outcome.
+#[tokio::test]
+async fn test_relation_stage_all_duplicates_empty_outcome() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let candidates = vec![a_candidate().build()];
+
+    let job_id = {
+        let mut conn = raw_conn(ctx).await;
+
+        // Seed pre-existing data via Seed builder.
+        let seed_result = Seed::new()
+            .define_project("proj", "git@github.com:test/relation-all-dup.git")
+            .define_principal("user", "user:relation-all-dup")
+            .define_prompt_version("pv", a_new_prompt_version().build())
+            .as_principal("user")
+            .for_project("proj", |store| {
+                store
+                    .add_item(
+                        "existing",
+                        item(KnowledgeKind::Fact, "existing item content").skip_embed(),
+                    )
+                    .observe("existing", SourceType::AgentMediated);
+            })
+            .execute(&mut conn)
+            .await;
+
+        let principal_id = seed_result.principal_id("user");
+        let project_id = seed_result.project_id("proj");
+        let pv_id = seed_result.prompt_version_id("pv");
+        let matched_ki_id = seed_result.item_id("existing");
+        let observation_id = seed_result.observation_ids("existing")[0];
+
+        // Build a job in Relating status with a Duplicate triage outcome.
+        let job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_prompt_version_id(pv_id)
+                    .triage_prompt_version_id(pv_id)
+                    .relation_prompt_version_id(pv_id)
+                    .build(),
+            )
+            .await
+            .expect("setup: insert job");
+        let job_id = job.id();
+
+        PgTaskRepository
+            .insert_for_test(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job_id)
+                    .task_type(TaskType::Extraction)
+                    .build(),
+                TaskStatus::Completed,
+            )
+            .await
+            .expect("setup: insert extraction task");
+
+        PgExtractionResultRepository
+            .insert(
+                &mut conn,
+                &a_new_extraction_result()
+                    .job_id(job_id)
+                    .candidates(candidates_json(&candidates))
+                    .build(),
+            )
+            .await
+            .expect("setup: insert extraction result");
+
+        PgJobRepository
+            .update_batch_size(&mut conn, job_id, 1, 1)
+            .await
+            .expect("setup: update batch size");
+
+        PgJobRepository
+            .update_status(
+                &mut conn,
+                job_id,
+                &JobStatusTransition::builder()
+                    .status(JobStatus::Triaging)
+                    .build(),
+            )
+            .await
+            .expect("setup: transition to triaging");
+
+        PgTaskRepository
+            .insert_for_test(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job_id)
+                    .task_type(TaskType::Triage)
+                    .batch_index(Some(0))
+                    .build(),
+                TaskStatus::Completed,
+            )
+            .await
+            .expect("setup: insert triage task");
+
+        PgTriageResultRepository
+            .insert(
+                &mut conn,
+                &a_new_triage_result_duplicate()
+                    .job_id(job_id)
+                    .batch_index(0)
+                    .outcome(TriageOutcome::Duplicate {
+                        observation_id,
+                        matched_item_id: matched_ki_id,
+                    })
+                    .build(),
+            )
+            .await
+            .expect("setup: insert triage result");
+
+        PgJobRepository
+            .update_status(
+                &mut conn,
+                job_id,
+                &JobStatusTransition::builder()
+                    .status(JobStatus::Relating)
+                    .build(),
+            )
+            .await
+            .expect("setup: transition to relating");
+
+        PgTaskRepository
+            .insert(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job_id)
+                    .task_type(TaskType::Relation)
+                    .build(),
+            )
+            .await
+            .expect("setup: insert relation task");
+
+        job_id
+    };
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(empty_relation_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let job = poll_job_status(&pool, job_id, JobStatus::Completed, POLL_SETTLE).await;
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(job.status(), JobStatus::Completed);
+    assert_eq!(
+        job.outcome(),
+        Some(JobOutcome::Empty),
+        "all duplicates should produce Empty outcome",
+    );
+    assert!(
+        job.committed_batch_id().is_some(),
+        "committed_batch_id should be set",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies the idempotency guard: when `committed_batch_id` is already
+/// set, the relation stage skips the LLM call and completes the task
+/// without modifying job state.
+#[tokio::test]
+async fn test_relation_stage_idempotency_skip() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "relation-idempotency").await;
+
+    let candidates = vec![a_candidate().build()];
+
+    let task_id = {
+        let mut conn = raw_conn(ctx).await;
+        let (job_id, task_id, _) =
+            seed_relation_job(&mut conn, principal_id, project_id, pv_id, &candidates, &[]).await;
+
+        // Pre-set committed_batch_id to simulate a previous successful
+        // relation commit.
+        PgJobRepository
+            .set_committed_batch_id(&mut conn, job_id, RelationBatchId::new())
+            .await
+            .expect("setup: set committed_batch_id");
+
+        task_id
+    };
+
+    // The inference provider should never be called.
+    let inference: Arc<MockInferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                tribal_inference::InferenceError::ProviderUnavailable {
+                    provider: "mock".into(),
+                    reason: "inference should not be called".into(),
+                }
+            })))
+            .build(),
+    );
+    let inference_ref = Arc::clone(&inference);
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference as Arc<dyn InferenceProvider>),
+        None,
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    assert_eq!(
+        inference_ref.call_count(),
+        0,
+        "inference should not be called when committed_batch_id is set",
     );
 
     teardown(ctx).await;

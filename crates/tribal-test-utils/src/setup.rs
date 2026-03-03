@@ -7,8 +7,8 @@
 
 use sqlx::PgConnection;
 use tribal_db::{
-    ExtractionResultRepository, JobRepository, JobStatusTransition, NewPromptVersion,
-    PgExtractionResultRepository, PgJobRepository, PgKnowledgeItemRepository,
+    ExtractionResultRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,
+    NewPromptVersion, PgExtractionResultRepository, PgJobRepository, PgKnowledgeItemRepository,
     PgPromptVersionRepository, PgTaskRepository, PgTriageResultRepository, PromptVersionRepository,
     TaskRepository, TriageResultRepository,
 };
@@ -367,6 +367,70 @@ pub async fn seed_multiple_triage_tasks(
 }
 
 // ---------------------------------------------------------------------------
+// seed_triage_created_outcomes
+// ---------------------------------------------------------------------------
+
+/// Creates a knowledge item, a completed triage task, and a `Created`
+/// triage result for each batch index in `0..batch_size`.
+///
+/// Returns the knowledge item IDs in batch-index order.
+///
+/// # Panics
+///
+/// Panics if any insert fails.
+async fn seed_triage_created_outcomes(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    principal_id: PrincipalId,
+    project_id: ProjectId,
+    batch_size: u32,
+) -> Vec<KnowledgeItemId> {
+    let mut ki_ids = Vec::with_capacity(batch_size as usize);
+
+    for batch_index in 0..batch_size {
+        let ki = PgKnowledgeItemRepository
+            .insert(
+                conn,
+                &a_new_knowledge_item()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .build(),
+            )
+            .await
+            .expect("setup: insert knowledge item");
+        let ki_id = ki.id();
+        ki_ids.push(ki_id);
+
+        PgTaskRepository
+            .insert_for_test(
+                conn,
+                &a_new_task()
+                    .job_id(job_id)
+                    .task_type(TaskType::Triage)
+                    .batch_index(Some(batch_index))
+                    .build(),
+                TaskStatus::Completed,
+            )
+            .await
+            .expect("setup: insert triage task");
+
+        PgTriageResultRepository
+            .insert(
+                conn,
+                &a_new_triage_result_created()
+                    .job_id(job_id)
+                    .batch_index(batch_index)
+                    .outcome(TriageOutcome::Created { item_id: ki_id })
+                    .build(),
+            )
+            .await
+            .expect("setup: insert triage result");
+    }
+
+    ki_ids
+}
+
+// ---------------------------------------------------------------------------
 // seed_relation_job
 // ---------------------------------------------------------------------------
 
@@ -453,50 +517,8 @@ pub async fn seed_relation_job(
         .expect("setup: transition job to triaging");
 
     // Create knowledge items and triage results (Created) for each candidate.
-    let mut ki_ids = Vec::with_capacity(candidates.len());
-    for (i, _candidate) in candidates.iter().enumerate() {
-        let batch_index = u32::try_from(i).expect("batch index fits u32");
-
-        let ki = PgKnowledgeItemRepository
-            .insert(
-                conn,
-                &a_new_knowledge_item()
-                    .project_id(project_id)
-                    .principal_id(principal_id)
-                    .build(),
-            )
-            .await
-            .expect("setup: insert knowledge item");
-        let ki_id = ki.id();
-        ki_ids.push(ki_id);
-
-        // Mark triage task as completed.
-        PgTaskRepository
-            .insert_for_test(
-                conn,
-                &a_new_task()
-                    .job_id(job_id)
-                    .task_type(TaskType::Triage)
-                    .batch_index(Some(batch_index))
-                    .build(),
-                TaskStatus::Completed,
-            )
-            .await
-            .expect("setup: insert triage task");
-
-        // Insert triage result with Created outcome.
-        PgTriageResultRepository
-            .insert(
-                conn,
-                &a_new_triage_result_created()
-                    .job_id(job_id)
-                    .batch_index(batch_index)
-                    .outcome(TriageOutcome::Created { item_id: ki_id })
-                    .build(),
-            )
-            .await
-            .expect("setup: insert triage result");
-    }
+    let ki_ids =
+        seed_triage_created_outcomes(conn, job_id, principal_id, project_id, batch_size).await;
 
     // Transition to Relating.
     let relating = JobStatusTransition::builder()
