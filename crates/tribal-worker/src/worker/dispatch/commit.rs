@@ -296,7 +296,7 @@ impl Worker {
 
     /// Commits relation stage effects within a single transaction.
     ///
-    /// **`Relate`**: batch-inserts relations, seals the committed batch ID,
+    /// **`Relate`**: seals the committed batch ID, batch-inserts relations,
     /// transitions the job to `Completed` with the computed outcome, and
     /// completes the task.
     ///

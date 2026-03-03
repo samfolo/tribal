@@ -188,8 +188,7 @@ pub trait JobRepository {
     ///
     /// The update only takes effect when `committed_batch_id` is currently
     /// `NULL`. Returns `Some(job)` on success, or `None` if the batch ID
-    /// was already set (idempotency hit from a concurrent or retried
-    /// commit).
+    /// was already set (idempotency hit) or the job does not exist.
     ///
     /// # Errors
     ///
