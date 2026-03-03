@@ -117,6 +117,58 @@ impl Worker {
 }
 
 // ---------------------------------------------------------------------------
+// Data loading
+// ---------------------------------------------------------------------------
+
+impl Worker {
+    /// Loads all relation stage inputs from the database using a single
+    /// pooled connection.
+    ///
+    /// Returns the assembled prompt context, the raw triage results
+    /// (needed for commit decision building), and the validated batch
+    /// size.
+    async fn load_relation_context(
+        &self,
+        job: &Job,
+    ) -> Result<(RelationPromptContext, Vec<TriageResult>, u32), StageError> {
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| relation_sqlx_error("acquiring connection", e))?;
+
+        let (candidates, relation_hints) = load_extraction_data(&mut conn, job).await?;
+        let triage_results = load_triage_results(&mut conn, job).await?;
+        let similar_item_decisions = load_similar_item_decisions(&mut conn, job).await?;
+        let decision_contexts =
+            build_similar_item_decision_contexts(&mut conn, &similar_item_decisions).await?;
+
+        drop(conn);
+
+        let Some(batch_size) = job.batch_size() else {
+            return Err(StageError::Database {
+                stage: STAGE_RELATION.into(),
+                context: format!("missing batch_size for job {}", job.id()),
+                source: tribal_db::DbError::NotFound {
+                    entity: "job.batch_size",
+                    id: job.id().to_string(),
+                },
+            });
+        };
+
+        let candidate_outcomes = build_candidate_outcomes(candidates, &triage_results, batch_size)?;
+
+        let prompt_context = RelationPromptContext {
+            candidates: candidate_outcomes,
+            relation_hints,
+            similar_item_decisions: decision_contexts,
+        };
+
+        Ok((prompt_context, triage_results, batch_size))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Stage implementation
 // ---------------------------------------------------------------------------
 
@@ -170,34 +222,13 @@ impl Worker {
 
             let include_llm_content = self.config().include_llm_content;
 
-            let (extraction_data, triage_results, similar_item_decisions) = tokio::try_join!(
-                self.load_extraction_data(job),
-                self.load_triage_results(job),
-                self.load_similar_item_decisions(job),
-            )?;
-            let (candidates, relation_hints) = extraction_data;
+            let (prompt_context, triage_results, batch_size) =
+                self.load_relation_context(job).await?;
 
             // Load prompt version.
             let prompt_version = self
                 .load_prompt_version(STAGE_RELATION, job.relation_prompt_version_id())
                 .await?;
-
-            // Build CandidateOutcome list.
-            let batch_size = job.batch_size().unwrap_or(0);
-            let candidate_outcomes =
-                build_candidate_outcomes(candidates, &triage_results, batch_size);
-
-            // Build SimilarItemDecisionContext list.
-            let decision_contexts = self
-                .build_similar_item_decision_contexts(&similar_item_decisions)
-                .await?;
-
-            // Assemble prompt context.
-            let prompt_context = RelationPromptContext {
-                candidates: candidate_outcomes,
-                relation_hints,
-                similar_item_decisions: decision_contexts,
-            };
 
             // Acquire semaphore.
             let semaphore = self.relation_semaphore();
@@ -270,145 +301,125 @@ impl Worker {
 // Private helpers — data loading
 // ---------------------------------------------------------------------------
 
-impl Worker {
-    /// Loads candidates and relation hints from the extraction result.
-    async fn load_extraction_data(
-        &self,
-        job: &Job,
-    ) -> Result<(Vec<Candidate>, Vec<RelationHint>), StageError> {
-        let mut conn =
-            self.pool().acquire().await.map_err(|e| {
-                relation_sqlx_error("acquiring connection for extraction result", e)
-            })?;
-
-        let extraction_result = PgExtractionResultRepository
-            .find_by_job_id(&mut conn, job.id())
-            .await
-            .map_err(|e| relation_db_error("loading extraction result", e))?
-            .ok_or_else(|| StageError::Database {
-                stage: STAGE_RELATION.into(),
-                context: format!("no extraction result for job {}", job.id()),
-                source: tribal_db::DbError::NotFound {
-                    entity: "extraction_result",
-                    id: job.id().to_string(),
-                },
-            })?;
-
-        let candidates: Vec<Candidate> =
-            serde_json::from_value(extraction_result.candidates().clone()).map_err(|_| {
-                let raw: String = extraction_result
-                    .candidates()
-                    .to_string()
-                    .chars()
-                    .take(PARSE_PREVIEW_LENGTH)
-                    .collect();
-                StageError::Parse {
-                    context: format!("deserialising candidates for job {}", job.id()),
-                    raw_response: Some(raw),
-                }
-            })?;
-
-        let relation_hints: Vec<RelationHint> =
-            serde_json::from_value(extraction_result.relation_hints().clone()).map_err(|_| {
-                let raw: String = extraction_result
-                    .relation_hints()
-                    .to_string()
-                    .chars()
-                    .take(PARSE_PREVIEW_LENGTH)
-                    .collect();
-                StageError::Parse {
-                    context: format!("deserialising relation hints for job {}", job.id()),
-                    raw_response: Some(raw),
-                }
-            })?;
-
-        Ok((candidates, relation_hints))
-    }
-
-    /// Loads all triage results for the job.
-    async fn load_triage_results(&self, job: &Job) -> Result<Vec<TriageResult>, StageError> {
-        let mut conn = self
-            .pool()
-            .acquire()
-            .await
-            .map_err(|e| relation_sqlx_error("acquiring connection for triage results", e))?;
-
-        PgTriageResultRepository
-            .find_by_job_id(&mut conn, job.id())
-            .await
-            .map_err(|e| relation_db_error("loading triage results", e))
-    }
-
-    /// Loads all triage similar item decisions for the job.
-    async fn load_similar_item_decisions(
-        &self,
-        job: &Job,
-    ) -> Result<Vec<TriageSimilarItemDecision>, StageError> {
-        let mut conn = self.pool().acquire().await.map_err(|e| {
-            relation_sqlx_error("acquiring connection for similar item decisions", e)
+/// Loads candidates and relation hints from the extraction result.
+async fn load_extraction_data(
+    conn: &mut sqlx::PgConnection,
+    job: &Job,
+) -> Result<(Vec<Candidate>, Vec<RelationHint>), StageError> {
+    let extraction_result = PgExtractionResultRepository
+        .find_by_job_id(conn, job.id())
+        .await
+        .map_err(|e| relation_db_error("loading extraction result", e))?
+        .ok_or_else(|| StageError::Database {
+            stage: STAGE_RELATION.into(),
+            context: format!("no extraction result for job {}", job.id()),
+            source: tribal_db::DbError::NotFound {
+                entity: "extraction_result",
+                id: job.id().to_string(),
+            },
         })?;
 
-        PgTriageSimilarItemDecisionRepository
-            .find_by_job_id(&mut conn, job.id())
-            .await
-            .map_err(|e| relation_db_error("loading similar item decisions", e))
+    let candidates: Vec<Candidate> = serde_json::from_value(extraction_result.candidates().clone())
+        .map_err(|_| {
+            let raw: String = extraction_result
+                .candidates()
+                .to_string()
+                .chars()
+                .take(PARSE_PREVIEW_LENGTH)
+                .collect();
+            StageError::Parse {
+                context: format!("deserialising candidates for job {}", job.id()),
+                raw_response: Some(raw),
+            }
+        })?;
+
+    let relation_hints: Vec<RelationHint> =
+        serde_json::from_value(extraction_result.relation_hints().clone()).map_err(|_| {
+            let raw: String = extraction_result
+                .relation_hints()
+                .to_string()
+                .chars()
+                .take(PARSE_PREVIEW_LENGTH)
+                .collect();
+            StageError::Parse {
+                context: format!("deserialising relation hints for job {}", job.id()),
+                raw_response: Some(raw),
+            }
+        })?;
+
+    Ok((candidates, relation_hints))
+}
+
+/// Loads all triage results for the job.
+async fn load_triage_results(
+    conn: &mut sqlx::PgConnection,
+    job: &Job,
+) -> Result<Vec<TriageResult>, StageError> {
+    PgTriageResultRepository
+        .find_by_job_id(conn, job.id())
+        .await
+        .map_err(|e| relation_db_error("loading triage results", e))
+}
+
+/// Loads all triage similar item decisions for the job.
+async fn load_similar_item_decisions(
+    conn: &mut sqlx::PgConnection,
+    job: &Job,
+) -> Result<Vec<TriageSimilarItemDecision>, StageError> {
+    PgTriageSimilarItemDecisionRepository
+        .find_by_job_id(conn, job.id())
+        .await
+        .map_err(|e| relation_db_error("loading similar item decisions", e))
+}
+
+/// Builds `SimilarItemDecisionContext` records by loading matched
+/// item content from the knowledge item repository.
+async fn build_similar_item_decision_contexts(
+    conn: &mut sqlx::PgConnection,
+    decisions: &[TriageSimilarItemDecision],
+) -> Result<Vec<SimilarItemDecisionContext>, StageError> {
+    if decisions.is_empty() {
+        return Ok(vec![]);
     }
 
-    /// Builds `SimilarItemDecisionContext` records by loading matched
-    /// item content from the knowledge item repository.
-    async fn build_similar_item_decision_contexts(
-        &self,
-        decisions: &[TriageSimilarItemDecision],
-    ) -> Result<Vec<SimilarItemDecisionContext>, StageError> {
-        if decisions.is_empty() {
-            return Ok(vec![]);
-        }
+    let unique_ids: Vec<KnowledgeItemId> = decisions
+        .iter()
+        .map(TriageSimilarItemDecision::matched_item_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
 
-        let unique_ids: Vec<KnowledgeItemId> = decisions
-            .iter()
-            .map(TriageSimilarItemDecision::matched_item_id)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+    let items = PgKnowledgeItemRepository
+        .find_by_ids(conn, &unique_ids)
+        .await
+        .map_err(|e| relation_db_error("loading knowledge items for context", e))?;
 
-        let mut conn = self
-            .pool()
-            .acquire()
-            .await
-            .map_err(|e| relation_sqlx_error("acquiring connection for knowledge items", e))?;
+    let content_by_id: HashMap<KnowledgeItemId, String> = items
+        .into_iter()
+        .map(|item| (item.id(), item.content().to_owned()))
+        .collect();
 
-        let items = PgKnowledgeItemRepository
-            .find_by_ids(&mut conn, &unique_ids)
-            .await
-            .map_err(|e| relation_db_error("loading knowledge items for context", e))?;
+    Ok(decisions
+        .iter()
+        .filter_map(|d| {
+            let Some(content) = content_by_id.get(&d.matched_item_id()) else {
+                tracing::debug!(
+                    matched_item_id = %d.matched_item_id(),
+                    "dropping similar item decision — item not found",
+                );
+                return None;
+            };
 
-        let content_by_id: HashMap<KnowledgeItemId, String> = items
-            .into_iter()
-            .map(|item| (item.id(), item.content().to_owned()))
-            .collect();
-
-        Ok(decisions
-            .iter()
-            .filter_map(|d| {
-                let Some(content) = content_by_id.get(&d.matched_item_id()) else {
-                    tracing::debug!(
-                        matched_item_id = %d.matched_item_id(),
-                        "dropping similar item decision — item not found",
-                    );
-                    return None;
-                };
-
-                Some(SimilarItemDecisionContext {
-                    batch_index: d.batch_index(),
-                    matched_item_id: d.matched_item_id(),
-                    matched_content: content.clone(),
-                    similarity_score: d.similarity_score(),
-                    suggested_relation: d.suggested_relation(),
-                    justification: d.justification_text().to_owned(),
-                })
+            Some(SimilarItemDecisionContext {
+                batch_index: d.batch_index(),
+                matched_item_id: d.matched_item_id(),
+                matched_content: content.clone(),
+                similarity_score: d.similarity_score(),
+                suggested_relation: d.suggested_relation(),
+                justification: d.justification_text().to_owned(),
             })
-            .collect())
-    }
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -418,28 +429,36 @@ impl Worker {
 /// Builds the `CandidateOutcome` list by joining candidates with triage
 /// results by batch index.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `batch_size` exceeds the candidates array length — this
-/// indicates data corruption between the extraction result and the
-/// job's `batch_size` field.
+/// Returns [`StageError::Database`] if `batch_size` exceeds the
+/// candidates array length — this indicates data corruption between
+/// the extraction result and the job's `batch_size` field.
 fn build_candidate_outcomes(
     candidates: Vec<Candidate>,
     triage_results: &[TriageResult],
     batch_size: u32,
-) -> Vec<CandidateOutcome> {
-    assert!(
-        (batch_size as usize) <= candidates.len(),
-        "batch_size ({batch_size}) exceeds candidates length ({})",
-        candidates.len(),
-    );
+) -> Result<Vec<CandidateOutcome>, StageError> {
+    if (batch_size as usize) > candidates.len() {
+        return Err(StageError::Database {
+            stage: STAGE_RELATION.into(),
+            context: format!(
+                "batch_size ({batch_size}) exceeds candidates length ({})",
+                candidates.len(),
+            ),
+            source: tribal_db::DbError::NotFound {
+                entity: "candidates",
+                id: format!("expected >= {batch_size}, found {}", candidates.len()),
+            },
+        });
+    }
 
     let triage_by_index: HashMap<u32, &TriageResult> = triage_results
         .iter()
         .map(|r| (r.batch_index(), r))
         .collect();
 
-    candidates
+    Ok(candidates
         .into_iter()
         .enumerate()
         .take(batch_size as usize)
@@ -463,7 +482,7 @@ fn build_candidate_outcomes(
                 item_id,
             }
         })
-        .collect()
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
