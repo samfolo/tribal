@@ -403,18 +403,20 @@ async fn build_similar_item_decision_contexts(
         .map(|item| (item.id(), item.content().to_owned()))
         .collect();
 
-    Ok(decisions
+    decisions
         .iter()
-        .filter_map(|d| {
-            let Some(content) = content_by_id.get(&d.matched_item_id()) else {
-                tracing::debug!(
-                    matched_item_id = %d.matched_item_id(),
-                    "dropping similar item decision — item not found",
-                );
-                return None;
-            };
+        .map(|d| {
+            let content = content_by_id.get(&d.matched_item_id()).ok_or_else(|| {
+                relation_db_error(
+                    "similar item decision refers to missing knowledge item",
+                    tribal_db::DbError::NotFound {
+                        entity: "knowledge_item",
+                        id: d.matched_item_id().to_string(),
+                    },
+                )
+            })?;
 
-            Some(SimilarItemDecisionContext {
+            Ok(SimilarItemDecisionContext {
                 batch_index: d.batch_index(),
                 matched_item_id: d.matched_item_id(),
                 matched_content: content.clone(),
@@ -423,7 +425,7 @@ async fn build_similar_item_decision_contexts(
                 justification: d.justification_text().to_owned(),
             })
         })
-        .collect())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

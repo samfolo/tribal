@@ -188,10 +188,11 @@ pub trait JobRepository {
     ///
     /// The update only takes effect when `committed_batch_id` is currently
     /// `NULL`. Returns `Some(job)` on success, or `None` if the batch ID
-    /// was already set (idempotency hit) or the job does not exist.
+    /// was already set (idempotency hit).
     ///
     /// # Errors
     ///
+    /// Returns [`DbError::NotFound`] if no job with the given ID exists.
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn set_committed_batch_id(
         &self,
@@ -411,7 +412,28 @@ impl JobRepository for PgJobRepository {
                 source: e,
             })?;
 
-        Ok(row.map(|r| map_job_row(&r)))
+        if let Some(r) = row {
+            return Ok(Some(map_job_row(&r)));
+        }
+
+        // Zero rows updated — distinguish "already set" from "not found".
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs WHERE id = $1)")
+            .bind(id.inner())
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("checking job existence for {id}"),
+                source: e,
+            })?;
+
+        if exists {
+            Ok(None)
+        } else {
+            Err(DbError::NotFound {
+                entity: "job",
+                id: id.to_string(),
+            })
+        }
     }
 
     async fn fail_stale_dead_lettered_jobs(

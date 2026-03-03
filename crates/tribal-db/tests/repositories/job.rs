@@ -502,17 +502,19 @@ async fn test_set_committed_batch_id_already_set_returns_none() {
 }
 
 #[tokio::test]
-async fn test_set_committed_batch_id_nonexistent_returns_none() {
+async fn test_set_committed_batch_id_not_found() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
     let result = repo
         .set_committed_batch_id(&mut txn, JobId::new(), RelationBatchId::new())
-        .await
-        .expect("set_committed_batch_id");
+        .await;
 
-    assert!(result.is_none(), "nonexistent job should return None");
+    assert!(matches!(
+        result,
+        Err(DbError::NotFound { entity: "job", .. })
+    ));
 }
 
 // ---------------------------------------------------------------------------
