@@ -313,6 +313,7 @@ impl Worker {
             { span_attrs::JOB_OUTCOME } = tracing::field::Empty,
             { span_attrs::RELATION_BATCH_ID } = tracing::field::Empty,
             { span_attrs::RELATIONS_COMMITTED } = tracing::field::Empty,
+            { span_attrs::RELATIONS_SKIPPED } = tracing::field::Empty,
         );
 
         async {
