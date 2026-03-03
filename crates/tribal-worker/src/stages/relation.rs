@@ -81,6 +81,8 @@ pub(crate) enum RelationCommitDecision {
         batch_id: RelationBatchId,
         /// The computed job outcome.
         outcome: JobOutcome,
+        /// Number of edges dropped during normalisation.
+        skipped: usize,
     },
     /// Idempotency skip — `committed_batch_id` already set.
     NoOp,
@@ -153,7 +155,6 @@ impl Worker {
             { span_attrs::TASK_ID } = %task.id(),
             { span_attrs::LLM_STAGE } = "relation",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
-            { span_attrs::RELATIONS_SKIPPED } = tracing::field::Empty,
         );
 
         async {
@@ -184,7 +185,7 @@ impl Worker {
             // Build CandidateOutcome list.
             let batch_size = job.batch_size().unwrap_or(0);
             let candidate_outcomes =
-                build_candidate_outcomes(&candidates, &triage_results, batch_size);
+                build_candidate_outcomes(candidates, &triage_results, batch_size);
 
             // Build SimilarItemDecisionContext list.
             let decision_contexts = self
@@ -194,7 +195,7 @@ impl Worker {
             // Assemble prompt context.
             let prompt_context = RelationPromptContext {
                 candidates: candidate_outcomes,
-                relation_hints: relation_hints.clone(),
+                relation_hints,
                 similar_item_decisions: decision_contexts,
             };
 
@@ -248,14 +249,12 @@ impl Worker {
                 })?
             };
 
-            let (decision, skipped) = build_commit_decision(
+            let decision = build_commit_decision(
                 output.relations,
                 &triage_results,
                 batch_size,
                 job.principal_id(),
             );
-
-            tracing::Span::current().record(span_attrs::RELATIONS_SKIPPED, skipped);
 
             Ok(StageOutput {
                 commit: StageCommit::Relation { decision },
@@ -425,7 +424,7 @@ impl Worker {
 /// indicates data corruption between the extraction result and the
 /// job's `batch_size` field.
 fn build_candidate_outcomes(
-    candidates: &[Candidate],
+    candidates: Vec<Candidate>,
     triage_results: &[TriageResult],
     batch_size: u32,
 ) -> Vec<CandidateOutcome> {
@@ -440,10 +439,12 @@ fn build_candidate_outcomes(
         .map(|r| (r.batch_index(), r))
         .collect();
 
-    (0..batch_size)
-        .map(|i| {
-            let candidate = candidates[i as usize].clone();
-
+    candidates
+        .into_iter()
+        .enumerate()
+        .take(batch_size as usize)
+        .map(|(i, candidate)| {
+            let i = i as u32;
             let (outcome, item_id) = match triage_by_index.get(&i) {
                 Some(result) => match result.outcome() {
                     TriageOutcome::Created { item_id } => ("created".into(), Some(*item_id)),
@@ -476,7 +477,7 @@ fn build_commit_decision(
     triage_results: &[TriageResult],
     batch_size: u32,
     principal_id: PrincipalId,
-) -> (RelationCommitDecision, usize) {
+) -> RelationCommitDecision {
     let (normalised, skipped) = normalise_edges(edges, triage_results);
     let outcome = compute_outcome(triage_results, batch_size);
     let batch_id = RelationBatchId::new();
@@ -495,13 +496,12 @@ fn build_commit_decision(
         })
         .collect();
 
-    let decision = RelationCommitDecision::Relate {
+    RelationCommitDecision::Relate {
         relations,
         batch_id,
         outcome,
-    };
-
-    (decision, skipped)
+        skipped,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -534,7 +534,7 @@ fn normalise_edges(
         .collect();
 
     let mut seen = HashSet::new();
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(edges.len());
     let mut skipped: usize = 0;
 
     for edge in edges {
