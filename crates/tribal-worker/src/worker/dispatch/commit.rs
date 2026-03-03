@@ -331,7 +331,7 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "beginning transaction", e))?;
 
-            match decision {
+            let is_terminal = match decision {
                 RelationCommitDecision::Relate {
                     relations,
                     batch_id,
@@ -349,6 +349,7 @@ impl Worker {
                         claim_token,
                     )
                     .await?;
+                    true
                 }
                 RelationCommitDecision::NoOp => {
                     let rows = PgTaskRepository
@@ -361,12 +362,18 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
+                    false
                 }
-            }
+            };
 
             txn.commit()
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "committing transaction", e))?;
+
+            if is_terminal {
+                self.notify_job_state(job_id);
+                self.remove_job_state(job_id);
+            }
 
             tracing::info!(
                 task_id = %task.id(),
@@ -433,9 +440,6 @@ impl Worker {
             .record(span_attrs::RELATION_BATCH_ID, batch_id.to_string().as_str());
         tracing::Span::current().record(span_attrs::RELATIONS_COMMITTED, relations_count);
         tracing::Span::current().record(span_attrs::RELATIONS_SKIPPED, skipped);
-
-        self.notify_job_state(job_id);
-        self.remove_job_state(job_id);
 
         Ok(())
     }
