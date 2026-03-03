@@ -14,8 +14,9 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    Candidate, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
-    RelationKind, Task, TriageOutcome, TriageResult, TriageSimilarItemDecision, span_attrs,
+    Candidate, ExtractionResult, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId,
+    RelationHint, RelationKind, Task, TriageOutcome, TriageResult, TriageSimilarItemDecision,
+    span_attrs,
 };
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
@@ -123,6 +124,7 @@ impl Worker {
             { span_attrs::TASK_ID } = %task.id(),
             { span_attrs::LLM_STAGE } = "relation",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
+            { span_attrs::RELATIONS_SKIPPED } = tracing::field::Empty,
         );
 
         async {
@@ -217,12 +219,14 @@ impl Worker {
                 })?
             };
 
-            let decision = build_commit_decision(
+            let (decision, skipped) = build_commit_decision(
                 output.relations,
                 &triage_results,
                 batch_size,
                 job.principal_id(),
             );
+
+            tracing::Span::current().record(span_attrs::RELATIONS_SKIPPED, skipped);
 
             Ok(StageOutput {
                 commit: StageCommit::Relation { decision },
@@ -443,8 +447,8 @@ fn build_commit_decision(
     triage_results: &[TriageResult],
     batch_size: u32,
     principal_id: PrincipalId,
-) -> RelationCommitDecision {
-    let normalised = normalise_edges(edges, triage_results);
+) -> (RelationCommitDecision, usize) {
+    let (normalised, skipped) = normalise_edges(edges, triage_results);
     let outcome = compute_outcome(triage_results, batch_size);
     let batch_id = RelationBatchId::new();
 
@@ -462,11 +466,13 @@ fn build_commit_decision(
         })
         .collect();
 
-    RelationCommitDecision::Relate {
+    let decision = RelationCommitDecision::Relate {
         relations,
         batch_id,
         outcome,
-    }
+    };
+
+    (decision, skipped)
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +495,10 @@ struct ResolvedEdge {
 /// 3. Drop unresolvable edges.
 /// 4. Drop self-edges.
 /// 5. Deduplicate `(source_id, target_id, relation_type)` triples.
-fn normalise_edges(edges: Vec<RelationEdge>, triage_results: &[TriageResult]) -> Vec<ResolvedEdge> {
+fn normalise_edges(
+    edges: Vec<RelationEdge>,
+    triage_results: &[TriageResult],
+) -> (Vec<ResolvedEdge>, usize) {
     let triage_by_index: HashMap<u32, &TriageResult> = triage_results
         .iter()
         .map(|r| (r.batch_index(), r))
@@ -497,6 +506,7 @@ fn normalise_edges(edges: Vec<RelationEdge>, triage_results: &[TriageResult]) ->
 
     let mut seen = HashSet::new();
     let mut result = Vec::new();
+    let mut skipped: usize = 0;
 
     for edge in edges {
         // Step 1: drop Supersedes.
@@ -505,6 +515,7 @@ fn normalise_edges(edges: Vec<RelationEdge>, triage_results: &[TriageResult]) ->
                 ?edge.source, ?edge.target,
                 "dropping supersedes edge",
             );
+            skipped += 1;
             continue;
         }
 
@@ -514,6 +525,7 @@ fn normalise_edges(edges: Vec<RelationEdge>, triage_results: &[TriageResult]) ->
                 ?edge.source, ?edge.target, relation_type = ?edge.relation_type,
                 "dropping edge — unresolvable source",
             );
+            skipped += 1;
             continue;
         };
         let Some(target_id) = resolve_target(&edge.target, &triage_by_index) else {
@@ -521,6 +533,7 @@ fn normalise_edges(edges: Vec<RelationEdge>, triage_results: &[TriageResult]) ->
                 ?edge.source, ?edge.target, relation_type = ?edge.relation_type,
                 "dropping edge — unresolvable target",
             );
+            skipped += 1;
             continue;
         };
 
@@ -530,6 +543,7 @@ fn normalise_edges(edges: Vec<RelationEdge>, triage_results: &[TriageResult]) ->
                 %source_id, relation_type = ?edge.relation_type,
                 "dropping self-edge",
             );
+            skipped += 1;
             continue;
         }
 
@@ -540,6 +554,7 @@ fn normalise_edges(edges: Vec<RelationEdge>, triage_results: &[TriageResult]) ->
                 %source_id, %target_id, relation_type = ?edge.relation_type,
                 "dropping duplicate edge",
             );
+            skipped += 1;
             continue;
         }
 
@@ -551,7 +566,7 @@ fn normalise_edges(edges: Vec<RelationEdge>, triage_results: &[TriageResult]) ->
         });
     }
 
-    result
+    (result, skipped)
 }
 
 /// Resolves a single `RelationTarget` to a `KnowledgeItemId`.
@@ -685,8 +700,9 @@ mod tests {
             RelationKind::Supersedes,
         )];
 
-        let normalised = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &results);
         assert!(normalised.is_empty());
+        assert_eq!(skipped, 1);
     }
 
     #[test]
@@ -700,10 +716,11 @@ mod tests {
             RelationKind::Supports,
         )];
 
-        let normalised = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &results);
         assert_eq!(normalised.len(), 1);
         assert_eq!(normalised[0].source_id, ki_a);
         assert_eq!(normalised[0].target_id, ki_b);
+        assert_eq!(skipped, 0);
     }
 
     #[test]
@@ -722,10 +739,11 @@ mod tests {
             RelationKind::Supports,
         )];
 
-        let normalised = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &results);
         assert_eq!(normalised.len(), 1);
         assert_eq!(normalised[0].source_id, ki_created);
         assert_eq!(normalised[0].target_id, ki_existing);
+        assert_eq!(skipped, 0);
     }
 
     #[test]
@@ -738,8 +756,9 @@ mod tests {
             RelationKind::Supports,
         )];
 
-        let normalised = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &results);
         assert!(normalised.is_empty());
+        assert_eq!(skipped, 1);
     }
 
     #[test]
@@ -752,8 +771,9 @@ mod tests {
             RelationKind::Supports,
         )];
 
-        let normalised = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &results);
         assert!(normalised.is_empty());
+        assert_eq!(skipped, 1);
     }
 
     #[test]
@@ -774,8 +794,9 @@ mod tests {
             ),
         ];
 
-        let normalised = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &results);
         assert_eq!(normalised.len(), 1);
+        assert_eq!(skipped, 1);
     }
 
     #[test]
@@ -796,8 +817,9 @@ mod tests {
             ),
         ];
 
-        let normalised = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &results);
         assert_eq!(normalised.len(), 2);
+        assert_eq!(skipped, 0);
     }
 
     // -- compute_outcome tests --
