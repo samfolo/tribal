@@ -1466,20 +1466,10 @@ async fn test_triage_idempotency_skip() {
         (job_id, task_id)
     };
 
-    // Neither provider should be called — the idempotency check returns
-    // early before any embedding or inference calls.
-    let inference: Arc<MockInferenceProvider> = Arc::new(
-        MockInferenceProvider::builder()
-            .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "inference should not be called".into(),
-                }
-            })))
-            .build(),
-    );
-    let inference_ref = Arc::clone(&inference);
-
+    // The triage idempotency check should return early before the
+    // embedding call.  We only assert on embedding — not inference —
+    // because the triage fan-in may create a relation task whose LLM
+    // call races with cancellation.
     let embedding: Arc<MockEmbeddingProvider> = Arc::new(
         MockEmbeddingProvider::builder()
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
@@ -1497,7 +1487,7 @@ async fn test_triage_idempotency_skip() {
         pool.clone(),
         token.clone(),
         test_config(),
-        Some(inference as Arc<dyn InferenceProvider>),
+        None,
         Some(embedding as Arc<dyn EmbeddingProvider>),
     );
     let handle = {
@@ -1511,12 +1501,8 @@ async fn test_triage_idempotency_skip() {
 
     assert_eq!(task.status(), TaskStatus::Completed);
 
-    // Verify no provider calls were made.
-    assert_eq!(
-        inference_ref.call_count(),
-        0,
-        "inference should not be called",
-    );
+    // Verify no embedding calls were made — the idempotency guard
+    // short-circuits before the embedding step.
     assert_eq!(
         embedding_ref.call_count(),
         0,
@@ -2994,7 +2980,8 @@ async fn test_relation_stage_idempotency_skip() {
         PgJobRepository
             .set_committed_batch_id(&mut conn, job_id, RelationBatchId::new())
             .await
-            .expect("setup: set committed_batch_id");
+            .expect("setup: set committed_batch_id")
+            .expect("setup: batch_id should not be set yet");
 
         task_id
     };

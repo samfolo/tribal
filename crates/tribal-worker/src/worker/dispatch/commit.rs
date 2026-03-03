@@ -389,6 +389,12 @@ impl Worker {
     }
 
     /// Inner commit path for `RelationCommitDecision::Relate`.
+    ///
+    /// The `committed_batch_id` column is set conditionally (`WHERE
+    /// committed_batch_id IS NULL`). If a concurrent or retried commit
+    /// already wrote a batch, the conditional update returns zero rows
+    /// and this method short-circuits to a task-only completion,
+    /// preventing relation overwrites.
     #[allow(clippy::too_many_arguments)]
     async fn commit_relation_relate(
         &self,
@@ -401,6 +407,28 @@ impl Worker {
         skipped: usize,
         claim_token: uuid::Uuid,
     ) -> Result<(), StageError> {
+        // Attempt to claim the batch slot. If another commit already
+        // wrote a batch_id, skip relation inserts and job transition.
+        if PgJobRepository
+            .set_committed_batch_id(txn, job_id, batch_id)
+            .await
+            .map_err(|e| stage_db_error(STAGE_RELATION, "setting committed batch ID", e))?
+            .is_none()
+        {
+            tracing::warn!("committed_batch_id already set — completing task as idempotency hit");
+
+            let rows = PgTaskRepository
+                .complete(txn, task.id(), claim_token)
+                .await
+                .map_err(|e| stage_db_error(STAGE_RELATION, "completing task", e))?;
+
+            if rows == 0 {
+                return Err(StageError::OwnershipLost);
+            }
+
+            return Ok(());
+        }
+
         let relations_count = relations.len();
 
         if !relations.is_empty() {
@@ -409,11 +437,6 @@ impl Worker {
                 .await
                 .map_err(|e| stage_db_error(STAGE_RELATION, "batch-inserting relations", e))?;
         }
-
-        PgJobRepository
-            .set_committed_batch_id(txn, job_id, batch_id)
-            .await
-            .map_err(|e| stage_db_error(STAGE_RELATION, "setting committed batch ID", e))?;
 
         let transition = JobStatusTransition::builder()
             .status(JobStatus::Completed)
