@@ -1,8 +1,62 @@
-//! Relation response parsing.
+//! Relation response parsing and LLM response types.
 
+use serde::Deserialize;
+use tribal_domain::{KnowledgeItemId, RelationKind};
 use tribal_inference::CompletionResponse;
 
-use crate::{error::StageError, stages::RelationOutput};
+use crate::error::StageError;
+
+// ---------------------------------------------------------------------------
+// RelationOutput
+// ---------------------------------------------------------------------------
+
+/// The deserialised output from the relation LLM call.
+///
+/// Lenient serde — unknown fields are silently ignored so the LLM
+/// can return extra keys without breaking parsing.
+#[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
+pub(crate) struct RelationOutput {
+    /// The complete set of relations to create for this job.
+    pub relations: Vec<RelationEdge>,
+}
+
+/// A single directed relationship edge to create.
+#[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
+pub(crate) struct RelationEdge {
+    /// The source item (the item asserting the relationship).
+    pub source: RelationTarget,
+    /// The target item.
+    pub target: RelationTarget,
+    /// The relationship type.
+    pub relation_type: RelationKind,
+    /// The agent's reasoning for this relationship.
+    #[serde(default)]
+    pub justification: Option<String>,
+}
+
+/// Identifies one end of a relationship edge.
+///
+/// The relation agent may reference items by their batch index (for
+/// candidates created in this episode) or by their `KnowledgeItemId`
+/// (for existing items found during triage similarity search).
+/// The worker resolves batch indices to `KnowledgeItemId`s via triage
+/// results before persisting.
+///
+/// Uses `#[serde(tag = "kind")]` (internally tagged) for explicit
+/// discrimination.
+#[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind")]
+pub(crate) enum RelationTarget {
+    /// A candidate from the current episode, identified by its
+    /// position in the extraction candidates array.
+    /// Wire format: `{"kind": "batch_index", "batch_index": 2}`
+    #[serde(rename = "batch_index")]
+    BatchIndex { batch_index: u32 },
+    /// An existing knowledge item, identified by ID.
+    /// Wire format: `{"kind": "item_id", "item_id": "ki_..."}`
+    #[serde(rename = "item_id")]
+    ItemId { item_id: KnowledgeItemId },
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -32,6 +86,7 @@ pub(crate) fn parse_relation_response(
 mod tests {
     use std::time::Duration;
 
+    use tribal_domain::{KnowledgeItemId, RelationKind};
     use tribal_inference::CompletionUsage;
 
     use super::*;
@@ -62,10 +117,6 @@ mod tests {
 
     #[test]
     fn test_parse_valid_relations_with_batch_index_and_item_id() {
-        use tribal_domain::{KnowledgeItemId, RelationKind};
-
-        use crate::stages::{RelationEdge, RelationTarget};
-
         let ki_id: KnowledgeItemId = "ki_550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
 
         let json = r#"{

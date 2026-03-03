@@ -14,7 +14,7 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    JobId, JobOutcome, JobStatus, RelationBatchId, ReferenceKind, Task, TriageOutcome, span_attrs,
+    JobId, JobOutcome, JobStatus, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
 };
 
 use super::Worker;
@@ -60,9 +60,7 @@ impl Worker {
                 self.commit_triage(task, project_id, decision, similar_item_decisions)
                     .await
             }
-            StageCommit::Relation { decision } => {
-                self.commit_relation(task, decision).await
-            }
+            StageCommit::Relation { decision } => self.commit_relation(task, decision).await,
         }
     }
 
@@ -295,7 +293,6 @@ impl Worker {
         .instrument(span)
         .await
     }
-}
 
     /// Commits relation stage effects within a single transaction.
     ///
@@ -399,17 +396,13 @@ impl Worker {
             PgRelationRepository
                 .batch_insert(txn, &relations)
                 .await
-                .map_err(|e| {
-                    stage_db_error(STAGE_RELATION, "batch-inserting relations", e)
-                })?;
+                .map_err(|e| stage_db_error(STAGE_RELATION, "batch-inserting relations", e))?;
         }
 
         PgJobRepository
             .set_committed_batch_id(txn, job_id, batch_id)
             .await
-            .map_err(|e| {
-                stage_db_error(STAGE_RELATION, "setting committed batch ID", e)
-            })?;
+            .map_err(|e| stage_db_error(STAGE_RELATION, "setting committed batch ID", e))?;
 
         let transition = JobStatusTransition::builder()
             .status(JobStatus::Completed)
@@ -420,9 +413,7 @@ impl Worker {
         PgJobRepository
             .update_status(txn, job_id, &transition)
             .await
-            .map_err(|e| {
-                stage_db_error(STAGE_RELATION, "transitioning job to completed", e)
-            })?;
+            .map_err(|e| stage_db_error(STAGE_RELATION, "transitioning job to completed", e))?;
 
         let rows = PgTaskRepository
             .complete(txn, task.id(), claim_token)
