@@ -165,7 +165,7 @@ mod tests {
                     batch_index: 1,
                     candidate: test_candidate("Ownership prevents data races"),
                     outcome: "duplicate".into(),
-                    item_id: None,
+                    item_id: Some(ki_b),
                 },
                 CandidateOutcome {
                     batch_index: 2,
