@@ -382,12 +382,16 @@ async fn build_similar_item_decision_contexts(
         return Ok(vec![]);
     }
 
-    let unique_ids: Vec<KnowledgeItemId> = decisions
+    let mut seen_ids = HashSet::new();
+    let mut unique_ids = Vec::new();
+    for id in decisions
         .iter()
         .map(TriageSimilarItemDecision::matched_item_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
+    {
+        if seen_ids.insert(id) {
+            unique_ids.push(id);
+        }
+    }
 
     let items = PgKnowledgeItemRepository
         .find_by_ids(conn, &unique_ids)

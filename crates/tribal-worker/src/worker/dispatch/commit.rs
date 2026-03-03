@@ -436,8 +436,10 @@ impl Worker {
         }
 
         tracing::Span::current().record(span_attrs::JOB_OUTCOME, outcome.as_str());
-        tracing::Span::current()
-            .record(span_attrs::RELATION_BATCH_ID, batch_id.to_string().as_str());
+        tracing::Span::current().record(
+            span_attrs::RELATION_BATCH_ID,
+            tracing::field::display(&batch_id),
+        );
         tracing::Span::current().record(span_attrs::RELATIONS_COMMITTED, relations_count);
         tracing::Span::current().record(span_attrs::RELATIONS_SKIPPED, skipped);
 
