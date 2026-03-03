@@ -461,25 +461,58 @@ async fn test_set_committed_batch_id() {
     let updated = repo
         .set_committed_batch_id(&mut txn, job.id(), batch_id)
         .await
-        .expect("set_committed_batch_id");
+        .expect("set_committed_batch_id")
+        .expect("should return Some on first set");
 
     assert_eq!(updated.committed_batch_id(), Some(batch_id));
 }
 
 #[tokio::test]
-async fn test_set_committed_batch_id_not_found() {
+async fn test_set_committed_batch_id_already_set_returns_none() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let (principal_id, project_id, pv_id) =
+        setup_job_prerequisites(&mut txn, "committed-batch-idem").await;
+
+    let new = a_new_job()
+        .project_id(project_id)
+        .principal_id(principal_id)
+        .extraction_prompt_version_id(pv_id)
+        .triage_prompt_version_id(pv_id)
+        .relation_prompt_version_id(pv_id)
+        .build();
+
+    let job = repo.insert(&mut txn, &new).await.expect("insert");
+
+    let first = RelationBatchId::new();
+    let result = repo
+        .set_committed_batch_id(&mut txn, job.id(), first)
+        .await
+        .expect("set_committed_batch_id");
+    assert!(result.is_some(), "first set should succeed");
+
+    let second = RelationBatchId::new();
+    let result = repo
+        .set_committed_batch_id(&mut txn, job.id(), second)
+        .await
+        .expect("set_committed_batch_id");
+    assert!(result.is_none(), "second set should return None");
+}
+
+#[tokio::test]
+async fn test_set_committed_batch_id_nonexistent_returns_none() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
     let result = repo
         .set_committed_batch_id(&mut txn, JobId::new(), RelationBatchId::new())
-        .await;
+        .await
+        .expect("set_committed_batch_id");
 
-    assert!(matches!(
-        result,
-        Err(DbError::NotFound { entity: "job", .. })
-    ));
+    assert!(result.is_none(), "nonexistent job should return None");
 }
 
 // ---------------------------------------------------------------------------
