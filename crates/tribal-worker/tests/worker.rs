@@ -2626,11 +2626,6 @@ fn relation_response_json(ki_ids: &[KnowledgeItemId]) -> String {
     serde_json::json!({ "relations": relations }).to_string()
 }
 
-/// Helper: builds an empty relation response JSON string.
-fn empty_relation_response_json() -> String {
-    serde_json::json!({ "relations": [] }).to_string()
-}
-
 /// Verifies the happy path: the relation stage calls the LLM, parses
 /// the response, commits relations, sets `committed_batch_id`, and
 /// transitions the job to `Completed` with a `Success` outcome.
@@ -2721,17 +2716,18 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
     teardown(ctx).await;
 }
 
-/// Verifies that when all triage outcomes are duplicates, the job
-/// completes with an `Empty` outcome.
+/// Verifies that when all triage outcomes are duplicates, relations
+/// between matched existing items are committed and the job completes
+/// with an `Empty` outcome.
 #[tokio::test]
 async fn test_relation_stage_all_duplicates_empty_outcome() {
     let _guard = serial_lock().await;
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let candidates = vec![a_candidate().build()];
+    let candidates = vec![a_candidate().build(), a_candidate().build()];
 
-    let job_id = {
+    let (job_id, matched_ki_a, matched_ki_b) = {
         let mut conn = raw_conn(ctx).await;
 
         // Seed pre-existing data via Seed builder.
@@ -2743,10 +2739,15 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
             .for_project("proj", |store| {
                 store
                     .add_item(
-                        "existing",
-                        item(KnowledgeKind::Fact, "existing item content").skip_embed(),
+                        "existing_a",
+                        item(KnowledgeKind::Fact, "existing item A content").skip_embed(),
                     )
-                    .observe("existing", SourceType::AgentMediated);
+                    .observe("existing_a", SourceType::AgentMediated)
+                    .add_item(
+                        "existing_b",
+                        item(KnowledgeKind::Fact, "existing item B content").skip_embed(),
+                    )
+                    .observe("existing_b", SourceType::AgentMediated);
             })
             .execute(&mut conn)
             .await;
@@ -2754,10 +2755,12 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
         let principal_id = seed_result.principal_id("user");
         let project_id = seed_result.project_id("proj");
         let pv_id = seed_result.prompt_version_id("pv");
-        let matched_ki_id = seed_result.item_id("existing");
-        let observation_id = seed_result.observation_ids("existing")[0];
+        let matched_ki_a = seed_result.item_id("existing_a");
+        let matched_ki_b = seed_result.item_id("existing_b");
+        let obs_id_a = seed_result.observation_ids("existing_a")[0];
+        let obs_id_b = seed_result.observation_ids("existing_b")[0];
 
-        // Build a job in Relating status with a Duplicate triage outcome.
+        // Build a job in Relating status with two Duplicate triage outcomes.
         let job = PgJobRepository
             .insert(
                 &mut conn,
@@ -2797,7 +2800,7 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
             .expect("setup: insert extraction result");
 
         PgJobRepository
-            .update_batch_size(&mut conn, job_id, 1, 1)
+            .update_batch_size(&mut conn, job_id, 2, 2)
             .await
             .expect("setup: update batch size");
 
@@ -2812,33 +2815,40 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
             .await
             .expect("setup: transition to triaging");
 
-        PgTaskRepository
-            .insert_for_test(
-                &mut conn,
-                &a_new_task()
-                    .job_id(job_id)
-                    .task_type(TaskType::Triage)
-                    .batch_index(Some(0))
-                    .build(),
-                TaskStatus::Completed,
-            )
-            .await
-            .expect("setup: insert triage task");
+        for (idx, (matched_id, obs_id)) in [(matched_ki_a, obs_id_a), (matched_ki_b, obs_id_b)]
+            .iter()
+            .enumerate()
+        {
+            let batch_index = u32::try_from(idx).unwrap();
 
-        PgTriageResultRepository
-            .insert(
-                &mut conn,
-                &a_new_triage_result_duplicate()
-                    .job_id(job_id)
-                    .batch_index(0)
-                    .outcome(TriageOutcome::Duplicate {
-                        observation_id,
-                        matched_item_id: matched_ki_id,
-                    })
-                    .build(),
-            )
-            .await
-            .expect("setup: insert triage result");
+            PgTaskRepository
+                .insert_for_test(
+                    &mut conn,
+                    &a_new_task()
+                        .job_id(job_id)
+                        .task_type(TaskType::Triage)
+                        .batch_index(Some(batch_index))
+                        .build(),
+                    TaskStatus::Completed,
+                )
+                .await
+                .expect("setup: insert triage task");
+
+            PgTriageResultRepository
+                .insert(
+                    &mut conn,
+                    &a_new_triage_result_duplicate()
+                        .job_id(job_id)
+                        .batch_index(batch_index)
+                        .outcome(TriageOutcome::Duplicate {
+                            observation_id: *obs_id,
+                            matched_item_id: *matched_id,
+                        })
+                        .build(),
+                )
+                .await
+                .expect("setup: insert triage result");
+        }
 
         PgJobRepository
             .update_status(
@@ -2862,12 +2872,16 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
             .await
             .expect("setup: insert relation task");
 
-        job_id
+        (job_id, matched_ki_a, matched_ki_b)
     };
 
+    // Mock returns a relation between the two existing items.
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
-            .on_complete(a_completion_response(empty_relation_response_json()), None)
+            .on_complete(
+                a_completion_response(relation_response_json(&[matched_ki_a, matched_ki_b])),
+                None,
+            )
             .on_exhaust(ExhaustBehaviour::RepeatLast)
             .build(),
     );
@@ -2900,6 +2914,19 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
         job.committed_batch_id().is_some(),
         "committed_batch_id should be set",
     );
+
+    // Verify relations between existing items were committed.
+    let mut conn = raw_conn(ctx).await;
+    let outbound = PgRelationRepository
+        .find_outbound(&mut conn, matched_ki_a, None)
+        .await
+        .expect("find outbound relations");
+    assert_eq!(
+        outbound.len(),
+        1,
+        "should have one relation between existing items",
+    );
+    assert_eq!(outbound[0].target_id(), matched_ki_b);
 
     teardown(ctx).await;
 }
