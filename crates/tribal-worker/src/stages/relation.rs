@@ -543,8 +543,8 @@ struct ResolvedEdge {
 ///
 /// Steps:
 /// 1. Drop `Supersedes` edges.
-/// 2. Resolve `BatchIndex` targets to `KnowledgeItemId` via triage results.
-/// 3. Drop unresolvable edges.
+/// 2. Resolve `BatchIndex` endpoints (sources and targets) to `KnowledgeItemId` via triage results.
+/// 3. Drop edges with any unresolvable endpoint.
 /// 4. Drop self-edges.
 /// 5. Deduplicate `(source_id, target_id, relation_type)` triples.
 fn normalise_edges(
