@@ -7,10 +7,10 @@ use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
 use crate::{
     error::StageError,
+    parsing::RelationOutput,
     prompt::variables::{
         VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SCHEMA, VAR_SIMILAR_ITEM_DECISIONS,
     },
-    stages::RelationOutput,
 };
 
 // ---------------------------------------------------------------------------
@@ -188,8 +188,7 @@ mod tests {
     #[test]
     fn test_invalid_template_returns_template_render_error() {
         let ctx = rich_context();
-        let result =
-            assemble_relation_prompt("{{ invalid | nonexistent_filter }}", &ctx);
+        let result = assemble_relation_prompt("{{ invalid | nonexistent_filter }}", &ctx);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.to_error_kind(), TaskErrorKind::InternalError);
@@ -288,8 +287,7 @@ mod tests {
     #[test]
     fn test_schema_variable_rendered() {
         let ctx = rich_context();
-        let request =
-            assemble_relation_prompt("Schema: {{ schema }}", &ctx).unwrap();
+        let request = assemble_relation_prompt("Schema: {{ schema }}", &ctx).unwrap();
         let system = request.system.unwrap();
         assert!(
             system.contains("RelationOutput"),

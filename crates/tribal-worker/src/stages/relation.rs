@@ -1,9 +1,10 @@
 //! Relation stage: LLM-based relation extraction and commit.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use serde::Deserialize;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{
@@ -13,18 +14,20 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    Candidate, Job, JobOutcome, KnowledgeItemId, RelationBatchId, RelationHint, RelationKind, Task,
-    TriageOutcome, TriageResult, TriageSimilarItemDecision, span_attrs,
+    Candidate, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
+    RelationKind, Task, TriageOutcome, TriageResult, TriageSimilarItemDecision, span_attrs,
 };
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
 use super::{StageCommit, StageOutput};
 use crate::{
-    common::PARSE_PREVIEW_LENGTH,
+    common::{PARSE_PREVIEW_LENGTH, clamp_to_u32},
     error::{SEMAPHORE_CLOSED, STAGE_RELATION, StageError},
-    parsing::parse_relation_response,
-    prompt::{CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext,
-        assemble_relation_prompt},
+    parsing::{RelationEdge, RelationTarget, parse_relation_response},
+    prompt::{
+        CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext,
+        assemble_relation_prompt,
+    },
     worker::Worker,
 };
 
@@ -33,58 +36,6 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const EXPECT_RELATION_KEY: &str = "relation key registered at startup";
-
-// ---------------------------------------------------------------------------
-// LLM output types
-// ---------------------------------------------------------------------------
-
-/// The deserialised output from the relation LLM call.
-///
-/// Lenient serde — unknown fields are silently ignored so the LLM
-/// can return extra keys without breaking parsing.
-#[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
-pub(crate) struct RelationOutput {
-    /// The complete set of relations to create for this job.
-    pub relations: Vec<RelationEdge>,
-}
-
-/// A single directed relationship edge to create.
-#[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
-pub(crate) struct RelationEdge {
-    /// The source item (the item asserting the relationship).
-    pub source: RelationTarget,
-    /// The target item.
-    pub target: RelationTarget,
-    /// The relationship type.
-    pub relation_type: RelationKind,
-    /// The agent's reasoning for this relationship.
-    #[serde(default)]
-    pub justification: Option<String>,
-}
-
-/// Identifies one end of a relationship edge.
-///
-/// The relation agent may reference items by their batch index (for
-/// candidates created in this episode) or by their `KnowledgeItemId`
-/// (for existing items found during triage similarity search).
-/// The worker resolves batch indices to `KnowledgeItemId`s via triage
-/// results before persisting.
-///
-/// Uses `#[serde(tag = "kind")]` (internally tagged) for explicit
-/// discrimination.
-#[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind")]
-pub(crate) enum RelationTarget {
-    /// A candidate from the current episode, identified by its
-    /// position in the extraction candidates array.
-    /// Wire format: `{"kind": "batch_index", "batch_index": 2}`
-    #[serde(rename = "batch_index")]
-    BatchIndex { batch_index: u32 },
-    /// An existing knowledge item, identified by ID.
-    /// Wire format: `{"kind": "item_id", "item_id": "ki_..."}`
-    #[serde(rename = "item_id")]
-    ItemId { item_id: KnowledgeItemId },
-}
 
 // ---------------------------------------------------------------------------
 // Commit decision
@@ -226,8 +177,7 @@ impl Worker {
                 })?
                 .expect(SEMAPHORE_CLOSED);
 
-            let request =
-                assemble_relation_prompt(prompt_version.content(), &prompt_context)?;
+            let request = assemble_relation_prompt(prompt_version.content(), &prompt_context)?;
 
             if include_llm_content {
                 tracing::debug!(
@@ -267,37 +217,15 @@ impl Worker {
                 })?
             };
 
-            // Normalise edges.
-            let normalised =
-                normalise_edges(output.relations, &triage_results);
-
-            // Compute outcome.
-            let outcome = compute_outcome(&triage_results, batch_size);
-
-            // Build NewKnowledgeItemRelation rows.
-            let batch_id = RelationBatchId::new();
-            let relations: Vec<NewKnowledgeItemRelation> = normalised
-                .into_iter()
-                .map(|edge| {
-                    NewKnowledgeItemRelation::builder()
-                        .relation_batch_id(batch_id)
-                        .source_id(edge.source_id)
-                        .target_id(edge.target_id)
-                        .relation_type(edge.relation_type)
-                        .principal_id(job.principal_id())
-                        .justification(edge.justification)
-                        .build()
-                })
-                .collect();
+            let decision = build_commit_decision(
+                output.relations,
+                &triage_results,
+                batch_size,
+                job.principal_id(),
+            );
 
             Ok(StageOutput {
-                commit: StageCommit::Relation {
-                    decision: RelationCommitDecision::Relate {
-                        relations,
-                        batch_id,
-                        outcome,
-                    },
-                },
+                commit: StageCommit::Relation { decision },
                 usages: vec![Usage::Completion(response.usage)],
             })
         }
@@ -316,11 +244,10 @@ impl Worker {
         &self,
         job: &Job,
     ) -> Result<(Vec<Candidate>, Vec<RelationHint>), StageError> {
-        let mut conn = self
-            .pool()
-            .acquire()
-            .await
-            .map_err(|e| relation_sqlx_error("acquiring connection for extraction result", e))?;
+        let mut conn =
+            self.pool().acquire().await.map_err(|e| {
+                relation_sqlx_error("acquiring connection for extraction result", e)
+            })?;
 
         let extraction_result = PgExtractionResultRepository
             .find_by_job_id(&mut conn, job.id())
@@ -335,46 +262,39 @@ impl Worker {
                 },
             })?;
 
-        let candidates: Vec<Candidate> = serde_json::from_value(
-            extraction_result.candidates().clone(),
-        )
-        .map_err(|_| {
-            let raw: String = extraction_result
-                .candidates()
-                .to_string()
-                .chars()
-                .take(PARSE_PREVIEW_LENGTH)
-                .collect();
-            StageError::Parse {
-                context: format!("deserialising candidates for job {}", job.id()),
-                raw_response: Some(raw),
-            }
-        })?;
+        let candidates: Vec<Candidate> =
+            serde_json::from_value(extraction_result.candidates().clone()).map_err(|_| {
+                let raw: String = extraction_result
+                    .candidates()
+                    .to_string()
+                    .chars()
+                    .take(PARSE_PREVIEW_LENGTH)
+                    .collect();
+                StageError::Parse {
+                    context: format!("deserialising candidates for job {}", job.id()),
+                    raw_response: Some(raw),
+                }
+            })?;
 
-        let relation_hints: Vec<RelationHint> = serde_json::from_value(
-            extraction_result.relation_hints().clone(),
-        )
-        .map_err(|_| {
-            let raw: String = extraction_result
-                .relation_hints()
-                .to_string()
-                .chars()
-                .take(PARSE_PREVIEW_LENGTH)
-                .collect();
-            StageError::Parse {
-                context: format!("deserialising relation hints for job {}", job.id()),
-                raw_response: Some(raw),
-            }
-        })?;
+        let relation_hints: Vec<RelationHint> =
+            serde_json::from_value(extraction_result.relation_hints().clone()).map_err(|_| {
+                let raw: String = extraction_result
+                    .relation_hints()
+                    .to_string()
+                    .chars()
+                    .take(PARSE_PREVIEW_LENGTH)
+                    .collect();
+                StageError::Parse {
+                    context: format!("deserialising relation hints for job {}", job.id()),
+                    raw_response: Some(raw),
+                }
+            })?;
 
         Ok((candidates, relation_hints))
     }
 
     /// Loads all triage results for the job.
-    async fn load_triage_results(
-        &self,
-        job: &Job,
-    ) -> Result<Vec<TriageResult>, StageError> {
+    async fn load_triage_results(&self, job: &Job) -> Result<Vec<TriageResult>, StageError> {
         let mut conn = self
             .pool()
             .acquire()
@@ -392,13 +312,9 @@ impl Worker {
         &self,
         job: &Job,
     ) -> Result<Vec<TriageSimilarItemDecision>, StageError> {
-        let mut conn = self
-            .pool()
-            .acquire()
-            .await
-            .map_err(|e| {
-                relation_sqlx_error("acquiring connection for similar item decisions", e)
-            })?;
+        let mut conn = self.pool().acquire().await.map_err(|e| {
+            relation_sqlx_error("acquiring connection for similar item decisions", e)
+        })?;
 
         PgTriageSimilarItemDecisionRepository
             .find_by_job_id(&mut conn, job.id())
@@ -418,7 +334,7 @@ impl Worker {
 
         let unique_ids: Vec<KnowledgeItemId> = decisions
             .iter()
-            .map(|d| d.matched_item_id())
+            .map(TriageSimilarItemDecision::matched_item_id)
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
@@ -427,9 +343,7 @@ impl Worker {
             .pool()
             .acquire()
             .await
-            .map_err(|e| {
-                relation_sqlx_error("acquiring connection for knowledge items", e)
-            })?;
+            .map_err(|e| relation_sqlx_error("acquiring connection for knowledge items", e))?;
 
         let items = PgKnowledgeItemRepository
             .find_by_ids(&mut conn, &unique_ids)
@@ -466,7 +380,7 @@ impl Worker {
 }
 
 // ---------------------------------------------------------------------------
-// Pure helpers — candidate outcomes
+// Candidate outcomes
 // ---------------------------------------------------------------------------
 
 /// Builds the `CandidateOutcome` list by joining candidates with triage
@@ -500,9 +414,9 @@ fn build_candidate_outcomes(
             let (outcome, item_id) = match triage_by_index.get(&i) {
                 Some(result) => match result.outcome() {
                     TriageOutcome::Created { item_id } => ("created".into(), Some(*item_id)),
-                    TriageOutcome::Duplicate { matched_item_id, .. } => {
-                        ("duplicate".into(), Some(*matched_item_id))
-                    }
+                    TriageOutcome::Duplicate {
+                        matched_item_id, ..
+                    } => ("duplicate".into(), Some(*matched_item_id)),
                     TriageOutcome::Failed { .. } => ("failed".into(), None),
                 },
                 None => ("failed".into(), None),
@@ -519,7 +433,44 @@ fn build_candidate_outcomes(
 }
 
 // ---------------------------------------------------------------------------
-// Pure helpers — edge normalisation
+// Commit decision building
+// ---------------------------------------------------------------------------
+
+/// Normalises edges, computes the job outcome, and builds the commit
+/// decision with `NewKnowledgeItemRelation` rows.
+fn build_commit_decision(
+    edges: Vec<RelationEdge>,
+    triage_results: &[TriageResult],
+    batch_size: u32,
+    principal_id: PrincipalId,
+) -> RelationCommitDecision {
+    let normalised = normalise_edges(edges, triage_results);
+    let outcome = compute_outcome(triage_results, batch_size);
+    let batch_id = RelationBatchId::new();
+
+    let relations: Vec<NewKnowledgeItemRelation> = normalised
+        .into_iter()
+        .map(|edge| {
+            NewKnowledgeItemRelation::builder()
+                .relation_batch_id(batch_id)
+                .source_id(edge.source_id)
+                .target_id(edge.target_id)
+                .relation_type(edge.relation_type)
+                .principal_id(principal_id)
+                .justification(edge.justification)
+                .build()
+        })
+        .collect();
+
+    RelationCommitDecision::Relate {
+        relations,
+        batch_id,
+        outcome,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Edge normalisation
 // ---------------------------------------------------------------------------
 
 /// A resolved edge with concrete `KnowledgeItemId` endpoints.
@@ -538,10 +489,7 @@ struct ResolvedEdge {
 /// 3. Drop unresolvable edges.
 /// 4. Drop self-edges.
 /// 5. Deduplicate `(source_id, target_id, relation_type)` triples.
-fn normalise_edges(
-    edges: Vec<RelationEdge>,
-    triage_results: &[TriageResult],
-) -> Vec<ResolvedEdge> {
+fn normalise_edges(edges: Vec<RelationEdge>, triage_results: &[TriageResult]) -> Vec<ResolvedEdge> {
     let triage_by_index: HashMap<u32, &TriageResult> = triage_results
         .iter()
         .map(|r| (r.batch_index(), r))
@@ -617,7 +565,9 @@ fn resolve_target(
             let result = triage_by_index.get(batch_index)?;
             match result.outcome() {
                 TriageOutcome::Created { item_id } => Some(*item_id),
-                TriageOutcome::Duplicate { matched_item_id, .. } => Some(*matched_item_id),
+                TriageOutcome::Duplicate {
+                    matched_item_id, ..
+                } => Some(*matched_item_id),
                 TriageOutcome::Failed { .. } => None,
             }
         }
@@ -625,7 +575,7 @@ fn resolve_target(
 }
 
 // ---------------------------------------------------------------------------
-// Pure helpers — outcome computation
+// Outcome computation
 // ---------------------------------------------------------------------------
 
 /// Computes the job outcome from triage results and batch size.
@@ -634,7 +584,7 @@ fn compute_outcome(triage_results: &[TriageResult], batch_size: u32) -> JobOutco
         .iter()
         .filter(|r| matches!(r.outcome(), TriageOutcome::Created { .. }))
         .count();
-    let n_dead = batch_size.saturating_sub(triage_results.len() as u32);
+    let n_dead = batch_size.saturating_sub(clamp_to_u32(triage_results.len()));
 
     if n_created == 0 {
         JobOutcome::Empty
@@ -680,7 +630,7 @@ mod tests {
     use super::*;
 
     fn ki(suffix: &str) -> KnowledgeItemId {
-        format!("ki_{suffix}00000-0000-0000-0000-000000000000")
+        format!("ki_{suffix}0000-0000-0000-0000-000000000000")
             .parse()
             .unwrap()
     }
@@ -712,10 +662,7 @@ mod tests {
         triage_result(batch_index, TriageOutcome::Created { item_id: ki_id })
     }
 
-    fn duplicate(
-        batch_index: u32,
-        matched: KnowledgeItemId,
-    ) -> TriageResult {
+    fn duplicate(batch_index: u32, matched: KnowledgeItemId) -> TriageResult {
         triage_result(
             batch_index,
             TriageOutcome::Duplicate {
