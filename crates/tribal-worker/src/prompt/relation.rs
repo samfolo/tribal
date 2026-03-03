@@ -41,7 +41,8 @@ pub(crate) struct CandidateOutcome {
     pub candidate: Candidate,
     /// The triage outcome: `"created"`, `"duplicate"`, or `"failed"`.
     pub outcome: String,
-    /// If created, the `KnowledgeItemId`. `None` for duplicate/failed.
+    /// The resolved `KnowledgeItemId` for created or duplicate
+    /// outcomes. `None` for failed.
     pub item_id: Option<KnowledgeItemId>,
 }
 
