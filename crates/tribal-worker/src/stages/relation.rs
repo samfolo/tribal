@@ -791,6 +791,30 @@ mod tests {
     }
 
     #[test]
+    fn test_normalise_drops_failed_batch_index() {
+        let ki_a = ki("aaaa");
+        let results = vec![
+            created(0, ki_a),
+            triage_result(
+                1,
+                TriageOutcome::Failed {
+                    error_message: "test failure".into(),
+                    retryable: false,
+                },
+            ),
+        ];
+        let edges = vec![edge(
+            RelationTarget::BatchIndex { batch_index: 0 },
+            RelationTarget::BatchIndex { batch_index: 1 },
+            RelationKind::Supports,
+        )];
+
+        let (normalised, skipped) = normalise_edges(edges, &results);
+        assert!(normalised.is_empty());
+        assert_eq!(skipped, 1);
+    }
+
+    #[test]
     fn test_normalise_drops_self_edges() {
         let ki_a = ki("aaaa");
         let results = vec![created(0, ki_a)];
