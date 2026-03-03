@@ -39,6 +39,35 @@ use crate::{
 const EXPECT_RELATION_KEY: &str = "relation key registered at startup";
 
 // ---------------------------------------------------------------------------
+// RelationContext
+// ---------------------------------------------------------------------------
+
+/// Context assembled before running the relation stage.
+///
+/// This is the richest context of any stage — it carries the complete
+/// episode picture for the relation agent.
+#[allow(dead_code)]
+pub(crate) struct RelationContext {
+    /// The parent job.
+    pub job: Job,
+    /// The claimed task.
+    pub task: Task,
+    /// Retained for metadata (id, timestamps) used in logging and
+    /// diagnostics.
+    pub extraction_result: ExtractionResult,
+    /// Typed candidates, deserialised from `extraction_result` at
+    /// construction time.
+    pub candidates: Vec<Candidate>,
+    /// Typed relation hints, deserialised from `extraction_result` at
+    /// construction time.
+    pub relation_hints: Vec<RelationHint>,
+    /// All triage results for this job.
+    pub triage_results: Vec<TriageResult>,
+    /// All triage similar item decisions for this job.
+    pub similar_item_decisions: Vec<TriageSimilarItemDecision>,
+}
+
+// ---------------------------------------------------------------------------
 // Commit decision
 // ---------------------------------------------------------------------------
 
