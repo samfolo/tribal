@@ -6,3 +6,4 @@ mod relation;
 mod triage;
 
 pub(crate) use common::{StageCommit, StageOutput, TriageCommitDecision};
+pub(crate) use relation::RelationCommitDecision;

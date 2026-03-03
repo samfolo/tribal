@@ -53,6 +53,11 @@ pub(crate) enum StageCommit {
         /// Per-similar-item decisions for audit persistence.
         similar_item_decisions: Vec<NewTriageSimilarItemDecision>,
     },
+    /// Relation stage effects.
+    Relation {
+        /// The relation decision with associated commit data.
+        decision: super::relation::RelationCommitDecision,
+    },
 }
 
 // ---------------------------------------------------------------------------

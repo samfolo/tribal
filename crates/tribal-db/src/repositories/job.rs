@@ -184,7 +184,11 @@ pub trait JobRepository {
         extraction_original_count: u32,
     ) -> Result<Job, DbError>;
 
-    /// Sets the committed batch ID, returning the updated job.
+    /// Conditionally sets the committed batch ID.
+    ///
+    /// The update only takes effect when `committed_batch_id` is currently
+    /// `NULL`. Returns `Some(job)` on success, or `None` if the batch ID
+    /// was already set (idempotency hit).
     ///
     /// # Errors
     ///
@@ -195,7 +199,7 @@ pub trait JobRepository {
         conn: &mut PgConnection,
         id: JobId,
         batch_id: RelationBatchId,
-    ) -> Result<Job, DbError>;
+    ) -> Result<Option<Job>, DbError>;
 
     /// Transitions jobs to `Failed` when they have dead-lettered
     /// extraction or relation tasks, and the job is not already
@@ -390,11 +394,11 @@ impl JobRepository for PgJobRepository {
         conn: &mut PgConnection,
         id: JobId,
         batch_id: RelationBatchId,
-    ) -> Result<Job, DbError> {
+    ) -> Result<Option<Job>, DbError> {
         let sql = format!(
             "UPDATE jobs \
              SET committed_batch_id = $2, updated_at = now() \
-             WHERE id = $1 \
+             WHERE id = $1 AND committed_batch_id IS NULL \
              RETURNING {COLUMNS}",
         );
 
@@ -406,13 +410,30 @@ impl JobRepository for PgJobRepository {
             .map_err(|e| DbError::QueryFailed {
                 context: format!("setting committed batch id for job {id}"),
                 source: e,
-            })?
-            .ok_or_else(|| DbError::NotFound {
-                entity: "job",
-                id: id.to_string(),
             })?;
 
-        Ok(map_job_row(&row))
+        if let Some(r) = row {
+            return Ok(Some(map_job_row(&r)));
+        }
+
+        // Zero rows updated — distinguish "already set" from "not found".
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs WHERE id = $1)")
+            .bind(id.inner())
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("checking job existence for {id}"),
+                source: e,
+            })?;
+
+        if exists {
+            Ok(None)
+        } else {
+            Err(DbError::NotFound {
+                entity: "job",
+                id: id.to_string(),
+            })
+        }
     }
 
     async fn fail_stale_dead_lettered_jobs(
