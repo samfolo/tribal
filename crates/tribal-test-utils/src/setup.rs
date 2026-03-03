@@ -7,16 +7,20 @@
 
 use sqlx::PgConnection;
 use tribal_db::{
-    ExtractionResultRepository, JobRepository, JobStatusTransition, NewPromptVersion,
-    PgExtractionResultRepository, PgJobRepository, PgPromptVersionRepository, PgTaskRepository,
-    PromptVersionRepository, TaskRepository,
+    ExtractionResultRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,
+    NewPromptVersion, PgExtractionResultRepository, PgJobRepository, PgKnowledgeItemRepository,
+    PgPromptVersionRepository, PgTaskRepository, PgTriageResultRepository, PromptVersionRepository,
+    TaskRepository, TriageResultRepository,
 };
 use tribal_domain::{
     Candidate, JobId, JobStatus, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
-    RelationBatchId, RelationKind, TaskId, TaskStatus, TaskType,
+    RelationBatchId, RelationHint, RelationKind, TaskId, TaskStatus, TaskType, TriageOutcome,
 };
 
-use crate::{a_new_extraction_result, a_new_job, a_new_task, candidates_json};
+use crate::{
+    a_new_extraction_result, a_new_job, a_new_knowledge_item, a_new_task,
+    a_new_triage_result_created, candidates_json, relation_hints_json,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -360,4 +364,182 @@ pub async fn seed_multiple_triage_tasks(
     }
 
     (job_id, task_ids)
+}
+
+// ---------------------------------------------------------------------------
+// seed_triage_created_outcomes
+// ---------------------------------------------------------------------------
+
+/// Creates a knowledge item, a completed triage task, and a `Created`
+/// triage result for each batch index in `0..batch_size`.
+///
+/// Returns the knowledge item IDs in batch-index order.
+///
+/// # Panics
+///
+/// Panics if any insert fails.
+async fn seed_triage_created_outcomes(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    principal_id: PrincipalId,
+    project_id: ProjectId,
+    batch_size: u32,
+) -> Vec<KnowledgeItemId> {
+    let mut ki_ids = Vec::with_capacity(batch_size as usize);
+
+    for batch_index in 0..batch_size {
+        let ki = PgKnowledgeItemRepository
+            .insert(
+                conn,
+                &a_new_knowledge_item()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .build(),
+            )
+            .await
+            .expect("setup: insert knowledge item");
+        let ki_id = ki.id();
+        ki_ids.push(ki_id);
+
+        PgTaskRepository
+            .insert_for_test(
+                conn,
+                &a_new_task()
+                    .job_id(job_id)
+                    .task_type(TaskType::Triage)
+                    .batch_index(Some(batch_index))
+                    .build(),
+                TaskStatus::Completed,
+            )
+            .await
+            .expect("setup: insert triage task");
+
+        PgTriageResultRepository
+            .insert(
+                conn,
+                &a_new_triage_result_created()
+                    .job_id(job_id)
+                    .batch_index(batch_index)
+                    .outcome(TriageOutcome::Created { item_id: ki_id })
+                    .build(),
+            )
+            .await
+            .expect("setup: insert triage result");
+    }
+
+    ki_ids
+}
+
+// ---------------------------------------------------------------------------
+// seed_relation_job
+// ---------------------------------------------------------------------------
+
+/// Inserts a job in `Relating` status with completed extraction and triage
+/// tasks, an extraction result containing the given candidates and relation
+/// hints, knowledge items for each candidate (all with `Created` triage
+/// outcomes), and a queued relation task.
+///
+/// Returns `(job_id, relation_task_id, knowledge_item_ids)` where the
+/// knowledge item IDs are ordered by batch index.
+///
+/// # Panics
+///
+/// Panics if any insert or status transition fails, or if `candidates`
+/// is empty.
+pub async fn seed_relation_job(
+    conn: &mut PgConnection,
+    principal_id: PrincipalId,
+    project_id: ProjectId,
+    pv_id: PromptVersionId,
+    candidates: &[Candidate],
+    relation_hints: &[RelationHint],
+) -> (JobId, TaskId, Vec<KnowledgeItemId>) {
+    assert!(
+        !candidates.is_empty(),
+        "seed_relation_job requires at least one candidate",
+    );
+    let batch_size = u32::try_from(candidates.len()).expect("candidate count fits u32");
+
+    let job = PgJobRepository
+        .insert(
+            conn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .extraction_prompt_version_id(pv_id)
+                .triage_prompt_version_id(pv_id)
+                .relation_prompt_version_id(pv_id)
+                .build(),
+        )
+        .await
+        .expect("setup: insert job");
+
+    let job_id = job.id();
+
+    // Mark extraction as completed.
+    PgTaskRepository
+        .insert_for_test(
+            conn,
+            &a_new_task()
+                .job_id(job_id)
+                .task_type(TaskType::Extraction)
+                .build(),
+            TaskStatus::Completed,
+        )
+        .await
+        .expect("setup: insert extraction task");
+
+    // Persist the extraction result with candidate and relation hint JSON.
+    PgExtractionResultRepository
+        .insert(
+            conn,
+            &a_new_extraction_result()
+                .job_id(job_id)
+                .candidates(candidates_json(candidates))
+                .relation_hints(relation_hints_json(relation_hints))
+                .build(),
+        )
+        .await
+        .expect("setup: insert extraction result");
+
+    // Update batch size and transition to Triaging.
+    PgJobRepository
+        .update_batch_size(conn, job_id, batch_size, batch_size)
+        .await
+        .expect("setup: update batch size");
+
+    let triaging = JobStatusTransition::builder()
+        .status(JobStatus::Triaging)
+        .build();
+    PgJobRepository
+        .update_status(conn, job_id, &triaging)
+        .await
+        .expect("setup: transition job to triaging");
+
+    // Create knowledge items and triage results (Created) for each candidate.
+    let ki_ids =
+        seed_triage_created_outcomes(conn, job_id, principal_id, project_id, batch_size).await;
+
+    // Transition to Relating.
+    let relating = JobStatusTransition::builder()
+        .status(JobStatus::Relating)
+        .build();
+    PgJobRepository
+        .update_status(conn, job_id, &relating)
+        .await
+        .expect("setup: transition job to relating");
+
+    // Create the queued relation task.
+    let relation_task = PgTaskRepository
+        .insert(
+            conn,
+            &a_new_task()
+                .job_id(job_id)
+                .task_type(TaskType::Relation)
+                .build(),
+        )
+        .await
+        .expect("setup: insert relation task");
+
+    (job_id, relation_task.id(), ki_ids)
 }

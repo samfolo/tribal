@@ -13,6 +13,7 @@ define_factory! {
         target_id: KnowledgeItemId = KnowledgeItemId::new(),
         relation_type: RelationKind = RelationKind::Supports,
         principal_id: PrincipalId = PrincipalId::new(),
+        justification: Option<String> = None,
         created_at: chrono::DateTime<Utc> = Utc::now(),
     }
 }
@@ -31,6 +32,7 @@ define_factory! {
         target_id: KnowledgeItemId = KnowledgeItemId::new(),
         relation_type: RelationKind = RelationKind::Supports,
         principal_id: PrincipalId = PrincipalId::new(),
+        justification: Option<String> = None,
     }
 }
 
