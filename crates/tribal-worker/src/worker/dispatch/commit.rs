@@ -336,6 +336,7 @@ impl Worker {
                     relations,
                     batch_id,
                     outcome,
+                    skipped,
                 } => {
                     self.commit_relation_relate(
                         &mut txn,
@@ -344,6 +345,7 @@ impl Worker {
                         relations,
                         batch_id,
                         outcome,
+                        skipped,
                         claim_token,
                     )
                     .await?;
@@ -389,6 +391,7 @@ impl Worker {
         relations: Vec<NewKnowledgeItemRelation>,
         batch_id: RelationBatchId,
         outcome: JobOutcome,
+        skipped: usize,
         claim_token: uuid::Uuid,
     ) -> Result<(), StageError> {
         let relations_count = relations.len();
@@ -429,6 +432,7 @@ impl Worker {
         tracing::Span::current()
             .record(span_attrs::RELATION_BATCH_ID, batch_id.to_string().as_str());
         tracing::Span::current().record(span_attrs::RELATIONS_COMMITTED, relations_count);
+        tracing::Span::current().record(span_attrs::RELATIONS_SKIPPED, skipped);
 
         self.notify_job_state(job_id);
         self.remove_job_state(job_id);

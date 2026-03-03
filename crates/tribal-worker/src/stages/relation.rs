@@ -444,8 +444,8 @@ fn build_candidate_outcomes(
         .enumerate()
         .take(batch_size as usize)
         .map(|(i, candidate)| {
-            let i = i as u32;
-            let (outcome, item_id) = match triage_by_index.get(&i) {
+            let batch_index = clamp_to_u32(i);
+            let (outcome, item_id) = match triage_by_index.get(&batch_index) {
                 Some(result) => match result.outcome() {
                     TriageOutcome::Created { item_id } => ("created".into(), Some(*item_id)),
                     TriageOutcome::Duplicate {
@@ -457,7 +457,7 @@ fn build_candidate_outcomes(
             };
 
             CandidateOutcome {
-                batch_index: i,
+                batch_index,
                 candidate,
                 outcome,
                 item_id,

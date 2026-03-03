@@ -2607,9 +2607,27 @@ async fn test_triage_fan_in_single_candidate_batch() {
 // Relation stage tests
 // ---------------------------------------------------------------------------
 
-/// Helper: builds a relation response JSON string with a `supports` edge
-/// from the first item to each subsequent item.
-fn relation_response_json(ki_ids: &[KnowledgeItemId]) -> String {
+/// Helper: builds a relation response JSON string with `batch_index`
+/// targets — a `supports` edge from index 0 to each subsequent index.
+fn batch_index_relation_response_json(batch_size: usize) -> String {
+    let mut relations = Vec::new();
+
+    for i in 1..batch_size {
+        relations.push(serde_json::json!({
+            "source": { "kind": "batch_index", "batch_index": 0 },
+            "target": { "kind": "batch_index", "batch_index": i },
+            "relation_type": "supports",
+            "justification": "Test relation",
+        }));
+    }
+
+    serde_json::json!({ "relations": relations }).to_string()
+}
+
+/// Helper: builds a relation response JSON string with `item_id`
+/// targets — a `supports` edge from the first item to each subsequent
+/// item.
+fn item_id_relation_response_json(ki_ids: &[KnowledgeItemId]) -> String {
     let mut relations = Vec::new();
 
     if ki_ids.len() >= 2 {
@@ -2662,7 +2680,10 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
-            .on_complete(a_completion_response(relation_response_json(&ki_ids)), None)
+            .on_complete(
+                a_completion_response(batch_index_relation_response_json(ki_ids.len())),
+                None,
+            )
             .on_exhaust(ExhaustBehaviour::RepeatLast)
             .build(),
     );
@@ -2712,6 +2733,11 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
         "should have one outbound relation from first item",
     );
     assert_eq!(outbound[0].target_id(), ki_ids[1]);
+    assert_eq!(
+        outbound[0].justification(),
+        Some("Test relation"),
+        "justification should be persisted",
+    );
 
     teardown(ctx).await;
 }
@@ -2727,7 +2753,7 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
 
     let candidates = vec![a_candidate().build(), a_candidate().build()];
 
-    let (job_id, matched_ki_a, matched_ki_b) = {
+    let (job_id, task_id, matched_ki_a, matched_ki_b) = {
         let mut conn = raw_conn(ctx).await;
 
         // Seed pre-existing data via Seed builder.
@@ -2861,7 +2887,7 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
             .await
             .expect("setup: transition to relating");
 
-        PgTaskRepository
+        let relation_task = PgTaskRepository
             .insert(
                 &mut conn,
                 &a_new_task()
@@ -2872,14 +2898,17 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
             .await
             .expect("setup: insert relation task");
 
-        (job_id, matched_ki_a, matched_ki_b)
+        (job_id, relation_task.id(), matched_ki_a, matched_ki_b)
     };
 
     // Mock returns a relation between the two existing items.
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
             .on_complete(
-                a_completion_response(relation_response_json(&[matched_ki_a, matched_ki_b])),
+                a_completion_response(item_id_relation_response_json(&[
+                    matched_ki_a,
+                    matched_ki_b,
+                ])),
                 None,
             )
             .on_exhaust(ExhaustBehaviour::RepeatLast)
@@ -2915,8 +2944,19 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
         "committed_batch_id should be set",
     );
 
-    // Verify relations between existing items were committed.
+    // Task completion is atomic with the job transition — no polling needed.
     let mut conn = raw_conn(ctx).await;
+    let task = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("find relation task");
+    assert_eq!(
+        task.status(),
+        TaskStatus::Completed,
+        "relation task should be completed atomically with job",
+    );
+
+    // Verify relations between existing items were committed.
     let outbound = PgRelationRepository
         .find_outbound(&mut conn, matched_ki_a, None)
         .await
@@ -2996,6 +3036,168 @@ async fn test_relation_stage_idempotency_skip() {
         inference_ref.call_count(),
         0,
         "inference should not be called when committed_batch_id is set",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies that an unparseable LLM response causes a `ParseError`
+/// requeue, matching the extraction and triage parse-failure tests.
+#[tokio::test]
+async fn test_relation_parse_failure() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) =
+        setup_prerequisites(ctx, "relation-parse-failure").await;
+
+    let candidates = vec![a_candidate().build()];
+
+    let task_id = {
+        let mut conn = raw_conn(ctx).await;
+        let (_job_id, task_id, _) =
+            seed_relation_job(&mut conn, principal_id, project_id, pv_id, &candidates, &[]).await;
+        task_id
+    };
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                a_completion_response("this is not valid relation json"),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_until(
+        "relation task requeued with parse error",
+        POLL_INTERVAL,
+        POLL_SETTLE,
+        || {
+            let pool = pool.clone();
+            async move {
+                let mut conn = pool.acquire().await.ok()?;
+                let task = PgTaskRepository.find_by_id(&mut conn, task_id).await.ok()?;
+                if task.status() == TaskStatus::Queued
+                    && task.error_kind() == Some(TaskErrorKind::ParseError)
+                {
+                    Some(task)
+                } else {
+                    None
+                }
+            }
+        },
+    )
+    .await;
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(
+        task.error_kind(),
+        Some(TaskErrorKind::ParseError),
+        "error kind should be parse_error",
+    );
+    assert!(
+        task.error_message().is_some(),
+        "error message should be set",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies that when the LLM returns only `Supersedes` edges (all
+/// dropped by normalisation), the job still completes with zero
+/// committed relations.
+#[tokio::test]
+async fn test_relation_stage_all_edges_dropped() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, pv_id) = setup_prerequisites(ctx, "relation-all-dropped").await;
+
+    let candidates = vec![
+        a_candidate().content("First candidate".to_owned()).build(),
+        a_candidate().content("Second candidate".to_owned()).build(),
+    ];
+
+    let (job_id, _task_id, ki_ids) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_relation_job(&mut conn, principal_id, project_id, pv_id, &candidates, &[]).await
+    };
+
+    // Return only Supersedes edges — all will be dropped.
+    let supersedes_json = serde_json::json!({
+        "relations": [{
+            "source": { "kind": "batch_index", "batch_index": 0 },
+            "target": { "kind": "batch_index", "batch_index": 1 },
+            "relation_type": "supersedes",
+            "justification": "Should be dropped",
+        }]
+    })
+    .to_string();
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(supersedes_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let job = poll_job_status(&pool, job_id, JobStatus::Completed, POLL_SETTLE).await;
+
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(job.status(), JobStatus::Completed);
+    assert_eq!(
+        job.outcome(),
+        Some(JobOutcome::Success),
+        "all Created triage outcomes with zero committed relations is still Success",
+    );
+    assert!(
+        job.committed_batch_id().is_some(),
+        "committed_batch_id should be set even with zero relations",
+    );
+
+    // Verify no relations were committed.
+    let mut conn = raw_conn(ctx).await;
+    let outbound = PgRelationRepository
+        .find_outbound(&mut conn, ki_ids[0], None)
+        .await
+        .expect("find outbound relations");
+    assert!(
+        outbound.is_empty(),
+        "no relations should be committed when all edges are dropped",
     );
 
     teardown(ctx).await;
