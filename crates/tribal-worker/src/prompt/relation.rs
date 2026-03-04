@@ -22,23 +22,25 @@ use crate::{
 /// Assembled from multiple database reads. This is the prompt-facing
 /// representation — simpler than `RelationContext` which carries full
 /// domain objects. Fields are structured for Tera template rendering.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct RelationPromptContext {
+///
+/// Borrows from `RelationContext` to avoid cloning large collections.
+#[derive(Debug, Serialize)]
+pub(crate) struct RelationPromptContext<'a> {
     /// Each candidate with its triage outcome and created item ID (if any).
-    pub candidates: Vec<CandidateOutcome>,
+    pub candidates: Vec<CandidateOutcome<'a>>,
     /// Intra-batch relation hints from extraction.
-    pub relation_hints: Vec<RelationHint>,
+    pub relation_hints: &'a [RelationHint],
     /// Similar item decisions from triage (all candidates combined).
-    pub similar_item_decisions: Vec<SimilarItemDecisionContext>,
+    pub similar_item_decisions: &'a [SimilarItemDecisionContext],
 }
 
 /// A candidate paired with its triage outcome for the relation prompt.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct CandidateOutcome {
+#[derive(Debug, Serialize)]
+pub(crate) struct CandidateOutcome<'a> {
     /// The candidate's position in the extraction batch.
     pub batch_index: u32,
     /// The original extracted candidate.
-    pub candidate: Candidate,
+    pub candidate: &'a Candidate,
     /// The triage outcome: `"created"`, `"duplicate"`, or `"failed"`.
     pub outcome: String,
     /// The resolved `KnowledgeItemId` for created or duplicate
@@ -82,7 +84,7 @@ pub(crate) struct SimilarItemDecisionContext {
 pub(crate) fn assemble_relation_prompt(
     system_template: &str,
     user_template: &str,
-    context: &RelationPromptContext,
+    context: &RelationPromptContext<'_>,
 ) -> Result<CompletionRequest, StageError> {
     let schema = schema_for!(RelationOutput);
     let schema_value =
@@ -158,30 +160,23 @@ mod tests {
         .expect("valid relation hint JSON")
     }
 
-    fn rich_context() -> RelationPromptContext {
+    struct RichTestData {
+        candidates: Vec<Candidate>,
+        relation_hints: Vec<RelationHint>,
+        similar_item_decisions: Vec<SimilarItemDecisionContext>,
+        ki_a: KnowledgeItemId,
+        ki_b: KnowledgeItemId,
+    }
+
+    fn rich_test_data() -> RichTestData {
         let ki_a: KnowledgeItemId = "ki_550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
         let ki_b: KnowledgeItemId = "ki_660e8400-e29b-41d4-a716-446655440000".parse().unwrap();
 
-        RelationPromptContext {
+        RichTestData {
             candidates: vec![
-                CandidateOutcome {
-                    batch_index: 0,
-                    candidate: test_candidate("Rust has zero-cost abstractions"),
-                    outcome: "created".into(),
-                    item_id: Some(ki_a),
-                },
-                CandidateOutcome {
-                    batch_index: 1,
-                    candidate: test_candidate("Ownership prevents data races"),
-                    outcome: "duplicate".into(),
-                    item_id: Some(ki_b),
-                },
-                CandidateOutcome {
-                    batch_index: 2,
-                    candidate: test_candidate("Borrow checker validates lifetimes"),
-                    outcome: "failed".into(),
-                    item_id: None,
-                },
+                test_candidate("Rust has zero-cost abstractions"),
+                test_candidate("Ownership prevents data races"),
+                test_candidate("Borrow checker validates lifetimes"),
             ],
             relation_hints: vec![test_relation_hint(0, 1)],
             similar_item_decisions: vec![SimilarItemDecisionContext {
@@ -192,12 +187,42 @@ mod tests {
                 suggested_relation: RelationSuggestion::Supports,
                 justification: "Both discuss Rust memory guarantees".into(),
             }],
+            ki_a,
+            ki_b,
+        }
+    }
+
+    fn rich_context(data: &RichTestData) -> RelationPromptContext<'_> {
+        RelationPromptContext {
+            candidates: vec![
+                CandidateOutcome {
+                    batch_index: 0,
+                    candidate: &data.candidates[0],
+                    outcome: "created".into(),
+                    item_id: Some(data.ki_a),
+                },
+                CandidateOutcome {
+                    batch_index: 1,
+                    candidate: &data.candidates[1],
+                    outcome: "duplicate".into(),
+                    item_id: Some(data.ki_b),
+                },
+                CandidateOutcome {
+                    batch_index: 2,
+                    candidate: &data.candidates[2],
+                    outcome: "failed".into(),
+                    item_id: None,
+                },
+            ],
+            relation_hints: &data.relation_hints,
+            similar_item_decisions: &data.similar_item_decisions,
         }
     }
 
     #[test]
     fn test_invalid_system_template_returns_template_render_error() {
-        let ctx = rich_context();
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
         let result = assemble_relation_prompt(
             "{{ invalid | nonexistent_filter }}",
             "{{ candidates }}",
@@ -210,7 +235,8 @@ mod tests {
 
     #[test]
     fn test_invalid_user_template_returns_template_render_error() {
-        let ctx = rich_context();
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
         let result = assemble_relation_prompt(
             "system",
             "{{ invalid | nonexistent_filter }}",
@@ -223,7 +249,8 @@ mod tests {
 
     #[test]
     fn test_renders_candidates_into_user_prompt() {
-        let ctx = rich_context();
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
         let system_template = "system";
         let user_template = concat!(
             "{% for c in candidates %}",
@@ -260,7 +287,8 @@ mod tests {
 
     #[test]
     fn test_renders_relation_hints_into_user_prompt() {
-        let ctx = rich_context();
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
         let user_template = concat!(
             "{% for h in relation_hints %}",
             "{{ h.source_index }} -> {{ h.target_index }}: {{ h.hint_type }}\n",
@@ -278,7 +306,8 @@ mod tests {
 
     #[test]
     fn test_renders_similar_item_decisions_into_user_prompt() {
-        let ctx = rich_context();
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
         let user_template = concat!(
             "{% for d in similar_item_decisions %}",
             "batch {{ d.batch_index }}: {{ d.matched_item_id }} ",
@@ -313,7 +342,8 @@ mod tests {
 
     #[test]
     fn test_response_format_is_json_schema() {
-        let ctx = rich_context();
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
         let request =
             assemble_relation_prompt("system", "user", &ctx).unwrap();
         assert!(
@@ -327,7 +357,8 @@ mod tests {
 
     #[test]
     fn test_schema_variable_rendered_in_system() {
-        let ctx = rich_context();
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
         let request =
             assemble_relation_prompt("Schema: {{ schema }}", "user", &ctx).unwrap();
         let system = request.system.unwrap();
@@ -339,7 +370,8 @@ mod tests {
 
     #[test]
     fn test_user_message_contains_rendered_context() {
-        let ctx = rich_context();
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
         let user_template = concat!(
             "{% for c in candidates %}{{ c.candidate.content }}\n{% endfor %}",
             "{% for h in relation_hints %}{{ h.hint_type }}\n{% endfor %}",
