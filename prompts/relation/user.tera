@@ -1,0 +1,29 @@
+## Candidates
+
+{% for c in candidates %}
+### Candidate {{ c.batch_index }} ({{ c.outcome }}{% if c.item_id %}, {{ c.item_id }}{% endif %})
+Kind: {{ c.candidate.kind }}
+Content: {{ c.candidate.content }}
+Tags: {% for tag in c.candidate.suggested_tags %}{{ tag }}{% if not loop.last %}, {% endif %}{% endfor %}
+
+{% endfor %}
+
+{% if relation_hints | length > 0 %}
+## Intra-batch relation hints from extraction
+
+{% for h in relation_hints %}
+- Candidate {{ h.source_index }} → Candidate {{ h.target_index }}: {{ h.hint_type }}
+{% endfor %}
+{% endif %}
+
+{% if similar_item_decisions | length > 0 %}
+## Similar item decisions from triage
+
+{% for d in similar_item_decisions %}
+### Candidate {{ d.batch_index }} ↔ {{ d.matched_item_id }} (similarity: {{ d.similarity_score | round(precision=4) }})
+Suggested relation: {{ d.suggested_relation }}
+Justification: {{ d.justification }}
+Content: {{ d.matched_content }}
+
+{% endfor %}
+{% endif %}
