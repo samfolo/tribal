@@ -30,12 +30,11 @@ const EXPECT_EXTRACTION_KEY: &str = "extraction key registered at startup";
 // ---------------------------------------------------------------------------
 
 /// Context assembled before running the extraction stage.
-#[allow(dead_code)]
-pub(crate) struct ExtractionContext {
+pub(crate) struct ExtractionContext<'a> {
     /// The parent job.
-    pub job: Job,
+    pub job: &'a Job,
     /// The claimed task.
-    pub task: Task,
+    pub task: &'a Task,
     /// The current global tag registry.
     pub tag_registry: Vec<TagRegistryEntry>,
 }
@@ -114,9 +113,13 @@ impl Worker {
 
         async {
             let tag_registry = self.load_tag_registry(STAGE_EXTRACTION).await?;
+            let ctx = ExtractionContext { job, task, tag_registry };
 
-            let prompt_version = self
-                .load_prompt_version(STAGE_EXTRACTION, job.extraction_prompt_version_id())
+            let system_pv = self
+                .load_prompt_version(STAGE_EXTRACTION, ctx.job.extraction_system_prompt_version_id())
+                .await?;
+            let user_pv = self
+                .load_prompt_version(STAGE_EXTRACTION, ctx.job.extraction_user_prompt_version_id())
                 .await?;
 
             let semaphore = self.extraction_semaphore();
@@ -129,14 +132,16 @@ impl Worker {
                 .expect(SEMAPHORE_CLOSED);
 
             let request = assemble_extraction_prompt(
-                prompt_version.content(),
-                job.raw_input(),
-                &tag_registry,
+                system_pv.content(),
+                user_pv.content(),
+                ctx.job.raw_input(),
+                &ctx.tag_registry,
             )?;
 
             if self.config().include_llm_content {
                 tracing::debug!(
-                    prompt = %request.system.as_deref().unwrap_or(""),
+                    system_prompt = %request.system.as_deref().unwrap_or(""),
+                    user_prompt = %request.messages.first().map(|m| m.content.as_str()).unwrap_or(""),
                     "extraction prompt assembled",
                 );
             }
@@ -191,7 +196,7 @@ impl Worker {
             let triage_tasks: Vec<NewTask> = (0..batch_size)
                 .map(|i| {
                     NewTask::builder()
-                        .job_id(task.job_id())
+                        .job_id(ctx.task.job_id())
                         .task_type(TaskType::Triage)
                         .batch_index(Some(i))
                         .build()
