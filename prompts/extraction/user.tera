@@ -1,0 +1,8 @@
+{% if tags | length > 0 %}
+The following tags already exist in the registry. Prefer reusing these where appropriate rather than inventing new ones:
+{% for tag in tags %}
+- {{ tag }}
+{% endfor %}
+{% endif %}
+
+{{ raw_input }}
