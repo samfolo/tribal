@@ -83,13 +83,15 @@ async fn test_insert_returns_populated_token_usage() {
     let repo = PgTokenUsageRepository;
 
     let (principal_id, project_id) = setup_prerequisites(&mut txn, "insert").await;
-    let pv_id = setup_prompt_version(&mut txn).await;
-    let job_id = setup_job(&mut txn, project_id, principal_id, pv_id).await;
+    let system_pv_id = setup_prompt_version(&mut txn).await;
+    let user_pv_id = setup_prompt_version(&mut txn).await;
+    let job_id = setup_job(&mut txn, project_id, principal_id, system_pv_id).await;
 
     let new = a_new_token_usage()
         .job_id(Some(job_id))
         .stage(TokenUsageStage::Extraction)
-        .system_prompt_version_id(Some(pv_id))
+        .system_prompt_version_id(Some(system_pv_id))
+        .user_prompt_version_id(Some(user_pv_id))
         .build();
 
     let tu = repo.insert(&mut txn, &new).await.expect("insert");
@@ -108,7 +110,8 @@ async fn test_insert_returns_populated_token_usage() {
     assert_eq!(tu.tokens_cache_write(), 0);
     assert_eq!(tu.tokens_total(), 150);
     assert_eq!(tu.latency_ms(), 200);
-    assert_eq!(tu.system_prompt_version_id(), Some(pv_id));
+    assert_eq!(tu.system_prompt_version_id(), Some(system_pv_id));
+    assert_eq!(tu.user_prompt_version_id(), Some(user_pv_id));
     assert!(tu.trace_id().is_none());
 }
 

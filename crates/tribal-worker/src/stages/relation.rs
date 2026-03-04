@@ -48,8 +48,6 @@ const EXPECT_RELATION_KEY: &str = "relation key registered at startup";
 pub(crate) struct RelationContext<'a> {
     /// The parent job.
     pub job: &'a Job,
-    /// The claimed task.
-    pub task: &'a Task,
     /// Typed candidates, deserialised from the extraction result.
     pub candidates: Vec<Candidate>,
     /// Typed relation hints, deserialised from the extraction result.
@@ -119,7 +117,6 @@ impl Worker {
     async fn load_relation_data<'a>(
         &self,
         job: &'a Job,
-        task: &'a Task,
     ) -> Result<RelationContext<'a>, StageError> {
         let mut conn = self
             .pool()
@@ -137,7 +134,6 @@ impl Worker {
 
         Ok(RelationContext {
             job,
-            task,
             candidates,
             relation_hints,
             triage_results,
@@ -200,7 +196,7 @@ impl Worker {
 
             let include_llm_content = self.config().include_llm_content;
 
-            let ctx = self.load_relation_data(job, task).await?;
+            let ctx = self.load_relation_data(job).await?;
 
             let batch_size = ctx.job.batch_size().ok_or_else(|| StageError::Database {
                 stage: STAGE_RELATION.into(),

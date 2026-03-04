@@ -37,8 +37,6 @@ use crate::{
 pub(crate) struct TriageContext<'a> {
     /// The parent job.
     pub job: &'a Job,
-    /// The claimed task.
-    pub task: &'a Task,
     /// The candidate extracted for this batch index.
     pub candidate: Candidate,
     /// The candidate's position in the extraction batch.
@@ -158,7 +156,7 @@ impl Worker {
 
             let candidate = self.load_triage_candidate(job.id(), batch_index).await?;
             let tag_registry = self.load_tag_registry(STAGE_TRIAGE).await?;
-            let ctx = TriageContext { job, task, candidate, batch_index, tag_registry };
+            let ctx = TriageContext { job, candidate, batch_index, tag_registry };
 
             let system_pv = self
                 .load_prompt_version(STAGE_TRIAGE, ctx.job.triage_system_prompt_version_id())
@@ -196,7 +194,7 @@ impl Worker {
                     let (resolved, usages) = tag_resolution::resolve_tags(
                         self.pool(),
                         ctx.candidate.suggested_tags(),
-                        &tag_registry,
+                        &ctx.tag_registry,
                         self.embedding_provider(),
                         self.triage_embedding_semaphore(),
                         &format!("{:?}", self.triage_embedding_key()),
