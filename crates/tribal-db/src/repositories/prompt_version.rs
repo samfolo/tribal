@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
-use tribal_domain::{PromptStage, PromptVersion, PromptVersionId};
+use tribal_domain::{PromptRole, PromptStage, PromptVersion, PromptVersionId};
 use typed_builder::TypedBuilder;
 
 use super::common::columns::Columns;
@@ -16,9 +16,10 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: Columns = Columns(&["id", "stage", "content_hash", "content", "created_at"]);
+const COLUMNS: Columns = Columns(&["id", "stage", "role", "content_hash", "content", "created_at"]);
 
 const UNKNOWN_PROMPT_STAGE_IN_DB: &str = "unrecognised prompt stage in database — schema mismatch";
+const UNKNOWN_PROMPT_ROLE_IN_DB: &str = "unrecognised prompt role in database — schema mismatch";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -33,6 +34,8 @@ const UNKNOWN_PROMPT_STAGE_IN_DB: &str = "unrecognised prompt stage in database 
 pub struct NewPromptVersion {
     /// The pipeline stage this prompt applies to.
     pub stage: PromptStage,
+    /// Whether this is a system or user prompt.
+    pub role: PromptRole,
     /// SHA-256 hex-encoded content hash (64 chars, lowercase).
     pub content_hash: String,
     /// The full prompt template content.
@@ -52,7 +55,7 @@ pub struct NewPromptVersion {
 #[async_trait]
 pub trait PromptVersionRepository {
     /// Inserts a new prompt version or returns the existing row when
-    /// the `(stage, content_hash)` pair already exists.
+    /// the `(stage, role, content_hash)` triple already exists.
     ///
     /// Uses a two-step approach: INSERT ON CONFLICT DO NOTHING, then
     /// SELECT if no row was returned.  This preserves content-addressed
@@ -79,17 +82,18 @@ pub trait PromptVersionRepository {
         id: PromptVersionId,
     ) -> Result<PromptVersion, DbError>;
 
-    /// Finds a prompt version by its stage and content hash.
+    /// Finds a prompt version by its stage, role, and content hash.
     ///
     /// Returns `Ok(None)` when no match exists.
     ///
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_stage_and_hash(
+    async fn find_by_stage_role_and_hash(
         &self,
         conn: &mut PgConnection,
         stage: PromptStage,
+        role: PromptRole,
         content_hash: &str,
     ) -> Result<Option<PromptVersion>, DbError>;
 }
@@ -111,14 +115,15 @@ impl PromptVersionRepository for PgPromptVersionRepository {
         new: &NewPromptVersion,
     ) -> Result<PromptVersion, DbError> {
         let sql = format!(
-            "INSERT INTO prompt_versions (stage, content_hash, content) \
-             VALUES ($1, $2, $3) \
-             ON CONFLICT (stage, content_hash) DO NOTHING \
+            "INSERT INTO prompt_versions (stage, role, content_hash, content) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (stage, role, content_hash) DO NOTHING \
              RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)
             .bind(new.stage.as_str())
+            .bind(new.role.as_str())
             .bind(&new.content_hash)
             .bind(&new.content)
             .fetch_optional(&mut *conn)
@@ -132,14 +137,15 @@ impl PromptVersionRepository for PgPromptVersionRepository {
             return Ok(map_prompt_version_row(&r));
         }
 
-        // Conflict path — content already exists for this stage.
+        // Conflict path — content already exists for this stage + role.
         let sql = format!(
             "SELECT {COLUMNS} FROM prompt_versions \
-             WHERE stage = $1 AND content_hash = $2",
+             WHERE stage = $1 AND role = $2 AND content_hash = $3",
         );
 
         let r = sqlx::query(&sql)
             .bind(new.stage.as_str())
+            .bind(new.role.as_str())
             .bind(&new.content_hash)
             .fetch_one(&mut *conn)
             .await
@@ -174,24 +180,26 @@ impl PromptVersionRepository for PgPromptVersionRepository {
         Ok(map_prompt_version_row(&row))
     }
 
-    async fn find_by_stage_and_hash(
+    async fn find_by_stage_role_and_hash(
         &self,
         conn: &mut PgConnection,
         stage: PromptStage,
+        role: PromptRole,
         content_hash: &str,
     ) -> Result<Option<PromptVersion>, DbError> {
         let sql = format!(
             "SELECT {COLUMNS} FROM prompt_versions \
-             WHERE stage = $1 AND content_hash = $2",
+             WHERE stage = $1 AND role = $2 AND content_hash = $3",
         );
 
         let row = sqlx::query(&sql)
             .bind(stage.as_str())
+            .bind(role.as_str())
             .bind(content_hash)
             .fetch_optional(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
-                context: "finding prompt version by stage and hash".to_owned(),
+                context: "finding prompt version by stage, role, and hash".to_owned(),
                 source: e,
             })?;
 
@@ -212,6 +220,11 @@ fn map_prompt_version_row(r: &sqlx::postgres::PgRow) -> PromptVersion {
             r.get::<String, _>("stage")
                 .parse::<PromptStage>()
                 .expect(UNKNOWN_PROMPT_STAGE_IN_DB),
+        )
+        .role(
+            r.get::<String, _>("role")
+                .parse::<PromptRole>()
+                .expect(UNKNOWN_PROMPT_ROLE_IN_DB),
         )
         .content_hash(r.get("content_hash"))
         .content(r.get("content"))
