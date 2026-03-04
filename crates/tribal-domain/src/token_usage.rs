@@ -47,9 +47,12 @@ pub struct TokenUsage {
     tokens_total: i32,
     /// Call latency in milliseconds.
     latency_ms: i32,
-    /// The prompt version used for this call.
+    /// The system prompt version used for this call.
     #[builder(default)]
-    prompt_version_id: Option<PromptVersionId>,
+    system_prompt_version_id: Option<PromptVersionId>,
+    /// The user prompt version used for this call.
+    #[builder(default)]
+    user_prompt_version_id: Option<PromptVersionId>,
     /// OpenTelemetry trace identifier.
     #[builder(default)]
     trace_id: Option<String>,
@@ -128,9 +131,14 @@ impl TokenUsage {
         self.latency_ms
     }
 
-    /// Returns the prompt version identifier, if applicable.
-    pub fn prompt_version_id(&self) -> Option<PromptVersionId> {
-        self.prompt_version_id
+    /// Returns the system prompt version identifier, if applicable.
+    pub fn system_prompt_version_id(&self) -> Option<PromptVersionId> {
+        self.system_prompt_version_id
+    }
+
+    /// Returns the user prompt version identifier, if applicable.
+    pub fn user_prompt_version_id(&self) -> Option<PromptVersionId> {
+        self.user_prompt_version_id
     }
 
     /// Returns the trace identifier, if applicable.
