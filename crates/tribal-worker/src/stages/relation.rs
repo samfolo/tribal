@@ -430,21 +430,22 @@ async fn build_similar_item_decision_contexts(
 /// Builds the `RelationPromptContext` from the loaded relation data.
 ///
 /// This is a pure, synchronous transformation — no database access.
+/// Borrows from the `RelationContext` to avoid cloning.
 ///
 /// # Errors
 ///
 /// Returns [`StageError::Database`] if `batch_size` exceeds the
 /// candidates array length (data corruption).
-fn build_prompt_context(
-    ctx: &RelationContext<'_>,
+fn build_prompt_context<'a>(
+    ctx: &'a RelationContext<'_>,
     batch_size: u32,
-) -> Result<RelationPromptContext, StageError> {
+) -> Result<RelationPromptContext<'a>, StageError> {
     let candidate_outcomes = build_candidate_outcomes(&ctx.candidates, &ctx.triage_results, batch_size)?;
 
     Ok(RelationPromptContext {
         candidates: candidate_outcomes,
-        relation_hints: ctx.relation_hints.clone(),
-        similar_item_decisions: ctx.similar_item_decision_contexts.clone(),
+        relation_hints: &ctx.relation_hints,
+        similar_item_decisions: &ctx.similar_item_decision_contexts,
     })
 }
 
@@ -460,11 +461,11 @@ fn build_prompt_context(
 /// Returns [`StageError::Database`] if `batch_size` exceeds the
 /// candidates array length — this indicates data corruption between
 /// the extraction result and the job's `batch_size` field.
-fn build_candidate_outcomes(
-    candidates: &[Candidate],
+fn build_candidate_outcomes<'a>(
+    candidates: &'a [Candidate],
     triage_results: &[TriageResult],
     batch_size: u32,
-) -> Result<Vec<CandidateOutcome>, StageError> {
+) -> Result<Vec<CandidateOutcome<'a>>, StageError> {
     if (batch_size as usize) > candidates.len() {
         return Err(StageError::Database {
             stage: STAGE_RELATION.into(),
@@ -503,7 +504,7 @@ fn build_candidate_outcomes(
 
             CandidateOutcome {
                 batch_index,
-                candidate: candidate.clone(),
+                candidate,
                 outcome,
                 item_id,
             }
