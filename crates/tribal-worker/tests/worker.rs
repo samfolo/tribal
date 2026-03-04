@@ -97,7 +97,7 @@ async fn setup_prerequisites(
             "user-pv",
             a_new_prompt_version()
                 .role(tribal_domain::PromptRole::User)
-                .content_hash("u".repeat(64))
+                .content_hash("c".repeat(64))
                 .content("test user prompt content".to_owned())
                 .build(),
         )
@@ -1257,7 +1257,7 @@ async fn test_triage_duplicate_path() {
             "user-pv",
             a_new_prompt_version()
                 .role(tribal_domain::PromptRole::User)
-                .content_hash("u".repeat(64))
+                .content_hash("c".repeat(64))
                 .content("test user prompt content".to_owned())
                 .build(),
         )
@@ -2773,7 +2773,7 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
                 "user-pv",
                 a_new_prompt_version()
                     .role(tribal_domain::PromptRole::User)
-                    .content_hash("u".repeat(64))
+                    .content_hash("c".repeat(64))
                     .content("test user prompt content".to_owned())
                     .build(),
             )

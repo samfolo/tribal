@@ -798,6 +798,7 @@ mod tests {
                 "extraction-pv",
                 NewPromptVersion::builder()
                     .stage(PromptStage::Extraction)
+                    .role(PromptRole::System)
                     .content_hash("a".repeat(64))
                     .content("extraction prompt".to_owned())
                     .build(),
@@ -806,6 +807,7 @@ mod tests {
                 "triage-pv",
                 NewPromptVersion::builder()
                     .stage(PromptStage::Triage)
+                    .role(PromptRole::System)
                     .content_hash("b".repeat(64))
                     .content("triage prompt".to_owned())
                     .build(),
