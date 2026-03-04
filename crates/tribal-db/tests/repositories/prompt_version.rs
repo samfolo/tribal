@@ -1,5 +1,5 @@
 use tribal_db::{DbError, PgPromptVersionRepository, PromptVersionRepository};
-use tribal_domain::{PromptStage, PromptVersionId};
+use tribal_domain::{PromptRole, PromptStage, PromptVersionId};
 use tribal_test_utils::{a_new_prompt_version, test_context};
 
 // ---------------------------------------------------------------------------
@@ -107,23 +107,29 @@ async fn test_find_by_id_not_found() {
 }
 
 // ---------------------------------------------------------------------------
-// find_by_stage_and_hash
+// find_by_stage_role_and_hash
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_find_by_stage_and_hash_returns_prompt_version() {
+async fn test_find_by_stage_role_and_hash_returns_prompt_version() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let new = a_new_prompt_version()
         .stage(PromptStage::Relation)
+        .role(PromptRole::System)
         .content_hash("d".repeat(64))
         .build();
     let pv = repo.upsert(&mut txn, &new).await.expect("upsert");
 
     let found = repo
-        .find_by_stage_and_hash(&mut txn, PromptStage::Relation, &"d".repeat(64))
+        .find_by_stage_role_and_hash(
+            &mut txn,
+            PromptStage::Relation,
+            PromptRole::System,
+            &"d".repeat(64),
+        )
         .await
         .expect("find");
 
@@ -131,13 +137,18 @@ async fn test_find_by_stage_and_hash_returns_prompt_version() {
 }
 
 #[tokio::test]
-async fn test_find_by_stage_and_hash_returns_none() {
+async fn test_find_by_stage_role_and_hash_returns_none() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgPromptVersionRepository;
 
     let found = repo
-        .find_by_stage_and_hash(&mut txn, PromptStage::Extraction, &"f".repeat(64))
+        .find_by_stage_role_and_hash(
+            &mut txn,
+            PromptStage::Extraction,
+            PromptRole::System,
+            &"f".repeat(64),
+        )
         .await
         .expect("find");
 

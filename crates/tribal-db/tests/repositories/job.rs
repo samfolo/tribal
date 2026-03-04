@@ -19,7 +19,7 @@ use tribal_test_utils::{
 /// Inserts a principal, project, and a prompt_version row, returning
 /// the IDs needed to create a job.
 ///
-/// A single prompt_version ID is reused for all three job FK columns.
+/// A single prompt_version ID is reused for all six job FK columns.
 async fn setup_job_prerequisites(
     txn: &mut sqlx::PgConnection,
     suffix: &str,
@@ -64,9 +64,12 @@ async fn test_insert_returns_populated_job() {
     let new = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .source_context(serde_json::json!({"tool": "test"}))
         .build();
 
@@ -79,9 +82,12 @@ async fn test_insert_returns_populated_job() {
     assert!(job.outcome().is_none());
     assert_eq!(*job.source_context(), serde_json::json!({"tool": "test"}));
     assert_eq!(job.raw_input(), "test raw input");
-    assert_eq!(job.extraction_prompt_version_id(), pv_id);
-    assert_eq!(job.triage_prompt_version_id(), pv_id);
-    assert_eq!(job.relation_prompt_version_id(), pv_id);
+    assert_eq!(job.extraction_system_prompt_version_id(), pv_id);
+    assert_eq!(job.extraction_user_prompt_version_id(), pv_id);
+    assert_eq!(job.triage_system_prompt_version_id(), pv_id);
+    assert_eq!(job.triage_user_prompt_version_id(), pv_id);
+    assert_eq!(job.relation_system_prompt_version_id(), pv_id);
+    assert_eq!(job.relation_user_prompt_version_id(), pv_id);
     assert!(job.batch_size().is_none());
     assert!(job.committed_batch_id().is_none());
     assert!(job.error_message().is_none());
@@ -113,9 +119,12 @@ async fn test_insert_with_optional_fields_round_trips() {
         .principal_id(principal_id)
         .actor_id(Some(actor.id()))
         .correlation_id(Some(correlation_id))
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .raw_input("custom raw input for round-trip".to_owned())
         .trace_context(Some("00-abc-def-01".to_owned()))
         .build();
@@ -143,9 +152,12 @@ async fn test_find_by_id_returns_job() {
     let new = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .build();
 
     let inserted = repo.insert(&mut txn, &new).await.expect("insert");
@@ -188,9 +200,12 @@ async fn test_find_by_project_id_returns_jobs() {
     let base = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id);
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id);
 
     let first = repo
         .insert(&mut txn, &base.clone().build())
@@ -244,9 +259,12 @@ async fn test_update_status_valid_transition() {
     let new = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -276,9 +294,12 @@ async fn test_update_status_to_completed() {
     let new = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -313,9 +334,12 @@ async fn test_update_status_to_failed() {
     let new = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -351,9 +375,12 @@ async fn test_update_status_invalid_transition() {
     let new = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -404,9 +431,12 @@ async fn test_update_batch_size() {
     let new = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -450,9 +480,12 @@ async fn test_set_committed_batch_id() {
     let new = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -479,9 +512,12 @@ async fn test_set_committed_batch_id_already_set_returns_none() {
     let new = a_new_job()
         .project_id(project_id)
         .principal_id(principal_id)
-        .extraction_prompt_version_id(pv_id)
-        .triage_prompt_version_id(pv_id)
-        .relation_prompt_version_id(pv_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -536,9 +572,12 @@ async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
             &a_new_job()
                 .project_id(project_id)
                 .principal_id(principal_id)
-                .extraction_prompt_version_id(pv_id)
-                .triage_prompt_version_id(pv_id)
-                .relation_prompt_version_id(pv_id)
+                .extraction_system_prompt_version_id(pv_id)
+                .extraction_user_prompt_version_id(pv_id)
+                .triage_system_prompt_version_id(pv_id)
+                .triage_user_prompt_version_id(pv_id)
+                .relation_system_prompt_version_id(pv_id)
+                .relation_user_prompt_version_id(pv_id)
                 .build(),
         )
         .await
@@ -602,9 +641,12 @@ async fn test_fail_stale_dead_lettered_jobs_skips_triage() {
             &a_new_job()
                 .project_id(project_id)
                 .principal_id(principal_id)
-                .extraction_prompt_version_id(pv_id)
-                .triage_prompt_version_id(pv_id)
-                .relation_prompt_version_id(pv_id)
+                .extraction_system_prompt_version_id(pv_id)
+                .extraction_user_prompt_version_id(pv_id)
+                .triage_system_prompt_version_id(pv_id)
+                .triage_user_prompt_version_id(pv_id)
+                .relation_system_prompt_version_id(pv_id)
+                .relation_user_prompt_version_id(pv_id)
                 .build(),
         )
         .await
@@ -661,9 +703,12 @@ async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
             &a_new_job()
                 .project_id(project_id)
                 .principal_id(principal_id)
-                .extraction_prompt_version_id(pv_id)
-                .triage_prompt_version_id(pv_id)
-                .relation_prompt_version_id(pv_id)
+                .extraction_system_prompt_version_id(pv_id)
+                .extraction_user_prompt_version_id(pv_id)
+                .triage_system_prompt_version_id(pv_id)
+                .triage_user_prompt_version_id(pv_id)
+                .relation_system_prompt_version_id(pv_id)
+                .relation_user_prompt_version_id(pv_id)
                 .build(),
         )
         .await

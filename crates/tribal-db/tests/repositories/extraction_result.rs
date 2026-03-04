@@ -43,9 +43,12 @@ async fn setup_job(txn: &mut sqlx::PgConnection, suffix: &str) -> tribal_domain:
             &a_new_job()
                 .project_id(project.id())
                 .principal_id(principal.id())
-                .extraction_prompt_version_id(pv_id)
-                .triage_prompt_version_id(pv_id)
-                .relation_prompt_version_id(pv_id)
+                .extraction_system_prompt_version_id(pv_id)
+                .extraction_user_prompt_version_id(pv_id)
+                .triage_system_prompt_version_id(pv_id)
+                .triage_user_prompt_version_id(pv_id)
+                .relation_system_prompt_version_id(pv_id)
+                .relation_user_prompt_version_id(pv_id)
                 .build(),
         )
         .await
