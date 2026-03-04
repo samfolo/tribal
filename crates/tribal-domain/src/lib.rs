@@ -60,6 +60,7 @@ mod knowledge;
 mod pipeline_stage;
 mod principal;
 mod project;
+mod prompt_role;
 mod prompt_stage;
 mod prompt_version;
 mod reference;
@@ -96,6 +97,7 @@ pub use knowledge::{Confidence, KnowledgeItem, KnowledgeItemBuilder, KnowledgeKi
 pub use pipeline_stage::PipelineStage;
 pub use principal::{Principal, PrincipalBuilder};
 pub use project::{Project, ProjectBuilder};
+pub use prompt_role::PromptRole;
 pub use prompt_stage::PromptStage;
 pub use prompt_version::{PromptVersion, PromptVersionBuilder};
 pub use reference::{Reference, ReferenceBuilder};
