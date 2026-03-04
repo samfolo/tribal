@@ -12,6 +12,9 @@ pub(crate) const VAR_TAGS: &str = "tags";
 /// Tera context variable: the JSON Schema for the expected output.
 pub(crate) const VAR_SCHEMA: &str = "schema";
 
+/// Tera context variable: the verbatim raw input text.
+pub(crate) const VAR_RAW_INPUT: &str = "raw_input";
+
 /// Tera context variable: candidates with triage outcomes.
 pub(crate) const VAR_CANDIDATES: &str = "candidates";
 
