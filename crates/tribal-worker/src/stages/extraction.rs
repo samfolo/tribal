@@ -112,6 +112,8 @@ impl Worker {
         );
 
         async {
+            let include_llm_content = self.config().include_llm_content;
+
             let tag_registry = self.load_tag_registry(STAGE_EXTRACTION).await?;
             let ctx = ExtractionContext { job, task, tag_registry };
 
@@ -138,7 +140,7 @@ impl Worker {
                 &ctx.tag_registry,
             )?;
 
-            if self.config().include_llm_content {
+            if include_llm_content {
                 tracing::debug!(
                     system_prompt = %request.system.as_deref().unwrap_or(""),
                     user_prompt = %request.messages.first().map(|m| m.content.as_str()).unwrap_or(""),
@@ -155,14 +157,13 @@ impl Worker {
                     source: e,
                 })?;
 
-            if self.config().include_llm_content {
+            if include_llm_content {
                 tracing::debug!(
                     response = %response.text,
                     "extraction response received",
                 );
             }
 
-            let include_llm_content = self.config().include_llm_content;
             let output = {
                 let _parse_span = tracing::info_span!("tribal.extraction.parse").entered();
                 parse_extraction_response(&response).inspect_err(|_| {

@@ -34,12 +34,11 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 /// Context assembled before running the triage stage.
-#[allow(dead_code)]
-pub(crate) struct TriageContext {
+pub(crate) struct TriageContext<'a> {
     /// The parent job.
-    pub job: Job,
+    pub job: &'a Job,
     /// The claimed task.
-    pub task: Task,
+    pub task: &'a Task,
     /// The candidate extracted for this batch index.
     pub candidate: Candidate,
     /// The candidate's position in the extraction batch.
@@ -159,11 +158,19 @@ impl Worker {
 
             let candidate = self.load_triage_candidate(job.id(), batch_index).await?;
             let tag_registry = self.load_tag_registry(STAGE_TRIAGE).await?;
+            let ctx = TriageContext { job, task, candidate, batch_index, tag_registry };
 
-            let embedding_response = self.embed_candidate(candidate.content(), deadline).await?;
+            let system_pv = self
+                .load_prompt_version(STAGE_TRIAGE, ctx.job.triage_system_prompt_version_id())
+                .await?;
+            let user_pv = self
+                .load_prompt_version(STAGE_TRIAGE, ctx.job.triage_user_prompt_version_id())
+                .await?;
+
+            let embedding_response = self.embed_candidate(ctx.candidate.content(), deadline).await?;
 
             let search_results = self
-                .search_similar_items(&embedding_response.vector, job)
+                .search_similar_items(&embedding_response.vector, ctx.job)
                 .await?;
 
             let similar_items: Vec<SimilarItemContext> = search_results
@@ -172,7 +179,13 @@ impl Worker {
                 .collect();
 
             let (classification, completion_response) = self
-                .classify_candidate(job, &candidate, &similar_items, &tag_registry, deadline)
+                .classify_candidate(
+                    &ctx,
+                    system_pv.content(),
+                    user_pv.content(),
+                    &similar_items,
+                    deadline,
+                )
                 .await?;
 
             let embedding_usage = embedding_response.usage;
@@ -182,7 +195,7 @@ impl Worker {
                 TriageDecision::Novel => {
                     let (resolved, usages) = tag_resolution::resolve_tags(
                         self.pool(),
-                        candidate.suggested_tags(),
+                        ctx.candidate.suggested_tags(),
                         &tag_registry,
                         self.embedding_provider(),
                         self.triage_embedding_semaphore(),
@@ -197,9 +210,7 @@ impl Worker {
             };
 
             let commit = self.build_triage_commit(
-                job,
-                batch_index,
-                &candidate,
+                &ctx,
                 &classification,
                 &search_results,
                 embedding_vector,
@@ -373,26 +384,26 @@ impl Worker {
     /// the classification response.
     async fn classify_candidate(
         &self,
-        job: &Job,
-        candidate: &Candidate,
+        ctx: &TriageContext<'_>,
+        system_template: &str,
+        user_template: &str,
         similar_items: &[SimilarItemContext],
-        tag_registry: &[TagRegistryEntry],
         deadline: tokio::time::Instant,
     ) -> Result<(TriageClassification, tribal_inference::CompletionResponse), StageError> {
-        let prompt_version = self
-            .load_prompt_version(STAGE_TRIAGE, job.triage_prompt_version_id())
-            .await?;
+        let include_llm_content = self.config().include_llm_content;
 
         let request = assemble_triage_prompt(
-            prompt_version.content(),
-            candidate,
+            system_template,
+            user_template,
+            &ctx.candidate,
             similar_items,
-            tag_registry,
+            &ctx.tag_registry,
         )?;
 
-        if self.config().include_llm_content {
+        if include_llm_content {
             tracing::debug!(
-                prompt = %request.system.as_deref().unwrap_or(""),
+                system_prompt = %request.system.as_deref().unwrap_or(""),
+                user_prompt = %request.messages.first().map(|m| m.content.as_str()).unwrap_or(""),
                 "triage prompt assembled",
             );
         }
@@ -415,14 +426,13 @@ impl Worker {
                 source: e,
             })?;
 
-        if self.config().include_llm_content {
+        if include_llm_content {
             tracing::debug!(
                 response = %response.text,
                 "triage response received",
             );
         }
 
-        let include_llm_content = self.config().include_llm_content;
         let classification = {
             let _parse_span = tracing::info_span!("tribal.triage.parse").entered();
             parse_triage_response(&response).inspect_err(|_| {
@@ -444,20 +454,17 @@ impl Worker {
 
     /// Builds the `StageCommit::Triage` variant from the classification
     /// result, resolved tags, and embedding vector.
-    #[allow(clippy::too_many_arguments)]
     fn build_triage_commit(
         &self,
-        job: &Job,
-        batch_index: u32,
-        candidate: &Candidate,
+        ctx: &TriageContext<'_>,
         classification: &TriageClassification,
         search_results: &[SemanticSearchResult],
         embedding_vector: Vec<f32>,
         resolved_tags: Option<ResolvedTags>,
     ) -> StageCommit {
         let similar_item_decisions = build_similar_item_decisions(
-            job.id(),
-            batch_index,
+            ctx.job.id(),
+            ctx.batch_index,
             &classification.similar_item_decisions,
             search_results,
         );
@@ -478,14 +485,14 @@ impl Worker {
 
                 let knowledge_item = Box::new(
                     NewKnowledgeItem::builder()
-                        .project_id(job.project_id())
-                        .principal_id(job.principal_id())
-                        .kind(candidate.kind())
-                        .content(candidate.content().to_owned())
+                        .project_id(ctx.job.project_id())
+                        .principal_id(ctx.job.principal_id())
+                        .kind(ctx.candidate.kind())
+                        .content(ctx.candidate.content().to_owned())
                         .tags(all_tags)
                         .confidence(Confidence::Inferred)
                         .source_context(source_context)
-                        .episode_id(job.correlation_id())
+                        .episode_id(ctx.job.correlation_id())
                         .build(),
                 );
 
@@ -495,7 +502,7 @@ impl Worker {
                     knowledge_item,
                     embedding_vector,
                     embedding_model: embedding_identity.model.clone(),
-                    suggested_references: candidate.suggested_references().to_vec(),
+                    suggested_references: ctx.candidate.suggested_references().to_vec(),
                     new_tags: tag_data.new_tags,
                     resolved_tags: tag_data.resolved,
                 }
@@ -503,7 +510,7 @@ impl Worker {
             TriageDecision::Duplicate { matched_item_id } => {
                 let observation = NewItemObservation::builder()
                     .knowledge_item_id(*matched_item_id)
-                    .principal_id(job.principal_id())
+                    .principal_id(ctx.job.principal_id())
                     .source_type(SourceType::AgentMediated)
                     .build();
 
@@ -512,7 +519,7 @@ impl Worker {
         };
 
         StageCommit::Triage {
-            project_id: job.project_id(),
+            project_id: ctx.job.project_id(),
             decision,
             similar_item_decisions,
         }
