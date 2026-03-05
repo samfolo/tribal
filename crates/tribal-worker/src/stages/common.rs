@@ -8,7 +8,7 @@ use tribal_db::{
     PromptVersionRepository, TagRegistryRepository,
 };
 use tribal_domain::{
-    ProjectId, PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry,
+    ProjectId, PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry, span_attrs,
 };
 use tribal_inference::{EmbeddingProvider, Usage};
 
@@ -92,6 +92,26 @@ pub(crate) enum TriageCommitDecision {
     },
     /// Idempotency skip — result already exists for this `(job_id, batch_index)`.
     NoOp,
+}
+
+// ---------------------------------------------------------------------------
+// Span recording
+// ---------------------------------------------------------------------------
+
+/// Records the system and user prompt version IDs on the current span.
+pub(crate) fn record_prompt_version_ids(
+    system_pv_id: PromptVersionId,
+    user_pv_id: PromptVersionId,
+) {
+    let span = tracing::Span::current();
+    span.record(
+        span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID,
+        tracing::field::display(system_pv_id),
+    );
+    span.record(
+        span_attrs::LLM_USER_PROMPT_VERSION_ID,
+        tracing::field::display(user_pv_id),
+    );
 }
 
 // ---------------------------------------------------------------------------
