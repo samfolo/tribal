@@ -30,12 +30,11 @@ const EXPECT_EXTRACTION_KEY: &str = "extraction key registered at startup";
 // ---------------------------------------------------------------------------
 
 /// Context assembled before running the extraction stage.
-#[allow(dead_code)]
-pub(crate) struct ExtractionContext {
+pub(crate) struct ExtractionContext<'a> {
     /// The parent job.
-    pub job: Job,
+    pub job: &'a Job,
     /// The claimed task.
-    pub task: Task,
+    pub task: &'a Task,
     /// The current global tag registry.
     pub tag_registry: Vec<TagRegistryEntry>,
 }
@@ -113,11 +112,25 @@ impl Worker {
         );
 
         async {
-            let tag_registry = self.load_tag_registry(STAGE_EXTRACTION).await?;
+            let include_llm_content = self.config().include_llm_content;
 
-            let prompt_version = self
-                .load_prompt_version(STAGE_EXTRACTION, job.extraction_prompt_version_id())
-                .await?;
+            let tag_registry = self.load_tag_registry(STAGE_EXTRACTION).await?;
+            let ctx = ExtractionContext {
+                job,
+                task,
+                tag_registry,
+            };
+
+            let (system_pv, user_pv) = tokio::try_join!(
+                self.load_prompt_version(
+                    STAGE_EXTRACTION,
+                    ctx.job.extraction_system_prompt_version_id()
+                ),
+                self.load_prompt_version(
+                    STAGE_EXTRACTION,
+                    ctx.job.extraction_user_prompt_version_id()
+                ),
+            )?;
 
             let semaphore = self.extraction_semaphore();
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -129,14 +142,16 @@ impl Worker {
                 .expect(SEMAPHORE_CLOSED);
 
             let request = assemble_extraction_prompt(
-                prompt_version.content(),
-                job.raw_input(),
-                &tag_registry,
+                system_pv.content(),
+                user_pv.content(),
+                ctx.job.raw_input(),
+                &ctx.tag_registry,
             )?;
 
-            if self.config().include_llm_content {
+            if include_llm_content {
                 tracing::debug!(
-                    prompt = %request.system.as_deref().unwrap_or(""),
+                    system_prompt = %request.system.as_deref().unwrap_or(""),
+                    user_prompt = %request.messages.first().map_or("", |m| m.content.as_str()),
                     "extraction prompt assembled",
                 );
             }
@@ -150,29 +165,14 @@ impl Worker {
                     source: e,
                 })?;
 
-            if self.config().include_llm_content {
+            if include_llm_content {
                 tracing::debug!(
                     response = %response.text,
                     "extraction response received",
                 );
             }
 
-            let include_llm_content = self.config().include_llm_content;
-            let output = {
-                let _parse_span = tracing::info_span!("tribal.extraction.parse").entered();
-                parse_extraction_response(&response).inspect_err(|_| {
-                    if include_llm_content {
-                        let preview: String =
-                            response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
-                        tracing::debug!(preview = %preview, "parse failure — raw LLM response");
-                    } else {
-                        tracing::debug!(
-                            response_length = response.text.len(),
-                            "parse failure — response details redacted",
-                        );
-                    }
-                })?
-            };
+            let output = parse_with_diagnostics(&response, include_llm_content)?;
 
             let original_count = clamp_to_u32(output.candidates.len());
             let max = self.config().max_candidates_per_job as usize;
@@ -191,7 +191,7 @@ impl Worker {
             let triage_tasks: Vec<NewTask> = (0..batch_size)
                 .map(|i| {
                     NewTask::builder()
-                        .job_id(task.job_id())
+                        .job_id(ctx.task.job_id())
                         .task_type(TaskType::Triage)
                         .batch_index(Some(i))
                         .build()
@@ -217,4 +217,23 @@ impl Worker {
         .instrument(span)
         .await
     }
+}
+
+/// Parses the extraction response, emitting diagnostics on failure.
+fn parse_with_diagnostics(
+    response: &tribal_inference::CompletionResponse,
+    include_llm_content: bool,
+) -> Result<crate::parsing::ExtractionOutput, StageError> {
+    let _parse_span = tracing::info_span!("tribal.extraction.parse").entered();
+    parse_extraction_response(response).inspect_err(|_| {
+        if include_llm_content {
+            let preview: String = response.text.chars().take(PARSE_PREVIEW_LENGTH).collect();
+            tracing::debug!(preview = %preview, "parse failure — raw LLM response");
+        } else {
+            tracing::debug!(
+                response_length = response.text.len(),
+                "parse failure — response details redacted",
+            );
+        }
+    })
 }

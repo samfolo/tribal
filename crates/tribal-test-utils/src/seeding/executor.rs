@@ -174,19 +174,17 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
             SeedCommand::CreatePromptVersion {
                 label,
                 stage,
+                role,
                 content_hash,
                 content,
             } => {
-                handle_create_prompt_version(
-                    i,
-                    label,
-                    *stage,
-                    content_hash,
-                    content,
-                    &mut state,
-                    conn,
-                )
-                .await;
+                let new = NewPromptVersion::builder()
+                    .stage(*stage)
+                    .role(*role)
+                    .content_hash(content_hash.clone())
+                    .content(content.clone())
+                    .build();
+                handle_create_prompt_version(i, label, &new, &mut state, conn).await;
                 i += 1;
             }
 
@@ -399,9 +397,7 @@ fn handle_switch_principal(idx: usize, label: &str, state: &ExecutionState) {
 async fn handle_create_prompt_version(
     idx: usize,
     label: &str,
-    prompt_stage: tribal_domain::PromptStage,
-    content_hash: &str,
-    content: &str,
+    new: &NewPromptVersion,
     state: &mut ExecutionState,
     conn: &mut PgConnection,
 ) {
@@ -412,16 +408,13 @@ async fn handle_create_prompt_version(
         .prompt_version_command_indices
         .insert(label.to_owned(), idx);
 
-    debug!("seed[{idx}]: CreatePromptVersion label={label:?} stage={prompt_stage:?}");
-
-    let new = NewPromptVersion::builder()
-        .stage(prompt_stage)
-        .content_hash(content_hash.to_owned())
-        .content(content.to_owned())
-        .build();
+    debug!(
+        "seed[{idx}]: CreatePromptVersion label={label:?} stage={:?} role={:?}",
+        new.stage, new.role
+    );
 
     let pv = PgPromptVersionRepository
-        .upsert(&mut *conn, &new)
+        .upsert(&mut *conn, new)
         .await
         .expect("seed: upsert prompt version");
 

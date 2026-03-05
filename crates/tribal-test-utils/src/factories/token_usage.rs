@@ -19,7 +19,8 @@ define_factory! {
         tokens_cache_write: i32 = 0,
         tokens_total: i32 = 150,
         latency_ms: i32 = 200,
-        prompt_version_id: Option<PromptVersionId> = None,
+        system_prompt_version_id: Option<PromptVersionId> = None,
+        user_prompt_version_id: Option<PromptVersionId> = None,
         trace_id: Option<String> = None,
         created_at: chrono::DateTime<Utc> = Utc::now(),
     }
@@ -45,7 +46,8 @@ define_factory! {
         tokens_cache_read: i32 = 0,
         tokens_cache_write: i32 = 0,
         latency_ms: i32 = 200,
-        prompt_version_id: Option<PromptVersionId> = None,
+        system_prompt_version_id: Option<PromptVersionId> = None,
+        user_prompt_version_id: Option<PromptVersionId> = None,
         trace_id: Option<String> = None,
     }
 }
@@ -79,7 +81,8 @@ mod tests {
         assert_eq!(new.tokens_cache_read, 0);
         assert_eq!(new.tokens_cache_write, 0);
         assert_eq!(new.latency_ms, 200);
-        assert!(new.prompt_version_id.is_none());
+        assert!(new.system_prompt_version_id.is_none());
+        assert!(new.user_prompt_version_id.is_none());
         assert!(new.trace_id.is_none());
     }
 }
