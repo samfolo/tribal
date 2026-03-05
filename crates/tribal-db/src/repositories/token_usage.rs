@@ -235,13 +235,14 @@ impl PgTokenUsageRepository {
              ORDER BY created_at ASC",
         );
 
-        let rows = sqlx::query(&sql)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|e| DbError::QueryFailed {
-                context: "finding all token usage records".to_owned(),
-                source: e,
-            })?;
+        let rows =
+            sqlx::query(&sql)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: "finding all token usage records".to_owned(),
+                    source: e,
+                })?;
 
         Ok(rows.iter().map(map_token_usage_row).collect())
     }
