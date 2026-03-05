@@ -455,7 +455,7 @@ impl Worker {
         }
     }
 
-    /// Records a single token usage record in a dedicated transaction.
+    /// Records a single token usage record.
     ///
     /// Best-effort: logs a warning on failure without failing the task.
     /// Uses a freshly acquired connection from the pool (not the domain
