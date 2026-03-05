@@ -554,3 +554,65 @@ async fn test_token_usage_records_retry_attempt() {
 
     teardown(ctx).await;
 }
+
+/// Verifies that tag embedding backfill during `worker.startup()` records
+/// token usage entries with `job_id = None`, `task_id = None`,
+/// `stage = Embedding`, and `purpose = Tag`.
+#[tokio::test]
+async fn test_backfill_records_token_usage() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    {
+        let mut conn = raw_conn(ctx).await;
+        Seed::new()
+            .define_project("proj", "git@github.com:test/backfill-token-usage.git")
+            .define_principal("user", "user:backfill-token-usage")
+            .define_tag("alpha")
+            .define_tag("beta")
+            .execute(&mut conn)
+            .await;
+    }
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding));
+
+    worker.startup().await.expect("startup");
+
+    let mut conn = raw_conn(ctx).await;
+    let records = PgTokenUsageRepository
+        .find_all_for_test(&mut conn)
+        .await
+        .expect("find all token usage");
+
+    assert_eq!(
+        records.len(),
+        2,
+        "backfill should produce 2 token usage records (one per tag)",
+    );
+
+    for r in &records {
+        assert_eq!(r.job_id(), None, "backfill records have no job");
+        assert_eq!(r.task_id(), None, "backfill records have no task");
+        assert_eq!(r.stage(), PipelineStage::Embedding);
+        assert_eq!(r.purpose(), Some(EmbeddingPurpose::Tag));
+        assert_eq!(r.attempt(), 0);
+        assert_eq!(r.provider(), "mock");
+        assert_eq!(r.model(), "mock-embed-model");
+        assert_eq!(r.tokens_input(), 10);
+        assert_eq!(r.tokens_output(), 0);
+        assert_eq!(r.tokens_total(), 10);
+        assert_eq!(r.system_prompt_version_id(), None);
+        assert_eq!(r.user_prompt_version_id(), None);
+    }
+
+    teardown(ctx).await;
+}
