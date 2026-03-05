@@ -181,6 +181,8 @@ impl Worker {
             { span_attrs::TASK_ID } = %task.id(),
             { span_attrs::LLM_STAGE } = "relation",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
+            { span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::LLM_USER_PROMPT_VERSION_ID } = tracing::field::Empty,
         );
 
         async {
@@ -216,6 +218,16 @@ impl Worker {
                 ),
                 self.load_prompt_version(STAGE_RELATION, ctx.job.relation_user_prompt_version_id()),
             )?;
+
+            let span = tracing::Span::current();
+            span.record(
+                span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID,
+                tracing::field::display(ctx.job.relation_system_prompt_version_id()),
+            );
+            span.record(
+                span_attrs::LLM_USER_PROMPT_VERSION_ID,
+                tracing::field::display(ctx.job.relation_user_prompt_version_id()),
+            );
 
             // Acquire semaphore.
             let semaphore = self.relation_semaphore();
