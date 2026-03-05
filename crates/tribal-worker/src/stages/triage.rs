@@ -221,8 +221,13 @@ impl Worker {
             );
 
             let mut usages = vec![
-                Usage::Embedding(embedding_usage),
-                Usage::Completion(completion_response.usage),
+                Usage::Embedding {
+                    usage: embedding_usage,
+                    purpose: EmbeddingPurpose::Candidate,
+                },
+                Usage::Completion {
+                    usage: completion_response.usage,
+                },
             ];
             usages.extend(tag_usages);
 
