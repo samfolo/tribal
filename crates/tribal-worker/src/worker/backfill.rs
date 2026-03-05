@@ -24,9 +24,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tribal_db::{
     NewTagEmbedding, NewTokenUsage, PgTagEmbeddingRepository, PgTokenUsageRepository,
-    TagEmbeddingRepository, TokenUsageRepository, TokenUsageStage,
+    TagEmbeddingRepository, TokenUsageRepository,
 };
-use tribal_domain::EmbeddingPurpose;
+use tribal_domain::{EmbeddingPurpose, TokenUsageStage};
 use tribal_inference::{EmbeddingProvider, EmbeddingRequest, EmbeddingUsage};
 
 use crate::{

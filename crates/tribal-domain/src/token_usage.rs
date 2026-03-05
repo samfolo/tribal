@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, TaskId, TokenUsageId};
+use crate::{
+    EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, TaskId, TaskType, TokenUsageId,
+};
 
 /// A token usage record for a single LLM or embedding call.
 ///
@@ -149,5 +151,60 @@ impl TokenUsage {
     /// Returns when this usage was recorded.
     pub fn created_at(&self) -> DateTime<Utc> {
         self.created_at
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Token usage stage
+// ---------------------------------------------------------------------------
+
+/// Encodes the `purpose_stage_check` constraint at the type level.
+///
+/// Embedding usage requires a purpose qualifier; non-embedding stages
+/// forbid it.  This enum makes the invalid state unrepresentable.
+#[derive(Debug, Clone, Copy)]
+pub enum TokenUsageStage {
+    /// The extraction pipeline stage.
+    Extraction,
+    /// The triage pipeline stage.
+    Triage,
+    /// The relation pipeline stage.
+    Relation,
+    /// The embedding pipeline stage with a required purpose.
+    Embedding {
+        /// Whether the embedding was for indexing, querying, or tag resolution.
+        purpose: EmbeddingPurpose,
+    },
+}
+
+impl TokenUsageStage {
+    /// Returns the pipeline stage.
+    #[must_use]
+    pub fn pipeline_stage(&self) -> PipelineStage {
+        match self {
+            Self::Extraction => PipelineStage::Extraction,
+            Self::Triage => PipelineStage::Triage,
+            Self::Relation => PipelineStage::Relation,
+            Self::Embedding { .. } => PipelineStage::Embedding,
+        }
+    }
+
+    /// Returns the embedding purpose, if applicable.
+    #[must_use]
+    pub fn purpose(&self) -> Option<EmbeddingPurpose> {
+        match self {
+            Self::Embedding { purpose } => Some(*purpose),
+            _ => None,
+        }
+    }
+}
+
+impl From<TaskType> for TokenUsageStage {
+    fn from(task_type: TaskType) -> Self {
+        match task_type {
+            TaskType::Extraction => Self::Extraction,
+            TaskType::Triage => Self::Triage,
+            TaskType::Relation => Self::Relation,
+        }
     }
 }
