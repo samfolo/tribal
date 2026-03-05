@@ -39,9 +39,12 @@ const COLUMNS: Columns = Columns(&[
     "raw_input",
     "extraction_original_count",
     "error_message",
-    "extraction_prompt_version_id",
-    "triage_prompt_version_id",
-    "relation_prompt_version_id",
+    "extraction_system_prompt_version_id",
+    "extraction_user_prompt_version_id",
+    "triage_system_prompt_version_id",
+    "triage_user_prompt_version_id",
+    "relation_system_prompt_version_id",
+    "relation_user_prompt_version_id",
     "trace_context",
     "completed_at",
     "created_at",
@@ -81,12 +84,18 @@ pub struct NewJob {
     pub source_context: serde_json::Value,
     /// Verbatim text from ingestion; primary input to extraction.
     pub raw_input: String,
-    /// Extraction prompt version at job creation time.
-    pub extraction_prompt_version_id: PromptVersionId,
-    /// Triage prompt version at job creation time.
-    pub triage_prompt_version_id: PromptVersionId,
-    /// Relation prompt version at job creation time.
-    pub relation_prompt_version_id: PromptVersionId,
+    /// Extraction system prompt version at job creation time.
+    pub extraction_system_prompt_version_id: PromptVersionId,
+    /// Extraction user prompt version at job creation time.
+    pub extraction_user_prompt_version_id: PromptVersionId,
+    /// Triage system prompt version at job creation time.
+    pub triage_system_prompt_version_id: PromptVersionId,
+    /// Triage user prompt version at job creation time.
+    pub triage_user_prompt_version_id: PromptVersionId,
+    /// Relation system prompt version at job creation time.
+    pub relation_system_prompt_version_id: PromptVersionId,
+    /// Relation user prompt version at job creation time.
+    pub relation_user_prompt_version_id: PromptVersionId,
     /// W3C traceparent for distributed tracing.
     #[builder(default)]
     pub trace_context: Option<String>,
@@ -249,10 +258,12 @@ impl JobRepository for PgJobRepository {
         let sql = format!(
             "INSERT INTO jobs \
                  (correlation_id, project_id, principal_id, actor_id, \
-                  source_context, raw_input, extraction_prompt_version_id, \
-                  triage_prompt_version_id, relation_prompt_version_id, \
+                  source_context, raw_input, \
+                  extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
+                  triage_system_prompt_version_id, triage_user_prompt_version_id, \
+                  relation_system_prompt_version_id, relation_user_prompt_version_id, \
                   trace_context) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
              RETURNING {COLUMNS}",
         );
 
@@ -263,9 +274,12 @@ impl JobRepository for PgJobRepository {
             .bind(new_job.actor_id.map(|id| *id.inner()))
             .bind(&new_job.source_context)
             .bind(&new_job.raw_input)
-            .bind(new_job.extraction_prompt_version_id.inner())
-            .bind(new_job.triage_prompt_version_id.inner())
-            .bind(new_job.relation_prompt_version_id.inner())
+            .bind(new_job.extraction_system_prompt_version_id.inner())
+            .bind(new_job.extraction_user_prompt_version_id.inner())
+            .bind(new_job.triage_system_prompt_version_id.inner())
+            .bind(new_job.triage_user_prompt_version_id.inner())
+            .bind(new_job.relation_system_prompt_version_id.inner())
+            .bind(new_job.relation_user_prompt_version_id.inner())
             .bind(&new_job.trace_context)
             .fetch_one(&mut *conn)
             .await
@@ -548,14 +562,23 @@ fn map_job_row(r: &sqlx::postgres::PgRow) -> Job {
                 .map(|v| u32::try_from(v).expect(EXTRACTION_ORIGINAL_COUNT_OVERFLOW)),
         )
         .error_message(r.get("error_message"))
-        .extraction_prompt_version_id(PromptVersionId::from(
-            r.get::<uuid::Uuid, _>("extraction_prompt_version_id"),
+        .extraction_system_prompt_version_id(PromptVersionId::from(
+            r.get::<uuid::Uuid, _>("extraction_system_prompt_version_id"),
         ))
-        .triage_prompt_version_id(PromptVersionId::from(
-            r.get::<uuid::Uuid, _>("triage_prompt_version_id"),
+        .extraction_user_prompt_version_id(PromptVersionId::from(
+            r.get::<uuid::Uuid, _>("extraction_user_prompt_version_id"),
         ))
-        .relation_prompt_version_id(PromptVersionId::from(
-            r.get::<uuid::Uuid, _>("relation_prompt_version_id"),
+        .triage_system_prompt_version_id(PromptVersionId::from(
+            r.get::<uuid::Uuid, _>("triage_system_prompt_version_id"),
+        ))
+        .triage_user_prompt_version_id(PromptVersionId::from(
+            r.get::<uuid::Uuid, _>("triage_user_prompt_version_id"),
+        ))
+        .relation_system_prompt_version_id(PromptVersionId::from(
+            r.get::<uuid::Uuid, _>("relation_system_prompt_version_id"),
+        ))
+        .relation_user_prompt_version_id(PromptVersionId::from(
+            r.get::<uuid::Uuid, _>("relation_user_prompt_version_id"),
         ))
         .trace_context(r.get("trace_context"))
         .completed_at(r.get("completed_at"))
@@ -624,11 +647,13 @@ impl PgJobRepository {
         let sql = format!(
             "INSERT INTO jobs \
                  (correlation_id, project_id, principal_id, actor_id, \
-                  source_context, raw_input, extraction_prompt_version_id, \
-                  triage_prompt_version_id, relation_prompt_version_id, \
+                  source_context, raw_input, \
+                  extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
+                  triage_system_prompt_version_id, triage_user_prompt_version_id, \
+                  relation_system_prompt_version_id, relation_user_prompt_version_id, \
                   trace_context, status, outcome, committed_batch_id, \
                   error_message) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) \
              RETURNING {COLUMNS}",
         );
 
@@ -639,9 +664,12 @@ impl PgJobRepository {
             .bind(new_job.actor_id.map(|id| *id.inner()))
             .bind(&new_job.source_context)
             .bind(&new_job.raw_input)
-            .bind(new_job.extraction_prompt_version_id.inner())
-            .bind(new_job.triage_prompt_version_id.inner())
-            .bind(new_job.relation_prompt_version_id.inner())
+            .bind(new_job.extraction_system_prompt_version_id.inner())
+            .bind(new_job.extraction_user_prompt_version_id.inner())
+            .bind(new_job.triage_system_prompt_version_id.inner())
+            .bind(new_job.triage_user_prompt_version_id.inner())
+            .bind(new_job.relation_system_prompt_version_id.inner())
+            .bind(new_job.relation_user_prompt_version_id.inner())
             .bind(&new_job.trace_context)
             .bind(overrides.status.as_str())
             .bind(overrides.outcome.map(|o| o.as_str().to_owned()))

@@ -14,9 +14,8 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    Candidate, ExtractionResult, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId,
-    RelationHint, RelationKind, Task, TriageOutcome, TriageResult, TriageSimilarItemDecision,
-    span_attrs,
+    Candidate, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
+    RelationKind, Task, TriageOutcome, TriageResult, TriageSimilarItemDecision, span_attrs,
 };
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
@@ -46,25 +45,17 @@ const EXPECT_RELATION_KEY: &str = "relation key registered at startup";
 ///
 /// This is the richest context of any stage — it carries the complete
 /// episode picture for the relation agent.
-#[allow(dead_code)]
-pub(crate) struct RelationContext {
+pub(crate) struct RelationContext<'a> {
     /// The parent job.
-    pub job: Job,
-    /// The claimed task.
-    pub task: Task,
-    /// Retained for metadata (id, timestamps) used in logging and
-    /// diagnostics.
-    pub extraction_result: ExtractionResult,
-    /// Typed candidates, deserialised from `extraction_result` at
-    /// construction time.
+    pub job: &'a Job,
+    /// Typed candidates, deserialised from the extraction result.
     pub candidates: Vec<Candidate>,
-    /// Typed relation hints, deserialised from `extraction_result` at
-    /// construction time.
+    /// Typed relation hints, deserialised from the extraction result.
     pub relation_hints: Vec<RelationHint>,
     /// All triage results for this job.
     pub triage_results: Vec<TriageResult>,
-    /// All triage similar item decisions for this job.
-    pub similar_item_decisions: Vec<TriageSimilarItemDecision>,
+    /// Enriched similar item decisions with matched item content.
+    pub similar_item_decision_contexts: Vec<SimilarItemDecisionContext>,
 }
 
 // ---------------------------------------------------------------------------
@@ -122,15 +113,11 @@ impl Worker {
 
 impl Worker {
     /// Loads all relation stage inputs from the database using a single
-    /// pooled connection.
-    ///
-    /// Returns the assembled prompt context, the raw triage results
-    /// (needed for commit decision building), and the validated batch
-    /// size.
-    async fn load_relation_context(
+    /// pooled connection and returns the assembled context.
+    async fn load_relation_data<'a>(
         &self,
-        job: &Job,
-    ) -> Result<(RelationPromptContext, Vec<TriageResult>, u32), StageError> {
+        job: &'a Job,
+    ) -> Result<RelationContext<'a>, StageError> {
         let mut conn = self
             .pool()
             .acquire()
@@ -140,31 +127,18 @@ impl Worker {
         let (candidates, relation_hints) = load_extraction_data(&mut conn, job).await?;
         let triage_results = load_triage_results(&mut conn, job).await?;
         let similar_item_decisions = load_similar_item_decisions(&mut conn, job).await?;
-        let decision_contexts =
+        let similar_item_decision_contexts =
             build_similar_item_decision_contexts(&mut conn, &similar_item_decisions).await?;
 
         drop(conn);
 
-        let Some(batch_size) = job.batch_size() else {
-            return Err(StageError::Database {
-                stage: STAGE_RELATION.into(),
-                context: format!("missing batch_size for job {}", job.id()),
-                source: tribal_db::DbError::NotFound {
-                    entity: "job.batch_size",
-                    id: job.id().to_string(),
-                },
-            });
-        };
-
-        let candidate_outcomes = build_candidate_outcomes(candidates, &triage_results, batch_size)?;
-
-        let prompt_context = RelationPromptContext {
-            candidates: candidate_outcomes,
+        Ok(RelationContext {
+            job,
+            candidates,
             relation_hints,
-            similar_item_decisions: decision_contexts,
-        };
-
-        Ok((prompt_context, triage_results, batch_size))
+            triage_results,
+            similar_item_decision_contexts,
+        })
     }
 }
 
@@ -222,13 +196,26 @@ impl Worker {
 
             let include_llm_content = self.config().include_llm_content;
 
-            let (prompt_context, triage_results, batch_size) =
-                self.load_relation_context(job).await?;
+            let ctx = self.load_relation_data(job).await?;
 
-            // Load prompt version.
-            let prompt_version = self
-                .load_prompt_version(STAGE_RELATION, job.relation_prompt_version_id())
-                .await?;
+            let batch_size = ctx.job.batch_size().ok_or_else(|| StageError::Database {
+                stage: STAGE_RELATION.into(),
+                context: format!("job {} has no batch_size set", ctx.job.id()),
+                source: tribal_db::DbError::NotFound {
+                    entity: "job.batch_size",
+                    id: ctx.job.id().to_string(),
+                },
+            })?;
+
+            let prompt_context = build_prompt_context(&ctx, batch_size)?;
+
+            let (system_pv, user_pv) = tokio::try_join!(
+                self.load_prompt_version(
+                    STAGE_RELATION,
+                    ctx.job.relation_system_prompt_version_id()
+                ),
+                self.load_prompt_version(STAGE_RELATION, ctx.job.relation_user_prompt_version_id()),
+            )?;
 
             // Acquire semaphore.
             let semaphore = self.relation_semaphore();
@@ -240,11 +227,13 @@ impl Worker {
                 })?
                 .expect(SEMAPHORE_CLOSED);
 
-            let request = assemble_relation_prompt(prompt_version.content(), &prompt_context)?;
+            let request =
+                assemble_relation_prompt(system_pv.content(), user_pv.content(), &prompt_context)?;
 
             if include_llm_content {
                 tracing::debug!(
-                    prompt = %request.system.as_deref().unwrap_or(""),
+                    system_prompt = %request.system.as_deref().unwrap_or(""),
+                    user_prompt = %request.messages.first().map_or("", |m| m.content.as_str()),
                     "relation prompt assembled",
                 );
             }
@@ -282,9 +271,9 @@ impl Worker {
 
             let decision = build_commit_decision(
                 output.relations,
-                &triage_results,
+                &ctx.triage_results,
                 batch_size,
-                job.principal_id(),
+                ctx.job.principal_id(),
             );
 
             Ok(StageOutput {
@@ -429,6 +418,33 @@ async fn build_similar_item_decision_contexts(
 }
 
 // ---------------------------------------------------------------------------
+// Prompt context assembly
+// ---------------------------------------------------------------------------
+
+/// Builds the `RelationPromptContext` from the loaded relation data.
+///
+/// This is a pure, synchronous transformation — no database access.
+/// Borrows from the `RelationContext` to avoid cloning.
+///
+/// # Errors
+///
+/// Returns [`StageError::Database`] if `batch_size` exceeds the
+/// candidates array length (data corruption).
+fn build_prompt_context<'a>(
+    ctx: &'a RelationContext<'_>,
+    batch_size: u32,
+) -> Result<RelationPromptContext<'a>, StageError> {
+    let candidate_outcomes =
+        build_candidate_outcomes(&ctx.candidates, &ctx.triage_results, batch_size)?;
+
+    Ok(RelationPromptContext {
+        candidates: candidate_outcomes,
+        relation_hints: &ctx.relation_hints,
+        similar_item_decisions: &ctx.similar_item_decision_contexts,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Candidate outcomes
 // ---------------------------------------------------------------------------
 
@@ -440,11 +456,11 @@ async fn build_similar_item_decision_contexts(
 /// Returns [`StageError::Database`] if `batch_size` exceeds the
 /// candidates array length — this indicates data corruption between
 /// the extraction result and the job's `batch_size` field.
-fn build_candidate_outcomes(
-    candidates: Vec<Candidate>,
+fn build_candidate_outcomes<'a>(
+    candidates: &'a [Candidate],
     triage_results: &[TriageResult],
     batch_size: u32,
-) -> Result<Vec<CandidateOutcome>, StageError> {
+) -> Result<Vec<CandidateOutcome<'a>>, StageError> {
     if (batch_size as usize) > candidates.len() {
         return Err(StageError::Database {
             stage: STAGE_RELATION.into(),
@@ -465,7 +481,7 @@ fn build_candidate_outcomes(
         .collect();
 
     Ok(candidates
-        .into_iter()
+        .iter()
         .enumerate()
         .take(batch_size as usize)
         .map(|(i, candidate)| {

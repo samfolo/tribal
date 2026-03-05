@@ -13,8 +13,8 @@ use sqlx::PgConnection;
 use tribal_db::NewPromptVersion;
 use tribal_domain::{
     Confidence, EmbeddingId, ItemObservationId, JobId, KnowledgeItemId, KnowledgeKind, PrincipalId,
-    ProjectId, PromptStage, PromptVersionId, ReferenceId, ReferenceKind, RelationBatchId,
-    RelationId, RelationKind, SourceType,
+    ProjectId, PromptRole, PromptStage, PromptVersionId, ReferenceId, ReferenceKind,
+    RelationBatchId, RelationId, RelationKind, SourceType,
 };
 
 use super::executor;
@@ -44,6 +44,7 @@ pub(crate) enum SeedCommand {
     CreatePromptVersion {
         label: String,
         stage: PromptStage,
+        role: PromptRole,
         content_hash: String,
         content: String,
     },
@@ -324,7 +325,7 @@ impl Seed {
     /// Registers a prompt version with the given label.
     ///
     /// The upsert is idempotent — repeated calls with the same
-    /// `(stage, content_hash)` return the existing row.
+    /// `(stage, role, content_hash)` return the existing row.
     #[must_use]
     pub fn define_prompt_version(
         mut self,
@@ -334,6 +335,7 @@ impl Seed {
         self.commands.push(SeedCommand::CreatePromptVersion {
             label: label.into(),
             stage: new.stage,
+            role: new.role,
             content_hash: new.content_hash,
             content: new.content,
         });
@@ -796,6 +798,7 @@ mod tests {
                 "extraction-pv",
                 NewPromptVersion::builder()
                     .stage(PromptStage::Extraction)
+                    .role(PromptRole::System)
                     .content_hash("a".repeat(64))
                     .content("extraction prompt".to_owned())
                     .build(),
@@ -804,6 +807,7 @@ mod tests {
                 "triage-pv",
                 NewPromptVersion::builder()
                     .stage(PromptStage::Triage)
+                    .role(PromptRole::System)
                     .content_hash("b".repeat(64))
                     .content("triage prompt".to_owned())
                     .build(),

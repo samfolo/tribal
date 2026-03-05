@@ -117,12 +117,18 @@ pub struct Job {
     /// Error message — set only when status is `Failed`.
     #[builder(default)]
     error_message: Option<String>,
-    /// Extraction prompt version at job creation time.
-    extraction_prompt_version_id: PromptVersionId,
-    /// Triage prompt version at job creation time.
-    triage_prompt_version_id: PromptVersionId,
-    /// Relation prompt version at job creation time.
-    relation_prompt_version_id: PromptVersionId,
+    /// Extraction system prompt version at job creation time.
+    extraction_system_prompt_version_id: PromptVersionId,
+    /// Extraction user prompt version at job creation time.
+    extraction_user_prompt_version_id: PromptVersionId,
+    /// Triage system prompt version at job creation time.
+    triage_system_prompt_version_id: PromptVersionId,
+    /// Triage user prompt version at job creation time.
+    triage_user_prompt_version_id: PromptVersionId,
+    /// Relation system prompt version at job creation time.
+    relation_system_prompt_version_id: PromptVersionId,
+    /// Relation user prompt version at job creation time.
+    relation_user_prompt_version_id: PromptVersionId,
     /// W3C traceparent for distributed tracing.
     #[builder(default)]
     trace_context: Option<String>,
@@ -201,19 +207,34 @@ impl Job {
         self.error_message.as_deref()
     }
 
-    /// Returns the extraction prompt version identifier.
-    pub fn extraction_prompt_version_id(&self) -> PromptVersionId {
-        self.extraction_prompt_version_id
+    /// Returns the extraction system prompt version identifier.
+    pub fn extraction_system_prompt_version_id(&self) -> PromptVersionId {
+        self.extraction_system_prompt_version_id
     }
 
-    /// Returns the triage prompt version identifier.
-    pub fn triage_prompt_version_id(&self) -> PromptVersionId {
-        self.triage_prompt_version_id
+    /// Returns the extraction user prompt version identifier.
+    pub fn extraction_user_prompt_version_id(&self) -> PromptVersionId {
+        self.extraction_user_prompt_version_id
     }
 
-    /// Returns the relation prompt version identifier.
-    pub fn relation_prompt_version_id(&self) -> PromptVersionId {
-        self.relation_prompt_version_id
+    /// Returns the triage system prompt version identifier.
+    pub fn triage_system_prompt_version_id(&self) -> PromptVersionId {
+        self.triage_system_prompt_version_id
+    }
+
+    /// Returns the triage user prompt version identifier.
+    pub fn triage_user_prompt_version_id(&self) -> PromptVersionId {
+        self.triage_user_prompt_version_id
+    }
+
+    /// Returns the relation system prompt version identifier.
+    pub fn relation_system_prompt_version_id(&self) -> PromptVersionId {
+        self.relation_system_prompt_version_id
+    }
+
+    /// Returns the relation user prompt version identifier.
+    pub fn relation_user_prompt_version_id(&self) -> PromptVersionId {
+        self.relation_user_prompt_version_id
     }
 
     /// Returns the W3C traceparent, if set.

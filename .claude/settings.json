@@ -27,6 +27,7 @@
 
       "Bash(brew list:*)",
 
+      "Bash(DATABASE_URL=\"postgres://tribal:tribal@localhost:5432/tribal_test\" cargo test:*)",
       "Bash(SQLX_OFFLINE=true cargo clippy:*)",
       "Bash(SQLX_OFFLINE=true cargo test:*)",
       "Bash(cargo +nightly expand:*)",
@@ -45,6 +46,7 @@
       "Bash(find:*)",
 
       "Bash(gh api:*)",
+      "Bash(gh auth:*)",
       "Bash(gh issue view:*)",
       "Bash(gh issue list:*)",
       "Bash(gh label:*)",

@@ -34,7 +34,8 @@ const COLUMNS: Columns = Columns(&[
     "tokens_cache_write",
     "tokens_total",
     "latency_ms",
-    "prompt_version_id",
+    "system_prompt_version_id",
+    "user_prompt_version_id",
     "trace_id",
     "created_at",
 ]);
@@ -128,9 +129,12 @@ pub struct NewTokenUsage {
     pub tokens_cache_write: i32,
     /// End-to-end latency in milliseconds.
     pub latency_ms: i32,
-    /// The prompt version used (null for embedding calls).
+    /// The system prompt version used (null for embedding calls).
     #[builder(default)]
-    pub prompt_version_id: Option<PromptVersionId>,
+    pub system_prompt_version_id: Option<PromptVersionId>,
+    /// The user prompt version used (null for embedding calls).
+    #[builder(default)]
+    pub user_prompt_version_id: Option<PromptVersionId>,
     /// Optional trace identifier for read-path correlation.
     #[builder(default)]
     pub trace_id: Option<String>,
@@ -197,8 +201,9 @@ impl TokenUsageRepository for PgTokenUsageRepository {
             "INSERT INTO token_usage \
                  (job_id, task_id, attempt, stage, purpose, provider, model, \
                   tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, \
-                  tokens_total, latency_ms, prompt_version_id, trace_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $8 + $9, $12, $13, $14) \
+                  tokens_total, latency_ms, system_prompt_version_id, user_prompt_version_id, \
+                  trace_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $8 + $9, $12, $13, $14, $15) \
              RETURNING {COLUMNS}",
         );
 
@@ -215,7 +220,8 @@ impl TokenUsageRepository for PgTokenUsageRepository {
             .bind(new.tokens_cache_read)
             .bind(new.tokens_cache_write)
             .bind(new.latency_ms)
-            .bind(new.prompt_version_id.map(|id| *id.inner()))
+            .bind(new.system_prompt_version_id.map(|id| *id.inner()))
+            .bind(new.user_prompt_version_id.map(|id| *id.inner()))
             .bind(&new.trace_id)
             .fetch_one(&mut *conn)
             .await
@@ -280,8 +286,12 @@ fn map_token_usage_row(r: &sqlx::postgres::PgRow) -> TokenUsage {
         .tokens_cache_write(r.get("tokens_cache_write"))
         .tokens_total(r.get("tokens_total"))
         .latency_ms(r.get("latency_ms"))
-        .prompt_version_id(
-            r.get::<Option<uuid::Uuid>, _>("prompt_version_id")
+        .system_prompt_version_id(
+            r.get::<Option<uuid::Uuid>, _>("system_prompt_version_id")
+                .map(PromptVersionId::from),
+        )
+        .user_prompt_version_id(
+            r.get::<Option<uuid::Uuid>, _>("user_prompt_version_id")
                 .map(PromptVersionId::from),
         )
         .trace_id(r.get("trace_id"))

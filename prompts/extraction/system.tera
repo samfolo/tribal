@@ -8,13 +8,6 @@ Each candidate must include:
 
 If two candidates have a derivation relationship (one is derived from the other), include a relation_hint with the source and target indices.
 
-{% if tags | length > 0 %}
-The following tags already exist in the registry. Prefer reusing these where appropriate rather than inventing new ones:
-{% for tag in tags %}
-- {{ tag }}
-{% endfor %}
-{% endif %}
-
 Respond with valid JSON matching this schema:
 
 {{ schema }}

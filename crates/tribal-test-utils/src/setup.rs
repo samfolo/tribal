@@ -137,7 +137,8 @@ pub async fn seed_extraction_job(
     conn: &mut PgConnection,
     principal_id: PrincipalId,
     project_id: ProjectId,
-    pv_id: PromptVersionId,
+    system_pv_id: PromptVersionId,
+    user_pv_id: PromptVersionId,
 ) -> (JobId, TaskId) {
     let job = PgJobRepository
         .insert(
@@ -145,9 +146,12 @@ pub async fn seed_extraction_job(
             &a_new_job()
                 .project_id(project_id)
                 .principal_id(principal_id)
-                .extraction_prompt_version_id(pv_id)
-                .triage_prompt_version_id(pv_id)
-                .relation_prompt_version_id(pv_id)
+                .extraction_system_prompt_version_id(system_pv_id)
+                .extraction_user_prompt_version_id(user_pv_id)
+                .triage_system_prompt_version_id(system_pv_id)
+                .triage_user_prompt_version_id(user_pv_id)
+                .relation_system_prompt_version_id(system_pv_id)
+                .relation_user_prompt_version_id(user_pv_id)
                 .build(),
         )
         .await
@@ -182,7 +186,8 @@ pub async fn seed_triage_job(
     conn: &mut PgConnection,
     principal_id: PrincipalId,
     project_id: ProjectId,
-    pv_id: PromptVersionId,
+    system_pv_id: PromptVersionId,
+    user_pv_id: PromptVersionId,
     candidates: &[Candidate],
 ) -> (JobId, TaskId) {
     assert!(
@@ -197,9 +202,12 @@ pub async fn seed_triage_job(
             &a_new_job()
                 .project_id(project_id)
                 .principal_id(principal_id)
-                .extraction_prompt_version_id(pv_id)
-                .triage_prompt_version_id(pv_id)
-                .relation_prompt_version_id(pv_id)
+                .extraction_system_prompt_version_id(system_pv_id)
+                .extraction_user_prompt_version_id(user_pv_id)
+                .triage_system_prompt_version_id(system_pv_id)
+                .triage_user_prompt_version_id(user_pv_id)
+                .relation_system_prompt_version_id(system_pv_id)
+                .relation_user_prompt_version_id(user_pv_id)
                 .build(),
         )
         .await
@@ -281,7 +289,8 @@ pub async fn seed_multiple_triage_tasks(
     conn: &mut PgConnection,
     principal_id: PrincipalId,
     project_id: ProjectId,
-    pv_id: PromptVersionId,
+    system_pv_id: PromptVersionId,
+    user_pv_id: PromptVersionId,
     candidates: &[Candidate],
 ) -> (JobId, Vec<TaskId>) {
     assert!(
@@ -296,9 +305,12 @@ pub async fn seed_multiple_triage_tasks(
             &a_new_job()
                 .project_id(project_id)
                 .principal_id(principal_id)
-                .extraction_prompt_version_id(pv_id)
-                .triage_prompt_version_id(pv_id)
-                .relation_prompt_version_id(pv_id)
+                .extraction_system_prompt_version_id(system_pv_id)
+                .extraction_user_prompt_version_id(user_pv_id)
+                .triage_system_prompt_version_id(system_pv_id)
+                .triage_user_prompt_version_id(user_pv_id)
+                .relation_system_prompt_version_id(system_pv_id)
+                .relation_user_prompt_version_id(user_pv_id)
                 .build(),
         )
         .await
@@ -450,7 +462,8 @@ pub async fn seed_relation_job(
     conn: &mut PgConnection,
     principal_id: PrincipalId,
     project_id: ProjectId,
-    pv_id: PromptVersionId,
+    system_pv_id: PromptVersionId,
+    user_pv_id: PromptVersionId,
     candidates: &[Candidate],
     relation_hints: &[RelationHint],
 ) -> (JobId, TaskId, Vec<KnowledgeItemId>) {
@@ -466,9 +479,12 @@ pub async fn seed_relation_job(
             &a_new_job()
                 .project_id(project_id)
                 .principal_id(principal_id)
-                .extraction_prompt_version_id(pv_id)
-                .triage_prompt_version_id(pv_id)
-                .relation_prompt_version_id(pv_id)
+                .extraction_system_prompt_version_id(system_pv_id)
+                .extraction_user_prompt_version_id(user_pv_id)
+                .triage_system_prompt_version_id(system_pv_id)
+                .triage_user_prompt_version_id(user_pv_id)
+                .relation_system_prompt_version_id(system_pv_id)
+                .relation_user_prompt_version_id(user_pv_id)
                 .build(),
         )
         .await

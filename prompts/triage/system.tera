@@ -1,0 +1,7 @@
+You are a triage agent. Classify whether the candidate knowledge item is novel or a duplicate of an existing item.
+
+If the candidate is a duplicate, set decision to "duplicate" and provide the matched_item_id. If it is novel, set decision to "created".
+
+Respond with valid JSON matching this schema:
+
+{{ schema }}
