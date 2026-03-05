@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use tribal_domain::EmbeddingPurpose;
+
 /// Token usage and latency for an LLM completion call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionUsage {
@@ -47,20 +49,28 @@ pub struct EmbeddingUsage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Usage {
     /// Usage from an LLM completion call.
-    Completion(CompletionUsage),
+    Completion {
+        /// The completion usage data.
+        usage: CompletionUsage,
+    },
     /// Usage from an embedding generation call.
-    Embedding(EmbeddingUsage),
+    Embedding {
+        /// The embedding usage data.
+        usage: EmbeddingUsage,
+        /// The domain-level purpose of this embedding call.
+        purpose: EmbeddingPurpose,
+    },
 }
 
 impl From<CompletionUsage> for Usage {
     fn from(usage: CompletionUsage) -> Self {
-        Self::Completion(usage)
+        Self::Completion { usage }
     }
 }
 
-impl From<EmbeddingUsage> for Usage {
-    fn from(usage: EmbeddingUsage) -> Self {
-        Self::Embedding(usage)
+impl From<(EmbeddingUsage, EmbeddingPurpose)> for Usage {
+    fn from((usage, purpose): (EmbeddingUsage, EmbeddingPurpose)) -> Self {
+        Self::Embedding { usage, purpose }
     }
 }
 
@@ -108,13 +118,19 @@ mod tests {
     fn test_from_completion_usage() {
         let usage = a_completion_usage();
         let unified = Usage::from(usage.clone());
-        assert_eq!(unified, Usage::Completion(usage));
+        assert_eq!(unified, Usage::Completion { usage });
     }
 
     #[test]
     fn test_from_embedding_usage() {
         let usage = an_embedding_usage();
-        let unified = Usage::from(usage.clone());
-        assert_eq!(unified, Usage::Embedding(usage));
+        let unified = Usage::from((usage.clone(), EmbeddingPurpose::Candidate));
+        assert_eq!(
+            unified,
+            Usage::Embedding {
+                usage,
+                purpose: EmbeddingPurpose::Candidate,
+            },
+        );
     }
 }
