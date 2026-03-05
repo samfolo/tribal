@@ -213,6 +213,41 @@ impl TokenUsageRepository for PgTokenUsageRepository {
 }
 
 // ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-helpers")]
+impl PgTokenUsageRepository {
+    /// Returns all token usage records, ordered by `created_at ASC`.
+    ///
+    /// Intended for integration tests that need to inspect records
+    /// without filtering by job (e.g. backfill records with no job).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn find_all_for_test(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<TokenUsage>, DbError> {
+        let sql = format!(
+            "SELECT {COLUMNS} FROM token_usage \
+             ORDER BY created_at ASC",
+        );
+
+        let rows = sqlx::query(&sql)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "finding all token usage records".to_owned(),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_token_usage_row).collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Row mapping
 // ---------------------------------------------------------------------------
 
