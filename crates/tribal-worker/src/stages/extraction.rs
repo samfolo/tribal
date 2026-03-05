@@ -109,6 +109,8 @@ impl Worker {
             { span_attrs::TASK_ID } = %task.id(),
             { span_attrs::LLM_STAGE } = "extraction",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
+            { span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::LLM_USER_PROMPT_VERSION_ID } = tracing::field::Empty,
         );
 
         async {
@@ -131,6 +133,16 @@ impl Worker {
                     ctx.job.extraction_user_prompt_version_id()
                 ),
             )?;
+
+            let span = tracing::Span::current();
+            span.record(
+                span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID,
+                tracing::field::display(ctx.job.extraction_system_prompt_version_id()),
+            );
+            span.record(
+                span_attrs::LLM_USER_PROMPT_VERSION_ID,
+                tracing::field::display(ctx.job.extraction_user_prompt_version_id()),
+            );
 
             let semaphore = self.extraction_semaphore();
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

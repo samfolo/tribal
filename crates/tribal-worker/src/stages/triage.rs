@@ -140,6 +140,8 @@ impl Worker {
             { span_attrs::TASK_ID } = %task.id(),
             { span_attrs::LLM_STAGE } = "triage",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
+            { span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::LLM_USER_PROMPT_VERSION_ID } = tracing::field::Empty,
         );
 
         async {
@@ -167,6 +169,16 @@ impl Worker {
                 self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_system_prompt_version_id()),
                 self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_user_prompt_version_id()),
             )?;
+
+            let span = tracing::Span::current();
+            span.record(
+                span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID,
+                tracing::field::display(ctx.job.triage_system_prompt_version_id()),
+            );
+            span.record(
+                span_attrs::LLM_USER_PROMPT_VERSION_ID,
+                tracing::field::display(ctx.job.triage_user_prompt_version_id()),
+            );
 
             let embedding_response = self
                 .embed_candidate(ctx.candidate.content(), deadline)
