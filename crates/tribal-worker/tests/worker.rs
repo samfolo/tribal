@@ -237,11 +237,19 @@ async fn test_retry_path_increments_retry_count() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "retry").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "retry").await;
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
     };
 
     let token = CancellationToken::new();
@@ -293,12 +301,19 @@ async fn test_dead_letter_path_transitions_task_and_job() {
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "dead-letter").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "dead-letter").await;
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let (job_id, task_id) =
-            seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await;
+        let (job_id, task_id) = seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await;
 
         // Pre-set retry_count to max_retries so the next failure
         // triggers dead-lettering.
@@ -359,7 +374,8 @@ async fn test_concurrency_limit_respected() {
         ..test_config()
     };
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "concurrency").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "concurrency").await;
 
     // Seed more tasks than max_concurrent.
     let task_count = max_concurrent + 2;
@@ -433,12 +449,19 @@ async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "reclaim-requeue").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "reclaim-requeue").await;
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
-        let (_job_id, task_id) =
-            seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await;
+        let (_job_id, task_id) = seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await;
 
         // Claim the task via the repository (simulating a previous
         // worker instance) and immediately backdate the heartbeat
@@ -488,12 +511,19 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "reclaim-dead-letter").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "reclaim-dead-letter").await;
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let (job_id, task_id) =
-            seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await;
+        let (job_id, task_id) = seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await;
 
         // Pre-set retry_count to max_retries so reclaim triggers
         // dead-lettering.
@@ -557,12 +587,19 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "startup-reclaim").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "startup-reclaim").await;
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
-        let (_job_id, task_id) =
-            seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await;
+        let (_job_id, task_id) = seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await;
 
         // Claim and backdate heartbeat (simulating crash).
         let claimed = PgTaskRepository
@@ -620,12 +657,19 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "ownership-loss").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "ownership-loss").await;
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
-        let (_job_id, task_id) =
-            seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await;
+        let (_job_id, task_id) = seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await;
         task_id
     };
 
@@ -773,7 +817,8 @@ async fn test_extraction_happy_path() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "extraction-happy").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "extraction-happy").await;
 
     let candidates = vec![
         a_candidate().content("first".to_owned()).build(),
@@ -784,7 +829,14 @@ async fn test_extraction_happy_path() {
 
     let (job_id, _task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
     };
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
@@ -862,7 +914,14 @@ async fn test_extraction_zero_candidates() {
 
     let (job_id, _task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
     };
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
@@ -921,7 +980,8 @@ async fn test_extraction_capping() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "extraction-capping").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "extraction-capping").await;
 
     // Build 5 candidates and hints that span all 5 indices.
     let candidates: Vec<_> = (0..5)
@@ -935,7 +995,14 @@ async fn test_extraction_capping() {
 
     let (job_id, _task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
     };
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
@@ -1016,7 +1083,14 @@ async fn test_extraction_parse_failure() {
 
     let (_job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_extraction_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id).await
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
     };
 
     // Return text that is not valid ExtractionOutput JSON.
@@ -1116,7 +1190,8 @@ async fn test_triage_novel_path() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "triage-novel").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "triage-novel").await;
 
     let candidates = vec![
         a_candidate()
@@ -1132,7 +1207,15 @@ async fn test_triage_novel_path() {
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_triage_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await
+        seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
     };
 
     let embedding_vector = vec![0.1_f32; 768];
@@ -1290,8 +1373,15 @@ async fn test_triage_duplicate_path() {
             .build(),
     ];
 
-    let (job_id, task_id) =
-        seed_triage_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await;
+    let (job_id, task_id) = seed_triage_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+        &candidates,
+    )
+    .await;
     drop(conn);
 
     // Mock embedding returns the same vector so cosine similarity is 1.0.
@@ -1366,13 +1456,22 @@ async fn test_triage_parse_failure() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "triage-parse-failure").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "triage-parse-failure").await;
 
     let candidates = vec![a_candidate().build()];
 
     let (_job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_triage_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await
+        seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
     };
 
     // Embedding succeeds (called before the LLM).
@@ -1450,14 +1549,22 @@ async fn test_triage_idempotency_skip() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "triage-idempotency").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "triage-idempotency").await;
 
     let candidates = vec![a_candidate().build()];
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        let (job_id, task_id) =
-            seed_triage_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await;
+        let (job_id, task_id) = seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await;
 
         // Pre-seed a knowledge item so the triage result FK is satisfied.
         let ki = PgKnowledgeItemRepository
@@ -1566,7 +1673,8 @@ async fn test_triage_novel_semantic_tag_resolution() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "triage-semantic-tags").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "triage-semantic-tags").await;
 
     // Pre-seed "rust" in the tag registry with an embedding so semantic
     // matching can find it.
@@ -1596,7 +1704,15 @@ async fn test_triage_novel_semantic_tag_resolution() {
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_triage_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await
+        seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
     };
 
     // Embedding calls:
@@ -1809,7 +1925,8 @@ async fn test_triage_exact_match_skips_tag_embedding() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "triage-exact-match").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "triage-exact-match").await;
 
     // Pre-seed "rust" in the registry with an embedding.
     {
@@ -1834,7 +1951,15 @@ async fn test_triage_exact_match_skips_tag_embedding() {
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_triage_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await
+        seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
     };
 
     // Only one embedding call should happen: the candidate content.
@@ -1949,7 +2074,15 @@ async fn test_triage_tag_resolution_provider_failure_retries() {
 
     let (_job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_triage_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await
+        seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
     };
 
     // First embedding call (candidate content) succeeds;
@@ -2012,7 +2145,8 @@ async fn test_triage_semantic_match_determinism() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "triage-determinism").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "triage-determinism").await;
 
     // Seed two tags with identical embeddings. Give "beta" a higher
     // usage_count so the tie-breaker is exercised.
@@ -2068,7 +2202,15 @@ async fn test_triage_semantic_match_determinism() {
 
     let (job_id, task_id) = {
         let mut conn = raw_conn(ctx).await;
-        seed_triage_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await
+        seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
     };
 
     let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
@@ -2157,7 +2299,8 @@ async fn test_triage_fan_in_all_complete() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "fan-in-all-complete").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "fan-in-all-complete").await;
 
     let candidates = vec![
         a_candidate()
@@ -2172,7 +2315,15 @@ async fn test_triage_fan_in_all_complete() {
 
     let (job_id, task_ids) = {
         let mut conn = raw_conn(ctx).await;
-        seed_multiple_triage_tasks(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await
+        seed_multiple_triage_tasks(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
     };
 
     let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
@@ -2256,7 +2407,8 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
     let pool = ctx.create_pool().await.expect("create pool");
     let config = test_config();
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "fan-in-mixed").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "fan-in-mixed").await;
 
     let candidates = vec![
         a_candidate()
@@ -2271,9 +2423,15 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
 
     let job_id = {
         let mut conn = raw_conn(ctx).await;
-        let (job_id, task_ids) =
-            seed_multiple_triage_tasks(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates)
-                .await;
+        let (job_id, task_ids) = seed_multiple_triage_tasks(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await;
 
         // Both tasks at max retries — the one that gets the error
         // will dead-letter regardless of claim order.
@@ -2371,7 +2529,8 @@ async fn test_triage_fan_in_multi_task_exactly_one_relation() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "fan-in-one-relation").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "fan-in-one-relation").await;
 
     let candidates = vec![
         a_candidate()
@@ -2390,7 +2549,15 @@ async fn test_triage_fan_in_multi_task_exactly_one_relation() {
 
     let (job_id, task_ids) = {
         let mut conn = raw_conn(ctx).await;
-        seed_multiple_triage_tasks(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await
+        seed_multiple_triage_tasks(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
     };
 
     let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
@@ -2471,7 +2638,8 @@ async fn test_heal_stuck_triaging_job() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "heal-stuck-triaging").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "heal-stuck-triaging").await;
 
     let candidates = vec![
         a_candidate()
@@ -2486,9 +2654,15 @@ async fn test_heal_stuck_triaging_job() {
 
     let job_id = {
         let mut conn = raw_conn(ctx).await;
-        let (job_id, _task_ids) =
-            seed_multiple_triage_tasks(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates)
-                .await;
+        let (job_id, _task_ids) = seed_multiple_triage_tasks(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await;
 
         // Mark all triage tasks as completed to simulate the reclaim-sweep
         // gap where tasks reach terminal state without invoking per-task
@@ -2540,7 +2714,8 @@ async fn test_triage_fan_in_single_candidate_batch() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "fan-in-single").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "fan-in-single").await;
 
     let candidates = vec![
         a_candidate()
@@ -2551,7 +2726,15 @@ async fn test_triage_fan_in_single_candidate_batch() {
 
     let (job_id, task_ids) = {
         let mut conn = raw_conn(ctx).await;
-        seed_multiple_triage_tasks(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates).await
+        seed_multiple_triage_tasks(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
     };
     let task_id = task_ids[0];
 
@@ -2660,7 +2843,8 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "relation-happy-path").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "relation-happy-path").await;
 
     let candidates = vec![
         a_candidate()
@@ -3000,14 +3184,23 @@ async fn test_relation_stage_idempotency_skip() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "relation-idempotency").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "relation-idempotency").await;
 
     let candidates = vec![a_candidate().build()];
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
-        let (job_id, task_id, _) =
-            seed_relation_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates, &[]).await;
+        let (job_id, task_id, _) = seed_relation_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+            &[],
+        )
+        .await;
 
         // Pre-set committed_batch_id to simulate a previous successful
         // relation commit.
@@ -3077,8 +3270,16 @@ async fn test_relation_parse_failure() {
 
     let task_id = {
         let mut conn = raw_conn(ctx).await;
-        let (_job_id, task_id, _) =
-            seed_relation_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates, &[]).await;
+        let (_job_id, task_id, _) = seed_relation_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+            &[],
+        )
+        .await;
         task_id
     };
 
@@ -3151,7 +3352,8 @@ async fn test_relation_stage_all_edges_dropped() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
-    let (principal_id, project_id, system_pv_id, user_pv_id) = setup_prerequisites(ctx, "relation-all-dropped").await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "relation-all-dropped").await;
 
     let candidates = vec![
         a_candidate().content("First candidate".to_owned()).build(),
@@ -3160,7 +3362,16 @@ async fn test_relation_stage_all_edges_dropped() {
 
     let (job_id, _task_id, ki_ids) = {
         let mut conn = raw_conn(ctx).await;
-        seed_relation_job(&mut conn, principal_id, project_id, system_pv_id, user_pv_id, &candidates, &[]).await
+        seed_relation_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+            &[],
+        )
+        .await
     };
 
     // Return only Supersedes edges — all will be dropped.

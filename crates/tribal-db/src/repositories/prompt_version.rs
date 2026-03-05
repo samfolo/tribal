@@ -16,7 +16,14 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLUMNS: Columns = Columns(&["id", "stage", "role", "content_hash", "content", "created_at"]);
+const COLUMNS: Columns = Columns(&[
+    "id",
+    "stage",
+    "role",
+    "content_hash",
+    "content",
+    "created_at",
+]);
 
 const UNKNOWN_PROMPT_STAGE_IN_DB: &str = "unrecognised prompt stage in database — schema mismatch";
 const UNKNOWN_PROMPT_ROLE_IN_DB: &str = "unrecognised prompt role in database — schema mismatch";

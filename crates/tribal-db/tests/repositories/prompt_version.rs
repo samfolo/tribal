@@ -22,6 +22,7 @@ async fn test_upsert_returns_new_prompt_version() {
 
     assert!(pv.id().to_string().starts_with("pv_"));
     assert_eq!(pv.stage(), PromptStage::Triage);
+    assert_eq!(pv.role(), PromptRole::System);
     assert_eq!(pv.content_hash(), "c".repeat(64));
     assert_eq!(pv.content(), "triage prompt");
 }
@@ -153,4 +154,91 @@ async fn test_find_by_stage_role_and_hash_returns_none() {
         .expect("find");
 
     assert!(found.is_none());
+}
+
+#[tokio::test]
+async fn test_upsert_same_stage_hash_different_role_creates_separate_record() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgPromptVersionRepository;
+
+    let hash = "a".repeat(64);
+
+    let system = repo
+        .upsert(
+            &mut txn,
+            &a_new_prompt_version()
+                .role(PromptRole::System)
+                .content_hash(hash.clone())
+                .content("system content".to_owned())
+                .build(),
+        )
+        .await
+        .expect("system upsert");
+
+    let user = repo
+        .upsert(
+            &mut txn,
+            &a_new_prompt_version()
+                .role(PromptRole::User)
+                .content_hash(hash)
+                .content("user content".to_owned())
+                .build(),
+        )
+        .await
+        .expect("user upsert");
+
+    assert_ne!(system.id(), user.id());
+    assert_eq!(system.stage(), user.stage());
+    assert_eq!(system.role(), PromptRole::System);
+    assert_eq!(user.role(), PromptRole::User);
+}
+
+#[tokio::test]
+async fn test_find_by_stage_role_and_hash_distinguishes_roles() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgPromptVersionRepository;
+
+    let hash = "e".repeat(64);
+
+    let system_pv = repo
+        .upsert(
+            &mut txn,
+            &a_new_prompt_version()
+                .role(PromptRole::System)
+                .content_hash(hash.clone())
+                .content("system content".to_owned())
+                .build(),
+        )
+        .await
+        .expect("system upsert");
+
+    let user_pv = repo
+        .upsert(
+            &mut txn,
+            &a_new_prompt_version()
+                .role(PromptRole::User)
+                .content_hash(hash.clone())
+                .content("user content".to_owned())
+                .build(),
+        )
+        .await
+        .expect("user upsert");
+
+    let found_system = repo
+        .find_by_stage_role_and_hash(&mut txn, PromptStage::Extraction, PromptRole::System, &hash)
+        .await
+        .expect("find system")
+        .expect("system should exist");
+
+    let found_user = repo
+        .find_by_stage_role_and_hash(&mut txn, PromptStage::Extraction, PromptRole::User, &hash)
+        .await
+        .expect("find user")
+        .expect("user should exist");
+
+    assert_eq!(found_system.id(), system_pv.id());
+    assert_eq!(found_user.id(), user_pv.id());
+    assert_ne!(found_system.id(), found_user.id());
 }

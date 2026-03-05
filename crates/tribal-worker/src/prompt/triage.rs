@@ -93,13 +93,12 @@ pub(crate) fn assemble_triage_prompt(
     user_ctx.insert(VAR_SIMILAR_ITEMS, similar_items);
     user_ctx.insert(VAR_TAGS, &tags);
 
-    let rendered_user =
-        tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
-            StageError::TemplateRender {
-                context: "rendering triage user prompt".into(),
-                source: e,
-            }
-        })?;
+    let rendered_user = tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
+        StageError::TemplateRender {
+            context: "rendering triage user prompt".into(),
+            source: e,
+        }
+    })?;
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
