@@ -209,12 +209,13 @@ impl Worker {
 
             let prompt_context = build_prompt_context(&ctx, batch_size)?;
 
-            let system_pv = self
-                .load_prompt_version(STAGE_RELATION, ctx.job.relation_system_prompt_version_id())
-                .await?;
-            let user_pv = self
-                .load_prompt_version(STAGE_RELATION, ctx.job.relation_user_prompt_version_id())
-                .await?;
+            let (system_pv, user_pv) = tokio::try_join!(
+                self.load_prompt_version(
+                    STAGE_RELATION,
+                    ctx.job.relation_system_prompt_version_id()
+                ),
+                self.load_prompt_version(STAGE_RELATION, ctx.job.relation_user_prompt_version_id()),
+            )?;
 
             // Acquire semaphore.
             let semaphore = self.relation_semaphore();
@@ -226,16 +227,13 @@ impl Worker {
                 })?
                 .expect(SEMAPHORE_CLOSED);
 
-            let request = assemble_relation_prompt(
-                system_pv.content(),
-                user_pv.content(),
-                &prompt_context,
-            )?;
+            let request =
+                assemble_relation_prompt(system_pv.content(), user_pv.content(), &prompt_context)?;
 
             if include_llm_content {
                 tracing::debug!(
                     system_prompt = %request.system.as_deref().unwrap_or(""),
-                    user_prompt = %request.messages.first().map(|m| m.content.as_str()).unwrap_or(""),
+                    user_prompt = %request.messages.first().map_or("", |m| m.content.as_str()),
                     "relation prompt assembled",
                 );
             }
@@ -436,7 +434,8 @@ fn build_prompt_context<'a>(
     ctx: &'a RelationContext<'_>,
     batch_size: u32,
 ) -> Result<RelationPromptContext<'a>, StageError> {
-    let candidate_outcomes = build_candidate_outcomes(&ctx.candidates, &ctx.triage_results, batch_size)?;
+    let candidate_outcomes =
+        build_candidate_outcomes(&ctx.candidates, &ctx.triage_results, batch_size)?;
 
     Ok(RelationPromptContext {
         candidates: candidate_outcomes,

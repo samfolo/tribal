@@ -110,13 +110,12 @@ pub(crate) fn assemble_relation_prompt(
     user_ctx.insert(VAR_RELATION_HINTS, &context.relation_hints);
     user_ctx.insert(VAR_SIMILAR_ITEM_DECISIONS, &context.similar_item_decisions);
 
-    let rendered_user =
-        tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
-            StageError::TemplateRender {
-                context: "rendering relation user prompt".into(),
-                source: e,
-            }
-        })?;
+    let rendered_user = tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
+        StageError::TemplateRender {
+            context: "rendering relation user prompt".into(),
+            source: e,
+        }
+    })?;
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
@@ -237,11 +236,7 @@ mod tests {
     fn test_invalid_user_template_returns_template_render_error() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let result = assemble_relation_prompt(
-            "system",
-            "{{ invalid | nonexistent_filter }}",
-            &ctx,
-        );
+        let result = assemble_relation_prompt("system", "{{ invalid | nonexistent_filter }}", &ctx);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.to_error_kind(), TaskErrorKind::InternalError);
@@ -259,8 +254,7 @@ mod tests {
             " — {{ c.candidate.content }}\n",
             "{% endfor %}",
         );
-        let request =
-            assemble_relation_prompt(system_template, user_template, &ctx).unwrap();
+        let request = assemble_relation_prompt(system_template, user_template, &ctx).unwrap();
         let user_content = &request.messages[0].content;
 
         assert!(
@@ -294,8 +288,7 @@ mod tests {
             "{{ h.source_index }} -> {{ h.target_index }}: {{ h.hint_type }}\n",
             "{% endfor %}",
         );
-        let request =
-            assemble_relation_prompt("system", user_template, &ctx).unwrap();
+        let request = assemble_relation_prompt("system", user_template, &ctx).unwrap();
         let user_content = &request.messages[0].content;
 
         assert!(
@@ -314,8 +307,7 @@ mod tests {
             "({{ d.similarity_score }}) {{ d.suggested_relation }} — {{ d.justification }}\n",
             "{% endfor %}",
         );
-        let request =
-            assemble_relation_prompt("system", user_template, &ctx).unwrap();
+        let request = assemble_relation_prompt("system", user_template, &ctx).unwrap();
         let user_content = &request.messages[0].content;
 
         assert!(
@@ -344,8 +336,7 @@ mod tests {
     fn test_response_format_is_json_schema() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let request =
-            assemble_relation_prompt("system", "user", &ctx).unwrap();
+        let request = assemble_relation_prompt("system", "user", &ctx).unwrap();
         assert!(
             matches!(
                 request.response_format,
@@ -359,8 +350,7 @@ mod tests {
     fn test_schema_variable_rendered_in_system() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let request =
-            assemble_relation_prompt("Schema: {{ schema }}", "user", &ctx).unwrap();
+        let request = assemble_relation_prompt("Schema: {{ schema }}", "user", &ctx).unwrap();
         let system = request.system.unwrap();
         assert!(
             system.contains("RelationOutput"),
@@ -377,8 +367,7 @@ mod tests {
             "{% for h in relation_hints %}{{ h.hint_type }}\n{% endfor %}",
             "{% for d in similar_item_decisions %}{{ d.justification }}\n{% endfor %}",
         );
-        let request =
-            assemble_relation_prompt("system", user_template, &ctx).unwrap();
+        let request = assemble_relation_prompt("system", user_template, &ctx).unwrap();
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0].role, Role::User);
 

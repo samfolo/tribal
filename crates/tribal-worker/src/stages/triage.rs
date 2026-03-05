@@ -156,16 +156,21 @@ impl Worker {
 
             let candidate = self.load_triage_candidate(job.id(), batch_index).await?;
             let tag_registry = self.load_tag_registry(STAGE_TRIAGE).await?;
-            let ctx = TriageContext { job, candidate, batch_index, tag_registry };
+            let ctx = TriageContext {
+                job,
+                candidate,
+                batch_index,
+                tag_registry,
+            };
 
-            let system_pv = self
-                .load_prompt_version(STAGE_TRIAGE, ctx.job.triage_system_prompt_version_id())
-                .await?;
-            let user_pv = self
-                .load_prompt_version(STAGE_TRIAGE, ctx.job.triage_user_prompt_version_id())
-                .await?;
+            let (system_pv, user_pv) = tokio::try_join!(
+                self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_system_prompt_version_id()),
+                self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_user_prompt_version_id()),
+            )?;
 
-            let embedding_response = self.embed_candidate(ctx.candidate.content(), deadline).await?;
+            let embedding_response = self
+                .embed_candidate(ctx.candidate.content(), deadline)
+                .await?;
 
             let search_results = self
                 .search_similar_items(&embedding_response.vector, ctx.job)
@@ -401,7 +406,7 @@ impl Worker {
         if include_llm_content {
             tracing::debug!(
                 system_prompt = %request.system.as_deref().unwrap_or(""),
-                user_prompt = %request.messages.first().map(|m| m.content.as_str()).unwrap_or(""),
+                user_prompt = %request.messages.first().map_or("", |m| m.content.as_str()),
                 "triage prompt assembled",
             );
         }

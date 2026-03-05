@@ -55,13 +55,12 @@ pub(crate) fn assemble_extraction_prompt(
     user_ctx.insert(VAR_TAGS, &tags);
     user_ctx.insert(VAR_RAW_INPUT, raw_input);
 
-    let rendered_user =
-        tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
-            StageError::TemplateRender {
-                context: "rendering extraction user prompt".into(),
-                source: e,
-            }
-        })?;
+    let rendered_user = tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
+        StageError::TemplateRender {
+            context: "rendering extraction user prompt".into(),
+            source: e,
+        }
+    })?;
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
@@ -138,12 +137,8 @@ mod tests {
 
     #[test]
     fn test_schema_rendered_in_system_prompt() {
-        let result = assemble_extraction_prompt(
-            "Schema: {{ schema }}",
-            "{{ raw_input }}",
-            "input",
-            &[],
-        );
+        let result =
+            assemble_extraction_prompt("Schema: {{ schema }}", "{{ raw_input }}", "input", &[]);
         assert!(result.is_ok());
         let request = result.unwrap();
         let system = request.system.unwrap();
@@ -155,8 +150,7 @@ mod tests {
 
     #[test]
     fn test_response_format_is_json_schema() {
-        let result =
-            assemble_extraction_prompt("system", "{{ raw_input }}", "input", &[]);
+        let result = assemble_extraction_prompt("system", "{{ raw_input }}", "input", &[]);
         assert!(result.is_ok());
         let request = result.unwrap();
         assert!(
@@ -170,8 +164,7 @@ mod tests {
 
     #[test]
     fn test_raw_input_rendered_in_user_message() {
-        let result =
-            assemble_extraction_prompt("system", "{{ raw_input }}", "the raw input", &[]);
+        let result = assemble_extraction_prompt("system", "{{ raw_input }}", "the raw input", &[]);
         assert!(result.is_ok());
         let request = result.unwrap();
         assert_eq!(request.messages.len(), 1);
