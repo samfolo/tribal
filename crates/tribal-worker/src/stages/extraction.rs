@@ -8,7 +8,7 @@ use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
-use super::{StageCommit, StageOutput};
+use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{
     common::{PARSE_PREVIEW_LENGTH, clamp_to_u32},
     error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, StageError},
@@ -134,14 +134,9 @@ impl Worker {
                 ),
             )?;
 
-            let span = tracing::Span::current();
-            span.record(
-                span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID,
-                tracing::field::display(ctx.job.extraction_system_prompt_version_id()),
-            );
-            span.record(
-                span_attrs::LLM_USER_PROMPT_VERSION_ID,
-                tracing::field::display(ctx.job.extraction_user_prompt_version_id()),
+            record_prompt_version_ids(
+                ctx.job.extraction_system_prompt_version_id(),
+                ctx.job.extraction_user_prompt_version_id(),
             );
 
             let semaphore = self.extraction_semaphore();

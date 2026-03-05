@@ -19,7 +19,7 @@ use tribal_domain::{
 };
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
-use super::{StageCommit, StageOutput};
+use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{
     common::{PARSE_PREVIEW_LENGTH, clamp_to_u32},
     error::{SEMAPHORE_CLOSED, STAGE_RELATION, StageError},
@@ -219,17 +219,11 @@ impl Worker {
                 self.load_prompt_version(STAGE_RELATION, ctx.job.relation_user_prompt_version_id()),
             )?;
 
-            let span = tracing::Span::current();
-            span.record(
-                span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID,
-                tracing::field::display(ctx.job.relation_system_prompt_version_id()),
-            );
-            span.record(
-                span_attrs::LLM_USER_PROMPT_VERSION_ID,
-                tracing::field::display(ctx.job.relation_user_prompt_version_id()),
+            record_prompt_version_ids(
+                ctx.job.relation_system_prompt_version_id(),
+                ctx.job.relation_user_prompt_version_id(),
             );
 
-            // Acquire semaphore.
             let semaphore = self.relation_semaphore();
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())

@@ -17,7 +17,7 @@ use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
 };
 
-use super::{StageCommit, StageOutput, TriageCommitDecision};
+use super::{StageCommit, StageOutput, TriageCommitDecision, record_prompt_version_ids};
 use crate::{
     common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
     error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError},
@@ -170,14 +170,9 @@ impl Worker {
                 self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_user_prompt_version_id()),
             )?;
 
-            let span = tracing::Span::current();
-            span.record(
-                span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID,
-                tracing::field::display(ctx.job.triage_system_prompt_version_id()),
-            );
-            span.record(
-                span_attrs::LLM_USER_PROMPT_VERSION_ID,
-                tracing::field::display(ctx.job.triage_user_prompt_version_id()),
+            record_prompt_version_ids(
+                ctx.job.triage_system_prompt_version_id(),
+                ctx.job.triage_user_prompt_version_id(),
             );
 
             let embedding_response = self
