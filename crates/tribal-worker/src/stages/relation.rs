@@ -278,7 +278,9 @@ impl Worker {
 
             Ok(StageOutput {
                 commit: StageCommit::Relation { decision },
-                usages: vec![Usage::Completion { usage: response.usage }],
+                usages: vec![Usage::Completion {
+                    usage: response.usage,
+                }],
             })
         }
         .instrument(span)

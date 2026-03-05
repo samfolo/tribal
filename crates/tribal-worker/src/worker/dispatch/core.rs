@@ -10,15 +10,16 @@ use sqlx::PgPool;
 use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
-    JobRepository, JobStatusTransition, NewTask, PgJobRepository, PgTaskRepository, TaskRepository,
+    JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository, PgTaskRepository,
+    PgTokenUsageRepository, TaskRepository, TokenUsageRepository,
 };
-use tribal_domain::{Job, JobId, JobStatus, Task, TaskType};
+use tribal_domain::{Job, JobId, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage};
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
 
 use crate::{
-    common::clamp_to_u32,
+    common::{clamp_to_i32, clamp_to_u32},
     config::WorkerConfig,
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
     stages::StageOutput,
@@ -415,7 +416,9 @@ impl Worker {
 
         match stage_result {
             Ok(output) => {
-                self.record_token_usage(&job, &task, &output.usages).await;
+                for usage in &output.usages {
+                    self.record_token_usage(&job, &task, usage).await;
+                }
 
                 if self.cancellation_token.is_cancelled() {
                     heartbeat.abort();
@@ -452,10 +455,81 @@ impl Worker {
         }
     }
 
-    /// Records token usage for a completed stage.
-    #[allow(clippy::unused_self, clippy::unused_async)]
-    async fn record_token_usage(&self, _job: &Job, _task: &Task, _usages: &[Usage]) {
-        // Implemented by ticket 4.6
+    /// Records a single token usage record in a dedicated transaction.
+    ///
+    /// Best-effort: logs a warning on failure without failing the task.
+    /// Uses a freshly acquired connection from the pool (not the domain
+    /// commit transaction) so recording is independent of task outcome.
+    async fn record_token_usage(&self, job: &Job, task: &Task, usage: &Usage) {
+        let mut conn = match self.pool().acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    task_id = %task.id(),
+                    "failed to acquire connection for token usage recording",
+                );
+                return;
+            }
+        };
+
+        let attempt = clamp_to_i32(task.retry_count());
+        let trace_id = job.trace_context().map(str::to_owned);
+
+        let new = match usage {
+            Usage::Completion { usage: cu } => {
+                let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
+                NewTokenUsage::builder()
+                    .job_id(Some(job.id()))
+                    .task_id(Some(task.id()))
+                    .attempt(attempt)
+                    .stage(task.task_type().into())
+                    .provider(cu.provider.clone())
+                    .model(cu.model.clone())
+                    .tokens_input(clamp_to_i32(cu.input_tokens))
+                    .tokens_output(clamp_to_i32(cu.output_tokens))
+                    .tokens_cache_read(clamp_to_i32(cu.cache_read_tokens))
+                    .tokens_cache_write(clamp_to_i32(cu.cache_write_tokens))
+                    .latency_ms(clamp_to_i32(cu.latency.as_millis()))
+                    .system_prompt_version_id(Some(system_pv_id))
+                    .user_prompt_version_id(Some(user_pv_id))
+                    .trace_id(trace_id)
+                    .build()
+            }
+            Usage::Embedding { usage: eu, purpose } => NewTokenUsage::builder()
+                .job_id(Some(job.id()))
+                .task_id(Some(task.id()))
+                .attempt(attempt)
+                .stage(TokenUsageStage::Embedding { purpose: *purpose })
+                .provider(eu.provider.clone())
+                .model(eu.model.clone())
+                .tokens_input(clamp_to_i32(eu.total_tokens))
+                .tokens_output(0)
+                .latency_ms(clamp_to_i32(eu.latency.as_millis()))
+                .trace_id(trace_id)
+                .build(),
+        };
+
+        let stage = new.stage.pipeline_stage();
+        match PgTokenUsageRepository.insert(&mut conn, &new).await {
+            Ok(recorded) => {
+                tracing::debug!(
+                    task_id = %task.id(),
+                    stage = %stage,
+                    tokens_total = recorded.tokens_total(),
+                    latency_ms = recorded.latency_ms(),
+                    "token usage recorded",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id(),
+                    stage = %stage,
+                    error = %e,
+                    "failed to record token usage",
+                );
+            }
+        }
     }
 
     /// Sends a wake-up signal to any watch subscribers for the given job.
@@ -626,6 +700,24 @@ impl Worker {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Returns the `(system, user)` prompt version pair for the task's stage.
+fn prompt_version_ids_for_task(job: &Job, task: &Task) -> (PromptVersionId, PromptVersionId) {
+    match task.task_type() {
+        TaskType::Extraction => (
+            job.extraction_system_prompt_version_id(),
+            job.extraction_user_prompt_version_id(),
+        ),
+        TaskType::Triage => (
+            job.triage_system_prompt_version_id(),
+            job.triage_user_prompt_version_id(),
+        ),
+        TaskType::Relation => (
+            job.relation_system_prompt_version_id(),
+            job.relation_user_prompt_version_id(),
+        ),
+    }
+}
 
 /// Computes the next claim-cycle backoff by doubling the current poll
 /// interval, capping at [`BACKOFF_CAP_SECS`], and flooring at 1 s.

@@ -1,9 +1,10 @@
 use tribal_db::{
     JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
     PgTokenUsageRepository, PrincipalRepository, ProjectRepository, TokenUsageRepository,
-    TokenUsageStage,
 };
-use tribal_domain::{EmbeddingPurpose, JobId, PipelineStage, PrincipalId, ProjectId};
+use tribal_domain::{
+    EmbeddingPurpose, JobId, PipelineStage, PrincipalId, ProjectId, TokenUsageStage,
+};
 use tribal_test_utils::{
     a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_token_usage,
     insert_prompt_version, shift_timestamp_by_id, test_context,

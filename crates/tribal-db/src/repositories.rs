@@ -56,9 +56,7 @@ pub use standing::{PgStandingRepository, StandingRepository};
 pub use tag_embedding::{NewTagEmbedding, PgTagEmbeddingRepository, TagEmbeddingRepository};
 pub use tag_registry::{PgTagRegistryRepository, TagRegistryRepository};
 pub use task::{NewTask, PgTaskRepository, ReclaimOutcome, TaskRepository};
-pub use token_usage::{
-    NewTokenUsage, PgTokenUsageRepository, TokenUsageRepository, TokenUsageStage,
-};
+pub use token_usage::{NewTokenUsage, PgTokenUsageRepository, TokenUsageRepository};
 pub use triage_result::{NewTriageResult, PgTriageResultRepository, TriageResultRepository};
 pub use triage_similar_item_decision::{
     NewTriageSimilarItemDecision, PgTriageSimilarItemDecisionRepository,

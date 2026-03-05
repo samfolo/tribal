@@ -211,7 +211,9 @@ impl Worker {
                     batch_size,
                     original_count,
                 },
-                usages: vec![Usage::Completion { usage: response.usage }],
+                usages: vec![Usage::Completion {
+                    usage: response.usage,
+                }],
             })
         }
         .instrument(span)
