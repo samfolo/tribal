@@ -9,15 +9,15 @@ use crate::{
     server_handler::TribalServerHandler,
 };
 
-#[allow(clippy::unused_async)]
 impl TribalServerHandler {
+    #[allow(clippy::unused_async)]
     pub(crate) async fn handle_get_item(
         &self,
         _params: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         Ok(McpToolError {
-            code: McpErrorCode::Internal,
+            code: McpErrorCode::FailedPrecondition,
             message: "tribal_get_item is not yet implemented".into(),
             details: serde_json::json!({}),
         }

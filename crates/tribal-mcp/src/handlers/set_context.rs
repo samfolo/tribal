@@ -9,15 +9,15 @@ use crate::{
     server_handler::TribalServerHandler,
 };
 
-#[allow(clippy::unused_async)]
 impl TribalServerHandler {
+    #[allow(clippy::unused_async)]
     pub(crate) async fn handle_set_context(
         &self,
         _params: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         Ok(McpToolError {
-            code: McpErrorCode::Internal,
+            code: McpErrorCode::FailedPrecondition,
             message: "tribal_set_context is not yet implemented".into(),
             details: serde_json::json!({}),
         }
