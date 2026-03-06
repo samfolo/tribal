@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "pattern": "^job_[0-9a-f-]{36}$",
+      "description": "Unique identifier for the ingest job. Use with tribal_job_status to track progress."
+    }
+  },
+  "required": ["job_id"]
+}
