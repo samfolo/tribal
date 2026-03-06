@@ -1,33 +1,32 @@
 use std::sync::{Arc, LazyLock};
 
 use futures::future::BoxFuture;
-use rmcp::handler::server::RequestContext;
-use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorData as McpError,
-    Implementation, ListToolsResult, ServerCapabilities, ServerInfo, Tool,
+use rmcp::{
+    model::{
+        CallToolRequestParams, CallToolResult, ErrorData as McpError, Implementation,
+        ListToolsResult, ServerCapabilities, ServerInfo, Tool,
+    },
+    service::{RequestContext, RoleServer},
 };
-use rmcp::service::RoleServer;
-use tribal_db::repositories::{
-    JobRepository, KnowledgeItemRepository, ProjectRepository,
-    RetrievalFeedbackRepository,
+use tribal_db::{
+    JobRepository, KnowledgeItemRepository, ProjectRepository, RetrievalFeedbackRepository,
 };
 
-use crate::auth::AuthContext;
-use crate::error::method_not_found;
+use crate::{auth::AuthContext, error::method_not_found};
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const INPUT_SCHEMA_PARSE_FAILED: &str =
-    "invariant: embedded input schema must be valid JSON";
-const OUTPUT_SCHEMA_PARSE_FAILED: &str =
-    "invariant: embedded output schema must be valid JSON";
+const SERVER_NAME: &str = "tribal";
+const INPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded input schema must be valid JSON";
+const OUTPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded output schema must be valid JSON";
 
 // ---------------------------------------------------------------------------
 // ConnectionRepositories
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub struct ConnectionRepositories {
     pub(crate) knowledge: Arc<dyn KnowledgeItemRepository + Send + Sync>,
     pub(crate) project: Arc<dyn ProjectRepository + Send + Sync>,
@@ -152,10 +151,8 @@ static PARSED_TOOLS: LazyLock<Vec<ParsedToolEntry>> = LazyLock::new(|| {
             name: t.name,
             title: t.title,
             description: t.description,
-            input_schema: serde_json::from_str(t.input_schema)
-                .expect(INPUT_SCHEMA_PARSE_FAILED),
-            output_schema: serde_json::from_str(t.output_schema)
-                .expect(OUTPUT_SCHEMA_PARSE_FAILED),
+            input_schema: serde_json::from_str(t.input_schema).expect(INPUT_SCHEMA_PARSE_FAILED),
+            output_schema: serde_json::from_str(t.output_schema).expect(OUTPUT_SCHEMA_PARSE_FAILED),
             required_scope: t.required_scope,
             dispatch: t.dispatch,
         })
@@ -176,9 +173,13 @@ fn to_json_object(value: &serde_json::Value) -> Arc<serde_json::Map<String, serd
 }
 
 fn to_tool(entry: &ParsedToolEntry) -> Tool {
-    Tool::new(entry.name, entry.description, to_json_object(&entry.input_schema))
-        .with_title(entry.title)
-        .with_raw_output_schema(to_json_object(&entry.output_schema))
+    Tool::new(
+        entry.name,
+        entry.description,
+        to_json_object(&entry.input_schema),
+    )
+    .with_title(entry.title)
+    .with_raw_output_schema(to_json_object(&entry.output_schema))
 }
 
 // ---------------------------------------------------------------------------
@@ -203,11 +204,7 @@ impl TribalServerHandler {
 impl rmcp::handler::server::ServerHandler for TribalServerHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation {
-                name: "tribal".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                ..Default::default()
-            })
+            .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
     }
 
     fn list_tools(
@@ -222,10 +219,7 @@ impl rmcp::handler::server::ServerHandler for TribalServerHandler {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        PARSED_TOOLS
-            .iter()
-            .find(|t| t.name == name)
-            .map(to_tool)
+        PARSED_TOOLS.iter().find(|t| t.name == name).map(to_tool)
     }
 
     fn call_tool(
@@ -262,10 +256,11 @@ mod tests {
 
     use async_trait::async_trait;
     use sqlx::PgConnection;
-    use tribal_db::error::DbError;
-    use tribal_db::repositories::{
-        JobRepository, KnowledgeItemRepository, ProjectRepository,
-        RetrievalFeedbackRepository,
+    use tribal_db::{
+        error::DbError,
+        repositories::{
+            JobRepository, KnowledgeItemRepository, ProjectRepository, RetrievalFeedbackRepository,
+        },
     };
     use tribal_domain::*;
 
@@ -341,10 +336,7 @@ mod tests {
             unimplemented!()
         }
 
-        async fn list(
-            &self,
-            _conn: &mut PgConnection,
-        ) -> Result<Vec<Project>, DbError> {
+        async fn list(&self, _conn: &mut PgConnection) -> Result<Vec<Project>, DbError> {
             unimplemented!()
         }
     }
@@ -359,11 +351,7 @@ mod tests {
             unimplemented!()
         }
 
-        async fn find_by_id(
-            &self,
-            _conn: &mut PgConnection,
-            _id: JobId,
-        ) -> Result<Job, DbError> {
+        async fn find_by_id(&self, _conn: &mut PgConnection, _id: JobId) -> Result<Job, DbError> {
             unimplemented!()
         }
 
@@ -530,10 +518,7 @@ mod tests {
         assert!(tool.is_some());
         let tool = tool.unwrap();
         assert_eq!(tool.name.as_ref(), "tribal_discover");
-        assert_eq!(
-            tool.title.as_deref(),
-            Some("Tribal: Discover Knowledge")
-        );
+        assert_eq!(tool.title.as_deref(), Some("Tribal: Discover Knowledge"));
     }
 
     #[test]
@@ -551,12 +536,8 @@ mod tests {
             ..Default::default()
         };
         let context = RequestContext::empty();
-        let result = rmcp::handler::server::ServerHandler::call_tool(
-            &handler,
-            request,
-            context,
-        )
-        .await;
+        let result =
+            rmcp::handler::server::ServerHandler::call_tool(&handler, request, context).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::METHOD_NOT_FOUND);
@@ -582,13 +563,10 @@ mod tests {
                 ..Default::default()
             };
             let context = RequestContext::empty();
-            let result = rmcp::handler::server::ServerHandler::call_tool(
-                &handler,
-                request,
-                context,
-            )
-            .await
-            .unwrap_or_else(|e| panic!("{name} dispatch failed: {e}"));
+            let result =
+                rmcp::handler::server::ServerHandler::call_tool(&handler, request, context)
+                    .await
+                    .unwrap_or_else(|e| panic!("{name} dispatch failed: {e}"));
 
             assert_eq!(
                 result.is_error,
@@ -626,8 +604,7 @@ mod tests {
             })
             .collect();
 
-        let snapshot = serde_json::to_string_pretty(&tools)
-            .expect("snapshot serialisation");
+        let snapshot = serde_json::to_string_pretty(&tools).expect("snapshot serialisation");
 
         let snapshot_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
@@ -635,19 +612,16 @@ mod tests {
             .join("golden_snapshot.json");
 
         if std::env::var("UPDATE_SNAPSHOTS").is_ok() {
-            std::fs::write(&snapshot_path, &snapshot)
-                .expect("write golden snapshot");
+            std::fs::write(&snapshot_path, &snapshot).expect("write golden snapshot");
             return;
         }
 
         if !snapshot_path.exists() {
-            std::fs::write(&snapshot_path, &snapshot)
-                .expect("write initial golden snapshot");
+            std::fs::write(&snapshot_path, &snapshot).expect("write initial golden snapshot");
             return;
         }
 
-        let existing =
-            std::fs::read_to_string(&snapshot_path).expect("read golden snapshot");
+        let existing = std::fs::read_to_string(&snapshot_path).expect("read golden snapshot");
         assert_eq!(
             existing, snapshot,
             "Golden snapshot mismatch. Run with UPDATE_SNAPSHOTS=1 to update."
