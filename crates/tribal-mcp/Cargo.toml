@@ -9,3 +9,10 @@ publish.workspace = true
 [dependencies]
 tribal-domain.workspace = true
 tribal-db.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
