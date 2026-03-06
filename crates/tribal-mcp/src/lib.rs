@@ -8,6 +8,7 @@ mod error;
 mod handlers;
 mod mapping;
 mod server_handler;
+mod tools;
 
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
 pub use server_handler::{ConnectionRepositories, TribalServerHandler};
