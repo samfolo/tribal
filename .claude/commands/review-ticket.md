@@ -30,6 +30,7 @@ Also read the corresponding issue row in `docs/internal/milestones.md` to verify
 These are documents specific to particular milestones. They serve as higher-fidelity sources of truth for specific concerns and should be consulted if the ticket falls under the milestone:
 
 - **4.x Write Path Pipeline** — `docs/draft/write_path_pipeline.md`
+- **5.x MCP Tool Surface** - `docs/drarft/mcp_server_handler.md`
 
 ## 3. Review
 
