@@ -3625,8 +3625,6 @@ dependencies = [
 name = "tribal-mcp"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "futures",
  "rmcp",
  "serde",
  "serde_json",
