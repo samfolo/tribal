@@ -1,0 +1,106 @@
+{
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/discovery_result" }
+    },
+    "next_cursor": {
+      "type": ["string", "null"],
+      "description": "Pagination cursor. Null if no more results."
+    },
+    "total_count": {
+      "type": ["integer", "null"],
+      "description": "Total matching items. Present when query uses structured filters only (project, kind, tags, time range); null when primary search is semantic similarity."
+    },
+    "applied_project_id": {
+      "type": ["string", "null"],
+      "pattern": "^proj_[0-9a-f-]{36}$",
+      "description": "The project used for filtering. Set when search was project-scoped (explicit ID or from session context). Null when search was global (no project filter applied, or project_id was explicitly null)."
+    },
+    "embedding_model": {
+      "type": "string",
+      "description": "Which embedding model was used for this query."
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "OpenTelemetry trace ID for this retrieval. Pass to tribal_feedback to rate this session."
+    },
+    "exact": {
+      "type": "boolean",
+      "description": "True if all matching results are included. False if truncated by limit."
+    }
+  },
+  "required": ["items", "applied_project_id", "embedding_model", "exact", "trace_id"],
+  "$defs": {
+    "discovery_result": {
+      "type": "object",
+      "properties": {
+        "item": { "$ref": "#/$defs/knowledge_item" },
+        "similarity": {
+          "type": "number",
+          "description": "Cosine similarity to query (0.0–1.0)."
+        },
+        "standing": { "$ref": "#/$defs/standing" },
+        "references": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reference" }
+        }
+      },
+      "required": ["item", "similarity"]
+    },
+    "knowledge_item": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^ki_[0-9a-f-]{36}$" },
+        "project_id": { "type": "string", "pattern": "^proj_[0-9a-f-]{36}$" },
+        "principal_key": { "type": "string", "description": "Human-readable principal identifier (e.g., 'user:sam')." },
+        "kind": { "type": "string", "enum": ["fact", "heuristic", "procedure", "decision_record"] },
+        "content": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "string", "enum": ["verified", "inferred", "uncertain"] },
+        "source_context": {
+          "type": "object",
+          "description": "Provenance of this item. Types: 'agent_mediated' = model-mediated capture via a provider/model pipeline (e.g., an agent ingesting via MCP); 'manual' = human-initiated capture without model mediation; 'derived' = produced by synthesis or compaction from existing items.",
+          "properties": {
+            "type": { "type": "string", "enum": ["agent_mediated", "manual", "derived"] },
+            "provider": { "type": ["string", "null"] },
+            "model": { "type": ["string", "null"] }
+          },
+          "required": ["type"]
+        },
+        "episode_id": { "type": ["string", "null"], "pattern": "^ep_[0-9a-f-]{36}$" },
+        "capture_commit": { "type": ["string", "null"] },
+        "capture_branch": { "type": ["string", "null"], "description": "Branch name when this item was captured (informational)." },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "project_id", "principal_key", "kind", "content", "tags", "confidence", "source_context", "created_at"]
+    },
+    "standing": {
+      "type": "object",
+      "description": "Evidential profile computed from the relationship graph. Use tribal_get_item to retrieve items referenced by newest_supporting_id, newest_contradicting_id, or superseded_by.",
+      "properties": {
+        "supporting_count": { "type": "integer", "description": "Distinct items asserting Supports." },
+        "contradicting_count": { "type": "integer", "description": "Distinct items asserting Contradicts." },
+        "superseded_by": { "type": ["string", "null"], "pattern": "^ki_[0-9a-f-]{36}$", "description": "ID of the superseding item, if any." },
+        "observation_count": { "type": "integer", "description": "Times this knowledge was independently re-encountered." },
+        "newest_supporting_id": { "type": ["string", "null"], "pattern": "^ki_[0-9a-f-]{36}$", "description": "Most recent supporting item. Retrieve with tribal_get_item." },
+        "newest_contradicting_id": { "type": ["string", "null"], "pattern": "^ki_[0-9a-f-]{36}$", "description": "Most recent contradicting item. Retrieve with tribal_get_item." },
+        "supporting_episode_count": { "type": "integer", "description": "Distinct episodes providing support. Higher = broader validation." },
+        "supporting_project_count": { "type": "integer", "description": "Distinct projects providing support. Higher = cross-project validation." }
+      },
+      "required": ["supporting_count", "contradicting_count", "observation_count", "supporting_episode_count", "supporting_project_count"]
+    },
+    "reference": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^ref_[0-9a-f-]{36}$" },
+        "kind": { "type": "string", "enum": ["file_path", "url", "concept", "symbol"] },
+        "value": { "type": "string", "description": "The pointer (e.g., '//src/auth/middleware.rs', a URL, a concept name)." },
+        "description": { "type": ["string", "null"], "description": "What was at this location and why it mattered." },
+        "commit": { "type": ["string", "null"], "description": "Git SHA when this reference was known valid." }
+      },
+      "required": ["id", "kind", "value"]
+    }
+  }
+}
