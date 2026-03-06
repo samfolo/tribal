@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "item_ids": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^ki_[0-9a-f-]{36}$" },
+      "minItems": 1,
+      "maxItems": 20,
+      "description": "One or more knowledge item IDs to retrieve."
+    },
+    "include_standing": {
+      "type": "boolean",
+      "default": false,
+      "description": "Compute and return standing (evidential profile) for each item."
+    },
+    "include_references": {
+      "type": "boolean",
+      "default": false,
+      "description": "Return references attached to each item."
+    }
+  },
+  "required": ["item_ids"],
+  "additionalProperties": false
+}
