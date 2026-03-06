@@ -1,10 +1,13 @@
-use rmcp::handler::server::RequestContext;
-use rmcp::model::{CallToolResult, ErrorData as McpError};
-use rmcp::service::RoleServer;
+use rmcp::{
+    model::{CallToolResult, ErrorData as McpError},
+    service::{RequestContext, RoleServer},
+};
 use tribal_domain::McpErrorCode;
 
-use crate::error::{IntoCallToolResult, McpToolError};
-use crate::server_handler::TribalServerHandler;
+use crate::{
+    error::{IntoCallToolResult, McpToolError},
+    server_handler::TribalServerHandler,
+};
 
 impl TribalServerHandler {
     pub(crate) async fn handle_get_item(

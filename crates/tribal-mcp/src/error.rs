@@ -1,7 +1,4 @@
-use rmcp::model::{
-    CallToolResult, Content, ErrorCode,
-    ErrorData as McpError,
-};
+use rmcp::model::{CallToolResult, Content, ErrorCode, ErrorData as McpError};
 use serde::Serialize;
 use tribal_domain::McpErrorCode;
 
@@ -62,12 +59,9 @@ impl IntoCallToolResult for McpToolError {
             }
         });
 
-        CallToolResult {
-            content: vec![Content::text(&self.message)],
-            structured_content: Some(structured),
-            is_error: Some(true),
-            ..Default::default()
-        }
+        let mut result = CallToolResult::error(vec![Content::text(&self.message)]);
+        result.structured_content = Some(structured);
+        result
     }
 }
 
@@ -85,6 +79,7 @@ pub fn method_not_found(name: &str) -> McpError {
 }
 
 /// Produces a JSON-RPC invalid-params error for malformed arguments.
+#[allow(dead_code)]
 pub fn invalid_argument(message: impl Into<String>) -> McpError {
     McpError::invalid_params(message.into(), None)
 }

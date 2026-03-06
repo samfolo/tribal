@@ -1,6 +1,7 @@
-use rmcp::handler::server::RequestContext;
-use rmcp::model::ErrorData as McpError;
-use rmcp::service::RoleServer;
+use rmcp::{
+    model::ErrorData as McpError,
+    service::{RequestContext, RoleServer},
+};
 
 // ---------------------------------------------------------------------------
 // AuthContext
