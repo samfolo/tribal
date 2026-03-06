@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "pattern": "^job_[0-9a-f-]{36}$",
+      "description": "Job ID returned by tribal_ingest."
+    },
+    "wait_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 30,
+      "default": 0,
+      "description": "If > 0, the server blocks until the job reaches a final status (completed or failed) or the timeout expires, whichever comes first. Returns current status either way. Use this to collapse ingest + poll into fewer round-trips for fast operations."
+    }
+  },
+  "required": ["job_id"],
+  "additionalProperties": false
+}

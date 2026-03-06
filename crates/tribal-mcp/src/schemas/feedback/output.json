@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "feedback_id": {
+      "type": "string",
+      "pattern": "^fb_[0-9a-f-]{36}$",
+      "description": "ID of the recorded feedback."
+    }
+  },
+  "required": ["feedback_id"]
+}
