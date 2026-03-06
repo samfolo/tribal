@@ -25,6 +25,18 @@ use crate::{
 const SERVER_NAME: &str = "tribal";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Tool names with explicit `call_tool` match arms.
+#[cfg(test)]
+pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
+    "tribal_set_context",
+    "tribal_ingest",
+    "tribal_discover",
+    "tribal_explore",
+    "tribal_get_item",
+    "tribal_feedback",
+    "tribal_job_status",
+];
+
 // ---------------------------------------------------------------------------
 // ConnectionRepositories
 // ---------------------------------------------------------------------------

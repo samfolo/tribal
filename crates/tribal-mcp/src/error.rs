@@ -11,20 +11,13 @@ use tribal_domain::McpErrorCode;
 /// Maps domain failures to a structured error shape. The `code` field uses
 /// `McpErrorCode` from `tribal-domain`; `details` is always present
 /// (defaults to `{}`).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, thiserror::Error)]
+#[error("{message}")]
 pub struct McpToolError {
     pub code: McpErrorCode,
     pub message: String,
     pub details: serde_json::Value,
 }
-
-impl std::fmt::Display for McpToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for McpToolError {}
 
 // ---------------------------------------------------------------------------
 // IntoMcpError

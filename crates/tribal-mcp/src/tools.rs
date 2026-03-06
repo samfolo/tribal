@@ -347,6 +347,19 @@ mod tests {
     }
 
     #[test]
+    fn test_dispatch_covers_all_tools() {
+        use crate::server_handler::DISPATCHED_TOOLS;
+
+        let registry: BTreeSet<&str> = PARSED_TOOLS.iter().map(|t| t.name).collect();
+        let dispatched: BTreeSet<&str> = DISPATCHED_TOOLS.iter().copied().collect();
+
+        assert_eq!(
+            registry, dispatched,
+            "PARSED_TOOLS and DISPATCHED_TOOLS must match exactly"
+        );
+    }
+
+    #[test]
     fn test_get_tool_found() {
         let tool = PARSED_TOOLS
             .iter()
