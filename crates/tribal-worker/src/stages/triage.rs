@@ -17,7 +17,7 @@ use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
 };
 
-use super::{StageCommit, StageOutput, TriageCommitDecision};
+use super::{StageCommit, StageOutput, TriageCommitDecision, record_prompt_version_ids};
 use crate::{
     common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
     error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError},
@@ -140,6 +140,8 @@ impl Worker {
             { span_attrs::TASK_ID } = %task.id(),
             { span_attrs::LLM_STAGE } = "triage",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
+            { span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::LLM_USER_PROMPT_VERSION_ID } = tracing::field::Empty,
         );
 
         async {
@@ -167,6 +169,11 @@ impl Worker {
                 self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_system_prompt_version_id()),
                 self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_user_prompt_version_id()),
             )?;
+
+            record_prompt_version_ids(
+                ctx.job.triage_system_prompt_version_id(),
+                ctx.job.triage_user_prompt_version_id(),
+            );
 
             let embedding_response = self
                 .embed_candidate(ctx.candidate.content(), deadline)
@@ -221,8 +228,13 @@ impl Worker {
             );
 
             let mut usages = vec![
-                Usage::Embedding(embedding_usage),
-                Usage::Completion(completion_response.usage),
+                Usage::Embedding {
+                    usage: embedding_usage,
+                    purpose: EmbeddingPurpose::Candidate,
+                },
+                Usage::Completion {
+                    usage: completion_response.usage,
+                },
             ];
             usages.extend(tag_usages);
 

@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
     EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, TaskId, TokenUsage, TokenUsageId,
+    TokenUsageStage,
 };
 use typed_builder::TypedBuilder;
 
@@ -44,52 +45,6 @@ const UNKNOWN_PIPELINE_STAGE_IN_DB: &str =
     "unrecognised pipeline stage in database — schema mismatch";
 const UNKNOWN_EMBEDDING_PURPOSE_IN_DB: &str =
     "unrecognised embedding purpose in database — schema mismatch";
-
-// ---------------------------------------------------------------------------
-// Type-safe stage encoding
-// ---------------------------------------------------------------------------
-
-/// Encodes the `purpose_stage_check` constraint at the type level.
-///
-/// Embedding usage requires a purpose qualifier; non-embedding stages
-/// forbid it.  This enum makes the invalid state unrepresentable in
-/// [`NewTokenUsage`].
-#[derive(Debug, Clone, Copy)]
-pub enum TokenUsageStage {
-    /// The extraction pipeline stage.
-    Extraction,
-    /// The triage pipeline stage.
-    Triage,
-    /// The relation pipeline stage.
-    Relation,
-    /// The embedding pipeline stage with a required purpose.
-    Embedding {
-        /// Whether the embedding was for indexing or querying.
-        purpose: EmbeddingPurpose,
-    },
-}
-
-impl TokenUsageStage {
-    /// Returns the pipeline stage.
-    #[must_use]
-    pub fn pipeline_stage(&self) -> PipelineStage {
-        match self {
-            Self::Extraction => PipelineStage::Extraction,
-            Self::Triage => PipelineStage::Triage,
-            Self::Relation => PipelineStage::Relation,
-            Self::Embedding { .. } => PipelineStage::Embedding,
-        }
-    }
-
-    /// Returns the embedding purpose, if applicable.
-    #[must_use]
-    pub fn purpose(&self) -> Option<EmbeddingPurpose> {
-        match self {
-            Self::Embedding { purpose } => Some(*purpose),
-            _ => None,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -252,6 +207,42 @@ impl TokenUsageRepository for PgTokenUsageRepository {
                 context: format!("finding token usage for job {job_id}"),
                 source: e,
             })?;
+
+        Ok(rows.iter().map(map_token_usage_row).collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-helpers")]
+impl PgTokenUsageRepository {
+    /// Returns all token usage records, ordered by `created_at ASC`.
+    ///
+    /// Intended for integration tests that need to inspect records
+    /// without filtering by job (e.g. backfill records with no job).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn find_all_for_test(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<TokenUsage>, DbError> {
+        let sql = format!(
+            "SELECT {COLUMNS} FROM token_usage \
+             ORDER BY created_at ASC",
+        );
+
+        let rows =
+            sqlx::query(&sql)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: "finding all token usage records".to_owned(),
+                    source: e,
+                })?;
 
         Ok(rows.iter().map(map_token_usage_row).collect())
     }

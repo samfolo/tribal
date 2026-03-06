@@ -19,7 +19,7 @@ use tribal_domain::{
 };
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
-use super::{StageCommit, StageOutput};
+use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{
     common::{PARSE_PREVIEW_LENGTH, clamp_to_u32},
     error::{SEMAPHORE_CLOSED, STAGE_RELATION, StageError},
@@ -181,6 +181,8 @@ impl Worker {
             { span_attrs::TASK_ID } = %task.id(),
             { span_attrs::LLM_STAGE } = "relation",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
+            { span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::LLM_USER_PROMPT_VERSION_ID } = tracing::field::Empty,
         );
 
         async {
@@ -217,7 +219,11 @@ impl Worker {
                 self.load_prompt_version(STAGE_RELATION, ctx.job.relation_user_prompt_version_id()),
             )?;
 
-            // Acquire semaphore.
+            record_prompt_version_ids(
+                ctx.job.relation_system_prompt_version_id(),
+                ctx.job.relation_user_prompt_version_id(),
+            );
+
             let semaphore = self.relation_semaphore();
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
@@ -278,7 +284,9 @@ impl Worker {
 
             Ok(StageOutput {
                 commit: StageCommit::Relation { decision },
-                usages: vec![Usage::Completion(response.usage)],
+                usages: vec![Usage::Completion {
+                    usage: response.usage,
+                }],
             })
         }
         .instrument(span)

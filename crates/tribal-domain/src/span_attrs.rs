@@ -58,7 +58,7 @@ pub const EMBEDDING_DIMENSIONS: &str = "tribal.embedding.dimensions";
 /// Span field name for embedding request latency in milliseconds.
 pub const EMBEDDING_LATENCY_MS: &str = "tribal.embedding.latency_ms";
 
-/// Span field name for the embedding purpose (`"candidate"` or `"query"`).
+/// Span field name for the embedding purpose (`"candidate"`, `"query"`, or `"tag"`).
 pub const EMBEDDING_PURPOSE: &str = "tribal.embedding.purpose";
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,12 @@ pub const LLM_LATENCY_MS: &str = "tribal.llm.latency_ms";
 
 /// Span field name for the sampling temperature.
 pub const LLM_TEMPERATURE: &str = "tribal.llm.temperature";
+
+/// Span field name for the system prompt version identifier used in the LLM call.
+pub const LLM_SYSTEM_PROMPT_VERSION_ID: &str = "tribal.llm.system_prompt_version_id";
+
+/// Span field name for the user prompt version identifier used in the LLM call.
+pub const LLM_USER_PROMPT_VERSION_ID: &str = "tribal.llm.user_prompt_version_id";
 
 // ---------------------------------------------------------------------------
 // Worker spans
