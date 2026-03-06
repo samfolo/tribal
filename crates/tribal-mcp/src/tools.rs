@@ -151,6 +151,8 @@ pub(crate) fn to_tool(entry: &ParsedToolEntry) -> Tool {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeSet, env, fs, path::Path};
+
     use super::*;
 
     #[test]
@@ -165,11 +167,11 @@ mod tests {
 
     #[test]
     fn test_schema_coverage() {
-        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let schema_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .join("schemas");
 
-        let dirs_on_disk: std::collections::BTreeSet<String> = std::fs::read_dir(&schema_dir)
+        let dirs_on_disk: BTreeSet<String> = fs::read_dir(&schema_dir)
             .expect("schemas/ directory must exist")
             .filter_map(|e| {
                 let entry = e.ok()?;
@@ -181,7 +183,7 @@ mod tests {
             })
             .collect();
 
-        let registry_dirs: std::collections::BTreeSet<String> = TOOLS
+        let registry_dirs: BTreeSet<String> = TOOLS
             .iter()
             .map(|t| {
                 t.name
@@ -199,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_schema_naming_convention() {
-        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let schema_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .join("schemas");
 
@@ -243,21 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_registry_bijection() {
-        let registry_names: Vec<&str> = PARSED_TOOLS.iter().map(|t| t.name).collect();
-        let expected = vec![
-            "tribal_set_context",
-            "tribal_ingest",
-            "tribal_discover",
-            "tribal_explore",
-            "tribal_get_item",
-            "tribal_feedback",
-            "tribal_job_status",
-        ];
-        assert_eq!(registry_names, expected);
-    }
-
-    #[test]
     fn test_schema_golden_snapshot() {
         let tools: Vec<serde_json::Value> = PARSED_TOOLS
             .iter()
@@ -275,22 +262,22 @@ mod tests {
 
         let snapshot = serde_json::to_string_pretty(&tools).expect("snapshot serialisation");
 
-        let snapshot_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let snapshot_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .join("schemas")
             .join("golden_snapshot.json");
 
-        if std::env::var("UPDATE_SNAPSHOTS").is_ok() {
-            std::fs::write(&snapshot_path, &snapshot).expect("write golden snapshot");
+        if env::var("UPDATE_SNAPSHOTS").is_ok() {
+            fs::write(&snapshot_path, &snapshot).expect("write golden snapshot");
             return;
         }
 
         if !snapshot_path.exists() {
-            std::fs::write(&snapshot_path, &snapshot).expect("write initial golden snapshot");
+            fs::write(&snapshot_path, &snapshot).expect("write initial golden snapshot");
             return;
         }
 
-        let existing = std::fs::read_to_string(&snapshot_path).expect("read golden snapshot");
+        let existing = fs::read_to_string(&snapshot_path).expect("read golden snapshot");
         assert_eq!(
             existing, snapshot,
             "Golden snapshot mismatch. Run with UPDATE_SNAPSHOTS=1 to update."
