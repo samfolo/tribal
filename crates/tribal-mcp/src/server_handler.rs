@@ -4,7 +4,7 @@ use rmcp::{
     handler::server::ServerHandler,
     model::{
         CallToolRequestParams, CallToolResult, ErrorData as McpError, Implementation,
-        ListToolsResult, ServerCapabilities, ServerInfo, Tool,
+        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
     },
     service::{RequestContext, RoleServer},
 };
@@ -12,13 +12,18 @@ use tribal_db::{
     JobRepository, KnowledgeItemRepository, ProjectRepository, RetrievalFeedbackRepository,
 };
 
-use crate::{auth::AuthContext, error::method_not_found, tools::PARSED_TOOLS};
+use crate::{
+    auth::AuthContext,
+    error::method_not_found,
+    tools::{PARSED_TOOLS, to_tool},
+};
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const SERVER_NAME: &str = "tribal";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ---------------------------------------------------------------------------
 // ConnectionRepositories
@@ -55,25 +60,22 @@ impl TribalServerHandler {
 impl ServerHandler for TribalServerHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
+            .with_server_info(Implementation::new(SERVER_NAME, VERSION))
     }
 
     fn list_tools(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         std::future::ready(Ok(ListToolsResult {
-            tools: PARSED_TOOLS.iter().map(crate::tools::to_tool).collect(),
+            tools: PARSED_TOOLS.iter().map(to_tool).collect(),
             ..Default::default()
         }))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        PARSED_TOOLS
-            .iter()
-            .find(|t| t.name == name)
-            .map(crate::tools::to_tool)
+        PARSED_TOOLS.iter().find(|t| t.name == name).map(to_tool)
     }
 
     async fn call_tool(
