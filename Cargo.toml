@@ -75,6 +75,12 @@ tera = "1"
 # JSON Schema generation
 schemars = { version = "0.8", features = ["uuid1"] }
 
+# MCP server
+rmcp = { version = "1.1", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
+
+# Async futures utilities
+futures = "0.3"
+
 # Testing
 tempfile = "3"
 testcontainers = "0.27"
