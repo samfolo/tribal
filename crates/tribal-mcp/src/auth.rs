@@ -17,6 +17,7 @@ impl AuthContext {
         AuthContext
     }
 
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     pub fn require_scope(&self, _scope: &str) -> Result<(), McpError> {
         Ok(())
     }

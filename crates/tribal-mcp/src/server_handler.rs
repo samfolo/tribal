@@ -42,6 +42,7 @@ pub struct TribalServerHandler {
 }
 
 impl TribalServerHandler {
+    #[must_use]
     pub fn new(repositories: ConnectionRepositories) -> Self {
         Self { repositories }
     }
@@ -75,35 +76,33 @@ impl ServerHandler for TribalServerHandler {
             .map(crate::tools::to_tool)
     }
 
-    fn call_tool(
+    async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
-        async move {
-            let entry = PARSED_TOOLS
-                .iter()
-                .find(|t| t.name == request.name.as_ref())
-                .ok_or_else(|| method_not_found(&request.name))?;
+    ) -> Result<CallToolResult, McpError> {
+        let entry = PARSED_TOOLS
+            .iter()
+            .find(|t| t.name == request.name.as_ref())
+            .ok_or_else(|| method_not_found(&request.name))?;
 
-            let auth = AuthContext::from_context(&context);
-            auth.require_scope(entry.required_scope)?;
+        let auth = AuthContext::from_context(&context);
+        auth.require_scope(entry.required_scope)?;
 
-            let params = request
-                .arguments
-                .map(serde_json::Value::Object)
-                .unwrap_or_default();
+        let params = request
+            .arguments
+            .map(serde_json::Value::Object)
+            .unwrap_or_default();
 
-            match entry.name {
-                "tribal_set_context" => self.handle_set_context(params, context).await,
-                "tribal_ingest" => self.handle_ingest(params, context).await,
-                "tribal_discover" => self.handle_discover(params, context).await,
-                "tribal_explore" => self.handle_explore(params, context).await,
-                "tribal_get_item" => self.handle_get_item(params, context).await,
-                "tribal_feedback" => self.handle_feedback(params, context).await,
-                "tribal_job_status" => self.handle_job_status(params, context).await,
-                _ => Err(method_not_found(&request.name)),
-            }
+        match entry.name {
+            "tribal_set_context" => self.handle_set_context(params, context).await,
+            "tribal_ingest" => self.handle_ingest(params, context).await,
+            "tribal_discover" => self.handle_discover(params, context).await,
+            "tribal_explore" => self.handle_explore(params, context).await,
+            "tribal_get_item" => self.handle_get_item(params, context).await,
+            "tribal_feedback" => self.handle_feedback(params, context).await,
+            "tribal_job_status" => self.handle_job_status(params, context).await,
+            _ => Err(method_not_found(&request.name)),
         }
     }
 }

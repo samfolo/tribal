@@ -9,6 +9,7 @@ use crate::{
     server_handler::TribalServerHandler,
 };
 
+#[allow(clippy::unused_async)]
 impl TribalServerHandler {
     pub(crate) async fn handle_job_status(
         &self,
