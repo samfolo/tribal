@@ -112,7 +112,7 @@ pub use standing::{Standing, StandingBuilder};
 pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};
 pub use tag_similarity_result::TagSimilarityResult;
 pub use task::{Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
-pub use token_usage::{TokenUsage, TokenUsageBuilder};
+pub use token_usage::{TokenUsage, TokenUsageBuilder, TokenUsageStage};
 pub use triage::{
     SimilarItem, SimilarItemBuilder, TriageOutcome, TriageResult, TriageResultBuilder,
     TriageSimilarItemDecision, TriageSimilarItemDecisionBuilder,

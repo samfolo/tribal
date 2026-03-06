@@ -1,6 +1,8 @@
 use chrono::Utc;
-use tribal_db::{NewTokenUsage, TokenUsageStage};
-use tribal_domain::{JobId, PipelineStage, PromptVersionId, TaskId, TokenUsage, TokenUsageId};
+use tribal_db::NewTokenUsage;
+use tribal_domain::{
+    JobId, PipelineStage, PromptVersionId, TaskId, TokenUsage, TokenUsageId, TokenUsageStage,
+};
 
 define_factory! {
     /// Factory for [`TokenUsage`] instances.

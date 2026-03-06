@@ -130,7 +130,10 @@ pub(crate) async fn resolve_tags(
             let embedding_response =
                 embed_tag(tag, embedding_provider, semaphore, deadline, provider_key).await?;
 
-            usages.push(Usage::Embedding(embedding_response.usage));
+            usages.push(Usage::Embedding {
+                usage: embedding_response.usage,
+                purpose: EmbeddingPurpose::Tag,
+            });
 
             let mut conn = pool.acquire().await.map_err(|e| StageError::Database {
                 stage: STAGE_TRIAGE.into(),

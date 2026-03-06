@@ -8,7 +8,7 @@ use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
-use super::{StageCommit, StageOutput};
+use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{
     common::{PARSE_PREVIEW_LENGTH, clamp_to_u32},
     error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, StageError},
@@ -109,6 +109,8 @@ impl Worker {
             { span_attrs::TASK_ID } = %task.id(),
             { span_attrs::LLM_STAGE } = "extraction",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
+            { span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::LLM_USER_PROMPT_VERSION_ID } = tracing::field::Empty,
         );
 
         async {
@@ -131,6 +133,11 @@ impl Worker {
                     ctx.job.extraction_user_prompt_version_id()
                 ),
             )?;
+
+            record_prompt_version_ids(
+                ctx.job.extraction_system_prompt_version_id(),
+                ctx.job.extraction_user_prompt_version_id(),
+            );
 
             let semaphore = self.extraction_semaphore();
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -211,7 +218,9 @@ impl Worker {
                     batch_size,
                     original_count,
                 },
-                usages: vec![Usage::Completion(response.usage)],
+                usages: vec![Usage::Completion {
+                    usage: response.usage,
+                }],
             })
         }
         .instrument(span)
