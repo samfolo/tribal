@@ -61,12 +61,16 @@ pub struct ConnectionRepositories {
 pub struct TribalServerHandler {
     #[allow(dead_code)]
     repositories: ConnectionRepositories,
+    pub(crate) session: Arc<RwLock<SessionContext>>,
 }
 
 impl TribalServerHandler {
     #[must_use]
-    pub fn new(repositories: ConnectionRepositories) -> Self {
-        Self { repositories }
+    pub fn new(repositories: ConnectionRepositories, session: SessionContext) -> Self {
+        Self {
+            repositories,
+            session: Arc::new(RwLock::new(session)),
+        }
     }
 }
 
@@ -76,8 +80,14 @@ impl TribalServerHandler {
 
 impl ServerHandler for TribalServerHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(SERVER_NAME, VERSION))
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_resources_subscribe()
+                .build(),
+        )
+        .with_server_info(Implementation::new(SERVER_NAME, VERSION))
     }
 
     fn list_tools(
