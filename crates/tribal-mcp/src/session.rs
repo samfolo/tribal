@@ -17,8 +17,8 @@ pub(crate) const SESSION_RESOURCE_URI: &str = "tribal://session/context";
 
 /// Project identity stored on the session.
 ///
-/// Holds a domain-level `ProjectId` (UUID) — the `proj_` prefix is applied
-/// only at the MCP mapping layer when serialising outbound JSON.
+/// Holds a domain-level `ProjectId` whose underlying value is a UUID. When
+/// rendered as a string (including in MCP JSON), it uses the `proj_<uuid>` form.
 pub struct SessionProject {
     pub id: ProjectId,
     pub name: String,
@@ -96,8 +96,8 @@ pub(crate) fn session_resource() -> Resource {
 // ---------------------------------------------------------------------------
 
 /// Sends a `notifications/resources/updated` for `tribal://session/context`
-/// if the client has subscribed. Fire-and-forget — notification failure is
-/// silently ignored.
+/// if the client has subscribed. Best-effort — the notification is awaited
+/// but its result is silently discarded.
 #[allow(dead_code)]
 pub(crate) async fn notify_session_updated(
     session: &RwLock<SessionContext>,
