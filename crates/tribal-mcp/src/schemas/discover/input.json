@@ -1,0 +1,63 @@
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "Natural language query. Describe what you're looking for conversationally. The system embeds this and finds semantically similar knowledge items."
+    },
+    "project_id": {
+      "type": ["string", "null"],
+      "pattern": "^proj_[0-9a-f-]{36}$",
+      "description": "Filter to a specific project. Three-way semantics: omit to use session context project (if set); pass a project ID to filter to that project; pass null to search globally, ignoring session context."
+    },
+    "kinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["fact", "heuristic", "procedure", "decision_record"]
+      },
+      "description": "Filter to specific knowledge kinds. Use sparingly — semantic search naturally ranks relevant kinds higher. Most useful for explicit structural queries like 'show me all decision records for this project'."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Filter by tags (AND semantics — items must have ALL specified tags). Tags are lowercase. For OR semantics, make separate queries."
+    },
+    "time_range": {
+      "type": "object",
+      "properties": {
+        "from": { "type": "string", "format": "date-time", "description": "Items created after this time (inclusive)." },
+        "to": { "type": "string", "format": "date-time", "description": "Items created before this time (inclusive)." }
+      },
+      "description": "Filter by creation time. Either or both bounds may be specified."
+    },
+    "include_superseded": {
+      "type": "boolean",
+      "default": false,
+      "description": "Include items that have been superseded by newer understanding. Default false."
+    },
+    "include_standing": {
+      "type": "boolean",
+      "default": false,
+      "description": "Compute and return standing (evidential profile) for each result. Adds minor latency. Recommended when assessing reliability."
+    },
+    "include_references": {
+      "type": "boolean",
+      "default": false,
+      "description": "Return references (file paths, URLs, concepts) attached to each item."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50,
+      "default": 10,
+      "description": "Maximum number of results to return."
+    },
+    "cursor": {
+      "type": "string",
+      "description": "Opaque pagination cursor from a previous response's next_cursor."
+    }
+  },
+  "required": ["query"],
+  "additionalProperties": false
+}

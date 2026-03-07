@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "job_id": { "type": "string", "pattern": "^job_[0-9a-f-]{36}$" },
+    "status": {
+      "type": "string",
+      "enum": ["queued", "extracting", "triaging", "relating", "completed", "failed"],
+      "description": "Current lifecycle state."
+    },
+    "outcome": {
+      "type": ["string", "null"],
+      "enum": ["success", "partial", "empty", "failure", null],
+      "description": "Final result. Only set when status is 'completed' or 'failed'."
+    },
+    "batch_size": {
+      "type": ["integer", "null"],
+      "description": "Number of knowledge candidates extracted. Set after extraction completes."
+    },
+    "tasks_completed": {
+      "type": "integer",
+      "description": "Triage tasks completed successfully."
+    },
+    "tasks_failed": {
+      "type": "integer",
+      "description": "Triage tasks that failed permanently."
+    },
+    "items_created": {
+      "type": "integer",
+      "description": "New knowledge items stored (novel content)."
+    },
+    "observations_created": {
+      "type": "integer",
+      "description": "Duplicate observations recorded (strengthens existing items)."
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["job_id", "status", "tasks_completed", "tasks_failed", "items_created", "observations_created", "created_at", "updated_at"]
+}
