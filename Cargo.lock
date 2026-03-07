@@ -1844,12 +1844,6 @@ dependencies = [
 
 [[package]]
 name = "pastey"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
-
-[[package]]
-name = "pastey"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b867cad97c0791bbd3aaa6472142568c6c9e8f71937e98379f584cfb0cf35bec"
@@ -2378,7 +2372,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
- "pastey 0.2.1",
+ "pastey",
  "pin-project-lite",
  "rand 0.10.0",
  "rmcp-macros",
@@ -3677,7 +3671,7 @@ dependencies = [
  "chrono",
  "fnv",
  "indexmap 2.13.0",
- "pastey 0.1.1",
+ "pastey",
  "pgvector",
  "serde_json",
  "sqlx",

@@ -82,7 +82,7 @@ rmcp = { version = "1", features = ["macros", "server", "transport-io", "transpo
 futures = "0.3"
 
 # Macro utilities
-pastey = "0.1"
+pastey = "0.2"
 
 # Testing
 tempfile = "3"
