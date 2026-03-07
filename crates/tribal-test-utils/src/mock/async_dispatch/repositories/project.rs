@@ -6,7 +6,7 @@ use tribal_domain::{Project, ProjectId};
 use super::mock_repository;
 
 mock_repository! {
-    MockProjectRepository for ProjectRepository {
+    MockProjectRepository for ProjectRepository, tribal_db::DbError {
         insert(NewProject => Project)
             (new_project: &NewProject) { new_project.clone() };
         find_by_id(ProjectId => Project)
