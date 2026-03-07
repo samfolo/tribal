@@ -68,7 +68,7 @@ const EXTRACTION_ORIGINAL_COUNT_OVERFLOW: &str =
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `status`, `created_at`, `updated_at`) are produced by Postgres
 /// via `DEFAULT` clauses and returned via `RETURNING {COLUMNS}`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewJob {
     /// Episode grouping (correlation key).
     #[builder(default)]
@@ -106,7 +106,7 @@ pub struct NewJob {
 /// Callers supply the new status and, for terminal states, the outcome
 /// and optional error details.  The repository applies the transition
 /// atomically and returns the updated job.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct JobStatusTransition {
     /// The new lifecycle status.
     pub status: JobStatus,

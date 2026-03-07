@@ -34,7 +34,7 @@ const UNKNOWN_SOURCE_TYPE_IN_DB: &str = "unrecognised source type in database â€
 ///
 /// Server-generated fields (`id`, `observed_at`) are produced by Postgres
 /// defaults and returned via `RETURNING {COLUMNS}`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewItemObservation {
     /// The knowledge item that was re-observed.
     pub knowledge_item_id: KnowledgeItemId,

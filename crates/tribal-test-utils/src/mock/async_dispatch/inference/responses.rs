@@ -11,6 +11,11 @@ use tribal_inference::{
     CompletionResponse, CompletionUsage, EmbeddingResponse, EmbeddingUsage, InferenceError,
 };
 
+use crate::mock::async_dispatch::core::ErrorFactory;
+
+/// Inference-specific error factory type alias.
+pub type InferenceErrorFactory = ErrorFactory<InferenceError>;
+
 /// Produces a [`CompletionResponse`] with the given text and mock defaults.
 ///
 /// Defaults: `provider = "mock"`, `model = "mock-model"`,
@@ -47,11 +52,8 @@ pub fn an_embedding_response(vector: Vec<f32>) -> EmbeddingResponse {
     }
 }
 
-/// Error factory type shared by all error factory functions.
-pub type ErrorFactory = Box<dyn Fn() -> InferenceError + Send + Sync>;
-
 /// Produces a closure returning [`InferenceError::ProviderUnavailable`].
-pub fn a_provider_unavailable(reason: impl Into<String>) -> ErrorFactory {
+pub fn a_provider_unavailable(reason: impl Into<String>) -> InferenceErrorFactory {
     let reason = reason.into();
     Box::new(move || InferenceError::ProviderUnavailable {
         provider: "mock".to_owned(),
@@ -61,7 +63,10 @@ pub fn a_provider_unavailable(reason: impl Into<String>) -> ErrorFactory {
 
 /// Produces a closure returning [`InferenceError::LlmCallFailed`] with a
 /// synthetic `io::Error` source.
-pub fn an_llm_call_failure(model: impl Into<String>, context: impl Into<String>) -> ErrorFactory {
+pub fn an_llm_call_failure(
+    model: impl Into<String>,
+    context: impl Into<String>,
+) -> InferenceErrorFactory {
     let model = model.into();
     let context = context.into();
     Box::new(move || InferenceError::LlmCallFailed {
@@ -73,7 +78,10 @@ pub fn an_llm_call_failure(model: impl Into<String>, context: impl Into<String>)
 
 /// Produces a closure returning [`InferenceError::EmbeddingFailed`] with a
 /// synthetic `io::Error` source.
-pub fn an_embedding_failure(model: impl Into<String>, context: impl Into<String>) -> ErrorFactory {
+pub fn an_embedding_failure(
+    model: impl Into<String>,
+    context: impl Into<String>,
+) -> InferenceErrorFactory {
     let model = model.into();
     let context = context.into();
     Box::new(move || InferenceError::EmbeddingFailed {
@@ -89,7 +97,7 @@ pub fn an_embedding_failure(model: impl Into<String>, context: impl Into<String>
 pub fn a_parse_failure(
     expected_shape: impl Into<String>,
     actual: impl Into<String>,
-) -> ErrorFactory {
+) -> InferenceErrorFactory {
     let expected_shape = expected_shape.into();
     let actual = actual.into();
     Box::new(move || InferenceError::ResponseParseFailed {

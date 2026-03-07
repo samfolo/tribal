@@ -37,7 +37,7 @@ const UNKNOWN_PROMPT_ROLE_IN_DB: &str = "unrecognised prompt role in database â€
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewPromptVersion {
     /// The pipeline stage this prompt applies to.
     pub stage: PromptStage,

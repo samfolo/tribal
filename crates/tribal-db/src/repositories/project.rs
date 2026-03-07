@@ -20,7 +20,7 @@ const SCHEMA_VERSION_OVERFLOW: &str = "negative schema_version in database — d
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`, `updated_at`) are produced by Postgres via
 /// `DEFAULT` clauses and returned via `RETURNING *`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewProject {
     /// The git remote URL (stable project identity).
     pub git_remote: String,

@@ -29,7 +29,7 @@ const DIMENSIONS_OVERFLOW: &str = "negative dimensions in database — data corr
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewEmbedding {
     /// The knowledge item this embedding represents.
     pub knowledge_item_id: KnowledgeItemId,

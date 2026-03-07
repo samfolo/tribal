@@ -44,7 +44,7 @@ const UNKNOWN_FEEDBACK_RATING_IN_DB: &str =
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewRetrievalFeedback {
     /// The trace identifier for correlating with retrieval sessions.
     pub trace_id: String,
