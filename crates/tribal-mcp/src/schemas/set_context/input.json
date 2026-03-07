@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "project_id": {
+      "type": "string",
+      "pattern": "^proj_[0-9a-f-]{36}$",
+      "description": "Override the active project. Use when working in a different project than the one resolved from the git remote."
+    },
+    "model": {
+      "type": "string",
+      "description": "The model you are running as. e.g., 'claude-sonnet-4-5-20250514'. Set once at session start."
+    },
+    "provider": {
+      "type": "string",
+      "description": "The inference provider. e.g., 'anthropic', 'openai'. Set once at session start."
+    }
+  },
+  "additionalProperties": false
+}

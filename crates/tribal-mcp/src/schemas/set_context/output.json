@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "description": "Returns the full session context after applying changes.",
+  "properties": {
+    "project": {
+      "type": ["object", "null"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^proj_[0-9a-f-]{36}$" },
+        "name": { "type": "string" },
+        "git_remote": { "type": "string" }
+      },
+      "required": ["id", "name", "git_remote"]
+    },
+    "principal_key": { "type": "string" },
+    "actor": {
+      "type": "object",
+      "properties": {
+        "client_name": { "type": ["string", "null"] },
+        "client_version": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "provider": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "required": ["principal_key", "actor"]
+}

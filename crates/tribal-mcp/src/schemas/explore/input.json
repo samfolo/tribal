@@ -1,0 +1,54 @@
+{
+  "type": "object",
+  "properties": {
+    "item_id": {
+      "type": "string",
+      "pattern": "^ki_[0-9a-f-]{36}$",
+      "description": "The anchor item to explore from. Typically obtained from a tribal_discover result."
+    },
+    "session_trace_id": {
+      "type": "string",
+      "description": "Trace ID from a prior tribal_discover call. If provided, this explore is part of the same retrieval session. The returned trace_id will match. Use this to build coherent feedback across discover + explore workflows."
+    },
+    "direction": {
+      "type": "string",
+      "enum": ["inbound", "outbound", "both"],
+      "default": "inbound",
+      "description": "Traversal direction relative to the anchor item."
+    },
+    "relation_types": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["supports", "contradicts", "supersedes", "derived_from"]
+      },
+      "description": "Filter to specific relation types. Omit to return all types."
+    },
+    "depth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3,
+      "default": 1,
+      "description": "Maximum traversal hops from anchor. 1 = direct relations only."
+    },
+    "include_standing": {
+      "type": "boolean",
+      "default": false,
+      "description": "Compute standing for each returned item. Adds latency at depth > 1."
+    },
+    "include_references": {
+      "type": "boolean",
+      "default": false,
+      "description": "Return references attached to each item."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 20,
+      "description": "Maximum total results across all depths. BFS order ensures closer relations are returned first."
+    }
+  },
+  "required": ["item_id"],
+  "additionalProperties": false
+}
