@@ -25,11 +25,19 @@ mod tests {
     use chrono::SubsecRound;
     use tribal_db::DbError;
 
-    use crate::mock::async_dispatch::core::ExhaustBehaviour;
-    use crate::mock::async_dispatch::repositories::error_factories::a_not_found;
-    use crate::test_context;
-
     use super::*;
+    use crate::{
+        mock::async_dispatch::{
+            core::ExhaustBehaviour, repositories::error_factories::a_not_found,
+        },
+        test_context,
+    };
+
+    // -- Constants ----------------------------------------------------------
+
+    const EXPECT_BEGIN: &str = "should begin transaction";
+
+    // -- Helpers ------------------------------------------------------------
 
     fn a_project(name: &str) -> Project {
         Project::builder()
@@ -45,6 +53,8 @@ mod tests {
             .build()
     }
 
+    // -- Tests --------------------------------------------------------------
+
     #[tokio::test]
     async fn test_sequential_find_by_id_returns_in_order() {
         let p1 = a_project("first");
@@ -56,13 +66,13 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await;
+        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
 
         let r1 = mock.find_by_id(&mut tx, ProjectId::new()).await.unwrap();
         let r2 = mock.find_by_id(&mut tx, ProjectId::new()).await.unwrap();
 
-        assert_eq!(r1.name, "first");
-        assert_eq!(r2.name, "second");
+        assert_eq!(r1.name(), "first");
+        assert_eq!(r2.name(), "second");
     }
 
     #[tokio::test]
@@ -76,10 +86,10 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await;
+        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
 
         let result = mock.find_by_id(&mut tx, target_id).await.unwrap();
-        assert_eq!(result.name, "matched");
+        assert_eq!(result.name(), "matched");
     }
 
     #[tokio::test]
@@ -87,7 +97,7 @@ mod tests {
     async fn test_exhaust_panic_on_empty_queue() {
         let mock = MockProjectRepository::builder().build();
         let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await;
+        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
         let _ = mock.find_by_id(&mut tx, ProjectId::new()).await;
     }
 
@@ -101,15 +111,15 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await;
+        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
 
         let r1 = mock.find_by_id(&mut tx, ProjectId::new()).await.unwrap();
         let r2 = mock.find_by_id(&mut tx, ProjectId::new()).await.unwrap();
         let r3 = mock.find_by_id(&mut tx, ProjectId::new()).await.unwrap();
 
-        assert_eq!(r1.name, "repeated");
-        assert_eq!(r2.name, "repeated");
-        assert_eq!(r3.name, "repeated");
+        assert_eq!(r1.name(), "repeated");
+        assert_eq!(r2.name(), "repeated");
+        assert_eq!(r3.name(), "repeated");
         assert_eq!(mock.find_by_id_call_count(), 3);
     }
 
@@ -123,7 +133,7 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await;
+        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
         let err = mock
             .find_by_id(&mut tx, ProjectId::new())
             .await
@@ -146,7 +156,7 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await;
+        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
 
         let id1 = ProjectId::new();
         let id2 = ProjectId::new();
@@ -177,7 +187,7 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut tx = ctx.begin_test().await;
+        let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
 
         let new_project = NewProject::builder()
             .git_remote("git@github.com:user/test.git".to_owned())

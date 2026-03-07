@@ -13,12 +13,11 @@ use tribal_inference::{
     InferenceError, InferenceProvider, ProviderIdentity,
 };
 
-use crate::mock::async_dispatch::core::{
-    ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED,
-    MockAsyncDispatchCore, MockProviderOptions, QueueEntry,
-};
-
 use super::matcher::{CompletionMatcher, EmbeddingMatcher};
+use crate::mock::async_dispatch::core::{
+    ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED, MockAsyncDispatchCore,
+    MockProviderOptions, QueueEntry,
+};
 
 // ---------------------------------------------------------------------------
 // Usage accumulators

@@ -1,6 +1,8 @@
 //! Mock implementation of [`KnowledgeItemRepository`].
 
-use tribal_db::{KnowledgeItemRepository, NewKnowledgeItem, SemanticSearchParams, SemanticSearchResponse};
+use tribal_db::{
+    KnowledgeItemRepository, NewKnowledgeItem, SemanticSearchParams, SemanticSearchResponse,
+};
 use tribal_domain::{KnowledgeItem, KnowledgeItemId};
 
 use super::mock_repository;
