@@ -7,6 +7,9 @@ use serde_json::{Map, Value};
 // Constants
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+pub(crate) const TOOL_PREFIX: &str = "tribal_";
+
 const INPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded input schema must be valid JSON";
 const OUTPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded output schema must be valid JSON";
 const SCHEMA_MUST_BE_OBJECT: &str = "invariant: schema must be a JSON object";
@@ -311,8 +314,8 @@ mod tests {
             .iter()
             .map(|t| {
                 t.name
-                    .strip_prefix("tribal_")
-                    .expect("tool name must start with tribal_")
+                    .strip_prefix(TOOL_PREFIX)
+                    .unwrap_or_else(|| panic!("tool name must start with {TOOL_PREFIX}"))
                     .to_owned()
             })
             .collect();
@@ -332,8 +335,8 @@ mod tests {
         for entry in TOOLS {
             let dir_name = entry
                 .name
-                .strip_prefix("tribal_")
-                .expect("tool name must start with tribal_");
+                .strip_prefix(TOOL_PREFIX)
+                .unwrap_or_else(|| panic!("tool name must start with {TOOL_PREFIX}"));
 
             let tool_dir = schema_dir.join(dir_name);
             assert!(
