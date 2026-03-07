@@ -56,7 +56,7 @@ pub(crate) struct McpSetContextRequest {
 // Response types
 // ---------------------------------------------------------------------------
 
-/// Project on the MCP set_context response surface.
+/// Project on the MCP `set_context` response surface.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct McpSessionProject {
     pub(crate) id: String,
@@ -64,7 +64,7 @@ pub(crate) struct McpSessionProject {
     pub(crate) git_remote: String,
 }
 
-/// Actor metadata on the MCP set_context response surface.
+/// Actor metadata on the MCP `set_context` response surface.
 ///
 /// All fields are always present in serialised JSON (null when absent),
 /// matching the existing session resource representation.

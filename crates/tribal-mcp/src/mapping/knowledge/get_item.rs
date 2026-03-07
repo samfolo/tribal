@@ -50,11 +50,13 @@ pub(crate) struct McpGetItemEntry {
 
 impl McpGetItemResponse {
     /// Returns the number of non-null entries in the response.
+    #[must_use]
     pub(crate) fn found_count(&self) -> usize {
         self.items.values().filter(|v| !v.is_null()).count()
     }
 
     /// Returns the total number of requested entries.
+    #[must_use]
     pub(crate) fn requested_count(&self) -> usize {
         self.items.len()
     }
@@ -83,7 +85,10 @@ impl IntoCallToolResult for McpGetItemResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        super::common::{McpSourceContext, McpSourceType},
+        *,
+    };
 
     #[test]
     fn test_get_item_request_deserialises() {
@@ -109,8 +114,6 @@ mod tests {
 
     #[test]
     fn test_get_item_response_serialises_present_entry() {
-        use super::super::common::{McpSourceContext, McpSourceType};
-
         let entry = McpGetItemEntry {
             item: McpKnowledgeItem {
                 id: "ki_abc".into(),

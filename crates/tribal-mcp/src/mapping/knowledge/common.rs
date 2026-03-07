@@ -56,8 +56,7 @@ impl From<&serde_json::Value> for McpSourceContext {
             .map_or(McpSourceType::Manual, |t| match t {
                 "agent_mediated" => McpSourceType::AgentMediated,
                 "derived" => McpSourceType::Derived,
-                "manual_capture" => McpSourceType::Manual,
-                // "file_watch" and unknown values map defensively to Manual.
+                // "manual_capture", "file_watch", and unknown values map to Manual.
                 _ => McpSourceType::Manual,
             });
 
@@ -113,6 +112,7 @@ impl McpKnowledgeItem {
     /// A named constructor is needed because the domain type stores
     /// `principal_id` (a UUID) while the MCP surface requires the
     /// human-readable `principal_key`.
+    #[must_use]
     pub(crate) fn from_item_with_principal_key(item: &KnowledgeItem, principal_key: &str) -> Self {
         Self {
             id: item.id().to_string(),
@@ -123,7 +123,7 @@ impl McpKnowledgeItem {
             tags: item.tags().to_vec(),
             confidence: item.confidence(),
             source_context: McpSourceContext::from(item.source_context()),
-            episode_id: item.episode_id().map(|id| id.to_string()),
+            episode_id: item.episode_id().map(Into::into),
             capture_commit: item.capture_commit().map(String::from),
             capture_branch: item.capture_branch().map(String::from),
             created_at: item.created_at(),
@@ -159,10 +159,10 @@ impl From<&Standing> for McpStanding {
         Self {
             supporting_count: s.supporting_count(),
             contradicting_count: s.contradicting_count(),
-            superseded_by: s.superseded_by().map(|id| id.to_string()),
+            superseded_by: s.superseded_by().map(Into::into),
             observation_count: s.observation_count(),
-            newest_supporting_id: s.newest_supporting_id().map(|id| id.to_string()),
-            newest_contradicting_id: s.newest_contradicting_id().map(|id| id.to_string()),
+            newest_supporting_id: s.newest_supporting_id().map(Into::into),
+            newest_contradicting_id: s.newest_contradicting_id().map(Into::into),
             supporting_episode_count: s.supporting_episode_count(),
             supporting_project_count: s.supporting_project_count(),
         }
@@ -206,9 +206,82 @@ impl From<&Reference> for McpReference {
 
 #[cfg(test)]
 mod tests {
-    use tribal_domain::{KnowledgeItemId, ProjectId, ReferenceId, Standing};
+    use tribal_domain::{
+        EpisodeId, KnowledgeItemId, PrincipalId, ProjectId, ReferenceId, Standing,
+    };
 
     use super::*;
+
+    // -- McpKnowledgeItem -------------------------------------------------
+
+    #[test]
+    fn test_knowledge_item_from_domain_with_all_fields() {
+        let ki_id = KnowledgeItemId::new();
+        let proj_id = ProjectId::new();
+        let ep_id = EpisodeId::new();
+
+        let item = KnowledgeItem::builder()
+            .id(ki_id)
+            .project_id(proj_id)
+            .principal_id(PrincipalId::new())
+            .kind(KnowledgeKind::Fact)
+            .content("auth uses JWT".to_owned())
+            .tags(vec!["auth".to_owned()])
+            .confidence(Confidence::Verified)
+            .source_context(serde_json::json!({"type": "agent_mediated", "provider": "anthropic"}))
+            .episode_id(Some(ep_id))
+            .capture_commit(Some("abc123".to_owned()))
+            .capture_branch(Some("main".to_owned()))
+            .created_at(chrono::Utc::now())
+            .build();
+
+        let mcp = McpKnowledgeItem::from_item_with_principal_key(&item, "user:sam");
+
+        // ID prefixes
+        assert!(mcp.id.starts_with("ki_"));
+        assert_eq!(mcp.id, ki_id.to_string());
+        assert!(mcp.project_id.starts_with("proj_"));
+        assert_eq!(mcp.project_id, proj_id.to_string());
+        assert!(mcp.episode_id.as_ref().unwrap().starts_with("ep_"));
+        assert_eq!(mcp.episode_id.as_deref(), Some(ep_id.to_string().as_str()));
+
+        // principal_key is passed through, not the UUID
+        assert_eq!(mcp.principal_key, "user:sam");
+
+        // Domain fields
+        assert_eq!(mcp.kind, KnowledgeKind::Fact);
+        assert_eq!(mcp.content, "auth uses JWT");
+        assert_eq!(mcp.tags, vec!["auth"]);
+        assert_eq!(mcp.confidence, Confidence::Verified);
+
+        // Source context conversion is delegated
+        assert_eq!(mcp.source_context.source_type, McpSourceType::AgentMediated);
+        assert_eq!(mcp.source_context.provider.as_deref(), Some("anthropic"));
+
+        // Optional fields present
+        assert_eq!(mcp.capture_commit.as_deref(), Some("abc123"));
+        assert_eq!(mcp.capture_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn test_knowledge_item_from_domain_optional_fields_absent() {
+        let item = KnowledgeItem::builder()
+            .id(KnowledgeItemId::new())
+            .project_id(ProjectId::new())
+            .principal_id(PrincipalId::new())
+            .kind(KnowledgeKind::Heuristic)
+            .content("test".to_owned())
+            .confidence(Confidence::Inferred)
+            .source_context(serde_json::json!({}))
+            .created_at(chrono::Utc::now())
+            .build();
+
+        let mcp = McpKnowledgeItem::from_item_with_principal_key(&item, "user:test");
+
+        assert!(mcp.episode_id.is_none());
+        assert!(mcp.capture_commit.is_none());
+        assert!(mcp.capture_branch.is_none());
+    }
 
     // -- McpSourceContext --------------------------------------------------
 
@@ -264,12 +337,14 @@ mod tests {
     #[test]
     fn test_standing_from_domain() {
         let sup_id = KnowledgeItemId::new();
+        let con_id = KnowledgeItemId::new();
         let standing = Standing::builder()
             .supporting_count(3)
             .contradicting_count(1)
             .superseded_by(Some(KnowledgeItemId::new()))
             .observation_count(5)
             .newest_supporting_id(Some(sup_id))
+            .newest_contradicting_id(Some(con_id))
             .supporting_episode_count(2)
             .supporting_project_count(1)
             .build();
@@ -280,6 +355,16 @@ mod tests {
         assert_eq!(
             mcp.newest_supporting_id.as_deref(),
             Some(sup_id.to_string().as_str())
+        );
+        assert!(
+            mcp.newest_contradicting_id
+                .as_ref()
+                .unwrap()
+                .starts_with("ki_")
+        );
+        assert_eq!(
+            mcp.newest_contradicting_id.as_deref(),
+            Some(con_id.to_string().as_str())
         );
     }
 

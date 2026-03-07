@@ -26,6 +26,7 @@ pub(crate) struct McpDiscoverRequest {
     /// Three-way semantics: absent → use session project; explicit null →
     /// search globally; present → filter to this project.
     #[serde(default, deserialize_with = "deserialise_optional_nullable")]
+    #[allow(clippy::option_option)]
     pub(crate) project_id: Option<Option<String>>,
     pub(crate) kinds: Option<Vec<KnowledgeKind>>,
     pub(crate) tags: Option<Vec<String>>,
@@ -51,6 +52,7 @@ pub(crate) struct McpTimeRange {
 /// from null — both produce `None` for the outer option. This deserialiser
 /// is used with `#[serde(default, deserialize_with = "...")]` to preserve
 /// the distinction.
+#[allow(clippy::option_option)]
 fn deserialise_optional_nullable<'de, D, T>(deserialiser: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -151,6 +153,16 @@ mod tests {
         assert_eq!(req.project_id, Some(None));
         assert_eq!(req.kinds.as_ref().unwrap().len(), 1);
         assert_eq!(req.limit, Some(5));
+    }
+
+    #[test]
+    fn test_discover_request_deserialises_present_project_id() {
+        let json = serde_json::json!({
+            "query": "auth",
+            "project_id": "proj_abc",
+        });
+        let req: McpDiscoverRequest = serde_json::from_value(json).expect("deserialises");
+        assert_eq!(req.project_id, Some(Some("proj_abc".to_owned())));
     }
 
     #[test]

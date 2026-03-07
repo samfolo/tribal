@@ -1,6 +1,8 @@
 //! MCP request and response types for `tribal_ingest`, `tribal_feedback`,
 //! and `tribal_job_status`.
 
+use std::fmt::Write;
+
 use chrono::{DateTime, Utc};
 use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::{Deserialize, Serialize};
@@ -84,6 +86,7 @@ pub(crate) struct McpFeedbackResponse {
 
 impl McpFeedbackResponse {
     /// Creates a new feedback response.
+    #[must_use]
     pub(crate) fn new(id: RetrievalFeedbackId, rating: FeedbackRating) -> Self {
         Self {
             feedback_id: id.to_string(),
@@ -138,6 +141,7 @@ pub(crate) struct McpJobStatusResponse {
 
 impl McpJobStatusResponse {
     /// Builds a response from a domain `Job` and aggregate task counts.
+    #[must_use]
     pub(crate) fn from_domain(
         job: &Job,
         tasks_completed: u32,
@@ -164,7 +168,7 @@ impl IntoCallToolResult for McpJobStatusResponse {
     fn into_call_tool_result(self) -> CallToolResult {
         let mut text = format!("Job {}: {}", self.job_id, self.status);
         if let Some(outcome) = &self.outcome {
-            text.push_str(&format!(" ({outcome})"));
+            let _ = write!(text, " ({outcome})");
         }
 
         let structured = serde_json::to_value(&self).expect(SERIALISE_JOB_STATUS_RESPONSE);
