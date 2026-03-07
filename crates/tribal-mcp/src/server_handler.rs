@@ -193,3 +193,143 @@ impl ServerHandler for TribalServerHandler {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rmcp::handler::server::ServerHandler;
+    use tribal_domain::ProjectId;
+    use tribal_test_utils::stub_repositories::{
+        StubJobRepository, StubKnowledgeItemRepository, StubProjectRepository,
+        StubRetrievalFeedbackRepository,
+    };
+
+    use super::*;
+    use crate::session::{SESSION_RESOURCE_URI, SessionContext, SessionProject};
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn test_repositories() -> ConnectionRepositories {
+        ConnectionRepositories {
+            knowledge: Arc::new(StubKnowledgeItemRepository),
+            project: Arc::new(StubProjectRepository),
+            job: Arc::new(StubJobRepository),
+            feedback: Arc::new(StubRetrievalFeedbackRepository),
+        }
+    }
+
+    fn test_handler() -> TribalServerHandler {
+        let session = SessionContext::new(None, "user:test".into());
+        TribalServerHandler::new(test_repositories(), session)
+    }
+
+    fn test_handler_with_project() -> TribalServerHandler {
+        let project = SessionProject {
+            id: ProjectId::new(),
+            name: "tribal".into(),
+            git_remote: "git@github.com:user/tribal.git".into(),
+        };
+        let session = SessionContext::new(Some(project), "user:test".into());
+        TribalServerHandler::new(test_repositories(), session)
+    }
+
+    // -----------------------------------------------------------------------
+    // get_info tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_get_info_advertises_resources() {
+        let handler = test_handler();
+        let info = handler.get_info();
+
+        assert!(
+            info.capabilities.resources.is_some(),
+            "resources capability must be advertised",
+        );
+    }
+
+    #[test]
+    fn test_get_info_advertises_tools() {
+        let handler = test_handler();
+        let info = handler.get_info();
+
+        assert!(
+            info.capabilities.tools.is_some(),
+            "tools capability must be advertised",
+        );
+    }
+
+    #[test]
+    fn test_get_info_server_identity() {
+        let handler = test_handler();
+        let info = handler.get_info();
+        assert_eq!(info.server_info.name, SERVER_NAME);
+        assert_eq!(info.server_info.version, VERSION);
+    }
+
+    // -----------------------------------------------------------------------
+    // get_tool tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_get_tool_found() {
+        let handler = test_handler();
+        let tool = handler.get_tool("tribal_discover");
+
+        assert!(tool.is_some());
+        assert_eq!(tool.unwrap().name.as_ref(), "tribal_discover");
+    }
+
+    #[test]
+    fn test_get_tool_not_found() {
+        let handler = test_handler();
+        assert!(handler.get_tool("nonexistent").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Session state tests (direct lock access — RequestContext not available)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_session_read_resource_json() {
+        let handler = test_handler_with_project();
+        let session = handler.session.read().await;
+        let json: serde_json::Value = (&*session).into();
+
+        assert!(json["project"].is_object());
+        assert_eq!(json["principal_key"], "user:test");
+        assert_eq!(json["project"]["name"], "tribal");
+    }
+
+    #[tokio::test]
+    async fn test_session_subscribe_flag_default() {
+        let handler = test_handler();
+        let session = handler.session.read().await;
+
+        assert!(!session.subscribed);
+    }
+
+    #[tokio::test]
+    async fn test_session_subscribe_flag_toggle() {
+        let handler = test_handler();
+
+        handler.session.write().await.subscribed = true;
+        assert!(handler.session.read().await.subscribed);
+
+        handler.session.write().await.subscribed = false;
+        assert!(!handler.session.read().await.subscribed);
+    }
+
+    #[test]
+    fn test_session_resource_uri_matches() {
+        let resource = session::session_resource();
+        assert_eq!(resource.uri, SESSION_RESOURCE_URI);
+    }
+}

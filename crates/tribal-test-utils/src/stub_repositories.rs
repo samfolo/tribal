@@ -5,11 +5,12 @@
 //! trait objects in test harnesses where the repository methods are
 //! never called.
 
+use async_trait::async_trait;
 use sqlx::PgConnection;
 use tribal_db::{
-    DbError, JobRepository, JobStatusTransition, KnowledgeItemRepository, NewJob,
-    NewKnowledgeItem, NewProject, NewRetrievalFeedback, ProjectRepository,
-    RetrievalFeedbackRepository, SemanticSearchParams, SemanticSearchResponse,
+    DbError, JobRepository, JobStatusTransition, KnowledgeItemRepository, NewJob, NewKnowledgeItem,
+    NewProject, NewRetrievalFeedback, ProjectRepository, RetrievalFeedbackRepository,
+    SemanticSearchParams, SemanticSearchResponse,
 };
 use tribal_domain::{
     Job, JobId, KnowledgeItem, KnowledgeItemId, Project, ProjectId, RelationBatchId,
@@ -22,6 +23,7 @@ use tribal_domain::{
 
 pub struct StubKnowledgeItemRepository;
 
+#[async_trait]
 impl KnowledgeItemRepository for StubKnowledgeItemRepository {
     async fn insert(
         &self,
@@ -62,6 +64,7 @@ impl KnowledgeItemRepository for StubKnowledgeItemRepository {
 
 pub struct StubProjectRepository;
 
+#[async_trait]
 impl ProjectRepository for StubProjectRepository {
     async fn insert(
         &self,
@@ -98,20 +101,13 @@ impl ProjectRepository for StubProjectRepository {
 
 pub struct StubJobRepository;
 
+#[async_trait]
 impl JobRepository for StubJobRepository {
-    async fn insert(
-        &self,
-        _conn: &mut PgConnection,
-        _new_job: &NewJob,
-    ) -> Result<Job, DbError> {
+    async fn insert(&self, _conn: &mut PgConnection, _new_job: &NewJob) -> Result<Job, DbError> {
         unimplemented!()
     }
 
-    async fn find_by_id(
-        &self,
-        _conn: &mut PgConnection,
-        _id: JobId,
-    ) -> Result<Job, DbError> {
+    async fn find_by_id(&self, _conn: &mut PgConnection, _id: JobId) -> Result<Job, DbError> {
         unimplemented!()
     }
 
@@ -172,6 +168,7 @@ impl JobRepository for StubJobRepository {
 
 pub struct StubRetrievalFeedbackRepository;
 
+#[async_trait]
 impl RetrievalFeedbackRepository for StubRetrievalFeedbackRepository {
     async fn insert(
         &self,
