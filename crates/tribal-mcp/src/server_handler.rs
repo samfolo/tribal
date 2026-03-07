@@ -15,11 +15,10 @@ use tribal_db::{
     JobRepository, KnowledgeItemRepository, ProjectRepository, RetrievalFeedbackRepository,
 };
 
-use crate::session::{self, SessionContext, SESSION_RESOURCE_URI};
-
 use crate::{
     auth::AuthContext,
     error::method_not_found,
+    session::{self, SESSION_RESOURCE_URI, SessionContext},
     tools::{PARSED_TOOLS, to_tool},
 };
 
@@ -130,12 +129,11 @@ impl ServerHandler for TribalServerHandler {
             (&*session).into()
         };
 
-        let text = serde_json::to_string(&json)
-            .expect("session context serialisation must not fail");
+        let text =
+            serde_json::to_string(&json).expect("session context serialisation must not fail");
 
         Ok(ReadResourceResult::new(vec![
-            ResourceContents::text(text, SESSION_RESOURCE_URI)
-                .with_mime_type("application/json"),
+            ResourceContents::text(text, SESSION_RESOURCE_URI).with_mime_type("application/json"),
         ]))
     }
 

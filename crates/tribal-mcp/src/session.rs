@@ -1,7 +1,7 @@
-use rmcp::model::{
-    AnnotateAble, RawResource, Resource, ResourceUpdatedNotificationParam,
+use rmcp::{
+    model::{AnnotateAble, RawResource, Resource, ResourceUpdatedNotificationParam},
+    service::{Peer, RoleServer},
 };
-use rmcp::service::{Peer, RoleServer};
 use tokio::sync::RwLock;
 use tribal_domain::ProjectId;
 
@@ -86,9 +86,7 @@ impl SessionContext {
 #[must_use]
 pub(crate) fn session_resource() -> Resource {
     RawResource::new(SESSION_RESOURCE_URI, "session_context")
-        .with_description(
-            "Current session context: active project, principal, and agent identity",
-        )
+        .with_description("Current session context: active project, principal, and agent identity")
         .with_mime_type("application/json")
         .no_annotation()
 }
@@ -107,9 +105,7 @@ pub(crate) async fn notify_session_updated(
     let subscribed = { session.read().await.subscribed };
     if subscribed {
         let _ = peer
-            .notify_resource_updated(ResourceUpdatedNotificationParam::new(
-                SESSION_RESOURCE_URI,
-            ))
+            .notify_resource_updated(ResourceUpdatedNotificationParam::new(SESSION_RESOURCE_URI))
             .await;
     }
 }
