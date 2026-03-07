@@ -71,6 +71,49 @@ impl TribalServerHandler {
             session: Arc::new(RwLock::new(session)),
         }
     }
+
+    fn list_resources_inner() -> ListResourcesResult {
+        ListResourcesResult {
+            resources: vec![session::session_resource()],
+            ..Default::default()
+        }
+    }
+
+    async fn read_resource_inner(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
+        if uri != SESSION_RESOURCE_URI {
+            return Err(McpError::invalid_params("unknown resource URI", None));
+        }
+
+        let json: serde_json::Value = {
+            let session = self.session.read().await;
+            (&*session).into()
+        };
+
+        let text =
+            serde_json::to_string(&json).expect("session context serialisation must not fail");
+
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(text, SESSION_RESOURCE_URI).with_mime_type("application/json"),
+        ]))
+    }
+
+    async fn subscribe_inner(&self, uri: &str) -> Result<(), McpError> {
+        if uri != SESSION_RESOURCE_URI {
+            return Err(McpError::invalid_params("unknown resource URI", None));
+        }
+
+        self.session.write().await.subscribed = true;
+        Ok(())
+    }
+
+    async fn unsubscribe_inner(&self, uri: &str) -> Result<(), McpError> {
+        if uri != SESSION_RESOURCE_URI {
+            return Err(McpError::invalid_params("unknown resource URI", None));
+        }
+
+        self.session.write().await.subscribed = false;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -109,10 +152,7 @@ impl ServerHandler for TribalServerHandler {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send + '_ {
-        std::future::ready(Ok(ListResourcesResult {
-            resources: vec![session::session_resource()],
-            ..Default::default()
-        }))
+        std::future::ready(Ok(Self::list_resources_inner()))
     }
 
     async fn read_resource(
@@ -120,21 +160,7 @@ impl ServerHandler for TribalServerHandler {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
-        if request.uri != SESSION_RESOURCE_URI {
-            return Err(McpError::invalid_params("unknown resource URI", None));
-        }
-
-        let json: serde_json::Value = {
-            let session = self.session.read().await;
-            (&*session).into()
-        };
-
-        let text =
-            serde_json::to_string(&json).expect("session context serialisation must not fail");
-
-        Ok(ReadResourceResult::new(vec![
-            ResourceContents::text(text, SESSION_RESOURCE_URI).with_mime_type("application/json"),
-        ]))
+        self.read_resource_inner(&request.uri).await
     }
 
     async fn subscribe(
@@ -142,12 +168,7 @@ impl ServerHandler for TribalServerHandler {
         request: SubscribeRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        if request.uri != SESSION_RESOURCE_URI {
-            return Err(McpError::invalid_params("unknown resource URI", None));
-        }
-
-        self.session.write().await.subscribed = true;
-        Ok(())
+        self.subscribe_inner(&request.uri).await
     }
 
     async fn unsubscribe(
@@ -155,12 +176,7 @@ impl ServerHandler for TribalServerHandler {
         request: UnsubscribeRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        if request.uri != SESSION_RESOURCE_URI {
-            return Err(McpError::invalid_params("unknown resource URI", None));
-        }
-
-        self.session.write().await.subscribed = false;
-        Ok(())
+        self.unsubscribe_inner(&request.uri).await
     }
 
     async fn call_tool(
@@ -202,7 +218,10 @@ impl ServerHandler for TribalServerHandler {
 mod tests {
     use std::sync::Arc;
 
-    use rmcp::handler::server::ServerHandler;
+    use rmcp::{
+        handler::server::ServerHandler,
+        model::{ErrorCode, ResourceContents},
+    };
     use tribal_domain::ProjectId;
     use tribal_test_utils::stub_repositories::{
         StubJobRepository, StubKnowledgeItemRepository, StubProjectRepository,
@@ -256,6 +275,19 @@ mod tests {
     }
 
     #[test]
+    fn test_get_info_advertises_resource_subscription() {
+        let handler = test_handler();
+        let info = handler.get_info();
+        let resources = info.capabilities.resources.expect("resources must be set");
+
+        assert_eq!(
+            resources.subscribe,
+            Some(true),
+            "resource subscription capability must be advertised",
+        );
+    }
+
+    #[test]
     fn test_get_info_advertises_tools() {
         let handler = test_handler();
         let info = handler.get_info();
@@ -270,6 +302,7 @@ mod tests {
     fn test_get_info_server_identity() {
         let handler = test_handler();
         let info = handler.get_info();
+
         assert_eq!(info.server_info.name, SERVER_NAME);
         assert_eq!(info.server_info.version, VERSION);
     }
@@ -294,14 +327,45 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Session state tests (direct lock access — RequestContext not available)
+    // list_resources tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_resources_returns_session() {
+        let result = TribalServerHandler::list_resources_inner();
+
+        assert_eq!(result.resources.len(), 1);
+        let resource = &result.resources[0];
+        assert_eq!(resource.uri, SESSION_RESOURCE_URI);
+        assert_eq!(resource.name, "session_context");
+        assert_eq!(resource.mime_type.as_deref(), Some("application/json"));
+    }
+
+    // -----------------------------------------------------------------------
+    // read_resource tests
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_session_read_resource_json() {
+    async fn test_read_resource_success() {
         let handler = test_handler_with_project();
-        let session = handler.session.read().await;
-        let json: serde_json::Value = (&*session).into();
+        let result = handler
+            .read_resource_inner(SESSION_RESOURCE_URI)
+            .await
+            .expect("read_resource must succeed for known URI");
+
+        assert_eq!(result.contents.len(), 1);
+
+        let ResourceContents::TextResourceContents {
+            mime_type, text, ..
+        } = &result.contents[0]
+        else {
+            panic!("expected text resource content");
+        };
+
+        assert_eq!(mime_type.as_deref(), Some("application/json"));
+
+        let json: serde_json::Value =
+            serde_json::from_str(text).expect("content must be valid JSON");
 
         assert!(json["project"].is_object());
         assert_eq!(json["principal_key"], "user:test");
@@ -309,27 +373,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_subscribe_flag_default() {
+    async fn test_read_resource_unknown_uri() {
         let handler = test_handler();
-        let session = handler.session.read().await;
+        let err = handler
+            .read_resource_inner("tribal://unknown")
+            .await
+            .expect_err("unknown URI must return error");
 
-        assert!(!session.subscribed);
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    // -----------------------------------------------------------------------
+    // subscribe tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_subscribe_success() {
+        let handler = test_handler();
+        assert!(!handler.session.read().await.subscribed);
+
+        handler
+            .subscribe_inner(SESSION_RESOURCE_URI)
+            .await
+            .expect("subscribe must succeed for known URI");
+
+        assert!(handler.session.read().await.subscribed);
     }
 
     #[tokio::test]
-    async fn test_session_subscribe_flag_toggle() {
+    async fn test_subscribe_unknown_uri() {
         let handler = test_handler();
+        let err = handler
+            .subscribe_inner("tribal://unknown")
+            .await
+            .expect_err("unknown URI must return error");
 
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    // -----------------------------------------------------------------------
+    // unsubscribe tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_unsubscribe_success() {
+        let handler = test_handler();
         handler.session.write().await.subscribed = true;
-        assert!(handler.session.read().await.subscribed);
 
-        handler.session.write().await.subscribed = false;
+        handler
+            .unsubscribe_inner(SESSION_RESOURCE_URI)
+            .await
+            .expect("unsubscribe must succeed for known URI");
+
         assert!(!handler.session.read().await.subscribed);
     }
 
-    #[test]
-    fn test_session_resource_uri_matches() {
-        let resource = session::session_resource();
-        assert_eq!(resource.uri, SESSION_RESOURCE_URI);
+    #[tokio::test]
+    async fn test_unsubscribe_unknown_uri() {
+        let handler = test_handler();
+        let err = handler
+            .unsubscribe_inner("tribal://unknown")
+            .await
+            .expect_err("unknown URI must return error");
+
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 }
