@@ -10,5 +10,6 @@ mod inference;
 mod repositories;
 
 pub use core::{ExhaustBehaviour, MockProviderOptions};
+
 pub use inference::*;
 pub use repositories::*;
