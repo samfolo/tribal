@@ -53,6 +53,14 @@ pub use retrieval_feedback::MockRetrievalFeedbackRepository;
 /// 1. `method_name(Req => Resp)` — dispatch core type parameters
 /// 2. `(param: type, ...)` — trait method domain params (conn is implicit)
 /// 3. `{ expr }` — conversion from params to the `Req` type
+///
+/// # Note on fully-qualified paths
+///
+/// The macro body uses `crate::` paths (e.g.
+/// `crate::mock::async_dispatch::core::MockAsyncDispatchCore`) because
+/// `macro_rules!` expansions resolve paths at the **call site**, not the
+/// definition site.  Top-level `use` imports at the macro definition
+/// would not be visible at expansion time.
 macro_rules! mock_repository {
     (
         $MockName:ident for $Trait:ident {
