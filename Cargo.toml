@@ -81,6 +81,9 @@ rmcp = { version = "1", features = ["macros", "server", "transport-io", "transpo
 # Async futures utilities
 futures = "0.3"
 
+# Macro utilities
+paste = "1"
+
 # Testing
 tempfile = "3"
 testcontainers = "0.27"
