@@ -51,9 +51,7 @@ pub(crate) struct McpTimeRange {
 /// from null — both produce `None` for the outer option. This deserialiser
 /// is used with `#[serde(default, deserialize_with = "...")]` to preserve
 /// the distinction.
-fn deserialise_optional_nullable<'de, D, T>(
-    deserialiser: D,
-) -> Result<Option<Option<T>>, D::Error>
+fn deserialise_optional_nullable<'de, D, T>(deserialiser: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -127,8 +125,7 @@ mod tests {
     #[test]
     fn test_discover_request_deserialises_minimal() {
         let json = serde_json::json!({"query": "authentication patterns"});
-        let req: McpDiscoverRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpDiscoverRequest = serde_json::from_value(json).expect("deserialises");
         assert_eq!(req.query, "authentication patterns");
         // project_id absent → outer None
         assert!(req.project_id.is_none());
@@ -149,8 +146,7 @@ mod tests {
             "limit": 5,
             "cursor": "abc"
         });
-        let req: McpDiscoverRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpDiscoverRequest = serde_json::from_value(json).expect("deserialises");
         // project_id is explicit null → Some(None)
         assert_eq!(req.project_id, Some(None));
         assert_eq!(req.kinds.as_ref().unwrap().len(), 1);
@@ -189,7 +185,7 @@ mod tests {
             exact: true,
         };
         let result = resp.into_call_tool_result();
-        assert!(result.is_error.is_none());
+        assert_eq!(result.is_error, Some(false));
         assert_eq!(result.content.len(), 1);
         assert!(result.structured_content.is_some());
     }

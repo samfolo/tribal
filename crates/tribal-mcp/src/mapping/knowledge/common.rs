@@ -6,9 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use tribal_domain::{
-    Confidence, KnowledgeItem, KnowledgeKind, Reference, ReferenceKind, Standing,
-};
+use tribal_domain::{Confidence, KnowledgeItem, KnowledgeKind, Reference, ReferenceKind, Standing};
 
 // ---------------------------------------------------------------------------
 // McpSourceType
@@ -115,10 +113,7 @@ impl McpKnowledgeItem {
     /// A named constructor is needed because the domain type stores
     /// `principal_id` (a UUID) while the MCP surface requires the
     /// human-readable `principal_key`.
-    pub(crate) fn from_item_with_principal_key(
-        item: &KnowledgeItem,
-        principal_key: &str,
-    ) -> Self {
+    pub(crate) fn from_item_with_principal_key(item: &KnowledgeItem, principal_key: &str) -> Self {
         Self {
             id: item.id().to_string(),
             project_id: item.project_id().to_string(),
@@ -211,8 +206,9 @@ impl From<&Reference> for McpReference {
 
 #[cfg(test)]
 mod tests {
+    use tribal_domain::{KnowledgeItemId, ProjectId, ReferenceId, Standing};
+
     use super::*;
-    use tribal_domain::{KnowledgeItemId, ReferenceId, StandingBuilder};
 
     // -- McpSourceContext --------------------------------------------------
 
@@ -268,7 +264,7 @@ mod tests {
     #[test]
     fn test_standing_from_domain() {
         let sup_id = KnowledgeItemId::new();
-        let standing = StandingBuilder::default()
+        let standing = Standing::builder()
             .supporting_count(3)
             .contradicting_count(1)
             .superseded_by(Some(KnowledgeItemId::new()))
@@ -289,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_standing_optional_ids_omitted_when_absent() {
-        let standing = StandingBuilder::default()
+        let standing = Standing::builder()
             .supporting_count(0)
             .contradicting_count(0)
             .observation_count(0)
@@ -299,14 +295,18 @@ mod tests {
         let mcp = McpStanding::from(&standing);
         let json = serde_json::to_value(&mcp).expect("serialises");
         assert!(!json.as_object().unwrap().contains_key("superseded_by"));
-        assert!(!json
-            .as_object()
-            .unwrap()
-            .contains_key("newest_supporting_id"));
-        assert!(!json
-            .as_object()
-            .unwrap()
-            .contains_key("newest_contradicting_id"));
+        assert!(
+            !json
+                .as_object()
+                .unwrap()
+                .contains_key("newest_supporting_id")
+        );
+        assert!(
+            !json
+                .as_object()
+                .unwrap()
+                .contains_key("newest_contradicting_id")
+        );
     }
 
     // -- McpReference -----------------------------------------------------
@@ -319,7 +319,7 @@ mod tests {
             .kind(ReferenceKind::FilePath)
             .value("//src/auth.rs".to_owned())
             .description(Some("Auth middleware".to_owned()))
-            .project_id(tribal_domain::ProjectId::new())
+            .project_id(ProjectId::new())
             .commit(Some("abc123".to_owned()))
             .build();
 

@@ -3629,12 +3629,14 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tribal-db",
  "tribal-domain",
  "tribal-test-utils",
+ "uuid",
 ]
 
 [[package]]

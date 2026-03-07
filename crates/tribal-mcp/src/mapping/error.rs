@@ -16,10 +16,9 @@ use crate::error::{IntoMcpError, McpToolError};
 impl IntoMcpError for DbError {
     fn into_mcp_error(self) -> McpToolError {
         let (code, message) = match &self {
-            DbError::NotFound { entity, id } => (
-                McpErrorCode::NotFound,
-                format!("{entity} not found: {id}"),
-            ),
+            DbError::NotFound { entity, id } => {
+                (McpErrorCode::NotFound, format!("{entity} not found: {id}"))
+            }
             DbError::InvalidCursor { detail } => (
                 McpErrorCode::InvalidArgument,
                 format!("invalid cursor: {detail}"),
@@ -37,9 +36,7 @@ impl IntoMcpError for DbError {
             DbError::QueryFailed { context, .. } => {
                 (McpErrorCode::Internal, format!("query failed: {context}"))
             }
-            DbError::Migration { .. } => {
-                (McpErrorCode::Internal, "migration failed".to_owned())
-            }
+            DbError::Migration { .. } => (McpErrorCode::Internal, "migration failed".to_owned()),
         };
 
         McpToolError {
