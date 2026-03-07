@@ -1,5 +1,7 @@
 //! MCP request and response types for `tribal_explore`.
 
+use std::fmt::Write;
+
 use chrono::{DateTime, Utc};
 use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::{Deserialize, Serialize};
@@ -95,10 +97,11 @@ impl IntoCallToolResult for McpExploreResponse {
             if result.relation_type == RelationKind::Supersedes
                 && result.relation_direction == McpRelationDirection::Inbound
             {
-                text.push_str(&format!(
+                let _ = write!(
+                    text,
                     "\nThis item has been superseded by {} (newer understanding)",
                     result.item.id,
-                ));
+                );
                 break;
             }
         }
@@ -118,10 +121,12 @@ impl IntoCallToolResult for McpExploreResponse {
 mod tests {
     use tribal_domain::{ProjectId, Standing};
 
-    use super::*;
+    use super::{
+        super::common::{McpSourceContext, McpSourceType},
+        *,
+    };
 
     fn sample_item(id: &str) -> McpKnowledgeItem {
-        use super::super::common::{McpSourceContext, McpSourceType};
         McpKnowledgeItem {
             id: id.to_owned(),
             project_id: ProjectId::new().to_string(),
@@ -191,6 +196,36 @@ mod tests {
         let json = serde_json::to_value(&resp).expect("serialises");
         assert!(json.get("anchor_standing").is_some());
         assert!(json["anchor_standing"].is_object());
+    }
+
+    #[test]
+    fn test_explore_response_into_call_tool_result_without_supersession() {
+        let resp = McpExploreResponse {
+            anchor: sample_item("ki_anchor"),
+            anchor_standing: sample_standing(),
+            related_items: vec![McpExplorationResult {
+                item: sample_item("ki_related"),
+                relation_type: RelationKind::Supports,
+                relation_direction: McpRelationDirection::Inbound,
+                depth: 1,
+                relation_created_at: chrono::Utc::now(),
+                standing: None,
+                references: None,
+            }],
+            trace_id: "t1".into(),
+            exact: true,
+        };
+        let result = resp.into_call_tool_result();
+        assert_eq!(result.is_error, Some(false));
+        assert!(result.structured_content.is_some());
+
+        let RawContent::Text(t) = &result.content[0].raw else {
+            panic!("expected text content");
+        };
+        let text = &t.text;
+        assert!(text.contains("ki_anchor"));
+        assert!(text.contains("1 related item(s)"));
+        assert!(!text.contains("superseded"));
     }
 
     #[test]
