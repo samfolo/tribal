@@ -3633,6 +3633,7 @@ dependencies = [
  "tracing",
  "tribal-db",
  "tribal-domain",
+ "tribal-test-utils",
 ]
 
 [[package]]
