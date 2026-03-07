@@ -32,8 +32,8 @@ pub(crate) struct ParsedToolEntry {
     pub(crate) name: &'static str,
     pub(crate) title: &'static str,
     pub(crate) description: &'static str,
-    pub(crate) input_schema: Value,
-    pub(crate) output_schema: Value,
+    pub(crate) input_schema: Arc<Map<String, Value>>,
+    pub(crate) output_schema: Arc<Map<String, Value>>,
     pub(crate) required_scope: &'static str,
 }
 
@@ -243,8 +243,8 @@ pub(crate) static PARSED_TOOLS: LazyLock<Vec<ParsedToolEntry>> = LazyLock::new(|
             name: t.name,
             title: t.title,
             description: t.description,
-            input_schema: serde_json::from_str(t.input_schema).expect(INPUT_SCHEMA_PARSE_FAILED),
-            output_schema: serde_json::from_str(t.output_schema).expect(OUTPUT_SCHEMA_PARSE_FAILED),
+            input_schema: parse_schema_object(t.input_schema, INPUT_SCHEMA_PARSE_FAILED),
+            output_schema: parse_schema_object(t.output_schema, OUTPUT_SCHEMA_PARSE_FAILED),
             required_scope: t.required_scope,
         })
         .collect()
@@ -254,7 +254,8 @@ pub(crate) static PARSED_TOOLS: LazyLock<Vec<ParsedToolEntry>> = LazyLock::new(|
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn to_json_object(value: &Value) -> Arc<Map<String, Value>> {
+fn parse_schema_object(json: &str, expect_msg: &str) -> Arc<Map<String, Value>> {
+    let value: Value = serde_json::from_str(json).expect(expect_msg);
     Arc::new(value.as_object().expect(SCHEMA_MUST_BE_OBJECT).clone())
 }
 
@@ -262,10 +263,10 @@ pub(crate) fn to_tool(entry: &ParsedToolEntry) -> Tool {
     Tool::new(
         entry.name,
         entry.description,
-        to_json_object(&entry.input_schema),
+        Arc::clone(&entry.input_schema),
     )
     .with_title(entry.title)
-    .with_raw_output_schema(to_json_object(&entry.output_schema))
+    .with_raw_output_schema(Arc::clone(&entry.output_schema))
 }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +390,8 @@ mod tests {
                     "name": t.name,
                     "title": t.title,
                     "description": t.description,
-                    "input_schema": t.input_schema,
-                    "output_schema": t.output_schema,
+                    "input_schema": t.input_schema.as_ref(),
+                    "output_schema": t.output_schema.as_ref(),
                     "required_scope": t.required_scope,
                 })
             })

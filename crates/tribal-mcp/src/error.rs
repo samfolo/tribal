@@ -45,11 +45,9 @@ pub trait IntoCallToolResult {
 impl IntoCallToolResult for McpToolError {
     fn into_call_tool_result(self) -> CallToolResult {
         let structured = serde_json::json!({
-            "error": {
-                "code": self.code,
-                "message": self.message,
-                "details": self.details,
-            }
+            "code": self.code,
+            "message": self.message,
+            "details": self.details,
         });
 
         let mut result = CallToolResult::error(vec![Content::text(&self.message)]);
@@ -126,11 +124,8 @@ mod tests {
         let structured = result
             .structured_content
             .expect("structured_content is present");
-        assert_eq!(structured["error"]["code"], "not_found");
-        assert_eq!(
-            structured["error"]["message"],
-            "No job found with ID job_abc"
-        );
+        assert_eq!(structured["code"], "not_found");
+        assert_eq!(structured["message"], "No job found with ID job_abc");
     }
 
     #[test]

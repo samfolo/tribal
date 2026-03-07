@@ -103,10 +103,10 @@ impl ServerHandler for TribalServerHandler {
         let auth = AuthContext::from_context(&context);
         auth.require_scope(entry.required_scope)?;
 
-        let params = request
-            .arguments
-            .map(serde_json::Value::Object)
-            .unwrap_or_default();
+        let params = request.arguments.map_or_else(
+            || serde_json::Value::Object(serde_json::Map::default()),
+            serde_json::Value::Object,
+        );
 
         match entry.name {
             "tribal_set_context" => self.handle_set_context(params, context).await,
