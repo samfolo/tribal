@@ -223,9 +223,9 @@ mod tests {
         model::{ErrorCode, ResourceContents},
     };
     use tribal_domain::ProjectId;
-    use tribal_test_utils::stub_repositories::{
-        StubJobRepository, StubKnowledgeItemRepository, StubProjectRepository,
-        StubRetrievalFeedbackRepository,
+    use tribal_test_utils::{
+        MockJobRepository, MockKnowledgeItemRepository, MockProjectRepository,
+        MockRetrievalFeedbackRepository,
     };
 
     use super::*;
@@ -237,10 +237,10 @@ mod tests {
 
     fn test_repositories() -> ConnectionRepositories {
         ConnectionRepositories {
-            knowledge: Arc::new(StubKnowledgeItemRepository),
-            project: Arc::new(StubProjectRepository),
-            job: Arc::new(StubJobRepository),
-            feedback: Arc::new(StubRetrievalFeedbackRepository),
+            knowledge: Arc::new(MockKnowledgeItemRepository::builder().build()),
+            project: Arc::new(MockProjectRepository::builder().build()),
+            job: Arc::new(MockJobRepository::builder().build()),
+            feedback: Arc::new(MockRetrievalFeedbackRepository::builder().build()),
         }
     }
 

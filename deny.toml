@@ -22,6 +22,4 @@ allow-wildcard-paths = true
 
 [advisories]
 unmaintained = "workspace"
-ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "Pulled in transitively via sqlx-macros-core -> sqlx-mysql for compile-time query checking. We only use postgres; this dependency is not part of our runtime artifacts." },
-]
+ignore = []

@@ -17,7 +17,7 @@ use crate::DbError;
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING *`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewPrincipal {
     /// Human-readable key (e.g. `"user:sam"`, `"principal:local"`).
     pub principal_key: String,

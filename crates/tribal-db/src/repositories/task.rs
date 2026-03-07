@@ -70,7 +70,7 @@ pub struct ReclaimOutcome {
 /// (`id`, `status`, `available_at`, `created_at`, `updated_at`) are
 /// produced by Postgres via `DEFAULT` clauses and returned via
 /// `RETURNING {COLUMNS}`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewTask {
     /// The job this task belongs to.
     pub job_id: JobId,

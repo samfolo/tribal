@@ -38,7 +38,7 @@ const NEGATIVE_DEPTH_IN_CTE: &str = "negative depth in CTE — logic error";
 /// Used by [`RelationRepository::batch_insert`] which inserts multiple
 /// relations sharing a `relation_batch_id`.  Server-generated values
 /// (`id`, `created_at`) are produced by Postgres.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewKnowledgeItemRelation {
     /// Groups relations from one relation task attempt.
     pub relation_batch_id: RelationBatchId,

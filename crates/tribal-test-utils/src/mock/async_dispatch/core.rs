@@ -1,88 +1,54 @@
-//! Generic dispatch core shared by both mock providers.
+//! Generic dispatch core shared by mock providers and mock repositories.
 //!
-//! [`MockProviderCore`] handles sequential queue management, conditional
+//! [`MockAsyncDispatchCore`] handles sequential queue management, conditional
 //! matching, call history recording, exhaustion behaviour, and diagnostic
-//! tracing. It is generic over request and response types but hardcoded
-//! to [`InferenceError`].
+//! tracing.  It is generic over request, response, **and** error types —
+//! no domain-specific imports live here.
 
-use std::{collections::VecDeque, fmt, sync::Mutex, time::Duration};
+use std::{collections::VecDeque, fmt, sync::Mutex};
 
 use tracing::debug;
-use tribal_inference::{CompletionRequest, EmbeddingRequest, InferenceError};
 
-use super::responses::ErrorFactory;
 use crate::text::truncate;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-pub(crate) const MUTEX_POISONED: &str = "mock provider mutex poisoned";
+pub(crate) const MUTEX_POISONED: &str = "mock dispatch mutex poisoned";
 
 // ---------------------------------------------------------------------------
 // MockProviderOptions
 // ---------------------------------------------------------------------------
 
-/// Per-response options for mock provider entries.
+/// Per-response options for mock dispatch entries.
 #[derive(Debug, Clone, Default)]
 pub struct MockProviderOptions {
     /// Delay applied before returning the response.
-    pub delay: Option<Duration>,
+    pub delay: Option<std::time::Duration>,
 }
 
 // ---------------------------------------------------------------------------
-// MockRequest trait
+// ErrorFactory
 // ---------------------------------------------------------------------------
 
-/// Extracts diagnostic information from request types for panic messages
-/// and tracing.
-pub(crate) trait MockRequest: Clone + Send + Sync + fmt::Debug {
-    /// The label for the context field shown in panic messages
-    /// (`"system"` for completions, `"input"` for embeddings).
-    fn context_label(&self) -> &'static str;
-
-    /// The first 80 characters of the relevant context field, with
-    /// `"..."` appended if truncated.
-    fn context_preview(&self) -> String;
-}
-
-impl MockRequest for CompletionRequest {
-    fn context_label(&self) -> &'static str {
-        "system"
-    }
-
-    fn context_preview(&self) -> String {
-        match &self.system {
-            Some(s) => truncate(s, 80),
-            None => "<none>".to_owned(),
-        }
-    }
-}
-
-impl MockRequest for EmbeddingRequest {
-    fn context_label(&self) -> &'static str {
-        "input"
-    }
-
-    fn context_preview(&self) -> String {
-        truncate(&self.input, 80)
-    }
-}
+/// A boxed closure that produces a fresh error on each invocation.
+pub type ErrorFactory<E> = Box<dyn Fn() -> E + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // ExhaustBehaviour
 // ---------------------------------------------------------------------------
 
 /// Controls what happens when the sequential response queue is drained.
-pub enum ExhaustBehaviour {
+pub enum ExhaustBehaviour<E> {
     /// Panic with diagnostic context (default).
     Panic,
     /// Clone and return the last successful sequential response
-    /// indefinitely. Panics if no prior successful sequential response
+    /// indefinitely.  Panics if no prior successful sequential response
     /// exists.
     RepeatLast,
     /// Invoke the error factory on each subsequent call.
-    Error(ErrorFactory),
+    Error(ErrorFactory<E>),
 }
 
 // ---------------------------------------------------------------------------
@@ -90,56 +56,66 @@ pub enum ExhaustBehaviour {
 // ---------------------------------------------------------------------------
 
 /// A single entry in the sequential response queue.
-pub(crate) enum QueueEntry<Resp> {
-    Ok(Resp, Option<Duration>),
-    Err(ErrorFactory, Option<Duration>),
+pub(crate) enum QueueEntry<Resp, Err> {
+    Ok(Resp, Option<std::time::Duration>),
+    Err(ErrorFactory<Err>, Option<std::time::Duration>),
 }
 
 /// The outcome of a conditional match.
-pub(crate) enum ConditionalOutcome<Resp> {
-    Ok(Resp, Option<Duration>),
-    Err(ErrorFactory, Option<Duration>),
+pub(crate) enum ConditionalOutcome<Resp, Err> {
+    Ok(Resp, Option<std::time::Duration>),
+    Err(ErrorFactory<Err>, Option<std::time::Duration>),
 }
 
 /// A conditional entry: a predicate paired with a response or error.
-pub(crate) struct ConditionalEntry<Req, Resp> {
+pub(crate) struct ConditionalEntry<Req, Resp, Err> {
     pub matcher: Box<dyn Fn(&Req) -> bool + Send + Sync>,
-    pub outcome: ConditionalOutcome<Resp>,
+    pub outcome: ConditionalOutcome<Resp, Err>,
 }
 
 // ---------------------------------------------------------------------------
 // Core state
 // ---------------------------------------------------------------------------
 
-struct CoreState<Req, Resp> {
-    queue: VecDeque<QueueEntry<Resp>>,
+struct CoreState<Req, Resp, Err> {
+    queue: VecDeque<QueueEntry<Resp, Err>>,
     last_ok_response: Option<Resp>,
     history: Vec<Req>,
     sequential_count: usize,
 }
 
 // ---------------------------------------------------------------------------
-// MockProviderCore
+// MockAsyncDispatchCore
 // ---------------------------------------------------------------------------
 
-/// Generic dispatch core for mock providers.
+/// Generic dispatch core for mock providers and repositories.
 ///
 /// Handles sequential queue management, conditional matching, call
 /// history recording, exhaustion behaviour, and diagnostic tracing.
-pub(crate) struct MockProviderCore<Req: MockRequest, Resp: Clone + Send + Sync> {
-    conditionals: Vec<ConditionalEntry<Req, Resp>>,
-    exhaust_behaviour: ExhaustBehaviour,
+pub(crate) struct MockAsyncDispatchCore<Req, Resp, Err>
+where
+    Req: Clone + Send + Sync + fmt::Debug,
+    Resp: Clone + Send + Sync,
+    Err: fmt::Debug,
+{
+    conditionals: Vec<ConditionalEntry<Req, Resp, Err>>,
+    exhaust_behaviour: ExhaustBehaviour<Err>,
     provider_name: &'static str,
-    state: Mutex<CoreState<Req, Resp>>,
+    state: Mutex<CoreState<Req, Resp, Err>>,
 }
 
-impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
+impl<Req, Resp, Err> MockAsyncDispatchCore<Req, Resp, Err>
+where
+    Req: Clone + Send + Sync + fmt::Debug,
+    Resp: Clone + Send + Sync,
+    Err: fmt::Debug,
+{
     /// Creates a new core with the given configuration.
     pub fn new(
         provider_name: &'static str,
-        queue: VecDeque<QueueEntry<Resp>>,
-        conditionals: Vec<ConditionalEntry<Req, Resp>>,
-        exhaust_behaviour: ExhaustBehaviour,
+        queue: VecDeque<QueueEntry<Resp, Err>>,
+        conditionals: Vec<ConditionalEntry<Req, Resp, Err>>,
+        exhaust_behaviour: ExhaustBehaviour<Err>,
     ) -> Self {
         let sequential_count = queue.len();
         Self {
@@ -161,7 +137,7 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
     /// Returns the result alongside an optional delay that the caller
     /// should apply (via `tokio::time::sleep`) before returning the
     /// response.
-    pub fn dispatch(&self, request: &Req) -> (Result<Resp, InferenceError>, Option<Duration>) {
+    pub fn dispatch(&self, request: &Req) -> (Result<Resp, Err>, Option<std::time::Duration>) {
         let mut state = self.state.lock().expect(MUTEX_POISONED);
 
         state.history.push(request.clone());
@@ -255,12 +231,13 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
 
     fn handle_exhaustion(
         &self,
-        state: &mut CoreState<Req, Resp>,
+        state: &mut CoreState<Req, Resp, Err>,
         request: &Req,
         call_number: usize,
-    ) -> Result<Resp, InferenceError> {
+    ) -> Result<Resp, Err> {
         let consumed = state.sequential_count;
         let conditionals_count = self.conditionals.len();
+        let request_preview = truncate(&format!("{request:?}"), 80);
 
         match &self.exhaust_behaviour {
             ExhaustBehaviour::Panic => {
@@ -268,13 +245,12 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                     "{name}: sequential queue exhausted\n  \
                      sequential: {consumed} of {total} consumed, 0 remaining\n  \
                      conditionals: {conds} registered\n  \
-                     call #{call}: {label}=\"{preview}\"",
+                     call #{call}: request={preview}",
                     name = self.provider_name,
                     total = consumed,
                     conds = conditionals_count,
                     call = call_number,
-                    label = request.context_label(),
-                    preview = request.context_preview(),
+                    preview = request_preview,
                 );
             }
             ExhaustBehaviour::RepeatLast => {
@@ -284,13 +260,12 @@ impl<Req: MockRequest, Resp: Clone + Send + Sync> MockProviderCore<Req, Resp> {
                          sequential response exists\n  \
                          sequential: {consumed} of {total} consumed\n  \
                          conditionals: {conds} registered\n  \
-                         call #{call}: {label}=\"{preview}\"",
+                         call #{call}: request={preview}",
                         name = self.provider_name,
                         total = consumed,
                         conds = conditionals_count,
                         call = call_number,
-                        label = request.context_label(),
-                        preview = request.context_preview(),
+                        preview = request_preview,
                     );
                 });
                 debug!(

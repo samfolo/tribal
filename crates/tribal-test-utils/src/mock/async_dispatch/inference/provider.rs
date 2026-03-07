@@ -13,12 +13,10 @@ use tribal_inference::{
     InferenceError, InferenceProvider, ProviderIdentity,
 };
 
-use super::{
-    core::{
-        ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED, MockProviderCore,
-        MockProviderOptions, QueueEntry,
-    },
-    matcher::{CompletionMatcher, EmbeddingMatcher},
+use super::matcher::{CompletionMatcher, EmbeddingMatcher};
+use crate::mock::async_dispatch::core::{
+    ConditionalEntry, ConditionalOutcome, ExhaustBehaviour, MUTEX_POISONED, MockAsyncDispatchCore,
+    MockProviderOptions, QueueEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -46,7 +44,7 @@ struct EmbeddingUsageAccumulator {
 /// responses from a sequential queue with optional conditional matching,
 /// error injection, call history capture, and usage accounting.
 pub struct MockInferenceProvider {
-    core: MockProviderCore<CompletionRequest, CompletionResponse>,
+    core: MockAsyncDispatchCore<CompletionRequest, CompletionResponse, InferenceError>,
     usage: Mutex<CompletionUsageAccumulator>,
     identity: ProviderIdentity,
 }
@@ -133,9 +131,9 @@ impl InferenceProvider for MockInferenceProvider {
 /// Fluent builder for [`MockInferenceProvider`].
 #[must_use]
 pub struct MockInferenceProviderBuilder {
-    queue: VecDeque<QueueEntry<CompletionResponse>>,
-    conditionals: Vec<ConditionalEntry<CompletionRequest, CompletionResponse>>,
-    exhaust_behaviour: ExhaustBehaviour,
+    queue: VecDeque<QueueEntry<CompletionResponse, InferenceError>>,
+    conditionals: Vec<ConditionalEntry<CompletionRequest, CompletionResponse, InferenceError>>,
+    exhaust_behaviour: ExhaustBehaviour<InferenceError>,
     identity: ProviderIdentity,
 }
 
@@ -192,7 +190,7 @@ impl MockInferenceProviderBuilder {
     }
 
     /// Sets the behaviour when the sequential queue is exhausted.
-    pub fn on_exhaust(mut self, behaviour: ExhaustBehaviour) -> Self {
+    pub fn on_exhaust(mut self, behaviour: ExhaustBehaviour<InferenceError>) -> Self {
         self.exhaust_behaviour = behaviour;
         self
     }
@@ -200,7 +198,7 @@ impl MockInferenceProviderBuilder {
     /// Builds the [`MockInferenceProvider`].
     pub fn build(self) -> MockInferenceProvider {
         MockInferenceProvider {
-            core: MockProviderCore::new(
+            core: MockAsyncDispatchCore::new(
                 "MockInferenceProvider",
                 self.queue,
                 self.conditionals,
@@ -269,7 +267,7 @@ impl ConditionalCompletionBuilder {
 /// responses from a sequential queue with optional conditional matching,
 /// error injection, call history capture, and usage accounting.
 pub struct MockEmbeddingProvider {
-    core: MockProviderCore<EmbeddingRequest, EmbeddingResponse>,
+    core: MockAsyncDispatchCore<EmbeddingRequest, EmbeddingResponse, InferenceError>,
     usage: Mutex<EmbeddingUsageAccumulator>,
     identity: ProviderIdentity,
 }
@@ -343,9 +341,9 @@ impl EmbeddingProvider for MockEmbeddingProvider {
 /// Fluent builder for [`MockEmbeddingProvider`].
 #[must_use]
 pub struct MockEmbeddingProviderBuilder {
-    queue: VecDeque<QueueEntry<EmbeddingResponse>>,
-    conditionals: Vec<ConditionalEntry<EmbeddingRequest, EmbeddingResponse>>,
-    exhaust_behaviour: ExhaustBehaviour,
+    queue: VecDeque<QueueEntry<EmbeddingResponse, InferenceError>>,
+    conditionals: Vec<ConditionalEntry<EmbeddingRequest, EmbeddingResponse, InferenceError>>,
+    exhaust_behaviour: ExhaustBehaviour<InferenceError>,
     identity: ProviderIdentity,
 }
 
@@ -402,7 +400,7 @@ impl MockEmbeddingProviderBuilder {
     }
 
     /// Sets the behaviour when the sequential queue is exhausted.
-    pub fn on_exhaust(mut self, behaviour: ExhaustBehaviour) -> Self {
+    pub fn on_exhaust(mut self, behaviour: ExhaustBehaviour<InferenceError>) -> Self {
         self.exhaust_behaviour = behaviour;
         self
     }
@@ -410,7 +408,7 @@ impl MockEmbeddingProviderBuilder {
     /// Builds the [`MockEmbeddingProvider`].
     pub fn build(self) -> MockEmbeddingProvider {
         MockEmbeddingProvider {
-            core: MockProviderCore::new(
+            core: MockAsyncDispatchCore::new(
                 "MockEmbeddingProvider",
                 self.queue,
                 self.conditionals,
@@ -481,7 +479,7 @@ mod tests {
     use tribal_inference::{Message, Role};
 
     use super::*;
-    use crate::mock_inference::responses::{
+    use crate::mock::async_dispatch::inference::responses::{
         a_completion_response, a_provider_unavailable, an_embedding_response,
     };
 

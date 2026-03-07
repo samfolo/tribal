@@ -4,12 +4,9 @@
 //! fluent builder APIs, sequential response queues, conditional request
 //! matching, error injection, call history capture, and usage accounting.
 
-mod core;
 mod matcher;
 mod provider;
 mod responses;
-
-pub use core::{ExhaustBehaviour, MockProviderOptions};
 
 pub use matcher::{CompletionMatcher, EmbeddingMatcher};
 pub use provider::{

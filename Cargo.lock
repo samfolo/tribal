@@ -3671,6 +3671,7 @@ dependencies = [
  "chrono",
  "fnv",
  "indexmap 2.13.0",
+ "pastey",
  "pgvector",
  "serde_json",
  "sqlx",
