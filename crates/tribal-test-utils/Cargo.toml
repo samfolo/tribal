@@ -19,7 +19,7 @@ sqlx = { workspace = true, features = ["migrate"] }
 testcontainers.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-paste.workspace = true
+pastey.workspace = true
 tracing.workspace = true
 pgvector.workspace = true
 uuid.workspace = true

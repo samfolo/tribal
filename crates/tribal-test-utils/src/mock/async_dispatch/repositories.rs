@@ -38,7 +38,7 @@ pub use retrieval_feedback::MockRetrievalFeedbackRepository;
 ///
 /// ```ignore
 /// mock_repository! {
-///     MockProjectRepository for ProjectRepository {
+///     MockProjectRepository for ProjectRepository, tribal_db::DbError {
 ///         insert(NewProject => Project)
 ///             (new_project: &NewProject) { new_project.clone() };
 ///         find_by_id(ProjectId => Project)
@@ -63,7 +63,7 @@ pub use retrieval_feedback::MockRetrievalFeedbackRepository;
 /// would not be visible at expansion time.
 macro_rules! mock_repository {
     (
-        $MockName:ident for $Trait:ident {
+        $MockName:ident for $Trait:ident, $Err:ty {
             $(
                 $method:ident ( $Req:ty => $Resp:ty )
                     ( $( $param:ident : $param_ty:ty ),* )
@@ -71,13 +71,13 @@ macro_rules! mock_repository {
             );* $(;)?
         }
     ) => {
-        paste::paste! {
+        pastey::paste! {
             // ---------------------------------------------------------------
             // Mock struct
             // ---------------------------------------------------------------
 
             pub struct $MockName {
-                $( [<$method _core>]: crate::mock::async_dispatch::core::MockAsyncDispatchCore<$Req, $Resp, tribal_db::DbError>, )*
+                $( [<$method _core>]: crate::mock::async_dispatch::core::MockAsyncDispatchCore<$Req, $Resp, $Err>, )*
             }
 
             impl $MockName {
@@ -129,12 +129,12 @@ macro_rules! mock_repository {
             pub struct [<$MockName Builder>] {
                 $(
                     [<$method _queue>]: std::collections::VecDeque<
-                        crate::mock::async_dispatch::core::QueueEntry<$Resp, tribal_db::DbError>
+                        crate::mock::async_dispatch::core::QueueEntry<$Resp, $Err>
                     >,
                     [<$method _conditionals>]: Vec<
-                        crate::mock::async_dispatch::core::ConditionalEntry<$Req, $Resp, tribal_db::DbError>
+                        crate::mock::async_dispatch::core::ConditionalEntry<$Req, $Resp, $Err>
                     >,
-                    [<$method _exhaust>]: crate::mock::async_dispatch::core::ExhaustBehaviour<tribal_db::DbError>,
+                    [<$method _exhaust>]: crate::mock::async_dispatch::core::ExhaustBehaviour<$Err>,
                 )*
             }
 
@@ -168,7 +168,7 @@ macro_rules! mock_repository {
                     #[doc = concat!("`", stringify!($method), "`.")]
                     pub fn [<on_ $method _error>](
                         mut self,
-                        factory: impl Fn() -> tribal_db::DbError + Send + Sync + 'static,
+                        factory: impl Fn() -> $Err + Send + Sync + 'static,
                         options: Option<crate::mock::async_dispatch::core::MockProviderOptions>,
                     ) -> Self {
                         let delay = options.and_then(|o| o.delay);
@@ -194,7 +194,7 @@ macro_rules! mock_repository {
                     #[doc = concat!("`", stringify!($method), "`.")]
                     pub fn [<on_ $method _exhaust>](
                         mut self,
-                        behaviour: crate::mock::async_dispatch::core::ExhaustBehaviour<tribal_db::DbError>,
+                        behaviour: crate::mock::async_dispatch::core::ExhaustBehaviour<$Err>,
                     ) -> Self {
                         self.[<$method _exhaust>] = behaviour;
                         self
@@ -248,7 +248,7 @@ macro_rules! mock_repository {
                     /// Registers an error factory for this conditional.
                     pub fn respond_with_error(
                         self,
-                        factory: impl Fn() -> tribal_db::DbError + Send + Sync + 'static,
+                        factory: impl Fn() -> $Err + Send + Sync + 'static,
                         options: Option<crate::mock::async_dispatch::core::MockProviderOptions>,
                     ) -> [<$MockName Builder>] {
                         let delay = options.and_then(|o| o.delay);
@@ -278,7 +278,7 @@ macro_rules! mock_repository {
                         &self,
                         _conn: &mut sqlx::PgConnection,
                         $( $param : $param_ty, )*
-                    ) -> Result<$Resp, tribal_db::DbError> {
+                    ) -> Result<$Resp, $Err> {
                         let req = $convert;
                         let (result, delay) = self.[<$method _core>].dispatch(&req);
                         if let Some(d) = delay {

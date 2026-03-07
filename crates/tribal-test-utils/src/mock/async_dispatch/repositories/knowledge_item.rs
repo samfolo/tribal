@@ -8,7 +8,7 @@ use tribal_domain::{KnowledgeItem, KnowledgeItemId};
 use super::mock_repository;
 
 mock_repository! {
-    MockKnowledgeItemRepository for KnowledgeItemRepository {
+    MockKnowledgeItemRepository for KnowledgeItemRepository, tribal_db::DbError {
         insert(NewKnowledgeItem => KnowledgeItem)
             (new: &NewKnowledgeItem) { new.clone() };
         find_by_id(KnowledgeItemId => KnowledgeItem)

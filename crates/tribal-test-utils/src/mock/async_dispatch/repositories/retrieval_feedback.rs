@@ -6,7 +6,7 @@ use tribal_domain::{RetrievalFeedback, RetrievalFeedbackId};
 use super::mock_repository;
 
 mock_repository! {
-    MockRetrievalFeedbackRepository for RetrievalFeedbackRepository {
+    MockRetrievalFeedbackRepository for RetrievalFeedbackRepository, tribal_db::DbError {
         insert(NewRetrievalFeedback => RetrievalFeedback)
             (new: &NewRetrievalFeedback) { new.clone() };
         find_by_id(RetrievalFeedbackId => RetrievalFeedback)

@@ -6,7 +6,7 @@ use tribal_domain::{Job, JobId, ProjectId, RelationBatchId};
 use super::mock_repository;
 
 mock_repository! {
-    MockJobRepository for JobRepository {
+    MockJobRepository for JobRepository, tribal_db::DbError {
         insert(NewJob => Job)
             (new_job: &NewJob) { new_job.clone() };
         find_by_id(JobId => Job)
