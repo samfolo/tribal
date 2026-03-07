@@ -88,7 +88,7 @@ fn build_knowledge_item(
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING *`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewKnowledgeItem {
     /// The project this item belongs to.
     pub project_id: ProjectId,
@@ -124,7 +124,7 @@ pub struct NewKnowledgeItem {
 // ---------------------------------------------------------------------------
 
 /// Parameters for a semantic search query against the knowledge graph.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct SemanticSearchParams {
     /// The pre-computed query embedding vector.
     pub query_embedding: Vec<f32>,
@@ -165,7 +165,7 @@ pub struct SemanticSearchResult {
 }
 
 /// The full response from a semantic search.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SemanticSearchResponse {
     /// The matching results, ordered by descending similarity.
     pub results: Vec<SemanticSearchResult>,
