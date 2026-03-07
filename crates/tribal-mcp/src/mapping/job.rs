@@ -2,7 +2,7 @@
 //! and `tribal_job_status`.
 
 use chrono::{DateTime, Utc};
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::{Deserialize, Serialize};
 use tribal_domain::{FeedbackRating, Job, JobId, JobOutcome, JobStatus, RetrievalFeedbackId};
 
@@ -12,8 +12,7 @@ use crate::error::IntoCallToolResult;
 // Constants
 // ---------------------------------------------------------------------------
 
-const SERIALISE_INGEST_RESPONSE: &str =
-    "McpIngestResponse should always serialise successfully";
+const SERIALISE_INGEST_RESPONSE: &str = "McpIngestResponse should always serialise successfully";
 const SERIALISE_FEEDBACK_RESPONSE: &str =
     "McpFeedbackResponse should always serialise successfully";
 const SERIALISE_JOB_STATUS_RESPONSE: &str =
@@ -50,8 +49,7 @@ impl IntoCallToolResult for McpIngestResponse {
             "Ingest job created: {}. Use tribal_job_status to track progress.",
             self.job_id,
         );
-        let structured =
-            serde_json::to_value(&self).expect(SERIALISE_INGEST_RESPONSE);
+        let structured = serde_json::to_value(&self).expect(SERIALISE_INGEST_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
         result
@@ -100,8 +98,7 @@ impl IntoCallToolResult for McpFeedbackResponse {
             "Feedback recorded: {} (rating: {})",
             self.feedback_id, self.rating,
         );
-        let structured =
-            serde_json::to_value(&self).expect(SERIALISE_FEEDBACK_RESPONSE);
+        let structured = serde_json::to_value(&self).expect(SERIALISE_FEEDBACK_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
         result
@@ -170,8 +167,7 @@ impl IntoCallToolResult for McpJobStatusResponse {
             text.push_str(&format!(" ({outcome})"));
         }
 
-        let structured =
-            serde_json::to_value(&self).expect(SERIALISE_JOB_STATUS_RESPONSE);
+        let structured = serde_json::to_value(&self).expect(SERIALISE_JOB_STATUS_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
         result
@@ -184,12 +180,12 @@ impl IntoCallToolResult for McpJobStatusResponse {
 
 #[cfg(test)]
 mod tests {
-    use tribal_domain::{JobBuilder, ProjectId, PrincipalId, PromptVersionId};
+    use tribal_domain::{PrincipalId, ProjectId, PromptVersionId};
 
     use super::*;
 
     fn sample_job() -> Job {
-        JobBuilder::default()
+        Job::builder()
             .id(JobId::new())
             .project_id(ProjectId::new())
             .principal_id(PrincipalId::new())
@@ -214,8 +210,7 @@ mod tests {
     #[test]
     fn test_ingest_request_deserialises() {
         let json = serde_json::json!({"content": "learned something"});
-        let req: McpIngestRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpIngestRequest = serde_json::from_value(json).expect("deserialises");
         assert_eq!(req.content, "learned something");
         assert!(req.project_id.is_none());
     }
@@ -224,10 +219,10 @@ mod tests {
     fn test_ingest_response_into_call_tool_result() {
         let resp = McpIngestResponse::from(JobId::new());
         let result = resp.into_call_tool_result();
-        assert!(result.is_error.is_none());
+        assert_eq!(result.is_error, Some(false));
         assert!(result.structured_content.is_some());
 
-        let Content::Text(text) = &result.content[0] else {
+        let RawContent::Text(text) = &result.content[0].raw else {
             panic!("expected text content");
         };
         assert!(text.text.contains("Ingest job created"));
@@ -244,27 +239,23 @@ mod tests {
             "returned_item_ids": ["ki_abc"],
             "rating": "positive",
         });
-        let req: McpFeedbackRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpFeedbackRequest = serde_json::from_value(json).expect("deserialises");
         assert_eq!(req.rating, FeedbackRating::Positive);
         assert!(req.explored_anchor_ids.is_none());
     }
 
     #[test]
     fn test_feedback_response_into_call_tool_result() {
-        let resp = McpFeedbackResponse::new(
-            RetrievalFeedbackId::new(),
-            FeedbackRating::Positive,
-        );
+        let resp = McpFeedbackResponse::new(RetrievalFeedbackId::new(), FeedbackRating::Positive);
 
         // rating must not appear in serialised JSON
         let json = serde_json::to_value(&resp).expect("serialises");
         assert!(json.get("rating").is_none());
 
         let result = resp.into_call_tool_result();
-        assert!(result.is_error.is_none());
+        assert_eq!(result.is_error, Some(false));
 
-        let Content::Text(text) = &result.content[0] else {
+        let RawContent::Text(text) = &result.content[0].raw else {
             panic!("expected text content");
         };
         assert!(text.text.contains("positive"));
@@ -275,8 +266,7 @@ mod tests {
     #[test]
     fn test_job_status_request_deserialises() {
         let json = serde_json::json!({"job_id": "job_abc", "wait_seconds": 5});
-        let req: McpJobStatusRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpJobStatusRequest = serde_json::from_value(json).expect("deserialises");
         assert_eq!(req.job_id, "job_abc");
         assert_eq!(req.wait_seconds, Some(5));
     }
@@ -318,9 +308,9 @@ mod tests {
         let job = sample_job();
         let resp = McpJobStatusResponse::from_domain(&job, 0, 0, 0, 0);
         let result = resp.into_call_tool_result();
-        assert!(result.is_error.is_none());
+        assert_eq!(result.is_error, Some(false));
 
-        let Content::Text(text) = &result.content[0] else {
+        let RawContent::Text(text) = &result.content[0].raw else {
             panic!("expected text content");
         };
         assert!(text.text.contains("completed"));

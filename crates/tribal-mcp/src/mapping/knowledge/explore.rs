@@ -1,7 +1,7 @@
 //! MCP request and response types for `tribal_explore`.
 
 use chrono::{DateTime, Utc};
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::{Deserialize, Serialize};
 use tribal_domain::RelationKind;
 
@@ -12,8 +12,7 @@ use crate::error::IntoCallToolResult;
 // Constants
 // ---------------------------------------------------------------------------
 
-const SERIALISE_EXPLORE_RESPONSE: &str =
-    "McpExploreResponse should always serialise successfully";
+const SERIALISE_EXPLORE_RESPONSE: &str = "McpExploreResponse should always serialise successfully";
 
 // ---------------------------------------------------------------------------
 // McpRelationDirection
@@ -104,8 +103,7 @@ impl IntoCallToolResult for McpExploreResponse {
             }
         }
 
-        let structured =
-            serde_json::to_value(&self).expect(SERIALISE_EXPLORE_RESPONSE);
+        let structured = serde_json::to_value(&self).expect(SERIALISE_EXPLORE_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
         result
@@ -118,14 +116,15 @@ impl IntoCallToolResult for McpExploreResponse {
 
 #[cfg(test)]
 mod tests {
+    use tribal_domain::{ProjectId, Standing};
+
     use super::*;
-    use tribal_domain::StandingBuilder;
 
     fn sample_item(id: &str) -> McpKnowledgeItem {
         use super::super::common::{McpSourceContext, McpSourceType};
         McpKnowledgeItem {
             id: id.to_owned(),
-            project_id: "proj_00000000-0000-0000-0000-000000000000".into(),
+            project_id: ProjectId::new().to_string(),
             principal_key: "user:test".into(),
             kind: tribal_domain::KnowledgeKind::Fact,
             content: "test".into(),
@@ -145,7 +144,7 @@ mod tests {
 
     fn sample_standing() -> McpStanding {
         McpStanding::from(
-            &StandingBuilder::default()
+            &Standing::builder()
                 .supporting_count(0)
                 .contradicting_count(0)
                 .observation_count(0)
@@ -158,8 +157,7 @@ mod tests {
     #[test]
     fn test_explore_request_deserialises_minimal() {
         let json = serde_json::json!({"item_id": "ki_abc"});
-        let req: McpExploreRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpExploreRequest = serde_json::from_value(json).expect("deserialises");
         assert_eq!(req.item_id, "ki_abc");
         assert!(req.direction.is_none());
     }
@@ -176,8 +174,7 @@ mod tests {
             "include_references": false,
             "limit": 50
         });
-        let req: McpExploreRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpExploreRequest = serde_json::from_value(json).expect("deserialises");
         assert_eq!(req.depth, Some(2));
         assert_eq!(req.relation_types.as_ref().unwrap().len(), 2);
     }
@@ -214,12 +211,12 @@ mod tests {
             exact: true,
         };
         let result = resp.into_call_tool_result();
-        assert!(result.is_error.is_none());
+        assert_eq!(result.is_error, Some(false));
 
-        let text = match &result.content[0] {
-            Content::Text(t) => &t.text,
-            _ => panic!("expected text content"),
+        let RawContent::Text(t) = &result.content[0].raw else {
+            panic!("expected text content");
         };
+        let text = &t.text;
         assert!(text.contains("superseded by ki_superseder"));
     }
 }

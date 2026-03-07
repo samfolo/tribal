@@ -1,11 +1,10 @@
 //! MCP request and response types for `tribal_set_context`, plus the
 //! existing raw JSON conversion for the session resource.
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::{Deserialize, Serialize};
 
-use crate::error::IntoCallToolResult;
-use crate::session::SessionContext;
+use crate::{error::IntoCallToolResult, session::SessionContext};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -132,8 +131,7 @@ impl IntoCallToolResult for McpSetContextResponse {
             format!("Context updated ({})", parts.join(", "))
         };
 
-        let structured =
-            serde_json::to_value(&self).expect(SERIALISE_SET_CONTEXT_RESPONSE);
+        let structured = serde_json::to_value(&self).expect(SERIALISE_SET_CONTEXT_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
         result
@@ -207,8 +205,7 @@ mod tests {
     #[test]
     fn test_set_context_request_deserialises_empty() {
         let json = serde_json::json!({});
-        let req: McpSetContextRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpSetContextRequest = serde_json::from_value(json).expect("deserialises");
         assert!(req.project_id.is_none());
         assert!(req.model.is_none());
         assert!(req.provider.is_none());
@@ -266,12 +263,12 @@ mod tests {
 
         let resp = McpSetContextResponse::from(&ctx);
         let result = resp.into_call_tool_result();
-        assert!(result.is_error.is_none());
+        assert_eq!(result.is_error, Some(false));
 
-        let text = match &result.content[0] {
-            Content::Text(t) => &t.text,
-            _ => panic!("expected text content"),
+        let RawContent::Text(t) = &result.content[0].raw else {
+            panic!("expected text content");
         };
+        let text = &t.text;
         assert!(text.contains("project: tribal"));
         assert!(text.contains("model: claude-opus-4-6"));
         assert!(text.contains("provider: anthropic"));

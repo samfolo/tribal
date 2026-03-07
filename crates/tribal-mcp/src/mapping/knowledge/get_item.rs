@@ -1,6 +1,6 @@
 //! MCP request and response types for `tribal_get_item`.
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::{Deserialize, Serialize};
 
 use super::common::{McpKnowledgeItem, McpReference, McpStanding};
@@ -10,8 +10,7 @@ use crate::error::IntoCallToolResult;
 // Constants
 // ---------------------------------------------------------------------------
 
-const SERIALISE_GET_ITEM_RESPONSE: &str =
-    "McpGetItemResponse should always serialise successfully";
+const SERIALISE_GET_ITEM_RESPONSE: &str = "McpGetItemResponse should always serialise successfully";
 
 // ---------------------------------------------------------------------------
 // Request
@@ -71,8 +70,7 @@ impl IntoCallToolResult for McpGetItemResponse {
         let requested = self.requested_count();
         let text = format!("Retrieved {found} of {requested} item(s)");
 
-        let structured =
-            serde_json::to_value(&self).expect(SERIALISE_GET_ITEM_RESPONSE);
+        let structured = serde_json::to_value(&self).expect(SERIALISE_GET_ITEM_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
         result
@@ -93,8 +91,7 @@ mod tests {
             "item_ids": ["ki_abc", "ki_def"],
             "include_standing": true,
         });
-        let req: McpGetItemRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpGetItemRequest = serde_json::from_value(json).expect("deserialises");
         assert_eq!(req.item_ids.len(), 2);
         assert_eq!(req.include_standing, Some(true));
         assert!(req.include_references.is_none());
@@ -154,12 +151,12 @@ mod tests {
 
         let resp = McpGetItemResponse { items };
         let result = resp.into_call_tool_result();
-        assert!(result.is_error.is_none());
+        assert_eq!(result.is_error, Some(false));
 
-        let text = match &result.content[0] {
-            rmcp::model::Content::Text(t) => &t.text,
-            _ => panic!("expected text content"),
+        let RawContent::Text(t) = &result.content[0].raw else {
+            panic!("expected text content");
         };
+        let text = &t.text;
         assert!(text.contains("Retrieved 1 of 2 item(s)"));
     }
 }

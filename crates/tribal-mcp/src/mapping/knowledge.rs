@@ -8,6 +8,6 @@ pub(crate) use discover::{
     McpDiscoverRequest, McpDiscoverResponse, McpDiscoveryResult, McpTimeRange,
 };
 pub(crate) use explore::{
-    McpExploreRequest, McpExploreResponse, McpExplorationResult, McpRelationDirection,
+    McpExplorationResult, McpExploreRequest, McpExploreResponse, McpRelationDirection,
 };
 pub(crate) use get_item::{McpGetItemEntry, McpGetItemRequest, McpGetItemResponse};
