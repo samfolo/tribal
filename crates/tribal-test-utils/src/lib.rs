@@ -14,6 +14,7 @@ mod mock_inference;
 pub mod polling;
 mod seeding;
 mod setup;
+pub mod stub_repositories;
 mod text;
 
 pub use db::{TestContext, TestTransaction, serial_lock, test_context};

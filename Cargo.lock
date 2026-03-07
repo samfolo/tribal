@@ -3629,9 +3629,11 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "tribal-db",
  "tribal-domain",
+ "tribal-test-utils",
 ]
 
 [[package]]
