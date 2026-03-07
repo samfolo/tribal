@@ -105,6 +105,66 @@ impl ServerHandler for TribalServerHandler {
         PARSED_TOOLS.iter().find(|t| t.name == name).map(to_tool)
     }
 
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send + '_ {
+        std::future::ready(Ok(ListResourcesResult {
+            resources: vec![session::session_resource()],
+            ..Default::default()
+        }))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        if request.uri != SESSION_RESOURCE_URI {
+            return Err(McpError::invalid_params("unknown resource URI", None));
+        }
+
+        let json: serde_json::Value = {
+            let session = self.session.read().await;
+            (&*session).into()
+        };
+
+        let text = serde_json::to_string(&json)
+            .expect("session context serialisation must not fail");
+
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(text, SESSION_RESOURCE_URI)
+                .with_mime_type("application/json"),
+        ]))
+    }
+
+    async fn subscribe(
+        &self,
+        request: SubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        if request.uri != SESSION_RESOURCE_URI {
+            return Err(McpError::invalid_params("unknown resource URI", None));
+        }
+
+        self.session.write().await.subscribed = true;
+        Ok(())
+    }
+
+    async fn unsubscribe(
+        &self,
+        request: UnsubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        if request.uri != SESSION_RESOURCE_URI {
+            return Err(McpError::invalid_params("unknown resource URI", None));
+        }
+
+        self.session.write().await.subscribed = false;
+        Ok(())
+    }
+
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
