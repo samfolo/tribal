@@ -51,7 +51,7 @@ const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data co
 /// The [`TriageOutcome`] enum is flattened into separate database columns
 /// by the repository implementation.  Server-generated fields (`id`,
 /// `created_at`) are produced by Postgres defaults.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewTriageResult {
     /// The job this result belongs to.
     pub job_id: JobId,
