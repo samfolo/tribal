@@ -4,13 +4,18 @@ use rmcp::{
     handler::server::ServerHandler,
     model::{
         CallToolRequestParams, CallToolResult, ErrorData as McpError, Implementation,
-        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
+        ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+        SubscribeRequestParams, Tool, UnsubscribeRequestParams,
     },
     service::{RequestContext, RoleServer},
 };
+use tokio::sync::RwLock;
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, ProjectRepository, RetrievalFeedbackRepository,
 };
+
+use crate::session::{self, SessionContext, SESSION_RESOURCE_URI};
 
 use crate::{
     auth::AuthContext,
