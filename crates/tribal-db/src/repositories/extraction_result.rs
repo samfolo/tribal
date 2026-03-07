@@ -34,7 +34,7 @@ const COLUMNS: Columns = Columns(&["id", "job_id", "candidates", "relation_hints
 ///
 /// Server-generated fields (`id`, `created_at`) are produced by Postgres
 /// defaults.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewExtractionResult {
     /// The job this extraction result belongs to.
     pub job_id: JobId,

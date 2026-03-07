@@ -44,7 +44,7 @@ const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data co
 ///
 /// Server-generated fields (`id`, `created_at`) are produced by Postgres
 /// defaults and returned via `RETURNING {COLUMNS}`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewTriageSimilarItemDecision {
     /// The job this decision belongs to.
     pub job_id: JobId,

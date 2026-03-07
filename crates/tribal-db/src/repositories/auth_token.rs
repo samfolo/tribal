@@ -36,7 +36,7 @@ const COLUMNS: Columns = Columns(&[
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewAuthToken {
     /// SHA-256 hex-encoded token hash (64 chars, lowercase).
     pub token_hash: String,

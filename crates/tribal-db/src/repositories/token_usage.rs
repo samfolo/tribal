@@ -56,7 +56,7 @@ const UNKNOWN_EMBEDDING_PURPOSE_IN_DB: &str =
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING`.  `tokens_total` is excluded
 /// — derived in SQL as `tokens_input + tokens_output`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewTokenUsage {
     /// The job this usage belongs to (null for read-path calls).
     #[builder(default)]

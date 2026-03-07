@@ -27,7 +27,7 @@ const UNKNOWN_KIND_IN_DB: &str = "unrecognised reference kind in database — sc
 /// Contains only caller-provided fields.  Server-generated values
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING`.
-#[derive(Debug, TypedBuilder)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub struct NewReference {
     /// The knowledge item this reference is attached to.
     pub knowledge_item_id: KnowledgeItemId,
