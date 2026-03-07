@@ -22,11 +22,11 @@ mock_repository! {
 mod tests {
     use std::sync::Arc;
 
-    use chrono::SubsecRound;
     use tribal_db::DbError;
 
     use super::*;
     use crate::{
+        a_project,
         mock::async_dispatch::{
             core::ExhaustBehaviour, repositories::error_factories::a_not_found,
         },
@@ -37,28 +37,12 @@ mod tests {
 
     const EXPECT_BEGIN: &str = "should begin transaction";
 
-    // -- Helpers ------------------------------------------------------------
-
-    fn a_project(name: &str) -> Project {
-        Project::builder()
-            .id(ProjectId::new())
-            .git_remote(format!("git@github.com:user/{name}.git"))
-            .name(name.to_owned())
-            .default_branch("main".to_owned())
-            .project_type(None)
-            .schema_version(1)
-            .settings(serde_json::json!({}))
-            .created_at(chrono::Utc::now().trunc_subsecs(6))
-            .updated_at(chrono::Utc::now().trunc_subsecs(6))
-            .build()
-    }
-
     // -- Tests --------------------------------------------------------------
 
     #[tokio::test]
     async fn test_sequential_find_by_id_returns_in_order() {
-        let p1 = a_project("first");
-        let p2 = a_project("second");
+        let p1 = a_project().name("first".to_owned()).build();
+        let p2 = a_project().name("second".to_owned()).build();
 
         let mock = MockProjectRepository::builder()
             .on_find_by_id(p1.clone(), None)
@@ -78,7 +62,7 @@ mod tests {
     #[tokio::test]
     async fn test_conditional_find_by_id_matches_by_predicate() {
         let target_id = ProjectId::new();
-        let project = a_project("matched");
+        let project = a_project().name("matched".to_owned()).build();
 
         let mock = MockProjectRepository::builder()
             .when_find_by_id(move |id| *id == target_id)
@@ -103,7 +87,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exhaust_repeat_last() {
-        let project = a_project("repeated");
+        let project = a_project().name("repeated".to_owned()).build();
 
         let mock = MockProjectRepository::builder()
             .on_find_by_id(project.clone(), None)
@@ -148,7 +132,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_call_history_records_requests() {
-        let p = a_project("any");
+        let p = a_project().build();
 
         let mock = MockProjectRepository::builder()
             .on_find_by_id(p.clone(), None)
@@ -180,7 +164,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_insert_clones_ref_param() {
-        let project = a_project("inserted");
+        let project = a_project().build();
 
         let mock = MockProjectRepository::builder()
             .on_insert(project, None)
