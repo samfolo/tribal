@@ -1,0 +1,160 @@
+//! `IntoMcpError` implementations for domain error types.
+//!
+//! Centralises the mapping from domain errors to MCP error codes.
+//! Handlers never construct `McpToolError` directly for domain errors —
+//! they call `.into_mcp_error()` instead.
+
+use tribal_db::DbError;
+use tribal_domain::{IdParseError, McpErrorCode};
+
+use crate::error::{IntoMcpError, McpToolError};
+
+// ---------------------------------------------------------------------------
+// DbError → McpToolError
+// ---------------------------------------------------------------------------
+
+impl IntoMcpError for DbError {
+    fn into_mcp_error(self) -> McpToolError {
+        let (code, message) = match &self {
+            DbError::NotFound { entity, id } => (
+                McpErrorCode::NotFound,
+                format!("{entity} not found: {id}"),
+            ),
+            DbError::InvalidCursor { detail } => (
+                McpErrorCode::InvalidArgument,
+                format!("invalid cursor: {detail}"),
+            ),
+            DbError::PoolExhausted { pool_name } => (
+                McpErrorCode::ResourceExhausted,
+                format!("connection pool exhausted: {pool_name}"),
+            ),
+            DbError::UniqueViolation {
+                table, constraint, ..
+            } => (
+                McpErrorCode::FailedPrecondition,
+                format!("unique constraint violated on {table}.{constraint}"),
+            ),
+            DbError::QueryFailed { context, .. } => {
+                (McpErrorCode::Internal, format!("query failed: {context}"))
+            }
+            DbError::Migration { .. } => {
+                (McpErrorCode::Internal, "migration failed".to_owned())
+            }
+        };
+
+        McpToolError {
+            code,
+            message,
+            details: serde_json::json!({}),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IdParseError → McpToolError
+// ---------------------------------------------------------------------------
+
+impl IntoMcpError for IdParseError {
+    fn into_mcp_error(self) -> McpToolError {
+        McpToolError {
+            code: McpErrorCode::InvalidArgument,
+            message: self.to_string(),
+            details: serde_json::json!({}),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- DbError ----------------------------------------------------------
+
+    #[test]
+    fn test_db_not_found_maps_to_not_found() {
+        let err = DbError::NotFound {
+            entity: "job",
+            id: "job_abc".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::NotFound);
+        assert!(mcp.message.contains("job not found"));
+    }
+
+    #[test]
+    fn test_db_invalid_cursor_maps_to_invalid_argument() {
+        let err = DbError::InvalidCursor {
+            detail: "bad cursor".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::InvalidArgument);
+        assert!(mcp.message.contains("invalid cursor"));
+    }
+
+    #[test]
+    fn test_db_pool_exhausted_maps_to_resource_exhausted() {
+        let err = DbError::PoolExhausted { pool_name: "mcp" };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::ResourceExhausted);
+        assert!(mcp.message.contains("pool exhausted"));
+    }
+
+    #[test]
+    fn test_db_unique_violation_maps_to_failed_precondition() {
+        let err = DbError::UniqueViolation {
+            table: "knowledge_items".to_owned(),
+            constraint: "knowledge_items_pkey".to_owned(),
+            detail: "duplicate".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::FailedPrecondition);
+        assert!(mcp.message.contains("unique constraint violated"));
+    }
+
+    #[test]
+    fn test_db_query_failed_maps_to_internal() {
+        let err = DbError::QueryFailed {
+            context: "fetching job".to_owned(),
+            source: sqlx::Error::RowNotFound,
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Internal);
+        assert!(mcp.message.contains("query failed"));
+    }
+
+    #[test]
+    fn test_db_migration_maps_to_internal() {
+        let err = DbError::Migration {
+            source: sqlx::migrate::MigrateError::VersionMissing(1),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Internal);
+        assert!(mcp.message.contains("migration failed"));
+    }
+
+    // -- IdParseError -----------------------------------------------------
+
+    #[test]
+    fn test_id_missing_prefix_maps_to_invalid_argument() {
+        let err = IdParseError::MissingPrefix {
+            expected: "ki",
+            input: "bad_id".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn test_id_invalid_uuid_maps_to_invalid_argument() {
+        let err = IdParseError::InvalidUuid {
+            input: "ki_not-a-uuid".to_owned(),
+            source: "not-a-uuid".parse::<uuid::Uuid>().unwrap_err(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::InvalidArgument);
+    }
+}
