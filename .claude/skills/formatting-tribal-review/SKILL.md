@@ -155,7 +155,7 @@ Followed by a rationale line:
 
 > **Verdict: 4/5 — Ready to proceed**
 >
-> This is a strong ticket. The ownership-guard invariant is precisely stated against RFC §5.2, and the distinction between best-effort token usage writes and transactional domain commits is correctly captured in two separate acceptance criteria. The findings below are refinements, not structural problems.
+> This is a strong ticket. The ownership-guard invariant is precisely stated against RFC §5.7, and the distinction between best-effort token usage writes and transactional domain commits is correctly captured in two separate acceptance criteria. The findings below are refinements, not structural problems.
 >
 > Any remaining findings are refinements only — proceed once findings are consciously accepted or addressed.
 
@@ -176,7 +176,7 @@ A brief paragraph — two to four sentences — confirming what the review valid
 
 Example:
 
-> The four-way project ID resolution logic is correctly stated against RFC §4.1. The `spawn_blocking` requirement for inference calls is captured and cited against Conventions §8. The acceptance criteria for the happy path and the `OwnershipLost` error path both map to verifiable test assertions.
+> The four-way project ID resolution logic is correctly stated against RFC §4.1. The `spawn_blocking` requirement for inference calls is captured and cited against Server §1.2. The acceptance criteria for the happy path and the `OwnershipLost` error path both map to verifiable test assertions.
 
 ---
 ### 4. Observations
