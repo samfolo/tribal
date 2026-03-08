@@ -86,6 +86,8 @@ pub(crate) struct McpSetContextResponse {
     pub(crate) project: Option<McpSessionProject>,
     pub(crate) principal_key: String,
     pub(crate) actor: McpSessionActor,
+    #[serde(skip)]
+    pub(crate) mutated: bool,
 }
 
 impl From<&SessionContext> for McpSetContextResponse {
@@ -103,6 +105,7 @@ impl From<&SessionContext> for McpSetContextResponse {
                 model: ctx.actor.model.clone(),
                 provider: ctx.actor.provider.clone(),
             },
+            mutated: false,
         }
     }
 }
@@ -113,22 +116,26 @@ impl From<&SessionContext> for McpSetContextResponse {
 
 impl IntoCallToolResult for McpSetContextResponse {
     fn into_call_tool_result(self) -> CallToolResult {
-        let mut parts = Vec::new();
+        let text = if self.mutated {
+            let mut parts = Vec::new();
 
-        if let Some(ref project) = self.project {
-            parts.push(format!("project: {}", project.name));
-        }
-        if let Some(ref model) = self.actor.model {
-            parts.push(format!("model: {model}"));
-        }
-        if let Some(ref provider) = self.actor.provider {
-            parts.push(format!("provider: {provider}"));
-        }
+            if let Some(ref project) = self.project {
+                parts.push(format!("project: {}", project.name));
+            }
+            if let Some(ref model) = self.actor.model {
+                parts.push(format!("model: {model}"));
+            }
+            if let Some(ref provider) = self.actor.provider {
+                parts.push(format!("provider: {provider}"));
+            }
 
-        let text = if parts.is_empty() {
-            "Context updated".to_owned()
+            if parts.is_empty() {
+                "Context updated".to_owned()
+            } else {
+                format!("Context updated ({})", parts.join(", "))
+            }
         } else {
-            format!("Context updated ({})", parts.join(", "))
+            "Context unchanged".to_owned()
         };
 
         let structured = serde_json::to_value(&self).expect(SERIALISE_SET_CONTEXT_RESPONSE);
@@ -262,16 +269,30 @@ mod tests {
             provider: Some("anthropic".into()),
         };
 
-        let resp = McpSetContextResponse::from(&ctx);
+        let mut resp = McpSetContextResponse::from(&ctx);
+        resp.mutated = true;
         let result = resp.into_call_tool_result();
         assert_eq!(result.is_error, Some(false));
 
-        let RawContent::Text(t) = &result.content[0].raw else {
-            panic!("expected text content");
-        };
-        let text = &t.text;
-        assert!(text.contains("project: tribal"));
-        assert!(text.contains("model: claude-opus-4-6"));
-        assert!(text.contains("provider: anthropic"));
+        assert!(
+            matches!(&result.content[0].raw, RawContent::Text(t) if t.text.contains("project: tribal")),
+        );
+        assert!(
+            matches!(&result.content[0].raw, RawContent::Text(t) if t.text.contains("model: claude-opus-4-6")),
+        );
+        assert!(
+            matches!(&result.content[0].raw, RawContent::Text(t) if t.text.contains("provider: anthropic")),
+        );
+    }
+
+    #[test]
+    fn test_set_context_response_unchanged_text() {
+        let ctx = SessionContext::new(None, "user:sam".into());
+        let resp = McpSetContextResponse::from(&ctx);
+        let result = resp.into_call_tool_result();
+
+        assert!(
+            matches!(&result.content[0].raw, RawContent::Text(t) if t.text == "Context unchanged"),
+        );
     }
 }

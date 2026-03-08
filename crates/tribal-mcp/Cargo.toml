@@ -20,6 +20,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 tribal-test-utils.workspace = true
-sqlx.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 uuid.workspace = true
