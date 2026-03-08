@@ -21,6 +21,7 @@ When citing design documents, always use the short-form notation below followed 
 | Server | `docs/internal/mcp_server.md` |
 | Tools | `docs/internal/mcp_tool_surface.md` |
 | Conventions | `docs/internal/conventions.md` |
+| Ticket Spec | `docs/internal/ticket_writing_specification.md` |
 | Milestones | `docs/internal/milestones.md` |
 | M4 | `docs/archive/write_path_pipeline.md` |
 | M5 | `docs/draft/mcp_server_handler.md` |

@@ -2,7 +2,7 @@
 name: reviewing-tribal-ticket
 description: Use this skill when reviewing a Tribal ticket draft for correctness, completeness, and faithfulness to the design documents before it is published as a GitHub issue.
 user-invocable: false
-allowed-tools: Read, Grep, Glob, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh api:*)
+allowed-tools: Read, Grep, Glob, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh api:*), Bash(git branch:*)
 ---
 
 # Reviewing Tribal Ticket
@@ -28,12 +28,12 @@ Before classifying any discrepancy, apply this hierarchy. Getting this wrong is 
 
 **Architectural invariants are owned by the widest document.** These are system-wide rules that hold regardless of scope. If violated, the design breaks. They cannot be overruled by any narrower document. Examples for this project:
 
-- Knowledge items are immutable — no UPDATE queries (RFC §2.3)
-- Domain commits are transactional and ownership-guarded by `claim_token` (RFC §5.2)
-- Token usage writes are best-effort and separate from domain commits (RFC §5.2)
+- Knowledge items are immutable — no UPDATE queries (RFC §4.2)
+- Domain commits are transactional and ownership-guarded by `claim_token` (RFC §5.7)
+- Token usage writes are best-effort and separate from domain commits (RFC §4.14)
 - Error variants use named fields with sufficient context (Conventions §3)
 - `#![deny(warnings)]` — all warnings are compile errors (Conventions §9)
-- Inference calls must use `spawn_blocking` (Conventions §8)
+- Inference calls must use `spawn_blocking` (Server §1.2)
 
 **Scope-specific decisions are owned by the narrowest document.** Naming, field types, API surface, struct layout, method signatures — these are deliberately refined as scope narrows. The ticket represents the most considered choice for this specific piece of work. A field renamed between the RFC and the ticket is not a discrepancy — it is a refinement. Do not flag it.
 

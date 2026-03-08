@@ -34,12 +34,12 @@ Before classifying any discrepancy, apply this hierarchy.
 
 **The RFC and Conventions own architectural invariants.** These are system-wide rules no plan may violate regardless of what the ticket or milestone document say. Examples:
 
-- Knowledge items are immutable — no UPDATE queries (RFC §2.3)
-- Domain commits are transactional and ownership-guarded by `claim_token` (RFC §5.2)
-- Token usage writes are best-effort and separate from domain commits (RFC §5.2)
+- Knowledge items are immutable — no UPDATE queries (RFC §4.2)
+- Domain commits are transactional and ownership-guarded by `claim_token` (RFC §5.7)
+- Token usage writes are best-effort and separate from domain commits (RFC §4.14)
 - Error variants use named fields with sufficient context (Conventions §3)
 - `#![deny(warnings)]` — all warnings are compile errors (Conventions §9)
-- Inference calls must use `spawn_blocking` (Conventions §8)
+- Inference calls must use `spawn_blocking` (Server §1.2)
 
 **The codebase is the ground truth for scope-specific decisions where implementation already exists.** Naming, types, and API surface in the code supersede any document's version.
 
