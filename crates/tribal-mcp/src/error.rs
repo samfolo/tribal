@@ -70,7 +70,6 @@ pub fn method_not_found(name: &str) -> McpError {
 }
 
 /// Produces a JSON-RPC invalid-params error for malformed arguments.
-#[allow(dead_code)]
 pub fn invalid_argument(message: impl Into<String>) -> McpError {
     McpError::invalid_params(message.into(), None)
 }

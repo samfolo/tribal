@@ -10,6 +10,7 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
 };
+use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, ProjectRepository, RetrievalFeedbackRepository,
@@ -45,11 +46,13 @@ pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
 // ConnectionRepositories
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 pub struct ConnectionRepositories {
+    #[allow(dead_code)]
     pub(crate) knowledge: Arc<dyn KnowledgeItemRepository + Send + Sync>,
     pub(crate) project: Arc<dyn ProjectRepository + Send + Sync>,
+    #[allow(dead_code)]
     pub(crate) job: Arc<dyn JobRepository + Send + Sync>,
+    #[allow(dead_code)]
     pub(crate) feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
 }
 
@@ -58,15 +61,22 @@ pub struct ConnectionRepositories {
 // ---------------------------------------------------------------------------
 
 pub struct TribalServerHandler {
-    #[allow(dead_code)]
-    repositories: ConnectionRepositories,
+    pub(crate) pool: PgPool,
+    pub(crate) repositories: ConnectionRepositories,
     pub(crate) session: Arc<RwLock<SessionContext>>,
 }
 
 impl TribalServerHandler {
+    /// Creates a new handler for the given connection pool, repositories, and
+    /// initial session state.
+    ///
+    /// The pool is used by handlers that need database access (e.g.
+    /// `tribal_set_context` for project lookup). The session is wrapped in an
+    /// `Arc<RwLock<…>>` internally.
     #[must_use]
-    pub fn new(repositories: ConnectionRepositories, session: SessionContext) -> Self {
+    pub fn new(pool: PgPool, repositories: ConnectionRepositories, session: SessionContext) -> Self {
         Self {
+            pool,
             repositories,
             session: Arc::new(RwLock::new(session)),
         }
@@ -225,7 +235,7 @@ mod tests {
     use tribal_domain::ProjectId;
     use tribal_test_utils::{
         MockJobRepository, MockKnowledgeItemRepository, MockProjectRepository,
-        MockRetrievalFeedbackRepository,
+        MockRetrievalFeedbackRepository, test_context,
     };
 
     use super::*;
@@ -235,7 +245,7 @@ mod tests {
     // Helpers
     // -----------------------------------------------------------------------
 
-    fn test_repositories() -> ConnectionRepositories {
+    pub(crate) fn test_repositories() -> ConnectionRepositories {
         ConnectionRepositories {
             knowledge: Arc::new(MockKnowledgeItemRepository::builder().build()),
             project: Arc::new(MockProjectRepository::builder().build()),
@@ -244,28 +254,30 @@ mod tests {
         }
     }
 
-    fn test_handler() -> TribalServerHandler {
+    async fn test_handler() -> TribalServerHandler {
+        let pool = test_context().await.pool().clone();
         let session = SessionContext::new(None, "user:test".into());
-        TribalServerHandler::new(test_repositories(), session)
+        TribalServerHandler::new(pool, test_repositories(), session)
     }
 
-    fn test_handler_with_project() -> TribalServerHandler {
+    async fn test_handler_with_project() -> TribalServerHandler {
+        let pool = test_context().await.pool().clone();
         let project = SessionProject {
             id: ProjectId::new(),
             name: "tribal".into(),
             git_remote: "git@github.com:user/tribal.git".into(),
         };
         let session = SessionContext::new(Some(project), "user:test".into());
-        TribalServerHandler::new(test_repositories(), session)
+        TribalServerHandler::new(pool, test_repositories(), session)
     }
 
     // -----------------------------------------------------------------------
     // get_info tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_get_info_advertises_resources() {
-        let handler = test_handler();
+    #[tokio::test]
+    async fn test_get_info_advertises_resources() {
+        let handler = test_handler().await;
         let info = handler.get_info();
 
         assert!(
@@ -274,9 +286,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_info_advertises_resource_subscription() {
-        let handler = test_handler();
+    #[tokio::test]
+    async fn test_get_info_advertises_resource_subscription() {
+        let handler = test_handler().await;
         let info = handler.get_info();
         let resources = info.capabilities.resources.expect("resources must be set");
 
@@ -287,9 +299,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_info_advertises_tools() {
-        let handler = test_handler();
+    #[tokio::test]
+    async fn test_get_info_advertises_tools() {
+        let handler = test_handler().await;
         let info = handler.get_info();
 
         assert!(
@@ -298,9 +310,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_info_server_identity() {
-        let handler = test_handler();
+    #[tokio::test]
+    async fn test_get_info_server_identity() {
+        let handler = test_handler().await;
         let info = handler.get_info();
 
         assert_eq!(info.server_info.name, SERVER_NAME);
@@ -311,18 +323,18 @@ mod tests {
     // get_tool tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_get_tool_found() {
-        let handler = test_handler();
+    #[tokio::test]
+    async fn test_get_tool_found() {
+        let handler = test_handler().await;
         let tool = handler.get_tool("tribal_discover");
 
         assert!(tool.is_some());
         assert_eq!(tool.unwrap().name.as_ref(), "tribal_discover");
     }
 
-    #[test]
-    fn test_get_tool_not_found() {
-        let handler = test_handler();
+    #[tokio::test]
+    async fn test_get_tool_not_found() {
+        let handler = test_handler().await;
         assert!(handler.get_tool("nonexistent").is_none());
     }
 
@@ -347,7 +359,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_resource_success() {
-        let handler = test_handler_with_project();
+        let handler = test_handler_with_project().await;
         let result = handler
             .read_resource_inner(SESSION_RESOURCE_URI)
             .await
@@ -374,7 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_resource_unknown_uri() {
-        let handler = test_handler();
+        let handler = test_handler().await;
         let err = handler
             .read_resource_inner("tribal://unknown")
             .await
@@ -389,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe_success() {
-        let handler = test_handler();
+        let handler = test_handler().await;
         assert!(!handler.session.read().await.subscribed);
 
         handler
@@ -402,7 +414,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe_unknown_uri() {
-        let handler = test_handler();
+        let handler = test_handler().await;
         let err = handler
             .subscribe_inner("tribal://unknown")
             .await
@@ -417,7 +429,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unsubscribe_success() {
-        let handler = test_handler();
+        let handler = test_handler().await;
         handler.session.write().await.subscribed = true;
 
         handler
@@ -430,7 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unsubscribe_unknown_uri() {
-        let handler = test_handler();
+        let handler = test_handler().await;
         let err = handler
             .unsubscribe_inner("tribal://unknown")
             .await
