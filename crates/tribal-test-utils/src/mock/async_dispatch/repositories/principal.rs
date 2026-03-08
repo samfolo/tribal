@@ -54,7 +54,7 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().principal_key(), principal.principal_key(),);
+        assert_eq!(result.unwrap().principal_key(), principal.principal_key());
     }
 
     #[tokio::test]

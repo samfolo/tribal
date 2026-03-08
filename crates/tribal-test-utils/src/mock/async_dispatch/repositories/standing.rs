@@ -35,7 +35,7 @@ mod tests {
         let result = mock.compute(&mut tx, &ids).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].supporting_count(), standing.supporting_count(),);
+        assert_eq!(result[0].supporting_count(), standing.supporting_count());
     }
 
     #[tokio::test]
