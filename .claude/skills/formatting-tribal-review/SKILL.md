@@ -52,17 +52,19 @@ Examples of correct reference notation:
 
 ## Divider Rhythm
 
-A `---` divider appears immediately before every section heading and immediately before every item within a section. There is no blank line between the divider and what follows it. There is a blank line above the divider, separating it from the previous content.
+A `---` divider appears before every section heading and before every item within a section. There must be a blank line on both sides of the divider — one blank line above it (separating it from the previous content) and one blank line below it (separating it from the heading or item that follows).
 
 ```
 previous content
 
 ---
+
 ### Section Heading
 
 item content
 
 ---
+
 **Next Item**
 
 item content
@@ -187,9 +189,11 @@ Each observation has a short title and a single paragraph.
 
 ```markdown
 ---
+
 ### Observations
 
 ---
+
 **[Short title]**
 
 [One paragraph. What was noticed, how it was interpreted, and why it was passed
@@ -209,9 +213,11 @@ Each justified deviation must state:
 
 ```markdown
 ---
+
 ### Justified Deviations
 
 ---
+
 **[Short title of deviation]**
 
 [Description of what differs and which document it deviates from, with section
@@ -229,9 +235,11 @@ Each issue is a numbered item starting from 1.
 
 ```markdown
 ---
+
 ### Issues
 
 ---
+
 **[N]. [Severity] — [Short title]**
 
 [Context: what the issue is, why it matters, which document or criterion it relates
@@ -272,9 +280,11 @@ Each question is numbered independently starting from Q1.
 
 ```markdown
 ---
+
 ### Open Questions
 
 ---
+
 **Q[N]. [Short title]**
 
 [The specific ambiguity, stated precisely. Name the competing options if they exist.
@@ -288,6 +298,7 @@ Placed after all detailed sections. References the issue numbers from the Issues
 
 ```markdown
 ---
+
 ### Issue Summary
 
 | # | Severity | Action |
