@@ -142,13 +142,11 @@ impl TribalServerHandler {
             guard.project.as_ref().map(|p| (p.id, p.name.clone()))
         };
 
-        let (project_id, project_name) = match resolve_project_scope(
-            &request.project_id,
-            session_project,
-        ) {
-            Ok(scope) => scope.into_parts(),
-            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-        };
+        let (project_id, project_name) =
+            match resolve_project_scope(&request.project_id, session_project) {
+                Ok(scope) => scope.into_parts(),
+                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+            };
 
         let mut conn = match pool.acquire().await {
             Ok(conn) => conn,
@@ -259,7 +257,7 @@ impl ProjectScope {
 /// | **absent** (`None`)     | absent          | Global search (`None, None`)        |
 /// | **null** (`Some(None)`) | any             | Global search regardless of session |
 /// | **present** string      | any             | Parse ID; name resolved later by DB |
-#[allow(clippy::option_option)]
+#[allow(clippy::option_option, clippy::ref_option)]
 fn resolve_project_scope(
     request_project_id: &Option<Option<String>>,
     session_project: Option<(ProjectId, String)>,
@@ -355,6 +353,8 @@ async fn execute_discover(
         ids
     };
 
+    // N+1 queries for principal resolution. Acceptable because principal
+    // deduplication means the actual number of lookups is trivially small.
     let mut principal_map: HashMap<PrincipalId, String> =
         HashMap::with_capacity(unique_principal_ids.len());
     for prin_id in unique_principal_ids {
