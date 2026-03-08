@@ -8,7 +8,7 @@ allowed-tools: Read, Grep, Glob, Bash(gh issue view:*), Bash(gh issue list:*), B
 # Reviewing Tribal Ticket
 
 **Scope**: Governs the review of a Tribal ticket draft before it is published as a GitHub issue and handed to an implementing agent.  
-**Output format**: Produce all output in strict conformance with the format defined in [review-output](../../../../docs/templates/review-output.md). Read that file before producing any output.
+**Output format**: Produce all output in strict conformance with the format defined by the `formatting-tribal-review` skill. Load that skill's content before producing any output.
 
 ---
 
@@ -55,22 +55,22 @@ The milestone can be inferred from the issue ID prefix in the ticket (e.g. `4.4`
 
 | Milestone | Document |
 |-----------|----------|
-| M4 | `docs/internal/m4_write_path_pipeline.md` |
-| M5 | `docs/internal/m5_mcp_server.md` |
-| M6 | `docs/internal/m6_runtime.md` |
-| M7 | `docs/internal/m7_auth.md` |
+| M4 | `docs/archive/write_path_pipeline.md` |
+| M5 | `docs/draft/mcp_server_handler.md` |
+| M6 | — |
+| M7 | — |
 
-If the milestone document does not exist, note this in the review and fall back to the core design documents in step 4 as the primary reference for implementation approach.
+If the milestone document does not exist (M6, M7), note this in the review and fall back to the core design documents in step 4 as the primary reference for implementation approach.
 
 ### 3. Check for a branch
 
-Run `gh branch list` to check whether a feature branch exists for this ticket. Record it for the review header — use `*[No branch]*` if none exists.
+Run `git branch --list` to check whether a local feature branch exists for this ticket. Record it for the review header — use `*[No branch]*` if none exists.
 
 ### 4. Trace the design references
 
 Identify every section reference in the ticket's Design Constraints. Read those sections in:
 
-- `docs/internal/rfc.md`
+- `docs/internal/RFC.md`
 - `docs/internal/mcp_server.md`
 - `docs/internal/mcp_tool_surface.md`
 - `docs/internal/conventions.md`
@@ -111,7 +111,7 @@ Check against `@docs/internal/ticket_writing_specification.md`:
 
 ### 6. Produce the review
 
-Follow [review-output](../../../../docs/templates/review-output.md) exactly. Use `Ticket Review` as the review type in the header.
+Follow the `formatting-tribal-review` skill exactly. Use `Ticket Review` as the review type in the header.
 
 ---
 

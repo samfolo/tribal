@@ -8,7 +8,7 @@ allowed-tools: Read, Grep, Glob, Bash(gh issue view:*), Bash(gh issue list:*), B
 # Reviewing Tribal Plan
 
 **Scope**: Governs the review of an implementation plan before code is written. The plan exists as a local file produced by Claude Code immediately before implementation begins.  
-**Output format**: Produce all output in strict conformance with the format defined in [review-output](../../../../docs/templates/review-output.md). Read that file before producing any output.
+**Output format**: Produce all output in strict conformance with the format defined by the `formatting-tribal-review` skill. Load that skill's content before producing any output.
 
 ---
 
@@ -80,18 +80,18 @@ From the ticket (or the plan itself if no ticket), identify which milestone this
 
 | Milestone | Document |
 |-----------|----------|
-| M4 | `docs/internal/m4_write_path_pipeline.md` |
-| M5 | `docs/internal/m5_mcp_server.md` |
-| M6 | `docs/internal/m6_runtime.md` |
-| M7 | `docs/internal/m7_auth.md` |
+| M4 | `docs/archive/write_path_pipeline.md` |
+| M5 | `docs/draft/mcp_server_handler.md` |
+| M6 | — |
+| M7 | — |
 
-If the milestone document does not exist, fall back to the core design documents as the primary reference for implementation approach.
+If the milestone document does not exist (M6, M7), fall back to the core design documents as the primary reference for implementation approach.
 
 ### 5. Load the design references
 
 From the ticket's Design Constraints (or the plan's references if no ticket), identify every cited design section. Read those sections in:
 
-- `docs/internal/rfc.md`
+- `docs/internal/RFC.md`
 - `docs/internal/mcp_server.md`
 - `docs/internal/mcp_tool_surface.md`
 - `docs/internal/conventions.md`
@@ -132,7 +132,7 @@ Does the plan account for the test coverage the ticket's acceptance criteria req
 
 ### 7. Produce the review
 
-Follow [review-output](../../../../docs/templates/review-output.md) exactly. Use `Plan Review` as the review type in the header. The issue number (if provided) goes in the subtitle as `#<number>`.
+Follow the `formatting-tribal-review` skill exactly. Use `Plan Review` as the review type in the header. The issue number (if provided) goes in the subtitle as `#<number>`.
 
 ---
 

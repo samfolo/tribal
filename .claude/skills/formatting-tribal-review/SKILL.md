@@ -118,7 +118,7 @@ Example:
 #42 · feature/52-add-triage-similarity
 ```
 
-**Branch name:** For ticket reviews, check with `git branch -r` whether a branch exists before defaulting to `*[No branch]*`. For plan and code reviews, the branch should always be known.
+**Branch name:** For ticket reviews, check with `git branch --list` whether a local branch exists before defaulting to `*[No branch]*`. For plan and code reviews, the branch should always be known.
 
 ---
 ### 2. Verdict & Rating
