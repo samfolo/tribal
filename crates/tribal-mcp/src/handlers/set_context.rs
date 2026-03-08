@@ -323,9 +323,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_project_id_updates_session_and_response() {
-        // Uses a real pool (not `lazy_pool`) because the project_id path
-        // calls `pool.acquire()` internally.
+        // Uses a dedicated pool (not `lazy_pool`) because the project_id
+        // path calls `pool.acquire()` internally. A per-test pool avoids
+        // contention with the shared pool under concurrent test execution.
         let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
         let project = a_project().build();
         let mock = MockProjectRepository::builder()
             .on_find_by_id(project.clone(), None)
@@ -334,7 +336,7 @@ mod tests {
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
         let (result, mutated) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &repos,
             &session,
             serde_json::json!({ "project_id": project.id().to_string() }),
