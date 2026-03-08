@@ -1,7 +1,8 @@
 ---
 name: reviewing-tribal-plan
 description: Use this skill when reviewing a Tribal implementation plan for architectural soundness, faithfulness to its ticket, and compliance with design documents — before coding begins.
-version: 0.1.0
+user-invocable: false
+allowed-tools: Read, Grep, Glob, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh api:*)
 ---
 
 # Reviewing Tribal Plan

@@ -1,7 +1,8 @@
 ---
 name: reviewing-tribal-ticket
 description: Use this skill when reviewing a Tribal ticket draft for correctness, completeness, and faithfulness to the design documents before it is published as a GitHub issue.
-version: 0.1.0
+user-invocable: false
+allowed-tools: Read, Grep, Glob, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh api:*)
 ---
 
 # Reviewing Tribal Ticket
