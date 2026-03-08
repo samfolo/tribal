@@ -58,6 +58,9 @@
       "Bash(gh run list:*)",
       "Bash(gh run view:*)",
 
+      "Bash(git branch --list:*)",
+      "Bash(git branch --show-current:*)",
+
       "Bash(grep:*)",
       "Bash(ls:*)"
     ],
