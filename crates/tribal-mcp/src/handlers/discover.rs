@@ -164,7 +164,7 @@ impl TribalServerHandler {
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
 
-        let embedding_model = embedding_provider.identity().model.clone();
+        let embedding_model = embedding_response.usage.model.clone();
 
         let mut conn = match pool.acquire().await {
             Ok(conn) => conn,
