@@ -102,9 +102,9 @@ impl TribalServerHandler {
             let mut changed = false;
 
             if let Some(project) = resolved_project {
-                let same = ctx.project.as_ref().is_some_and(|p| p.id == project.id);
+                let same = ctx.project.as_ref() == Some(&project);
+                ctx.project = Some(project);
                 if !same {
-                    ctx.project = Some(project);
                     changed = true;
                 }
             }

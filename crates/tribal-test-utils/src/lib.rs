@@ -16,7 +16,7 @@ mod seeding;
 mod setup;
 mod text;
 
-pub use db::{TestContext, TestTransaction, serial_lock, test_context};
+pub use db::{TestContext, TestTransaction, lazy_pool, serial_lock, test_context};
 pub use error::TestDbError;
 pub use factories::*;
 pub use lifecycle::*;
