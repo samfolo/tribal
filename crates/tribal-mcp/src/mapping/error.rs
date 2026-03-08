@@ -6,7 +6,6 @@
 
 use tribal_db::DbError;
 use tribal_domain::{IdParseError, McpErrorCode};
-use tribal_inference::InferenceError;
 
 use crate::error::{IntoMcpError, McpToolError};
 
@@ -56,20 +55,6 @@ impl IntoMcpError for IdParseError {
     fn into_mcp_error(self) -> McpToolError {
         McpToolError {
             code: McpErrorCode::InvalidArgument,
-            message: self.to_string(),
-            details: serde_json::json!({}),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// InferenceError → McpToolError
-// ---------------------------------------------------------------------------
-
-impl IntoMcpError for InferenceError {
-    fn into_mcp_error(self) -> McpToolError {
-        McpToolError {
-            code: McpErrorCode::Internal,
             message: self.to_string(),
             details: serde_json::json!({}),
         }
@@ -168,53 +153,5 @@ mod tests {
         };
         let mcp = err.into_mcp_error();
         assert_eq!(mcp.code, McpErrorCode::InvalidArgument);
-    }
-
-    // -- InferenceError ---------------------------------------------------
-
-    #[test]
-    fn test_provider_unavailable_maps_to_internal() {
-        let err = InferenceError::ProviderUnavailable {
-            provider: "ollama".to_owned(),
-            reason: "connection refused".to_owned(),
-        };
-        let mcp = err.into_mcp_error();
-        assert_eq!(mcp.code, McpErrorCode::Internal);
-        assert!(mcp.message.contains("ollama"));
-    }
-
-    #[test]
-    fn test_embedding_failed_maps_to_internal() {
-        let err = InferenceError::EmbeddingFailed {
-            model: "nomic-embed-text".to_owned(),
-            context: "generating query embedding".to_owned(),
-            source: None,
-        };
-        let mcp = err.into_mcp_error();
-        assert_eq!(mcp.code, McpErrorCode::Internal);
-        assert!(mcp.message.contains("nomic-embed-text"));
-    }
-
-    #[test]
-    fn test_llm_call_failed_maps_to_internal() {
-        let err = InferenceError::LlmCallFailed {
-            model: "claude-sonnet".to_owned(),
-            context: "extraction".to_owned(),
-            source: None,
-        };
-        let mcp = err.into_mcp_error();
-        assert_eq!(mcp.code, McpErrorCode::Internal);
-        assert!(mcp.message.contains("claude-sonnet"));
-    }
-
-    #[test]
-    fn test_response_parse_failed_maps_to_internal() {
-        let err = InferenceError::ResponseParseFailed {
-            expected_shape: "JSON object".to_owned(),
-            actual: "plain text".to_owned(),
-        };
-        let mcp = err.into_mcp_error();
-        assert_eq!(mcp.code, McpErrorCode::Internal);
-        assert!(mcp.message.contains("JSON object"));
     }
 }

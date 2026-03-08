@@ -13,10 +13,8 @@ use rmcp::{
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tribal_db::{
-    JobRepository, KnowledgeItemRepository, PrincipalRepository, ProjectRepository,
-    ReferenceRepository, RetrievalFeedbackRepository, StandingRepository,
+    JobRepository, KnowledgeItemRepository, ProjectRepository, RetrievalFeedbackRepository,
 };
-use tribal_inference::EmbeddingProvider;
 
 use crate::{
     auth::AuthContext,
@@ -57,15 +55,13 @@ pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
 /// Fields marked `#[allow(dead_code)]` are not yet consumed by any handler
 /// but are wired in for upcoming tool implementations.
 pub struct ConnectionRepositories {
+    #[allow(dead_code)]
     pub(crate) knowledge_item: Arc<dyn KnowledgeItemRepository + Send + Sync>,
     pub(crate) project: Arc<dyn ProjectRepository + Send + Sync>,
     #[allow(dead_code)]
     pub(crate) job: Arc<dyn JobRepository + Send + Sync>,
     #[allow(dead_code)]
     pub(crate) retrieval_feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
-    pub(crate) standing: Arc<dyn StandingRepository + Send + Sync>,
-    pub(crate) reference: Arc<dyn ReferenceRepository + Send + Sync>,
-    pub(crate) principal: Arc<dyn PrincipalRepository + Send + Sync>,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +76,6 @@ pub struct ConnectionRepositories {
 pub struct TribalServerHandler {
     pub(crate) pool: PgPool,
     pub(crate) repositories: ConnectionRepositories,
-    pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
     pub(crate) session: Arc<RwLock<SessionContext>>,
 }
 
@@ -95,13 +90,11 @@ impl TribalServerHandler {
     pub fn new(
         pool: PgPool,
         repositories: ConnectionRepositories,
-        embedding_provider: Arc<dyn EmbeddingProvider>,
         session: SessionContext,
     ) -> Self {
         Self {
             pool,
             repositories,
-            embedding_provider,
             session: Arc::new(RwLock::new(session)),
         }
     }
@@ -255,7 +248,7 @@ mod tests {
         model::{ErrorCode, ResourceContents},
     };
     use tribal_domain::ProjectId;
-    use tribal_test_utils::{MockEmbeddingProvider, lazy_pool};
+    use tribal_test_utils::lazy_pool;
 
     use super::*;
     use crate::{
@@ -265,18 +258,9 @@ mod tests {
 
     // -- Helpers -----------------------------------------------------------
 
-    fn test_embedding_provider() -> Arc<dyn EmbeddingProvider> {
-        Arc::new(MockEmbeddingProvider::builder().build())
-    }
-
     fn test_handler() -> TribalServerHandler {
         let session = SessionContext::new(None, "user:test".into());
-        TribalServerHandler::new(
-            lazy_pool(),
-            test_repositories(),
-            test_embedding_provider(),
-            session,
-        )
+        TribalServerHandler::new(lazy_pool(), test_repositories(), session)
     }
 
     fn test_handler_with_project() -> TribalServerHandler {
@@ -286,12 +270,7 @@ mod tests {
             git_remote: "git@github.com:user/tribal.git".into(),
         };
         let session = SessionContext::new(Some(project), "user:test".into());
-        TribalServerHandler::new(
-            lazy_pool(),
-            test_repositories(),
-            test_embedding_provider(),
-            session,
-        )
+        TribalServerHandler::new(lazy_pool(), test_repositories(), session)
     }
 
     // -- get_info -----------------------------------------------------------

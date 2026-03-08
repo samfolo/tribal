@@ -475,6 +475,13 @@
             "null"
           ]
         },
+        "total_count": {
+          "description": "Total matching items. Present when query uses structured filters only (project, kind, tags, time range); null when primary search is semantic similarity.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "trace_id": {
           "description": "OpenTelemetry trace ID for this retrieval. Pass to tribal_feedback to rate this session.",
           "type": "string"
@@ -482,7 +489,6 @@
       },
       "required": [
         "items",
-        "next_cursor",
         "applied_project_id",
         "embedding_model",
         "exact",
