@@ -1,12 +1,14 @@
 //! MCP request and response types for `tribal_discover`.
 
+use std::fmt::Write;
+
 use chrono::{DateTime, Utc};
 use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Deserializer, Serialize};
 use tribal_domain::KnowledgeKind;
 
 use super::common::{McpKnowledgeItem, McpReference, McpStanding};
-use crate::error::IntoCallToolResult;
+use crate::{error::IntoCallToolResult, format::truncate_content};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -14,6 +16,10 @@ use crate::error::IntoCallToolResult;
 
 const SERIALISE_DISCOVER_RESPONSE: &str =
     "McpDiscoverResponse should always serialise successfully";
+
+/// Maximum number of characters to include in the content preview
+/// within the human-readable text summary.
+const CONTENT_PREVIEW_MAX_LENGTH: usize = 100;
 
 // ---------------------------------------------------------------------------
 // Request
@@ -71,15 +77,21 @@ where
 #[derive(Debug, Serialize)]
 pub(crate) struct McpDiscoverResponse {
     pub(crate) items: Vec<McpDiscoveryResult>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Required + nullable — always present (null when no more results).
     pub(crate) next_cursor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) total_count: Option<u64>,
     /// Required + nullable — always present in serialised JSON.
     pub(crate) applied_project_id: Option<String>,
     pub(crate) embedding_model: String,
     pub(crate) trace_id: String,
     pub(crate) exact: bool,
+    /// The original query text — used by `IntoCallToolResult` for the
+    /// human-readable summary. Excluded from `structuredContent`.
+    #[serde(skip)]
+    pub(crate) query: String,
+    /// Resolved project name — used by `IntoCallToolResult` for the
+    /// human-readable summary. Excluded from `structuredContent`.
+    #[serde(skip)]
+    pub(crate) project_name: Option<String>,
 }
 
 /// A single discovery result with its similarity score.
@@ -100,14 +112,21 @@ pub(crate) struct McpDiscoveryResult {
 impl IntoCallToolResult for McpDiscoverResponse {
     fn into_call_tool_result(self) -> CallToolResult {
         let count = self.items.len();
-        let scope = self
-            .applied_project_id
-            .as_deref()
-            .map_or("global".to_owned(), |id| format!("project {id}"));
-        let text = format!(
-            "Discovered {count} item(s) in {scope} (exact: {})",
-            self.exact,
-        );
+        let scope = match self.project_name.as_deref() {
+            Some(name) => format!("scoped to project '{name}'"),
+            None => "global search".to_owned(),
+        };
+        let mut text = format!("Found {count} items for '{}' ({scope}).", self.query);
+
+        if let Some(top) = self.items.first() {
+            let kind = &top.item.kind;
+            let preview = truncate_content(&top.item.content, CONTENT_PREVIEW_MAX_LENGTH);
+            let _ = write!(
+                text,
+                " Top result: [{kind}] {preview} ({:.2} similarity).",
+                top.similarity,
+            );
+        }
 
         let structured = serde_json::to_value(&self).expect(SERIALISE_DISCOVER_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
@@ -122,6 +141,8 @@ impl IntoCallToolResult for McpDiscoverResponse {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::RawContent;
+
     use super::*;
 
     #[test]
@@ -170,19 +191,25 @@ mod tests {
         let resp = McpDiscoverResponse {
             items: vec![],
             next_cursor: None,
-            total_count: None,
             applied_project_id: None,
             embedding_model: "text-embedding-3-small".into(),
             trace_id: "trace123".into(),
             exact: true,
+            query: "test".into(),
+            project_name: None,
         };
         let json = serde_json::to_value(&resp).expect("serialises");
         // applied_project_id must be present as null
         assert!(json.get("applied_project_id").is_some());
         assert!(json["applied_project_id"].is_null());
-        // next_cursor and total_count must be absent
-        assert!(json.get("next_cursor").is_none());
+        // next_cursor must be present as null (required field)
+        assert!(json.get("next_cursor").is_some());
+        assert!(json["next_cursor"].is_null());
+        // total_count must not exist
         assert!(json.get("total_count").is_none());
+        // serde(skip) fields must not appear
+        assert!(json.get("query").is_none());
+        assert!(json.get("project_name").is_none());
     }
 
     #[test]
@@ -190,15 +217,55 @@ mod tests {
         let resp = McpDiscoverResponse {
             items: vec![],
             next_cursor: None,
-            total_count: None,
             applied_project_id: Some("proj_abc".into()),
             embedding_model: "m".into(),
             trace_id: "t".into(),
             exact: true,
+            query: "auth patterns".into(),
+            project_name: Some("tribal".into()),
         };
         let result = resp.into_call_tool_result();
         assert_eq!(result.is_error, Some(false));
         assert_eq!(result.content.len(), 1);
         assert!(result.structured_content.is_some());
+    }
+
+    #[test]
+    fn test_text_summary_global_search() {
+        let resp = McpDiscoverResponse {
+            items: vec![],
+            next_cursor: None,
+            applied_project_id: None,
+            embedding_model: "m".into(),
+            trace_id: "t".into(),
+            exact: true,
+            query: "auth patterns".into(),
+            project_name: None,
+        };
+        let result = resp.into_call_tool_result();
+        let RawContent::Text(raw_text) = &result.content[0].raw else {
+            panic!("expected text content");
+        };
+        assert!(raw_text.text.contains("global search"));
+        assert!(raw_text.text.contains("auth patterns"));
+    }
+
+    #[test]
+    fn test_text_summary_scoped_to_project() {
+        let resp = McpDiscoverResponse {
+            items: vec![],
+            next_cursor: None,
+            applied_project_id: Some("proj_abc".into()),
+            embedding_model: "m".into(),
+            trace_id: "t".into(),
+            exact: true,
+            query: "auth".into(),
+            project_name: Some("tribal".into()),
+        };
+        let result = resp.into_call_tool_result();
+        let RawContent::Text(raw_text) = &result.content[0].raw else {
+            panic!("expected text content");
+        };
+        assert!(raw_text.text.contains("scoped to project 'tribal'"));
     }
 }

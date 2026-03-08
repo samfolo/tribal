@@ -19,7 +19,7 @@ pub(crate) const SESSION_RESOURCE_URI: &str = "tribal://session/context";
 ///
 /// Holds a domain-level `ProjectId` whose underlying value is a UUID. When
 /// rendered as a string (including in MCP JSON), it uses the `proj_<uuid>` form.
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct SessionProject {
     pub id: ProjectId,
     pub name: String,
