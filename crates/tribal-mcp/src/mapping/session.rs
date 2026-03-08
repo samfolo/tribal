@@ -45,7 +45,7 @@ impl From<&SessionContext> for serde_json::Value {
 // ---------------------------------------------------------------------------
 
 /// Deserialisation target for `tribal_set_context` input.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, PartialEq)]
 pub(crate) struct McpSetContextRequest {
     pub(crate) project_id: Option<String>,
     pub(crate) model: Option<String>,

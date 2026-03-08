@@ -20,16 +20,17 @@ impl TribalServerHandler {
     /// Handles the `tribal_set_context` tool call.
     ///
     /// Delegates to [`apply_set_context`] for the core logic, then sends a
-    /// resource-updated notification if the session was mutated.
+    /// resource-updated notification only when the session was actually
+    /// mutated (i.e. at least one field changed value).
     pub(crate) async fn handle_set_context(
         &self,
         params: serde_json::Value,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let result =
+        let (result, mutated) =
             Self::apply_set_context(&self.pool, &self.repositories, &self.session, params).await?;
 
-        if result.is_error != Some(true) {
+        if mutated {
             notify_session_updated(&self.session, &context.peer).await;
         }
 
@@ -40,34 +41,51 @@ impl TribalServerHandler {
     /// so it can be tested without a `Peer<RoleServer>`.
     ///
     /// Parses the request, validates and resolves a project ID (if supplied),
-    /// then applies partial updates to the session. Returns the full
-    /// post-mutation session context as a `CallToolResult`.
+    /// then applies partial updates to the session. Returns `(result, mutated)`
+    /// where `mutated` is `true` only when at least one session field was
+    /// replaced with a different value.
     async fn apply_set_context(
         pool: &PgPool,
         repositories: &ConnectionRepositories,
         session: &RwLock<SessionContext>,
         params: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<(CallToolResult, bool), McpError> {
         let request: McpSetContextRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
+
+        if request == McpSetContextRequest::default() {
+            let response = McpSetContextResponse::from(&*session.read().await);
+            return Ok((response.into_call_tool_result(), false));
+        }
 
         let resolved_project = if let Some(ref raw_id) = request.project_id {
             let proj_id = match ProjectId::from_str(raw_id) {
                 Ok(id) => id,
-                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+                Err(e) => {
+                    return Ok((e.into_mcp_error().into_call_tool_result(), false));
+                }
             };
 
-            let Ok(mut conn) = pool.acquire().await else {
-                return Ok(DbError::PoolExhausted {
-                    pool_name: POOL_NAME,
+            let mut conn = match pool.acquire().await {
+                Ok(conn) => conn,
+                Err(sqlx::Error::PoolTimedOut) => {
+                    let db_err = DbError::PoolExhausted {
+                        pool_name: POOL_NAME,
+                    };
+                    return Ok((db_err.into_mcp_error().into_call_tool_result(), false));
                 }
-                .into_mcp_error()
-                .into_call_tool_result());
+                Err(other) => {
+                    let db_err = DbError::QueryFailed {
+                        context: "acquiring connection from pool".into(),
+                        source: other,
+                    };
+                    return Ok((db_err.into_mcp_error().into_call_tool_result(), false));
+                }
             };
 
             let project = match repositories.project.find_by_id(&mut conn, proj_id).await {
                 Ok(p) => p,
-                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+                Err(e) => return Ok((e.into_mcp_error().into_call_tool_result(), false)),
             };
 
             Some(SessionProject {
@@ -79,23 +97,34 @@ impl TribalServerHandler {
             None
         };
 
-        let response = {
+        let (response, mutated) = {
             let mut ctx = session.write().await;
+            let mut changed = false;
 
             if let Some(project) = resolved_project {
-                ctx.project = Some(project);
+                let same = ctx.project.as_ref().is_some_and(|p| p.id == project.id);
+                if !same {
+                    ctx.project = Some(project);
+                    changed = true;
+                }
             }
-            if let Some(model) = request.model {
-                ctx.actor.model = Some(model);
+            if let Some(ref model) = request.model
+                && ctx.actor.model.as_ref() != Some(model)
+            {
+                ctx.actor.model = Some(model.clone());
+                changed = true;
             }
-            if let Some(provider) = request.provider {
-                ctx.actor.provider = Some(provider);
+            if let Some(ref provider) = request.provider
+                && ctx.actor.provider.as_ref() != Some(provider)
+            {
+                ctx.actor.provider = Some(provider.clone());
+                changed = true;
             }
 
-            McpSetContextResponse::from(&*ctx)
+            (McpSetContextResponse::from(&*ctx), changed)
         };
 
-        Ok(response.into_call_tool_result())
+        Ok((response.into_call_tool_result(), mutated))
     }
 }
 
@@ -140,7 +169,7 @@ mod tests {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, mutated) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
@@ -149,6 +178,7 @@ mod tests {
         .await
         .expect(NO_PROTOCOL_ERROR);
 
+        assert!(!mutated);
         assert_eq!(result.is_error, Some(false));
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -163,7 +193,7 @@ mod tests {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, mutated) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
@@ -172,6 +202,7 @@ mod tests {
         .await
         .expect(NO_PROTOCOL_ERROR);
 
+        assert!(mutated);
         assert_eq!(result.is_error, Some(false));
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -187,7 +218,7 @@ mod tests {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, mutated) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
@@ -196,6 +227,7 @@ mod tests {
         .await
         .expect(NO_PROTOCOL_ERROR);
 
+        assert!(mutated);
         assert_eq!(result.is_error, Some(false));
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -210,7 +242,7 @@ mod tests {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, mutated) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
@@ -222,6 +254,7 @@ mod tests {
         .await
         .expect(NO_PROTOCOL_ERROR);
 
+        assert!(mutated);
         assert_eq!(result.is_error, Some(false));
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -241,7 +274,7 @@ mod tests {
         let repos = repositories_with_project_mock(mock);
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, mutated) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &repos,
             &session,
@@ -250,6 +283,7 @@ mod tests {
         .await
         .expect(NO_PROTOCOL_ERROR);
 
+        assert!(mutated);
         assert_eq!(result.is_error, Some(false));
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -275,7 +309,7 @@ mod tests {
         let repos = repositories_with_project_mock(mock);
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, mutated) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &repos,
             &session,
@@ -288,6 +322,7 @@ mod tests {
         .await
         .expect(NO_PROTOCOL_ERROR);
 
+        assert!(mutated);
         assert_eq!(result.is_error, Some(false));
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -311,7 +346,7 @@ mod tests {
         .await
         .expect(NO_PROTOCOL_ERROR);
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, _) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &repos,
             &session,
@@ -332,14 +367,18 @@ mod tests {
         let repos = test_repositories();
         let params = serde_json::json!({ "model": "claude-opus-4-6" });
 
-        let result1 =
+        let (result1, first_mutated) =
             TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params.clone())
                 .await
                 .expect(NO_PROTOCOL_ERROR);
 
-        let result2 = TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params)
-            .await
-            .expect(NO_PROTOCOL_ERROR);
+        let (result2, second_mutated) =
+            TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params)
+                .await
+                .expect(NO_PROTOCOL_ERROR);
+
+        assert!(first_mutated);
+        assert!(!second_mutated);
 
         let s1 = result1.structured_content.expect(STRUCTURED_CONTENT);
         let s2 = result2.structured_content.expect(STRUCTURED_CONTENT);
@@ -354,7 +393,7 @@ mod tests {
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
         let wrong_type_id = KnowledgeItemId::new().to_string();
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, mutated) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
@@ -363,6 +402,7 @@ mod tests {
         .await
         .expect("should return Ok with error result, not Err");
 
+        assert!(!mutated);
         assert_eq!(result.is_error, Some(true));
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -374,7 +414,7 @@ mod tests {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, mutated) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
@@ -383,6 +423,7 @@ mod tests {
         .await
         .expect("should return Ok with error result, not Err");
 
+        assert!(!mutated);
         assert_eq!(result.is_error, Some(true));
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -403,7 +444,7 @@ mod tests {
         let repos = repositories_with_project_mock(mock);
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, mutated) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &repos,
             &session,
@@ -412,6 +453,7 @@ mod tests {
         .await
         .expect("should return Ok with error result, not Err");
 
+        assert!(!mutated);
         assert_eq!(result.is_error, Some(true));
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -442,7 +484,7 @@ mod tests {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, _) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
@@ -465,7 +507,7 @@ mod tests {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
-        let result = TribalServerHandler::apply_set_context(
+        let (result, _) = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
