@@ -1,7 +1,7 @@
 //! MCP request and response types for `tribal_set_context`, plus the
 //! existing raw JSON conversion for the session resource.
 
-use rmcp::model::{CallToolResult, Content, RawContent};
+use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Serialize};
 
 use crate::{error::IntoCallToolResult, session::SessionContext};
@@ -144,6 +144,7 @@ impl IntoCallToolResult for McpSetContextResponse {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::RawContent;
     use tribal_domain::ProjectId;
 
     use super::*;

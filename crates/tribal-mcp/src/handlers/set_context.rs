@@ -12,7 +12,7 @@ use tribal_domain::ProjectId;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, invalid_argument},
     mapping::{McpSetContextRequest, McpSetContextResponse},
-    server_handler::{ConnectionRepositories, TribalServerHandler},
+    server_handler::{ConnectionRepositories, POOL_NAME, TribalServerHandler},
     session::{SessionContext, SessionProject, notify_session_updated},
 };
 
@@ -51,24 +51,21 @@ impl TribalServerHandler {
         let request: McpSetContextRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
-        // -- Resolve project (async, before acquiring write lock) ------------
-
         let resolved_project = if let Some(ref raw_id) = request.project_id {
             let proj_id = match ProjectId::from_str(raw_id) {
                 Ok(id) => id,
                 Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
             };
 
-            let mut conn = match pool.acquire().await {
-                Ok(conn) => conn,
-                Err(_) => {
-                    return Ok(DbError::PoolExhausted { pool_name: "mcp" }
-                        .into_mcp_error()
-                        .into_call_tool_result());
+            let Ok(mut conn) = pool.acquire().await else {
+                return Ok(DbError::PoolExhausted {
+                    pool_name: POOL_NAME,
                 }
+                .into_mcp_error()
+                .into_call_tool_result());
             };
 
-            let project = match repositories.project.find_by_id(&mut *conn, proj_id).await {
+            let project = match repositories.project.find_by_id(&mut conn, proj_id).await {
                 Ok(p) => p,
                 Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
             };
@@ -81,8 +78,6 @@ impl TribalServerHandler {
         } else {
             None
         };
-
-        // -- Apply partial update under write lock ---------------------------
 
         let response = {
             let mut ctx = session.write().await;
@@ -112,20 +107,25 @@ impl TribalServerHandler {
 mod tests {
     use std::sync::Arc;
 
+    use rmcp::model::ErrorCode;
     use tokio::sync::RwLock;
-    use tribal_domain::{McpErrorCode, ProjectId};
+    use tribal_domain::{KnowledgeItemId, ProjectId};
     use tribal_test_utils::{
         ExhaustBehaviour, MockProjectRepository, a_not_found, a_project, test_context,
     };
 
     use crate::{
-        server_handler::{ConnectionRepositories, TribalServerHandler, tests::test_repositories},
-        session::{SessionContext, SessionProject},
+        server_handler::{ConnectionRepositories, TribalServerHandler},
+        session::SessionContext,
+        test_utils::test_repositories,
     };
 
-    // -----------------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------------
+    // -- Constants ---------------------------------------------------------
+
+    const STRUCTURED_CONTENT: &str = "structured_content must be present";
+    const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
+
+    // -- Helpers -----------------------------------------------------------
 
     fn repositories_with_project_mock(mock: MockProjectRepository) -> ConnectionRepositories {
         let mut repos = test_repositories();
@@ -133,28 +133,25 @@ mod tests {
         repos
     }
 
-    // -----------------------------------------------------------------------
-    // Happy path
-    // -----------------------------------------------------------------------
+    // -- Happy path -------------------------------------------------------
 
     #[tokio::test]
     async fn test_empty_request_returns_unchanged_session() {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({});
 
         let result = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
-            params,
+            serde_json::json!({}),
         )
         .await
-        .expect("should not return protocol error");
+        .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["principal_key"], "user:test");
         assert!(structured["project"].is_null());
         assert!(structured["actor"]["model"].is_null());
@@ -165,20 +162,19 @@ mod tests {
     async fn test_set_model_updates_actor() {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({ "model": "claude-opus-4-6" });
 
         let result = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
-            params,
+            serde_json::json!({ "model": "claude-opus-4-6" }),
         )
         .await
-        .expect("should not return protocol error");
+        .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["actor"]["model"], "claude-opus-4-6");
         assert!(structured["actor"]["provider"].is_null());
 
@@ -190,20 +186,19 @@ mod tests {
     async fn test_set_provider_updates_actor() {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({ "provider": "anthropic" });
 
         let result = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
-            params,
+            serde_json::json!({ "provider": "anthropic" }),
         )
         .await
-        .expect("should not return protocol error");
+        .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["actor"]["provider"], "anthropic");
 
         let guard = session.read().await;
@@ -214,23 +209,22 @@ mod tests {
     async fn test_set_model_and_provider() {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({
-            "model": "claude-opus-4-6",
-            "provider": "anthropic",
-        });
 
         let result = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
-            params,
+            serde_json::json!({
+                "model": "claude-opus-4-6",
+                "provider": "anthropic",
+            }),
         )
         .await
-        .expect("should not return protocol error");
+        .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["actor"]["model"], "claude-opus-4-6");
         assert_eq!(structured["actor"]["provider"], "anthropic");
     }
@@ -246,16 +240,19 @@ mod tests {
             .build();
         let repos = repositories_with_project_mock(mock);
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({ "project_id": proj_id_str });
 
-        let result =
-            TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params)
-                .await
-                .expect("should not return protocol error");
+        let result = TribalServerHandler::apply_set_context(
+            ctx.pool(),
+            &repos,
+            &session,
+            serde_json::json!({ "project_id": proj_id_str }),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["project"]["id"], proj_id_str);
         assert_eq!(structured["project"]["name"], project.name());
         assert_eq!(structured["project"]["git_remote"], project.git_remote());
@@ -277,20 +274,23 @@ mod tests {
             .build();
         let repos = repositories_with_project_mock(mock);
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({
-            "project_id": proj_id_str,
-            "model": "claude-opus-4-6",
-            "provider": "anthropic",
-        });
 
-        let result =
-            TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params)
-                .await
-                .expect("should not return protocol error");
+        let result = TribalServerHandler::apply_set_context(
+            ctx.pool(),
+            &repos,
+            &session,
+            serde_json::json!({
+                "project_id": proj_id_str,
+                "model": "claude-opus-4-6",
+                "provider": "anthropic",
+            }),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["project"]["id"], proj_id_str);
         assert_eq!(structured["actor"]["model"], "claude-opus-4-6");
         assert_eq!(structured["actor"]["provider"], "anthropic");
@@ -302,7 +302,6 @@ mod tests {
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
         let repos = test_repositories();
 
-        // First call: set model
         TribalServerHandler::apply_set_context(
             ctx.pool(),
             &repos,
@@ -310,9 +309,8 @@ mod tests {
             serde_json::json!({ "model": "claude-opus-4-6" }),
         )
         .await
-        .expect("first call should succeed");
+        .expect(NO_PROTOCOL_ERROR);
 
-        // Second call: set provider (model should be preserved)
         let result = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &repos,
@@ -320,9 +318,9 @@ mod tests {
             serde_json::json!({ "provider": "anthropic" }),
         )
         .await
-        .expect("second call should succeed");
+        .expect(NO_PROTOCOL_ERROR);
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["actor"]["model"], "claude-opus-4-6");
         assert_eq!(structured["actor"]["provider"], "anthropic");
     }
@@ -334,49 +332,40 @@ mod tests {
         let repos = test_repositories();
         let params = serde_json::json!({ "model": "claude-opus-4-6" });
 
-        let result1 = TribalServerHandler::apply_set_context(
-            ctx.pool(),
-            &repos,
-            &session,
-            params.clone(),
-        )
-        .await
-        .expect("first call should succeed");
-
-        let result2 =
-            TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params)
+        let result1 =
+            TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params.clone())
                 .await
-                .expect("second call should succeed");
+                .expect(NO_PROTOCOL_ERROR);
 
-        let s1 = result1.structured_content.expect("first structured_content");
-        let s2 = result2.structured_content.expect("second structured_content");
+        let result2 = TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params)
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        let s1 = result1.structured_content.expect(STRUCTURED_CONTENT);
+        let s2 = result2.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(s1, s2);
     }
 
-    // -----------------------------------------------------------------------
-    // Error paths
-    // -----------------------------------------------------------------------
+    // -- Error paths -------------------------------------------------------
 
     #[tokio::test]
     async fn test_invalid_project_id_prefix() {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({
-            "project_id": "ki_00000000-0000-0000-0000-000000000000",
-        });
+        let wrong_type_id = KnowledgeItemId::new().to_string();
 
         let result = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
-            params,
+            serde_json::json!({ "project_id": wrong_type_id }),
         )
         .await
         .expect("should return Ok with error result, not Err");
 
         assert_eq!(result.is_error, Some(true));
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["code"], "invalid_argument");
     }
 
@@ -384,20 +373,19 @@ mod tests {
     async fn test_invalid_project_id_uuid() {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({ "project_id": "proj_not-a-uuid" });
 
         let result = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
-            params,
+            serde_json::json!({ "project_id": "proj_not-a-uuid" }),
         )
         .await
         .expect("should return Ok with error result, not Err");
 
         assert_eq!(result.is_error, Some(true));
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["code"], "invalid_argument");
     }
 
@@ -414,16 +402,19 @@ mod tests {
             .build();
         let repos = repositories_with_project_mock(mock);
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({ "project_id": proj_id.to_string() });
 
-        let result =
-            TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params)
-                .await
-                .expect("should return Ok with error result, not Err");
+        let result = TribalServerHandler::apply_set_context(
+            ctx.pool(),
+            &repos,
+            &session,
+            serde_json::json!({ "project_id": proj_id.to_string() }),
+        )
+        .await
+        .expect("should return Ok with error result, not Err");
 
         assert_eq!(result.is_error, Some(true));
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["code"], "not_found");
     }
 
@@ -431,40 +422,36 @@ mod tests {
     async fn test_malformed_json_params() {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({ "project_id": 123 });
 
         let err = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
-            params,
+            serde_json::json!({ "project_id": 123 }),
         )
         .await
         .expect_err("should return Err(McpError) for malformed params");
 
-        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
-    // -----------------------------------------------------------------------
-    // Response shape
-    // -----------------------------------------------------------------------
+    // -- Response shape ----------------------------------------------------
 
     #[tokio::test]
     async fn test_response_always_has_principal_key_and_actor() {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({});
 
         let result = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
-            params,
+            serde_json::json!({}),
         )
         .await
-        .expect("should not return protocol error");
+        .expect(NO_PROTOCOL_ERROR);
 
-        let structured = result.structured_content.expect("structured_content present");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["principal_key"], "user:test");
         assert!(structured["actor"].is_object());
         assert!(structured["actor"].get("client_name").is_some());
@@ -477,19 +464,24 @@ mod tests {
     async fn test_response_project_null_when_unset() {
         let ctx = test_context().await;
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
-        let params = serde_json::json!({});
 
         let result = TribalServerHandler::apply_set_context(
             ctx.pool(),
             &test_repositories(),
             &session,
-            params,
+            serde_json::json!({}),
         )
         .await
-        .expect("should not return protocol error");
+        .expect(NO_PROTOCOL_ERROR);
 
-        let structured = result.structured_content.expect("structured_content present");
-        assert!(structured.get("project").is_some(), "project key must be present");
-        assert!(structured["project"].is_null(), "project value must be null");
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert!(
+            structured.get("project").is_some(),
+            "project key must be present"
+        );
+        assert!(
+            structured["project"].is_null(),
+            "project value must be null"
+        );
     }
 }

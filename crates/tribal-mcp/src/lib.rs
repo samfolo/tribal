@@ -9,6 +9,8 @@ mod handlers;
 mod mapping;
 mod server_handler;
 mod session;
+#[cfg(test)]
+mod test_utils;
 mod tools;
 
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
