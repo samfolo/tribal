@@ -98,7 +98,6 @@ pub(crate) fn session_resource() -> Resource {
 /// Sends a `notifications/resources/updated` for `tribal://session/context`
 /// if the client has subscribed. Best-effort — the notification is awaited
 /// but its result is silently discarded.
-#[allow(dead_code)]
 pub(crate) async fn notify_session_updated(
     session: &RwLock<SessionContext>,
     peer: &Peer<RoleServer>,
