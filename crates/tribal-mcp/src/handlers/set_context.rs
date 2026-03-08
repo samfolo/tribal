@@ -44,6 +44,10 @@ impl TribalServerHandler {
     /// then applies partial updates to the session. Returns `(result, mutated)`
     /// where `mutated` is `true` only when at least one session field was
     /// replaced with a different value.
+    ///
+    /// Domain errors (invalid ID, not-found, pool exhaustion) are returned as
+    /// error `CallToolResult` values via `IntoMcpError` / `IntoCallToolResult`.
+    /// Only protocol-level errors (malformed JSON) return `Err(McpError)`.
     async fn apply_set_context(
         pool: &PgPool,
         repositories: &ConnectionRepositories,
@@ -97,34 +101,32 @@ impl TribalServerHandler {
             None
         };
 
-        let (response, mutated) = {
-            let mut ctx = session.write().await;
-            let mut changed = false;
+        let mut ctx = session.write().await;
+        let mut changed = false;
 
-            if let Some(project) = resolved_project {
-                let same = ctx.project.as_ref() == Some(&project);
-                ctx.project = Some(project);
-                if !same {
-                    changed = true;
-                }
-            }
-            if let Some(ref model) = request.model
-                && ctx.actor.model.as_ref() != Some(model)
-            {
-                ctx.actor.model = Some(model.clone());
+        if let Some(project) = resolved_project {
+            let same = ctx.project.as_ref() == Some(&project);
+            ctx.project = Some(project);
+            if !same {
                 changed = true;
             }
-            if let Some(ref provider) = request.provider
-                && ctx.actor.provider.as_ref() != Some(provider)
-            {
-                ctx.actor.provider = Some(provider.clone());
-                changed = true;
-            }
+        }
+        if let Some(ref model) = request.model
+            && ctx.actor.model.as_ref() != Some(model)
+        {
+            ctx.actor.model = Some(model.clone());
+            changed = true;
+        }
+        if let Some(ref provider) = request.provider
+            && ctx.actor.provider.as_ref() != Some(provider)
+        {
+            ctx.actor.provider = Some(provider.clone());
+            changed = true;
+        }
 
-            (McpSetContextResponse::from(&*ctx), changed)
-        };
-
-        Ok((response.into_call_tool_result(), mutated))
+        let mut response = McpSetContextResponse::from(&*ctx);
+        response.mutated = changed;
+        Ok((response.into_call_tool_result(), changed))
     }
 }
 
@@ -140,7 +142,7 @@ mod tests {
     use tokio::sync::RwLock;
     use tribal_domain::{KnowledgeItemId, ProjectId};
     use tribal_test_utils::{
-        ExhaustBehaviour, MockProjectRepository, a_not_found, a_project, test_context,
+        ExhaustBehaviour, MockProjectRepository, a_not_found, a_project, lazy_pool, test_context,
     };
 
     use crate::{
@@ -166,11 +168,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_request_returns_unchanged_session() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
         let (result, mutated) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &test_repositories(),
             &session,
             serde_json::json!({}),
@@ -190,11 +192,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_model_updates_actor() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
         let (result, mutated) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &test_repositories(),
             &session,
             serde_json::json!({ "model": "claude-opus-4-6" }),
@@ -215,11 +217,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_provider_updates_actor() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
         let (result, mutated) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &test_repositories(),
             &session,
             serde_json::json!({ "provider": "anthropic" }),
@@ -239,11 +241,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_model_and_provider() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
         let (result, mutated) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &test_repositories(),
             &session,
             serde_json::json!({
@@ -333,12 +335,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_partial_updates_are_additive() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
         let repos = test_repositories();
 
         TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &repos,
             &session,
             serde_json::json!({ "model": "claude-opus-4-6" }),
@@ -347,7 +349,7 @@ mod tests {
         .expect(NO_PROTOCOL_ERROR);
 
         let (result, _) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &repos,
             &session,
             serde_json::json!({ "provider": "anthropic" }),
@@ -362,18 +364,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_idempotent_same_values() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
         let repos = test_repositories();
         let params = serde_json::json!({ "model": "claude-opus-4-6" });
 
         let (result1, first_mutated) =
-            TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params.clone())
+            TribalServerHandler::apply_set_context(&pool, &repos, &session, params.clone())
                 .await
                 .expect(NO_PROTOCOL_ERROR);
 
         let (result2, second_mutated) =
-            TribalServerHandler::apply_set_context(ctx.pool(), &repos, &session, params)
+            TribalServerHandler::apply_set_context(&pool, &repos, &session, params)
                 .await
                 .expect(NO_PROTOCOL_ERROR);
 
@@ -389,12 +391,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_project_id_prefix() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
         let wrong_type_id = KnowledgeItemId::new().to_string();
 
         let (result, mutated) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &test_repositories(),
             &session,
             serde_json::json!({ "project_id": wrong_type_id }),
@@ -411,11 +413,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_project_id_uuid() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
         let (result, mutated) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &test_repositories(),
             &session,
             serde_json::json!({ "project_id": "proj_not-a-uuid" }),
@@ -462,11 +464,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_params() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
         let err = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &test_repositories(),
             &session,
             serde_json::json!({ "project_id": 123 }),
@@ -481,11 +483,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_response_always_has_principal_key_and_actor() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
         let (result, _) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &test_repositories(),
             &session,
             serde_json::json!({}),
@@ -504,11 +506,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_response_project_null_when_unset() {
-        let ctx = test_context().await;
+        let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
 
         let (result, _) = TribalServerHandler::apply_set_context(
-            ctx.pool(),
+            &pool,
             &test_repositories(),
             &session,
             serde_json::json!({}),
