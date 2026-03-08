@@ -322,6 +322,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_set_project_id_updates_session_and_response() {
+        // Uses a real pool (not `lazy_pool`) because the project_id path
+        // calls `pool.acquire()` internally.
+        let ctx = test_context().await;
+        let project = a_project().build();
+        let mock = MockProjectRepository::builder()
+            .on_find_by_id(project.clone(), None)
+            .build();
+        let repos = repositories_with_project_mock(mock);
+        let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
+
+        let (result, mutated) = TribalServerHandler::apply_set_context(
+            ctx.pool(),
+            &repos,
+            &session,
+            serde_json::json!({ "project_id": project.id().to_string() }),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert!(mutated);
+        assert_eq!(result.is_error, Some(false));
+
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["project"]["id"], project.id().to_string());
+        assert_eq!(structured["project"]["name"], project.name());
+        assert_eq!(structured["project"]["git_remote"], project.git_remote());
+
+        let guard = session.read().await;
+        let session_project = guard.project.as_ref().expect("project must be set");
+        assert_eq!(session_project.id, project.id());
+        assert_eq!(session_project.name, project.name());
+        assert_eq!(session_project.git_remote, project.git_remote());
+    }
+
+    #[tokio::test]
     async fn test_partial_updates_are_additive() {
         let pool = lazy_pool();
         let session = Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())));
