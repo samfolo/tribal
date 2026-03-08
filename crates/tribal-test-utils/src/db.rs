@@ -294,3 +294,16 @@ pub async fn test_context() -> &'static TestContext {
         })
         .await
 }
+
+/// Returns a lazy `PgPool` that never connects to a real database.
+///
+/// Suitable for tests that construct a type requiring a `PgPool` but never
+/// exercise a code path that acquires a connection. Avoids the overhead of
+/// starting a testcontainer for purely structural tests.
+///
+/// # Panics
+///
+/// Panics if the dummy connection string cannot be parsed.
+pub fn lazy_pool() -> PgPool {
+    PgPool::connect_lazy("postgres://localhost/dummy").expect("lazy pool URL must parse")
+}
