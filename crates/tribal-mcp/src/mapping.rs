@@ -4,7 +4,6 @@ mod error;
 mod job;
 #[allow(unused)]
 mod knowledge;
-#[allow(unused)]
 mod session;
 
 #[allow(unused)]
@@ -19,5 +18,4 @@ pub(crate) use knowledge::{
     McpKnowledgeItem, McpReference, McpRelationDirection, McpSourceContext, McpStanding,
     McpTimeRange,
 };
-#[allow(unused)]
 pub(crate) use session::{McpSetContextRequest, McpSetContextResponse};

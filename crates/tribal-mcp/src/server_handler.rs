@@ -10,6 +10,7 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
 };
+use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, ProjectRepository, RetrievalFeedbackRepository,
@@ -29,6 +30,9 @@ use crate::{
 const SERVER_NAME: &str = "tribal";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Name used when reporting pool-related errors from the MCP connection pool.
+pub(crate) const POOL_NAME: &str = "mcp";
+
 /// Tool names with explicit `call_tool` match arms.
 #[cfg(test)]
 pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
@@ -45,28 +49,51 @@ pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
 // ConnectionRepositories
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
+/// Repository trait objects shared across MCP tool handlers.
+///
+/// Each field holds a trait-object-wrapped repository implementation.
+/// Fields marked `#[allow(dead_code)]` are not yet consumed by any handler
+/// but are wired in for upcoming tool implementations.
 pub struct ConnectionRepositories {
-    pub(crate) knowledge: Arc<dyn KnowledgeItemRepository + Send + Sync>,
+    #[allow(dead_code)]
+    pub(crate) knowledge_item: Arc<dyn KnowledgeItemRepository + Send + Sync>,
     pub(crate) project: Arc<dyn ProjectRepository + Send + Sync>,
+    #[allow(dead_code)]
     pub(crate) job: Arc<dyn JobRepository + Send + Sync>,
-    pub(crate) feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
+    #[allow(dead_code)]
+    pub(crate) retrieval_feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
 }
 
 // ---------------------------------------------------------------------------
 // TribalServerHandler
 // ---------------------------------------------------------------------------
 
+/// MCP server handler for the Tribal knowledge system.
+///
+/// Implements the [`ServerHandler`] trait from `rmcp`, dispatching tool
+/// calls to individual handler methods and managing the per-connection
+/// session state.
 pub struct TribalServerHandler {
-    #[allow(dead_code)]
-    repositories: ConnectionRepositories,
+    pub(crate) pool: PgPool,
+    pub(crate) repositories: ConnectionRepositories,
     pub(crate) session: Arc<RwLock<SessionContext>>,
 }
 
 impl TribalServerHandler {
+    /// Creates a new handler for the given connection pool, repositories, and
+    /// initial session state.
+    ///
+    /// The pool is used by handlers that need database access (e.g.
+    /// `tribal_set_context` for project lookup). The session is wrapped in an
+    /// `Arc<RwLock<…>>` internally.
     #[must_use]
-    pub fn new(repositories: ConnectionRepositories, session: SessionContext) -> Self {
+    pub fn new(
+        pool: PgPool,
+        repositories: ConnectionRepositories,
+        session: SessionContext,
+    ) -> Self {
         Self {
+            pool,
             repositories,
             session: Arc::new(RwLock::new(session)),
         }
@@ -216,37 +243,24 @@ impl ServerHandler for TribalServerHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use rmcp::{
         handler::server::ServerHandler,
         model::{ErrorCode, ResourceContents},
     };
     use tribal_domain::ProjectId;
-    use tribal_test_utils::{
-        MockJobRepository, MockKnowledgeItemRepository, MockProjectRepository,
-        MockRetrievalFeedbackRepository,
-    };
+    use tribal_test_utils::lazy_pool;
 
     use super::*;
-    use crate::session::{SESSION_RESOURCE_URI, SessionContext, SessionProject};
+    use crate::{
+        session::{SESSION_RESOURCE_URI, SessionContext, SessionProject},
+        test_utils::test_repositories,
+    };
 
-    // -----------------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------------
-
-    fn test_repositories() -> ConnectionRepositories {
-        ConnectionRepositories {
-            knowledge: Arc::new(MockKnowledgeItemRepository::builder().build()),
-            project: Arc::new(MockProjectRepository::builder().build()),
-            job: Arc::new(MockJobRepository::builder().build()),
-            feedback: Arc::new(MockRetrievalFeedbackRepository::builder().build()),
-        }
-    }
+    // -- Helpers -----------------------------------------------------------
 
     fn test_handler() -> TribalServerHandler {
         let session = SessionContext::new(None, "user:test".into());
-        TribalServerHandler::new(test_repositories(), session)
+        TribalServerHandler::new(lazy_pool(), test_repositories(), session)
     }
 
     fn test_handler_with_project() -> TribalServerHandler {
@@ -256,15 +270,13 @@ mod tests {
             git_remote: "git@github.com:user/tribal.git".into(),
         };
         let session = SessionContext::new(Some(project), "user:test".into());
-        TribalServerHandler::new(test_repositories(), session)
+        TribalServerHandler::new(lazy_pool(), test_repositories(), session)
     }
 
-    // -----------------------------------------------------------------------
-    // get_info tests
-    // -----------------------------------------------------------------------
+    // -- get_info -----------------------------------------------------------
 
-    #[test]
-    fn test_get_info_advertises_resources() {
+    #[tokio::test]
+    async fn test_get_info_advertises_resources() {
         let handler = test_handler();
         let info = handler.get_info();
 
@@ -274,8 +286,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_info_advertises_resource_subscription() {
+    #[tokio::test]
+    async fn test_get_info_advertises_resource_subscription() {
         let handler = test_handler();
         let info = handler.get_info();
         let resources = info.capabilities.resources.expect("resources must be set");
@@ -287,8 +299,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_info_advertises_tools() {
+    #[tokio::test]
+    async fn test_get_info_advertises_tools() {
         let handler = test_handler();
         let info = handler.get_info();
 
@@ -298,8 +310,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_info_server_identity() {
+    #[tokio::test]
+    async fn test_get_info_server_identity() {
         let handler = test_handler();
         let info = handler.get_info();
 
@@ -307,12 +319,10 @@ mod tests {
         assert_eq!(info.server_info.version, VERSION);
     }
 
-    // -----------------------------------------------------------------------
-    // get_tool tests
-    // -----------------------------------------------------------------------
+    // -- get_tool -----------------------------------------------------------
 
-    #[test]
-    fn test_get_tool_found() {
+    #[tokio::test]
+    async fn test_get_tool_found() {
         let handler = test_handler();
         let tool = handler.get_tool("tribal_discover");
 
@@ -320,15 +330,13 @@ mod tests {
         assert_eq!(tool.unwrap().name.as_ref(), "tribal_discover");
     }
 
-    #[test]
-    fn test_get_tool_not_found() {
+    #[tokio::test]
+    async fn test_get_tool_not_found() {
         let handler = test_handler();
         assert!(handler.get_tool("nonexistent").is_none());
     }
 
-    // -----------------------------------------------------------------------
-    // list_resources tests
-    // -----------------------------------------------------------------------
+    // -- list_resources -----------------------------------------------------
 
     #[test]
     fn test_list_resources_returns_session() {
@@ -341,9 +349,7 @@ mod tests {
         assert_eq!(resource.mime_type.as_deref(), Some("application/json"));
     }
 
-    // -----------------------------------------------------------------------
-    // read_resource tests
-    // -----------------------------------------------------------------------
+    // -- read_resource ------------------------------------------------------
 
     #[tokio::test]
     async fn test_read_resource_success() {
@@ -383,9 +389,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
-    // -----------------------------------------------------------------------
-    // subscribe tests
-    // -----------------------------------------------------------------------
+    // -- subscribe ----------------------------------------------------------
 
     #[tokio::test]
     async fn test_subscribe_success() {
@@ -411,9 +415,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
-    // -----------------------------------------------------------------------
-    // unsubscribe tests
-    // -----------------------------------------------------------------------
+    // -- unsubscribe --------------------------------------------------------
 
     #[tokio::test]
     async fn test_unsubscribe_success() {
