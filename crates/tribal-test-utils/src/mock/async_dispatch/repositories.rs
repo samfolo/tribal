@@ -132,6 +132,7 @@ macro_rules! mock_repository {
             // ---------------------------------------------------------------
 
             #[must_use]
+            #[allow(clippy::struct_field_names)]
             pub struct [<$MockName Builder>] {
                 $(
                     [<$method _queue>]: std::collections::VecDeque<

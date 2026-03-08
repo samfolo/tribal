@@ -1,7 +1,6 @@
 //! Handler for `tribal_discover` — semantic search across the knowledge base.
 
-use std::collections::HashMap;
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 use chrono::{DateTime, Utc};
 use rmcp::{
@@ -19,8 +18,8 @@ use tribal_inference::{EmbeddingProvider, EmbeddingRequest, InferenceError};
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
     mapping::{
-        McpDiscoverRequest, McpDiscoverResponse, McpDiscoveryResult,
-        common::{McpKnowledgeItem, McpReference, McpStanding},
+        McpDiscoverRequest, McpDiscoverResponse, McpDiscoveryResult, McpKnowledgeItem,
+        McpReference, McpStanding,
     },
     server_handler::{ConnectionRepositories, POOL_NAME, TribalServerHandler},
 };
@@ -129,7 +128,7 @@ impl TribalServerHandler {
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
         let limit = request.limit.unwrap_or(DEFAULT_LIMIT);
-        if limit < 1 || limit > MAX_LIMIT {
+        if !(1..=MAX_LIMIT).contains(&limit) {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
                 message: format!("limit must be between 1 and {MAX_LIMIT}, got {limit}"),
@@ -143,20 +142,11 @@ impl TribalServerHandler {
             guard.project.as_ref().map(|p| (p.id, p.name.clone()))
         };
 
-        let (project_id, project_name) = match request.project_id {
-            None => match session_project {
-                Some((id, name)) => (Some(id), Some(name)),
-                None => (None, None),
-            },
-            Some(None) => (None, None),
-            Some(Some(ref raw_id)) => {
-                let proj_id = match ProjectId::from_str(raw_id) {
-                    Ok(id) => id,
-                    Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-                };
-                (Some(proj_id), None)
-            }
-        };
+        let (project_id, project_name) =
+            match resolve_project_scope(&request.project_id, session_project) {
+                Ok(pair) => pair,
+                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+            };
 
         let mut conn = match pool.acquire().await {
             Ok(conn) => conn,
@@ -190,17 +180,13 @@ impl TribalServerHandler {
             cursor: request.cursor,
         };
 
-        let result = match execute_discover(
-            &mut conn,
-            repositories,
-            embedding_provider,
-            discover_params,
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-        };
+        let result =
+            match execute_discover(&mut conn, repositories, embedding_provider, discover_params)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+            };
 
         let trace_id = uuid::Uuid::new_v4().simple().to_string();
 
@@ -234,6 +220,39 @@ impl TribalServerHandler {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Resolves the four-way `project_id` semantics from the MCP request and
+/// session state.
+///
+/// The `project_id` field on `McpDiscoverRequest` uses `Option<Option<String>>`
+/// with three-way semantics:
+///
+/// | Request `project_id`    | Session project | Resolution                          |
+/// |-------------------------|-----------------|-------------------------------------|
+/// | **absent** (`None`)     | present         | Use session project (ID + name)     |
+/// | **absent** (`None`)     | absent          | Global search (`None, None`)        |
+/// | **null** (`Some(None)`) | any             | Global search regardless of session |
+/// | **present** string      | any             | Parse ID; name resolved later by DB |
+fn resolve_project_scope(
+    request_project_id: &Option<Option<String>>,
+    session_project: Option<(ProjectId, String)>,
+) -> Result<(Option<ProjectId>, Option<String>), tribal_domain::IdParseError> {
+    match request_project_id {
+        None => Ok(match session_project {
+            Some((id, name)) => (Some(id), Some(name)),
+            None => (None, None),
+        }),
+        Some(None) => Ok((None, None)),
+        Some(Some(raw_id)) => {
+            let proj_id = ProjectId::from_str(raw_id)?;
+            Ok((Some(proj_id), None))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Service function
 // ---------------------------------------------------------------------------
 
@@ -248,12 +267,12 @@ async fn execute_discover(
     embedding_provider: &(dyn EmbeddingProvider + Send + Sync),
     params: DiscoverParams,
 ) -> Result<DiscoverResult, DiscoverError> {
-    let project_name = if params.project_id.is_some() && params.project_name.is_none() {
-        let proj_id = params.project_id.unwrap();
-        let project = repositories.project.find_by_id(conn, proj_id).await?;
-        Some(project.name().to_owned())
-    } else {
-        params.project_name
+    let project_name = match (params.project_id, params.project_name) {
+        (Some(proj_id), None) => {
+            let project = repositories.project.find_by_id(conn, proj_id).await?;
+            Some(project.name().to_owned())
+        }
+        (_, name) => name,
     };
 
     let embedding_response = embedding_provider
@@ -389,8 +408,8 @@ mod tests {
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
-        MockStandingRepository, a_knowledge_item, a_not_found, a_principal, a_project,
-        a_reference, a_standing, an_embedding_response, lazy_pool,
+        MockStandingRepository, a_knowledge_item, a_not_found, a_principal, a_project, a_reference,
+        a_standing, an_embedding_response, lazy_pool, test_context,
     };
 
     use super::*;
@@ -433,9 +452,7 @@ mod tests {
         }
     }
 
-    fn a_search_response(
-        results: Vec<tribal_db::SemanticSearchResult>,
-    ) -> SemanticSearchResponse {
+    fn a_search_response(results: Vec<tribal_db::SemanticSearchResult>) -> SemanticSearchResponse {
         SemanticSearchResponse {
             results,
             next_cursor: None,
@@ -487,8 +504,9 @@ mod tests {
         session: &RwLock<SessionContext>,
         params: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
-        let pool = lazy_pool();
-        TribalServerHandler::apply_discover(&pool, repos, embedding_provider, session, params).await
+        let ctx = test_context().await;
+        TribalServerHandler::apply_discover(ctx.pool(), repos, embedding_provider, session, params)
+            .await
     }
 
     // -- Happy path -------------------------------------------------------
@@ -750,11 +768,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_below_one_is_invalid() {
+        let pool = lazy_pool();
         let repos = test_repositories();
         let provider = test_embedding_provider();
         let session = session_without_project();
 
-        let result = call_discover(
+        let result = TribalServerHandler::apply_discover(
+            &pool,
             &repos,
             provider.as_ref(),
             &session,
@@ -770,11 +790,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_above_fifty_is_invalid() {
+        let pool = lazy_pool();
         let repos = test_repositories();
         let provider = test_embedding_provider();
         let session = session_without_project();
 
-        let result = call_discover(
+        let result = TribalServerHandler::apply_discover(
+            &pool,
             &repos,
             provider.as_ref(),
             &session,
@@ -794,10 +816,7 @@ mod tests {
     async fn test_include_standing_enriches_results() {
         let prin_id = PrincipalId::new();
         let ki_id = KnowledgeItemId::new();
-        let item = a_knowledge_item()
-            .id(ki_id)
-            .principal_id(prin_id)
-            .build();
+        let item = a_knowledge_item().id(ki_id).principal_id(prin_id).build();
         let search = a_search_response(vec![a_search_result(&item, 0.9)]);
         let standing = a_standing()
             .supporting_count(3)
@@ -1001,12 +1020,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_project_id_prefix() {
+        let pool = lazy_pool();
         let repos = test_repositories();
         let provider = test_embedding_provider();
         let session = session_without_project();
         let wrong_type_id = KnowledgeItemId::new().to_string();
 
-        let result = call_discover(
+        let result = TribalServerHandler::apply_discover(
+            &pool,
             &repos,
             provider.as_ref(),
             &session,
@@ -1022,11 +1043,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_returns_invalid_params() {
+        let pool = lazy_pool();
         let repos = test_repositories();
         let provider = test_embedding_provider();
         let session = session_without_project();
 
-        let err = call_discover(
+        let err = TribalServerHandler::apply_discover(
+            &pool,
             &repos,
             provider.as_ref(),
             &session,

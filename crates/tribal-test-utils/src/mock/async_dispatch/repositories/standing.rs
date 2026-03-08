@@ -29,16 +29,13 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut conn = ctx.conn().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
 
         let ids = vec![KnowledgeItemId::new()];
-        let result = mock.compute(&mut conn, &ids).await.unwrap();
+        let result = mock.compute(&mut tx, &ids).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            result[0].supporting_count(),
-            standing.supporting_count(),
-        );
+        assert_eq!(result[0].supporting_count(), standing.supporting_count(),);
     }
 
     #[tokio::test]
@@ -48,10 +45,10 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut conn = ctx.conn().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
 
         let id = KnowledgeItemId::new();
-        let _ = mock.compute(&mut conn, &[id]).await;
+        let _ = mock.compute(&mut tx, &[id]).await;
 
         let history = mock.compute_history();
         assert_eq!(history.len(), 1);

@@ -33,9 +33,9 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut conn = ctx.conn().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
 
-        let result = mock.find_by_id(&mut conn, principal.id()).await.unwrap();
+        let result = mock.find_by_id(&mut tx, principal.id()).await.unwrap();
         assert_eq!(result.principal_key(), principal.principal_key());
     }
 
@@ -47,17 +47,14 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut conn = ctx.conn().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
 
         let result = mock
-            .find_by_key(&mut conn, principal.principal_key())
+            .find_by_key(&mut tx, principal.principal_key())
             .await
             .unwrap();
         assert!(result.is_some());
-        assert_eq!(
-            result.unwrap().principal_key(),
-            principal.principal_key(),
-        );
+        assert_eq!(result.unwrap().principal_key(), principal.principal_key(),);
     }
 
     #[tokio::test]
@@ -68,10 +65,10 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut conn = ctx.conn().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
 
         let id = principal.id();
-        let _ = mock.find_by_id(&mut conn, id).await;
+        let _ = mock.find_by_id(&mut tx, id).await;
 
         let history = mock.find_by_id_history();
         assert_eq!(history.len(), 1);

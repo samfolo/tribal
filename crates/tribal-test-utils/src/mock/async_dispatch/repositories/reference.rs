@@ -33,11 +33,11 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut conn = ctx.conn().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
 
         let ids = vec![KnowledgeItemId::new()];
         let result = mock
-            .find_by_knowledge_item_ids(&mut conn, &ids)
+            .find_by_knowledge_item_ids(&mut tx, &ids)
             .await
             .unwrap();
 
@@ -53,13 +53,10 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut conn = ctx.conn().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
 
         let id = KnowledgeItemId::new();
-        let result = mock
-            .find_by_knowledge_item_id(&mut conn, id)
-            .await
-            .unwrap();
+        let result = mock.find_by_knowledge_item_id(&mut tx, id).await.unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id(), reference.id());
@@ -72,12 +69,10 @@ mod tests {
             .build();
 
         let ctx = test_context().await;
-        let mut conn = ctx.conn().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
 
         let id = KnowledgeItemId::new();
-        let _ = mock
-            .find_by_knowledge_item_ids(&mut conn, &[id])
-            .await;
+        let _ = mock.find_by_knowledge_item_ids(&mut tx, &[id]).await;
 
         let history = mock.find_by_knowledge_item_ids_history();
         assert_eq!(history.len(), 1);

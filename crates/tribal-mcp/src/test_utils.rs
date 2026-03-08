@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use tribal_test_utils::{
-    MockJobRepository, MockKnowledgeItemRepository, MockPrincipalRepository,
-    MockProjectRepository, MockReferenceRepository, MockRetrievalFeedbackRepository,
-    MockStandingRepository,
+    MockJobRepository, MockKnowledgeItemRepository, MockPrincipalRepository, MockProjectRepository,
+    MockReferenceRepository, MockRetrievalFeedbackRepository, MockStandingRepository,
 };
 
 use crate::server_handler::ConnectionRepositories;

@@ -1,13 +1,14 @@
 //! MCP request and response types for `tribal_discover`.
 
+use std::fmt::Write;
+
 use chrono::{DateTime, Utc};
 use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Deserializer, Serialize};
 use tribal_domain::KnowledgeKind;
 
 use super::common::{McpKnowledgeItem, McpReference, McpStanding};
-use crate::error::IntoCallToolResult;
-use crate::format::truncate_content;
+use crate::{error::IntoCallToolResult, format::truncate_content};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -120,10 +121,11 @@ impl IntoCallToolResult for McpDiscoverResponse {
         if let Some(top) = self.items.first() {
             let kind = &top.item.kind;
             let preview = truncate_content(&top.item.content, CONTENT_PREVIEW_MAX_LENGTH);
-            text.push_str(&format!(
+            let _ = write!(
+                text,
                 " Top result: [{kind}] {preview} ({:.2} similarity).",
                 top.similarity,
-            ));
+            );
         }
 
         let structured = serde_json::to_value(&self).expect(SERIALISE_DISCOVER_RESPONSE);

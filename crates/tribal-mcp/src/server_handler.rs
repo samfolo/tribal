@@ -271,7 +271,12 @@ mod tests {
 
     fn test_handler() -> TribalServerHandler {
         let session = SessionContext::new(None, "user:test".into());
-        TribalServerHandler::new(lazy_pool(), test_repositories(), test_embedding_provider(), session)
+        TribalServerHandler::new(
+            lazy_pool(),
+            test_repositories(),
+            test_embedding_provider(),
+            session,
+        )
     }
 
     fn test_handler_with_project() -> TribalServerHandler {
@@ -281,7 +286,12 @@ mod tests {
             git_remote: "git@github.com:user/tribal.git".into(),
         };
         let session = SessionContext::new(Some(project), "user:test".into());
-        TribalServerHandler::new(lazy_pool(), test_repositories(), test_embedding_provider(), session)
+        TribalServerHandler::new(
+            lazy_pool(),
+            test_repositories(),
+            test_embedding_provider(),
+            session,
+        )
     }
 
     // -- get_info -----------------------------------------------------------
