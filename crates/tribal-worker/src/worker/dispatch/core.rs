@@ -566,7 +566,7 @@ impl Worker {
                     self.remove_job_state(*job_id);
                 }
                 if !job_ids.is_empty() {
-                    tracing::warn!(count = job_ids.len(), "transitioned stuck jobs to failed",);
+                    tracing::warn!(count = job_ids.len(), "transitioned stuck jobs to failed");
                 }
             }
             Err(e) => {
