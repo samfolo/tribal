@@ -45,7 +45,7 @@ Examples of correct reference notation:
 5. Justified Deviations *(omit if none)*
 6. Issues *(omit if none)*
 7. Open Questions *(omit if none)*
-8. Issue Summary Table *(omit if no issues)*
+8. Issue Summary *(omit if no issues)*
 9. Closing Line
 
 ---
@@ -119,7 +119,7 @@ Example:
 #42 · feature/52-add-triage-similarity
 ```
 
-**Branch name:** For ticket reviews, check with `git branch --list` whether a local branch exists before defaulting to `*[No branch]*`. For plan and code reviews, the branch should always be known.
+**Branch name:** For ticket reviews, check with `git branch --list` whether a local branch exists before defaulting to `*[No branch]*`. For plan and code reviews, include the branch name when it is known; if it cannot be determined, use `*[No branch]*`.
 
 ---
 ### 2. Verdict & Rating
