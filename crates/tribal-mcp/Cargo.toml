@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 tribal-domain.workspace = true
 tribal-db.workspace = true
+tribal-inference.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 rmcp.workspace = true
 serde.workspace = true
@@ -17,8 +18,8 @@ sqlx.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tribal-test-utils.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
-uuid.workspace = true

@@ -8,16 +8,22 @@
 mod error_factories;
 mod job;
 mod knowledge_item;
+mod principal;
 mod project;
+mod reference;
 mod retrieval_feedback;
+mod standing;
 
 pub use error_factories::{
     DbErrorFactory, a_not_found, a_pool_exhausted, a_query_failed, a_unique_violation,
 };
 pub use job::MockJobRepository;
 pub use knowledge_item::MockKnowledgeItemRepository;
+pub use principal::MockPrincipalRepository;
 pub use project::MockProjectRepository;
+pub use reference::MockReferenceRepository;
 pub use retrieval_feedback::MockRetrievalFeedbackRepository;
+pub use standing::MockStandingRepository;
 
 // ---------------------------------------------------------------------------
 // mock_repository! macro
@@ -126,6 +132,7 @@ macro_rules! mock_repository {
             // ---------------------------------------------------------------
 
             #[must_use]
+            #[allow(clippy::struct_field_names)]
             pub struct [<$MockName Builder>] {
                 $(
                     [<$method _queue>]: std::collections::VecDeque<
