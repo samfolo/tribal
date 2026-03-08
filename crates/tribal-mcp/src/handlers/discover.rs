@@ -142,11 +142,13 @@ impl TribalServerHandler {
             guard.project.as_ref().map(|p| (p.id, p.name.clone()))
         };
 
-        let (project_id, project_name) =
-            match resolve_project_scope(&request.project_id, session_project) {
-                Ok(pair) => pair,
-                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-            };
+        let (project_id, project_name) = match resolve_project_scope(
+            &request.project_id,
+            session_project,
+        ) {
+            Ok(scope) => scope.into_parts(),
+            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+        };
 
         let mut conn = match pool.acquire().await {
             Ok(conn) => conn,
@@ -223,6 +225,28 @@ impl TribalServerHandler {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Resolved project scope for a discover query.
+enum ProjectScope {
+    /// Use the session project — ID and name are already known.
+    Session { id: ProjectId, name: String },
+    /// Global search — no project filter applied.
+    Global,
+    /// Explicit project ID from the request — name must be resolved from DB.
+    Explicit(ProjectId),
+}
+
+impl ProjectScope {
+    /// Splits into the `(Option<ProjectId>, Option<String>)` pair consumed
+    /// by `DiscoverParams`.
+    fn into_parts(self) -> (Option<ProjectId>, Option<String>) {
+        match self {
+            Self::Session { id, name } => (Some(id), Some(name)),
+            Self::Global => (None, None),
+            Self::Explicit(id) => (Some(id), None),
+        }
+    }
+}
+
 /// Resolves the four-way `project_id` semantics from the MCP request and
 /// session state.
 ///
@@ -235,19 +259,20 @@ impl TribalServerHandler {
 /// | **absent** (`None`)     | absent          | Global search (`None, None`)        |
 /// | **null** (`Some(None)`) | any             | Global search regardless of session |
 /// | **present** string      | any             | Parse ID; name resolved later by DB |
+#[allow(clippy::option_option)]
 fn resolve_project_scope(
     request_project_id: &Option<Option<String>>,
     session_project: Option<(ProjectId, String)>,
-) -> Result<(Option<ProjectId>, Option<String>), tribal_domain::IdParseError> {
+) -> Result<ProjectScope, tribal_domain::IdParseError> {
     match request_project_id {
         None => Ok(match session_project {
-            Some((id, name)) => (Some(id), Some(name)),
-            None => (None, None),
+            Some((id, name)) => ProjectScope::Session { id, name },
+            None => ProjectScope::Global,
         }),
-        Some(None) => Ok((None, None)),
+        Some(None) => Ok(ProjectScope::Global),
         Some(Some(raw_id)) => {
             let proj_id = ProjectId::from_str(raw_id)?;
-            Ok((Some(proj_id), None))
+            Ok(ProjectScope::Explicit(proj_id))
         }
     }
 }
@@ -363,6 +388,9 @@ async fn execute_discover(
         .into_iter()
         .enumerate()
         .map(|(i, r)| {
+            // principal_map is populated from find_by_id above, which returns
+            // Err(NotFound) for missing principals. The fallback to the raw ID
+            // string is purely defensive — it should never be reached.
             let principal_key = principal_map
                 .get(&r.item.principal_id())
                 .cloned()
@@ -1014,6 +1042,34 @@ mod tests {
             "next_cursor must be present",
         );
         assert!(structured["next_cursor"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_next_cursor_populated_when_more_results() {
+        let prin_id = PrincipalId::new();
+        let item = a_knowledge_item().principal_id(prin_id).build();
+        let search = SemanticSearchResponse {
+            results: vec![a_search_result(&item, 0.9)],
+            next_cursor: Some("cursor_abc123".into()),
+            exact: false,
+        };
+        let repos =
+            repos_with_search_and_principal(search, vec![test_principal(prin_id, "user:test")]);
+        let provider = embedding_provider_with_response();
+        let session = session_without_project();
+
+        let result = call_discover(
+            &repos,
+            provider.as_ref(),
+            &session,
+            serde_json::json!({"query": "test"}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["next_cursor"], "cursor_abc123");
+        assert_eq!(structured["exact"], false);
     }
 
     // -- Error paths ------------------------------------------------------
