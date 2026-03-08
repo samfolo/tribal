@@ -30,6 +30,9 @@ use crate::{
 const SERVER_NAME: &str = "tribal";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Name used when reporting pool-related errors from the MCP connection pool.
+pub(crate) const POOL_NAME: &str = "mcp";
+
 /// Tool names with explicit `call_tool` match arms.
 #[cfg(test)]
 pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
@@ -48,12 +51,12 @@ pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
 
 pub struct ConnectionRepositories {
     #[allow(dead_code)]
-    pub(crate) knowledge: Arc<dyn KnowledgeItemRepository + Send + Sync>,
+    pub(crate) knowledge_item: Arc<dyn KnowledgeItemRepository + Send + Sync>,
     pub(crate) project: Arc<dyn ProjectRepository + Send + Sync>,
     #[allow(dead_code)]
     pub(crate) job: Arc<dyn JobRepository + Send + Sync>,
     #[allow(dead_code)]
-    pub(crate) feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
+    pub(crate) retrieval_feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +77,11 @@ impl TribalServerHandler {
     /// `tribal_set_context` for project lookup). The session is wrapped in an
     /// `Arc<RwLock<…>>` internally.
     #[must_use]
-    pub fn new(pool: PgPool, repositories: ConnectionRepositories, session: SessionContext) -> Self {
+    pub fn new(
+        pool: PgPool,
+        repositories: ConnectionRepositories,
+        session: SessionContext,
+    ) -> Self {
         Self {
             pool,
             repositories,
@@ -226,33 +233,20 @@ impl ServerHandler for TribalServerHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use rmcp::{
         handler::server::ServerHandler,
         model::{ErrorCode, ResourceContents},
     };
     use tribal_domain::ProjectId;
-    use tribal_test_utils::{
-        MockJobRepository, MockKnowledgeItemRepository, MockProjectRepository,
-        MockRetrievalFeedbackRepository, test_context,
-    };
+    use tribal_test_utils::test_context;
 
     use super::*;
-    use crate::session::{SESSION_RESOURCE_URI, SessionContext, SessionProject};
+    use crate::{
+        session::{SESSION_RESOURCE_URI, SessionContext, SessionProject},
+        test_utils::test_repositories,
+    };
 
-    // -----------------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------------
-
-    pub(crate) fn test_repositories() -> ConnectionRepositories {
-        ConnectionRepositories {
-            knowledge: Arc::new(MockKnowledgeItemRepository::builder().build()),
-            project: Arc::new(MockProjectRepository::builder().build()),
-            job: Arc::new(MockJobRepository::builder().build()),
-            feedback: Arc::new(MockRetrievalFeedbackRepository::builder().build()),
-        }
-    }
+    // -- Helpers -----------------------------------------------------------
 
     async fn test_handler() -> TribalServerHandler {
         let pool = test_context().await.pool().clone();
@@ -271,9 +265,7 @@ mod tests {
         TribalServerHandler::new(pool, test_repositories(), session)
     }
 
-    // -----------------------------------------------------------------------
-    // get_info tests
-    // -----------------------------------------------------------------------
+    // -- get_info -----------------------------------------------------------
 
     #[tokio::test]
     async fn test_get_info_advertises_resources() {
@@ -319,9 +311,7 @@ mod tests {
         assert_eq!(info.server_info.version, VERSION);
     }
 
-    // -----------------------------------------------------------------------
-    // get_tool tests
-    // -----------------------------------------------------------------------
+    // -- get_tool -----------------------------------------------------------
 
     #[tokio::test]
     async fn test_get_tool_found() {
@@ -338,9 +328,7 @@ mod tests {
         assert!(handler.get_tool("nonexistent").is_none());
     }
 
-    // -----------------------------------------------------------------------
-    // list_resources tests
-    // -----------------------------------------------------------------------
+    // -- list_resources -----------------------------------------------------
 
     #[test]
     fn test_list_resources_returns_session() {
@@ -353,9 +341,7 @@ mod tests {
         assert_eq!(resource.mime_type.as_deref(), Some("application/json"));
     }
 
-    // -----------------------------------------------------------------------
-    // read_resource tests
-    // -----------------------------------------------------------------------
+    // -- read_resource ------------------------------------------------------
 
     #[tokio::test]
     async fn test_read_resource_success() {
@@ -395,9 +381,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
-    // -----------------------------------------------------------------------
-    // subscribe tests
-    // -----------------------------------------------------------------------
+    // -- subscribe ----------------------------------------------------------
 
     #[tokio::test]
     async fn test_subscribe_success() {
@@ -423,9 +407,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
-    // -----------------------------------------------------------------------
-    // unsubscribe tests
-    // -----------------------------------------------------------------------
+    // -- unsubscribe --------------------------------------------------------
 
     #[tokio::test]
     async fn test_unsubscribe_success() {
