@@ -838,6 +838,101 @@ mod tests {
         assert_eq!(structured["code"], "invalid_argument");
     }
 
+    // -- Parameter propagation ---------------------------------------------
+
+    #[tokio::test]
+    async fn test_cursor_propagated_to_search_params() {
+        let search = a_search_response(vec![]);
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .when_semantic_search(|params| params.cursor.as_deref() == Some("cursor_xyz"))
+            .respond_with(search, None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+
+        let provider = embedding_provider_with_response();
+        let session = session_without_project();
+
+        let result = call_discover(
+            &repos,
+            provider.as_ref(),
+            &session,
+            serde_json::json!({"query": "test", "cursor": "cursor_xyz"}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_filters_passed_to_search_params() {
+        let from = Utc::now();
+        let to = from + chrono::Duration::hours(1);
+        let search = a_search_response(vec![]);
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .when_semantic_search(move |params| {
+                params.kinds.as_ref().is_some_and(|k| k.len() == 1)
+                    && params.tags.as_ref().is_some_and(|t| t == &["auth"])
+                    && params.time_range_from == Some(from)
+                    && params.time_range_to == Some(to)
+            })
+            .respond_with(search, None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+
+        let provider = embedding_provider_with_response();
+        let session = session_without_project();
+
+        let result = call_discover(
+            &repos,
+            provider.as_ref(),
+            &session,
+            serde_json::json!({
+                "query": "test",
+                "kinds": ["fact"],
+                "tags": ["auth"],
+                "time_range": {
+                    "from": from.to_rfc3339(),
+                    "to": to.to_rfc3339(),
+                },
+            }),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_include_superseded_passed_through() {
+        let search = a_search_response(vec![]);
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .when_semantic_search(|params| params.include_superseded)
+            .respond_with(search, None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+
+        let provider = embedding_provider_with_response();
+        let session = session_without_project();
+
+        let result = call_discover(
+            &repos,
+            provider.as_ref(),
+            &session,
+            serde_json::json!({"query": "test", "include_superseded": true}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+    }
+
     // -- Enrichment -------------------------------------------------------
 
     #[tokio::test]
