@@ -5,6 +5,7 @@
 
 mod auth;
 mod error;
+mod format;
 mod handlers;
 mod mapping;
 mod server_handler;
