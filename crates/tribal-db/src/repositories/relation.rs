@@ -79,6 +79,8 @@ pub struct TraversalNode {
     pub relation_created_at: DateTime<Utc>,
     /// BFS depth from the anchor (1 = direct neighbour).
     pub depth: u32,
+    /// Which CTE path discovered this node.
+    pub traversal_direction: TraversalDirection,
 }
 
 /// The result of a graph traversal from an anchor item.
@@ -89,6 +91,19 @@ pub struct TraversalResponse {
     /// `true` if all reachable nodes within `max_depth` were returned;
     /// `false` if `limit` was reached before exhausting the frontier.
     pub exact: bool,
+}
+
+/// Which CTE path discovered a [`TraversalNode`].
+///
+/// Distinct from the domain [`Direction`] which includes a `Both` variant
+/// that is never valid on a single node.  Set in Rust by
+/// [`run_directional_cte`], not in SQL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraversalDirection {
+    /// Discovered via the inbound CTE (items asserting about the anchor).
+    Inbound,
+    /// Discovered via the outbound CTE (items the anchor asserts about).
+    Outbound,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +212,15 @@ enum CteDirection {
     Outbound,
 }
 
+impl From<&CteDirection> for TraversalDirection {
+    fn from(d: &CteDirection) -> Self {
+        match d {
+            CteDirection::Inbound => Self::Inbound,
+            CteDirection::Outbound => Self::Outbound,
+        }
+    }
+}
+
 /// Converts an optional slice of relation kinds into an optional vec of
 /// their string representations for SQL binding.
 fn relation_type_strings(relation_types: Option<&[RelationKind]>) -> Option<Vec<String>> {
@@ -262,7 +286,7 @@ fn map_relation_row(r: &sqlx::postgres::PgRow) -> tribal_domain::KnowledgeItemRe
 }
 
 /// Maps a raw `sqlx::Row` from a traversal CTE into a [`TraversalNode`].
-fn map_traversal_row(r: &sqlx::postgres::PgRow) -> TraversalNode {
+fn map_traversal_row(r: &sqlx::postgres::PgRow, traversal_direction: TraversalDirection) -> TraversalNode {
     let item = KnowledgeItem::builder()
         .id(KnowledgeItemId::from(r.get::<uuid::Uuid, _>("item_id")))
         .project_id(ProjectId::from(r.get::<uuid::Uuid, _>("project_id")))
@@ -302,6 +326,7 @@ fn map_traversal_row(r: &sqlx::postgres::PgRow) -> TraversalNode {
         target_id: KnowledgeItemId::from(r.get::<uuid::Uuid, _>("target_id")),
         relation_created_at: r.get("relation_created_at"),
         depth: u32::try_from(r.get::<i32, _>("depth")).expect(NEGATIVE_DEPTH_IN_CTE),
+        traversal_direction,
     }
 }
 
@@ -388,11 +413,13 @@ async fn run_directional_cte(
             source: e,
         })?;
 
+    let traversal_direction = TraversalDirection::from(&direction);
+
     let fetched = rows.len();
     let nodes: Vec<TraversalNode> = rows
         .into_iter()
         .take(limit as usize)
-        .map(|r| map_traversal_row(&r))
+        .map(|r| map_traversal_row(&r, traversal_direction))
         .collect();
     let exact = fetched <= limit as usize;
 
