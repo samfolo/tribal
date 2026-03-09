@@ -128,14 +128,23 @@ impl TribalServerHandler {
 
         let direction: Direction = match request.direction.as_deref() {
             None => DEFAULT_DIRECTION,
-            Some(s) => serde_json::from_value::<Direction>(serde_json::Value::String(s.to_owned()))
-                .map_err(|_| {
+            Some(s) => {
+                let Ok(d) =
+                    serde_json::from_value::<Direction>(serde_json::Value::String(s.to_owned()))
+                else {
                     let valid: Vec<String> = Direction::iter()
                         .map(|d| serde_json::to_value(d).expect("Direction serialises"))
                         .map(|v| v.as_str().expect("Direction is a string").to_owned())
                         .collect();
-                    invalid_argument(format!("invalid direction '{s}': must be one of {valid:?}"))
-                })?,
+                    return Ok(McpToolError {
+                        code: McpErrorCode::InvalidArgument,
+                        message: format!("invalid direction '{s}': must be one of {valid:?}"),
+                        details: serde_json::json!({}),
+                    }
+                    .into_call_tool_result());
+                };
+                d
+            }
         };
 
         // -- Parse and validate relation_types -------------------------------
@@ -1242,9 +1251,11 @@ mod tests {
             serde_json::json!({"item_id": ki_id, "direction": "sideways"}),
         )
         .await
-        .expect_err("should return Err(McpError) for invalid direction");
+        .expect(NO_PROTOCOL_ERROR);
 
-        assert_eq!(result.code, ErrorCode::INVALID_PARAMS);
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["code"], "invalid_argument");
     }
 
     #[tokio::test]
