@@ -34,6 +34,7 @@
       "Bash(SQLX_OFFLINE=true cargo check:*)",
       "Bash(SQLX_OFFLINE=true cargo clippy:*)",
       "Bash(SQLX_OFFLINE=true cargo test:*)",
+      "Bash(UPDATE_SNAPSHOTS=1 cargo test:*)",
       "Bash(cargo +nightly expand:*)",
       "Bash(cargo +nightly fmt:*)",
       "Bash(cargo build:*)",
