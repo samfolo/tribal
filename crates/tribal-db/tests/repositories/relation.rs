@@ -1,6 +1,7 @@
 use tribal_db::{
     KnowledgeItemRepository, PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
     PgRelationRepository, PrincipalRepository, ProjectRepository, RelationRepository,
+    TraversalDirection,
 };
 use tribal_domain::{
     Direction, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationKind,
@@ -664,6 +665,105 @@ async fn test_traverse_both_merges_directions_multi_depth() {
     assert_eq!(depth_1.len(), 2);
     assert!(depth_1.contains(&item_x));
     assert!(depth_1.contains(&item_y));
+}
+
+#[tokio::test]
+async fn test_traverse_both_tags_directions_at_multiple_depths() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgRelationRepository;
+
+    // Graph: C → B → A → D → E (A is anchor).
+    // Inbound chain: B at depth 1, C at depth 2.
+    // Outbound chain: D at depth 1, E at depth 2.
+    let (principal_id, project_id, item_a) =
+        setup_prerequisites(&mut txn, "rel-trav-both-dir").await;
+    let item_b = setup_item(&mut txn, project_id, principal_id, "item B").await;
+    let item_c = setup_item(&mut txn, project_id, principal_id, "item C").await;
+    let item_d = setup_item(&mut txn, project_id, principal_id, "item D").await;
+    let item_e = setup_item(&mut txn, project_id, principal_id, "item E").await;
+
+    let batch_id = RelationBatchId::new();
+    repo.batch_insert(
+        &mut txn,
+        &[
+            a_new_knowledge_item_relation()
+                .relation_batch_id(batch_id)
+                .source_id(item_b)
+                .target_id(item_a)
+                .relation_type(RelationKind::Supports)
+                .principal_id(principal_id)
+                .build(),
+            a_new_knowledge_item_relation()
+                .relation_batch_id(batch_id)
+                .source_id(item_c)
+                .target_id(item_b)
+                .relation_type(RelationKind::Supports)
+                .principal_id(principal_id)
+                .build(),
+            a_new_knowledge_item_relation()
+                .relation_batch_id(batch_id)
+                .source_id(item_a)
+                .target_id(item_d)
+                .relation_type(RelationKind::DerivedFrom)
+                .principal_id(principal_id)
+                .build(),
+            a_new_knowledge_item_relation()
+                .relation_batch_id(batch_id)
+                .source_id(item_d)
+                .target_id(item_e)
+                .relation_type(RelationKind::DerivedFrom)
+                .principal_id(principal_id)
+                .build(),
+        ],
+    )
+    .await
+    .expect("batch_insert");
+
+    commit_relation_batch(&mut txn, project_id, principal_id, batch_id).await;
+
+    let response = repo
+        .traverse(&mut txn, item_a, Direction::Both, 2, 10, None)
+        .await
+        .expect("traverse");
+
+    assert_eq!(response.nodes.len(), 4);
+
+    // Depth-1 inbound: B asserts something about A.
+    let node_b = response
+        .nodes
+        .iter()
+        .find(|n| n.item.id() == item_b)
+        .expect("B present");
+    assert_eq!(node_b.depth, 1);
+    assert_eq!(node_b.traversal_direction, TraversalDirection::Inbound);
+
+    // Depth-2 inbound: C asserts something about B.
+    let node_c = response
+        .nodes
+        .iter()
+        .find(|n| n.item.id() == item_c)
+        .expect("C present");
+    assert_eq!(node_c.depth, 2);
+    assert_eq!(node_c.traversal_direction, TraversalDirection::Inbound);
+
+    // Depth-1 outbound: A asserts something about D.
+    let node_d = response
+        .nodes
+        .iter()
+        .find(|n| n.item.id() == item_d)
+        .expect("D present");
+    assert_eq!(node_d.depth, 1);
+    assert_eq!(node_d.traversal_direction, TraversalDirection::Outbound);
+
+    // Depth-2 outbound: D asserts something about E.
+    let node_e = response
+        .nodes
+        .iter()
+        .find(|n| n.item.id() == item_e)
+        .expect("E present");
+    assert_eq!(node_e.depth, 2);
+    assert_eq!(node_e.traversal_direction, TraversalDirection::Outbound);
 }
 
 #[tokio::test]
