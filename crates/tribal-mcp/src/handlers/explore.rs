@@ -8,8 +8,8 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use sqlx::{PgConnection, PgPool};
-use tribal_db::{DbError, TraversalDirection};
 use strum::IntoEnumIterator;
+use tribal_db::{DbError, TraversalDirection};
 use tribal_domain::{
     Direction, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, RelationKind, Standing,
 };
@@ -128,18 +128,14 @@ impl TribalServerHandler {
 
         let direction: Direction = match request.direction.as_deref() {
             None => DEFAULT_DIRECTION,
-            Some(s) => {
-                serde_json::from_value::<Direction>(serde_json::Value::String(s.to_owned()))
-                    .map_err(|_| {
-                        let valid: Vec<String> = Direction::iter()
-                            .map(|d| serde_json::to_value(d).expect("Direction serialises"))
-                            .map(|v| v.as_str().expect("Direction is a string").to_owned())
-                            .collect();
-                        invalid_argument(format!(
-                            "invalid direction '{s}': must be one of {valid:?}"
-                        ))
-                    })?
-            }
+            Some(s) => serde_json::from_value::<Direction>(serde_json::Value::String(s.to_owned()))
+                .map_err(|_| {
+                    let valid: Vec<String> = Direction::iter()
+                        .map(|d| serde_json::to_value(d).expect("Direction serialises"))
+                        .map(|v| v.as_str().expect("Direction is a string").to_owned())
+                        .collect();
+                    invalid_argument(format!("invalid direction '{s}': must be one of {valid:?}"))
+                })?,
         };
 
         // -- Parse and validate relation_types -------------------------------
@@ -149,8 +145,7 @@ impl TribalServerHandler {
                 let mut parsed = Vec::with_capacity(types.len());
                 for t in &types {
                     let Ok(rk) = RelationKind::from_str(t) else {
-                        let valid: Vec<&str> =
-                            RelationKind::iter().map(|rk| rk.as_str()).collect();
+                        let valid: Vec<&str> = RelationKind::iter().map(|rk| rk.as_str()).collect();
                         return Ok(McpToolError {
                             code: McpErrorCode::InvalidArgument,
                             message: format!(
@@ -304,9 +299,10 @@ async fn execute_explore(
         .standing
         .compute(conn, &[params.anchor_id])
         .await?;
-    let anchor_standing = anchor_standings.into_iter().next().expect(
-        "standing.compute returns one Standing per input ID",
-    );
+    let anchor_standing = anchor_standings
+        .into_iter()
+        .next()
+        .expect("standing.compute returns one Standing per input ID");
 
     // -- Traverse the graph --------------------------------------------------
 
@@ -623,7 +619,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.related_items.len(), 1);
-        assert_eq!(result.related_items[0].relation_type, RelationKind::Supports);
+        assert_eq!(
+            result.related_items[0].relation_type,
+            RelationKind::Supports
+        );
         assert_eq!(
             result.related_items[0].traversal_direction,
             TraversalDirection::Inbound,
@@ -1007,6 +1006,66 @@ mod tests {
         assert_eq!(result.related_items[1].depth, 2);
     }
 
+    #[tokio::test]
+    async fn test_both_directions_tagged_correctly() {
+        let anchor_id = KnowledgeItemId::new();
+        let anchor_prin_id = PrincipalId::new();
+        let anchor = test_anchor(anchor_id, anchor_prin_id);
+        let standing = a_standing().build();
+
+        let inbound_prin_id = PrincipalId::new();
+        let inbound_item = a_knowledge_item().principal_id(inbound_prin_id).build();
+        let inbound_node = test_traversal_node(
+            &inbound_item,
+            RelationKind::Supports,
+            TraversalDirection::Inbound,
+            anchor_id,
+            1,
+        );
+
+        let outbound_prin_id = PrincipalId::new();
+        let outbound_item = a_knowledge_item().principal_id(outbound_prin_id).build();
+        let outbound_node = test_traversal_node(
+            &outbound_item,
+            RelationKind::DerivedFrom,
+            TraversalDirection::Outbound,
+            anchor_id,
+            1,
+        );
+
+        let traversal = TraversalResponse {
+            nodes: vec![inbound_node, outbound_node],
+            exact: true,
+        };
+
+        let repos = repos_with_anchor_and_traversal(
+            anchor,
+            standing,
+            traversal,
+            vec![
+                test_principal(anchor_prin_id, "user:anchor"),
+                test_principal(inbound_prin_id, "user:inbound"),
+                test_principal(outbound_prin_id, "user:outbound"),
+            ],
+        );
+
+        let params = ExploreParams {
+            direction: Direction::Both,
+            ..default_params(anchor_id)
+        };
+        let result = call_execute(&repos, params).await.unwrap();
+
+        assert_eq!(result.related_items.len(), 2);
+        assert_eq!(
+            result.related_items[0].traversal_direction,
+            TraversalDirection::Inbound,
+        );
+        assert_eq!(
+            result.related_items[1].traversal_direction,
+            TraversalDirection::Outbound,
+        );
+    }
+
     // -- Adapter: validation -----------------------------------------------
 
     #[tokio::test]
@@ -1014,13 +1073,10 @@ mod tests {
         let pool = lazy_pool();
         let repos = test_repositories();
 
-        let err = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": 123}),
-        )
-        .await
-        .expect_err("should return Err(McpError) for malformed params");
+        let err =
+            TribalServerHandler::apply_explore(&pool, &repos, serde_json::json!({"item_id": 123}))
+                .await
+                .expect_err("should return Err(McpError) for malformed params");
 
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
