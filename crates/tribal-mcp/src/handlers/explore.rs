@@ -9,6 +9,7 @@ use rmcp::{
 };
 use sqlx::{PgConnection, PgPool};
 use tribal_db::{DbError, TraversalDirection};
+use strum::IntoEnumIterator;
 use tribal_domain::{
     Direction, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, RelationKind, Standing,
 };
@@ -26,7 +27,7 @@ use crate::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_DIRECTION: &str = "inbound";
+const DEFAULT_DIRECTION: Direction = Direction::Inbound;
 const DEFAULT_DEPTH: u32 = 1;
 const MAX_DEPTH: u32 = 3;
 const DEFAULT_LIMIT: u32 = 20;
@@ -125,15 +126,21 @@ impl TribalServerHandler {
 
         // -- Parse and validate direction ------------------------------------
 
-        let direction_str = request.direction.as_deref().unwrap_or(DEFAULT_DIRECTION);
-        let direction: Direction =
-            serde_json::from_value(serde_json::Value::String(direction_str.to_owned())).map_err(
-                |_| {
-                    invalid_argument(format!(
-                        "invalid direction '{direction_str}': must be 'inbound', 'outbound', or 'both'"
-                    ))
-                },
-            )?;
+        let direction: Direction = match request.direction.as_deref() {
+            None => DEFAULT_DIRECTION,
+            Some(s) => {
+                serde_json::from_value::<Direction>(serde_json::Value::String(s.to_owned()))
+                    .map_err(|_| {
+                        let valid: Vec<String> = Direction::iter()
+                            .map(|d| serde_json::to_value(d).expect("Direction serialises"))
+                            .map(|v| v.as_str().expect("Direction is a string").to_owned())
+                            .collect();
+                        invalid_argument(format!(
+                            "invalid direction '{s}': must be one of {valid:?}"
+                        ))
+                    })?
+            }
+        };
 
         // -- Parse and validate relation_types -------------------------------
 
@@ -141,20 +148,19 @@ impl TribalServerHandler {
             Some(types) => {
                 let mut parsed = Vec::with_capacity(types.len());
                 for t in &types {
-                    match RelationKind::from_str(t) {
-                        Ok(rk) => parsed.push(rk),
-                        Err(_) => {
-                            return Ok(McpToolError {
-                                code: McpErrorCode::InvalidArgument,
-                                message: format!(
-                                    "invalid relation type '{t}': must be one of \
-                                     'supports', 'contradicts', 'supersedes', 'derived_from'"
-                                ),
-                                details: serde_json::json!({}),
-                            }
-                            .into_call_tool_result());
+                    let Ok(rk) = RelationKind::from_str(t) else {
+                        let valid: Vec<&str> =
+                            RelationKind::iter().map(|rk| rk.as_str()).collect();
+                        return Ok(McpToolError {
+                            code: McpErrorCode::InvalidArgument,
+                            message: format!(
+                                "invalid relation type '{t}': must be one of {valid:?}"
+                            ),
+                            details: serde_json::json!({}),
                         }
-                    }
+                        .into_call_tool_result());
+                    };
+                    parsed.push(rk);
                 }
                 Some(parsed)
             }
