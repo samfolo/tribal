@@ -11,13 +11,13 @@ mock_repository! {
             (batch: &[NewKnowledgeItemRelation]) { batch.to_vec() };
         find_inbound((KnowledgeItemId, Option<Vec<RelationKind>>) => Vec<KnowledgeItemRelation>)
             (anchor_id: KnowledgeItemId, relation_types: Option<&[RelationKind]>)
-            { (anchor_id, relation_types.map(|s| s.to_vec())) };
+            { (anchor_id, relation_types.map(<[RelationKind]>::to_vec)) };
         find_outbound((KnowledgeItemId, Option<Vec<RelationKind>>) => Vec<KnowledgeItemRelation>)
             (anchor_id: KnowledgeItemId, relation_types: Option<&[RelationKind]>)
-            { (anchor_id, relation_types.map(|s| s.to_vec())) };
+            { (anchor_id, relation_types.map(<[RelationKind]>::to_vec)) };
         traverse((KnowledgeItemId, Direction, u32, u32, Option<Vec<RelationKind>>) => TraversalResponse)
             (anchor_id: KnowledgeItemId, direction: Direction, max_depth: u32, limit: u32, relation_types: Option<&[RelationKind]>)
-            { (anchor_id, direction, max_depth, limit, relation_types.map(|s| s.to_vec())) }
+            { (anchor_id, direction, max_depth, limit, relation_types.map(<[RelationKind]>::to_vec)) }
     }
 }
 
