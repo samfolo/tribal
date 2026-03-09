@@ -77,12 +77,20 @@ struct ExploreResult {
 enum ExploreError {
     #[error(transparent)]
     Db(#[from] DbError),
+
+    #[error("standing compute returned no results for anchor {anchor_id}")]
+    MissingAnchorStanding { anchor_id: KnowledgeItemId },
 }
 
 impl IntoMcpError for ExploreError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
+            Self::MissingAnchorStanding { .. } => McpToolError {
+                code: McpErrorCode::Internal,
+                message: self.to_string(),
+                details: serde_json::json!({}),
+            },
         }
     }
 }
@@ -132,10 +140,7 @@ impl TribalServerHandler {
                 let Ok(d) =
                     serde_json::from_value::<Direction>(serde_json::Value::String(s.to_owned()))
                 else {
-                    let valid: Vec<String> = Direction::iter()
-                        .map(|d| serde_json::to_value(d).expect("Direction serialises"))
-                        .map(|v| v.as_str().expect("Direction is a string").to_owned())
-                        .collect();
+                    let valid: Vec<&str> = Direction::iter().map(|d| d.as_ref()).collect();
                     return Ok(McpToolError {
                         code: McpErrorCode::InvalidArgument,
                         message: format!("invalid direction '{s}': must be one of {valid:?}"),
@@ -308,10 +313,11 @@ async fn execute_explore(
         .standing
         .compute(conn, &[params.anchor_id])
         .await?;
-    let anchor_standing = anchor_standings
-        .into_iter()
-        .next()
-        .expect("standing.compute returns one Standing per input ID");
+    let Some(anchor_standing) = anchor_standings.into_iter().next() else {
+        return Err(ExploreError::MissingAnchorStanding {
+            anchor_id: params.anchor_id,
+        });
+    };
 
     // -- Traverse the graph --------------------------------------------------
 
