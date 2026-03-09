@@ -70,6 +70,20 @@ pub trait PrincipalRepository {
         conn: &mut PgConnection,
         principal_key: &str,
     ) -> Result<Option<Principal>, DbError>;
+
+    /// Finds multiple principals by their IDs.
+    ///
+    /// Returns the principals that were found, in no guaranteed order.
+    /// Missing IDs are silently omitted from the result (not an error).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_ids(
+        &self,
+        conn: &mut PgConnection,
+        ids: &[PrincipalId],
+    ) -> Result<Vec<Principal>, DbError>;
 }
 
 /// Postgres implementation of [`PrincipalRepository`].
@@ -165,5 +179,40 @@ impl PrincipalRepository for PgPrincipalRepository {
                 .created_at(r.created_at)
                 .build()
         }))
+    }
+
+    async fn find_by_ids(
+        &self,
+        conn: &mut PgConnection,
+        ids: &[PrincipalId],
+    ) -> Result<Vec<Principal>, DbError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let raw_ids: Vec<uuid::Uuid> = ids.iter().map(|id| *id.inner()).collect();
+
+        let rows = sqlx::query!(
+            r#"SELECT * FROM principals WHERE id = ANY($1)"#,
+            &raw_ids,
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("finding principals by {} ids", ids.len()),
+            source: e,
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                Principal::builder()
+                    .id(PrincipalId::from(r.id))
+                    .principal_key(r.principal_key)
+                    .display_name(r.display_name)
+                    .created_at(r.created_at)
+                    .build()
+            })
+            .collect())
     }
 }
