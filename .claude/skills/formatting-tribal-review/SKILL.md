@@ -174,11 +174,13 @@ Followed by a rationale line:
 ---
 ### 3. Verified Correct
 
-A brief paragraph — two to four sentences — confirming what the review validated as accurate. Name specifics: which constraints were checked against which sections and found correct. This is a confirmation sweep, not a praise section.
+A bulleted list confirming what the review validated as accurate. Each bullet names a specific constraint or decision, the section it was checked against, and the outcome. This is a confirmation sweep, not a praise section.
 
 Example:
 
-> The four-way project ID resolution logic is correctly stated against RFC §4.1. The `spawn_blocking` requirement for inference calls is captured and cited against Server §1.2. The acceptance criteria for the happy path and the `OwnershipLost` error path both map to verifiable test assertions.
+> - The four-way project ID resolution logic is correctly stated against RFC §4.1
+> - The `spawn_blocking` requirement for inference calls is captured and cited against Server §1.2
+> - The acceptance criteria for the happy path and the `OwnershipLost` error path both map to verifiable test assertions
 
 ---
 ### 4. Observations
@@ -259,9 +261,9 @@ verification; the author should not need to investigate further.]
 | **Critical** | Breaks the design or violates an architectural invariant. Blocks implementation regardless of other findings. |
 | **High** | Strongly recommended fix. Does not break an invariant but would likely cause incorrect or incomplete implementation. |
 | **Medium** | Should be addressed. A gap or imprecision that could cause confusion or partial implementation. |
-| **Low — Completeness** | A missing detail that is low risk but worth adding. |
-| **Low — Precision** | Wording an implementing agent could reasonably misinterpret, but the likely interpretation is probably correct. |
-| **Low — Informational** | Context worth surfacing. No change strictly required. |
+| **Low (Completeness)** | A missing detail that is low risk but worth adding. |
+| **Low (Precision)** | Wording an implementing agent could reasonably misinterpret, but the likely interpretation is probably correct. |
+| **Low (Informational)** | Context worth surfacing. No change strictly required. |
 | **Convention** | Deviation from the ticket writing specification, naming conventions, or format rules. Orthogonal to the severity hierarchy. |
 
 **Rules for raising issues:**
@@ -305,7 +307,7 @@ Placed after all detailed sections. References the issue numbers from the Issues
 |---|----------|--------|
 | 1 | Critical | [Short imperative describing the fix] |
 | 2 | High | [Short imperative] |
-| 3 | Low — Precision | [Short imperative] |
+| 3 | Low (Precision) | [Short imperative] |
 ```
 
 ---
