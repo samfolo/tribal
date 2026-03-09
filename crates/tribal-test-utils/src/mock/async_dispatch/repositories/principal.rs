@@ -80,7 +80,7 @@ mod tests {
     #[tokio::test]
     async fn test_find_by_ids_returns_canned_principals() {
         let p1 = a_principal().build();
-        let p2 = a_principal().principal_key("user:other").build();
+        let p2 = a_principal().principal_key("user:other".to_owned()).build();
         let mock = MockPrincipalRepository::builder()
             .on_find_by_ids(vec![p1.clone(), p2.clone()], None)
             .build();
