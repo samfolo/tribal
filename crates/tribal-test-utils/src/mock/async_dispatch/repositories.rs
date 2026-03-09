@@ -11,6 +11,7 @@ mod knowledge_item;
 mod principal;
 mod project;
 mod reference;
+mod relation;
 mod retrieval_feedback;
 mod standing;
 
@@ -22,6 +23,7 @@ pub use knowledge_item::MockKnowledgeItemRepository;
 pub use principal::MockPrincipalRepository;
 pub use project::MockProjectRepository;
 pub use reference::MockReferenceRepository;
+pub use relation::MockRelationRepository;
 pub use retrieval_feedback::MockRetrievalFeedbackRepository;
 pub use standing::MockStandingRepository;
 
