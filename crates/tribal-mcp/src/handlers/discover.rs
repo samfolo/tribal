@@ -497,10 +497,7 @@ mod tests {
             .on_semantic_search(search_response, None)
             .build();
 
-        let mut prin_mock = MockPrincipalRepository::builder();
-        for p in principals {
-            prin_mock = prin_mock.on_find_by_id(p, None);
-        }
+        let prin_mock = MockPrincipalRepository::builder().on_find_by_ids(principals, None);
 
         let mut repos = test_repositories();
         repos.knowledge_item = Arc::new(ki_mock);
@@ -672,7 +669,7 @@ mod tests {
         );
         repos.principal = Arc::new(
             MockPrincipalRepository::builder()
-                .on_find_by_id(test_principal(prin_id, "user:test"), None)
+                .on_find_by_ids(vec![test_principal(prin_id, "user:test")], None)
                 .build(),
         );
         repos.project = Arc::new(
