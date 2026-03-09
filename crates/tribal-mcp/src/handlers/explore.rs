@@ -328,15 +328,19 @@ async fn execute_explore(
         .await?;
 
     if traversal.nodes.is_empty() {
-        let anchor_principal = repositories
+        let principals = repositories
             .principal
-            .find_by_id(conn, anchor.principal_id())
+            .find_by_ids(conn, &[anchor.principal_id()])
             .await?;
+        let anchor_principal_key = principals.first().map_or_else(
+            || anchor.principal_id().to_string(),
+            |p| p.principal_key().to_owned(),
+        );
 
         return Ok(ExploreResult {
             anchor,
             anchor_standing,
-            anchor_principal_key: anchor_principal.principal_key().to_owned(),
+            anchor_principal_key,
             related_items: Vec::new(),
             exact: traversal.exact,
         });
