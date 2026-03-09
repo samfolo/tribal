@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, PrincipalRepository, ProjectRepository,
-    ReferenceRepository, RetrievalFeedbackRepository, StandingRepository,
+    ReferenceRepository, RelationRepository, RetrievalFeedbackRepository, StandingRepository,
 };
 use tribal_inference::EmbeddingProvider;
 
@@ -65,6 +65,7 @@ pub struct ConnectionRepositories {
     pub(crate) retrieval_feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
     pub(crate) standing: Arc<dyn StandingRepository + Send + Sync>,
     pub(crate) reference: Arc<dyn ReferenceRepository + Send + Sync>,
+    pub(crate) relation: Arc<dyn RelationRepository + Send + Sync>,
     pub(crate) principal: Arc<dyn PrincipalRepository + Send + Sync>,
 }
 
