@@ -48,6 +48,9 @@ anyhow = "1"
 # Builders
 typed-builder = "0.23"
 
+# Enum utilities
+strum = { version = "0.28", features = ["derive"] }
+
 # Hashing
 fnv = "1"
 
