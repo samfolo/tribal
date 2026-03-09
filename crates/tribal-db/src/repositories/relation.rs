@@ -65,7 +65,7 @@ pub struct NewKnowledgeItemRelation {
 /// depth at which it was discovered.  Analogous to how
 /// [`SemanticSearchResult`](super::SemanticSearchResult) pairs an item
 /// with a similarity score.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraversalNode {
     /// The knowledge item at this node in the graph.
     pub item: KnowledgeItem,
@@ -84,7 +84,7 @@ pub struct TraversalNode {
 }
 
 /// The result of a graph traversal from an anchor item.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraversalResponse {
     /// Discovered nodes ordered by ascending depth (BFS order).
     pub nodes: Vec<TraversalNode>,
