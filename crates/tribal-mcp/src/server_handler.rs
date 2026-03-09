@@ -65,6 +65,7 @@ pub struct ConnectionRepositories {
     pub(crate) retrieval_feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
     pub(crate) standing: Arc<dyn StandingRepository + Send + Sync>,
     pub(crate) reference: Arc<dyn ReferenceRepository + Send + Sync>,
+    #[allow(dead_code)]
     pub(crate) relation: Arc<dyn RelationRepository + Send + Sync>,
     pub(crate) principal: Arc<dyn PrincipalRepository + Send + Sync>,
 }
