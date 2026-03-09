@@ -77,20 +77,12 @@ struct ExploreResult {
 enum ExploreError {
     #[error(transparent)]
     Db(#[from] DbError),
-
-    #[error("standing compute returned no results for anchor {anchor_id}")]
-    MissingAnchorStanding { anchor_id: KnowledgeItemId },
 }
 
 impl IntoMcpError for ExploreError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
-            Self::MissingAnchorStanding { .. } => McpToolError {
-                code: McpErrorCode::Internal,
-                message: self.to_string(),
-                details: serde_json::json!({}),
-            },
         }
     }
 }
@@ -155,7 +147,7 @@ impl TribalServerHandler {
         // -- Parse and validate relation_types -------------------------------
 
         let relation_types = match request.relation_types {
-            Some(types) => {
+            Some(types) if !types.is_empty() => {
                 let mut parsed = Vec::with_capacity(types.len());
                 for t in &types {
                     let Ok(rk) = RelationKind::from_str(t) else {
@@ -173,7 +165,7 @@ impl TribalServerHandler {
                 }
                 Some(parsed)
             }
-            None => None,
+            _ => None,
         };
 
         // -- Apply defaults and validate depth/limit -------------------------
@@ -313,11 +305,13 @@ async fn execute_explore(
         .standing
         .compute(conn, &[params.anchor_id])
         .await?;
-    let Some(anchor_standing) = anchor_standings.into_iter().next() else {
-        return Err(ExploreError::MissingAnchorStanding {
-            anchor_id: params.anchor_id,
-        });
-    };
+    // StandingRepository::compute guarantees one Standing per input ID
+    // (zero-valued for items with no observations). The input slice is
+    // always exactly one element, so this is never empty.
+    let anchor_standing = anchor_standings
+        .into_iter()
+        .next()
+        .expect("compute returns one Standing per input ID");
 
     // -- Traverse the graph --------------------------------------------------
 
