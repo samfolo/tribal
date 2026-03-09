@@ -186,18 +186,18 @@ impl TribalServerHandler {
 
         // -- Validate session_trace_id ---------------------------------------
 
-        if let Some(ref trace_id) = request.session_trace_id {
-            if trace_id.is_empty() || trace_id.len() > MAX_TRACE_ID_LEN {
-                return Ok(McpToolError {
-                    code: McpErrorCode::InvalidArgument,
-                    message: format!(
-                        "session_trace_id must be a non-empty string of at most \
-                         {MAX_TRACE_ID_LEN} characters"
-                    ),
-                    details: serde_json::json!({}),
-                }
-                .into_call_tool_result());
+        if let Some(ref trace_id) = request.session_trace_id
+            && (trace_id.is_empty() || trace_id.len() > MAX_TRACE_ID_LEN)
+        {
+            return Ok(McpToolError {
+                code: McpErrorCode::InvalidArgument,
+                message: format!(
+                    "session_trace_id must be a non-empty string of at most \
+                     {MAX_TRACE_ID_LEN} characters"
+                ),
+                details: serde_json::json!({}),
             }
+            .into_call_tool_result());
         }
 
         // -- Acquire connection and execute ----------------------------------
@@ -604,15 +604,27 @@ mod tests {
             exact: true,
         };
 
-        let repos = repos_with_anchor_and_traversal(
-            anchor,
-            standing,
-            traversal,
-            vec![
-                test_principal(anchor_prin_id, "user:anchor"),
-                test_principal(related_prin_id, "user:related"),
-            ],
-        );
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .on_find_by_id(anchor, None)
+            .build();
+        let standing_mock = MockStandingRepository::builder()
+            .on_compute(vec![standing], None)
+            .build();
+        let relation_mock = MockRelationRepository::builder()
+            .on_traverse(traversal, None)
+            .build();
+        let prin_mock = MockPrincipalRepository::builder()
+            .when_find_by_id(move |id| *id == anchor_prin_id)
+            .respond_with(test_principal(anchor_prin_id, "user:anchor"), None)
+            .when_find_by_id(move |id| *id == related_prin_id)
+            .respond_with(test_principal(related_prin_id, "user:related"), None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+        repos.standing = Arc::new(standing_mock);
+        repos.relation = Arc::new(relation_mock);
+        repos.principal = Arc::new(prin_mock);
 
         let result = call_execute(&repos, default_params(anchor_id))
             .await
@@ -1214,7 +1226,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_defaults_for_direction_depth_limit() {
-        let pool = lazy_pool();
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
         let anchor_id = KnowledgeItemId::new();
         let prin_id = PrincipalId::new();
         let anchor = test_anchor(anchor_id, prin_id);
@@ -1265,7 +1278,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_trace_id_echoed_when_valid() {
-        let pool = lazy_pool();
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
         let anchor_id = KnowledgeItemId::new();
         let prin_id = PrincipalId::new();
         let anchor = test_anchor(anchor_id, prin_id);
@@ -1299,7 +1313,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_trace_id_generated_when_absent() {
-        let pool = lazy_pool();
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
         let anchor_id = KnowledgeItemId::new();
         let prin_id = PrincipalId::new();
         let anchor = test_anchor(anchor_id, prin_id);
