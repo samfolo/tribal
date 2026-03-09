@@ -360,14 +360,14 @@ async fn execute_discover(
         ids
     };
 
-    // N+1 queries for principal resolution. Acceptable because principal
-    // deduplication means the actual number of lookups is trivially small.
-    let mut principal_map: HashMap<PrincipalId, String> =
-        HashMap::with_capacity(unique_principal_ids.len());
-    for prin_id in unique_principal_ids {
-        let principal = repositories.principal.find_by_id(conn, prin_id).await?;
-        principal_map.insert(prin_id, principal.principal_key().to_owned());
-    }
+    let principals = repositories
+        .principal
+        .find_by_ids(conn, &unique_principal_ids)
+        .await?;
+    let principal_map: HashMap<PrincipalId, String> = principals
+        .into_iter()
+        .map(|p| (p.id(), p.principal_key().to_owned()))
+        .collect();
 
     let standings_map: Option<HashMap<KnowledgeItemId, Standing>> = if params.include_standing {
         let computed = repositories.standing.compute(conn, &ki_ids).await?;
