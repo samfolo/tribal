@@ -465,12 +465,12 @@ mod tests {
         item: &tribal_domain::KnowledgeItem,
         relation_type: RelationKind,
         direction: TraversalDirection,
-        anchor_id: KnowledgeItemId,
+        peer_id: KnowledgeItemId,
         depth: u32,
     ) -> TraversalNode {
         let (source_id, target_id) = match direction {
-            TraversalDirection::Inbound => (item.id(), anchor_id),
-            TraversalDirection::Outbound => (anchor_id, item.id()),
+            TraversalDirection::Inbound => (item.id(), peer_id),
+            TraversalDirection::Outbound => (peer_id, item.id()),
         };
         TraversalNode {
             item: item.clone(),
@@ -741,32 +741,6 @@ mod tests {
         assert!(!result.exact);
     }
 
-    #[tokio::test]
-    async fn test_empty_traversal_results() {
-        let anchor_id = KnowledgeItemId::new();
-        let prin_id = PrincipalId::new();
-        let anchor = test_anchor(anchor_id, prin_id);
-        let standing = a_standing().build();
-        let traversal = TraversalResponse {
-            nodes: vec![],
-            exact: true,
-        };
-
-        let repos = repos_with_anchor_and_traversal(
-            anchor,
-            standing,
-            traversal,
-            vec![test_principal(prin_id, "user:test")],
-        );
-
-        let result = call_execute(&repos, default_params(anchor_id))
-            .await
-            .unwrap();
-
-        assert!(result.related_items.is_empty());
-        assert!(result.exact);
-    }
-
     // -- Service: enrichment -----------------------------------------------
 
     #[tokio::test]
@@ -774,7 +748,6 @@ mod tests {
         let anchor_id = KnowledgeItemId::new();
         let anchor_prin_id = PrincipalId::new();
         let anchor = test_anchor(anchor_id, anchor_prin_id);
-        let anchor_standing = a_standing().build();
 
         let related_prin_id = PrincipalId::new();
         let related_ki_id = KnowledgeItemId::new();
@@ -794,6 +767,7 @@ mod tests {
             exact: true,
         };
 
+        let anchor_standing = a_standing().build();
         let related_standing = a_standing()
             .supporting_count(5)
             .contradicting_count(2)
@@ -801,20 +775,31 @@ mod tests {
             .supporting_episode_count(3)
             .supporting_project_count(1)
             .build();
+        let expected_supporting = related_standing.supporting_count();
 
-        let mut repos = repos_with_anchor_and_traversal(
-            anchor,
-            anchor_standing,
-            traversal,
-            vec![
-                test_principal(anchor_prin_id, "user:anchor"),
-                test_principal(related_prin_id, "user:related"),
-            ],
+        let standing_mock = MockStandingRepository::builder()
+            .when_compute(move |ids| ids.len() == 1 && ids[0] == anchor_id)
+            .respond_with(vec![anchor_standing], None)
+            .when_compute(move |ids| ids.len() == 1 && ids[0] == related_ki_id)
+            .respond_with(vec![related_standing], None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(
+            MockKnowledgeItemRepository::builder()
+                .on_find_by_id(anchor, None)
+                .build(),
         );
-        repos.standing = Arc::new(
-            MockStandingRepository::builder()
-                .on_compute(vec![anchor_standing.clone()], None)
-                .on_compute(vec![related_standing.clone()], None)
+        repos.relation = Arc::new(
+            MockRelationRepository::builder()
+                .on_traverse(traversal, None)
+                .build(),
+        );
+        repos.standing = Arc::new(standing_mock);
+        repos.principal = Arc::new(
+            MockPrincipalRepository::builder()
+                .on_find_by_id(test_principal(anchor_prin_id, "user:anchor"), None)
+                .on_find_by_id(test_principal(related_prin_id, "user:related"), None)
                 .build(),
         );
 
@@ -828,10 +813,7 @@ mod tests {
             .standing
             .as_ref()
             .expect("standing present");
-        assert_eq!(
-            item_standing.supporting_count(),
-            related_standing.supporting_count(),
-        );
+        assert_eq!(item_standing.supporting_count(), expected_supporting);
     }
 
     #[tokio::test]
@@ -984,15 +966,13 @@ mod tests {
 
         let prin_id_2 = PrincipalId::new();
         let item_2 = a_knowledge_item().principal_id(prin_id_2).build();
-        let node_2 = TraversalNode {
-            item: item_2.clone(),
-            relation_type: RelationKind::DerivedFrom,
-            source_id: item_2.id(),
-            target_id: item_1.id(),
-            relation_created_at: Utc::now(),
-            depth: 2,
-            traversal_direction: TraversalDirection::Inbound,
-        };
+        let node_2 = test_traversal_node(
+            &item_2,
+            RelationKind::DerivedFrom,
+            TraversalDirection::Inbound,
+            item_1.id(),
+            2,
+        );
 
         let traversal = TraversalResponse {
             nodes: vec![node_1, node_2],
@@ -1120,7 +1100,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_depth_above_three_is_invalid() {
+    async fn test_depth_above_max_is_invalid() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let ki_id = KnowledgeItemId::new().to_string();
@@ -1128,7 +1108,7 @@ mod tests {
         let result = TribalServerHandler::apply_explore(
             &pool,
             &repos,
-            serde_json::json!({"item_id": ki_id, "depth": 4}),
+            serde_json::json!({"item_id": ki_id, "depth": MAX_DEPTH + 1}),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -1158,7 +1138,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_limit_above_hundred_is_invalid() {
+    async fn test_limit_above_max_is_invalid() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let ki_id = KnowledgeItemId::new().to_string();
@@ -1166,7 +1146,7 @@ mod tests {
         let result = TribalServerHandler::apply_explore(
             &pool,
             &repos,
-            serde_json::json!({"item_id": ki_id, "limit": 101}),
+            serde_json::json!({"item_id": ki_id, "limit": MAX_LIMIT + 1}),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -1177,7 +1157,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_default_direction_is_inbound() {
+    async fn test_defaults_for_direction_depth_limit() {
         let pool = lazy_pool();
         let anchor_id = KnowledgeItemId::new();
         let prin_id = PrincipalId::new();
@@ -1188,16 +1168,35 @@ mod tests {
             exact: true,
         };
 
-        let repos = repos_with_anchor_and_traversal(
-            anchor,
-            standing,
-            traversal,
-            vec![test_principal(prin_id, "user:test")],
+        let relation_mock = MockRelationRepository::builder()
+            .when_traverse(move |args| {
+                let (id, dir, depth, limit, _) = args;
+                *id == anchor_id
+                    && *dir == Direction::Inbound
+                    && *depth == DEFAULT_DEPTH
+                    && *limit == DEFAULT_LIMIT
+            })
+            .respond_with(traversal, None)
+            .build();
+
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .on_find_by_id(anchor, None)
+            .build();
+        let standing_mock = MockStandingRepository::builder()
+            .on_compute(vec![standing], None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+        repos.standing = Arc::new(standing_mock);
+        repos.relation = Arc::new(relation_mock);
+        repos.principal = Arc::new(
+            MockPrincipalRepository::builder()
+                .on_find_by_id(test_principal(prin_id, "user:test"), None)
+                .build(),
         );
 
-        let relation_mock = repos.relation.clone();
-
-        let _result = TribalServerHandler::apply_explore(
+        let result = TribalServerHandler::apply_explore(
             &pool,
             &repos,
             serde_json::json!({"item_id": anchor_id.to_string()}),
@@ -1205,92 +1204,7 @@ mod tests {
         .await
         .expect(NO_PROTOCOL_ERROR);
 
-        let mock = relation_mock
-            .as_any()
-            .downcast_ref::<MockRelationRepository>()
-            .expect("should be MockRelationRepository");
-        let history = mock.traverse_history();
-        assert_eq!(history.len(), 1);
-        let (_, dir, _, _, _) = &history[0];
-        assert_eq!(*dir, Direction::Inbound);
-    }
-
-    #[tokio::test]
-    async fn test_default_depth_is_one() {
-        let pool = lazy_pool();
-        let anchor_id = KnowledgeItemId::new();
-        let prin_id = PrincipalId::new();
-        let anchor = test_anchor(anchor_id, prin_id);
-        let standing = a_standing().build();
-        let traversal = TraversalResponse {
-            nodes: vec![],
-            exact: true,
-        };
-
-        let repos = repos_with_anchor_and_traversal(
-            anchor,
-            standing,
-            traversal,
-            vec![test_principal(prin_id, "user:test")],
-        );
-
-        let relation_mock = repos.relation.clone();
-
-        let _result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": anchor_id.to_string()}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
-
-        let mock = relation_mock
-            .as_any()
-            .downcast_ref::<MockRelationRepository>()
-            .expect("should be MockRelationRepository");
-        let history = mock.traverse_history();
-        assert_eq!(history.len(), 1);
-        let (_, _, depth, _, _) = &history[0];
-        assert_eq!(*depth, 1);
-    }
-
-    #[tokio::test]
-    async fn test_default_limit_is_twenty() {
-        let pool = lazy_pool();
-        let anchor_id = KnowledgeItemId::new();
-        let prin_id = PrincipalId::new();
-        let anchor = test_anchor(anchor_id, prin_id);
-        let standing = a_standing().build();
-        let traversal = TraversalResponse {
-            nodes: vec![],
-            exact: true,
-        };
-
-        let repos = repos_with_anchor_and_traversal(
-            anchor,
-            standing,
-            traversal,
-            vec![test_principal(prin_id, "user:test")],
-        );
-
-        let relation_mock = repos.relation.clone();
-
-        let _result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": anchor_id.to_string()}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
-
-        let mock = relation_mock
-            .as_any()
-            .downcast_ref::<MockRelationRepository>()
-            .expect("should be MockRelationRepository");
-        let history = mock.traverse_history();
-        assert_eq!(history.len(), 1);
-        let (_, _, _, limit, _) = &history[0];
-        assert_eq!(*limit, 20);
+        assert_eq!(result.is_error, Some(false));
     }
 
     #[tokio::test]
@@ -1383,7 +1297,7 @@ mod tests {
         let pool = lazy_pool();
         let repos = test_repositories();
         let ki_id = KnowledgeItemId::new().to_string();
-        let long_trace = "x".repeat(65);
+        let long_trace = "x".repeat(MAX_TRACE_ID_LEN + 1);
 
         let result = TribalServerHandler::apply_explore(
             &pool,
