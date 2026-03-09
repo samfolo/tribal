@@ -1078,6 +1078,124 @@ mod tests {
         );
     }
 
+    // -- Service: parameter pass-through ------------------------------------
+
+    #[tokio::test]
+    async fn test_direction_filtering() {
+        let anchor_id = KnowledgeItemId::new();
+        let prin_id = PrincipalId::new();
+        let anchor = test_anchor(anchor_id, prin_id);
+        let standing = a_standing().build();
+
+        let related = a_knowledge_item().principal_id(prin_id).build();
+        let node = test_traversal_node(
+            &related,
+            RelationKind::DerivedFrom,
+            TraversalDirection::Outbound,
+            anchor_id,
+            1,
+        );
+        let traversal = TraversalResponse {
+            nodes: vec![node],
+            exact: true,
+        };
+
+        let relation_mock = MockRelationRepository::builder()
+            .when_traverse(move |args| {
+                let (_, dir, _, _, _) = args;
+                *dir == Direction::Outbound
+            })
+            .respond_with(traversal, None)
+            .build();
+
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .on_find_by_id(anchor, None)
+            .build();
+        let standing_mock = MockStandingRepository::builder()
+            .on_compute(vec![standing], None)
+            .build();
+        let prin_mock = MockPrincipalRepository::builder()
+            .on_find_by_id(test_principal(prin_id, "user:test"), None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+        repos.standing = Arc::new(standing_mock);
+        repos.relation = Arc::new(relation_mock);
+        repos.principal = Arc::new(prin_mock);
+
+        let params = ExploreParams {
+            direction: Direction::Outbound,
+            ..default_params(anchor_id)
+        };
+        let result = call_execute(&repos, params).await.unwrap();
+
+        assert_eq!(result.related_items.len(), 1);
+        assert_eq!(
+            result.related_items[0].traversal_direction,
+            TraversalDirection::Outbound,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_relation_type_filtering() {
+        let anchor_id = KnowledgeItemId::new();
+        let prin_id = PrincipalId::new();
+        let anchor = test_anchor(anchor_id, prin_id);
+        let standing = a_standing().build();
+
+        let related = a_knowledge_item().principal_id(prin_id).build();
+        let node = test_traversal_node(
+            &related,
+            RelationKind::Contradicts,
+            TraversalDirection::Inbound,
+            anchor_id,
+            1,
+        );
+        let traversal = TraversalResponse {
+            nodes: vec![node],
+            exact: true,
+        };
+
+        let relation_mock = MockRelationRepository::builder()
+            .when_traverse(move |args| {
+                let (_, _, _, _, types) = args;
+                types
+                    .as_ref()
+                    .is_some_and(|t| t == &[RelationKind::Contradicts])
+            })
+            .respond_with(traversal, None)
+            .build();
+
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .on_find_by_id(anchor, None)
+            .build();
+        let standing_mock = MockStandingRepository::builder()
+            .on_compute(vec![standing], None)
+            .build();
+        let prin_mock = MockPrincipalRepository::builder()
+            .on_find_by_id(test_principal(prin_id, "user:test"), None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+        repos.standing = Arc::new(standing_mock);
+        repos.relation = Arc::new(relation_mock);
+        repos.principal = Arc::new(prin_mock);
+
+        let params = ExploreParams {
+            relation_types: Some(vec![RelationKind::Contradicts]),
+            ..default_params(anchor_id)
+        };
+        let result = call_execute(&repos, params).await.unwrap();
+
+        assert_eq!(result.related_items.len(), 1);
+        assert_eq!(
+            result.related_items[0].relation_type,
+            RelationKind::Contradicts,
+        );
+    }
+
     // -- Adapter: validation -----------------------------------------------
 
     #[tokio::test]
