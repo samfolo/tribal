@@ -5,6 +5,7 @@ use std::fmt::Write;
 use chrono::{DateTime, Utc};
 use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::{Deserialize, Serialize};
+use tribal_db::TraversalDirection;
 use tribal_domain::RelationKind;
 
 use super::common::{McpKnowledgeItem, McpReference, McpStanding};
@@ -28,6 +29,15 @@ pub(crate) enum McpRelationDirection {
     Inbound,
     /// The anchor asserts something about this item.
     Outbound,
+}
+
+impl From<TraversalDirection> for McpRelationDirection {
+    fn from(d: TraversalDirection) -> Self {
+        match d {
+            TraversalDirection::Inbound => Self::Inbound,
+            TraversalDirection::Outbound => Self::Outbound,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +167,18 @@ mod tests {
                 .supporting_project_count(0)
                 .build(),
         )
+    }
+
+    #[test]
+    fn test_traversal_direction_to_mcp_direction() {
+        assert_eq!(
+            McpRelationDirection::from(TraversalDirection::Inbound),
+            McpRelationDirection::Inbound,
+        );
+        assert_eq!(
+            McpRelationDirection::from(TraversalDirection::Outbound),
+            McpRelationDirection::Outbound,
+        );
     }
 
     #[test]

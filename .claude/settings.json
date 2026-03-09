@@ -1,6 +1,9 @@
 {
   "permissions": {
     "allow": [
+      "Skill(reviewing-tribal-plan)",
+      "Skill(reviewing-tribal-ticket)",
+
       "WebSearch",
 
       "WebFetch(domain:docs.anthropic.com)",
@@ -28,8 +31,10 @@
       "Bash(brew list:*)",
 
       "Bash(DATABASE_URL=\"postgres://tribal:tribal@localhost:5432/tribal_test\" cargo test:*)",
+      "Bash(SQLX_OFFLINE=true cargo check:*)",
       "Bash(SQLX_OFFLINE=true cargo clippy:*)",
       "Bash(SQLX_OFFLINE=true cargo test:*)",
+      "Bash(UPDATE_SNAPSHOTS=1 cargo test:*)",
       "Bash(cargo +nightly expand:*)",
       "Bash(cargo +nightly fmt:*)",
       "Bash(cargo build:*)",
@@ -43,8 +48,6 @@
       "Bash(cargo tree:*)",
 
       "Bash(docker info:*)",
-
-      "Bash(find:*)",
 
       "Bash(gh api:*)",
       "Bash(gh auth:*)",
@@ -61,8 +64,11 @@
       "Bash(git branch --list:*)",
       "Bash(git branch --show-current:*)",
 
+      "Bash(find:*)",
       "Bash(grep:*)",
-      "Bash(ls:*)"
+      "Bash(jq:*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)"
     ],
     "deny": [
       "Read(.env)",

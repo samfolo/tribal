@@ -46,8 +46,8 @@ pub use project::{NewProject, PgProjectRepository, ProjectRepository};
 pub use prompt_version::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
 pub use reference::{NewReference, PgReferenceRepository, ReferenceRepository};
 pub use relation::{
-    NewKnowledgeItemRelation, PgRelationRepository, RelationRepository, TraversalNode,
-    TraversalResponse,
+    NewKnowledgeItemRelation, PgRelationRepository, RelationRepository, TraversalDirection,
+    TraversalNode, TraversalResponse,
 };
 pub use retrieval_feedback::{
     NewRetrievalFeedback, PgRetrievalFeedbackRepository, RetrievalFeedbackRepository,
