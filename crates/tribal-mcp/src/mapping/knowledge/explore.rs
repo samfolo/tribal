@@ -5,9 +5,8 @@ use std::fmt::Write;
 use chrono::{DateTime, Utc};
 use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::{Deserialize, Serialize};
-use tribal_domain::RelationKind;
-
 use tribal_db::TraversalDirection;
+use tribal_domain::RelationKind;
 
 use super::common::{McpKnowledgeItem, McpReference, McpStanding};
 use crate::error::IntoCallToolResult;

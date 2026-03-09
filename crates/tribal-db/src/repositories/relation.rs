@@ -286,7 +286,10 @@ fn map_relation_row(r: &sqlx::postgres::PgRow) -> tribal_domain::KnowledgeItemRe
 }
 
 /// Maps a raw `sqlx::Row` from a traversal CTE into a [`TraversalNode`].
-fn map_traversal_row(r: &sqlx::postgres::PgRow, traversal_direction: TraversalDirection) -> TraversalNode {
+fn map_traversal_row(
+    r: &sqlx::postgres::PgRow,
+    traversal_direction: TraversalDirection,
+) -> TraversalNode {
     let item = KnowledgeItem::builder()
         .id(KnowledgeItemId::from(r.get::<uuid::Uuid, _>("item_id")))
         .project_id(ProjectId::from(r.get::<uuid::Uuid, _>("project_id")))

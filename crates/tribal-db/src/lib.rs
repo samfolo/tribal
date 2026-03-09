@@ -38,6 +38,5 @@ pub use repositories::{
     RetrievalFeedbackRepository, SemanticSearchParams, SemanticSearchResponse,
     SemanticSearchResult, StandingRepository, TagEmbeddingRepository, TagRegistryRepository,
     TaskRepository, TokenUsageRepository, TraversalDirection, TraversalNode, TraversalResponse,
-    TriageResultRepository,
-    TriageSimilarItemDecisionRepository,
+    TriageResultRepository, TriageSimilarItemDecisionRepository,
 };
