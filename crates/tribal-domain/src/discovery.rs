@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
-use strum::{AsRefStr, EnumIter};
+use strum::{EnumIter, IntoStaticStr};
 
 /// The direction of graph traversal relative to the anchor item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, AsRefStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum Direction {

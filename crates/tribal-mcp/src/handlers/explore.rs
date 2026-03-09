@@ -140,7 +140,7 @@ impl TribalServerHandler {
                 let Ok(d) =
                     serde_json::from_value::<Direction>(serde_json::Value::String(s.to_owned()))
                 else {
-                    let valid: Vec<&str> = Direction::iter().map(|d| d.as_ref()).collect();
+                    let valid: Vec<&str> = Direction::iter().map(Into::<&str>::into).collect();
                     return Ok(McpToolError {
                         code: McpErrorCode::InvalidArgument,
                         message: format!("invalid direction '{s}': must be one of {valid:?}"),
