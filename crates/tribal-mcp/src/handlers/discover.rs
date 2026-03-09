@@ -395,9 +395,7 @@ async fn execute_discover(
         .results
         .into_iter()
         .map(|r| {
-            // principal_map is populated from find_by_id above, which returns
-            // Err(NotFound) for missing principals. The fallback to the raw ID
-            // string is purely defensive — it should never be reached.
+            // Missing principals fall back to the raw ID string.
             let principal_key = principal_map
                 .get(&r.item.principal_id())
                 .cloned()
