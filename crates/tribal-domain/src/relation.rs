@@ -6,12 +6,13 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use strum::EnumIter;
 use typed_builder::TypedBuilder;
 
 use crate::{KnowledgeItemId, PrincipalId, RelationBatchId, RelationId};
 
 /// The type of a committed relationship between two knowledge items.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
