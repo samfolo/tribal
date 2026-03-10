@@ -360,14 +360,14 @@ async fn execute_discover(
         ids
     };
 
-    // N+1 queries for principal resolution. Acceptable because principal
-    // deduplication means the actual number of lookups is trivially small.
-    let mut principal_map: HashMap<PrincipalId, String> =
-        HashMap::with_capacity(unique_principal_ids.len());
-    for prin_id in unique_principal_ids {
-        let principal = repositories.principal.find_by_id(conn, prin_id).await?;
-        principal_map.insert(prin_id, principal.principal_key().to_owned());
-    }
+    let principals = repositories
+        .principal
+        .find_by_ids(conn, &unique_principal_ids)
+        .await?;
+    let principal_map: HashMap<PrincipalId, String> = principals
+        .into_iter()
+        .map(|p| (p.id(), p.principal_key().to_owned()))
+        .collect();
 
     let standings_map: Option<HashMap<KnowledgeItemId, Standing>> = if params.include_standing {
         let computed = repositories.standing.compute(conn, &ki_ids).await?;
@@ -395,9 +395,7 @@ async fn execute_discover(
         .results
         .into_iter()
         .map(|r| {
-            // principal_map is populated from find_by_id above, which returns
-            // Err(NotFound) for missing principals. The fallback to the raw ID
-            // string is purely defensive — it should never be reached.
+            // Missing principals fall back to the raw ID string.
             let principal_key = principal_map
                 .get(&r.item.principal_id())
                 .cloned()
@@ -497,10 +495,7 @@ mod tests {
             .on_semantic_search(search_response, None)
             .build();
 
-        let mut prin_mock = MockPrincipalRepository::builder();
-        for p in principals {
-            prin_mock = prin_mock.on_find_by_id(p, None);
-        }
+        let prin_mock = MockPrincipalRepository::builder().on_find_by_ids(principals, None);
 
         let mut repos = test_repositories();
         repos.knowledge_item = Arc::new(ki_mock);
@@ -672,7 +667,7 @@ mod tests {
         );
         repos.principal = Arc::new(
             MockPrincipalRepository::builder()
-                .on_find_by_id(test_principal(prin_id, "user:test"), None)
+                .on_find_by_ids(vec![test_principal(prin_id, "user:test")], None)
                 .build(),
         );
         repos.project = Arc::new(

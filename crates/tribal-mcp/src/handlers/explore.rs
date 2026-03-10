@@ -353,12 +353,14 @@ async fn execute_explore(
         ids
     };
 
-    let mut principal_map: HashMap<PrincipalId, String> =
-        HashMap::with_capacity(unique_principal_ids.len());
-    for prin_id in unique_principal_ids {
-        let principal = repositories.principal.find_by_id(conn, prin_id).await?;
-        principal_map.insert(prin_id, principal.principal_key().to_owned());
-    }
+    let principals = repositories
+        .principal
+        .find_by_ids(conn, &unique_principal_ids)
+        .await?;
+    let principal_map: HashMap<PrincipalId, String> = principals
+        .into_iter()
+        .map(|p| (p.id(), p.principal_key().to_owned()))
+        .collect();
 
     let anchor_principal_key = principal_map
         .get(&anchor.principal_id())
@@ -518,10 +520,7 @@ mod tests {
             .on_traverse(traversal, None)
             .build();
 
-        let mut prin_mock = MockPrincipalRepository::builder();
-        for p in principals {
-            prin_mock = prin_mock.on_find_by_id(p, None);
-        }
+        let prin_mock = MockPrincipalRepository::builder().on_find_by_ids(principals, None);
 
         let mut repos = test_repositories();
         repos.knowledge_item = Arc::new(ki_mock);
@@ -553,11 +552,12 @@ mod tests {
             exact: true,
         };
 
-        let repos = repos_with_anchor_and_traversal(
-            anchor.clone(),
-            standing.clone(),
-            traversal,
-            vec![test_principal(prin_id, "user:test")],
+        let mut repos =
+            repos_with_anchor_and_traversal(anchor.clone(), standing.clone(), traversal, vec![]);
+        repos.principal = Arc::new(
+            MockPrincipalRepository::builder()
+                .on_find_by_id(test_principal(prin_id, "user:test"), None)
+                .build(),
         );
 
         let result = call_execute(&repos, default_params(anchor_id))
@@ -623,10 +623,13 @@ mod tests {
             .on_traverse(traversal, None)
             .build();
         let prin_mock = MockPrincipalRepository::builder()
-            .when_find_by_id(move |id| *id == anchor_prin_id)
-            .respond_with(test_principal(anchor_prin_id, "user:anchor"), None)
-            .when_find_by_id(move |id| *id == related_prin_id)
-            .respond_with(test_principal(related_prin_id, "user:related"), None)
+            .on_find_by_ids(
+                vec![
+                    test_principal(anchor_prin_id, "user:anchor"),
+                    test_principal(related_prin_id, "user:related"),
+                ],
+                None,
+            )
             .build();
 
         let mut repos = test_repositories();
@@ -709,7 +712,8 @@ mod tests {
 
         let principal = test_principal(prin_id, "user:shared");
         let prin_mock = MockPrincipalRepository::builder()
-            .on_find_by_id(principal, None)
+            .when_find_by_ids(move |ids| ids.len() == 1 && ids[0] == prin_id)
+            .respond_with(vec![principal], None)
             .build();
 
         let ki_mock = MockKnowledgeItemRepository::builder()
@@ -747,11 +751,11 @@ mod tests {
             exact: false,
         };
 
-        let repos = repos_with_anchor_and_traversal(
-            anchor,
-            standing,
-            traversal,
-            vec![test_principal(prin_id, "user:test")],
+        let mut repos = repos_with_anchor_and_traversal(anchor, standing, traversal, vec![]);
+        repos.principal = Arc::new(
+            MockPrincipalRepository::builder()
+                .on_find_by_id(test_principal(prin_id, "user:test"), None)
+                .build(),
         );
 
         let result = call_execute(&repos, default_params(anchor_id))
@@ -818,8 +822,13 @@ mod tests {
         repos.standing = Arc::new(standing_mock);
         repos.principal = Arc::new(
             MockPrincipalRepository::builder()
-                .on_find_by_id(test_principal(anchor_prin_id, "user:anchor"), None)
-                .on_find_by_id(test_principal(related_prin_id, "user:related"), None)
+                .on_find_by_ids(
+                    vec![
+                        test_principal(anchor_prin_id, "user:anchor"),
+                        test_principal(related_prin_id, "user:related"),
+                    ],
+                    None,
+                )
                 .build(),
         );
 
@@ -1124,7 +1133,7 @@ mod tests {
             .on_compute(vec![standing], None)
             .build();
         let prin_mock = MockPrincipalRepository::builder()
-            .on_find_by_id(test_principal(prin_id, "user:test"), None)
+            .on_find_by_ids(vec![test_principal(prin_id, "user:test")], None)
             .build();
 
         let mut repos = test_repositories();
@@ -1183,7 +1192,7 @@ mod tests {
             .on_compute(vec![standing], None)
             .build();
         let prin_mock = MockPrincipalRepository::builder()
-            .on_find_by_id(test_principal(prin_id, "user:test"), None)
+            .on_find_by_ids(vec![test_principal(prin_id, "user:test")], None)
             .build();
 
         let mut repos = test_repositories();
@@ -1418,11 +1427,11 @@ mod tests {
             exact: true,
         };
 
-        let repos = repos_with_anchor_and_traversal(
-            anchor,
-            standing,
-            traversal,
-            vec![test_principal(prin_id, "user:test")],
+        let mut repos = repos_with_anchor_and_traversal(anchor, standing, traversal, vec![]);
+        repos.principal = Arc::new(
+            MockPrincipalRepository::builder()
+                .on_find_by_id(test_principal(prin_id, "user:test"), None)
+                .build(),
         );
 
         let result = TribalServerHandler::apply_explore(
@@ -1453,11 +1462,11 @@ mod tests {
             exact: true,
         };
 
-        let repos = repos_with_anchor_and_traversal(
-            anchor,
-            standing,
-            traversal,
-            vec![test_principal(prin_id, "user:test")],
+        let mut repos = repos_with_anchor_and_traversal(anchor, standing, traversal, vec![]);
+        repos.principal = Arc::new(
+            MockPrincipalRepository::builder()
+                .on_find_by_id(test_principal(prin_id, "user:test"), None)
+                .build(),
         );
 
         let result = TribalServerHandler::apply_explore(

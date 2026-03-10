@@ -118,3 +118,72 @@ async fn test_find_by_key_not_found_returns_none() {
 
     assert!(result.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// find_by_ids
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_find_by_ids_returns_matching_principals() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgPrincipalRepository;
+
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let new = a_new_principal()
+            .principal_key(format!("user:batch-{i}"))
+            .build();
+        let principal = repo.insert(&mut txn, &new).await.expect("insert");
+        ids.push(principal.id());
+    }
+
+    let found = repo.find_by_ids(&mut txn, &ids).await.expect("find_by_ids");
+
+    assert_eq!(found.len(), 3);
+    let found_ids: Vec<PrincipalId> = found.iter().map(|p| p.id()).collect();
+    for id in &ids {
+        assert!(found_ids.contains(id), "missing id {id}");
+    }
+}
+
+#[tokio::test]
+async fn test_find_by_ids_omits_missing_ids() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgPrincipalRepository;
+
+    let new = a_new_principal()
+        .principal_key("user:batch-omit".to_owned())
+        .build();
+    let inserted = repo.insert(&mut txn, &new).await.expect("insert");
+
+    let ids = vec![inserted.id(), PrincipalId::new()];
+    let found = repo.find_by_ids(&mut txn, &ids).await.expect("find_by_ids");
+
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id(), inserted.id());
+}
+
+#[tokio::test]
+async fn test_find_by_ids_empty_input_returns_empty_vec() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgPrincipalRepository;
+
+    let found = repo.find_by_ids(&mut txn, &[]).await.expect("find_by_ids");
+
+    assert!(found.is_empty());
+}
+
+#[tokio::test]
+async fn test_find_by_ids_all_missing_returns_empty_vec() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgPrincipalRepository;
+
+    let ids = vec![PrincipalId::new(), PrincipalId::new()];
+    let found = repo.find_by_ids(&mut txn, &ids).await.expect("find_by_ids");
+
+    assert!(found.is_empty());
+}
