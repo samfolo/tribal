@@ -339,7 +339,7 @@ async fn execute_get_item(
 mod tests {
     use std::sync::Arc;
 
-    use rmcp::model::ErrorCode;
+    use rmcp::model::{ErrorCode, RawContent};
     use tribal_domain::ProjectId;
     use tribal_test_utils::{
         MockKnowledgeItemRepository, MockPrincipalRepository, MockReferenceRepository,
@@ -651,6 +651,54 @@ mod tests {
         assert!(result.found.is_empty());
         assert_eq!(result.not_found_ids.len(), 1);
         assert_eq!(result.not_found_ids[0], ki_id.to_string());
+    }
+
+    // -- Adapter: happy path -----------------------------------------------
+
+    #[tokio::test]
+    async fn test_apply_partial_not_found_builds_response_map() {
+        let ki_id_found = KnowledgeItemId::new();
+        let ki_id_missing = KnowledgeItemId::new();
+        let prin_id = PrincipalId::new();
+        let item = test_item(ki_id_found, prin_id);
+        let principal = test_principal(prin_id, "user:ada");
+
+        let repos = repos_for_get_item(vec![item], vec![principal]);
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
+
+        let found_str = ki_id_found.to_string();
+        let missing_str = ki_id_missing.to_string();
+
+        let result = TribalServerHandler::apply_get_item(
+            &pool,
+            &repos,
+            serde_json::json!({
+                "item_ids": [found_str, missing_str],
+            }),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert!(!structured["items"][&found_str].is_null());
+        assert!(structured["items"][&missing_str].is_null());
+
+        let RawContent::Text(t) = &result.content[0].raw else {
+            panic!("expected text content");
+        };
+        assert!(
+            t.text.contains("Retrieved 1 of 2 requested items."),
+            "unexpected text: {}",
+            t.text
+        );
+        assert!(
+            t.text.contains(&format!("1 ID not found: {missing_str}")),
+            "unexpected text: {}",
+            t.text
+        );
     }
 
     // -- Adapter: validation -----------------------------------------------

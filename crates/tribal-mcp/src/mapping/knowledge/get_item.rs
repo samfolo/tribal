@@ -14,9 +14,6 @@ use crate::error::IntoCallToolResult;
 
 const SERIALISE_GET_ITEM_RESPONSE: &str = "McpGetItemResponse should always serialise successfully";
 
-/// Maximum number of not-found IDs listed individually in the text summary.
-const NOT_FOUND_DISPLAY_LIMIT: usize = 3;
-
 // ---------------------------------------------------------------------------
 // Request
 // ---------------------------------------------------------------------------
@@ -79,27 +76,17 @@ impl IntoCallToolResult for McpGetItemResponse {
         let requested = self.requested_count();
         let not_found_count = self.not_found_ids.len();
 
-        let mut text = if found == 0 {
-            format!("No items found ({requested} requested).")
-        } else {
-            format!("Retrieved {found} of {requested} requested items.")
-        };
+        let mut text = format!("Retrieved {found} of {requested} requested items.");
 
-        if not_found_count > 0 && found > 0 {
+        if not_found_count > 0 {
             let plural = if not_found_count == 1 { "" } else { "s" };
             let _ = write!(text, " {not_found_count} ID{plural} not found: ");
 
-            let display_count = not_found_count.min(NOT_FOUND_DISPLAY_LIMIT);
-            for (i, id) in self.not_found_ids.iter().take(display_count).enumerate() {
+            for (i, id) in self.not_found_ids.iter().enumerate() {
                 if i > 0 {
                     text.push_str(", ");
                 }
                 text.push_str(id);
-            }
-
-            if not_found_count > NOT_FOUND_DISPLAY_LIMIT {
-                let remaining = not_found_count - NOT_FOUND_DISPLAY_LIMIT;
-                let _ = write!(text, " (and {remaining} more)");
             }
         }
 
@@ -245,34 +232,12 @@ mod tests {
             panic!("expected text content");
         };
         let text = &t.text;
-        assert_eq!(text, "No items found (2 requested).");
-    }
-
-    #[test]
-    fn test_get_item_response_many_not_found_text() {
-        let mut items = serde_json::Map::new();
-        items.insert("ki_found".into(), serde_json::json!({"item": {}}));
-        for i in 0..5 {
-            items.insert(format!("ki_miss_{i}"), serde_json::Value::Null);
-        }
-
-        let not_found_ids: Vec<String> = (0..5).map(|i| format!("ki_miss_{i}")).collect();
-        let resp = McpGetItemResponse {
-            items,
-            not_found_ids,
-        };
-        let result = resp.into_call_tool_result();
-
-        let RawContent::Text(t) = &result.content[0].raw else {
-            panic!("expected text content");
-        };
-        let text = &t.text;
         assert!(
-            text.contains("Retrieved 1 of 6 requested items."),
+            text.contains("Retrieved 0 of 2 requested items."),
             "unexpected text: {text}"
         );
         assert!(
-            text.contains("5 IDs not found: ki_miss_0, ki_miss_1, ki_miss_2 (and 2 more)"),
+            text.contains("2 IDs not found: ki_a, ki_b"),
             "unexpected text: {text}"
         );
     }
