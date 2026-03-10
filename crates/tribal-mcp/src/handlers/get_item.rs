@@ -1,6 +1,9 @@
 //! Handler for `tribal_get_item` — batch item lookup by ID.
 
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -152,7 +155,7 @@ impl TribalServerHandler {
         };
 
         let get_item_params = GetItemParams {
-            item_ids: parsed_ids,
+            item_ids: parsed_ids.clone(),
             include_standing: request.include_standing.unwrap_or(false),
             include_references: request.include_references.unwrap_or(false),
         };
@@ -168,11 +171,8 @@ impl TribalServerHandler {
         // insert wins, producing one entry per unique ID.
         let mut items = serde_json::Map::with_capacity(raw_ids.len());
 
-        for raw_id in &raw_ids {
-            let ki_id =
-                KnowledgeItemId::from_str(raw_id).expect("already validated during ID parsing");
-
-            if let Some(entry) = result.found.get(&ki_id) {
+        for (raw_id, ki_id) in raw_ids.iter().zip(&parsed_ids) {
+            if let Some(entry) = result.found.get(ki_id) {
                 let mcp_entry = McpGetItemEntry {
                     item: McpKnowledgeItem::from_item_with_principal_key(
                         &entry.item,
@@ -218,9 +218,9 @@ async fn execute_get_item(
     // -- Deduplicate input IDs -------------------------------------------------
 
     let item_ids: Vec<KnowledgeItemId> = {
+        let mut seen = HashSet::new();
         let mut ids = params.item_ids;
-        ids.sort();
-        ids.dedup();
+        ids.retain(|id| seen.insert(*id));
         ids
     };
 
