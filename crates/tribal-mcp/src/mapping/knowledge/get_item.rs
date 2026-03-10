@@ -76,7 +76,8 @@ impl IntoCallToolResult for McpGetItemResponse {
         let requested = self.requested_count();
         let not_found_count = self.not_found_ids.len();
 
-        let mut text = format!("Retrieved {found} of {requested} requested items.");
+        let item_word = if requested == 1 { "item" } else { "items" };
+        let mut text = format!("Retrieved {found} of {requested} requested {item_word}.");
 
         if not_found_count > 0 {
             let plural = if not_found_count == 1 { "" } else { "s" };
