@@ -79,9 +79,13 @@ impl IntoCallToolResult for McpGetItemResponse {
         let requested = self.requested_count();
         let not_found_count = self.not_found_ids.len();
 
-        let mut text = format!("Retrieved {found} of {requested} requested items.");
+        let mut text = if found == 0 {
+            format!("No items found ({requested} requested).")
+        } else {
+            format!("Retrieved {found} of {requested} requested items.")
+        };
 
-        if not_found_count > 0 {
+        if not_found_count > 0 && found > 0 {
             let plural = if not_found_count == 1 { "" } else { "s" };
             let _ = write!(text, " {not_found_count} ID{plural} not found: ");
 
@@ -223,6 +227,25 @@ mod tests {
         };
         let text = &t.text;
         assert_eq!(text, "Retrieved 2 of 2 requested items.");
+    }
+
+    #[test]
+    fn test_get_item_response_all_not_found_text() {
+        let mut items = serde_json::Map::new();
+        items.insert("ki_a".into(), serde_json::Value::Null);
+        items.insert("ki_b".into(), serde_json::Value::Null);
+
+        let resp = McpGetItemResponse {
+            items,
+            not_found_ids: vec!["ki_a".into(), "ki_b".into()],
+        };
+        let result = resp.into_call_tool_result();
+
+        let RawContent::Text(t) = &result.content[0].raw else {
+            panic!("expected text content");
+        };
+        let text = &t.text;
+        assert_eq!(text, "No items found (2 requested).");
     }
 
     #[test]

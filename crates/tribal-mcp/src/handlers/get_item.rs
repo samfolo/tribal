@@ -8,7 +8,9 @@ use rmcp::{
 };
 use sqlx::{PgConnection, PgPool};
 use tribal_db::DbError;
-use tribal_domain::{KnowledgeItem, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, Standing};
+use tribal_domain::{
+    KnowledgeItem, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, Standing,
+};
 
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
@@ -112,9 +114,7 @@ impl TribalServerHandler {
         if count > MAX_ITEM_IDS {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: format!(
-                    "item_ids must contain at most {MAX_ITEM_IDS} IDs, got {count}"
-                ),
+                message: format!("item_ids must contain at most {MAX_ITEM_IDS} IDs, got {count}"),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
@@ -164,11 +164,13 @@ impl TribalServerHandler {
 
         // -- Build response ----------------------------------------------------
 
+        // Duplicate raw IDs are naturally collapsed by the map — the last
+        // insert wins, producing one entry per unique ID.
         let mut items = serde_json::Map::with_capacity(raw_ids.len());
 
         for raw_id in &raw_ids {
-            let ki_id = KnowledgeItemId::from_str(raw_id)
-                .expect("already validated during ID parsing");
+            let ki_id =
+                KnowledgeItemId::from_str(raw_id).expect("already validated during ID parsing");
 
             if let Some(entry) = result.found.get(&ki_id) {
                 let mcp_entry = McpGetItemEntry {
@@ -213,11 +215,20 @@ async fn execute_get_item(
     repositories: &ConnectionRepositories,
     params: GetItemParams,
 ) -> Result<GetItemResult, GetItemError> {
+    // -- Deduplicate input IDs -------------------------------------------------
+
+    let item_ids: Vec<KnowledgeItemId> = {
+        let mut ids = params.item_ids;
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+
     // -- Batch lookup items ----------------------------------------------------
 
     let found_items = repositories
         .knowledge_item
-        .find_by_ids(conn, &params.item_ids)
+        .find_by_ids(conn, &item_ids)
         .await?;
 
     let found_map: HashMap<KnowledgeItemId, KnowledgeItem> = found_items
@@ -227,8 +238,7 @@ async fn execute_get_item(
 
     // -- Partition into found / not-found --------------------------------------
 
-    let not_found_ids: Vec<String> = params
-        .item_ids
+    let not_found_ids: Vec<String> = item_ids
         .iter()
         .filter(|id| !found_map.contains_key(id))
         .map(ToString::to_string)
@@ -246,7 +256,10 @@ async fn execute_get_item(
     // -- Resolve principal keys ------------------------------------------------
 
     let unique_principal_ids: Vec<PrincipalId> = {
-        let mut ids: Vec<PrincipalId> = found_map.values().map(|item| item.principal_id()).collect();
+        let mut ids: Vec<PrincipalId> = found_map
+            .values()
+            .map(KnowledgeItem::principal_id)
+            .collect();
         ids.sort();
         ids.dedup();
         ids
@@ -295,9 +308,7 @@ async fn execute_get_item(
                 .cloned()
                 .unwrap_or_else(|| item.principal_id().to_string());
 
-            let standing = standings_map
-                .as_ref()
-                .and_then(|m| m.get(&ki_id).cloned());
+            let standing = standings_map.as_ref().and_then(|m| m.get(&ki_id).cloned());
             let references = references_map
                 .as_ref()
                 .map(|m| m.get(&ki_id).cloned().unwrap_or_default());
@@ -346,10 +357,7 @@ mod tests {
 
     // -- Helpers -----------------------------------------------------------
 
-    fn test_item(
-        ki_id: KnowledgeItemId,
-        prin_id: PrincipalId,
-    ) -> KnowledgeItem {
+    fn test_item(ki_id: KnowledgeItemId, prin_id: PrincipalId) -> KnowledgeItem {
         a_knowledge_item().id(ki_id).principal_id(prin_id).build()
     }
 
@@ -438,12 +446,9 @@ mod tests {
         let principal = test_principal(prin_id, "user:carol");
 
         let repos = repos_for_get_item(vec![item], vec![principal]);
-        let result = call_execute(
-            &repos,
-            default_params(vec![ki_id_found, ki_id_missing]),
-        )
-        .await
-        .expect("should succeed");
+        let result = call_execute(&repos, default_params(vec![ki_id_found, ki_id_missing]))
+            .await
+            .expect("should succeed");
 
         assert_eq!(result.found.len(), 1);
         assert!(result.found.contains_key(&ki_id_found));
@@ -629,6 +634,25 @@ mod tests {
         assert!(result.not_found_ids.is_empty());
     }
 
+    #[tokio::test]
+    async fn test_duplicate_not_found_ids_deduplicates() {
+        let ki_id = KnowledgeItemId::new();
+
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .on_find_by_ids(vec![], None)
+            .build();
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+
+        let result = call_execute(&repos, default_params(vec![ki_id, ki_id]))
+            .await
+            .expect("should succeed");
+
+        assert!(result.found.is_empty());
+        assert_eq!(result.not_found_ids.len(), 1);
+        assert_eq!(result.not_found_ids[0], ki_id.to_string());
+    }
+
     // -- Adapter: validation -----------------------------------------------
 
     #[tokio::test]
@@ -636,21 +660,20 @@ mod tests {
         let pool = lazy_pool();
         let repos = test_repositories();
 
-        let result = TribalServerHandler::apply_get_item(
-            &pool,
-            &repos,
-            serde_json::json!({"item_ids": []}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result =
+            TribalServerHandler::apply_get_item(&pool, &repos, serde_json::json!({"item_ids": []}))
+                .await
+                .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["code"], "invalid_argument");
-        assert!(structured["message"]
-            .as_str()
-            .unwrap()
-            .contains("at least 1"));
+        assert!(
+            structured["message"]
+                .as_str()
+                .unwrap()
+                .contains("at least 1")
+        );
     }
 
     #[tokio::test]
@@ -673,10 +696,12 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["code"], "invalid_argument");
-        assert!(structured["message"]
-            .as_str()
-            .unwrap()
-            .contains("at most 20"));
+        assert!(
+            structured["message"]
+                .as_str()
+                .unwrap()
+                .contains("at most 20")
+        );
     }
 
     #[tokio::test]
