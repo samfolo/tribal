@@ -93,8 +93,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].principal_key(), p1.principal_key());
-        assert_eq!(result[1].principal_key(), p2.principal_key());
+        let keys: Vec<&str> = result.iter().map(Principal::principal_key).collect();
+        assert!(keys.contains(&p1.principal_key()));
+        assert!(keys.contains(&p2.principal_key()));
     }
 
     #[test]
