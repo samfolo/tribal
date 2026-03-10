@@ -12,7 +12,9 @@ mock_repository! {
         find_by_id(PrincipalId => Principal)
             (id: PrincipalId) { id };
         find_by_key(String => Option<Principal>)
-            (principal_key: &str) { principal_key.to_owned() }
+            (principal_key: &str) { principal_key.to_owned() };
+        find_by_ids(Vec<PrincipalId> => Vec<Principal>)
+            (ids: &[PrincipalId]) { ids.to_vec() }
     }
 }
 
@@ -73,6 +75,27 @@ mod tests {
         let history = mock.find_by_id_history();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0], id);
+    }
+
+    #[tokio::test]
+    async fn test_find_by_ids_returns_canned_principals() {
+        let p1 = a_principal().build();
+        let p2 = a_principal().principal_key("user:other".to_owned()).build();
+        let mock = MockPrincipalRepository::builder()
+            .on_find_by_ids(vec![p1.clone(), p2.clone()], None)
+            .build();
+
+        let ctx = test_context().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
+
+        let result = mock
+            .find_by_ids(&mut tx, &[p1.id(), p2.id()])
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2);
+        let keys: Vec<&str> = result.iter().map(Principal::principal_key).collect();
+        assert!(keys.contains(&p1.principal_key()));
+        assert!(keys.contains(&p2.principal_key()));
     }
 
     #[test]
