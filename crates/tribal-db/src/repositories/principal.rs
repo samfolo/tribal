@@ -192,7 +192,7 @@ impl PrincipalRepository for PgPrincipalRepository {
 
         let raw_ids: Vec<uuid::Uuid> = ids.iter().map(|id| *id.inner()).collect();
 
-        let rows = sqlx::query!(r#"SELECT * FROM principals WHERE id = ANY($1)"#, &raw_ids,)
+        let rows = sqlx::query!(r#"SELECT * FROM principals WHERE id = ANY($1)"#, &raw_ids)
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
