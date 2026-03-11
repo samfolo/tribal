@@ -1,5 +1,4 @@
-//! MCP request and response types for `tribal_ingest`, `tribal_feedback`,
-//! and `tribal_job_status`.
+//! MCP request and response types for `tribal_ingest` and `tribal_job_status`.
 
 use std::fmt::Write;
 
