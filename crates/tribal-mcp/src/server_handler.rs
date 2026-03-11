@@ -15,7 +15,9 @@ use tokio::sync::RwLock;
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, PrincipalRepository, ProjectRepository,
     ReferenceRepository, RelationRepository, RetrievalFeedbackRepository, StandingRepository,
+    TaskRepository,
 };
+use tribal_domain::PromptVersionId;
 use tribal_inference::EmbeddingProvider;
 
 use crate::{
@@ -54,19 +56,37 @@ pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
 /// Repository trait objects shared across MCP tool handlers.
 ///
 /// Each field holds a trait-object-wrapped repository implementation.
-/// Fields marked `#[allow(dead_code)]` are not yet consumed by any handler
-/// but are wired in for upcoming tool implementations.
 pub struct ConnectionRepositories {
     pub(crate) knowledge_item: Arc<dyn KnowledgeItemRepository + Send + Sync>,
     pub(crate) project: Arc<dyn ProjectRepository + Send + Sync>,
-    #[allow(dead_code)]
     pub(crate) job: Arc<dyn JobRepository + Send + Sync>,
+    pub(crate) task: Arc<dyn TaskRepository + Send + Sync>,
     #[allow(dead_code)]
     pub(crate) retrieval_feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
     pub(crate) standing: Arc<dyn StandingRepository + Send + Sync>,
     pub(crate) reference: Arc<dyn ReferenceRepository + Send + Sync>,
     pub(crate) relation: Arc<dyn RelationRepository + Send + Sync>,
     pub(crate) principal: Arc<dyn PrincipalRepository + Send + Sync>,
+}
+
+// ---------------------------------------------------------------------------
+// ActivePromptVersions
+// ---------------------------------------------------------------------------
+
+/// Active prompt version IDs used when creating new jobs.
+///
+/// Each field corresponds to a prompt version ID on [`tribal_db::NewJob`].
+/// At startup, the factory closure populates this from the database and
+/// passes it into [`TribalServerHandler::new`].
+#[derive(Clone, Debug)]
+#[allow(clippy::struct_field_names)]
+pub struct ActivePromptVersions {
+    pub(crate) extraction_system_prompt_version_id: PromptVersionId,
+    pub(crate) extraction_user_prompt_version_id: PromptVersionId,
+    pub(crate) triage_system_prompt_version_id: PromptVersionId,
+    pub(crate) triage_user_prompt_version_id: PromptVersionId,
+    pub(crate) relation_system_prompt_version_id: PromptVersionId,
+    pub(crate) relation_user_prompt_version_id: PromptVersionId,
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +102,7 @@ pub struct TribalServerHandler {
     pub(crate) pool: PgPool,
     pub(crate) repositories: ConnectionRepositories,
     pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
+    pub(crate) active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
     pub(crate) session: Arc<RwLock<SessionContext>>,
 }
 
@@ -90,19 +111,23 @@ impl TribalServerHandler {
     /// initial session state.
     ///
     /// The pool is used by handlers that need database access (e.g.
-    /// `tribal_set_context` for project lookup). The session is wrapped in an
-    /// `Arc<RwLock<…>>` internally.
+    /// `tribal_set_context` for project lookup). The session is wrapped
+    /// in an `Arc<RwLock<…>>` internally; `active_prompt_versions` is
+    /// accepted pre-wrapped for compatibility with a shared process-level
+    /// cache.
     #[must_use]
     pub fn new(
         pool: PgPool,
         repositories: ConnectionRepositories,
         embedding_provider: Arc<dyn EmbeddingProvider>,
+        active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
         session: SessionContext,
     ) -> Self {
         Self {
             pool,
             repositories,
             embedding_provider,
+            active_prompt_versions,
             session: Arc::new(RwLock::new(session)),
         }
     }
@@ -255,7 +280,7 @@ mod tests {
         handler::server::ServerHandler,
         model::{ErrorCode, ResourceContents},
     };
-    use tribal_domain::ProjectId;
+    use tribal_domain::{ProjectId, PromptVersionId};
     use tribal_test_utils::{MockEmbeddingProvider, lazy_pool};
 
     use super::*;
@@ -270,12 +295,24 @@ mod tests {
         Arc::new(MockEmbeddingProvider::builder().build())
     }
 
+    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
+        Arc::new(RwLock::new(ActivePromptVersions {
+            extraction_system_prompt_version_id: PromptVersionId::new(),
+            extraction_user_prompt_version_id: PromptVersionId::new(),
+            triage_system_prompt_version_id: PromptVersionId::new(),
+            triage_user_prompt_version_id: PromptVersionId::new(),
+            relation_system_prompt_version_id: PromptVersionId::new(),
+            relation_user_prompt_version_id: PromptVersionId::new(),
+        }))
+    }
+
     fn test_handler() -> TribalServerHandler {
         let session = SessionContext::new(None, "user:test".into());
         TribalServerHandler::new(
             lazy_pool(),
             test_repositories(),
             test_embedding_provider(),
+            test_prompt_versions(),
             session,
         )
     }
@@ -291,6 +328,7 @@ mod tests {
             lazy_pool(),
             test_repositories(),
             test_embedding_provider(),
+            test_prompt_versions(),
             session,
         )
     }

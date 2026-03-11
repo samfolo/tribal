@@ -15,5 +15,5 @@ mod test_utils;
 mod tools;
 
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
-pub use server_handler::{ConnectionRepositories, TribalServerHandler};
+pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
 pub use session::{SessionActor, SessionContext, SessionProject};

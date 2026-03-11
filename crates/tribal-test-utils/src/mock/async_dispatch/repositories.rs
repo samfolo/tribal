@@ -14,6 +14,7 @@ mod reference;
 mod relation;
 mod retrieval_feedback;
 mod standing;
+mod task;
 
 pub use error_factories::{
     DbErrorFactory, a_not_found, a_pool_exhausted, a_query_failed, a_unique_violation,
@@ -26,6 +27,7 @@ pub use reference::MockReferenceRepository;
 pub use relation::MockRelationRepository;
 pub use retrieval_feedback::MockRetrievalFeedbackRepository;
 pub use standing::MockStandingRepository;
+pub use task::MockTaskRepository;
 
 // ---------------------------------------------------------------------------
 // mock_repository! macro
