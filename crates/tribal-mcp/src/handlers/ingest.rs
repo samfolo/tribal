@@ -1,9 +1,4 @@
-//! Handler for `tribal_ingest` — the write-path entry point for the
-//! knowledge extraction pipeline.
-//!
-//! Accepts raw text, creates a job and its initial extraction task within
-//! a single transaction, derives source context from session state, and
-//! returns the prefixed job ID.
+//! Handler for `tribal_ingest` — job and extraction task creation.
 
 use std::str::FromStr;
 
@@ -81,6 +76,7 @@ impl IntoMcpError for IngestError {
 // ---------------------------------------------------------------------------
 
 impl TribalServerHandler {
+    /// Handles the `tribal_ingest` tool call.
     pub(crate) async fn handle_ingest(
         &self,
         params: serde_json::Value,
@@ -96,11 +92,20 @@ impl TribalServerHandler {
         .await
     }
 
+    /// Core logic for `tribal_ingest`, separated from the outer handler
+    /// so it can be tested without a `Peer<RoleServer>`.
+    ///
+    /// Parses the request, reads session state (project, principal key,
+    /// actor fields), resolves a project ID, builds source context, then
+    /// opens a transaction and delegates to [`execute_ingest`] for all
+    /// domain logic. Domain errors are returned as error `CallToolResult`
+    /// values via `IntoMcpError` / `IntoCallToolResult`. Only
+    /// protocol-level errors (malformed JSON) return `Err(McpError)`.
     async fn apply_ingest(
         pool: &PgPool,
         repositories: &ConnectionRepositories,
         session: &RwLock<SessionContext>,
-        active_prompt_versions: &ActivePromptVersions,
+        active_prompt_versions: &RwLock<ActivePromptVersions>,
         params: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
         let request: McpIngestRequest =
@@ -137,12 +142,14 @@ impl TribalServerHandler {
         let source_context =
             build_source_context(actor_provider.as_deref(), actor_model.as_deref());
 
+        let active_prompts = active_prompt_versions.read().await.clone();
+
         let ingest_params = IngestParams {
             project_id,
             principal_key,
             source_context,
             content: request.content,
-            active_prompts: active_prompt_versions.clone(),
+            active_prompts,
         };
 
         let mut tx = match pool.begin().await {
@@ -274,14 +281,17 @@ mod tests {
     };
 
     use super::*;
-    use crate::test_utils::test_repositories;
+    use crate::{
+        session::{SessionContext, SessionProject},
+        test_utils::test_repositories,
+    };
 
-    // -- Constants ----------------------------------------------------------
+    // -- Constants ---------------------------------------------------------
 
+    const STRUCTURED_CONTENT: &str = "structured_content must be present";
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
-    const STRUCTURED_CONTENT: &str = "structured content must be present";
 
-    // -- Helpers ------------------------------------------------------------
+    // -- Helpers -----------------------------------------------------------
 
     fn test_active_prompt_versions() -> ActivePromptVersions {
         ActivePromptVersions {
@@ -294,8 +304,24 @@ mod tests {
         }
     }
 
+    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
+        Arc::new(RwLock::new(test_active_prompt_versions()))
+    }
+
     fn session_without_project() -> Arc<RwLock<SessionContext>> {
         Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())))
+    }
+
+    fn session_with_project() -> Arc<RwLock<SessionContext>> {
+        let project = SessionProject {
+            id: ProjectId::new(),
+            name: "tribal".into(),
+            git_remote: "git@github.com:user/tribal.git".into(),
+        };
+        Arc::new(RwLock::new(SessionContext::new(
+            Some(project),
+            "user:test".into(),
+        )))
     }
 
     async fn call_execute(
@@ -307,7 +333,7 @@ mod tests {
         execute_ingest(&mut tx, repos, params).await
     }
 
-    fn default_ingest_params() -> IngestParams {
+    fn default_params() -> IngestParams {
         IngestParams {
             project_id: ProjectId::new(),
             principal_key: "user:test".into(),
@@ -339,14 +365,14 @@ mod tests {
         repos
     }
 
-    // -- apply_ingest: pre-transaction errors --------------------------------
+    // -- Adapter: validation -----------------------------------------------
 
     #[tokio::test]
     async fn test_apply_ingest_malformed_json_returns_protocol_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = session_without_project();
-        let prompts = test_active_prompt_versions();
+        let prompts = test_prompt_versions();
 
         let err = TribalServerHandler::apply_ingest(
             &pool,
@@ -366,7 +392,7 @@ mod tests {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = session_without_project();
-        let prompts = test_active_prompt_versions();
+        let prompts = test_prompt_versions();
 
         let result = TribalServerHandler::apply_ingest(
             &pool,
@@ -388,7 +414,7 @@ mod tests {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = session_without_project();
-        let prompts = test_active_prompt_versions();
+        let prompts = test_prompt_versions();
 
         let wrong_prefix_id = KnowledgeItemId::new().to_string();
         let result = TribalServerHandler::apply_ingest(
@@ -406,7 +432,37 @@ mod tests {
         assert_eq!(structured["code"], "invalid_argument");
     }
 
-    // -- execute_ingest: service function tests ------------------------------
+    /// With a session project set and no `project_id` in the request, the
+    /// handler should resolve the session project and continue past the
+    /// precondition check. `lazy_pool` cannot open connections, so the
+    /// call fails at the pool phase — we assert the error is NOT
+    /// `failed_precondition` to confirm project resolution succeeded.
+    #[tokio::test]
+    async fn test_apply_ingest_uses_session_project_when_request_omits_it() {
+        let pool = lazy_pool();
+        let repos = test_repositories();
+        let session = session_with_project();
+        let prompts = test_prompt_versions();
+
+        let result = TribalServerHandler::apply_ingest(
+            &pool,
+            &repos,
+            &session,
+            &prompts,
+            serde_json::json!({"content": "some knowledge"}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_ne!(
+            structured["code"], "failed_precondition",
+            "session project should be used when request omits project_id",
+        );
+    }
+
+    // -- Service: happy path -----------------------------------------------
 
     #[tokio::test]
     async fn test_execute_ingest_creates_job_and_task() {
@@ -539,6 +595,8 @@ mod tests {
         assert_eq!(result.job_id, job.id());
     }
 
+    // -- Service: error paths ----------------------------------------------
+
     #[tokio::test]
     async fn test_execute_ingest_project_not_found() {
         let mut repos = test_repositories();
@@ -554,7 +612,7 @@ mod tests {
                 .build(),
         );
 
-        let params = default_ingest_params();
+        let params = default_params();
         let err = call_execute(&repos, params).await.expect_err("should fail");
 
         assert!(
@@ -582,7 +640,7 @@ mod tests {
         let params = IngestParams {
             project_id: proj_id,
             principal_key: "user:unknown".into(),
-            ..default_ingest_params()
+            ..default_params()
         };
 
         let err = call_execute(&repos, params).await.expect_err("should fail");
@@ -592,7 +650,7 @@ mod tests {
         );
     }
 
-    // -- build_source_context: pure helper tests ----------------------------
+    // -- Helper: source context --------------------------------------------
 
     #[test]
     fn test_build_source_context_agent_mediated() {

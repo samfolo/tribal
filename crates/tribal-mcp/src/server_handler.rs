@@ -102,7 +102,7 @@ pub struct TribalServerHandler {
     pub(crate) pool: PgPool,
     pub(crate) repositories: ConnectionRepositories,
     pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
-    pub(crate) active_prompt_versions: ActivePromptVersions,
+    pub(crate) active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
     pub(crate) session: Arc<RwLock<SessionContext>>,
 }
 
@@ -111,14 +111,16 @@ impl TribalServerHandler {
     /// initial session state.
     ///
     /// The pool is used by handlers that need database access (e.g.
-    /// `tribal_set_context` for project lookup). The session is wrapped in an
-    /// `Arc<RwLock<…>>` internally.
+    /// `tribal_set_context` for project lookup). The session is wrapped
+    /// in an `Arc<RwLock<…>>` internally; `active_prompt_versions` is
+    /// accepted pre-wrapped for compatibility with a shared process-level
+    /// cache.
     #[must_use]
     pub fn new(
         pool: PgPool,
         repositories: ConnectionRepositories,
         embedding_provider: Arc<dyn EmbeddingProvider>,
-        active_prompt_versions: ActivePromptVersions,
+        active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
         session: SessionContext,
     ) -> Self {
         Self {
@@ -293,15 +295,15 @@ mod tests {
         Arc::new(MockEmbeddingProvider::builder().build())
     }
 
-    fn test_active_prompt_versions() -> ActivePromptVersions {
-        ActivePromptVersions {
+    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
+        Arc::new(RwLock::new(ActivePromptVersions {
             extraction_system_prompt_version_id: PromptVersionId::new(),
             extraction_user_prompt_version_id: PromptVersionId::new(),
             triage_system_prompt_version_id: PromptVersionId::new(),
             triage_user_prompt_version_id: PromptVersionId::new(),
             relation_system_prompt_version_id: PromptVersionId::new(),
             relation_user_prompt_version_id: PromptVersionId::new(),
-        }
+        }))
     }
 
     fn test_handler() -> TribalServerHandler {
@@ -310,7 +312,7 @@ mod tests {
             lazy_pool(),
             test_repositories(),
             test_embedding_provider(),
-            test_active_prompt_versions(),
+            test_prompt_versions(),
             session,
         )
     }
@@ -326,7 +328,7 @@ mod tests {
             lazy_pool(),
             test_repositories(),
             test_embedding_provider(),
-            test_active_prompt_versions(),
+            test_prompt_versions(),
             session,
         )
     }
