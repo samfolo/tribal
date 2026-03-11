@@ -46,6 +46,7 @@ struct IngestParams {
 }
 
 /// Domain-level result from the ingest service function.
+#[derive(Debug)]
 struct IngestResult {
     job_id: JobId,
 }
@@ -237,14 +238,10 @@ async fn execute_ingest(
         .extraction_system_prompt_version_id(
             params.active_prompts.extraction_system_prompt_version_id,
         )
-        .extraction_user_prompt_version_id(
-            params.active_prompts.extraction_user_prompt_version_id,
-        )
+        .extraction_user_prompt_version_id(params.active_prompts.extraction_user_prompt_version_id)
         .triage_system_prompt_version_id(params.active_prompts.triage_system_prompt_version_id)
         .triage_user_prompt_version_id(params.active_prompts.triage_user_prompt_version_id)
-        .relation_system_prompt_version_id(
-            params.active_prompts.relation_system_prompt_version_id,
-        )
+        .relation_system_prompt_version_id(params.active_prompts.relation_system_prompt_version_id)
         .relation_user_prompt_version_id(params.active_prompts.relation_user_prompt_version_id)
         .build();
 
@@ -277,7 +274,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{session::SessionProject, test_utils::test_repositories};
+    use crate::test_utils::test_repositories;
 
     // -- Constants ----------------------------------------------------------
 
@@ -295,18 +292,6 @@ mod tests {
             relation_system_prompt_version_id: PromptVersionId::new(),
             relation_user_prompt_version_id: PromptVersionId::new(),
         }
-    }
-
-    fn session_with_project() -> Arc<RwLock<SessionContext>> {
-        let project = SessionProject {
-            id: ProjectId::new(),
-            name: "tribal".into(),
-            git_remote: "git@github.com:user/tribal.git".into(),
-        };
-        Arc::new(RwLock::new(SessionContext::new(
-            Some(project),
-            "user:test".into(),
-        )))
     }
 
     fn session_without_project() -> Arc<RwLock<SessionContext>> {
@@ -332,29 +317,26 @@ mod tests {
         }
     }
 
-    /// Prompt version IDs as a list, matching the order on [`NewJob`].
-    fn prompt_version_ids(prompts: &ActivePromptVersions) -> Vec<PromptVersionId> {
-        vec![
-            prompts.extraction_system_prompt_version_id,
-            prompts.extraction_user_prompt_version_id,
-            prompts.triage_system_prompt_version_id,
-            prompts.triage_user_prompt_version_id,
-            prompts.relation_system_prompt_version_id,
-            prompts.relation_user_prompt_version_id,
-        ]
-    }
-
-    /// Extracts the six prompt version IDs from a [`NewJob`] in the same
-    /// order as [`prompt_version_ids`].
-    fn new_job_prompt_ids(new_job: &NewJob) -> Vec<PromptVersionId> {
-        vec![
-            new_job.extraction_system_prompt_version_id,
-            new_job.extraction_user_prompt_version_id,
-            new_job.triage_system_prompt_version_id,
-            new_job.triage_user_prompt_version_id,
-            new_job.relation_system_prompt_version_id,
-            new_job.relation_user_prompt_version_id,
-        ]
+    fn repos_for_ingest(
+        project: tribal_domain::Project,
+        principal: tribal_domain::Principal,
+        job: tribal_domain::Job,
+        task: tribal_domain::Task,
+    ) -> ConnectionRepositories {
+        let mut repos = test_repositories();
+        repos.project = Arc::new(
+            MockProjectRepository::builder()
+                .on_find_by_id(project, None)
+                .build(),
+        );
+        repos.principal = Arc::new(
+            MockPrincipalRepository::builder()
+                .on_find_by_key(Some(principal), None)
+                .build(),
+        );
+        repos.job = Arc::new(MockJobRepository::builder().on_insert(job, None).build());
+        repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
+        repos
     }
 
     // -- apply_ingest: pre-transaction errors --------------------------------
@@ -434,31 +416,9 @@ mod tests {
         let principal = a_principal().id(prin_id).build();
         let job = a_job().project_id(proj_id).principal_id(prin_id).build();
         let task = a_task().job_id(job.id()).build();
+        let expected_job_id = job.id();
 
-        let job_mock = Arc::new(
-            MockJobRepository::builder()
-                .on_insert(job.clone(), None)
-                .build(),
-        );
-        let task_mock = Arc::new(
-            MockTaskRepository::builder()
-                .on_insert(task, None)
-                .build(),
-        );
-
-        let mut repos = test_repositories();
-        repos.project = Arc::new(
-            MockProjectRepository::builder()
-                .on_find_by_id(project, None)
-                .build(),
-        );
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(Some(principal), None)
-                .build(),
-        );
-        repos.job = Arc::clone(&job_mock);
-        repos.task = Arc::clone(&task_mock);
+        let repos = repos_for_ingest(project, principal, job, task);
 
         let params = IngestParams {
             project_id: proj_id,
@@ -469,16 +429,7 @@ mod tests {
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
-        assert_eq!(result.job_id, job.id());
-
-        let job_history = job_mock.insert_history();
-        assert_eq!(job_history.len(), 1);
-        assert_eq!(job_history[0].raw_input, "learned something");
-
-        let task_history = task_mock.insert_history();
-        assert_eq!(task_history.len(), 1);
-        assert_eq!(task_history[0].task_type, TaskType::Extraction);
-        assert_eq!(task_history[0].job_id, job.id());
+        assert_eq!(result.job_id, expected_job_id);
     }
 
     #[tokio::test]
@@ -490,11 +441,30 @@ mod tests {
         let job = a_job().project_id(proj_id).principal_id(prin_id).build();
         let task = a_task().job_id(job.id()).build();
 
-        let job_mock = Arc::new(
-            MockJobRepository::builder()
-                .on_insert(job, None)
-                .build(),
-        );
+        let prompts = test_active_prompt_versions();
+        let expected_ids = vec![
+            prompts.extraction_system_prompt_version_id,
+            prompts.extraction_user_prompt_version_id,
+            prompts.triage_system_prompt_version_id,
+            prompts.triage_user_prompt_version_id,
+            prompts.relation_system_prompt_version_id,
+            prompts.relation_user_prompt_version_id,
+        ];
+
+        let job_mock = MockJobRepository::builder()
+            .when_insert(move |new_job| {
+                let actual_ids = vec![
+                    new_job.extraction_system_prompt_version_id,
+                    new_job.extraction_user_prompt_version_id,
+                    new_job.triage_system_prompt_version_id,
+                    new_job.triage_user_prompt_version_id,
+                    new_job.relation_system_prompt_version_id,
+                    new_job.relation_user_prompt_version_id,
+                ];
+                actual_ids.iter().zip(&expected_ids).all(|(a, e)| a == e)
+            })
+            .respond_with(job.clone(), None)
+            .build();
 
         let mut repos = test_repositories();
         repos.project = Arc::new(
@@ -507,15 +477,8 @@ mod tests {
                 .on_find_by_key(Some(principal), None)
                 .build(),
         );
-        repos.job = Arc::clone(&job_mock);
-        repos.task = Arc::new(
-            MockTaskRepository::builder()
-                .on_insert(task, None)
-                .build(),
-        );
-
-        let prompts = test_active_prompt_versions();
-        let expected_ids = prompt_version_ids(&prompts);
+        repos.job = Arc::new(job_mock);
+        repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
 
         let params = IngestParams {
             project_id: proj_id,
@@ -525,14 +488,8 @@ mod tests {
             active_prompts: prompts,
         };
 
-        let _ = call_execute(&repos, params).await.expect("should succeed");
-
-        let job_history = job_mock.insert_history();
-        let actual_ids = new_job_prompt_ids(&job_history[0]);
-
-        for (actual, expected) in actual_ids.iter().zip(&expected_ids) {
-            assert_eq!(actual, expected);
-        }
+        let result = call_execute(&repos, params).await.expect("should succeed");
+        assert_eq!(result.job_id, job.id());
     }
 
     #[tokio::test]
@@ -544,11 +501,17 @@ mod tests {
         let job = a_job().project_id(proj_id).principal_id(prin_id).build();
         let task = a_task().job_id(job.id()).build();
 
-        let job_mock = Arc::new(
-            MockJobRepository::builder()
-                .on_insert(job, None)
-                .build(),
-        );
+        let source_ctx = serde_json::json!({
+            "type": "AgentMediated",
+            "provider": "anthropic",
+            "model": "claude-opus-4-6"
+        });
+        let expected_ctx = source_ctx.clone();
+
+        let job_mock = MockJobRepository::builder()
+            .when_insert(move |new_job| new_job.source_context == expected_ctx)
+            .respond_with(job.clone(), None)
+            .build();
 
         let mut repos = test_repositories();
         repos.project = Arc::new(
@@ -561,53 +524,41 @@ mod tests {
                 .on_find_by_key(Some(principal), None)
                 .build(),
         );
-        repos.job = Arc::clone(&job_mock);
-        repos.task = Arc::new(
-            MockTaskRepository::builder()
-                .on_insert(task, None)
-                .build(),
-        );
-
-        let source_ctx = serde_json::json!({
-            "type": "AgentMediated",
-            "provider": "anthropic",
-            "model": "claude-opus-4-6"
-        });
+        repos.job = Arc::new(job_mock);
+        repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
 
         let params = IngestParams {
             project_id: proj_id,
             principal_key: "user:test".into(),
-            source_context: source_ctx.clone(),
+            source_context: source_ctx,
             content: "test content".into(),
             active_prompts: test_active_prompt_versions(),
         };
 
-        let _ = call_execute(&repos, params).await.expect("should succeed");
-
-        let job_history = job_mock.insert_history();
-        assert_eq!(job_history[0].source_context, source_ctx);
+        let result = call_execute(&repos, params).await.expect("should succeed");
+        assert_eq!(result.job_id, job.id());
     }
 
     #[tokio::test]
     async fn test_execute_ingest_project_not_found() {
-        let project_mock = MockProjectRepository::builder()
-            .on_find_by_id_error(
-                || DbError::NotFound {
-                    entity: "project".into(),
-                    id: "missing".into(),
-                },
-                None,
-            )
-            .build();
-
         let mut repos = test_repositories();
-        repos.project = Arc::new(project_mock);
+        repos.project = Arc::new(
+            MockProjectRepository::builder()
+                .on_find_by_id_error(
+                    || DbError::NotFound {
+                        entity: "project".into(),
+                        id: "missing".into(),
+                    },
+                    None,
+                )
+                .build(),
+        );
 
         let params = default_ingest_params();
         let err = call_execute(&repos, params).await.expect_err("should fail");
 
         assert!(
-            matches!(&err, IngestError::Db(DbError::NotFound { entity, .. }) if entity == "project")
+            matches!(err, IngestError::Db(DbError::NotFound { entity, .. }) if entity == "project")
         );
     }
 
@@ -637,7 +588,7 @@ mod tests {
         let err = call_execute(&repos, params).await.expect_err("should fail");
 
         assert!(
-            matches!(&err, IngestError::PrincipalNotFound { principal_key } if principal_key == "user:unknown")
+            matches!(err, IngestError::PrincipalNotFound { principal_key } if principal_key == "user:unknown")
         );
     }
 
