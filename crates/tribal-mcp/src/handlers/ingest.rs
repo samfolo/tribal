@@ -442,7 +442,7 @@ mod tests {
         let task = a_task().job_id(job.id()).build();
 
         let prompts = test_active_prompt_versions();
-        let expected_ids = vec![
+        let expected_ids = [
             prompts.extraction_system_prompt_version_id,
             prompts.extraction_user_prompt_version_id,
             prompts.triage_system_prompt_version_id,
@@ -453,7 +453,7 @@ mod tests {
 
         let job_mock = MockJobRepository::builder()
             .when_insert(move |new_job| {
-                let actual_ids = vec![
+                let actual_ids = [
                     new_job.extraction_system_prompt_version_id,
                     new_job.extraction_user_prompt_version_id,
                     new_job.triage_system_prompt_version_id,
@@ -546,7 +546,7 @@ mod tests {
             MockProjectRepository::builder()
                 .on_find_by_id_error(
                     || DbError::NotFound {
-                        entity: "project".into(),
+                        entity: "project",
                         id: "missing".into(),
                     },
                     None,
