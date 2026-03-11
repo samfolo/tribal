@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tribal_test_utils::{
     MockJobRepository, MockKnowledgeItemRepository, MockPrincipalRepository, MockProjectRepository,
     MockReferenceRepository, MockRelationRepository, MockRetrievalFeedbackRepository,
-    MockStandingRepository, MockTaskRepository,
+    MockStandingRepository, MockTaskRepository, MockTriageResultRepository,
 };
 
 use crate::server_handler::ConnectionRepositories;
@@ -24,5 +24,6 @@ pub(crate) fn test_repositories() -> ConnectionRepositories {
         reference: Arc::new(MockReferenceRepository::builder().build()),
         relation: Arc::new(MockRelationRepository::builder().build()),
         principal: Arc::new(MockPrincipalRepository::builder().build()),
+        triage_result: Arc::new(MockTriageResultRepository::builder().build()),
     }
 }

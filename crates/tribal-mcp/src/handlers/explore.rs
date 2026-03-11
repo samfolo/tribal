@@ -14,13 +14,14 @@ use tribal_domain::{
     Direction, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, RelationKind, Standing,
 };
 
+use super::common::acquire_connection;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
     mapping::{
         McpExplorationResult, McpExploreRequest, McpExploreResponse, McpKnowledgeItem,
         McpReference, McpRelationDirection, McpStanding,
     },
-    server_handler::{ConnectionRepositories, POOL_NAME, TribalServerHandler},
+    server_handler::{ConnectionRepositories, TribalServerHandler},
 };
 
 // ---------------------------------------------------------------------------
@@ -208,21 +209,9 @@ impl TribalServerHandler {
 
         // -- Acquire connection and execute ----------------------------------
 
-        let mut conn = match pool.acquire().await {
-            Ok(conn) => conn,
-            Err(sqlx::Error::PoolTimedOut) => {
-                let db_err = DbError::PoolExhausted {
-                    pool_name: POOL_NAME,
-                };
-                return Ok(db_err.into_mcp_error().into_call_tool_result());
-            }
-            Err(other) => {
-                let db_err = DbError::QueryFailed {
-                    context: "acquiring connection from pool".into(),
-                    source: other,
-                };
-                return Ok(db_err.into_mcp_error().into_call_tool_result());
-            }
+        let mut conn = match acquire_connection(pool).await {
+            Ok(c) => c,
+            Err(call_result) => return Ok(call_result),
         };
 
         let explore_params = ExploreParams {

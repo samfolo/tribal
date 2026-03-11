@@ -8,6 +8,7 @@ mod error;
 mod format;
 mod handlers;
 mod mapping;
+mod polling;
 mod server_handler;
 mod session;
 #[cfg(test)]

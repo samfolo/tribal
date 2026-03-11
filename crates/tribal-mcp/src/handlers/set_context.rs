@@ -9,10 +9,11 @@ use tokio::sync::RwLock;
 use tribal_db::DbError;
 use tribal_domain::ProjectId;
 
+use super::common::acquire_connection;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, invalid_argument},
     mapping::{McpSetContextRequest, McpSetContextResponse},
-    server_handler::{ConnectionRepositories, POOL_NAME, TribalServerHandler},
+    server_handler::{ConnectionRepositories, TribalServerHandler},
     session::{SessionContext, SessionProject, notify_session_updated},
 };
 
@@ -70,21 +71,9 @@ impl TribalServerHandler {
                 }
             };
 
-            let mut conn = match pool.acquire().await {
-                Ok(conn) => conn,
-                Err(sqlx::Error::PoolTimedOut) => {
-                    let db_err = DbError::PoolExhausted {
-                        pool_name: POOL_NAME,
-                    };
-                    return Ok((db_err.into_mcp_error().into_call_tool_result(), false));
-                }
-                Err(other) => {
-                    let db_err = DbError::QueryFailed {
-                        context: "acquiring connection from pool".into(),
-                        source: other,
-                    };
-                    return Ok((db_err.into_mcp_error().into_call_tool_result(), false));
-                }
+            let mut conn = match acquire_connection(pool).await {
+                Ok(c) => c,
+                Err(call_result) => return Ok((call_result, false)),
             };
 
             match resolve_project(&mut conn, repositories, proj_id).await {
