@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, PrincipalRepository, ProjectRepository,
     ReferenceRepository, RelationRepository, RetrievalFeedbackRepository, StandingRepository,
-    TaskRepository,
+    TaskRepository, TriageResultRepository,
 };
 use tribal_domain::PromptVersionId;
 use tribal_inference::EmbeddingProvider;
@@ -67,6 +67,8 @@ pub struct ConnectionRepositories {
     pub(crate) reference: Arc<dyn ReferenceRepository + Send + Sync>,
     pub(crate) relation: Arc<dyn RelationRepository + Send + Sync>,
     pub(crate) principal: Arc<dyn PrincipalRepository + Send + Sync>,
+    #[allow(dead_code)]
+    pub(crate) triage_result: Arc<dyn TriageResultRepository + Send + Sync>,
 }
 
 // ---------------------------------------------------------------------------
