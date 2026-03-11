@@ -20,7 +20,9 @@ use crate::{
 pub(crate) async fn acquire_connection(
     pool: &PgPool,
 ) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, CallToolResult> {
-    pool.acquire().await.map_err(map_pool_error)
+    pool.acquire()
+        .await
+        .map_err(|e| map_pool_error(e, "acquiring connection from pool"))
 }
 
 /// Begins a transaction from the pool, mapping errors to `CallToolResult`.
@@ -29,17 +31,19 @@ pub(crate) async fn acquire_connection(
 pub(crate) async fn begin_transaction(
     pool: &PgPool,
 ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, CallToolResult> {
-    pool.begin().await.map_err(map_pool_error)
+    pool.begin()
+        .await
+        .map_err(|e| map_pool_error(e, "beginning transaction"))
 }
 
 /// Maps a pool acquisition or transaction-begin error to a `CallToolResult`.
-fn map_pool_error(err: sqlx::Error) -> CallToolResult {
+fn map_pool_error(err: sqlx::Error, context: &str) -> CallToolResult {
     let db_err = match err {
         sqlx::Error::PoolTimedOut => DbError::PoolExhausted {
             pool_name: POOL_NAME,
         },
         other => DbError::QueryFailed {
-            context: "acquiring connection from pool".into(),
+            context: context.into(),
             source: other,
         },
     };
