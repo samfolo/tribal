@@ -7,7 +7,7 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use sqlx::PgPool;
-use tokio::{sync::RwLock, time::Instant};
+use tokio::sync::RwLock;
 use tribal_db::DbError;
 use tribal_domain::{Job, JobId, McpErrorCode, TaskStatus, TaskType, TriageOutcome};
 
@@ -15,6 +15,7 @@ use super::common::acquire_connection;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
     mapping::{McpJobStatusRequest, McpJobStatusResponse},
+    polling::{PollScheduler, TickSource, TimedPollScheduler},
     server_handler::{ConnectionRepositories, TribalServerHandler},
     session::SessionContext,
 };
@@ -71,7 +72,17 @@ impl TribalServerHandler {
         params: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Self::apply_job_status(&self.pool, &self.repositories, &self.session, params).await
+        let scheduler = TimedPollScheduler {
+            interval: POLL_INTERVAL,
+        };
+        Self::apply_job_status(
+            &self.pool,
+            &self.repositories,
+            &self.session,
+            params,
+            &scheduler,
+        )
+        .await
     }
 
     /// Core logic for `tribal_job_status`, separated from the outer handler
@@ -80,13 +91,14 @@ impl TribalServerHandler {
     /// Parses the request, validates the job ID prefix and `wait_seconds`
     /// range, then queries the database for the job and its aggregate
     /// counts. When `wait_seconds > 0` and the job is not yet terminal,
-    /// polls the database at one-second intervals until the job reaches a
-    /// terminal state or the deadline expires.
-    async fn apply_job_status(
+    /// polls the database using the provided [`PollScheduler`] until the
+    /// job reaches a terminal state or the scheduler's deadline expires.
+    async fn apply_job_status<S: PollScheduler>(
         pool: &PgPool,
         repositories: &ConnectionRepositories,
         _session: &RwLock<SessionContext>,
         params: serde_json::Value,
+        scheduler: &S,
     ) -> Result<CallToolResult, McpError> {
         let request: McpJobStatusRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
@@ -125,14 +137,12 @@ impl TribalServerHandler {
             .filter(|&w| w > 0)
             .filter(|_| !result.job.status().is_terminal())
         {
-            let deadline = Instant::now() + Duration::from_secs(u64::from(wait));
+            let ticker = scheduler.create_ticker(Duration::from_secs(u64::from(wait)));
 
             loop {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
+                if !ticker.tick().await {
                     break;
                 }
-                tokio::time::sleep(remaining.min(POLL_INTERVAL)).await;
 
                 result = {
                     let mut conn = match acquire_connection(pool).await {
@@ -232,13 +242,15 @@ mod tests {
     use tokio::sync::RwLock;
     use tribal_domain::{JobId, JobOutcome, JobStatus, KnowledgeItemId, TaskType};
     use tribal_test_utils::{
-        ExhaustBehaviour, MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job,
-        a_task, a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed,
-        lazy_pool, test_context,
+        MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job, a_task,
+        a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed, lazy_pool,
+        test_context,
     };
 
     use super::*;
-    use crate::{session::SessionContext, test_utils::test_repositories};
+    use crate::{
+        polling::ImmediatePollScheduler, session::SessionContext, test_utils::test_repositories,
+    };
 
     // -- Constants ---------------------------------------------------------
 
@@ -297,6 +309,7 @@ mod tests {
             &repos,
             &sess,
             serde_json::json!({"job_id": 123}),
+            &ImmediatePollScheduler,
         )
         .await
         .expect_err("should return Err(McpError) for malformed params");
@@ -316,6 +329,7 @@ mod tests {
             &repos,
             &sess,
             serde_json::json!({"job_id": wrong_prefix_id}),
+            &ImmediatePollScheduler,
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -336,6 +350,7 @@ mod tests {
             &repos,
             &sess,
             serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 31}),
+            &ImmediatePollScheduler,
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -361,6 +376,7 @@ mod tests {
             &repos,
             &sess,
             serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 30}),
+            &ImmediatePollScheduler,
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -386,6 +402,7 @@ mod tests {
             &repos,
             &sess,
             serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 0}),
+            &ImmediatePollScheduler,
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -411,6 +428,7 @@ mod tests {
             &repos,
             &sess,
             serde_json::json!({"job_id": JobId::new().to_string()}),
+            &ImmediatePollScheduler,
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -631,6 +649,7 @@ mod tests {
             &repos,
             &sess,
             serde_json::json!({"job_id": job_id.to_string()}),
+            &ImmediatePollScheduler,
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -657,26 +676,25 @@ mod tests {
             .outcome(Some(JobOutcome::Success))
             .build();
 
-        let job_mock = MockJobRepository::builder()
-            .on_find_by_id(job, None)
-            .on_find_by_id_exhaust(ExhaustBehaviour::RepeatLast)
-            .build();
-        let task_mock = MockTaskRepository::builder()
-            .on_find_by_job_id(vec![], None)
-            .on_find_by_job_id_exhaust(ExhaustBehaviour::RepeatLast)
-            .build();
-        let triage_mock = MockTriageResultRepository::builder()
-            .on_find_by_job_id(vec![], None)
-            .on_find_by_job_id_exhaust(ExhaustBehaviour::RepeatLast)
-            .build();
-
-        let job_mock = Arc::new(job_mock);
+        let job_mock = Arc::new(
+            MockJobRepository::builder()
+                .on_find_by_id(job, None)
+                .build(),
+        );
         let job_mock_ref = Arc::clone(&job_mock);
 
         let mut repos = test_repositories();
         repos.job = job_mock;
-        repos.task = Arc::new(task_mock);
-        repos.triage_result = Arc::new(triage_mock);
+        repos.task = Arc::new(
+            MockTaskRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .build(),
+        );
+        repos.triage_result = Arc::new(
+            MockTriageResultRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .build(),
+        );
 
         let sess = session_without_project();
         let result = TribalServerHandler::apply_job_status(
@@ -687,6 +705,7 @@ mod tests {
                 "job_id": job_id.to_string(),
                 "wait_seconds": 5,
             }),
+            &ImmediatePollScheduler,
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -723,26 +742,28 @@ mod tests {
             .build();
         let created_result = a_triage_result_created().job_id(job_id).build();
 
-        let job_mock = MockJobRepository::builder()
-            .on_find_by_id(triaging_job, None)
-            .on_find_by_id(completed_job, None)
-            .build();
-        let task_mock = MockTaskRepository::builder()
-            .on_find_by_job_id(vec![], None)
-            .on_find_by_job_id(vec![completed_task], None)
-            .build();
-        let triage_mock = MockTriageResultRepository::builder()
-            .on_find_by_job_id(vec![], None)
-            .on_find_by_job_id(vec![created_result], None)
-            .build();
-
-        let job_mock = Arc::new(job_mock);
+        let job_mock = Arc::new(
+            MockJobRepository::builder()
+                .on_find_by_id(triaging_job, None)
+                .on_find_by_id(completed_job, None)
+                .build(),
+        );
         let job_mock_ref = Arc::clone(&job_mock);
 
         let mut repos = test_repositories();
         repos.job = job_mock;
-        repos.task = Arc::new(task_mock);
-        repos.triage_result = Arc::new(triage_mock);
+        repos.task = Arc::new(
+            MockTaskRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .on_find_by_job_id(vec![completed_task], None)
+                .build(),
+        );
+        repos.triage_result = Arc::new(
+            MockTriageResultRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .on_find_by_job_id(vec![created_result], None)
+                .build(),
+        );
 
         let sess = session_without_project();
         let result = TribalServerHandler::apply_job_status(
@@ -753,6 +774,7 @@ mod tests {
                 "job_id": job_id.to_string(),
                 "wait_seconds": 5,
             }),
+            &ImmediatePollScheduler,
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
