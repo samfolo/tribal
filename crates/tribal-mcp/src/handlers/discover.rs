@@ -55,7 +55,7 @@ struct DiscoverParams {
 }
 
 /// A single item in the discover result set.
-#[cfg_attr(test, derive(Debug))]
+#[derive(Debug)]
 struct DiscoverResultItem {
     item: tribal_domain::KnowledgeItem,
     similarity: f64,
@@ -65,7 +65,7 @@ struct DiscoverResultItem {
 }
 
 /// Domain-level result from [`execute_discover`].
-#[cfg_attr(test, derive(Debug))]
+#[derive(Debug)]
 struct DiscoverResult {
     items: Vec<DiscoverResultItem>,
     next_cursor: Option<String>,

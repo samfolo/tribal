@@ -50,7 +50,7 @@ struct ExploreParams {
 }
 
 /// A single item in the explore result set.
-#[cfg_attr(test, derive(Debug))]
+#[derive(Debug)]
 struct ExploreResultItem {
     item: tribal_domain::KnowledgeItem,
     relation_type: RelationKind,
@@ -63,7 +63,7 @@ struct ExploreResultItem {
 }
 
 /// Domain-level result from [`execute_explore`].
-#[cfg_attr(test, derive(Debug))]
+#[derive(Debug)]
 struct ExploreResult {
     anchor: tribal_domain::KnowledgeItem,
     anchor_standing: Standing,
