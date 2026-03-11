@@ -1,26 +1,778 @@
+//! Handler for `tribal_job_status` — job progress and outcome lookup.
+
+use std::str::FromStr;
+use std::time::Duration;
+
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
     service::{RequestContext, RoleServer},
 };
-use tribal_domain::McpErrorCode;
+use sqlx::PgPool;
+use tokio::sync::RwLock;
+use tokio::time::Instant;
+use tribal_db::DbError;
+use tribal_domain::{Job, JobId, McpErrorCode, TaskStatus, TaskType, TriageOutcome};
 
 use crate::{
-    error::{IntoCallToolResult, McpToolError},
-    server_handler::TribalServerHandler,
+    error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
+    mapping::{McpJobStatusRequest, McpJobStatusResponse},
+    server_handler::{ConnectionRepositories, POOL_NAME, TribalServerHandler},
+    session::SessionContext,
 };
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const MAX_WAIT_SECONDS: u32 = 30;
+const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+// ---------------------------------------------------------------------------
+// Service types
+// ---------------------------------------------------------------------------
+
+/// Domain-level parameters for the job status service function.
+struct JobStatusParams {
+    job_id: JobId,
+}
+
+/// Domain-level result from the job status service function.
+#[derive(Debug)]
+struct JobStatusResult {
+    job: Job,
+    tasks_completed: u32,
+    tasks_failed: u32,
+    items_created: u32,
+    observations_created: u32,
+}
+
+/// Errors that can occur during job status execution.
+#[derive(Debug, thiserror::Error)]
+enum JobStatusError {
+    #[error(transparent)]
+    Db(#[from] DbError),
+}
+
+impl IntoMcpError for JobStatusError {
+    fn into_mcp_error(self) -> McpToolError {
+        match self {
+            Self::Db(e) => e.into_mcp_error(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
 impl TribalServerHandler {
-    #[allow(clippy::unused_async)]
+    /// Handles the `tribal_job_status` tool call.
     pub(crate) async fn handle_job_status(
         &self,
-        _params: serde_json::Value,
+        params: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(McpToolError {
-            code: McpErrorCode::FailedPrecondition,
-            message: "tribal_job_status is not yet implemented".into(),
-            details: serde_json::json!({}),
+        Self::apply_job_status(&self.pool, &self.repositories, &self.session, params).await
+    }
+
+    /// Core logic for `tribal_job_status`, separated from the outer handler
+    /// so it can be tested without a `Peer<RoleServer>`.
+    ///
+    /// Parses the request, validates the job ID prefix and `wait_seconds`
+    /// range, then queries the database for the job and its aggregate
+    /// counts. When `wait_seconds > 0` and the job is not yet terminal,
+    /// polls the database at one-second intervals until the job reaches a
+    /// terminal state or the deadline expires.
+    async fn apply_job_status(
+        pool: &PgPool,
+        repositories: &ConnectionRepositories,
+        _session: &RwLock<SessionContext>,
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let request: McpJobStatusRequest =
+            serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
+
+        let job_id = match JobId::from_str(&request.job_id) {
+            Ok(id) => id,
+            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+        };
+
+        if let Some(wait) = request.wait_seconds {
+            if wait > MAX_WAIT_SECONDS {
+                return Ok(McpToolError {
+                    code: McpErrorCode::InvalidArgument,
+                    message: format!(
+                        "wait_seconds must be between 0 and {MAX_WAIT_SECONDS}, got {wait}"
+                    ),
+                    details: serde_json::json!({}),
+                }
+                .into_call_tool_result());
+            }
         }
-        .into_call_tool_result())
+
+        let status_params = JobStatusParams { job_id };
+
+        let mut result = {
+            let mut conn = acquire_connection(pool).await?;
+            match execute_job_status(&mut *conn, repositories, &status_params).await {
+                Ok(r) => r,
+                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+            }
+        };
+
+        if let Some(wait) = request.wait_seconds.filter(|&w| w > 0) {
+            if !result.job.status().is_terminal() {
+                let deadline = Instant::now() + Duration::from_secs(u64::from(wait));
+
+                loop {
+                    tokio::time::sleep(POLL_INTERVAL).await;
+
+                    let poll_result = {
+                        let mut conn = acquire_connection(pool).await?;
+                        match execute_job_status(&mut *conn, repositories, &status_params).await {
+                            Ok(r) => r,
+                            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+                        }
+                    };
+
+                    result = poll_result;
+
+                    if result.job.status().is_terminal() || Instant::now() >= deadline {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let response = McpJobStatusResponse::from_domain(
+            &result.job,
+            result.tasks_completed,
+            result.tasks_failed,
+            result.items_created,
+            result.observations_created,
+        );
+
+        Ok(response.into_call_tool_result())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Acquires a connection from the pool, mapping errors to `CallToolResult`.
+async fn acquire_connection(
+    pool: &PgPool,
+) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, CallToolResult> {
+    match pool.acquire().await {
+        Ok(conn) => Ok(conn),
+        Err(sqlx::Error::PoolTimedOut) => {
+            let db_err = DbError::PoolExhausted {
+                pool_name: POOL_NAME,
+            };
+            Err(db_err.into_mcp_error().into_call_tool_result())
+        }
+        Err(other) => {
+            let db_err = DbError::QueryFailed {
+                context: "acquiring connection from pool".into(),
+                source: other,
+            };
+            Err(db_err.into_mcp_error().into_call_tool_result())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Service function
+// ---------------------------------------------------------------------------
+
+/// Queries the job, its triage tasks, and triage results, then computes
+/// aggregate counts.
+///
+/// All inputs and outputs are domain types — no MCP types cross this
+/// boundary.
+async fn execute_job_status(
+    conn: &mut sqlx::PgConnection,
+    repositories: &ConnectionRepositories,
+    params: &JobStatusParams,
+) -> Result<JobStatusResult, JobStatusError> {
+    let job = repositories.job.find_by_id(conn, params.job_id).await?;
+
+    let tasks = repositories.task.find_by_job_id(conn, params.job_id).await?;
+
+    let triage_results = repositories
+        .triage_result
+        .find_by_job_id(conn, params.job_id)
+        .await?;
+
+    // Only triage tasks contribute to task counts — extraction and relation
+    // tasks are excluded.
+    let triage_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.task_type() == TaskType::Triage)
+        .collect();
+
+    let tasks_completed = triage_tasks
+        .iter()
+        .filter(|t| t.status() == TaskStatus::Completed)
+        .count() as u32;
+
+    let tasks_failed = triage_tasks
+        .iter()
+        .filter(|t| t.status() == TaskStatus::DeadLetter)
+        .count() as u32;
+
+    // TriageOutcome::Failed results contribute to neither items_created nor
+    // observations_created — task-level failure is captured by tasks_failed.
+    let items_created = triage_results
+        .iter()
+        .filter(|r| matches!(r.outcome(), TriageOutcome::Created { .. }))
+        .count() as u32;
+
+    let observations_created = triage_results
+        .iter()
+        .filter(|r| matches!(r.outcome(), TriageOutcome::Duplicate { .. }))
+        .count() as u32;
+
+    Ok(JobStatusResult {
+        job,
+        tasks_completed,
+        tasks_failed,
+        items_created,
+        observations_created,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rmcp::model::ErrorCode;
+    use tokio::sync::RwLock;
+    use tribal_domain::{
+        JobId, JobOutcome, JobStatus, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
+        TaskType, TriageOutcome,
+    };
+    use tribal_test_utils::{
+        MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job, a_task,
+        a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed, lazy_pool,
+        test_context,
+    };
+
+    use super::*;
+    use crate::{session::SessionContext, test_utils::test_repositories};
+
+    // -- Constants ---------------------------------------------------------
+
+    const STRUCTURED_CONTENT: &str = "structured_content must be present";
+    const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
+
+    // -- Helpers -----------------------------------------------------------
+
+    fn session() -> Arc<RwLock<SessionContext>> {
+        Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())))
+    }
+
+    fn sample_job(status: JobStatus, outcome: Option<JobOutcome>) -> Job {
+        Job::builder()
+            .id(JobId::new())
+            .project_id(ProjectId::new())
+            .principal_id(PrincipalId::new())
+            .status(status)
+            .outcome(outcome)
+            .source_context(serde_json::json!({}))
+            .raw_input("test input".to_owned())
+            .extraction_system_prompt_version_id(PromptVersionId::new())
+            .extraction_user_prompt_version_id(PromptVersionId::new())
+            .triage_system_prompt_version_id(PromptVersionId::new())
+            .triage_user_prompt_version_id(PromptVersionId::new())
+            .relation_system_prompt_version_id(PromptVersionId::new())
+            .relation_user_prompt_version_id(PromptVersionId::new())
+            .created_at(chrono::Utc::now())
+            .updated_at(chrono::Utc::now())
+            .build()
+    }
+
+    async fn call_execute(
+        repos: &ConnectionRepositories,
+        job_id: JobId,
+    ) -> Result<JobStatusResult, JobStatusError> {
+        let ctx = test_context().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
+        let params = JobStatusParams { job_id };
+        execute_job_status(&mut tx, repos, &params).await
+    }
+
+    fn repos_for_job_status(
+        job: Job,
+        tasks: Vec<tribal_domain::Task>,
+        triage_results: Vec<tribal_domain::TriageResult>,
+    ) -> ConnectionRepositories {
+        let mut repos = test_repositories();
+        repos.job = Arc::new(
+            MockJobRepository::builder()
+                .on_find_by_id(job, None)
+                .build(),
+        );
+        repos.task = Arc::new(
+            MockTaskRepository::builder()
+                .on_find_by_job_id(tasks, None)
+                .build(),
+        );
+        repos.triage_result = Arc::new(
+            MockTriageResultRepository::builder()
+                .on_find_by_job_id(triage_results, None)
+                .build(),
+        );
+        repos
+    }
+
+    // -- Adapter: validation -----------------------------------------------
+
+    #[tokio::test]
+    async fn test_apply_job_status_malformed_json_returns_protocol_error() {
+        let pool = lazy_pool();
+        let repos = test_repositories();
+        let sess = session();
+
+        let err = TribalServerHandler::apply_job_status(
+            &pool,
+            &repos,
+            &sess,
+            serde_json::json!({"job_id": 123}),
+        )
+        .await
+        .expect_err("should return Err(McpError) for malformed params");
+
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn test_apply_job_status_invalid_job_prefix_returns_application_error() {
+        let pool = lazy_pool();
+        let repos = test_repositories();
+        let sess = session();
+
+        let wrong_prefix_id = KnowledgeItemId::new().to_string();
+        let result = TribalServerHandler::apply_job_status(
+            &pool,
+            &repos,
+            &sess,
+            serde_json::json!({"job_id": wrong_prefix_id}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["code"], "invalid_argument");
+    }
+
+    #[tokio::test]
+    async fn test_apply_job_status_wait_seconds_over_30_returns_application_error() {
+        let pool = lazy_pool();
+        let repos = test_repositories();
+        let sess = session();
+
+        let result = TribalServerHandler::apply_job_status(
+            &pool,
+            &repos,
+            &sess,
+            serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 31}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["code"], "invalid_argument");
+    }
+
+    /// With `wait_seconds=30` (the upper boundary), the handler should
+    /// pass validation and proceed to the pool phase. `lazy_pool` cannot
+    /// open connections, so the call fails at pool acquisition — we assert
+    /// the error is NOT `invalid_argument` to confirm the boundary is
+    /// accepted.
+    #[tokio::test]
+    async fn test_apply_job_status_wait_seconds_at_boundary_30_accepted() {
+        let pool = lazy_pool();
+        let repos = test_repositories();
+        let sess = session();
+
+        let result = TribalServerHandler::apply_job_status(
+            &pool,
+            &repos,
+            &sess,
+            serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 30}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_ne!(
+            structured["code"], "invalid_argument",
+            "wait_seconds=30 should be accepted",
+        );
+    }
+
+    /// With `wait_seconds=0`, the handler should pass validation and
+    /// proceed to the pool phase without polling.
+    #[tokio::test]
+    async fn test_apply_job_status_wait_seconds_zero_accepted() {
+        let pool = lazy_pool();
+        let repos = test_repositories();
+        let sess = session();
+
+        let result = TribalServerHandler::apply_job_status(
+            &pool,
+            &repos,
+            &sess,
+            serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 0}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_ne!(
+            structured["code"], "invalid_argument",
+            "wait_seconds=0 should be accepted",
+        );
+    }
+
+    /// With `wait_seconds` absent from the request, the handler should
+    /// pass validation and proceed to the pool phase without polling.
+    #[tokio::test]
+    async fn test_apply_job_status_wait_seconds_absent_accepted() {
+        let pool = lazy_pool();
+        let repos = test_repositories();
+        let sess = session();
+
+        let result = TribalServerHandler::apply_job_status(
+            &pool,
+            &repos,
+            &sess,
+            serde_json::json!({"job_id": JobId::new().to_string()}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_ne!(
+            structured["code"], "invalid_argument",
+            "absent wait_seconds should be accepted",
+        );
+    }
+
+    // -- Service: happy paths ----------------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_job_status_completed_job_with_counts() {
+        let job = sample_job(JobStatus::Completed, Some(JobOutcome::Success));
+        let job_id = job.id();
+
+        let tasks = vec![
+            a_task()
+                .job_id(job_id)
+                .task_type(TaskType::Triage)
+                .status(TaskStatus::Completed)
+                .build(),
+            a_task()
+                .job_id(job_id)
+                .task_type(TaskType::Triage)
+                .status(TaskStatus::Completed)
+                .build(),
+            a_task()
+                .job_id(job_id)
+                .task_type(TaskType::Triage)
+                .status(TaskStatus::DeadLetter)
+                .build(),
+        ];
+
+        let triage_results = vec![
+            a_triage_result_created().job_id(job_id).batch_index(0).build(),
+            a_triage_result_duplicate().job_id(job_id).batch_index(1).build(),
+            a_triage_result_failed().job_id(job_id).batch_index(2).build(),
+        ];
+
+        let repos = repos_for_job_status(job, tasks, triage_results);
+        let result = call_execute(&repos, job_id).await.expect("should succeed");
+
+        assert_eq!(result.job.status(), JobStatus::Completed);
+        assert_eq!(result.job.outcome(), Some(JobOutcome::Success));
+        assert_eq!(result.tasks_completed, 2);
+        assert_eq!(result.tasks_failed, 1);
+        assert_eq!(result.items_created, 1);
+        assert_eq!(result.observations_created, 1);
+    }
+
+    #[tokio::test]
+    async fn test_execute_job_status_queued_job_all_zeroes() {
+        let job = sample_job(JobStatus::Queued, None);
+        let job_id = job.id();
+
+        let repos = repos_for_job_status(job, vec![], vec![]);
+        let result = call_execute(&repos, job_id).await.expect("should succeed");
+
+        assert_eq!(result.job.status(), JobStatus::Queued);
+        assert!(result.job.outcome().is_none());
+        assert!(result.job.batch_size().is_none());
+        assert_eq!(result.tasks_completed, 0);
+        assert_eq!(result.tasks_failed, 0);
+        assert_eq!(result.items_created, 0);
+        assert_eq!(result.observations_created, 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_job_status_failed_job() {
+        let job = sample_job(JobStatus::Failed, Some(JobOutcome::Failure));
+        let job_id = job.id();
+
+        let repos = repos_for_job_status(job, vec![], vec![]);
+        let result = call_execute(&repos, job_id).await.expect("should succeed");
+
+        assert_eq!(result.job.status(), JobStatus::Failed);
+        assert_eq!(result.job.outcome(), Some(JobOutcome::Failure));
+    }
+
+    #[tokio::test]
+    async fn test_execute_job_status_in_progress_no_outcome() {
+        let job = Job::builder()
+            .id(JobId::new())
+            .project_id(ProjectId::new())
+            .principal_id(PrincipalId::new())
+            .status(JobStatus::Triaging)
+            .batch_size(Some(3))
+            .source_context(serde_json::json!({}))
+            .raw_input("test input".to_owned())
+            .extraction_system_prompt_version_id(PromptVersionId::new())
+            .extraction_user_prompt_version_id(PromptVersionId::new())
+            .triage_system_prompt_version_id(PromptVersionId::new())
+            .triage_user_prompt_version_id(PromptVersionId::new())
+            .relation_system_prompt_version_id(PromptVersionId::new())
+            .relation_user_prompt_version_id(PromptVersionId::new())
+            .created_at(chrono::Utc::now())
+            .updated_at(chrono::Utc::now())
+            .build();
+        let job_id = job.id();
+
+        let repos = repos_for_job_status(job, vec![], vec![]);
+        let result = call_execute(&repos, job_id).await.expect("should succeed");
+
+        assert_eq!(result.job.status(), JobStatus::Triaging);
+        assert!(result.job.outcome().is_none());
+        assert!(result.job.batch_size().is_some());
+    }
+
+    // -- Service: count filtering ------------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_job_status_only_counts_triage_tasks() {
+        let job = sample_job(JobStatus::Completed, Some(JobOutcome::Success));
+        let job_id = job.id();
+
+        let tasks = vec![
+            a_task()
+                .job_id(job_id)
+                .task_type(TaskType::Extraction)
+                .status(TaskStatus::Completed)
+                .build(),
+            a_task()
+                .job_id(job_id)
+                .task_type(TaskType::Triage)
+                .status(TaskStatus::Completed)
+                .build(),
+            a_task()
+                .job_id(job_id)
+                .task_type(TaskType::Relation)
+                .status(TaskStatus::Completed)
+                .build(),
+        ];
+
+        let repos = repos_for_job_status(job, tasks, vec![]);
+        let result = call_execute(&repos, job_id).await.expect("should succeed");
+
+        assert_eq!(
+            result.tasks_completed, 1,
+            "only the triage task should be counted",
+        );
+        assert_eq!(result.tasks_failed, 0);
+    }
+
+    // -- Service: error paths ----------------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_job_status_job_not_found() {
+        let mut repos = test_repositories();
+        repos.job = Arc::new(
+            MockJobRepository::builder()
+                .on_find_by_id_error(
+                    || DbError::NotFound {
+                        entity: "job",
+                        id: "missing".into(),
+                    },
+                    None,
+                )
+                .build(),
+        );
+
+        let err = call_execute(&repos, JobId::new())
+            .await
+            .expect_err("should fail");
+
+        assert!(
+            matches!(err, JobStatusError::Db(DbError::NotFound { entity, .. }) if entity == "job")
+        );
+    }
+
+    // -- Polling behaviour -------------------------------------------------
+
+    /// When the initial query returns a terminal state, the handler should
+    /// return immediately without entering the polling loop, even with a
+    /// non-zero `wait_seconds`.
+    #[tokio::test(start_paused = true)]
+    async fn test_apply_job_status_returns_immediately_when_terminal() {
+        let ctx = test_context().await;
+        let pool = ctx.pool().clone();
+
+        let job = sample_job(JobStatus::Completed, Some(JobOutcome::Success));
+        let job_id = job.id();
+
+        let job_mock = MockJobRepository::builder()
+            .on_find_by_id(job, None)
+            .on_find_by_id_exhaust(
+                tribal_test_utils::ExhaustBehaviour::RepeatLast,
+            )
+            .build();
+        let task_mock = MockTaskRepository::builder()
+            .on_find_by_job_id(vec![], None)
+            .on_find_by_job_id_exhaust(
+                tribal_test_utils::ExhaustBehaviour::RepeatLast,
+            )
+            .build();
+        let triage_mock = MockTriageResultRepository::builder()
+            .on_find_by_job_id(vec![], None)
+            .on_find_by_job_id_exhaust(
+                tribal_test_utils::ExhaustBehaviour::RepeatLast,
+            )
+            .build();
+
+        let job_mock = Arc::new(job_mock);
+        let job_mock_ref = Arc::clone(&job_mock);
+
+        let mut repos = test_repositories();
+        repos.job = job_mock;
+        repos.task = Arc::new(task_mock);
+        repos.triage_result = Arc::new(triage_mock);
+
+        let sess = session();
+        let result = TribalServerHandler::apply_job_status(
+            &pool,
+            &repos,
+            &sess,
+            serde_json::json!({
+                "job_id": job_id.to_string(),
+                "wait_seconds": 5,
+            }),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            job_mock_ref.find_by_id_call_count(),
+            1,
+            "should not poll when already terminal",
+        );
+    }
+
+    /// When the initial query returns a non-terminal state, and
+    /// `wait_seconds > 0`, the handler should poll until the job becomes
+    /// terminal.
+    #[tokio::test(start_paused = true)]
+    async fn test_apply_job_status_polls_until_terminal() {
+        let ctx = test_context().await;
+        let pool = ctx.pool().clone();
+
+        let triaging_job = sample_job(JobStatus::Triaging, None);
+        let job_id = triaging_job.id();
+        let completed_job = Job::builder()
+            .id(job_id)
+            .project_id(triaging_job.project_id())
+            .principal_id(triaging_job.principal_id())
+            .status(JobStatus::Completed)
+            .outcome(Some(JobOutcome::Success))
+            .batch_size(Some(1))
+            .source_context(serde_json::json!({}))
+            .raw_input("test input".to_owned())
+            .extraction_system_prompt_version_id(PromptVersionId::new())
+            .extraction_user_prompt_version_id(PromptVersionId::new())
+            .triage_system_prompt_version_id(PromptVersionId::new())
+            .triage_user_prompt_version_id(PromptVersionId::new())
+            .relation_system_prompt_version_id(PromptVersionId::new())
+            .relation_user_prompt_version_id(PromptVersionId::new())
+            .created_at(chrono::Utc::now())
+            .updated_at(chrono::Utc::now())
+            .build();
+
+        let completed_task = a_task()
+            .job_id(job_id)
+            .task_type(TaskType::Triage)
+            .status(TaskStatus::Completed)
+            .build();
+        let created_result = a_triage_result_created().job_id(job_id).build();
+
+        let job_mock = MockJobRepository::builder()
+            .on_find_by_id(triaging_job, None)
+            .on_find_by_id(completed_job, None)
+            .build();
+        let task_mock = MockTaskRepository::builder()
+            .on_find_by_job_id(vec![], None)
+            .on_find_by_job_id(vec![completed_task], None)
+            .build();
+        let triage_mock = MockTriageResultRepository::builder()
+            .on_find_by_job_id(vec![], None)
+            .on_find_by_job_id(vec![created_result], None)
+            .build();
+
+        let job_mock = Arc::new(job_mock);
+        let job_mock_ref = Arc::clone(&job_mock);
+
+        let mut repos = test_repositories();
+        repos.job = job_mock;
+        repos.task = Arc::new(task_mock);
+        repos.triage_result = Arc::new(triage_mock);
+
+        let sess = session();
+        let result = TribalServerHandler::apply_job_status(
+            &pool,
+            &repos,
+            &sess,
+            serde_json::json!({
+                "job_id": job_id.to_string(),
+                "wait_seconds": 5,
+            }),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            job_mock_ref.find_by_id_call_count(),
+            2,
+            "should poll once after initial query",
+        );
+
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["status"], "completed");
+        assert_eq!(structured["outcome"], "success");
+        assert_eq!(structured["tasks_completed"], 1);
+        assert_eq!(structured["items_created"], 1);
     }
 }
