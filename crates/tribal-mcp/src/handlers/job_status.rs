@@ -128,7 +128,11 @@ impl TribalServerHandler {
             let deadline = Instant::now() + Duration::from_secs(u64::from(wait));
 
             loop {
-                tokio::time::sleep(POLL_INTERVAL).await;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                tokio::time::sleep(remaining.min(POLL_INTERVAL)).await;
 
                 result = {
                     let mut conn = match acquire_connection(pool).await {
@@ -141,7 +145,7 @@ impl TribalServerHandler {
                     }
                 };
 
-                if result.job.status().is_terminal() || Instant::now() >= deadline {
+                if result.job.status().is_terminal() {
                     break;
                 }
             }
