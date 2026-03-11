@@ -5,6 +5,8 @@
 //! [`ImmediatePollScheduler`] to drive iterations without wall-clock
 //! delays — iteration count is controlled by the mock queue depth.
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -79,9 +81,9 @@ impl TickSource for TimedTickSource {
 // ---------------------------------------------------------------------------
 
 /// Test scheduler that produces tick sources which resolve immediately
-/// without sleeping. Iteration count is controlled entirely by the
-/// mock queue depth — when the mock returns a terminal job status,
-/// the polling loop breaks.
+/// without sleeping. The tick budget is derived from the wait duration
+/// (one tick per second, matching the production interval) so tests
+/// cannot loop forever if a mock is misconfigured.
 #[cfg(test)]
 pub(crate) struct ImmediatePollScheduler;
 
@@ -89,19 +91,27 @@ pub(crate) struct ImmediatePollScheduler;
 impl PollScheduler for ImmediatePollScheduler {
     type Ticker = ImmediateTickSource;
 
-    fn create_ticker(&self, _wait: Duration) -> Self::Ticker {
-        ImmediateTickSource
+    fn create_ticker(&self, wait: Duration) -> Self::Ticker {
+        ImmediateTickSource {
+            remaining: AtomicU32::new(u32::try_from(wait.as_secs()).unwrap_or(u32::MAX)),
+        }
     }
 }
 
-/// Tick source that always returns `true` immediately.
+/// Tick source that returns `true` immediately up to a fixed budget,
+/// then `false`. Prevents infinite loops in tests when mocks are
+/// misconfigured.
 #[cfg(test)]
-pub(crate) struct ImmediateTickSource;
+pub(crate) struct ImmediateTickSource {
+    remaining: AtomicU32,
+}
 
 #[cfg(test)]
 impl TickSource for ImmediateTickSource {
     async fn tick(&self) -> bool {
-        true
+        self.remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok()
     }
 }
 
@@ -136,12 +146,80 @@ mod tests {
         assert!(ticker.tick().await, "should return true when time remains");
     }
 
-    #[tokio::test]
-    async fn test_immediate_tick_source_always_returns_true() {
-        let ticker = ImmediateTickSource;
+    /// When `wait == interval`, the single sleep lands exactly on the
+    /// deadline. The post-sleep gate (`now <= deadline`) must return
+    /// `true` so the caller gets one poll — otherwise the wait was
+    /// pointless.
+    #[tokio::test(start_paused = true)]
+    async fn test_timed_tick_source_returns_true_when_sleep_lands_on_deadline() {
+        let ticker = TimedTickSource {
+            deadline: Instant::now() + Duration::from_secs(1),
+            interval: Duration::from_secs(1),
+        };
 
-        for _ in 0..5 {
-            assert!(ticker.tick().await);
-        }
+        assert!(ticker.tick().await, "should allow a query at the deadline");
+    }
+
+    /// After the single tick that lands on the deadline, the next call
+    /// to `tick` must return `false` — the pre-sleep gate sees
+    /// `remaining == 0` and exits immediately.
+    #[tokio::test(start_paused = true)]
+    async fn test_timed_tick_source_returns_false_on_second_call_after_deadline() {
+        let ticker = TimedTickSource {
+            deadline: Instant::now() + Duration::from_secs(1),
+            interval: Duration::from_secs(1),
+        };
+
+        assert!(
+            ticker.tick().await,
+            "first tick at deadline should return true"
+        );
+        assert!(
+            !ticker.tick().await,
+            "second tick past deadline should return false"
+        );
+    }
+
+    /// With multiple intervals before the deadline, `tick` returns
+    /// `true` for each interval then `false` once the deadline is
+    /// reached.
+    #[tokio::test(start_paused = true)]
+    async fn test_timed_tick_source_multiple_intervals_then_stops() {
+        let ticker = TimedTickSource {
+            deadline: Instant::now() + Duration::from_secs(3),
+            interval: Duration::from_secs(1),
+        };
+
+        assert!(ticker.tick().await, "tick 1 at 1s");
+        assert!(ticker.tick().await, "tick 2 at 2s");
+        assert!(ticker.tick().await, "tick 3 at 3s (deadline)");
+        assert!(!ticker.tick().await, "tick 4 past deadline");
+    }
+
+    /// When the interval exceeds the wait duration, `tick` sleeps only
+    /// for the remaining time and returns `true` for exactly one poll.
+    #[tokio::test(start_paused = true)]
+    async fn test_timed_tick_source_interval_exceeds_wait() {
+        let ticker = TimedTickSource {
+            deadline: Instant::now() + Duration::from_millis(500),
+            interval: Duration::from_secs(2),
+        };
+
+        assert!(
+            ticker.tick().await,
+            "should sleep for remaining and allow one query"
+        );
+        assert!(!ticker.tick().await, "should stop after deadline");
+    }
+
+    #[tokio::test]
+    async fn test_immediate_tick_source_respects_budget() {
+        let scheduler = ImmediatePollScheduler;
+        let ticker = scheduler.create_ticker(Duration::from_secs(3));
+
+        assert!(ticker.tick().await, "tick 1 of 3");
+        assert!(ticker.tick().await, "tick 2 of 3");
+        assert!(ticker.tick().await, "tick 3 of 3");
+        assert!(!ticker.tick().await, "budget exhausted");
     }
 }
