@@ -79,6 +79,7 @@ pub struct ConnectionRepositories {
 /// At startup, the factory closure populates this from the database and
 /// passes it into [`TribalServerHandler::new`].
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_field_names)]
 pub struct ActivePromptVersions {
     pub(crate) extraction_system_prompt_version_id: PromptVersionId,
     pub(crate) extraction_user_prompt_version_id: PromptVersionId,
