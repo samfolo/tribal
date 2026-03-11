@@ -1,15 +1,13 @@
 //! Handler for `tribal_job_status` — job progress and outcome lookup.
 
-use std::str::FromStr;
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
     service::{RequestContext, RoleServer},
 };
 use sqlx::PgPool;
-use tokio::sync::RwLock;
-use tokio::time::Instant;
+use tokio::{sync::RwLock, time::Instant};
 use tribal_db::DbError;
 use tribal_domain::{Job, JobId, McpErrorCode, TaskStatus, TaskType, TriageOutcome};
 
@@ -113,7 +111,10 @@ impl TribalServerHandler {
         let status_params = JobStatusParams { job_id };
 
         let mut result = {
-            let mut conn = acquire_connection(pool).await?;
+            let mut conn = match acquire_connection(pool).await {
+                Ok(c) => c,
+                Err(call_result) => return Ok(call_result),
+            };
             match execute_job_status(&mut *conn, repositories, &status_params).await {
                 Ok(r) => r,
                 Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
@@ -128,7 +129,10 @@ impl TribalServerHandler {
                     tokio::time::sleep(POLL_INTERVAL).await;
 
                     let poll_result = {
-                        let mut conn = acquire_connection(pool).await?;
+                        let mut conn = match acquire_connection(pool).await {
+                            Ok(c) => c,
+                            Err(call_result) => return Ok(call_result),
+                        };
                         match execute_job_status(&mut *conn, repositories, &status_params).await {
                             Ok(r) => r,
                             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
@@ -198,7 +202,10 @@ async fn execute_job_status(
 ) -> Result<JobStatusResult, JobStatusError> {
     let job = repositories.job.find_by_id(conn, params.job_id).await?;
 
-    let tasks = repositories.task.find_by_job_id(conn, params.job_id).await?;
+    let tasks = repositories
+        .task
+        .find_by_job_id(conn, params.job_id)
+        .await?;
 
     let triage_results = repositories
         .triage_result
@@ -255,10 +262,10 @@ mod tests {
     use tokio::sync::RwLock;
     use tribal_domain::{
         JobId, JobOutcome, JobStatus, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
-        TaskType, TriageOutcome,
+        TaskType,
     };
     use tribal_test_utils::{
-        MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job, a_task,
+        MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_task,
         a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed, lazy_pool,
         test_context,
     };
@@ -496,9 +503,18 @@ mod tests {
         ];
 
         let triage_results = vec![
-            a_triage_result_created().job_id(job_id).batch_index(0).build(),
-            a_triage_result_duplicate().job_id(job_id).batch_index(1).build(),
-            a_triage_result_failed().job_id(job_id).batch_index(2).build(),
+            a_triage_result_created()
+                .job_id(job_id)
+                .batch_index(0)
+                .build(),
+            a_triage_result_duplicate()
+                .job_id(job_id)
+                .batch_index(1)
+                .build(),
+            a_triage_result_failed()
+                .job_id(job_id)
+                .batch_index(2)
+                .build(),
         ];
 
         let repos = repos_for_job_status(job, tasks, triage_results);
@@ -636,31 +652,27 @@ mod tests {
     /// When the initial query returns a terminal state, the handler should
     /// return immediately without entering the polling loop, even with a
     /// non-zero `wait_seconds`.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn test_apply_job_status_returns_immediately_when_terminal() {
         let ctx = test_context().await;
         let pool = ctx.pool().clone();
+        // Note: cannot use tokio::time::pause() here — paused time causes
+        // pool.acquire() to time out immediately, breaking the test.
 
         let job = sample_job(JobStatus::Completed, Some(JobOutcome::Success));
         let job_id = job.id();
 
         let job_mock = MockJobRepository::builder()
             .on_find_by_id(job, None)
-            .on_find_by_id_exhaust(
-                tribal_test_utils::ExhaustBehaviour::RepeatLast,
-            )
+            .on_find_by_id_exhaust(tribal_test_utils::ExhaustBehaviour::RepeatLast)
             .build();
         let task_mock = MockTaskRepository::builder()
             .on_find_by_job_id(vec![], None)
-            .on_find_by_job_id_exhaust(
-                tribal_test_utils::ExhaustBehaviour::RepeatLast,
-            )
+            .on_find_by_job_id_exhaust(tribal_test_utils::ExhaustBehaviour::RepeatLast)
             .build();
         let triage_mock = MockTriageResultRepository::builder()
             .on_find_by_job_id(vec![], None)
-            .on_find_by_job_id_exhaust(
-                tribal_test_utils::ExhaustBehaviour::RepeatLast,
-            )
+            .on_find_by_job_id_exhaust(tribal_test_utils::ExhaustBehaviour::RepeatLast)
             .build();
 
         let job_mock = Arc::new(job_mock);
@@ -695,10 +707,12 @@ mod tests {
     /// When the initial query returns a non-terminal state, and
     /// `wait_seconds > 0`, the handler should poll until the job becomes
     /// terminal.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn test_apply_job_status_polls_until_terminal() {
         let ctx = test_context().await;
         let pool = ctx.pool().clone();
+        // Note: cannot use tokio::time::pause() here — paused time causes
+        // pool.acquire() to time out immediately, breaking the test.
 
         let triaging_job = sample_job(JobStatus::Triaging, None);
         let job_id = triaging_job.id();

@@ -67,7 +67,6 @@ pub struct ConnectionRepositories {
     pub(crate) reference: Arc<dyn ReferenceRepository + Send + Sync>,
     pub(crate) relation: Arc<dyn RelationRepository + Send + Sync>,
     pub(crate) principal: Arc<dyn PrincipalRepository + Send + Sync>,
-    #[allow(dead_code)]
     pub(crate) triage_result: Arc<dyn TriageResultRepository + Send + Sync>,
 }
 
