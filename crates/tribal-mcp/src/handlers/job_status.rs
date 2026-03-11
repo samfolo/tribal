@@ -102,7 +102,7 @@ impl TribalServerHandler {
                 message: format!(
                     "wait_seconds must be between 0 and {MAX_WAIT_SECONDS}, got {wait}"
                 ),
-                details: serde_json::json!({}),
+                details: serde_json::json!({ "wait_seconds": wait }),
             }
             .into_call_tool_result());
         }
@@ -598,6 +598,42 @@ mod tests {
         assert!(
             matches!(err, JobStatusError::Db(DbError::NotFound { entity, .. }) if entity == "job")
         );
+    }
+
+    // -- Adapter: error paths ----------------------------------------------
+
+    #[tokio::test]
+    async fn test_apply_job_status_job_not_found_returns_application_error() {
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
+
+        let job_id = JobId::new();
+        let mut repos = test_repositories();
+        repos.job = Arc::new(
+            MockJobRepository::builder()
+                .on_find_by_id_error(
+                    || DbError::NotFound {
+                        entity: "job",
+                        id: "missing".into(),
+                    },
+                    None,
+                )
+                .build(),
+        );
+
+        let sess = session_without_project();
+        let result = TribalServerHandler::apply_job_status(
+            &pool,
+            &repos,
+            &sess,
+            serde_json::json!({"job_id": job_id.to_string()}),
+        )
+        .await
+        .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["code"], "not_found");
     }
 
     // -- Polling behaviour -------------------------------------------------
