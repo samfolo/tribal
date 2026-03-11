@@ -11,10 +11,11 @@ use tokio::{sync::RwLock, time::Instant};
 use tribal_db::DbError;
 use tribal_domain::{Job, JobId, McpErrorCode, TaskStatus, TaskType, TriageOutcome};
 
+use super::common::acquire_connection;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
     mapping::{McpJobStatusRequest, McpJobStatusResponse},
-    server_handler::{ConnectionRepositories, POOL_NAME, TribalServerHandler},
+    server_handler::{ConnectionRepositories, TribalServerHandler},
     session::SessionContext,
 };
 
@@ -95,17 +96,15 @@ impl TribalServerHandler {
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
 
-        if let Some(wait) = request.wait_seconds {
-            if wait > MAX_WAIT_SECONDS {
-                return Ok(McpToolError {
-                    code: McpErrorCode::InvalidArgument,
-                    message: format!(
-                        "wait_seconds must be between 0 and {MAX_WAIT_SECONDS}, got {wait}"
-                    ),
-                    details: serde_json::json!({}),
-                }
-                .into_call_tool_result());
+        if let Some(wait) = request.wait_seconds.filter(|&w| w > MAX_WAIT_SECONDS) {
+            return Ok(McpToolError {
+                code: McpErrorCode::InvalidArgument,
+                message: format!(
+                    "wait_seconds must be between 0 and {MAX_WAIT_SECONDS}, got {wait}"
+                ),
+                details: serde_json::json!({}),
             }
+            .into_call_tool_result());
         }
 
         let status_params = JobStatusParams { job_id };
@@ -115,35 +114,35 @@ impl TribalServerHandler {
                 Ok(c) => c,
                 Err(call_result) => return Ok(call_result),
             };
-            match execute_job_status(&mut *conn, repositories, &status_params).await {
+            match execute_job_status(&mut conn, repositories, &status_params).await {
                 Ok(r) => r,
                 Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
             }
         };
 
-        if let Some(wait) = request.wait_seconds.filter(|&w| w > 0) {
-            if !result.job.status().is_terminal() {
-                let deadline = Instant::now() + Duration::from_secs(u64::from(wait));
+        if let Some(wait) = request
+            .wait_seconds
+            .filter(|&w| w > 0)
+            .filter(|_| !result.job.status().is_terminal())
+        {
+            let deadline = Instant::now() + Duration::from_secs(u64::from(wait));
 
-                loop {
-                    tokio::time::sleep(POLL_INTERVAL).await;
+            loop {
+                tokio::time::sleep(POLL_INTERVAL).await;
 
-                    let poll_result = {
-                        let mut conn = match acquire_connection(pool).await {
-                            Ok(c) => c,
-                            Err(call_result) => return Ok(call_result),
-                        };
-                        match execute_job_status(&mut *conn, repositories, &status_params).await {
-                            Ok(r) => r,
-                            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-                        }
+                result = {
+                    let mut conn = match acquire_connection(pool).await {
+                        Ok(c) => c,
+                        Err(call_result) => return Ok(call_result),
                     };
-
-                    result = poll_result;
-
-                    if result.job.status().is_terminal() || Instant::now() >= deadline {
-                        break;
+                    match execute_job_status(&mut conn, repositories, &status_params).await {
+                        Ok(r) => r,
+                        Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
                     }
+                };
+
+                if result.job.status().is_terminal() || Instant::now() >= deadline {
+                    break;
                 }
             }
         }
@@ -157,32 +156,6 @@ impl TribalServerHandler {
         );
 
         Ok(response.into_call_tool_result())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Acquires a connection from the pool, mapping errors to `CallToolResult`.
-async fn acquire_connection(
-    pool: &PgPool,
-) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, CallToolResult> {
-    match pool.acquire().await {
-        Ok(conn) => Ok(conn),
-        Err(sqlx::Error::PoolTimedOut) => {
-            let db_err = DbError::PoolExhausted {
-                pool_name: POOL_NAME,
-            };
-            Err(db_err.into_mcp_error().into_call_tool_result())
-        }
-        Err(other) => {
-            let db_err = DbError::QueryFailed {
-                context: "acquiring connection from pool".into(),
-                source: other,
-            };
-            Err(db_err.into_mcp_error().into_call_tool_result())
-        }
     }
 }
 
@@ -214,32 +187,25 @@ async fn execute_job_status(
 
     // Only triage tasks contribute to task counts — extraction and relation
     // tasks are excluded.
-    let triage_tasks: Vec<_> = tasks
-        .iter()
-        .filter(|t| t.task_type() == TaskType::Triage)
-        .collect();
-
-    let tasks_completed = triage_tasks
-        .iter()
-        .filter(|t| t.status() == TaskStatus::Completed)
-        .count() as u32;
-
-    let tasks_failed = triage_tasks
-        .iter()
-        .filter(|t| t.status() == TaskStatus::DeadLetter)
-        .count() as u32;
+    let (mut tasks_completed, mut tasks_failed) = (0u32, 0u32);
+    for task in tasks.iter().filter(|t| t.task_type() == TaskType::Triage) {
+        match task.status() {
+            TaskStatus::Completed => tasks_completed += 1,
+            TaskStatus::DeadLetter => tasks_failed += 1,
+            _ => {}
+        }
+    }
 
     // TriageOutcome::Failed results contribute to neither items_created nor
     // observations_created — task-level failure is captured by tasks_failed.
-    let items_created = triage_results
-        .iter()
-        .filter(|r| matches!(r.outcome(), TriageOutcome::Created { .. }))
-        .count() as u32;
-
-    let observations_created = triage_results
-        .iter()
-        .filter(|r| matches!(r.outcome(), TriageOutcome::Duplicate { .. }))
-        .count() as u32;
+    let (mut items_created, mut observations_created) = (0u32, 0u32);
+    for result in &triage_results {
+        match result.outcome() {
+            TriageOutcome::Created { .. } => items_created += 1,
+            TriageOutcome::Duplicate { .. } => observations_created += 1,
+            TriageOutcome::Failed { .. } => {}
+        }
+    }
 
     Ok(JobStatusResult {
         job,
@@ -260,14 +226,11 @@ mod tests {
 
     use rmcp::model::ErrorCode;
     use tokio::sync::RwLock;
-    use tribal_domain::{
-        JobId, JobOutcome, JobStatus, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
-        TaskType,
-    };
+    use tribal_domain::{JobId, JobOutcome, JobStatus, KnowledgeItemId, TaskType};
     use tribal_test_utils::{
-        MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_task,
-        a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed, lazy_pool,
-        test_context,
+        ExhaustBehaviour, MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job,
+        a_task, a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed,
+        lazy_pool, test_context,
     };
 
     use super::*;
@@ -280,38 +243,17 @@ mod tests {
 
     // -- Helpers -----------------------------------------------------------
 
-    fn session() -> Arc<RwLock<SessionContext>> {
+    fn session_without_project() -> Arc<RwLock<SessionContext>> {
         Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())))
-    }
-
-    fn sample_job(status: JobStatus, outcome: Option<JobOutcome>) -> Job {
-        Job::builder()
-            .id(JobId::new())
-            .project_id(ProjectId::new())
-            .principal_id(PrincipalId::new())
-            .status(status)
-            .outcome(outcome)
-            .source_context(serde_json::json!({}))
-            .raw_input("test input".to_owned())
-            .extraction_system_prompt_version_id(PromptVersionId::new())
-            .extraction_user_prompt_version_id(PromptVersionId::new())
-            .triage_system_prompt_version_id(PromptVersionId::new())
-            .triage_user_prompt_version_id(PromptVersionId::new())
-            .relation_system_prompt_version_id(PromptVersionId::new())
-            .relation_user_prompt_version_id(PromptVersionId::new())
-            .created_at(chrono::Utc::now())
-            .updated_at(chrono::Utc::now())
-            .build()
     }
 
     async fn call_execute(
         repos: &ConnectionRepositories,
-        job_id: JobId,
+        params: &JobStatusParams,
     ) -> Result<JobStatusResult, JobStatusError> {
         let ctx = test_context().await;
         let mut tx = ctx.begin_test().await.expect("begin");
-        let params = JobStatusParams { job_id };
-        execute_job_status(&mut tx, repos, &params).await
+        execute_job_status(&mut tx, repos, params).await
     }
 
     fn repos_for_job_status(
@@ -344,7 +286,7 @@ mod tests {
     async fn test_apply_job_status_malformed_json_returns_protocol_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
-        let sess = session();
+        let sess = session_without_project();
 
         let err = TribalServerHandler::apply_job_status(
             &pool,
@@ -362,7 +304,7 @@ mod tests {
     async fn test_apply_job_status_invalid_job_prefix_returns_application_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
-        let sess = session();
+        let sess = session_without_project();
 
         let wrong_prefix_id = KnowledgeItemId::new().to_string();
         let result = TribalServerHandler::apply_job_status(
@@ -383,7 +325,7 @@ mod tests {
     async fn test_apply_job_status_wait_seconds_over_30_returns_application_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
-        let sess = session();
+        let sess = session_without_project();
 
         let result = TribalServerHandler::apply_job_status(
             &pool,
@@ -408,7 +350,7 @@ mod tests {
     async fn test_apply_job_status_wait_seconds_at_boundary_30_accepted() {
         let pool = lazy_pool();
         let repos = test_repositories();
-        let sess = session();
+        let sess = session_without_project();
 
         let result = TribalServerHandler::apply_job_status(
             &pool,
@@ -433,7 +375,7 @@ mod tests {
     async fn test_apply_job_status_wait_seconds_zero_accepted() {
         let pool = lazy_pool();
         let repos = test_repositories();
-        let sess = session();
+        let sess = session_without_project();
 
         let result = TribalServerHandler::apply_job_status(
             &pool,
@@ -458,7 +400,7 @@ mod tests {
     async fn test_apply_job_status_wait_seconds_absent_accepted() {
         let pool = lazy_pool();
         let repos = test_repositories();
-        let sess = session();
+        let sess = session_without_project();
 
         let result = TribalServerHandler::apply_job_status(
             &pool,
@@ -481,8 +423,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_job_status_completed_job_with_counts() {
-        let job = sample_job(JobStatus::Completed, Some(JobOutcome::Success));
-        let job_id = job.id();
+        let job_id = JobId::new();
+        let job = a_job()
+            .id(job_id)
+            .status(JobStatus::Completed)
+            .outcome(Some(JobOutcome::Success))
+            .build();
 
         let tasks = vec![
             a_task()
@@ -518,8 +464,10 @@ mod tests {
         ];
 
         let repos = repos_for_job_status(job, tasks, triage_results);
-        let result = call_execute(&repos, job_id).await.expect("should succeed");
+        let params = JobStatusParams { job_id };
+        let result = call_execute(&repos, &params).await.expect("should succeed");
 
+        assert_eq!(result.job.id(), job_id);
         assert_eq!(result.job.status(), JobStatus::Completed);
         assert_eq!(result.job.outcome(), Some(JobOutcome::Success));
         assert_eq!(result.tasks_completed, 2);
@@ -530,12 +478,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_job_status_queued_job_all_zeroes() {
-        let job = sample_job(JobStatus::Queued, None);
-        let job_id = job.id();
+        let job_id = JobId::new();
+        let job = a_job().id(job_id).build();
 
         let repos = repos_for_job_status(job, vec![], vec![]);
-        let result = call_execute(&repos, job_id).await.expect("should succeed");
+        let params = JobStatusParams { job_id };
+        let result = call_execute(&repos, &params).await.expect("should succeed");
 
+        assert_eq!(result.job.id(), job_id);
         assert_eq!(result.job.status(), JobStatus::Queued);
         assert!(result.job.outcome().is_none());
         assert!(result.job.batch_size().is_none());
@@ -547,40 +497,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_job_status_failed_job() {
-        let job = sample_job(JobStatus::Failed, Some(JobOutcome::Failure));
-        let job_id = job.id();
+        let job_id = JobId::new();
+        let job = a_job()
+            .id(job_id)
+            .status(JobStatus::Failed)
+            .outcome(Some(JobOutcome::Failure))
+            .build();
 
         let repos = repos_for_job_status(job, vec![], vec![]);
-        let result = call_execute(&repos, job_id).await.expect("should succeed");
+        let params = JobStatusParams { job_id };
+        let result = call_execute(&repos, &params).await.expect("should succeed");
 
+        assert_eq!(result.job.id(), job_id);
         assert_eq!(result.job.status(), JobStatus::Failed);
         assert_eq!(result.job.outcome(), Some(JobOutcome::Failure));
     }
 
     #[tokio::test]
     async fn test_execute_job_status_in_progress_no_outcome() {
-        let job = Job::builder()
-            .id(JobId::new())
-            .project_id(ProjectId::new())
-            .principal_id(PrincipalId::new())
+        let job_id = JobId::new();
+        let job = a_job()
+            .id(job_id)
             .status(JobStatus::Triaging)
             .batch_size(Some(3))
-            .source_context(serde_json::json!({}))
-            .raw_input("test input".to_owned())
-            .extraction_system_prompt_version_id(PromptVersionId::new())
-            .extraction_user_prompt_version_id(PromptVersionId::new())
-            .triage_system_prompt_version_id(PromptVersionId::new())
-            .triage_user_prompt_version_id(PromptVersionId::new())
-            .relation_system_prompt_version_id(PromptVersionId::new())
-            .relation_user_prompt_version_id(PromptVersionId::new())
-            .created_at(chrono::Utc::now())
-            .updated_at(chrono::Utc::now())
             .build();
-        let job_id = job.id();
 
         let repos = repos_for_job_status(job, vec![], vec![]);
-        let result = call_execute(&repos, job_id).await.expect("should succeed");
+        let params = JobStatusParams { job_id };
+        let result = call_execute(&repos, &params).await.expect("should succeed");
 
+        assert_eq!(result.job.id(), job_id);
         assert_eq!(result.job.status(), JobStatus::Triaging);
         assert!(result.job.outcome().is_none());
         assert!(result.job.batch_size().is_some());
@@ -590,8 +536,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_job_status_only_counts_triage_tasks() {
-        let job = sample_job(JobStatus::Completed, Some(JobOutcome::Success));
-        let job_id = job.id();
+        let job_id = JobId::new();
+        let job = a_job()
+            .id(job_id)
+            .status(JobStatus::Completed)
+            .outcome(Some(JobOutcome::Success))
+            .build();
 
         let tasks = vec![
             a_task()
@@ -612,7 +562,8 @@ mod tests {
         ];
 
         let repos = repos_for_job_status(job, tasks, vec![]);
-        let result = call_execute(&repos, job_id).await.expect("should succeed");
+        let params = JobStatusParams { job_id };
+        let result = call_execute(&repos, &params).await.expect("should succeed");
 
         assert_eq!(
             result.tasks_completed, 1,
@@ -638,7 +589,9 @@ mod tests {
                 .build(),
         );
 
-        let err = call_execute(&repos, JobId::new())
+        let job_id = JobId::new();
+        let params = JobStatusParams { job_id };
+        let err = call_execute(&repos, &params)
             .await
             .expect_err("should fail");
 
@@ -656,23 +609,25 @@ mod tests {
     async fn test_apply_job_status_returns_immediately_when_terminal() {
         let ctx = test_context().await;
         let pool = ctx.pool().clone();
-        // Note: cannot use tokio::time::pause() here — paused time causes
-        // pool.acquire() to time out immediately, breaking the test.
 
-        let job = sample_job(JobStatus::Completed, Some(JobOutcome::Success));
-        let job_id = job.id();
+        let job_id = JobId::new();
+        let job = a_job()
+            .id(job_id)
+            .status(JobStatus::Completed)
+            .outcome(Some(JobOutcome::Success))
+            .build();
 
         let job_mock = MockJobRepository::builder()
             .on_find_by_id(job, None)
-            .on_find_by_id_exhaust(tribal_test_utils::ExhaustBehaviour::RepeatLast)
+            .on_find_by_id_exhaust(ExhaustBehaviour::RepeatLast)
             .build();
         let task_mock = MockTaskRepository::builder()
             .on_find_by_job_id(vec![], None)
-            .on_find_by_job_id_exhaust(tribal_test_utils::ExhaustBehaviour::RepeatLast)
+            .on_find_by_job_id_exhaust(ExhaustBehaviour::RepeatLast)
             .build();
         let triage_mock = MockTriageResultRepository::builder()
             .on_find_by_job_id(vec![], None)
-            .on_find_by_job_id_exhaust(tribal_test_utils::ExhaustBehaviour::RepeatLast)
+            .on_find_by_job_id_exhaust(ExhaustBehaviour::RepeatLast)
             .build();
 
         let job_mock = Arc::new(job_mock);
@@ -683,7 +638,7 @@ mod tests {
         repos.task = Arc::new(task_mock);
         repos.triage_result = Arc::new(triage_mock);
 
-        let sess = session();
+        let sess = session_without_project();
         let result = TribalServerHandler::apply_job_status(
             &pool,
             &repos,
@@ -711,28 +666,14 @@ mod tests {
     async fn test_apply_job_status_polls_until_terminal() {
         let ctx = test_context().await;
         let pool = ctx.pool().clone();
-        // Note: cannot use tokio::time::pause() here — paused time causes
-        // pool.acquire() to time out immediately, breaking the test.
 
-        let triaging_job = sample_job(JobStatus::Triaging, None);
-        let job_id = triaging_job.id();
-        let completed_job = Job::builder()
+        let job_id = JobId::new();
+        let triaging_job = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let completed_job = a_job()
             .id(job_id)
-            .project_id(triaging_job.project_id())
-            .principal_id(triaging_job.principal_id())
             .status(JobStatus::Completed)
             .outcome(Some(JobOutcome::Success))
             .batch_size(Some(1))
-            .source_context(serde_json::json!({}))
-            .raw_input("test input".to_owned())
-            .extraction_system_prompt_version_id(PromptVersionId::new())
-            .extraction_user_prompt_version_id(PromptVersionId::new())
-            .triage_system_prompt_version_id(PromptVersionId::new())
-            .triage_user_prompt_version_id(PromptVersionId::new())
-            .relation_system_prompt_version_id(PromptVersionId::new())
-            .relation_user_prompt_version_id(PromptVersionId::new())
-            .created_at(chrono::Utc::now())
-            .updated_at(chrono::Utc::now())
             .build();
 
         let completed_task = a_task()
@@ -763,7 +704,7 @@ mod tests {
         repos.task = Arc::new(task_mock);
         repos.triage_result = Arc::new(triage_mock);
 
-        let sess = session();
+        let sess = session_without_project();
         let result = TribalServerHandler::apply_job_status(
             &pool,
             &repos,
@@ -784,6 +725,7 @@ mod tests {
         );
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["job_id"], job_id.to_string());
         assert_eq!(structured["status"], "completed");
         assert_eq!(structured["outcome"], "success");
         assert_eq!(structured["tasks_completed"], 1);
