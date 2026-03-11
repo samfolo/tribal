@@ -1,3 +1,4 @@
+mod common;
 mod discover;
 mod explore;
 mod feedback;

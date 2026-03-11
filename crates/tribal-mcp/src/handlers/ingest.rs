@@ -11,12 +11,11 @@ use tokio::sync::RwLock;
 use tribal_db::{DbError, NewJob, NewTask};
 use tribal_domain::{JobId, McpErrorCode, ProjectId, TaskType};
 
+use super::common::begin_transaction;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
     mapping::{McpIngestRequest, McpIngestResponse},
-    server_handler::{
-        ActivePromptVersions, ConnectionRepositories, POOL_NAME, TribalServerHandler,
-    },
+    server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
     session::SessionContext,
 };
 
@@ -152,21 +151,9 @@ impl TribalServerHandler {
             active_prompts,
         };
 
-        let mut tx = match pool.begin().await {
+        let mut tx = match begin_transaction(pool).await {
             Ok(tx) => tx,
-            Err(sqlx::Error::PoolTimedOut) => {
-                let db_err = DbError::PoolExhausted {
-                    pool_name: POOL_NAME,
-                };
-                return Ok(db_err.into_mcp_error().into_call_tool_result());
-            }
-            Err(other) => {
-                let db_err = DbError::QueryFailed {
-                    context: "beginning transaction".into(),
-                    source: other,
-                };
-                return Ok(db_err.into_mcp_error().into_call_tool_result());
-            }
+            Err(call_result) => return Ok(call_result),
         };
 
         let result = match execute_ingest(&mut tx, repositories, ingest_params).await {

@@ -23,4 +23,4 @@ uuid.workspace = true
 
 [dev-dependencies]
 tribal-test-utils.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

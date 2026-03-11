@@ -47,6 +47,16 @@ pub enum JobOutcome {
     Failure,
 }
 
+impl JobStatus {
+    /// Returns `true` if this status is terminal (`Completed` or `Failed`).
+    ///
+    /// Once a job enters a terminal state it does not transition again.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed)
+    }
+}
+
 impl From<TaskType> for JobStatus {
     fn from(task_type: TaskType) -> Self {
         match task_type {
@@ -294,4 +304,25 @@ mod tests {
         JobOutcome::Empty => "empty",
         JobOutcome::Failure => "failure",
     });
+
+    // -- is_terminal -------------------------------------------------------
+
+    #[test]
+    fn test_job_status_is_terminal() {
+        for status in [JobStatus::Completed, JobStatus::Failed] {
+            assert!(status.is_terminal(), "{status:?} should be terminal");
+        }
+    }
+
+    #[test]
+    fn test_job_status_is_not_terminal() {
+        for status in [
+            JobStatus::Queued,
+            JobStatus::Extracting,
+            JobStatus::Triaging,
+            JobStatus::Relating,
+        ] {
+            assert!(!status.is_terminal(), "{status:?} should not be terminal");
+        }
+    }
 }
