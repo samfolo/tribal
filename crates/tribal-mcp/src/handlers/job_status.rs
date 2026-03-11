@@ -608,7 +608,7 @@ mod tests {
     #[tokio::test]
     async fn test_apply_job_status_returns_immediately_when_terminal() {
         let ctx = test_context().await;
-        let pool = ctx.pool().clone();
+        let pool = ctx.create_pool().await.expect("pool");
 
         let job_id = JobId::new();
         let job = a_job()
@@ -665,7 +665,7 @@ mod tests {
     #[tokio::test]
     async fn test_apply_job_status_polls_until_terminal() {
         let ctx = test_context().await;
-        let pool = ctx.pool().clone();
+        let pool = ctx.create_pool().await.expect("pool");
 
         let job_id = JobId::new();
         let triaging_job = a_job().id(job_id).status(JobStatus::Triaging).build();
