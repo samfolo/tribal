@@ -70,7 +70,7 @@ impl TickSource for TimedTickSource {
             return false;
         }
         tokio::time::sleep(remaining.min(self.interval)).await;
-        true
+        !self.deadline.saturating_duration_since(Instant::now()).is_zero()
     }
 }
 
