@@ -292,12 +292,24 @@ mod tests {
         Arc::new(MockEmbeddingProvider::builder().build())
     }
 
+    fn test_active_prompt_versions() -> ActivePromptVersions {
+        ActivePromptVersions {
+            extraction_system_prompt_version_id: PromptVersionId::new(),
+            extraction_user_prompt_version_id: PromptVersionId::new(),
+            triage_system_prompt_version_id: PromptVersionId::new(),
+            triage_user_prompt_version_id: PromptVersionId::new(),
+            relation_system_prompt_version_id: PromptVersionId::new(),
+            relation_user_prompt_version_id: PromptVersionId::new(),
+        }
+    }
+
     fn test_handler() -> TribalServerHandler {
         let session = SessionContext::new(None, "user:test".into());
         TribalServerHandler::new(
             lazy_pool(),
             test_repositories(),
             test_embedding_provider(),
+            test_active_prompt_versions(),
             session,
         )
     }
@@ -313,6 +325,7 @@ mod tests {
             lazy_pool(),
             test_repositories(),
             test_embedding_provider(),
+            test_active_prompt_versions(),
             session,
         )
     }
