@@ -42,7 +42,7 @@ struct GetItemParams {
 }
 
 /// A single found item with resolved enrichment data.
-#[cfg_attr(test, derive(Debug))]
+#[derive(Debug)]
 struct GetItemResultEntry {
     item: KnowledgeItem,
     principal_key: String,
@@ -51,7 +51,7 @@ struct GetItemResultEntry {
 }
 
 /// Domain-level result from [`execute_get_item`].
-#[cfg_attr(test, derive(Debug))]
+#[derive(Debug)]
 struct GetItemResult {
     found: HashMap<KnowledgeItemId, GetItemResultEntry>,
     not_found_ids: Vec<String>,
