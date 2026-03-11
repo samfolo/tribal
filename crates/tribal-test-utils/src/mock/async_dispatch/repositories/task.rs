@@ -1,0 +1,50 @@
+//! Mock implementation of [`TaskRepository`].
+
+use chrono::{DateTime, Utc};
+use tribal_db::{NewTask, ReclaimOutcome, TaskRepository};
+use tribal_domain::{JobId, Task, TaskErrorKind, TaskId, TaskStatus, TaskType};
+
+use super::mock_repository;
+
+mock_repository! {
+    MockTaskRepository for TaskRepository, tribal_db::DbError {
+        insert(NewTask => Task)
+            (new_task: &NewTask) { new_task.clone() };
+        find_by_id(TaskId => Task)
+            (id: TaskId) { id };
+        find_by_job_id(JobId => Vec<Task>)
+            (job_id: JobId) { job_id };
+        claim((u32, String) => Vec<Task>)
+            (limit: u32, claimed_by: &str) { (limit, claimed_by.to_owned()) };
+        heartbeat((TaskId, uuid::Uuid) => u64)
+            (id: TaskId, claim_token: uuid::Uuid) { (id, claim_token) };
+        complete((TaskId, uuid::Uuid) => u64)
+            (id: TaskId, claim_token: uuid::Uuid) { (id, claim_token) };
+        fail((TaskId, uuid::Uuid, u32, DateTime<Utc>, TaskErrorKind, String) => u64)
+            (id: TaskId, claim_token: uuid::Uuid, max_retries: u32, available_at: DateTime<Utc>, error_kind: TaskErrorKind, error_message: &str) { (id, claim_token, max_retries, available_at, error_kind, error_message.to_owned()) };
+        reclaim_stale((u32, u32, u32, TaskErrorKind, String, Option<u32>) => ReclaimOutcome)
+            (timeout_seconds: u32, max_retries: u32, limit: u32, error_kind: TaskErrorKind, error_message: &str, flat_backoff_seconds: Option<u32>) { (timeout_seconds, max_retries, limit, error_kind, error_message.to_owned(), flat_backoff_seconds) };
+        count_siblings_by_status((JobId, TaskType, Vec<TaskStatus>, TaskId) => i64)
+            (job_id: JobId, task_type: TaskType, statuses: &[TaskStatus], exclude_task_id: TaskId) { (job_id, task_type, statuses.to_vec(), exclude_task_id) };
+        upsert(NewTask => u64)
+            (new_task: &NewTask) { new_task.clone() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tribal_db::TaskRepository;
+
+    use super::*;
+
+    #[test]
+    fn test_send_sync_behind_arc() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockTaskRepository>();
+
+        let mock = MockTaskRepository::builder().build();
+        let _arc: Arc<dyn TaskRepository + Send + Sync> = Arc::new(mock);
+    }
+}
