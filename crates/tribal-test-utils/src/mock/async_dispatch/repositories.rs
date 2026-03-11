@@ -15,6 +15,7 @@ mod relation;
 mod retrieval_feedback;
 mod standing;
 mod task;
+mod triage_result;
 
 pub use error_factories::{
     DbErrorFactory, a_not_found, a_pool_exhausted, a_query_failed, a_unique_violation,
@@ -28,6 +29,7 @@ pub use relation::MockRelationRepository;
 pub use retrieval_feedback::MockRetrievalFeedbackRepository;
 pub use standing::MockStandingRepository;
 pub use task::MockTaskRepository;
+pub use triage_result::MockTriageResultRepository;
 
 // ---------------------------------------------------------------------------
 // mock_repository! macro
