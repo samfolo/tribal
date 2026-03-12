@@ -7,4 +7,4 @@ mod command;
 mod paths;
 mod transport;
 
-pub use command::{Cli, Command, ProjectCommand, ServeArgs, TokenCommand};
+pub use command::{Cli, Command, ProjectCommand, TokenCommand};

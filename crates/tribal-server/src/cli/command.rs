@@ -39,17 +39,11 @@ pub enum Command {
 
     /// Manage projects.
     #[command(subcommand)]
-    Project {
-        /// Project management subcommand.
-        command: ProjectCommand,
-    },
+    Project(ProjectCommand),
 
     /// Manage authentication tokens.
     #[command(subcommand)]
-    Token {
-        /// Token management subcommand.
-        command: TokenCommand,
-    },
+    Token(TokenCommand),
 }
 
 // ---------------------------------------------------------------------------

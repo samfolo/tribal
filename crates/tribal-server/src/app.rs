@@ -1,9 +1,9 @@
 //! Application entry point and subcommand dispatch.
 
-use anyhow::Result;
 use clap::{CommandFactory, Parser};
 
 use crate::cli::{Cli, Command, ProjectCommand, TokenCommand};
+use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
 // App
@@ -31,8 +31,9 @@ impl App {
     ///
     /// # Errors
     ///
-    /// Returns an error if a subcommand's validation or execution fails.
-    pub fn run(self) -> Result<()> {
+    /// Returns an [`AppError`] if a subcommand's validation or execution
+    /// fails.
+    pub fn run(self) -> Result<(), AppError> {
         let Some(command) = self.cli.command else {
             Cli::command().print_help()?;
             return Ok(());
@@ -46,7 +47,7 @@ impl App {
                 args.validate()?;
                 println!("tribal serve: not yet implemented");
             }
-            Command::Project { command } => match command {
+            Command::Project(command) => match command {
                 ProjectCommand::Register { .. } => {
                     println!("tribal project register: not yet implemented");
                 }
@@ -54,7 +55,7 @@ impl App {
                     println!("tribal project list: not yet implemented");
                 }
             },
-            Command::Token { command } => match command {
+            Command::Token(command) => match command {
                 TokenCommand::Create { .. } => {
                     println!("tribal token create: not yet implemented");
                 }

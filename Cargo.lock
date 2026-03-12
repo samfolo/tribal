@@ -3776,6 +3776,7 @@ name = "tribal-server"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "thiserror 2.0.18",
  "tribal-domain",
  "tribal-mcp",
  "tribal-telemetry",
