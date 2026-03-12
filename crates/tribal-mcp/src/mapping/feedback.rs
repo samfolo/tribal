@@ -10,8 +10,8 @@ use crate::error::IntoCallToolResult;
 // Constants
 // ---------------------------------------------------------------------------
 
-const SERIALISE_RETRIEVAL_FEEDBACK_RESPONSE: &str =
-    "McpRetrievalFeedbackResponse should always serialise successfully";
+const SERIALISE_FEEDBACK_RESPONSE: &str =
+    "McpFeedbackResponse should always serialise successfully";
 
 // ---------------------------------------------------------------------------
 // Request
@@ -23,7 +23,7 @@ const SERIALISE_RETRIEVAL_FEEDBACK_RESPONSE: &str =
 /// `"neutral"`) are caught during explicit validation rather than at
 /// the `serde_json::from_value` boundary.
 #[derive(Debug, Deserialize)]
-pub(crate) struct McpRetrievalFeedbackRequest {
+pub(crate) struct McpFeedbackRequest {
     pub(crate) trace_id: String,
     pub(crate) query_text: String,
     pub(crate) returned_item_ids: Vec<String>,
@@ -41,13 +41,13 @@ pub(crate) struct McpRetrievalFeedbackRequest {
 /// The `rating` field is `#[serde(skip)]` — it is not part of the output
 /// schema but is needed for the human-readable text summary.
 #[derive(Debug, Serialize)]
-pub(crate) struct McpRetrievalFeedbackResponse {
+pub(crate) struct McpFeedbackResponse {
     pub(crate) feedback_id: String,
     #[serde(skip)]
     pub(crate) rating: tribal_domain::FeedbackRating,
 }
 
-impl From<&RetrievalFeedback> for McpRetrievalFeedbackResponse {
+impl From<&RetrievalFeedback> for McpFeedbackResponse {
     fn from(feedback: &RetrievalFeedback) -> Self {
         Self {
             feedback_id: feedback.id().to_string(),
@@ -56,14 +56,13 @@ impl From<&RetrievalFeedback> for McpRetrievalFeedbackResponse {
     }
 }
 
-impl IntoCallToolResult for McpRetrievalFeedbackResponse {
+impl IntoCallToolResult for McpFeedbackResponse {
     fn into_call_tool_result(self) -> CallToolResult {
         let text = format!(
             "Feedback recorded: {} (rating: {})",
             self.feedback_id, self.rating,
         );
-        let structured =
-            serde_json::to_value(&self).expect(SERIALISE_RETRIEVAL_FEEDBACK_RESPONSE);
+        let structured = serde_json::to_value(&self).expect(SERIALISE_FEEDBACK_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
         result
@@ -83,41 +82,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_retrieval_feedback_request_deserialises() {
+    fn test_feedback_request_deserialises() {
         let json = serde_json::json!({
             "trace_id": "t1",
             "query_text": "auth patterns",
             "returned_item_ids": ["ki_abc"],
             "rating": "positive",
         });
-        let req: McpRetrievalFeedbackRequest =
-            serde_json::from_value(json).expect("deserialises");
+        let req: McpFeedbackRequest = serde_json::from_value(json).expect("deserialises");
         assert_eq!(req.rating, "positive");
         assert!(req.explored_anchor_ids.is_none());
         assert!(req.notes.is_none());
     }
 
     #[test]
-    fn test_retrieval_feedback_response_from_domain() {
+    fn test_feedback_response_from_domain() {
         let feedback = a_retrieval_feedback().build();
-        let resp = McpRetrievalFeedbackResponse::from(&feedback);
+        let resp = McpFeedbackResponse::from(&feedback);
 
         assert!(resp.feedback_id.starts_with("fb_"));
         assert_eq!(resp.rating, FeedbackRating::Positive);
     }
 
     #[test]
-    fn test_retrieval_feedback_response_structured_content_omits_rating() {
+    fn test_feedback_response_structured_content_omits_rating() {
         let feedback = a_retrieval_feedback().build();
-        let resp = McpRetrievalFeedbackResponse::from(&feedback);
+        let resp = McpFeedbackResponse::from(&feedback);
         let json = serde_json::to_value(&resp).expect("serialises");
         assert!(json.get("rating").is_none());
     }
 
     #[test]
-    fn test_retrieval_feedback_response_into_call_tool_result() {
+    fn test_feedback_response_into_call_tool_result() {
         let feedback = a_retrieval_feedback().build();
-        let resp = McpRetrievalFeedbackResponse::from(&feedback);
+        let resp = McpFeedbackResponse::from(&feedback);
         let result = resp.into_call_tool_result();
 
         assert_eq!(result.is_error, Some(false));

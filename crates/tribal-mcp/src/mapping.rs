@@ -7,7 +7,7 @@ mod job;
 mod knowledge;
 mod session;
 
-pub(crate) use feedback::{McpRetrievalFeedbackRequest, McpRetrievalFeedbackResponse};
+pub(crate) use feedback::{McpFeedbackRequest, McpFeedbackResponse};
 #[allow(unused)]
 pub(crate) use job::{
     McpIngestRequest, McpIngestResponse, McpJobStatusRequest, McpJobStatusResponse,

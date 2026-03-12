@@ -1,7 +1,6 @@
 //! Handler for `tribal_feedback` — retrieval session quality rating.
 
-use std::str::FromStr;
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -16,7 +15,7 @@ use tribal_inference::EmbeddingProvider;
 use super::common::acquire_connection;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
-    mapping::{McpRetrievalFeedbackRequest, McpRetrievalFeedbackResponse},
+    mapping::{McpFeedbackRequest, McpFeedbackResponse},
     server_handler::{ConnectionRepositories, TribalServerHandler},
     session::SessionContext,
 };
@@ -25,10 +24,9 @@ use crate::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_TRACE_ID_LENGTH: usize = 256;
+const MAX_TRACE_ID_LEN: usize = 64;
 
 const EMPTY_TRACE_ID: &str = "trace_id must not be empty";
-const TRACE_ID_TOO_LONG: &str = "trace_id exceeds maximum length of 256 characters";
 const EMPTY_QUERY_TEXT: &str = "query_text must not be empty";
 const EMPTY_RETURNED_ITEMS: &str = "returned_item_ids must contain at least one item";
 const INVALID_RATING: &str = "rating must be \"positive\" or \"negative\"";
@@ -37,8 +35,8 @@ const INVALID_RATING: &str = "rating must be \"positive\" or \"negative\"";
 // Service types
 // ---------------------------------------------------------------------------
 
-/// Domain-level parameters for the retrieval feedback service function.
-struct RetrievalFeedbackParams {
+/// Domain-level parameters for the feedback service function.
+struct FeedbackParams {
     trace_id: String,
     query_text: String,
     embedding_model: String,
@@ -49,9 +47,9 @@ struct RetrievalFeedbackParams {
     notes: Option<String>,
 }
 
-/// Errors that can occur during retrieval feedback execution.
+/// Errors that can occur during feedback execution.
 #[derive(Debug, thiserror::Error)]
-enum RetrievalFeedbackError {
+enum FeedbackError {
     #[error(transparent)]
     Db(#[from] DbError),
 
@@ -59,7 +57,7 @@ enum RetrievalFeedbackError {
     PrincipalNotFound { principal_key: String },
 }
 
-impl IntoMcpError for RetrievalFeedbackError {
+impl IntoMcpError for FeedbackError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
@@ -80,12 +78,12 @@ impl IntoMcpError for RetrievalFeedbackError {
 
 impl TribalServerHandler {
     /// Handles the `tribal_feedback` tool call.
-    pub(crate) async fn handle_retrieval_feedback(
+    pub(crate) async fn handle_feedback(
         &self,
         params: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Self::apply_retrieval_feedback(
+        Self::apply_feedback(
             &self.pool,
             &self.repositories,
             &self.session,
@@ -97,21 +95,14 @@ impl TribalServerHandler {
 
     /// Core logic for `tribal_feedback`, separated from the outer handler
     /// so it can be tested without a `Peer<RoleServer>`.
-    ///
-    /// Parses the request, validates inputs, reads session state (principal
-    /// key), resolves the embedding model, then acquires a connection and
-    /// delegates to [`execute_retrieval_feedback`] for domain logic. Domain
-    /// errors are returned as error `CallToolResult` values via `IntoMcpError`
-    /// / `IntoCallToolResult`. Only protocol-level errors (malformed JSON)
-    /// return `Err(McpError)`.
-    async fn apply_retrieval_feedback(
+    async fn apply_feedback(
         pool: &PgPool,
         repositories: &ConnectionRepositories,
         session: &RwLock<SessionContext>,
         embedding_provider: &Arc<dyn EmbeddingProvider>,
         params: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
-        let request: McpRetrievalFeedbackRequest =
+        let request: McpFeedbackRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
         // -- Validate trace_id ------------------------------------------------
@@ -124,10 +115,10 @@ impl TribalServerHandler {
             }
             .into_call_tool_result());
         }
-        if request.trace_id.len() > MAX_TRACE_ID_LENGTH {
+        if request.trace_id.len() > MAX_TRACE_ID_LEN {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: TRACE_ID_TOO_LONG.into(),
+                message: format!("trace_id must be at most {MAX_TRACE_ID_LEN} characters"),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
@@ -180,16 +171,13 @@ impl TribalServerHandler {
 
         // -- Validate rating --------------------------------------------------
 
-        let rating = match FeedbackRating::from_str(&request.rating) {
-            Ok(r) => r,
-            Err(_) => {
-                return Ok(McpToolError {
-                    code: McpErrorCode::InvalidArgument,
-                    message: INVALID_RATING.into(),
-                    details: serde_json::json!({}),
-                }
-                .into_call_tool_result());
+        let Ok(rating) = FeedbackRating::from_str(&request.rating) else {
+            return Ok(McpToolError {
+                code: McpErrorCode::InvalidArgument,
+                message: INVALID_RATING.into(),
+                details: serde_json::json!({}),
             }
+            .into_call_tool_result());
         };
 
         // -- Session state ----------------------------------------------------
@@ -205,7 +193,7 @@ impl TribalServerHandler {
 
         // -- Build params and execute -----------------------------------------
 
-        let feedback_params = RetrievalFeedbackParams {
+        let feedback_params = FeedbackParams {
             trace_id: request.trace_id,
             query_text: request.query_text,
             embedding_model,
@@ -221,13 +209,12 @@ impl TribalServerHandler {
             Err(call_result) => return Ok(call_result),
         };
 
-        let feedback =
-            match execute_retrieval_feedback(&mut conn, repositories, feedback_params).await {
-                Ok(f) => f,
-                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-            };
+        let feedback = match execute_feedback(&mut conn, repositories, feedback_params).await {
+            Ok(f) => f,
+            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+        };
 
-        Ok(McpRetrievalFeedbackResponse::from(&feedback).into_call_tool_result())
+        Ok(McpFeedbackResponse::from(&feedback).into_call_tool_result())
     }
 }
 
@@ -235,21 +222,21 @@ impl TribalServerHandler {
 // Service function
 // ---------------------------------------------------------------------------
 
-/// Executes the retrieval feedback operation: resolves the principal,
+/// Executes the feedback operation: resolves the principal,
 /// builds the new feedback record, and inserts it.
 ///
 /// All inputs and outputs are domain types — no MCP types cross this
 /// boundary.
-async fn execute_retrieval_feedback(
+async fn execute_feedback(
     conn: &mut PgConnection,
     repositories: &ConnectionRepositories,
-    params: RetrievalFeedbackParams,
-) -> Result<tribal_domain::RetrievalFeedback, RetrievalFeedbackError> {
+    params: FeedbackParams,
+) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
     let principal = repositories
         .principal
         .find_by_key(conn, &params.principal_key)
         .await?
-        .ok_or_else(|| RetrievalFeedbackError::PrincipalNotFound {
+        .ok_or_else(|| FeedbackError::PrincipalNotFound {
             principal_key: params.principal_key.clone(),
         })?;
 
@@ -282,7 +269,7 @@ mod tests {
 
     use rmcp::model::ErrorCode;
     use tokio::sync::RwLock;
-    use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId};
+    use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
         MockEmbeddingProvider, MockPrincipalRepository, MockRetrievalFeedbackRepository,
         a_principal, a_retrieval_feedback, lazy_pool, test_context,
@@ -306,17 +293,7 @@ mod tests {
         Arc::new(MockEmbeddingProvider::builder().build())
     }
 
-    fn valid_retrieval_feedback_json() -> serde_json::Value {
-        let ki_id = KnowledgeItemId::new().to_string();
-        serde_json::json!({
-            "trace_id": "00000000000000000000000000000001",
-            "query_text": "auth patterns",
-            "returned_item_ids": [ki_id],
-            "rating": "positive",
-        })
-    }
-
-    fn repos_for_retrieval_feedback(
+    fn repos_for_feedback(
         principal: tribal_domain::Principal,
         feedback: tribal_domain::RetrievalFeedback,
     ) -> ConnectionRepositories {
@@ -336,15 +313,15 @@ mod tests {
 
     async fn call_execute(
         repos: &ConnectionRepositories,
-        params: RetrievalFeedbackParams,
-    ) -> Result<tribal_domain::RetrievalFeedback, RetrievalFeedbackError> {
+        params: FeedbackParams,
+    ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
         let ctx = test_context().await;
         let mut tx = ctx.begin_test().await.expect("begin");
-        execute_retrieval_feedback(&mut tx, repos, params).await
+        execute_feedback(&mut tx, repos, params).await
     }
 
-    fn default_params() -> RetrievalFeedbackParams {
-        RetrievalFeedbackParams {
+    fn default_params() -> FeedbackParams {
+        FeedbackParams {
             trace_id: "00000000000000000000000000000001".into(),
             query_text: "auth patterns".into(),
             embedding_model: "mock-model".into(),
@@ -359,13 +336,13 @@ mod tests {
     // -- Adapter: validation -----------------------------------------------
 
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_malformed_json_returns_protocol_error() {
+    async fn test_apply_feedback_malformed_json_returns_protocol_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = test_session();
         let provider = test_embedding_provider();
 
-        let err = TribalServerHandler::apply_retrieval_feedback(
+        let err = TribalServerHandler::apply_feedback(
             &pool,
             &repos,
             &session,
@@ -379,17 +356,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_empty_trace_id_returns_application_error() {
+    async fn test_apply_feedback_empty_trace_id_returns_application_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = test_session();
         let provider = test_embedding_provider();
 
-        let mut json = valid_retrieval_feedback_json();
-        json["trace_id"] = serde_json::json!("");
-
-        let result = TribalServerHandler::apply_retrieval_feedback(
-            &pool, &repos, &session, &provider, json,
+        let ki_id = KnowledgeItemId::new().to_string();
+        let result = TribalServerHandler::apply_feedback(
+            &pool,
+            &repos,
+            &session,
+            &provider,
+            serde_json::json!({
+                "trace_id": "",
+                "query_text": "auth patterns",
+                "returned_item_ids": [ki_id],
+                "rating": "positive",
+            }),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -400,17 +384,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_trace_id_too_long_returns_application_error() {
+    async fn test_apply_feedback_trace_id_too_long_returns_application_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = test_session();
         let provider = test_embedding_provider();
 
-        let mut json = valid_retrieval_feedback_json();
-        json["trace_id"] = serde_json::json!("x".repeat(257));
-
-        let result = TribalServerHandler::apply_retrieval_feedback(
-            &pool, &repos, &session, &provider, json,
+        let ki_id = KnowledgeItemId::new().to_string();
+        let result = TribalServerHandler::apply_feedback(
+            &pool,
+            &repos,
+            &session,
+            &provider,
+            serde_json::json!({
+                "trace_id": "x".repeat(MAX_TRACE_ID_LEN + 1),
+                "query_text": "auth patterns",
+                "returned_item_ids": [ki_id],
+                "rating": "positive",
+            }),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -421,17 +412,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_empty_query_text_returns_application_error() {
+    async fn test_apply_feedback_empty_query_text_returns_application_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = test_session();
         let provider = test_embedding_provider();
 
-        let mut json = valid_retrieval_feedback_json();
-        json["query_text"] = serde_json::json!("");
-
-        let result = TribalServerHandler::apply_retrieval_feedback(
-            &pool, &repos, &session, &provider, json,
+        let ki_id = KnowledgeItemId::new().to_string();
+        let result = TribalServerHandler::apply_feedback(
+            &pool,
+            &repos,
+            &session,
+            &provider,
+            serde_json::json!({
+                "trace_id": "00000000000000000000000000000001",
+                "query_text": "",
+                "returned_item_ids": [ki_id],
+                "rating": "positive",
+            }),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -442,17 +440,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_empty_returned_item_ids_returns_application_error() {
+    async fn test_apply_feedback_empty_returned_item_ids_returns_application_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = test_session();
         let provider = test_embedding_provider();
 
-        let mut json = valid_retrieval_feedback_json();
-        json["returned_item_ids"] = serde_json::json!([]);
-
-        let result = TribalServerHandler::apply_retrieval_feedback(
-            &pool, &repos, &session, &provider, json,
+        let result = TribalServerHandler::apply_feedback(
+            &pool,
+            &repos,
+            &session,
+            &provider,
+            serde_json::json!({
+                "trace_id": "00000000000000000000000000000001",
+                "query_text": "auth patterns",
+                "returned_item_ids": [],
+                "rating": "positive",
+            }),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -463,19 +467,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_invalid_returned_item_id_prefix_returns_application_error()
-    {
+    async fn test_apply_feedback_invalid_returned_item_id_prefix_returns_application_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = test_session();
         let provider = test_embedding_provider();
 
         let wrong_prefix_id = ProjectId::new().to_string();
-        let mut json = valid_retrieval_feedback_json();
-        json["returned_item_ids"] = serde_json::json!([wrong_prefix_id]);
-
-        let result = TribalServerHandler::apply_retrieval_feedback(
-            &pool, &repos, &session, &provider, json,
+        let result = TribalServerHandler::apply_feedback(
+            &pool,
+            &repos,
+            &session,
+            &provider,
+            serde_json::json!({
+                "trace_id": "00000000000000000000000000000001",
+                "query_text": "auth patterns",
+                "returned_item_ids": [wrong_prefix_id],
+                "rating": "positive",
+            }),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -486,19 +495,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_invalid_explored_anchor_id_prefix_returns_application_error()
-    {
+    async fn test_apply_feedback_invalid_explored_anchor_id_prefix_returns_application_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = test_session();
         let provider = test_embedding_provider();
 
+        let ki_id = KnowledgeItemId::new().to_string();
         let wrong_prefix_id = ProjectId::new().to_string();
-        let mut json = valid_retrieval_feedback_json();
-        json["explored_anchor_ids"] = serde_json::json!([wrong_prefix_id]);
-
-        let result = TribalServerHandler::apply_retrieval_feedback(
-            &pool, &repos, &session, &provider, json,
+        let result = TribalServerHandler::apply_feedback(
+            &pool,
+            &repos,
+            &session,
+            &provider,
+            serde_json::json!({
+                "trace_id": "00000000000000000000000000000001",
+                "query_text": "auth patterns",
+                "returned_item_ids": [ki_id],
+                "explored_anchor_ids": [wrong_prefix_id],
+                "rating": "positive",
+            }),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -509,17 +525,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_invalid_rating_returns_application_error() {
+    async fn test_apply_feedback_invalid_rating_returns_application_error() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = test_session();
         let provider = test_embedding_provider();
 
-        let mut json = valid_retrieval_feedback_json();
-        json["rating"] = serde_json::json!("neutral");
-
-        let result = TribalServerHandler::apply_retrieval_feedback(
-            &pool, &repos, &session, &provider, json,
+        let ki_id = KnowledgeItemId::new().to_string();
+        let result = TribalServerHandler::apply_feedback(
+            &pool,
+            &repos,
+            &session,
+            &provider,
+            serde_json::json!({
+                "trace_id": "00000000000000000000000000000001",
+                "query_text": "auth patterns",
+                "returned_item_ids": [ki_id],
+                "rating": "neutral",
+            }),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -529,41 +552,64 @@ mod tests {
         assert_eq!(structured["code"], "invalid_argument");
     }
 
+    /// `lazy_pool` cannot open connections, so the call fails at the
+    /// pool acquisition phase. We assert `is_error` to confirm validation
+    /// passed and the error originates from the pool, not from input
+    /// validation.
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_pool_exhaustion_returns_application_error() {
+    async fn test_apply_feedback_lazy_pool_fails_after_validation() {
         let pool = lazy_pool();
         let repos = test_repositories();
         let session = test_session();
         let provider = test_embedding_provider();
 
-        let json = valid_retrieval_feedback_json();
-
-        let result = TribalServerHandler::apply_retrieval_feedback(
-            &pool, &repos, &session, &provider, json,
+        let ki_id = KnowledgeItemId::new().to_string();
+        let result = TribalServerHandler::apply_feedback(
+            &pool,
+            &repos,
+            &session,
+            &provider,
+            serde_json::json!({
+                "trace_id": "00000000000000000000000000000001",
+                "query_text": "auth patterns",
+                "returned_item_ids": [ki_id],
+                "rating": "positive",
+            }),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "resource_exhausted");
+        assert_ne!(
+            structured["code"], "invalid_argument",
+            "error should originate from pool, not input validation",
+        );
     }
 
     #[tokio::test]
-    async fn test_apply_retrieval_feedback_optional_fields_omitted_succeeds() {
+    async fn test_apply_feedback_optional_fields_omitted_succeeds() {
         let prin_id = PrincipalId::new();
         let principal = a_principal().id(prin_id).build();
         let feedback = a_retrieval_feedback().principal_id(prin_id).build();
-        let repos = repos_for_retrieval_feedback(principal, feedback);
+        let repos = repos_for_feedback(principal, feedback);
 
         let pool = test_context().await.pool().clone();
         let session = test_session();
         let provider = test_embedding_provider();
 
-        let json = valid_retrieval_feedback_json();
-
-        let result = TribalServerHandler::apply_retrieval_feedback(
-            &pool, &repos, &session, &provider, json,
+        let ki_id = KnowledgeItemId::new().to_string();
+        let result = TribalServerHandler::apply_feedback(
+            &pool,
+            &repos,
+            &session,
+            &provider,
+            serde_json::json!({
+                "trace_id": "00000000000000000000000000000001",
+                "query_text": "auth patterns",
+                "returned_item_ids": [ki_id],
+                "rating": "positive",
+            }),
         )
         .await
         .expect(NO_PROTOCOL_ERROR);
@@ -574,27 +620,29 @@ mod tests {
     // -- Service: happy path -----------------------------------------------
 
     #[tokio::test]
-    async fn test_execute_retrieval_feedback_happy_path() {
+    async fn test_execute_feedback_happy_path() {
         let prin_id = PrincipalId::new();
         let principal = a_principal().id(prin_id).build();
         let feedback = a_retrieval_feedback().principal_id(prin_id).build();
         let expected_id = feedback.id();
+        let expected_rating = feedback.rating();
 
-        let repos = repos_for_retrieval_feedback(principal, feedback);
+        let repos = repos_for_feedback(principal, feedback);
 
-        let params = RetrievalFeedbackParams {
-            principal_key: "user:test".into(),
-            ..default_params()
-        };
-
+        let params = default_params();
         let result = call_execute(&repos, params).await.expect("should succeed");
+
         assert_eq!(result.id(), expected_id);
+        assert_eq!(result.rating(), expected_rating);
+        assert!(result.explored_anchor_ids().is_empty());
+        assert!(result.notes().is_none());
+        assert!(result.policy_version().is_none());
     }
 
     // -- Service: error paths ----------------------------------------------
 
     #[tokio::test]
-    async fn test_execute_retrieval_feedback_principal_not_found() {
+    async fn test_execute_feedback_principal_not_found() {
         let mut repos = test_repositories();
         repos.principal = Arc::new(
             MockPrincipalRepository::builder()
@@ -602,22 +650,20 @@ mod tests {
                 .build(),
         );
 
-        let params = RetrievalFeedbackParams {
+        let params = FeedbackParams {
             principal_key: "user:unknown".into(),
             ..default_params()
         };
 
-        let err = call_execute(&repos, params)
-            .await
-            .expect_err("should fail");
+        let err = call_execute(&repos, params).await.expect_err("should fail");
 
         assert!(
-            matches!(err, RetrievalFeedbackError::PrincipalNotFound { principal_key } if principal_key == "user:unknown")
+            matches!(err, FeedbackError::PrincipalNotFound { principal_key } if principal_key == "user:unknown")
         );
     }
 
     #[tokio::test]
-    async fn test_execute_retrieval_feedback_db_error_on_insert() {
+    async fn test_execute_feedback_db_error_on_insert() {
         let prin_id = PrincipalId::new();
         let principal = a_principal().id(prin_id).build();
 
@@ -640,13 +686,11 @@ mod tests {
         );
 
         let params = default_params();
-        let err = call_execute(&repos, params)
-            .await
-            .expect_err("should fail");
+        let err = call_execute(&repos, params).await.expect_err("should fail");
 
         assert!(matches!(
             err,
-            RetrievalFeedbackError::Db(DbError::QueryFailed { .. })
+            FeedbackError::Db(DbError::QueryFailed { .. })
         ));
     }
 }
