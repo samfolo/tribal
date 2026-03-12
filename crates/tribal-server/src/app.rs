@@ -2,8 +2,10 @@
 
 use clap::{CommandFactory, Parser};
 
-use crate::cli::{Cli, Command, ProjectCommand, TokenCommand};
-use crate::error::AppError;
+use crate::{
+    cli::{Cli, Command, ProjectCommand, TokenCommand},
+    error::AppError,
+};
 
 // ---------------------------------------------------------------------------
 // App
@@ -22,9 +24,7 @@ impl App {
     /// Parses command-line arguments and constructs the application.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            cli: Cli::parse(),
-        }
+        Self { cli: Cli::parse() }
     }
 
     /// Dispatches to the requested subcommand.

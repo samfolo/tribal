@@ -6,7 +6,6 @@
 
 use std::io;
 
-use clap::error::ErrorKind;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -54,6 +53,8 @@ impl From<io::Error> for AppError {
 
 #[cfg(test)]
 mod tests {
+    use clap::error::ErrorKind;
+
     use super::*;
 
     #[test]

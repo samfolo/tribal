@@ -2,10 +2,9 @@
 
 use std::net::SocketAddr;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, error::ErrorKind};
 
-use super::paths::DEFAULT_CONFIG_PATH;
-use super::transport::Transport;
+use super::{paths::DEFAULT_CONFIG_PATH, transport::Transport};
 
 // ---------------------------------------------------------------------------
 // Root
@@ -51,7 +50,7 @@ pub enum Command {
 // ---------------------------------------------------------------------------
 
 /// Arguments for the `serve` subcommand.
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Transport protocol for the MCP server.
     #[arg(long, default_value = "stdio")]
@@ -81,7 +80,7 @@ impl ServeArgs {
     pub fn validate(&self) -> Result<(), clap::Error> {
         if self.bind.is_some() && self.transport == Transport::Stdio {
             return Err(clap::Error::raw(
-                clap::error::ErrorKind::ArgumentConflict,
+                ErrorKind::ArgumentConflict,
                 "--bind cannot be used with --transport stdio\n",
             ));
         }
@@ -108,7 +107,7 @@ pub enum ProjectCommand {
 }
 
 /// Arguments for `project register` (placeholder — defined by ticket 6.8).
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Args)]
 pub struct ProjectRegisterArgs {}
 
 // ---------------------------------------------------------------------------
@@ -144,15 +143,15 @@ pub enum TokenCommand {
 }
 
 /// Arguments for `token create` (placeholder — defined by ticket 7.5).
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Args)]
 pub struct TokenCreateArgs {}
 
 /// Arguments for `token revoke` (placeholder — defined by ticket 7.5).
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Args)]
 pub struct TokenRevokeArgs {}
 
 /// Arguments for `token revoke-all` (placeholder — defined by ticket 7.5).
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Args)]
 pub struct TokenRevokeAllArgs {}
 
 // ---------------------------------------------------------------------------
@@ -191,7 +190,12 @@ mod tests {
     #[test]
     fn test_serve_stdio_with_bind_rejected() {
         let cli = Cli::try_parse_from([
-            "tribal", "serve", "--transport", "stdio", "--bind", TEST_BIND_ADDR,
+            "tribal",
+            "serve",
+            "--transport",
+            "stdio",
+            "--bind",
+            TEST_BIND_ADDR,
         ])
         .unwrap();
         let Some(Command::Serve { args }) = cli.command else {
@@ -202,8 +206,7 @@ mod tests {
 
     #[test]
     fn test_serve_bind_without_transport_rejected() {
-        let cli =
-            Cli::try_parse_from(["tribal", "serve", "--bind", TEST_BIND_ADDR]).unwrap();
+        let cli = Cli::try_parse_from(["tribal", "serve", "--bind", TEST_BIND_ADDR]).unwrap();
         let Some(Command::Serve { args }) = cli.command else {
             unreachable!();
         };
@@ -213,7 +216,12 @@ mod tests {
     #[test]
     fn test_serve_http_with_bind_accepted() {
         let cli = Cli::try_parse_from([
-            "tribal", "serve", "--transport", "http", "--bind", TEST_BIND_ADDR,
+            "tribal",
+            "serve",
+            "--transport",
+            "http",
+            "--bind",
+            TEST_BIND_ADDR,
         ])
         .unwrap();
         let Some(Command::Serve { args }) = cli.command else {
@@ -226,7 +234,12 @@ mod tests {
     #[test]
     fn test_serve_sse_with_bind_accepted() {
         let cli = Cli::try_parse_from([
-            "tribal", "serve", "--transport", "sse", "--bind", TEST_BIND_ADDR,
+            "tribal",
+            "serve",
+            "--transport",
+            "sse",
+            "--bind",
+            TEST_BIND_ADDR,
         ])
         .unwrap();
         let Some(Command::Serve { args }) = cli.command else {
