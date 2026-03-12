@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use chrono::{DateTime, Utc};
-use rmcp::model::{CallToolResult, Content, RawContent};
+use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Serialize};
 use tribal_domain::{Job, JobId, JobOutcome, JobStatus};
 
@@ -131,6 +131,7 @@ impl IntoCallToolResult for McpJobStatusResponse {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::RawContent;
     use tribal_domain::{PrincipalId, ProjectId, PromptVersionId};
 
     use super::*;
