@@ -1,12 +1,11 @@
-//! MCP request and response types for `tribal_ingest`, `tribal_feedback`,
-//! and `tribal_job_status`.
+//! MCP request and response types for `tribal_ingest` and `tribal_job_status`.
 
 use std::fmt::Write;
 
 use chrono::{DateTime, Utc};
 use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::{Deserialize, Serialize};
-use tribal_domain::{FeedbackRating, Job, JobId, JobOutcome, JobStatus, RetrievalFeedbackId};
+use tribal_domain::{Job, JobId, JobOutcome, JobStatus};
 
 use crate::error::IntoCallToolResult;
 
@@ -15,8 +14,6 @@ use crate::error::IntoCallToolResult;
 // ---------------------------------------------------------------------------
 
 const SERIALISE_INGEST_RESPONSE: &str = "McpIngestResponse should always serialise successfully";
-const SERIALISE_FEEDBACK_RESPONSE: &str =
-    "McpFeedbackResponse should always serialise successfully";
 const SERIALISE_JOB_STATUS_RESPONSE: &str =
     "McpJobStatusResponse should always serialise successfully";
 
@@ -52,56 +49,6 @@ impl IntoCallToolResult for McpIngestResponse {
             self.job_id,
         );
         let structured = serde_json::to_value(&self).expect(SERIALISE_INGEST_RESPONSE);
-        let mut result = CallToolResult::success(vec![Content::text(text)]);
-        result.structured_content = Some(structured);
-        result
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Feedback
-// ---------------------------------------------------------------------------
-
-/// Deserialisation target for `tribal_feedback` input.
-#[derive(Debug, Deserialize)]
-pub(crate) struct McpFeedbackRequest {
-    pub(crate) trace_id: String,
-    pub(crate) query_text: String,
-    pub(crate) returned_item_ids: Vec<String>,
-    pub(crate) explored_anchor_ids: Option<Vec<String>>,
-    pub(crate) rating: FeedbackRating,
-    pub(crate) notes: Option<String>,
-}
-
-/// Response for `tribal_feedback`.
-///
-/// The `rating` field is `#[serde(skip)]` — it is not part of the output
-/// schema but is needed for the human-readable text summary.
-#[derive(Debug, Serialize)]
-pub(crate) struct McpFeedbackResponse {
-    pub(crate) feedback_id: String,
-    #[serde(skip)]
-    pub(crate) rating: FeedbackRating,
-}
-
-impl McpFeedbackResponse {
-    /// Creates a new feedback response.
-    #[must_use]
-    pub(crate) fn new(id: RetrievalFeedbackId, rating: FeedbackRating) -> Self {
-        Self {
-            feedback_id: id.to_string(),
-            rating,
-        }
-    }
-}
-
-impl IntoCallToolResult for McpFeedbackResponse {
-    fn into_call_tool_result(self) -> CallToolResult {
-        let text = format!(
-            "Feedback recorded: {} (rating: {})",
-            self.feedback_id, self.rating,
-        );
-        let structured = serde_json::to_value(&self).expect(SERIALISE_FEEDBACK_RESPONSE);
         let mut result = CallToolResult::success(vec![Content::text(text)]);
         result.structured_content = Some(structured);
         result
@@ -231,38 +178,6 @@ mod tests {
         };
         assert!(text.text.contains("Ingest job created"));
         assert!(text.text.contains("tribal_job_status"));
-    }
-
-    // -- Feedback ---------------------------------------------------------
-
-    #[test]
-    fn test_feedback_request_deserialises() {
-        let json = serde_json::json!({
-            "trace_id": "t1",
-            "query_text": "auth patterns",
-            "returned_item_ids": ["ki_abc"],
-            "rating": "positive",
-        });
-        let req: McpFeedbackRequest = serde_json::from_value(json).expect("deserialises");
-        assert_eq!(req.rating, FeedbackRating::Positive);
-        assert!(req.explored_anchor_ids.is_none());
-    }
-
-    #[test]
-    fn test_feedback_response_into_call_tool_result() {
-        let resp = McpFeedbackResponse::new(RetrievalFeedbackId::new(), FeedbackRating::Positive);
-
-        // rating must not appear in serialised JSON
-        let json = serde_json::to_value(&resp).expect("serialises");
-        assert!(json.get("rating").is_none());
-
-        let result = resp.into_call_tool_result();
-        assert_eq!(result.is_error, Some(false));
-
-        let RawContent::Text(text) = &result.content[0].raw else {
-            panic!("expected text content");
-        };
-        assert!(text.text.contains("positive"));
     }
 
     // -- Job status -------------------------------------------------------

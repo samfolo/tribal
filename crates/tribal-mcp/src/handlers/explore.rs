@@ -200,7 +200,7 @@ impl TribalServerHandler {
                 code: McpErrorCode::InvalidArgument,
                 message: format!(
                     "session_trace_id must be a non-empty string of at most \
-                     {MAX_TRACE_ID_LEN} characters"
+                     {MAX_TRACE_ID_LEN} bytes"
                 ),
                 details: serde_json::json!({}),
             }

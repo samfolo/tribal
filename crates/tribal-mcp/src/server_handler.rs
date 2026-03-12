@@ -61,7 +61,6 @@ pub struct ConnectionRepositories {
     pub(crate) project: Arc<dyn ProjectRepository + Send + Sync>,
     pub(crate) job: Arc<dyn JobRepository + Send + Sync>,
     pub(crate) task: Arc<dyn TaskRepository + Send + Sync>,
-    #[allow(dead_code)]
     pub(crate) retrieval_feedback: Arc<dyn RetrievalFeedbackRepository + Send + Sync>,
     pub(crate) standing: Arc<dyn StandingRepository + Send + Sync>,
     pub(crate) reference: Arc<dyn ReferenceRepository + Send + Sync>,
