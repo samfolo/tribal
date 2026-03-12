@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use clap::{Args, Parser, Subcommand, error::ErrorKind};
 
-use super::{paths::DEFAULT_CONFIG_PATH, transport::Transport};
+use super::{default_values::DEFAULT_CONFIG_PATH, transport::Transport};
 
 // ---------------------------------------------------------------------------
 // Root

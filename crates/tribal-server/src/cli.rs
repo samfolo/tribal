@@ -4,7 +4,7 @@
 //! parsing and subcommand dispatch.
 
 mod command;
-mod paths;
+mod default_values;
 mod transport;
 
 pub use command::{Cli, Command, ProjectCommand, TokenCommand};
