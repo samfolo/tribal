@@ -594,7 +594,8 @@ mod tests {
         let feedback = a_retrieval_feedback().principal_id(prin_id).build();
         let repos = repos_for_feedback(principal, feedback);
 
-        let pool = test_context().await.pool().clone();
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
         let session = test_session();
         let provider = test_embedding_provider();
 
