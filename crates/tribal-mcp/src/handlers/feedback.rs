@@ -249,6 +249,7 @@ async fn execute_feedback(
         .principal_id(principal.id())
         .rating(params.rating)
         .notes(params.notes)
+        .policy_version(None)
         .build();
 
     let feedback = repositories
