@@ -4,6 +4,7 @@
 
 mod app;
 mod cli;
+mod error;
 
 use std::process;
 
@@ -11,7 +12,7 @@ use app::App;
 
 fn main() {
     if let Err(err) = App::new().run() {
-        eprintln!("{err:#}");
+        eprintln!("{err}");
         process::exit(1);
     }
 }

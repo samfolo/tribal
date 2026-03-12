@@ -4,6 +4,9 @@
 //! All variants use named fields where applicable; wrapped errors carry
 //! `#[source]` for error chain propagation.
 
+use std::io;
+
+use clap::error::ErrorKind;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -27,9 +30,9 @@ pub enum AppError {
     /// Failed to write help text to stdout.
     #[error("failed to write help output")]
     HelpOutput {
-        /// The underlying formatting error.
+        /// The underlying I/O error.
         #[source]
-        source: std::fmt::Error,
+        source: io::Error,
     },
 }
 
@@ -39,8 +42,8 @@ impl From<clap::Error> for AppError {
     }
 }
 
-impl From<std::fmt::Error> for AppError {
-    fn from(source: std::fmt::Error) -> Self {
+impl From<io::Error> for AppError {
+    fn from(source: io::Error) -> Self {
         Self::HelpOutput { source }
     }
 }
@@ -56,7 +59,7 @@ mod tests {
     #[test]
     fn test_display_cli_error() {
         let source = clap::Error::raw(
-            clap::error::ErrorKind::ArgumentConflict,
+            ErrorKind::ArgumentConflict,
             "--bind cannot be used with --transport stdio",
         );
         let err = AppError::Cli { source };
@@ -70,7 +73,7 @@ mod tests {
     #[test]
     fn test_display_help_output() {
         let err = AppError::HelpOutput {
-            source: std::fmt::Error,
+            source: io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"),
         };
         assert_eq!(err.to_string(), "failed to write help output");
     }
