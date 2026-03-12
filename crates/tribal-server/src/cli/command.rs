@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 
-use clap::{Args, Parser, Subcommand, error::ErrorKind};
+use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 
 use super::{default_values::DEFAULT_CONFIG_PATH, transport::Transport};
 
@@ -53,19 +53,19 @@ pub enum Command {
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Transport protocol for the MCP server.
-    #[arg(long, default_value = "stdio")]
+    #[arg(long, default_value = "stdio", env = "TRIBAL_TRANSPORT")]
     pub transport: Transport,
 
     /// Project ID (`proj_`-prefixed) to scope the session to.
-    #[arg(long)]
+    #[arg(long, env = "TRIBAL_PROJECT_ID")]
     pub project: Option<String>,
 
     /// Socket address to bind the HTTP/SSE listener to.
-    #[arg(long)]
+    #[arg(long, env = "TRIBAL_BIND_ADDRESS")]
     pub bind: Option<SocketAddr>,
 
     /// Path to the configuration file.
-    #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
+    #[arg(long, default_value = DEFAULT_CONFIG_PATH, env = "TRIBAL_CONFIG_PATH", value_name = "PATH")]
     pub config: String,
 }
 
@@ -79,9 +79,9 @@ impl ServeArgs {
     /// listen on a network address.
     pub fn validate(&self) -> Result<(), clap::Error> {
         if self.bind.is_some() && self.transport == Transport::Stdio {
-            return Err(clap::Error::raw(
+            return Err(Cli::command().error(
                 ErrorKind::ArgumentConflict,
-                "--bind cannot be used with --transport stdio\n",
+                "--bind cannot be used with --transport stdio",
             ));
         }
         Ok(())
@@ -162,7 +162,7 @@ pub struct TokenRevokeAllArgs {}
 mod tests {
     use std::net::{Ipv4Addr, SocketAddrV4};
 
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::*;
 
@@ -170,6 +170,13 @@ mod tests {
 
     fn test_bind_addr() -> SocketAddr {
         SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 7077))
+    }
+
+    // -- Structural validation -----------------------------------------------
+
+    #[test]
+    fn test_verify_cli() {
+        Cli::command().debug_assert();
     }
 
     // -- Defaults -----------------------------------------------------------
