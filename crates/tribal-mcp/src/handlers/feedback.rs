@@ -118,7 +118,7 @@ impl TribalServerHandler {
         if request.trace_id.len() > MAX_TRACE_ID_LEN {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: format!("trace_id must be at most {MAX_TRACE_ID_LEN} characters"),
+                message: format!("trace_id must be at most {MAX_TRACE_ID_LEN} bytes"),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
