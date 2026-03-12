@@ -1,15 +1,16 @@
 #[allow(unused)]
 mod error;
+mod feedback;
 #[allow(unused)]
 mod job;
 #[allow(unused)]
 mod knowledge;
 mod session;
 
+pub(crate) use feedback::{McpFeedbackRequest, McpFeedbackResponse};
 #[allow(unused)]
 pub(crate) use job::{
-    McpFeedbackRequest, McpFeedbackResponse, McpIngestRequest, McpIngestResponse,
-    McpJobStatusRequest, McpJobStatusResponse,
+    McpIngestRequest, McpIngestResponse, McpJobStatusRequest, McpJobStatusResponse,
 };
 #[allow(unused)]
 pub(crate) use knowledge::{
