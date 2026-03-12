@@ -77,22 +77,10 @@ impl IntoCallToolResult for McpRetrievalFeedbackResponse {
 #[cfg(test)]
 mod tests {
     use rmcp::model::RawContent;
-    use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedback};
+    use tribal_domain::FeedbackRating;
+    use tribal_test_utils::a_retrieval_feedback;
 
     use super::*;
-
-    fn sample_retrieval_feedback() -> RetrievalFeedback {
-        RetrievalFeedback::builder()
-            .id(tribal_domain::RetrievalFeedbackId::new())
-            .trace_id("trace-1".to_owned())
-            .query_text("auth patterns".to_owned())
-            .embedding_model("mock-model".to_owned())
-            .returned_item_ids(vec![KnowledgeItemId::new()])
-            .principal_id(PrincipalId::new())
-            .rating(FeedbackRating::Positive)
-            .created_at(chrono::Utc::now())
-            .build()
-    }
 
     #[test]
     fn test_retrieval_feedback_request_deserialises() {
@@ -111,7 +99,7 @@ mod tests {
 
     #[test]
     fn test_retrieval_feedback_response_from_domain() {
-        let feedback = sample_retrieval_feedback();
+        let feedback = a_retrieval_feedback().build();
         let resp = McpRetrievalFeedbackResponse::from(&feedback);
 
         assert!(resp.feedback_id.starts_with("fb_"));
@@ -120,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_retrieval_feedback_response_structured_content_omits_rating() {
-        let feedback = sample_retrieval_feedback();
+        let feedback = a_retrieval_feedback().build();
         let resp = McpRetrievalFeedbackResponse::from(&feedback);
         let json = serde_json::to_value(&resp).expect("serialises");
         assert!(json.get("rating").is_none());
@@ -128,7 +116,7 @@ mod tests {
 
     #[test]
     fn test_retrieval_feedback_response_into_call_tool_result() {
-        let feedback = sample_retrieval_feedback();
+        let feedback = a_retrieval_feedback().build();
         let resp = McpRetrievalFeedbackResponse::from(&feedback);
         let result = resp.into_call_tool_result();
 
