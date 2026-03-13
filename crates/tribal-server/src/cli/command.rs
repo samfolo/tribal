@@ -125,7 +125,7 @@ pub struct ServeArgs {
         long,
         default_value = "stdio",
         env = "TRIBAL_TRANSPORT",
-        help_heading = "Transport",
+        help_heading = "Transport"
     )]
     pub transport: Transport,
 
