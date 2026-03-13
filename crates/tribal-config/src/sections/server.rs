@@ -8,20 +8,32 @@ use super::transport_kind::TransportKind;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// Default graceful shutdown deadline in milliseconds.
+pub const DEFAULT_SHUTDOWN_DEADLINE_MS: u64 = 30_000;
+
+/// Default maximum SSE connection lifetime in milliseconds.
+pub const DEFAULT_MAX_CONNECTION_AGE_MS: u64 = 900_000;
+
+/// Default SSE idle timeout in milliseconds.
+pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
+
+/// Default SSE keepalive interval in milliseconds.
+pub const DEFAULT_KEEPALIVE_INTERVAL_MS: u64 = 30_000;
+
 const fn default_shutdown_deadline_ms() -> u64 {
-    30_000
+    DEFAULT_SHUTDOWN_DEADLINE_MS
 }
 
 const fn default_max_connection_age_ms() -> u64 {
-    900_000
+    DEFAULT_MAX_CONNECTION_AGE_MS
 }
 
 const fn default_idle_timeout_ms() -> u64 {
-    300_000
+    DEFAULT_IDLE_TIMEOUT_MS
 }
 
 const fn default_keepalive_interval_ms() -> u64 {
-    30_000
+    DEFAULT_KEEPALIVE_INTERVAL_MS
 }
 
 // ---------------------------------------------------------------------------
@@ -116,14 +128,14 @@ mod tests {
         let config = ServerConfig::default();
         assert_eq!(config.transport, TransportKind::Stdio);
         assert_eq!(config.bind_address, None);
-        assert_eq!(config.shutdown_deadline_ms, 30_000);
+        assert_eq!(config.shutdown_deadline_ms, DEFAULT_SHUTDOWN_DEADLINE_MS);
     }
 
     #[test]
     fn test_sse_config_default_values() {
         let config = SseConfig::default();
-        assert_eq!(config.max_connection_age_ms, 900_000);
-        assert_eq!(config.idle_timeout_ms, 300_000);
-        assert_eq!(config.keepalive_interval_ms, 30_000);
+        assert_eq!(config.max_connection_age_ms, DEFAULT_MAX_CONNECTION_AGE_MS);
+        assert_eq!(config.idle_timeout_ms, DEFAULT_IDLE_TIMEOUT_MS);
+        assert_eq!(config.keepalive_interval_ms, DEFAULT_KEEPALIVE_INTERVAL_MS);
     }
 }

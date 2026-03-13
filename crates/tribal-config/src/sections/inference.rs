@@ -11,32 +11,50 @@ use super::provider_kind::ProviderKind;
 // Constants — extraction
 // ---------------------------------------------------------------------------
 
+/// Default extraction model name.
+pub const DEFAULT_EXTRACTION_MODEL: &str = "llama3.1:70b";
+
+/// Default extraction sampling temperature.
+pub const DEFAULT_EXTRACTION_TEMPERATURE: f64 = 0.2;
+
+/// Default extraction maximum output tokens.
+pub const DEFAULT_EXTRACTION_MAX_TOKENS: u32 = 4096;
+
 fn default_extraction_model() -> String {
-    String::from("llama3.1:70b")
+    String::from(DEFAULT_EXTRACTION_MODEL)
 }
 
 const fn default_extraction_temperature() -> f64 {
-    0.2
+    DEFAULT_EXTRACTION_TEMPERATURE
 }
 
 const fn default_extraction_max_tokens() -> u32 {
-    4096
+    DEFAULT_EXTRACTION_MAX_TOKENS
 }
 
 // ---------------------------------------------------------------------------
 // Constants — triage / relation (shared defaults)
 // ---------------------------------------------------------------------------
 
+/// Default triage/relation model name.
+pub const DEFAULT_SMALL_MODEL: &str = "llama3.1:8b";
+
+/// Default triage/relation sampling temperature.
+pub const DEFAULT_SMALL_TEMPERATURE: f64 = 0.1;
+
+/// Default triage/relation maximum output tokens.
+pub const DEFAULT_SMALL_MAX_TOKENS: u32 = 2048;
+
 fn default_small_model() -> String {
-    String::from("llama3.1:8b")
+    String::from(DEFAULT_SMALL_MODEL)
 }
 
 const fn default_small_temperature() -> f64 {
-    0.1
+    DEFAULT_SMALL_TEMPERATURE
 }
 
 const fn default_small_max_tokens() -> u32 {
-    2048
+    DEFAULT_SMALL_MAX_TOKENS
 }
 
 // ---------------------------------------------------------------------------
@@ -156,24 +174,24 @@ mod tests {
     fn test_extraction_defaults() {
         let config = default_extraction();
         assert_eq!(config.provider, ProviderKind::Ollama);
-        assert_eq!(config.model, "llama3.1:70b");
-        assert!((config.temperature - 0.2).abs() < f64::EPSILON);
-        assert_eq!(config.max_tokens, 4096);
+        assert_eq!(config.model, DEFAULT_EXTRACTION_MODEL);
+        assert!((config.temperature - DEFAULT_EXTRACTION_TEMPERATURE).abs() < f64::EPSILON);
+        assert_eq!(config.max_tokens, DEFAULT_EXTRACTION_MAX_TOKENS);
     }
 
     #[test]
     fn test_triage_defaults() {
         let config = default_triage();
-        assert_eq!(config.model, "llama3.1:8b");
-        assert!((config.temperature - 0.1).abs() < f64::EPSILON);
-        assert_eq!(config.max_tokens, 2048);
+        assert_eq!(config.model, DEFAULT_SMALL_MODEL);
+        assert!((config.temperature - DEFAULT_SMALL_TEMPERATURE).abs() < f64::EPSILON);
+        assert_eq!(config.max_tokens, DEFAULT_SMALL_MAX_TOKENS);
     }
 
     #[test]
     fn test_relation_defaults() {
         let config = default_relation();
-        assert_eq!(config.model, "llama3.1:8b");
-        assert!((config.temperature - 0.1).abs() < f64::EPSILON);
-        assert_eq!(config.max_tokens, 2048);
+        assert_eq!(config.model, DEFAULT_SMALL_MODEL);
+        assert!((config.temperature - DEFAULT_SMALL_TEMPERATURE).abs() < f64::EPSILON);
+        assert_eq!(config.max_tokens, DEFAULT_SMALL_MAX_TOKENS);
     }
 }

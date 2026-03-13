@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 // Constants
 // ---------------------------------------------------------------------------
 
+/// Default token lifetime in hours (~1 year).
+pub const DEFAULT_TOKEN_TTL_HOURS: u64 = 8760;
+
 const fn default_token_ttl_hours() -> u64 {
-    8760
+    DEFAULT_TOKEN_TTL_HOURS
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +45,6 @@ mod tests {
     #[test]
     fn test_default_values() {
         let config = AuthConfig::default();
-        assert_eq!(config.token_ttl_hours, 8760);
+        assert_eq!(config.token_ttl_hours, DEFAULT_TOKEN_TTL_HOURS);
     }
 }
