@@ -175,7 +175,7 @@ pub enum ProjectCommand {
     List,
 }
 
-/// Arguments for `project register` (defined by ticket 6.8).
+/// Arguments for `project register`.
 #[derive(Debug, Args)]
 pub struct ProjectRegisterArgs {}
 
@@ -211,15 +211,15 @@ pub enum TokenCommand {
     },
 }
 
-/// Arguments for `token create` (defined by ticket 7.5).
+/// Arguments for `token create`.
 #[derive(Debug, Args)]
 pub struct TokenCreateArgs {}
 
-/// Arguments for `token revoke` (defined by ticket 7.5).
+/// Arguments for `token revoke`.
 #[derive(Debug, Args)]
 pub struct TokenRevokeArgs {}
 
-/// Arguments for `token revoke-all` (defined by ticket 7.5).
+/// Arguments for `token revoke-all`.
 #[derive(Debug, Args)]
 pub struct TokenRevokeAllArgs {}
 

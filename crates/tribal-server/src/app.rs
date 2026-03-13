@@ -14,8 +14,7 @@ use crate::{
 /// Top-level application container for the Tribal server.
 ///
 /// Owns the parsed CLI arguments and dispatches to the appropriate subcommand
-/// handler. Future tickets will add configuration, database pools, telemetry,
-/// and runtime infrastructure here.
+/// handler.
 pub struct App {
     cli: Cli,
 }
@@ -34,6 +33,8 @@ impl App {
     /// Returns an [`AppError`] if a subcommand's validation or execution
     /// fails.
     pub fn run(self) -> Result<(), AppError> {
+        self.cli.global.validate()?;
+
         let Some(command) = self.cli.command else {
             Cli::command().print_help()?;
             return Ok(());
