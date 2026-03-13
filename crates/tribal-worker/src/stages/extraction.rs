@@ -114,7 +114,7 @@ impl Worker {
         );
 
         async {
-            let include_llm_content = self.config().include_llm_content;
+            let include_llm_content = self.include_llm_content();
 
             let tag_registry = self.load_tag_registry(STAGE_EXTRACTION).await?;
             let ctx = ExtractionContext {
