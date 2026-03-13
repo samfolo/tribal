@@ -11,10 +11,6 @@ use serde::{Deserialize, Serialize};
 /// Loaded from the application configuration file.  All fields have
 /// sensible defaults for local development (info level, JSON format,
 /// stderr output).
-///
-/// The `TRIBAL_LOG` environment variable, when set, overrides the
-/// [`level`](LoggingConfig::level) field entirely.  This allows runtime
-/// log level changes without modifying the configuration file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
