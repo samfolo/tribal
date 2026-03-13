@@ -2,21 +2,87 @@
 
 use std::net::SocketAddr;
 
-use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 
-use super::{default_values::DEFAULT_CONFIG_PATH, transport::Transport};
+use super::{default_values::DEFAULT_CONFIG_PATH, styles::STYLES, transport::Transport};
+
+// ---------------------------------------------------------------------------
+// Long version
+// ---------------------------------------------------------------------------
+
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("TRIBAL_GIT_DESCRIBE"),
+    ")",
+);
 
 // ---------------------------------------------------------------------------
 // Root
 // ---------------------------------------------------------------------------
 
-/// The Tribal knowledge server.
+/// A personal knowledge context engine for software development.
 #[derive(Debug, Parser)]
-#[command(name = "tribal", version, about)]
+#[command(
+    name = "tribal",
+    version,
+    long_version = LONG_VERSION,
+    about,
+    styles = STYLES,
+    infer_subcommands = true,
+)]
 pub struct Cli {
+    /// Global options shared across all subcommands.
+    #[command(flatten)]
+    pub global: GlobalArgs,
+
     /// The subcommand to execute.
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+// ---------------------------------------------------------------------------
+// Global arguments
+// ---------------------------------------------------------------------------
+
+/// Options available to every subcommand.
+#[derive(Debug, Args)]
+pub struct GlobalArgs {
+    /// Path to the configuration file.
+    #[arg(
+        long,
+        global = true,
+        default_value = DEFAULT_CONFIG_PATH,
+        env = "TRIBAL_CONFIG_PATH",
+        value_name = "PATH",
+    )]
+    pub config: String,
+
+    /// Increase log verbosity (repeat for more: -v, -vv, -vvv).
+    #[arg(short, long, global = true, action = ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Suppress non-error output.
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
+}
+
+impl GlobalArgs {
+    /// Validates global argument constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`clap::Error`] if both `--verbose` and `--quiet` are
+    /// supplied. The two flags are mutually exclusive.
+    pub fn validate(&self) -> Result<(), clap::Error> {
+        if self.verbose > 0 && self.quiet {
+            return Err(Cli::command().error(
+                ErrorKind::ArgumentConflict,
+                "--verbose and --quiet cannot be used together",
+            ));
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -26,22 +92,24 @@ pub struct Cli {
 /// Available subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run first-time database setup and migrations.
-    Setup,
-
     /// Start the MCP server.
+    #[command(display_order = 0)]
     Serve {
         /// Arguments for the serve subcommand.
         #[command(flatten)]
         args: ServeArgs,
     },
 
+    /// Run first-time database setup and migrations.
+    #[command(display_order = 1)]
+    Setup,
+
     /// Manage projects.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 2)]
     Project(ProjectCommand),
 
     /// Manage authentication tokens.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 3)]
     Token(TokenCommand),
 }
 
@@ -53,20 +121,21 @@ pub enum Command {
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Transport protocol for the MCP server.
-    #[arg(long, default_value = "stdio", env = "TRIBAL_TRANSPORT")]
+    #[arg(
+        long,
+        default_value = "stdio",
+        env = "TRIBAL_TRANSPORT",
+        help_heading = "Transport",
+    )]
     pub transport: Transport,
 
-    /// Project ID (`proj_`-prefixed) to scope the session to.
-    #[arg(long, env = "TRIBAL_PROJECT_ID")]
-    pub project: Option<String>,
-
     /// Socket address to bind the HTTP/SSE listener to.
-    #[arg(long, env = "TRIBAL_BIND_ADDRESS")]
+    #[arg(long, env = "TRIBAL_BIND_ADDRESS", help_heading = "Transport")]
     pub bind: Option<SocketAddr>,
 
-    /// Path to the configuration file.
-    #[arg(long, default_value = DEFAULT_CONFIG_PATH, env = "TRIBAL_CONFIG_PATH", value_name = "PATH")]
-    pub config: String,
+    /// Project ID (`proj_`-prefixed) to scope the session to.
+    #[arg(long, env = "TRIBAL_PROJECT_ID", help_heading = "Session")]
+    pub project: Option<String>,
 }
 
 impl ServeArgs {
@@ -106,7 +175,7 @@ pub enum ProjectCommand {
     List,
 }
 
-/// Arguments for `project register` (placeholder — defined by ticket 6.8).
+/// Arguments for `project register` (defined by ticket 6.8).
 #[derive(Debug, Args)]
 pub struct ProjectRegisterArgs {}
 
@@ -142,15 +211,15 @@ pub enum TokenCommand {
     },
 }
 
-/// Arguments for `token create` (placeholder — defined by ticket 7.5).
+/// Arguments for `token create` (defined by ticket 7.5).
 #[derive(Debug, Args)]
 pub struct TokenCreateArgs {}
 
-/// Arguments for `token revoke` (placeholder — defined by ticket 7.5).
+/// Arguments for `token revoke` (defined by ticket 7.5).
 #[derive(Debug, Args)]
 pub struct TokenRevokeArgs {}
 
-/// Arguments for `token revoke-all` (placeholder — defined by ticket 7.5).
+/// Arguments for `token revoke-all` (defined by ticket 7.5).
 #[derive(Debug, Args)]
 pub struct TokenRevokeAllArgs {}
 
@@ -179,7 +248,39 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    // -- Defaults -----------------------------------------------------------
+    // -- Global defaults -----------------------------------------------------
+
+    #[test]
+    fn test_global_defaults() {
+        let cli = Cli::try_parse_from(["tribal", "serve"]).unwrap();
+        assert_eq!(cli.global.config, DEFAULT_CONFIG_PATH);
+        assert_eq!(cli.global.verbose, 0);
+        assert!(!cli.global.quiet);
+    }
+
+    // -- Global validation ---------------------------------------------------
+
+    #[test]
+    fn test_verbose_and_quiet_rejected() {
+        let cli = Cli::try_parse_from(["tribal", "-v", "-q", "serve"]).unwrap();
+        assert!(cli.global.validate().is_err());
+    }
+
+    #[test]
+    fn test_verbose_without_quiet_accepted() {
+        let cli = Cli::try_parse_from(["tribal", "-vv", "serve"]).unwrap();
+        assert!(cli.global.validate().is_ok());
+        assert_eq!(cli.global.verbose, 2);
+    }
+
+    #[test]
+    fn test_quiet_without_verbose_accepted() {
+        let cli = Cli::try_parse_from(["tribal", "-q", "serve"]).unwrap();
+        assert!(cli.global.validate().is_ok());
+        assert!(cli.global.quiet);
+    }
+
+    // -- Serve defaults ------------------------------------------------------
 
     #[test]
     fn test_serve_defaults() {
@@ -188,7 +289,6 @@ mod tests {
             if args.transport == Transport::Stdio
             && args.project.is_none()
             && args.bind.is_none()
-            && args.config == DEFAULT_CONFIG_PATH
         ));
     }
 
