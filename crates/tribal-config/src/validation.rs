@@ -11,6 +11,14 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Additional connections the worker pool requires beyond the concurrent task
+/// count (heartbeat, reclaim, poll, and one spare).
+const POOL_CONNECTION_OVERHEAD: usize = 4;
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -30,7 +38,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_worker(config, &mut errors);
     validate_pool_sizing(config, &mut errors);
     validate_provider_timeouts(config, &mut errors);
-    validate_api_keys(config, &mut errors);
+    validate_api_key_presence(config, &mut errors);
     validate_discovery(config, &mut errors);
     validate_exploration(config, &mut errors);
 
@@ -80,12 +88,13 @@ fn validate_worker(config: &TribalConfig, errors: &mut Vec<String>) {
 }
 
 fn validate_pool_sizing(config: &TribalConfig, errors: &mut Vec<String>) {
-    let required = config.worker.max_concurrent_tasks + 4;
-    let available = config.database.pool_worker_max_connections as usize;
-    if available < required {
+    let available = config.database.pool_worker_max_connections;
+    let required = config.worker.max_concurrent_tasks + POOL_CONNECTION_OVERHEAD;
+
+    if (available as usize) < required {
         errors.push(format!(
-            "database.pool_worker_max_connections ({available}) must be >= \
-             worker.max_concurrent_tasks + 4 ({required})"
+            "database.pool_worker_max_connections ({available}) must be at least \
+             worker.max_concurrent_tasks + {POOL_CONNECTION_OVERHEAD} ({required})"
         ));
     }
 }
@@ -94,21 +103,22 @@ fn validate_provider_timeouts(config: &TribalConfig, errors: &mut Vec<String>) {
     let task_timeout = config.worker.task_timeout_millis;
 
     for (provider, limits) in &config.limits.providers {
-        if limits.request_timeout_ms == 0 {
+        let request_timeout = limits.request_timeout_ms;
+
+        if request_timeout == 0 {
             errors.push(format!(
                 "limits.providers.{provider:?}.request_timeout_ms must be greater than zero"
             ));
-        } else if limits.request_timeout_ms >= task_timeout {
+        } else if request_timeout >= task_timeout {
             errors.push(format!(
-                "limits.providers.{provider:?}.request_timeout_ms ({}) must be less than \
-                 worker.task_timeout_millis ({task_timeout})",
-                limits.request_timeout_ms
+                "limits.providers.{provider:?}.request_timeout_ms ({request_timeout}) \
+                 must be less than worker.task_timeout_millis ({task_timeout})"
             ));
         }
     }
 }
 
-fn validate_api_keys(config: &TribalConfig, errors: &mut Vec<String>) {
+fn validate_api_key_presence(config: &TribalConfig, errors: &mut Vec<String>) {
     if config.embedding.provider.requires_api_key() && config.embedding.api_key.is_none() {
         errors.push(format!(
             "embedding.api_key is required when embedding.provider is {:?}",
@@ -135,12 +145,15 @@ fn validate_discovery(config: &TribalConfig, errors: &mut Vec<String>) {
     if config.discovery.default_limit == 0 {
         errors.push("discovery.default_limit must be greater than zero".into());
     }
+
     if config.discovery.max_limit == 0 {
         errors.push("discovery.max_limit must be greater than zero".into());
     }
+
     if config.discovery.default_limit > config.discovery.max_limit {
-        errors.push("discovery.default_limit must be <= discovery.max_limit".into());
+        errors.push("discovery.default_limit must be at most discovery.max_limit".into());
     }
+
     if config.discovery.overfetch_multiplier == 0 {
         errors.push("discovery.overfetch_multiplier must be greater than zero".into());
     }
@@ -150,20 +163,25 @@ fn validate_exploration(config: &TribalConfig, errors: &mut Vec<String>) {
     if config.exploration.default_depth == 0 {
         errors.push("exploration.default_depth must be greater than zero".into());
     }
+
     if config.exploration.max_depth == 0 {
         errors.push("exploration.max_depth must be greater than zero".into());
     }
+
     if config.exploration.default_depth > config.exploration.max_depth {
-        errors.push("exploration.default_depth must be <= exploration.max_depth".into());
+        errors.push("exploration.default_depth must be at most exploration.max_depth".into());
     }
+
     if config.exploration.default_limit == 0 {
         errors.push("exploration.default_limit must be greater than zero".into());
     }
+
     if config.exploration.max_limit == 0 {
         errors.push("exploration.max_limit must be greater than zero".into());
     }
+
     if config.exploration.default_limit > config.exploration.max_limit {
-        errors.push("exploration.default_limit must be <= exploration.max_limit".into());
+        errors.push("exploration.default_limit must be at most exploration.max_limit".into());
     }
 }
 
@@ -232,7 +250,11 @@ mod tests {
         config.database.pool_worker_max_connections = 10;
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("pool_worker_max_connections (10) must be >= worker.max_concurrent_tasks + 4 (14)"));
+        let required = 10 + POOL_CONNECTION_OVERHEAD;
+        assert!(msg.contains(&format!(
+            "pool_worker_max_connections (10) must be at least \
+             worker.max_concurrent_tasks + {POOL_CONNECTION_OVERHEAD} ({required})"
+        )));
     }
 
     #[test]
