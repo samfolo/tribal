@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use chrono::{DateTime, Utc};
-use rmcp::model::{CallToolResult, Content, RawContent};
+use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Serialize};
 use tribal_db::TraversalDirection;
 use tribal_domain::RelationKind;
@@ -129,6 +129,7 @@ impl IntoCallToolResult for McpExploreResponse {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::RawContent;
     use tribal_domain::{ProjectId, Standing};
 
     use super::{
