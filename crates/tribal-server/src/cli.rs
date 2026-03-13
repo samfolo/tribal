@@ -8,4 +8,4 @@ mod default_values;
 mod styles;
 mod transport;
 
-pub use command::{Cli, Command, GlobalArgs, ProjectCommand, TokenCommand};
+pub use command::{Cli, Command, ProjectCommand, TokenCommand};
