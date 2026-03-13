@@ -8,12 +8,18 @@ use super::provider_kind::ProviderKind;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// Default embedding model name.
+pub const DEFAULT_MODEL: &str = "nomic-embed-text:v1.5";
+
+/// Default vector dimensions.
+pub const DEFAULT_DIMENSIONS: u32 = 768;
+
 fn default_model() -> String {
-    String::from("nomic-embed-text:v1.5")
+    String::from(DEFAULT_MODEL)
 }
 
 const fn default_dimensions() -> u32 {
-    768
+    DEFAULT_DIMENSIONS
 }
 
 // ---------------------------------------------------------------------------
@@ -75,8 +81,8 @@ mod tests {
     fn test_default_values() {
         let config = EmbeddingConfig::default();
         assert_eq!(config.provider, ProviderKind::Ollama);
-        assert_eq!(config.model, "nomic-embed-text:v1.5");
-        assert_eq!(config.dimensions, 768);
+        assert_eq!(config.model, DEFAULT_MODEL);
+        assert_eq!(config.dimensions, DEFAULT_DIMENSIONS);
         assert_eq!(config.base_url, None);
         assert_eq!(config.api_key, None);
     }
