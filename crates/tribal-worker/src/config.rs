@@ -32,6 +32,7 @@ pub enum ConfigError {
 /// `serde(default)` so that an empty JSON object deserialises to a valid
 /// configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     /// Maximum number of concurrently executing tasks.
     #[serde(default = "default_max_concurrent_tasks")]
