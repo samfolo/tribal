@@ -4,7 +4,7 @@
 //! and consumed by the startup sequence to create the MCP and worker
 //! connection pools.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Configuration for the database connection pools.
 ///
@@ -15,7 +15,8 @@ use serde::Deserialize;
 /// queries and one for worker write-path transactions.  Pool-specific
 /// settings (max connections, statement timeout) are selected by the startup
 /// sequence based on the pool name.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     /// `PostgreSQL` connection URL (e.g.
     /// `postgres://user:pass@localhost:5432/tribal`).  Required; no default.
@@ -71,9 +72,35 @@ const fn default_max_connect_attempts() -> u32 {
     5
 }
 
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            pool_mcp_max_connections: default_pool_mcp_max_connections(),
+            pool_worker_max_connections: default_pool_worker_max_connections(),
+            acquire_timeout_seconds: default_acquire_timeout_seconds(),
+            statement_timeout_mcp_seconds: default_statement_timeout_mcp_seconds(),
+            statement_timeout_worker_seconds: default_statement_timeout_worker_seconds(),
+            max_connect_attempts: default_max_connect_attempts(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_default_values() {
+        let config = DatabaseConfig::default();
+        assert!(config.url.is_empty());
+        assert_eq!(config.pool_mcp_max_connections, 8);
+        assert_eq!(config.pool_worker_max_connections, 16);
+        assert_eq!(config.acquire_timeout_seconds, 5);
+        assert_eq!(config.statement_timeout_mcp_seconds, 10);
+        assert_eq!(config.statement_timeout_worker_seconds, 60);
+        assert_eq!(config.max_connect_attempts, 5);
+    }
 
     #[test]
     fn test_deserialise_with_only_url_applies_defaults() {
