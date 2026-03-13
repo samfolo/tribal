@@ -22,8 +22,7 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 ///
 /// Builds a layered subscriber stack based on the given configuration:
 ///
-/// 1. **Filter layer** — `EnvFilter` parsed from the `TRIBAL_LOG`
-///    environment variable (if set) or `config.level`.
+/// 1. **Filter layer** — `EnvFilter` parsed from `config.level`.
 /// 2. **Format layer** — JSON or pretty, depending on `config.format`.
 /// 3. **Output layer** — stderr or file, depending on `config.output`.
 ///
@@ -68,13 +67,9 @@ pub fn init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, Telemetr
 /// Separated from [`init_subscriber`] so that the `INITIALISED` flag can
 /// be reset cleanly on failure without duplicating the guard logic.
 fn try_init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
-    // 1. Determine filter directive: TRIBAL_LOG env var overrides config.
-    let directive = std::env::var("TRIBAL_LOG").unwrap_or(config.level);
-
-    // 2. Build EnvFilter from the directive string.
-    let env_filter = EnvFilter::try_new(&directive).map_err(|source| {
+    let env_filter = EnvFilter::try_new(&config.level).map_err(|source| {
         TelemetryError::InvalidFilterDirective {
-            directive: directive.clone(),
+            directive: config.level.clone(),
             source,
         }
     })?;
