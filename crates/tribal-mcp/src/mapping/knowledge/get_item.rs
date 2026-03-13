@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use rmcp::model::{CallToolResult, Content, RawContent};
+use rmcp::model::{CallToolResult, Content};
 use serde::{Deserialize, Serialize};
 
 use super::common::{McpKnowledgeItem, McpReference, McpStanding};
@@ -104,6 +104,8 @@ impl IntoCallToolResult for McpGetItemResponse {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::RawContent;
+
     use super::{
         super::common::{McpSourceContext, McpSourceType},
         *,
