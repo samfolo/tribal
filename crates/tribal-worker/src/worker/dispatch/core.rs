@@ -52,6 +52,7 @@ pub struct Worker {
     pub(crate) relation_key: ProviderKey,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
+    include_llm_content: bool,
     instance_id: String,
     job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
     /// Current number of in-flight tasks.
@@ -79,6 +80,7 @@ impl Worker {
         relation_key: ProviderKey,
         cancellation_token: CancellationToken,
         config: WorkerConfig,
+        include_llm_content: bool,
         instance_id: String,
         job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
     ) -> Self {
@@ -95,6 +97,7 @@ impl Worker {
             relation_key,
             cancellation_token,
             config,
+            include_llm_content,
             instance_id,
             job_state_txs,
             active_tasks: Arc::new(AtomicUsize::new(0)),
@@ -106,6 +109,11 @@ impl Worker {
     #[must_use]
     pub fn config(&self) -> &WorkerConfig {
         &self.config
+    }
+
+    /// Returns whether raw LLM content should be included in log output.
+    pub(crate) fn include_llm_content(&self) -> bool {
+        self.include_llm_content
     }
 
     /// Returns a reference to the database pool.

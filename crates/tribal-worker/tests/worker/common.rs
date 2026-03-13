@@ -167,6 +167,7 @@ pub(super) fn build_test_worker(
         key(RequestClass::Inference),
         cancellation_token,
         config,
+        false,
         WORKER_INSTANCE.to_owned(),
         job_state_txs,
     ))
@@ -208,6 +209,5 @@ pub(super) fn test_config() -> WorkerConfig {
         max_candidates_per_job: 20,
         triage_search_limit: 10,
         tag_similarity_threshold: 0.85,
-        include_llm_content: false,
     }
 }
