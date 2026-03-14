@@ -3925,6 +3925,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "thiserror 2.0.18",
+ "tribal-config",
  "tribal-domain",
  "tribal-mcp",
  "tribal-telemetry",

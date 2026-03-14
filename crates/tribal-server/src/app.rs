@@ -1,6 +1,7 @@
 //! Application entry point and subcommand dispatch.
 
 use clap::{CommandFactory, Parser};
+use tribal_config::{load_config, validate};
 
 use crate::{
     cli::{Cli, Command, ProjectCommand, TokenCommand},
@@ -45,8 +46,14 @@ impl App {
                 println!("tribal setup: not yet implemented");
             }
             Command::Serve { args } => {
-                args.validate()?;
+                let config_path = self.cli.global.config.clone();
+                let (cli_overrides, _project) = args.into_cli_overrides();
+
+                let config = load_config(&config_path, Some(cli_overrides))?;
+                validate(&config)?;
+
                 println!("tribal serve: not yet implemented");
+                let _ = &config;
             }
             Command::Project(command) => match command {
                 ProjectCommand::Register { .. } => {
