@@ -327,7 +327,7 @@ server:
     fn test_env_var_whitelist_covers_all_sections() {
         Jail::expect_with(|jail| {
             jail.set_env("TRIBAL_SERVER__SHUTDOWN_DEADLINE_MS", "5000");
-            jail.set_env("TRIBAL_DATABASE__ACQUIRE_TIMEOUT_SECONDS", "10");
+            jail.set_env("TRIBAL_DATABASE__ACQUIRE_TIMEOUT_MS", "10000");
             jail.set_env("TRIBAL_AUTH__TOKEN_TTL_HOURS", "24");
             jail.set_env("TRIBAL_WORKER__MAX_CONCURRENT_TASKS", "8");
             jail.set_env("TRIBAL_EMBEDDING__DIMENSIONS", "1024");
@@ -343,7 +343,7 @@ server:
             let config = load_config(path.to_str().unwrap(), None).unwrap();
 
             assert_eq!(config.server.shutdown_deadline_ms, 5000);
-            assert_eq!(config.database.acquire_timeout_seconds, 10);
+            assert_eq!(config.database.acquire_timeout_ms, 10_000);
             assert_eq!(config.auth.token_ttl_hours, 24);
             assert_eq!(config.worker.max_concurrent_tasks, 8);
             assert_eq!(config.embedding.dimensions, 1024);

@@ -44,7 +44,7 @@ pub const CLAIM_SETTLE: Duration = Duration::from_secs(2);
 /// Timeout for the heartbeat loop to detect an externally-reclaimed
 /// task.
 ///
-/// Given `test_config().heartbeat_interval_millis = 200`, 2 s gives
+/// Given `test_config().heartbeat_interval_ms = 200`, 2 s gives
 /// the heartbeat at least nine chances to observe the loss, with
 /// headroom for CI-induced DB latency.
 pub const HEARTBEAT_DETECT: Duration = Duration::from_secs(2);
@@ -55,7 +55,7 @@ pub const HEARTBEAT_DETECT: Duration = Duration::from_secs(2);
 
 /// Duration to backdate a task heartbeat to simulate staleness.
 ///
-/// Must exceed `test_config().task_timeout_millis` (`5_000`) by a wide
+/// Must exceed `test_config().task_timeout_ms` (`5_000`) by a wide
 /// margin to guarantee the reclaim sweep treats the task as stale.
 pub const STALE_HEARTBEAT_BACKDATE: Duration = Duration::from_secs(120);
 
