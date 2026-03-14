@@ -3911,6 +3911,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tribal-config",
  "tribal-db",
  "tribal-domain",
  "tribal-inference",
