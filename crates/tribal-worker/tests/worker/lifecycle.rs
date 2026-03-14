@@ -466,10 +466,10 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         // manual backdate + reclaim injection below.  A 100 ms
         // interval can refresh the heartbeat between the backdate
         // and reclaim_stale calls, silently undoing the backdate.
-        heartbeat_interval_millis: 1_000,
+        heartbeat_interval_ms: 1_000,
         // Disable reclaim sweep so it does not interfere with the
         // manual reclaim injection below.
-        reclaim_interval_millis: 120_000,
+        reclaim_interval_ms: 120_000,
         ..test_config()
     };
 
