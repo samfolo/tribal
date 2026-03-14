@@ -37,6 +37,19 @@ fn test_pretty_format_produces_non_json_output() {
         "pretty output should contain the event message, but got:\n{output}",
     );
 
+    // Pretty format should produce files with a .log suffix.
+    let filenames: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("should read dir")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    for name in &filenames {
+        assert!(
+            name.ends_with(".log"),
+            "Pretty format should produce .log files, got: {name}",
+        );
+    }
+
     // Pretty output should not be valid JSON — each line is human-readable.
     for line in output.lines().filter(|l| !l.trim().is_empty()) {
         let is_json = serde_json::from_str::<serde_json::Value>(line).is_ok();
