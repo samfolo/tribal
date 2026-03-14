@@ -1,6 +1,6 @@
 //! Clap command and argument definitions for the Tribal CLI.
 
-use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use tribal_config::{CliOverrides, ServerCliOverrides};
 
 use super::{default_values::DEFAULT_CONFIG_PATH, styles::STYLES, transport::Transport};

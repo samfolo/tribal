@@ -4,6 +4,7 @@
 //! state management, and transport setup (stdio, HTTP, SSE).
 
 mod auth;
+mod config;
 mod error;
 mod format;
 mod handlers;
@@ -15,6 +16,7 @@ mod session;
 mod test_utils;
 mod tools;
 
+pub use config::HandlerConfig;
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
 pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
 pub use session::{SessionActor, SessionContext, SessionProject};

@@ -22,6 +22,7 @@ use tribal_inference::EmbeddingProvider;
 
 use crate::{
     auth::AuthContext,
+    config::HandlerConfig,
     error::method_not_found,
     session::{self, SESSION_RESOURCE_URI, SessionContext},
     tools::{PARSED_TOOLS, to_tool},
@@ -104,6 +105,7 @@ pub struct TribalServerHandler {
     pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
     pub(crate) active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
     pub(crate) session: Arc<RwLock<SessionContext>>,
+    pub(crate) config: HandlerConfig,
 }
 
 impl TribalServerHandler {
@@ -122,6 +124,7 @@ impl TribalServerHandler {
         embedding_provider: Arc<dyn EmbeddingProvider>,
         active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
         session: SessionContext,
+        config: HandlerConfig,
     ) -> Self {
         Self {
             pool,
@@ -129,6 +132,7 @@ impl TribalServerHandler {
             embedding_provider,
             active_prompt_versions,
             session: Arc::new(RwLock::new(session)),
+            config,
         }
     }
 
