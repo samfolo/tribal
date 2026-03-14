@@ -928,11 +928,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_limit_above_fifty_is_invalid() {
+    async fn test_limit_above_max_is_invalid() {
         let handler = test_handler_with_repos(test_repositories());
+        let max_limit = HandlerConfig::default().discovery.max_limit;
 
         let result = handler
-            .apply_discover(serde_json::json!({"query": "test", "limit": 51}))
+            .apply_discover(serde_json::json!({"query": "test", "limit": max_limit + 1}))
             .await
             .expect(NO_PROTOCOL_ERROR);
 
