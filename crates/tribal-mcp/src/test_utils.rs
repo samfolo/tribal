@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use tokio::sync::RwLock;
-use tribal_domain::PromptVersionId;
+use tribal_domain::{ProjectId, PromptVersionId};
 use tribal_inference::EmbeddingProvider;
 use tribal_test_utils::{
     MockEmbeddingProvider, MockJobRepository, MockKnowledgeItemRepository, MockPrincipalRepository,
@@ -15,7 +15,7 @@ use typed_builder::TypedBuilder;
 use crate::{
     config::HandlerConfig,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
-    session::SessionContext,
+    session::{SessionContext, SessionProject},
 };
 
 // ---------------------------------------------------------------------------
@@ -83,6 +83,19 @@ impl From<TestHandler> for TribalServerHandler {
             th.config,
         )
     }
+}
+
+/// Returns a [`SessionContext`] with a default project attached.
+///
+/// Use with `TestHandler::builder().session(session_with_project()).build()`
+/// when a test needs a handler whose session already has a project set.
+pub(crate) fn session_with_project() -> SessionContext {
+    let project = SessionProject {
+        id: ProjectId::new(),
+        name: "tribal".into(),
+        git_remote: "git@github.com:user/tribal.git".into(),
+    };
+    SessionContext::new(Some(project), "user:test".into())
 }
 
 fn default_embedding_provider() -> Arc<dyn EmbeddingProvider> {

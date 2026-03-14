@@ -284,26 +284,12 @@ mod tests {
         handler::server::ServerHandler,
         model::{ErrorCode, ResourceContents},
     };
-    use tribal_domain::ProjectId;
 
     use super::*;
     use crate::{
-        session::{SESSION_RESOURCE_URI, SessionContext, SessionProject},
-        test_utils::TestHandler,
+        session::SESSION_RESOURCE_URI,
+        test_utils::{TestHandler, session_with_project},
     };
-
-    // -- Helpers -----------------------------------------------------------
-
-    fn test_handler_with_project() -> TribalServerHandler {
-        let project = SessionProject {
-            id: ProjectId::new(),
-            name: "tribal".into(),
-            git_remote: "git@github.com:user/tribal.git".into(),
-        };
-        TestHandler::builder()
-            .session(SessionContext::new(Some(project), "user:test".into()))
-            .build()
-    }
 
     // -- get_info -----------------------------------------------------------
 
@@ -385,7 +371,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_resource_success() {
-        let handler = test_handler_with_project();
+        let handler = TestHandler::builder()
+            .session(session_with_project())
+            .build();
         let result = handler
             .read_resource_inner(SESSION_RESOURCE_URI)
             .await

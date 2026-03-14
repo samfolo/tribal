@@ -252,10 +252,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{
-        session::{SessionContext, SessionProject},
-        test_utils::{TestHandler, test_repositories},
-    };
+    use crate::test_utils::{TestHandler, session_with_project, test_repositories};
 
     // -- Constants ---------------------------------------------------------
 
@@ -273,17 +270,6 @@ mod tests {
             relation_system_prompt_version_id: PromptVersionId::new(),
             relation_user_prompt_version_id: PromptVersionId::new(),
         }
-    }
-
-    fn test_handler_with_session_project() -> TribalServerHandler {
-        let project = SessionProject {
-            id: ProjectId::new(),
-            name: "tribal".into(),
-            git_remote: "git@github.com:user/tribal.git".into(),
-        };
-        TestHandler::builder()
-            .session(SessionContext::new(Some(project), "user:test".into()))
-            .build()
     }
 
     async fn call_execute(
@@ -379,7 +365,9 @@ mod tests {
     /// `failed_precondition` to confirm project resolution succeeded.
     #[tokio::test]
     async fn test_apply_ingest_uses_session_project_when_request_omits_it() {
-        let handler = test_handler_with_session_project();
+        let handler = TestHandler::builder()
+            .session(session_with_project())
+            .build();
 
         let result = handler
             .apply_ingest(serde_json::json!({"content": "some knowledge"}))
