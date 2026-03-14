@@ -8,6 +8,32 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Default maximum connections in the MCP (read-path) pool.
+pub const DEFAULT_POOL_MCP_MAX_CONNECTIONS: u32 = 8;
+
+/// Default maximum connections in the worker (write-path) pool.
+pub const DEFAULT_POOL_WORKER_MAX_CONNECTIONS: u32 = 16;
+
+/// Default acquire timeout in milliseconds.
+pub const DEFAULT_ACQUIRE_TIMEOUT_MS: u64 = 5_000;
+
+/// Default statement timeout in milliseconds for MCP pool connections.
+pub const DEFAULT_STATEMENT_TIMEOUT_MCP_MS: u64 = 10_000;
+
+/// Default statement timeout in milliseconds for worker pool connections.
+pub const DEFAULT_STATEMENT_TIMEOUT_WORKER_MS: u64 = 60_000;
+
+/// Default maximum connection attempts during startup.
+pub const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 5;
+
+// ---------------------------------------------------------------------------
+// DatabaseConfig
+// ---------------------------------------------------------------------------
+
 /// Configuration for the database connection pools.
 ///
 /// Loaded from the application YAML configuration file.  The `url` field is
@@ -71,43 +97,51 @@ impl DatabaseConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Defaults (serde)
+// ---------------------------------------------------------------------------
+
 const fn default_pool_mcp_max_connections() -> u32 {
-    8
+    DEFAULT_POOL_MCP_MAX_CONNECTIONS
 }
 
 const fn default_pool_worker_max_connections() -> u32 {
-    16
+    DEFAULT_POOL_WORKER_MAX_CONNECTIONS
 }
 
 const fn default_acquire_timeout_ms() -> u64 {
-    5_000
+    DEFAULT_ACQUIRE_TIMEOUT_MS
 }
 
 const fn default_statement_timeout_mcp_ms() -> u64 {
-    10_000
+    DEFAULT_STATEMENT_TIMEOUT_MCP_MS
 }
 
 const fn default_statement_timeout_worker_ms() -> u64 {
-    60_000
+    DEFAULT_STATEMENT_TIMEOUT_WORKER_MS
 }
 
 const fn default_max_connect_attempts() -> u32 {
-    5
+    DEFAULT_MAX_CONNECT_ATTEMPTS
 }
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
-            pool_mcp_max_connections: default_pool_mcp_max_connections(),
-            pool_worker_max_connections: default_pool_worker_max_connections(),
-            acquire_timeout_ms: default_acquire_timeout_ms(),
-            statement_timeout_mcp_ms: default_statement_timeout_mcp_ms(),
-            statement_timeout_worker_ms: default_statement_timeout_worker_ms(),
-            max_connect_attempts: default_max_connect_attempts(),
+            pool_mcp_max_connections: DEFAULT_POOL_MCP_MAX_CONNECTIONS,
+            pool_worker_max_connections: DEFAULT_POOL_WORKER_MAX_CONNECTIONS,
+            acquire_timeout_ms: DEFAULT_ACQUIRE_TIMEOUT_MS,
+            statement_timeout_mcp_ms: DEFAULT_STATEMENT_TIMEOUT_MCP_MS,
+            statement_timeout_worker_ms: DEFAULT_STATEMENT_TIMEOUT_WORKER_MS,
+            max_connect_attempts: DEFAULT_MAX_CONNECT_ATTEMPTS,
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -117,40 +151,67 @@ mod tests {
     fn test_default_values() {
         let config = DatabaseConfig::default();
         assert!(config.url.is_empty());
-        assert_eq!(config.pool_mcp_max_connections, 8);
-        assert_eq!(config.pool_worker_max_connections, 16);
-        assert_eq!(config.acquire_timeout_ms, 5_000);
-        assert_eq!(config.statement_timeout_mcp_ms, 10_000);
-        assert_eq!(config.statement_timeout_worker_ms, 60_000);
-        assert_eq!(config.max_connect_attempts, 5);
+        assert_eq!(
+            config.pool_mcp_max_connections,
+            DEFAULT_POOL_MCP_MAX_CONNECTIONS
+        );
+        assert_eq!(
+            config.pool_worker_max_connections,
+            DEFAULT_POOL_WORKER_MAX_CONNECTIONS
+        );
+        assert_eq!(config.acquire_timeout_ms, DEFAULT_ACQUIRE_TIMEOUT_MS);
+        assert_eq!(
+            config.statement_timeout_mcp_ms,
+            DEFAULT_STATEMENT_TIMEOUT_MCP_MS
+        );
+        assert_eq!(
+            config.statement_timeout_worker_ms,
+            DEFAULT_STATEMENT_TIMEOUT_WORKER_MS
+        );
+        assert_eq!(config.max_connect_attempts, DEFAULT_MAX_CONNECT_ATTEMPTS);
     }
 
     #[test]
     fn test_deserialise_with_only_url_applies_defaults() {
-        let json = r#"{"url": "postgres://localhost/tribal"}"#;
+        let yaml = "url: postgres://localhost/tribal";
         let config: DatabaseConfig =
-            serde_json::from_str(json).expect("should deserialise with only url");
+            serde_yaml::from_str(yaml).expect("should deserialise with only url");
 
         assert_eq!(config.url, "postgres://localhost/tribal");
-        assert_eq!(config.pool_mcp_max_connections, 8);
-        assert_eq!(config.pool_worker_max_connections, 16);
-        assert_eq!(config.acquire_timeout_ms, 5_000);
-        assert_eq!(config.statement_timeout_mcp_ms, 10_000);
-        assert_eq!(config.statement_timeout_worker_ms, 60_000);
-        assert_eq!(config.max_connect_attempts, 5);
+        assert_eq!(
+            config.pool_mcp_max_connections,
+            DEFAULT_POOL_MCP_MAX_CONNECTIONS
+        );
+        assert_eq!(
+            config.pool_worker_max_connections,
+            DEFAULT_POOL_WORKER_MAX_CONNECTIONS
+        );
+        assert_eq!(config.acquire_timeout_ms, DEFAULT_ACQUIRE_TIMEOUT_MS);
+        assert_eq!(
+            config.statement_timeout_mcp_ms,
+            DEFAULT_STATEMENT_TIMEOUT_MCP_MS
+        );
+        assert_eq!(
+            config.statement_timeout_worker_ms,
+            DEFAULT_STATEMENT_TIMEOUT_WORKER_MS
+        );
+        assert_eq!(config.max_connect_attempts, DEFAULT_MAX_CONNECT_ATTEMPTS);
     }
 
     #[test]
     fn test_duration_conversions() {
         let config = DatabaseConfig::default();
-        assert_eq!(config.acquire_timeout(), Duration::from_millis(5_000));
+        assert_eq!(
+            config.acquire_timeout(),
+            Duration::from_millis(DEFAULT_ACQUIRE_TIMEOUT_MS)
+        );
         assert_eq!(
             config.statement_timeout_mcp(),
-            Duration::from_millis(10_000)
+            Duration::from_millis(DEFAULT_STATEMENT_TIMEOUT_MCP_MS)
         );
         assert_eq!(
             config.statement_timeout_worker(),
-            Duration::from_millis(60_000)
+            Duration::from_millis(DEFAULT_STATEMENT_TIMEOUT_WORKER_MS)
         );
     }
 }

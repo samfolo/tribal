@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use super::telemetry::FileRotation;
 use crate::paths::resolve_directory;
 
+// ---------------------------------------------------------------------------
+// LoggingConfig
+// ---------------------------------------------------------------------------
+
 /// Configuration for the tracing subscriber.
 ///
 /// Loaded from the application configuration file.  All fields have
@@ -94,6 +98,10 @@ impl Default for LoggingConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// LogFormat
+// ---------------------------------------------------------------------------
+
 /// Output format for log lines.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +120,10 @@ pub enum LogFormat {
     Pretty,
 }
 
+// ---------------------------------------------------------------------------
+// LogOutput
+// ---------------------------------------------------------------------------
+
 /// Output destination for log lines.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -125,9 +137,24 @@ pub enum LogOutput {
     File,
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enum_serde_tests;
+
+    enum_serde_tests!(test_log_format_serde_roundtrip, LogFormat {
+        LogFormat::Json => "json",
+        LogFormat::Pretty => "pretty",
+    });
+
+    enum_serde_tests!(test_log_output_serde_roundtrip, LogOutput {
+        LogOutput::Stderr => "stderr",
+        LogOutput::File => "file",
+    });
 
     #[test]
     fn test_logging_config_default_values() {
@@ -153,7 +180,8 @@ mod tests {
 
     #[test]
     fn test_deserialise_empty_object_applies_defaults() {
-        let config: LoggingConfig = serde_json::from_str("{}").unwrap();
+        let yaml = "---";
+        let config: LoggingConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.level, "info");
         assert_eq!(config.format, LogFormat::Json);
         assert_eq!(config.output, LogOutput::Stderr);
@@ -162,15 +190,15 @@ mod tests {
 
     #[test]
     fn test_deserialise_all_fields() {
-        let json = r#"{
-            "level": "debug,tribal_db=trace",
-            "format": "pretty",
-            "output": "file",
-            "file_directory": "/var/log/tribal",
-            "file_rotation": "hourly",
-            "include_llm_content": true
-        }"#;
-        let config: LoggingConfig = serde_json::from_str(json).unwrap();
+        let yaml = r#"
+level: "debug,tribal_db=trace"
+format: pretty
+output: file
+file_directory: /var/log/tribal
+file_rotation: hourly
+include_llm_content: true
+"#;
+        let config: LoggingConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.level, "debug,tribal_db=trace");
         assert_eq!(config.format, LogFormat::Pretty);
         assert_eq!(config.output, LogOutput::File);
@@ -185,56 +213,10 @@ mod tests {
             used_temp_dir_fallback: true,
             ..LoggingConfig::default()
         };
-        let json = serde_json::to_string(&config).unwrap();
+        let yaml = serde_yaml::to_string(&config).unwrap();
         assert!(
-            !json.contains("used_temp_dir_fallback"),
+            !yaml.contains("used_temp_dir_fallback"),
             "used_temp_dir_fallback should be skipped during serialisation"
         );
-    }
-
-    /// Roundtrip-tests every `LogFormat` variant through serde.
-    ///
-    /// The `match` is a compile-time exhaustiveness guard: adding a
-    /// variant without listing it here fails the build.
-    #[test]
-    fn test_deserialise_log_format_variants() {
-        #[allow(dead_code)]
-        fn check_exhaustiveness(v: LogFormat) {
-            match v {
-                LogFormat::Json | LogFormat::Pretty => {}
-            }
-        }
-
-        let cases: &[(LogFormat, &str)] = &[
-            (LogFormat::Json, r#""json""#),
-            (LogFormat::Pretty, r#""pretty""#),
-        ];
-        for &(expected, json) in cases {
-            let parsed: LogFormat = serde_json::from_str(json).unwrap();
-            assert_eq!(parsed, expected, "deserialising {json}");
-        }
-    }
-
-    /// Roundtrip-tests every `LogOutput` variant through serde.
-    ///
-    /// The `match` is a compile-time exhaustiveness guard: adding a
-    /// variant without listing it here fails the build.
-    #[test]
-    fn test_deserialise_log_output_variants() {
-        #[allow(dead_code)]
-        fn check_exhaustiveness(v: LogOutput) {
-            match v {
-                LogOutput::Stderr | LogOutput::File => {}
-            }
-        }
-
-        let cases: &[(LogOutput, &str)] = &[
-            (LogOutput::Stderr, r#""stderr""#),
-            (LogOutput::File, r#""file""#),
-        ];
-        for &(expected, json) in cases {
-            let parsed: LogOutput = serde_json::from_str(json).unwrap();
-            assert_eq!(parsed, expected, "deserialising {json}");
-        }
     }
 }
