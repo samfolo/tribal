@@ -37,7 +37,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_server(config, &mut errors);
     validate_worker(config, &mut errors);
     validate_pool_sizing(config, &mut errors);
-    validate_provider_timeouts(config, &mut errors);
+    validate_provider_limits(config, &mut errors);
     validate_api_key_presence(config, &mut errors);
     validate_discovery(config, &mut errors);
     validate_exploration(config, &mut errors);
@@ -99,10 +99,16 @@ fn validate_pool_sizing(config: &TribalConfig, errors: &mut Vec<String>) {
     }
 }
 
-fn validate_provider_timeouts(config: &TribalConfig, errors: &mut Vec<String>) {
+fn validate_provider_limits(config: &TribalConfig, errors: &mut Vec<String>) {
     let task_timeout = config.worker.task_timeout_millis;
 
     for (provider, limits) in &config.limits.providers {
+        if limits.max_in_flight == 0 {
+            errors.push(format!(
+                "limits.providers.{provider}.max_in_flight must be greater than zero"
+            ));
+        }
+
         let request_timeout = limits.request_timeout_ms;
 
         if request_timeout == 0 {
@@ -263,6 +269,20 @@ mod tests {
             "pool_worker_max_connections (10) must be at least \
              worker.max_concurrent_tasks + {POOL_CONNECTION_OVERHEAD} ({required})"
         )));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_max_in_flight() {
+        let mut config = valid_config();
+        config
+            .limits
+            .providers
+            .get_mut(&ProviderKind::Ollama)
+            .unwrap()
+            .max_in_flight = 0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("max_in_flight must be greater than zero"));
     }
 
     #[test]

@@ -25,9 +25,7 @@ pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.3;
 /// Configuration for the discovery (semantic search) handler.
 ///
 /// Controls result limits, overfetch behaviour, and similarity
-/// thresholds.  The `overfetch_multiplier` and `similarity_threshold`
-/// fields are defined here but not yet wired into the handler's query
-/// logic.
+/// thresholds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryConfig {

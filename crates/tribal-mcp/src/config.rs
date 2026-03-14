@@ -35,6 +35,10 @@ pub struct HandlerConfig {
 // ---------------------------------------------------------------------------
 
 /// Discovery configuration consumed by the `tribal_discover` handler.
+///
+/// `overfetch_multiplier` and `similarity_threshold` from
+/// `DiscoveryConfig` are intentionally omitted — the handler does not
+/// yet consume them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandlerDiscoveryConfig {
     /// Default number of results when the caller does not specify a limit.
