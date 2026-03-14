@@ -84,21 +84,25 @@ mod tests {
 
     #[test]
     fn test_display_file_appender_init() {
-        // Trigger a real InitError by building an appender with an invalid path.
+        // Use a regular file as the "directory" to guarantee the appender
+        // cannot create it, regardless of process permissions.
+        let tmp = tempfile::NamedTempFile::new().expect("should create temp file");
+        let file_path = tmp.path().display().to_string();
+
         let result = tracing_appender::rolling::RollingFileAppender::builder()
             .rotation(tracing_appender::rolling::Rotation::DAILY)
             .filename_prefix("tribal")
             .filename_suffix("jsonl")
-            .build("/nonexistent/dir/that/cannot/exist");
+            .build(&file_path);
 
-        let init_error = result.expect_err("should fail for nonexistent directory");
+        let init_error = result.expect_err("should fail when path is a regular file");
         let err = TelemetryError::FileAppenderInit {
-            path: "/nonexistent/dir/that/cannot/exist".to_owned(),
+            path: file_path.clone(),
             source: init_error,
         };
         assert_eq!(
             err.to_string(),
-            "failed to initialise file appender at /nonexistent/dir/that/cannot/exist",
+            format!("failed to initialise file appender at {file_path}"),
         );
     }
 }

@@ -178,13 +178,17 @@ mod tests {
     }
 
     #[test]
-    fn test_file_output_with_nonexistent_directory_returns_error() {
+    fn test_file_output_with_invalid_directory_returns_error() {
         let _lock = TEST_MUTEX.lock().unwrap();
         INITIALISED.store(false, Ordering::SeqCst);
 
+        // Use a regular file as the "directory" to guarantee the appender
+        // cannot create it, regardless of process permissions.
+        let tmp = tempfile::NamedTempFile::new().expect("should create temp file");
+
         let config = LoggingConfig {
             output: LogOutput::File,
-            file_directory: "/nonexistent/dir/tribal/logs".to_owned(),
+            file_directory: tmp.path().display().to_string(),
             ..LoggingConfig::default()
         };
         let result = init_subscriber(&config);
