@@ -13,6 +13,7 @@ use tribal_config::{
 // ---------------------------------------------------------------------------
 
 /// Configuration values threaded into [`TribalServerHandler`](crate::TribalServerHandler).
+#[derive(Default)]
 pub struct HandlerConfig {
     /// Discovery (semantic search) limits.
     pub(crate) discovery: HandlerDiscoveryConfig,
@@ -26,15 +27,6 @@ impl From<&TribalConfig> for HandlerConfig {
         Self {
             discovery: HandlerDiscoveryConfig::from(&config.discovery),
             exploration: HandlerExplorationConfig::from(&config.exploration),
-        }
-    }
-}
-
-impl Default for HandlerConfig {
-    fn default() -> Self {
-        Self {
-            discovery: HandlerDiscoveryConfig::default(),
-            exploration: HandlerExplorationConfig::default(),
         }
     }
 }

@@ -13,7 +13,7 @@ use tribal_domain::{
     EmbeddingPurpose, KnowledgeItemId, KnowledgeKind, McpErrorCode, PrincipalId, ProjectId,
     Reference, Standing,
 };
-use tribal_inference::{EmbeddingProvider, EmbeddingRequest};
+use tribal_inference::EmbeddingRequest;
 
 use super::common::acquire_connection;
 use crate::{
@@ -414,7 +414,7 @@ mod tests {
     use tokio::sync::RwLock;
     use tribal_db::SemanticSearchResponse;
     use tribal_domain::{PromptVersionId, ReferenceKind};
-    use tribal_inference::InferenceError;
+    use tribal_inference::{EmbeddingProvider, InferenceError};
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
