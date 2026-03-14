@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
-    /// Local Ollama instance.
+    /// Local `Ollama` instance.
     #[default]
     Ollama,
 
-    /// Anthropic cloud API.
+    /// `Anthropic` cloud API.
     Anthropic,
 
     /// `OpenAI` cloud API.
