@@ -88,7 +88,7 @@ pub struct TelemetryConfig {
 impl Default for TelemetryConfig {
     fn default() -> Self {
         let (file_directory, used_temp_dir_fallback) =
-            resolve_directory(dirs::data_local_dir, dirs::data_local_dir, "tribal/traces");
+            resolve_directory(dirs::data_local_dir, || None, "tribal/traces");
         Self {
             enabled: default_enabled(),
             otlp_endpoint: None,
