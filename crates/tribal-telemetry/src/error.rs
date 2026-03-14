@@ -23,7 +23,7 @@ pub enum TelemetryError {
     /// The filter directive string is invalid.
     ///
     /// The directive comes from the `level` field of
-    /// [`LoggingConfig`](crate::LoggingConfig).  Directive strings support
+    /// [`LoggingConfig`](tribal_config::LoggingConfig).  Directive strings support
     /// per-target granularity, e.g. `"info,tribal_db=debug"`.
     #[error("invalid filter directive: {directive}")]
     InvalidFilterDirective {
@@ -36,8 +36,8 @@ pub enum TelemetryError {
 
     /// File output was requested but no file path was provided.
     ///
-    /// Set [`LoggingConfig::file_path`](crate::LoggingConfig::file_path)
-    /// to `Some(path)` when using [`LogOutput::File`](crate::LogOutput::File).
+    /// Set [`LoggingConfig::file_path`](tribal_config::LoggingConfig::file_path)
+    /// to `Some(path)` when using [`LogOutput::File`](tribal_config::LogOutput::File).
     #[error("file output requested but file_path is None")]
     FileOutputMissingPath,
 

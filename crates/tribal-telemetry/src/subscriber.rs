@@ -1,7 +1,7 @@
 //! Tracing subscriber initialisation.
 //!
 //! [`init_subscriber`] builds a layered subscriber from a
-//! [`LoggingConfig`](crate::LoggingConfig) and sets it as the global
+//! [`LoggingConfig`](tribal_config::LoggingConfig) and sets it as the global
 //! default.  It should be called exactly once, early in program startup.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,11 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::subscriber::set_global_default;
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
-use crate::{
-    config::{LogFormat, LogOutput, LoggingConfig},
-    error::TelemetryError,
-    guard::TelemetryGuard,
-};
+use tribal_config::{LogFormat, LogOutput, LoggingConfig};
+
+use crate::{error::TelemetryError, guard::TelemetryGuard};
 
 /// Whether [`init_subscriber`] has already been called.
 static INITIALISED: AtomicBool = AtomicBool::new(false);

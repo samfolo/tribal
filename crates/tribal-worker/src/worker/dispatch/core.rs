@@ -18,9 +18,10 @@ use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
 
+use tribal_config::WorkerConfig;
+
 use crate::{
     common::{clamp_to_i32, clamp_to_u32},
-    config::WorkerConfig,
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
     stages::StageOutput,
     worker::{

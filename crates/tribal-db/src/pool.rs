@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use sqlx::{Executor, PgPool, postgres::PgPoolOptions};
-use tribal_domain::DatabaseConfig;
+use tribal_config::DatabaseConfig;
 
 use crate::DbError;
 
