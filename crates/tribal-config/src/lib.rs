@@ -8,6 +8,7 @@
 
 mod error;
 mod loader;
+mod paths;
 mod sections;
 mod validation;
 
