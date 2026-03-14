@@ -35,8 +35,10 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
 
     validate_database(config, &mut errors);
     validate_server(config, &mut errors);
+    validate_auth(config, &mut errors);
     validate_worker(config, &mut errors);
     validate_pool_sizing(config, &mut errors);
+    validate_embedding(config, &mut errors);
     validate_provider_limits(config, &mut errors);
     validate_api_key_presence(config, &mut errors);
     validate_discovery(config, &mut errors);
@@ -78,6 +80,42 @@ fn validate_server(config: &TribalConfig, errors: &mut Vec<String>) {
         errors.push(format!(
             "server.bind_address is not a valid socket address: {addr}"
         ));
+    }
+
+    if config.server.shutdown_deadline_ms == 0 {
+        errors.push("server.shutdown_deadline_ms must be greater than zero".into());
+    }
+
+    let sse = &config.server.sse;
+
+    if sse.max_connection_age_ms == 0 {
+        errors.push("server.sse.max_connection_age_ms must be greater than zero".into());
+    }
+
+    if sse.idle_timeout_ms == 0 {
+        errors.push("server.sse.idle_timeout_ms must be greater than zero".into());
+    }
+
+    if sse.keepalive_interval_ms == 0 {
+        errors.push("server.sse.keepalive_interval_ms must be greater than zero".into());
+    } else if sse.idle_timeout_ms > 0 && sse.keepalive_interval_ms >= sse.idle_timeout_ms {
+        errors.push(format!(
+            "server.sse.keepalive_interval_ms ({}) must be less than \
+             server.sse.idle_timeout_ms ({})",
+            sse.keepalive_interval_ms, sse.idle_timeout_ms
+        ));
+    }
+}
+
+fn validate_auth(config: &TribalConfig, errors: &mut Vec<String>) {
+    if config.auth.token_ttl_hours == 0 {
+        errors.push("auth.token_ttl_hours must be greater than zero".into());
+    }
+}
+
+fn validate_embedding(config: &TribalConfig, errors: &mut Vec<String>) {
+    if config.embedding.dimensions == 0 {
+        errors.push("embedding.dimensions must be greater than zero".into());
     }
 }
 
@@ -344,6 +382,71 @@ mod tests {
         let mut config = valid_config();
         config.discovery.similarity_threshold = 1.0;
         assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_token_ttl_hours() {
+        let mut config = valid_config();
+        config.auth.token_ttl_hours = 0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("auth.token_ttl_hours must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_shutdown_deadline() {
+        let mut config = valid_config();
+        config.server.shutdown_deadline_ms = 0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("server.shutdown_deadline_ms must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_embedding_dimensions() {
+        let mut config = valid_config();
+        config.embedding.dimensions = 0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("embedding.dimensions must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_sse_keepalive_interval() {
+        let mut config = valid_config();
+        config.server.sse.keepalive_interval_ms = 0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("server.sse.keepalive_interval_ms must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_sse_idle_timeout() {
+        let mut config = valid_config();
+        config.server.sse.idle_timeout_ms = 0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("server.sse.idle_timeout_ms must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_sse_max_connection_age() {
+        let mut config = valid_config();
+        config.server.sse.max_connection_age_ms = 0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("server.sse.max_connection_age_ms must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_keepalive_gte_idle_timeout() {
+        let mut config = valid_config();
+        config.server.sse.keepalive_interval_ms = 300_000;
+        config.server.sse.idle_timeout_ms = 300_000;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("keepalive_interval_ms"));
+        assert!(msg.contains("must be less than"));
     }
 
     #[test]
