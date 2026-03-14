@@ -15,7 +15,8 @@ mod validation;
 pub use error::ConfigError;
 pub use loader::{CliOverrides, ServerCliOverrides, load_config};
 pub use sections::{
-    AuthConfig, DatabaseConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation,
+    AuthConfig, DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL,
+    DatabaseConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation,
     InferenceConfig, LimitsConfig, LogFormat, LogOutput, LoggingConfig, PromptsConfig,
     ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig,
     TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,

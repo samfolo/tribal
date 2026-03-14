@@ -2,16 +2,14 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use tokio::sync::RwLock;
-use tribal_config::{
-    DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig,
-};
+use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
 use tribal_domain::{ProjectId, PromptVersionId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
 use tribal_test_utils::{
-    MockEmbeddingProvider, MockInferenceProvider, MockJobRepository,
-    MockKnowledgeItemRepository, MockPrincipalRepository, MockProjectRepository,
-    MockReferenceRepository, MockRelationRepository, MockRetrievalFeedbackRepository,
-    MockStandingRepository, MockTaskRepository, MockTriageResultRepository, lazy_pool,
+    MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
+    MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
+    MockRelationRepository, MockRetrievalFeedbackRepository, MockStandingRepository,
+    MockTaskRepository, MockTriageResultRepository, lazy_pool,
 };
 use typed_builder::TypedBuilder;
 
@@ -88,7 +86,7 @@ impl From<TestHandler> for TribalServerHandler {
         let state = Arc::new(AppState {
             pool_mcp: th.pool.clone(),
             pool_worker: th.pool,
-            instance_id: Arc::from("test-host-1-00000000-0000-0000-0000-000000000000"),
+            instance_id: Arc::from(TEST_INSTANCE_ID),
             active_prompt_versions: th.active_prompt_versions,
             provider_registry: Arc::new(
                 ProviderRegistry::new(Vec::new())
@@ -98,10 +96,10 @@ impl From<TestHandler> for TribalServerHandler {
             extraction_provider: default_inference_provider(),
             triage_provider: default_inference_provider(),
             relation_provider: default_inference_provider(),
-            embedding_key: test_provider_key("ollama", "http://localhost:11434"),
-            extraction_key: test_provider_key("ollama", "http://localhost:11434"),
-            triage_key: test_provider_key("ollama", "http://localhost:11434"),
-            relation_key: test_provider_key("ollama", "http://localhost:11434"),
+            embedding_key: test_provider_key(),
+            extraction_key: test_provider_key(),
+            triage_key: test_provider_key(),
+            relation_key: test_provider_key(),
             worker_config: WorkerConfig::default(),
             server_config: Arc::new(ServerConfig::default()),
             resolved_project: None,
@@ -142,13 +140,10 @@ fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
     }))
 }
 
-fn test_provider_key(
-    provider_kind: &str,
-    base_url: &str,
-) -> tribal_inference::ProviderKey {
+fn test_provider_key() -> tribal_inference::ProviderKey {
     tribal_inference::ProviderKey::new(
-        provider_kind,
-        base_url,
+        TEST_PROVIDER_KIND,
+        DEFAULT_OLLAMA_BASE_URL,
         tribal_inference::RequestClass::Inference,
     )
     .expect("test provider key construction must not fail")
