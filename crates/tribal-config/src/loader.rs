@@ -164,7 +164,10 @@ mod tests {
         Jail::expect_with(|jail| {
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None).unwrap();
-            assert_eq!(config, TribalConfig::default());
+
+            let mut expected = TribalConfig::default();
+            expand_paths(&mut expected);
+            assert_eq!(config, expected);
             Ok(())
         });
     }
