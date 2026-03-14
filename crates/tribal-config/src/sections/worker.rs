@@ -99,8 +99,7 @@ impl WorkerConfig {
         }
         if self.heartbeat_interval_ms >= self.task_timeout_ms {
             errors.push(
-                "worker.heartbeat_interval_ms must be less than worker.task_timeout_ms"
-                    .into(),
+                "worker.heartbeat_interval_ms must be less than worker.task_timeout_ms".into(),
             );
         }
         if self.reclaim_interval_ms < self.poll_interval_ms {
@@ -262,11 +261,7 @@ mod tests {
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("heartbeat_interval_ms"))
-        );
+        assert!(errors.iter().any(|e| e.contains("heartbeat_interval_ms")));
     }
 
     #[test]
@@ -277,11 +272,7 @@ mod tests {
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("heartbeat_interval_ms"))
-        );
+        assert!(errors.iter().any(|e| e.contains("heartbeat_interval_ms")));
     }
 
     #[test]

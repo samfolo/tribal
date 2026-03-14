@@ -4,6 +4,8 @@
 //! and consumed by the startup sequence to create the MCP and worker
 //! connection pools.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the database connection pools.
@@ -30,22 +32,43 @@ pub struct DatabaseConfig {
     #[serde(default = "default_pool_worker_max_connections")]
     pub pool_worker_max_connections: u32,
 
-    /// Seconds to wait when acquiring a connection before returning an error.
-    #[serde(default = "default_acquire_timeout_seconds")]
-    pub acquire_timeout_seconds: u64,
+    /// Milliseconds to wait when acquiring a connection before returning an
+    /// error.
+    #[serde(default = "default_acquire_timeout_ms")]
+    pub acquire_timeout_ms: u64,
 
-    /// Statement timeout in seconds for MCP pool connections.
-    #[serde(default = "default_statement_timeout_mcp_seconds")]
-    pub statement_timeout_mcp_seconds: u64,
+    /// Statement timeout in milliseconds for MCP pool connections.
+    #[serde(default = "default_statement_timeout_mcp_ms")]
+    pub statement_timeout_mcp_ms: u64,
 
-    /// Statement timeout in seconds for worker pool connections.
-    #[serde(default = "default_statement_timeout_worker_seconds")]
-    pub statement_timeout_worker_seconds: u64,
+    /// Statement timeout in milliseconds for worker pool connections.
+    #[serde(default = "default_statement_timeout_worker_ms")]
+    pub statement_timeout_worker_ms: u64,
 
     /// Maximum connection attempts during startup (used by the startup
     /// sequence, not by this module directly).
     #[serde(default = "default_max_connect_attempts")]
     pub max_connect_attempts: u32,
+}
+
+impl DatabaseConfig {
+    /// Returns the acquire timeout as a [`Duration`].
+    #[must_use]
+    pub fn acquire_timeout(&self) -> Duration {
+        Duration::from_millis(self.acquire_timeout_ms)
+    }
+
+    /// Returns the MCP statement timeout as a [`Duration`].
+    #[must_use]
+    pub fn statement_timeout_mcp(&self) -> Duration {
+        Duration::from_millis(self.statement_timeout_mcp_ms)
+    }
+
+    /// Returns the worker statement timeout as a [`Duration`].
+    #[must_use]
+    pub fn statement_timeout_worker(&self) -> Duration {
+        Duration::from_millis(self.statement_timeout_worker_ms)
+    }
 }
 
 const fn default_pool_mcp_max_connections() -> u32 {
@@ -56,16 +79,16 @@ const fn default_pool_worker_max_connections() -> u32 {
     16
 }
 
-const fn default_acquire_timeout_seconds() -> u64 {
-    5
+const fn default_acquire_timeout_ms() -> u64 {
+    5_000
 }
 
-const fn default_statement_timeout_mcp_seconds() -> u64 {
-    10
+const fn default_statement_timeout_mcp_ms() -> u64 {
+    10_000
 }
 
-const fn default_statement_timeout_worker_seconds() -> u64 {
-    60
+const fn default_statement_timeout_worker_ms() -> u64 {
+    60_000
 }
 
 const fn default_max_connect_attempts() -> u32 {
@@ -78,9 +101,9 @@ impl Default for DatabaseConfig {
             url: String::new(),
             pool_mcp_max_connections: default_pool_mcp_max_connections(),
             pool_worker_max_connections: default_pool_worker_max_connections(),
-            acquire_timeout_seconds: default_acquire_timeout_seconds(),
-            statement_timeout_mcp_seconds: default_statement_timeout_mcp_seconds(),
-            statement_timeout_worker_seconds: default_statement_timeout_worker_seconds(),
+            acquire_timeout_ms: default_acquire_timeout_ms(),
+            statement_timeout_mcp_ms: default_statement_timeout_mcp_ms(),
+            statement_timeout_worker_ms: default_statement_timeout_worker_ms(),
             max_connect_attempts: default_max_connect_attempts(),
         }
     }
@@ -96,9 +119,9 @@ mod tests {
         assert!(config.url.is_empty());
         assert_eq!(config.pool_mcp_max_connections, 8);
         assert_eq!(config.pool_worker_max_connections, 16);
-        assert_eq!(config.acquire_timeout_seconds, 5);
-        assert_eq!(config.statement_timeout_mcp_seconds, 10);
-        assert_eq!(config.statement_timeout_worker_seconds, 60);
+        assert_eq!(config.acquire_timeout_ms, 5_000);
+        assert_eq!(config.statement_timeout_mcp_ms, 10_000);
+        assert_eq!(config.statement_timeout_worker_ms, 60_000);
         assert_eq!(config.max_connect_attempts, 5);
     }
 
@@ -111,9 +134,23 @@ mod tests {
         assert_eq!(config.url, "postgres://localhost/tribal");
         assert_eq!(config.pool_mcp_max_connections, 8);
         assert_eq!(config.pool_worker_max_connections, 16);
-        assert_eq!(config.acquire_timeout_seconds, 5);
-        assert_eq!(config.statement_timeout_mcp_seconds, 10);
-        assert_eq!(config.statement_timeout_worker_seconds, 60);
+        assert_eq!(config.acquire_timeout_ms, 5_000);
+        assert_eq!(config.statement_timeout_mcp_ms, 10_000);
+        assert_eq!(config.statement_timeout_worker_ms, 60_000);
         assert_eq!(config.max_connect_attempts, 5);
+    }
+
+    #[test]
+    fn test_duration_conversions() {
+        let config = DatabaseConfig::default();
+        assert_eq!(config.acquire_timeout(), Duration::from_millis(5_000));
+        assert_eq!(
+            config.statement_timeout_mcp(),
+            Duration::from_millis(10_000)
+        );
+        assert_eq!(
+            config.statement_timeout_worker(),
+            Duration::from_millis(60_000)
+        );
     }
 }

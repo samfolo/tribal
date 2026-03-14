@@ -411,7 +411,7 @@ impl Worker {
             }
             () = tokio::time::sleep(self.config.task_timeout()) => {
                 Err(StageError::Timeout {
-                    timeout_millis: self.config.task_timeout_millis,
+                    timeout_millis: self.config.task_timeout_ms,
                 })
             }
             Ok(()) = &mut heartbeat.ownership_lost_rx => {
