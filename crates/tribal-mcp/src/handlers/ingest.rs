@@ -6,8 +6,7 @@ use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
     service::{RequestContext, RoleServer},
 };
-use sqlx::{PgConnection, PgPool};
-use tokio::sync::RwLock;
+use sqlx::PgConnection;
 use tribal_db::{DbError, NewJob, NewTask};
 use tribal_domain::{JobId, McpErrorCode, ProjectId, TaskType};
 
@@ -16,7 +15,6 @@ use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
     mapping::{McpIngestRequest, McpIngestResponse},
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
-    session::SessionContext,
 };
 
 // ---------------------------------------------------------------------------
@@ -81,14 +79,7 @@ impl TribalServerHandler {
         params: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Self::apply_ingest(
-            &self.pool,
-            &self.repositories,
-            &self.session,
-            &self.active_prompt_versions,
-            params,
-        )
-        .await
+        self.apply_ingest(params).await
     }
 
     /// Core logic for `tribal_ingest`, separated from the outer handler
@@ -100,18 +91,12 @@ impl TribalServerHandler {
     /// domain logic. Domain errors are returned as error `CallToolResult`
     /// values via `IntoMcpError` / `IntoCallToolResult`. Only
     /// protocol-level errors (malformed JSON) return `Err(McpError)`.
-    async fn apply_ingest(
-        pool: &PgPool,
-        repositories: &ConnectionRepositories,
-        session: &RwLock<SessionContext>,
-        active_prompt_versions: &RwLock<ActivePromptVersions>,
-        params: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    async fn apply_ingest(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
         let request: McpIngestRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
         let (session_project_id, principal_key, actor_provider, actor_model) = {
-            let guard = session.read().await;
+            let guard = self.session.read().await;
             (
                 guard.project.as_ref().map(|p| p.id),
                 guard.principal_key.clone(),
@@ -141,7 +126,7 @@ impl TribalServerHandler {
         let source_context =
             build_source_context(actor_provider.as_deref(), actor_model.as_deref());
 
-        let active_prompts = active_prompt_versions.read().await.clone();
+        let active_prompts = self.active_prompt_versions.read().await.clone();
 
         let ingest_params = IngestParams {
             project_id,
@@ -151,12 +136,12 @@ impl TribalServerHandler {
             active_prompts,
         };
 
-        let mut tx = match begin_transaction(pool).await {
+        let mut tx = match begin_transaction(&self.pool).await {
             Ok(tx) => tx,
             Err(call_result) => return Ok(call_result),
         };
 
-        let result = match execute_ingest(&mut tx, repositories, ingest_params).await {
+        let result = match execute_ingest(&mut tx, &self.repositories, ingest_params).await {
             Ok(r) => r,
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
@@ -260,18 +245,14 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
-    use tokio::sync::RwLock;
     use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId};
     use tribal_test_utils::{
         MockJobRepository, MockPrincipalRepository, MockProjectRepository, MockTaskRepository,
-        a_job, a_principal, a_project, a_task, lazy_pool, test_context,
+        a_job, a_principal, a_project, a_task, test_context,
     };
 
     use super::*;
-    use crate::{
-        session::{SessionContext, SessionProject},
-        test_utils::test_repositories,
-    };
+    use crate::test_utils::{TestHandler, session_with_project, test_repositories};
 
     // -- Constants ---------------------------------------------------------
 
@@ -289,26 +270,6 @@ mod tests {
             relation_system_prompt_version_id: PromptVersionId::new(),
             relation_user_prompt_version_id: PromptVersionId::new(),
         }
-    }
-
-    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-        Arc::new(RwLock::new(test_active_prompt_versions()))
-    }
-
-    fn session_without_project() -> Arc<RwLock<SessionContext>> {
-        Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())))
-    }
-
-    fn session_with_project() -> Arc<RwLock<SessionContext>> {
-        let project = SessionProject {
-            id: ProjectId::new(),
-            name: "tribal".into(),
-            git_remote: "git@github.com:user/tribal.git".into(),
-        };
-        Arc::new(RwLock::new(SessionContext::new(
-            Some(project),
-            "user:test".into(),
-        )))
     }
 
     async fn call_execute(
@@ -356,40 +317,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_ingest_malformed_json_returns_protocol_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let session = session_without_project();
-        let prompts = test_prompt_versions();
+        let handler = TestHandler::builder().build();
 
-        let err = TribalServerHandler::apply_ingest(
-            &pool,
-            &repos,
-            &session,
-            &prompts,
-            serde_json::json!({"content": 123}),
-        )
-        .await
-        .expect_err("should return Err(McpError) for malformed params");
+        let err = handler
+            .apply_ingest(serde_json::json!({"content": 123}))
+            .await
+            .expect_err("should return Err(McpError) for malformed params");
 
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
     async fn test_apply_ingest_no_project_returns_failed_precondition() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let session = session_without_project();
-        let prompts = test_prompt_versions();
+        let handler = TestHandler::builder().build();
 
-        let result = TribalServerHandler::apply_ingest(
-            &pool,
-            &repos,
-            &session,
-            &prompts,
-            serde_json::json!({"content": "some knowledge"}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_ingest(serde_json::json!({"content": "some knowledge"}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -398,21 +343,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_ingest_invalid_project_prefix_returns_application_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let session = session_without_project();
-        let prompts = test_prompt_versions();
+        let handler = TestHandler::builder().build();
 
         let wrong_prefix_id = KnowledgeItemId::new().to_string();
-        let result = TribalServerHandler::apply_ingest(
-            &pool,
-            &repos,
-            &session,
-            &prompts,
-            serde_json::json!({"content": "some knowledge", "project_id": wrong_prefix_id}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_ingest(
+                serde_json::json!({"content": "some knowledge", "project_id": wrong_prefix_id}),
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -426,20 +365,14 @@ mod tests {
     /// `failed_precondition` to confirm project resolution succeeded.
     #[tokio::test]
     async fn test_apply_ingest_uses_session_project_when_request_omits_it() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let session = session_with_project();
-        let prompts = test_prompt_versions();
+        let handler = TestHandler::builder()
+            .session(session_with_project())
+            .build();
 
-        let result = TribalServerHandler::apply_ingest(
-            &pool,
-            &repos,
-            &session,
-            &prompts,
-            serde_json::json!({"content": "some knowledge"}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_ingest(serde_json::json!({"content": "some knowledge"}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);

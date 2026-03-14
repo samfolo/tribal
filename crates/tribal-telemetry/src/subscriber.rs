@@ -22,8 +22,7 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 ///
 /// Builds a layered subscriber stack based on the given configuration:
 ///
-/// 1. **Filter layer** — `EnvFilter` parsed from the `TRIBAL_LOG`
-///    environment variable (if set) or `config.level`.
+/// 1. **Filter layer** — `EnvFilter` parsed from `config.level`.
 /// 2. **Format layer** — JSON or pretty, depending on `config.format`.
 /// 3. **Output layer** — stderr or file, depending on `config.output`.
 ///
@@ -46,7 +45,7 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 /// # Panics
 ///
 /// Does not panic.  All failure modes return `Err`.
-pub fn init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
+pub fn init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
     if INITIALISED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -67,14 +66,10 @@ pub fn init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, Telemetr
 ///
 /// Separated from [`init_subscriber`] so that the `INITIALISED` flag can
 /// be reset cleanly on failure without duplicating the guard logic.
-fn try_init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
-    // 1. Determine filter directive: TRIBAL_LOG env var overrides config.
-    let directive = std::env::var("TRIBAL_LOG").unwrap_or(config.level);
-
-    // 2. Build EnvFilter from the directive string.
-    let env_filter = EnvFilter::try_new(&directive).map_err(|source| {
+fn try_init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
+    let env_filter = EnvFilter::try_new(&config.level).map_err(|source| {
         TelemetryError::InvalidFilterDirective {
-            directive: directive.clone(),
+            directive: config.level.clone(),
             source,
         }
     })?;
@@ -159,7 +154,7 @@ mod tests {
             level: "not valid [[".to_owned(),
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(config);
+        let result = init_subscriber(&config);
 
         assert!(
             matches!(result, Err(TelemetryError::InvalidFilterDirective { .. })),
@@ -181,7 +176,7 @@ mod tests {
             file_path: None,
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(config);
+        let result = init_subscriber(&config);
 
         assert!(
             matches!(result, Err(TelemetryError::FileOutputMissingPath)),
@@ -203,7 +198,7 @@ mod tests {
             file_path: Some("/nonexistent/dir/tribal.log".to_owned()),
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(config);
+        let result = init_subscriber(&config);
 
         assert!(
             matches!(result, Err(TelemetryError::FileCreation { .. })),
@@ -225,13 +220,13 @@ mod tests {
             level: "not valid [[".to_owned(),
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(bad_config);
+        let result = init_subscriber(&bad_config);
         assert!(result.is_err());
 
         // Flag was reset — a subsequent call with valid config is not
         // rejected as `SubscriberAlreadyInitialised`.
         let good_config = LoggingConfig::default();
-        let result = init_subscriber(good_config);
+        let result = init_subscriber(&good_config);
 
         // We expect `SetGlobalDefault` (the unit test process may already
         // have a subscriber) rather than `SubscriberAlreadyInitialised`.

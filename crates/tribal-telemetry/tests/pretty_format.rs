@@ -18,7 +18,7 @@ fn test_pretty_format_produces_non_json_output() {
         include_llm_content: false,
     };
 
-    let guard = tribal_telemetry::init_subscriber(config).expect("init should succeed");
+    let guard = tribal_telemetry::init_subscriber(&config).expect("init should succeed");
 
     tracing::info!(target: "pretty_test", "human readable event");
 

@@ -196,7 +196,7 @@ impl Worker {
                 });
             }
 
-            let include_llm_content = self.config().include_llm_content;
+            let include_llm_content = self.include_llm_content();
 
             let ctx = self.load_relation_data(job).await?;
 

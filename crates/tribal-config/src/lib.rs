@@ -1,0 +1,59 @@
+//! Configuration loading and validation for the Tribal server.
+//!
+//! Merges four sources in precedence order:
+//! compiled defaults → YAML file → environment variables → CLI flags.
+
+#![deny(warnings)]
+#![warn(clippy::pedantic)]
+
+mod error;
+mod loader;
+mod sections;
+mod validation;
+
+pub use error::ConfigError;
+pub use loader::{CliOverrides, ServerCliOverrides, load_config};
+pub use sections::{
+    AuthConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation, InferenceConfig,
+    LimitsConfig, PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
+    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig, VERSION,
+};
+pub use validation::validate;
+
+// ---------------------------------------------------------------------------
+// Test utilities
+// ---------------------------------------------------------------------------
+
+/// Generates a serde roundtrip test for an enum with a compile-time
+/// exhaustiveness check.
+///
+/// If a variant is added to the enum but not listed in the macro invocation,
+/// the embedded `match` becomes non-exhaustive and the build fails.
+#[cfg(test)]
+macro_rules! enum_serde_tests {
+    ($test_name:ident, $type:ty { $($variant:path => $json:literal),+ $(,)? }) => {
+        #[test]
+        fn $test_name() {
+            // Compile-time exhaustiveness guard: every variant must be listed.
+            #[allow(dead_code)]
+            fn check_exhaustiveness(v: $type) {
+                match v {
+                    $( $variant => {} )+
+                }
+            }
+
+            let variants: &[($type, &str)] = &[
+                $( ($variant, $json), )+
+            ];
+            for &(variant, expected_json) in variants {
+                let json = serde_json::to_string(&variant).expect("should serialise");
+                assert_eq!(json, format!("\"{expected_json}\""), "serialised form of {variant:?}");
+                let parsed: $type = serde_json::from_str(&json).expect("should deserialise");
+                assert_eq!(parsed, variant);
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+pub(crate) use enum_serde_tests;

@@ -7,6 +7,7 @@ members = [
     "crates/tribal-worker",
     "crates/tribal-mcp",
     "crates/tribal-telemetry",
+    "crates/tribal-config",
     "crates/tribal-server",
     "crates/tribal-test-utils",
 ]
@@ -87,6 +88,10 @@ futures = "0.3"
 # Macro utilities
 pastey = "0.2"
 
+# Configuration
+figment = { version = "0.10", features = ["yaml", "env"] }
+shellexpand = "3"
+
 # CLI argument parsing
 clap = { version = "4", features = ["derive", "env", "suggestions"] }
 
@@ -102,4 +107,5 @@ tribal-inference = { path = "crates/tribal-inference" }
 tribal-worker = { path = "crates/tribal-worker" }
 tribal-mcp = { path = "crates/tribal-mcp" }
 tribal-telemetry = { path = "crates/tribal-telemetry" }
+tribal-config = { path = "crates/tribal-config" }
 tribal-test-utils = { path = "crates/tribal-test-utils" }

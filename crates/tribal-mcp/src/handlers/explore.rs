@@ -7,7 +7,7 @@ use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
     service::{RequestContext, RoleServer},
 };
-use sqlx::{PgConnection, PgPool};
+use sqlx::PgConnection;
 use strum::IntoEnumIterator;
 use tribal_db::{DbError, TraversalDirection};
 use tribal_domain::{
@@ -29,10 +29,6 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const DEFAULT_DIRECTION: Direction = Direction::Inbound;
-const DEFAULT_DEPTH: u32 = 1;
-const MAX_DEPTH: u32 = 3;
-const DEFAULT_LIMIT: u32 = 20;
-const MAX_LIMIT: u32 = 100;
 const MAX_TRACE_ID_LEN: usize = 64;
 
 // ---------------------------------------------------------------------------
@@ -99,7 +95,7 @@ impl TribalServerHandler {
         params: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Self::apply_explore(&self.pool, &self.repositories, params).await
+        self.apply_explore(params).await
     }
 
     /// Core logic for `tribal_explore`, separated from the outer handler
@@ -110,11 +106,7 @@ impl TribalServerHandler {
     /// returned as error `CallToolResult` values via `IntoMcpError` /
     /// `IntoCallToolResult`. Only protocol-level errors (malformed JSON)
     /// return `Err(McpError)`.
-    async fn apply_explore(
-        pool: &PgPool,
-        repositories: &ConnectionRepositories,
-        params: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    async fn apply_explore(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
         let request: McpExploreRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
@@ -171,21 +163,26 @@ impl TribalServerHandler {
 
         // -- Apply defaults and validate depth/limit -------------------------
 
-        let depth = request.depth.unwrap_or(DEFAULT_DEPTH);
-        if !(1..=MAX_DEPTH).contains(&depth) {
+        let default_depth = self.config.exploration.default_depth;
+        let max_depth = self.config.exploration.max_depth;
+        let default_limit = self.config.exploration.default_limit;
+        let max_limit = self.config.exploration.max_limit;
+
+        let depth = request.depth.unwrap_or(default_depth);
+        if !(1..=max_depth).contains(&depth) {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: format!("depth must be between 1 and {MAX_DEPTH}, got {depth}"),
+                message: format!("depth must be between 1 and {max_depth}, got {depth}"),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
         }
 
-        let limit = request.limit.unwrap_or(DEFAULT_LIMIT);
-        if !(1..=MAX_LIMIT).contains(&limit) {
+        let limit = request.limit.unwrap_or(default_limit);
+        if !(1..=max_limit).contains(&limit) {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: format!("limit must be between 1 and {MAX_LIMIT}, got {limit}"),
+                message: format!("limit must be between 1 and {max_limit}, got {limit}"),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
@@ -209,7 +206,7 @@ impl TribalServerHandler {
 
         // -- Acquire connection and execute ----------------------------------
 
-        let mut conn = match acquire_connection(pool).await {
+        let mut conn = match acquire_connection(&self.pool).await {
             Ok(c) => c,
             Err(call_result) => return Ok(call_result),
         };
@@ -224,7 +221,7 @@ impl TribalServerHandler {
             include_references: request.include_references.unwrap_or(false),
         };
 
-        let result = match execute_explore(&mut conn, repositories, explore_params).await {
+        let result = match execute_explore(&mut conn, &self.repositories, explore_params).await {
             Ok(r) => r,
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
@@ -436,11 +433,14 @@ mod tests {
     use tribal_test_utils::{
         MockKnowledgeItemRepository, MockPrincipalRepository, MockReferenceRepository,
         MockRelationRepository, MockStandingRepository, a_knowledge_item, a_principal, a_reference,
-        a_standing, lazy_pool, test_context,
+        a_standing, test_context,
     };
 
     use super::*;
-    use crate::test_utils::test_repositories;
+    use crate::{
+        config::HandlerConfig,
+        test_utils::{TestHandler, test_repositories},
+    };
 
     // -- Constants ---------------------------------------------------------
 
@@ -480,12 +480,13 @@ mod tests {
     }
 
     fn default_params(anchor_id: KnowledgeItemId) -> ExploreParams {
+        let config = HandlerConfig::default();
         ExploreParams {
             anchor_id,
             direction: Direction::Inbound,
             relation_types: None,
-            depth: DEFAULT_DEPTH,
-            limit: DEFAULT_LIMIT,
+            depth: config.exploration.default_depth,
+            limit: config.exploration.default_limit,
             include_standing: false,
             include_references: false,
         }
@@ -1207,30 +1208,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_returns_invalid_params() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
 
-        let err =
-            TribalServerHandler::apply_explore(&pool, &repos, serde_json::json!({"item_id": 123}))
-                .await
-                .expect_err("should return Err(McpError) for malformed params");
+        let err = handler
+            .apply_explore(serde_json::json!({"item_id": 123}))
+            .await
+            .expect_err("should return Err(McpError) for malformed params");
 
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
     async fn test_invalid_item_id_prefix() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
         let wrong_id = ProjectId::new().to_string();
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": wrong_id}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": wrong_id}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -1239,17 +1235,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_direction_returns_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": ki_id, "direction": "sideways"}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": ki_id, "direction": "sideways"}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -1258,17 +1250,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_relation_type_returns_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": ki_id, "relation_types": ["causes"]}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": ki_id, "relation_types": ["causes"]}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -1277,17 +1265,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_depth_below_one_is_invalid() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": ki_id, "depth": 0}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": ki_id, "depth": 0}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -1296,17 +1280,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_depth_above_max_is_invalid() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
+        let max_depth = HandlerConfig::default().exploration.max_depth;
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": ki_id, "depth": MAX_DEPTH + 1}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": ki_id, "depth": max_depth + 1}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -1315,17 +1296,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_below_one_is_invalid() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": ki_id, "limit": 0}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": ki_id, "limit": 0}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -1334,17 +1311,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_above_max_is_invalid() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
+        let max_limit = HandlerConfig::default().exploration.max_limit;
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": ki_id, "limit": MAX_LIMIT + 1}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": ki_id, "limit": max_limit + 1}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -1364,13 +1338,17 @@ mod tests {
             exact: true,
         };
 
+        let config = HandlerConfig::default();
+        let expected_depth = config.exploration.default_depth;
+        let expected_limit = config.exploration.default_limit;
+
         let relation_mock = MockRelationRepository::builder()
             .when_traverse(move |args| {
                 let (id, dir, depth, limit, _) = args;
                 *id == anchor_id
                     && *dir == Direction::Inbound
-                    && *depth == DEFAULT_DEPTH
-                    && *limit == DEFAULT_LIMIT
+                    && *depth == expected_depth
+                    && *limit == expected_limit
             })
             .respond_with(traversal, None)
             .build();
@@ -1392,13 +1370,15 @@ mod tests {
                 .build(),
         );
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": anchor_id.to_string()}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
+
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": anchor_id.to_string()}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
     }
@@ -1423,16 +1403,18 @@ mod tests {
                 .build(),
         );
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
+
+        let result = handler
+            .apply_explore(serde_json::json!({
                 "item_id": anchor_id.to_string(),
                 "session_trace_id": "my-trace-42"
-            }),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+            }))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["trace_id"], "my-trace-42");
@@ -1458,13 +1440,15 @@ mod tests {
                 .build(),
         );
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": anchor_id.to_string()}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
+
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": anchor_id.to_string()}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         let trace_id = structured["trace_id"].as_str().expect("trace_id is string");
@@ -1473,17 +1457,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_trace_id_empty_string_rejected() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": ki_id, "session_trace_id": ""}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": ki_id, "session_trace_id": ""}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -1492,18 +1472,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_trace_id_too_long_rejected() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
         let long_trace = "x".repeat(MAX_TRACE_ID_LEN + 1);
 
-        let result = TribalServerHandler::apply_explore(
-            &pool,
-            &repos,
-            serde_json::json!({"item_id": ki_id, "session_trace_id": long_trace}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_explore(serde_json::json!({"item_id": ki_id, "session_trace_id": long_trace}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);

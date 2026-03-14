@@ -4,23 +4,22 @@
 //! consumed by [`init_subscriber`](crate::init_subscriber) to build the
 //! tracing subscriber stack.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Configuration for the tracing subscriber.
 ///
 /// Loaded from the application configuration file.  All fields have
 /// sensible defaults for local development (info level, JSON format,
 /// stderr output).
-///
-/// The `TRIBAL_LOG` environment variable, when set, overrides the
-/// [`level`](LoggingConfig::level) field entirely.  This allows runtime
-/// log level changes without modifying the configuration file.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     /// Tracing filter directive string.
     ///
     /// Supports per-module granularity, e.g. `"info,tribal_db=debug"`.
-    /// Defaults to `"info"`.
+    /// Defaults to `"info"`.  The `TRIBAL_LOG` environment variable,
+    /// mapped by the configuration loader, takes precedence over a
+    /// YAML-supplied value for this field.
     #[serde(default = "default_level")]
     pub level: String,
 
@@ -72,7 +71,7 @@ impl Default for LoggingConfig {
 }
 
 /// Output format for log lines.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogFormat {
     /// Structured JSON output, one object per line (JSONL).
@@ -90,7 +89,7 @@ pub enum LogFormat {
 }
 
 /// Output destination for log lines.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogOutput {
     /// Write log output to standard error.

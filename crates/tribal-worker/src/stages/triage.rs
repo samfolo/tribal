@@ -405,7 +405,7 @@ impl Worker {
         similar_items: &[SimilarItemContext],
         deadline: tokio::time::Instant,
     ) -> Result<(TriageClassification, tribal_inference::CompletionResponse), StageError> {
-        let include_llm_content = self.config().include_llm_content;
+        let include_llm_content = self.include_llm_content();
 
         let request = assemble_triage_prompt(
             system_template,
