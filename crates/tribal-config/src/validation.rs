@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 
 use crate::{
     error::ConfigError,
-    sections::{ProviderKind, TransportKind, TribalConfig},
+    sections::{TransportKind, TribalConfig},
 };
 
 // ---------------------------------------------------------------------------
@@ -72,12 +72,12 @@ fn validate_server(config: &TribalConfig, errors: &mut Vec<String>) {
         errors.push("server.bind_address cannot be set when server.transport is stdio".into());
     }
 
-    if let Some(ref addr) = config.server.bind_address {
-        if addr.parse::<SocketAddr>().is_err() {
-            errors.push(format!(
-                "server.bind_address is not a valid socket address: {addr}"
-            ));
-        }
+    if let Some(ref addr) = config.server.bind_address
+        && addr.parse::<SocketAddr>().is_err()
+    {
+        errors.push(format!(
+            "server.bind_address is not a valid socket address: {addr}"
+        ));
     }
 }
 
@@ -192,6 +192,7 @@ fn validate_exploration(config: &TribalConfig, errors: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProviderKind;
 
     fn valid_config() -> TribalConfig {
         let mut config = TribalConfig::default();
