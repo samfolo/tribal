@@ -10,6 +10,7 @@ publish.workspace = true
 test-helpers = []
 
 [dependencies]
+tribal-config.workspace = true
 tribal-domain.workspace = true
 sqlx = { workspace = true, features = ["migrate", "macros"] }
 pgvector.workspace = true
