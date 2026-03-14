@@ -17,5 +17,6 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+figment = { workspace = true, features = ["test"] }
 serde_json.workspace = true
 tempfile.workspace = true
