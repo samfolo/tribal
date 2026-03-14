@@ -289,6 +289,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        config::HandlerConfig,
         session::{SESSION_RESOURCE_URI, SessionContext, SessionProject},
         test_utils::test_repositories,
     };
@@ -318,6 +319,7 @@ mod tests {
             test_embedding_provider(),
             test_prompt_versions(),
             session,
+            HandlerConfig::default(),
         )
     }
 
@@ -334,6 +336,7 @@ mod tests {
             test_embedding_provider(),
             test_prompt_versions(),
             session,
+            HandlerConfig::default(),
         )
     }
 

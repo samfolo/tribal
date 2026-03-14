@@ -9,7 +9,7 @@ use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
     service::{RequestContext, RoleServer},
 };
-use sqlx::{PgConnection, PgPool};
+use sqlx::PgConnection;
 use tribal_db::DbError;
 use tribal_domain::{
     KnowledgeItem, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, Standing,
@@ -84,7 +84,7 @@ impl TribalServerHandler {
         params: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Self::apply_get_item(&self.pool, &self.repositories, params).await
+        self.apply_get_item(params).await
     }
 
     /// Core logic for `tribal_get_item`, separated from the outer handler
@@ -96,8 +96,7 @@ impl TribalServerHandler {
     /// `IntoCallToolResult`. Only protocol-level errors (malformed JSON)
     /// return `Err(McpError)`.
     async fn apply_get_item(
-        pool: &PgPool,
-        repositories: &ConnectionRepositories,
+        &self,
         params: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
         let request: McpGetItemRequest =
@@ -138,7 +137,7 @@ impl TribalServerHandler {
 
         // -- Acquire connection and execute ------------------------------------
 
-        let mut conn = match acquire_connection(pool).await {
+        let mut conn = match acquire_connection(&self.pool).await {
             Ok(c) => c,
             Err(call_result) => return Ok(call_result),
         };
@@ -149,7 +148,7 @@ impl TribalServerHandler {
             include_references: request.include_references.unwrap_or(false),
         };
 
-        let result = match execute_get_item(&mut conn, repositories, get_item_params).await {
+        let result = match execute_get_item(&mut conn, &self.repositories, get_item_params).await {
             Ok(r) => r,
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
@@ -329,15 +328,21 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::{ErrorCode, RawContent};
-    use tribal_domain::ProjectId;
+    use tokio::sync::RwLock;
+    use tribal_domain::{ProjectId, PromptVersionId};
     use tribal_test_utils::{
-        MockKnowledgeItemRepository, MockPrincipalRepository, MockReferenceRepository,
-        MockStandingRepository, a_knowledge_item, a_principal, a_reference, a_standing, lazy_pool,
-        test_context,
+        MockEmbeddingProvider, MockKnowledgeItemRepository, MockPrincipalRepository,
+        MockReferenceRepository, MockStandingRepository, a_knowledge_item, a_principal, a_reference,
+        a_standing, lazy_pool, test_context,
     };
 
     use super::*;
-    use crate::test_utils::test_repositories;
+    use crate::{
+        config::HandlerConfig,
+        server_handler::{ActivePromptVersions, TribalServerHandler},
+        session::SessionContext,
+        test_utils::test_repositories,
+    };
 
     // -- Constants ---------------------------------------------------------
 
@@ -352,6 +357,28 @@ mod tests {
 
     fn test_principal(id: PrincipalId, key: &str) -> tribal_domain::Principal {
         a_principal().id(id).principal_key(key.to_owned()).build()
+    }
+
+    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
+        Arc::new(RwLock::new(ActivePromptVersions {
+            extraction_system_prompt_version_id: PromptVersionId::new(),
+            extraction_user_prompt_version_id: PromptVersionId::new(),
+            triage_system_prompt_version_id: PromptVersionId::new(),
+            triage_user_prompt_version_id: PromptVersionId::new(),
+            relation_system_prompt_version_id: PromptVersionId::new(),
+            relation_user_prompt_version_id: PromptVersionId::new(),
+        }))
+    }
+
+    fn test_handler_with_repos(repos: ConnectionRepositories) -> TribalServerHandler {
+        TribalServerHandler::new(
+            lazy_pool(),
+            repos,
+            Arc::new(MockEmbeddingProvider::builder().build()),
+            test_prompt_versions(),
+            SessionContext::new(None, "user:test".into()),
+            HandlerConfig::default(),
+        )
     }
 
     fn default_params(item_ids: Vec<KnowledgeItemId>) -> GetItemParams {
@@ -659,15 +686,21 @@ mod tests {
         let found_str = ki_id_found.to_string();
         let missing_str = ki_id_missing.to_string();
 
-        let result = TribalServerHandler::apply_get_item(
-            &pool,
-            &repos,
-            serde_json::json!({
+        let handler = TribalServerHandler::new(
+            pool,
+            repos,
+            Arc::new(MockEmbeddingProvider::builder().build()),
+            test_prompt_versions(),
+            SessionContext::new(None, "user:test".into()),
+            HandlerConfig::default(),
+        );
+
+        let result = handler
+            .apply_get_item(serde_json::json!({
                 "item_ids": [found_str, missing_str],
-            }),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+            }))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
 
@@ -694,13 +727,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_item_ids_returns_application_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = test_handler_with_repos(test_repositories());
 
-        let result =
-            TribalServerHandler::apply_get_item(&pool, &repos, serde_json::json!({"item_ids": []}))
-                .await
-                .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_get_item(serde_json::json!({"item_ids": []}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -715,20 +747,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_too_many_item_ids_returns_application_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = test_handler_with_repos(test_repositories());
 
         let ids: Vec<String> = (0..21)
             .map(|_| KnowledgeItemId::new().to_string())
             .collect();
 
-        let result = TribalServerHandler::apply_get_item(
-            &pool,
-            &repos,
-            serde_json::json!({"item_ids": ids}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_get_item(serde_json::json!({"item_ids": ids}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -743,17 +771,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_prefix_returns_application_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = test_handler_with_repos(test_repositories());
         let wrong_id = ProjectId::new().to_string();
 
-        let result = TribalServerHandler::apply_get_item(
-            &pool,
-            &repos,
-            serde_json::json!({"item_ids": [wrong_id]}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_get_item(serde_json::json!({"item_ids": [wrong_id]}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -762,16 +786,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_returns_protocol_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
+        let handler = test_handler_with_repos(test_repositories());
 
-        let err = TribalServerHandler::apply_get_item(
-            &pool,
-            &repos,
-            serde_json::json!({"item_ids": 123}),
-        )
-        .await
-        .expect_err("should return Err(McpError) for malformed params");
+        let err = handler
+            .apply_get_item(serde_json::json!({"item_ids": 123}))
+            .await
+            .expect_err("should return Err(McpError) for malformed params");
 
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
