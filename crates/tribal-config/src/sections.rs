@@ -21,7 +21,7 @@ pub use inference::{InferenceConfig, StageInferenceConfig};
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use prompts::PromptsConfig;
 pub use provider_kind::ProviderKind;
-pub use root::TribalConfig;
+pub use root::{TribalConfig, VERSION};
 pub use server::{ServerConfig, SseConfig};
 pub use telemetry::{FileRotation, TelemetryConfig};
 pub use transport_kind::TransportKind;
