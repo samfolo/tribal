@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::subscriber::set_global_default;
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
-
 use tribal_config::{LogFormat, LogOutput, LoggingConfig};
 
 use crate::{error::TelemetryError, guard::TelemetryGuard};

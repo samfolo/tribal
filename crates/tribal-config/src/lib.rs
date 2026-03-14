@@ -15,9 +15,9 @@ pub use error::ConfigError;
 pub use loader::{CliOverrides, ServerCliOverrides, load_config};
 pub use sections::{
     AuthConfig, DatabaseConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation,
-    InferenceConfig, LimitsConfig, LogFormat, LogOutput, LoggingConfig, PromptsConfig, ProviderKind,
-    ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig,
-    TransportKind, TribalConfig, WorkerConfig, VERSION,
+    InferenceConfig, LimitsConfig, LogFormat, LogOutput, LoggingConfig, PromptsConfig,
+    ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig,
+    TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
 };
 pub use validation::validate;
 

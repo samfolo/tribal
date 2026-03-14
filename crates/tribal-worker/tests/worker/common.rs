@@ -5,6 +5,7 @@ pub(super) use std::{sync::Arc, time::Duration};
 pub(super) use dashmap::DashMap;
 pub(super) use tokio::sync::watch;
 pub(super) use tokio_util::sync::CancellationToken;
+pub(super) use tribal_config::WorkerConfig;
 pub(super) use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
     JobStatusTransition, KnowledgeItemRepository, NewTagEmbedding, PgEmbeddingRepository,
@@ -38,7 +39,6 @@ pub(super) use tribal_test_utils::{
     seed_extraction_job, seed_multiple_triage_tasks, seed_relation_job, seed_triage_job,
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
 };
-pub(super) use tribal_config::WorkerConfig;
 pub(super) use tribal_worker::Worker;
 
 // ---------------------------------------------------------------------------
