@@ -32,6 +32,7 @@ pub enum ConfigError {
 /// `serde(default)` so that an empty JSON object deserialises to a valid
 /// configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     /// Maximum number of concurrently executing tasks.
     #[serde(default = "default_max_concurrent_tasks")]
@@ -68,10 +69,6 @@ pub struct WorkerConfig {
     /// Minimum cosine similarity for semantic tag matching (0.0, 1.0].
     #[serde(default = "default_tag_similarity_threshold")]
     pub tag_similarity_threshold: f64,
-
-    /// Whether to include raw LLM content in debug log output.
-    #[serde(default)]
-    pub include_llm_content: bool,
 }
 
 impl WorkerConfig {
@@ -177,7 +174,6 @@ impl Default for WorkerConfig {
             max_candidates_per_job: default_max_candidates_per_job(),
             triage_search_limit: default_triage_search_limit(),
             tag_similarity_threshold: default_tag_similarity_threshold(),
-            include_llm_content: false,
         }
     }
 }
@@ -234,7 +230,6 @@ mod tests {
         assert_eq!(config.max_candidates_per_job, 20);
         assert_eq!(config.triage_search_limit, 10);
         assert!((config.tag_similarity_threshold - 0.85).abs() < f64::EPSILON);
-        assert!(!config.include_llm_content);
     }
 
     #[test]
@@ -258,7 +253,6 @@ mod tests {
             max_candidates_per_job: 50,
             triage_search_limit: 25,
             tag_similarity_threshold: 0.9,
-            include_llm_content: true,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: WorkerConfig = serde_json::from_str(&json).unwrap();

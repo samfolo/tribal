@@ -19,7 +19,7 @@ fn test_per_target_filter_directive() {
         include_llm_content: false,
     };
 
-    let guard = tribal_telemetry::init_subscriber(config).expect("init should succeed");
+    let guard = tribal_telemetry::init_subscriber(&config).expect("init should succeed");
 
     // This debug event targets `allowed_target` — should appear.
     tracing::debug!(target: "allowed_target", "allowed debug message");

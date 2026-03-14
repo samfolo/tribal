@@ -7,14 +7,13 @@ use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
     service::{RequestContext, RoleServer},
 };
-use sqlx::{PgConnection, PgPool};
-use tokio::sync::RwLock;
+use sqlx::PgConnection;
 use tribal_db::{DbError, SemanticSearchParams};
 use tribal_domain::{
     EmbeddingPurpose, KnowledgeItemId, KnowledgeKind, McpErrorCode, PrincipalId, ProjectId,
     Reference, Standing,
 };
-use tribal_inference::{EmbeddingProvider, EmbeddingRequest};
+use tribal_inference::EmbeddingRequest;
 
 use super::common::acquire_connection;
 use crate::{
@@ -24,15 +23,7 @@ use crate::{
         McpReference, McpStanding,
     },
     server_handler::{ConnectionRepositories, TribalServerHandler},
-    session::SessionContext,
 };
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const DEFAULT_LIMIT: u32 = 10;
-const MAX_LIMIT: u32 = 50;
 
 // ---------------------------------------------------------------------------
 // Service types
@@ -102,14 +93,7 @@ impl TribalServerHandler {
         params: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Self::apply_discover(
-            &self.pool,
-            &self.repositories,
-            self.embedding_provider.as_ref(),
-            &self.session,
-            params,
-        )
-        .await
+        self.apply_discover(params).await
     }
 
     /// Core logic for `tribal_discover`, separated from the outer handler
@@ -123,28 +107,25 @@ impl TribalServerHandler {
     /// Domain errors are returned as error `CallToolResult` values via
     /// `IntoMcpError` / `IntoCallToolResult`. Only protocol-level errors
     /// (malformed JSON) return `Err(McpError)`.
-    async fn apply_discover(
-        pool: &PgPool,
-        repositories: &ConnectionRepositories,
-        embedding_provider: &(dyn EmbeddingProvider + Send + Sync),
-        session: &RwLock<SessionContext>,
-        params: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    async fn apply_discover(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
         let request: McpDiscoverRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
-        let limit = request.limit.unwrap_or(DEFAULT_LIMIT);
-        if !(1..=MAX_LIMIT).contains(&limit) {
+        let default_limit = self.config.discovery.default_limit;
+        let max_limit = self.config.discovery.max_limit;
+
+        let limit = request.limit.unwrap_or(default_limit);
+        if !(1..=max_limit).contains(&limit) {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: format!("limit must be between 1 and {MAX_LIMIT}, got {limit}"),
+                message: format!("limit must be between 1 and {max_limit}, got {limit}"),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
         }
 
         let session_project = {
-            let guard = session.read().await;
+            let guard = self.session.read().await;
             guard.project.as_ref().map(|p| (p.id, p.name.clone()))
         };
 
@@ -154,7 +135,8 @@ impl TribalServerHandler {
                 Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
             };
 
-        let embedding_response = match embedding_provider
+        let embedding_response = match self
+            .embedding_provider
             .embed(EmbeddingRequest {
                 input: request.query.clone(),
                 purpose: EmbeddingPurpose::Query,
@@ -167,7 +149,7 @@ impl TribalServerHandler {
 
         let embedding_model = embedding_response.usage.model.clone();
 
-        let mut conn = match acquire_connection(pool).await {
+        let mut conn = match acquire_connection(&self.pool).await {
             Ok(c) => c,
             Err(call_result) => return Ok(call_result),
         };
@@ -188,7 +170,7 @@ impl TribalServerHandler {
             cursor: request.cursor,
         };
 
-        let result = match execute_discover(&mut conn, repositories, discover_params).await {
+        let result = match execute_discover(&mut conn, &self.repositories, discover_params).await {
             Ok(r) => r,
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
@@ -428,16 +410,19 @@ mod tests {
     use rmcp::model::ErrorCode;
     use tribal_db::SemanticSearchResponse;
     use tribal_domain::ReferenceKind;
-    use tribal_inference::InferenceError;
+    use tribal_inference::{EmbeddingProvider, InferenceError};
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
         MockStandingRepository, a_knowledge_item, a_not_found, a_principal, a_project, a_reference,
-        a_standing, lazy_pool, test_context,
+        a_standing, test_context,
     };
 
     use super::*;
-    use crate::test_utils::test_repositories;
+    use crate::{
+        config::HandlerConfig,
+        test_utils::{TestHandler, test_repositories},
+    };
 
     // -- Constants ---------------------------------------------------------
 
@@ -448,10 +433,6 @@ mod tests {
 
     fn test_vector() -> Vec<f32> {
         vec![0.1, 0.2, 0.3]
-    }
-
-    fn test_embedding_provider() -> Arc<dyn EmbeddingProvider> {
-        Arc::new(MockEmbeddingProvider::builder().build())
     }
 
     fn a_search_result(
@@ -493,6 +474,7 @@ mod tests {
     }
 
     fn default_params() -> DiscoverParams {
+        let config = HandlerConfig::default();
         DiscoverParams {
             query_embedding: test_vector(),
             embedding_model: "mock-model".into(),
@@ -505,13 +487,9 @@ mod tests {
             include_superseded: false,
             include_standing: false,
             include_references: false,
-            limit: DEFAULT_LIMIT,
+            limit: config.discovery.default_limit,
             cursor: None,
         }
-    }
-
-    fn session_without_project() -> Arc<RwLock<SessionContext>> {
-        Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())))
     }
 
     async fn call_execute(
@@ -898,20 +876,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_below_one_is_invalid() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let provider = test_embedding_provider();
-        let session = session_without_project();
+        let handler = TestHandler::builder().build();
 
-        let result = TribalServerHandler::apply_discover(
-            &pool,
-            &repos,
-            provider.as_ref(),
-            &session,
-            serde_json::json!({"query": "test", "limit": 0}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_discover(serde_json::json!({"query": "test", "limit": 0}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -919,21 +889,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_limit_above_fifty_is_invalid() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let provider = test_embedding_provider();
-        let session = session_without_project();
+    async fn test_limit_above_max_is_invalid() {
+        let handler = TestHandler::builder().build();
+        let max_limit = HandlerConfig::default().discovery.max_limit;
 
-        let result = TribalServerHandler::apply_discover(
-            &pool,
-            &repos,
-            provider.as_ref(),
-            &session,
-            serde_json::json!({"query": "test", "limit": 51}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_discover(serde_json::json!({"query": "test", "limit": max_limit + 1}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -942,21 +905,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_project_id_prefix() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let provider = test_embedding_provider();
-        let session = session_without_project();
+        let handler = TestHandler::builder().build();
         let wrong_type_id = KnowledgeItemId::new().to_string();
 
-        let result = TribalServerHandler::apply_discover(
-            &pool,
-            &repos,
-            provider.as_ref(),
-            &session,
-            serde_json::json!({"query": "test", "project_id": wrong_type_id}),
-        )
-        .await
-        .expect("should return Ok with error result, not Err");
+        let result = handler
+            .apply_discover(serde_json::json!({"query": "test", "project_id": wrong_type_id}))
+            .await
+            .expect("should return Ok with error result, not Err");
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -965,28 +920,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_returns_invalid_params() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let provider = test_embedding_provider();
-        let session = session_without_project();
+        let handler = TestHandler::builder().build();
 
-        let err = TribalServerHandler::apply_discover(
-            &pool,
-            &repos,
-            provider.as_ref(),
-            &session,
-            serde_json::json!({"query": 123}),
-        )
-        .await
-        .expect_err("should return Err(McpError) for malformed params");
+        let err = handler
+            .apply_discover(serde_json::json!({"query": 123}))
+            .await
+            .expect_err("should return Err(McpError) for malformed params");
 
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
     async fn test_embedding_provider_failure_returns_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
         let provider: Arc<dyn EmbeddingProvider> = Arc::new(
             MockEmbeddingProvider::builder()
                 .on_embed_error(
@@ -999,17 +944,12 @@ mod tests {
                 )
                 .build(),
         );
-        let session = session_without_project();
+        let handler = TestHandler::builder().embedding_provider(provider).build();
 
-        let result = TribalServerHandler::apply_discover(
-            &pool,
-            &repos,
-            provider.as_ref(),
-            &session,
-            serde_json::json!({"query": "test"}),
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_discover(serde_json::json!({"query": "test"}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);

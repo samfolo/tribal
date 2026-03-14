@@ -22,10 +22,9 @@ pub enum TelemetryError {
 
     /// The filter directive string is invalid.
     ///
-    /// The directive comes from the `TRIBAL_LOG` environment variable or
-    /// the `level` field of [`LoggingConfig`](crate::LoggingConfig).
-    /// Directive strings support per-target granularity, e.g.
-    /// `"info,tribal_db=debug"`.
+    /// The directive comes from the `level` field of
+    /// [`LoggingConfig`](crate::LoggingConfig).  Directive strings support
+    /// per-target granularity, e.g. `"info,tribal_db=debug"`.
     #[error("invalid filter directive: {directive}")]
     InvalidFilterDirective {
         /// The directive string that could not be parsed.

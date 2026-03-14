@@ -18,7 +18,7 @@ fn test_file_output_writes_to_specified_path() {
         include_llm_content: false,
     };
 
-    let guard = tribal_telemetry::init_subscriber(config).expect("init should succeed");
+    let guard = tribal_telemetry::init_subscriber(&config).expect("init should succeed");
 
     tracing::info!(target: "file_output_test", "hello from file output test");
 

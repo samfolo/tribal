@@ -1,8 +1,7 @@
 //! Clap command and argument definitions for the Tribal CLI.
 
-use std::net::SocketAddr;
-
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
+use tribal_config::{CliOverrides, ServerCliOverrides};
 
 use super::{default_values::DEFAULT_CONFIG_PATH, styles::STYLES, transport::Transport};
 
@@ -118,20 +117,20 @@ pub enum Command {
 // ---------------------------------------------------------------------------
 
 /// Arguments for the `serve` subcommand.
+///
+/// Transport and bind-address environment variables (`TRIBAL_TRANSPORT`,
+/// `TRIBAL_BIND_ADDRESS`) are handled by the configuration loading layer,
+/// not by clap. Only `--project` retains its `env` attribute because it is
+/// session-scoped rather than a configuration value.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Transport protocol for the MCP server.
-    #[arg(
-        long,
-        default_value = "stdio",
-        env = "TRIBAL_TRANSPORT",
-        help_heading = "Transport"
-    )]
-    pub transport: Transport,
+    #[arg(long, help_heading = "Transport")]
+    pub transport: Option<Transport>,
 
     /// Socket address to bind the HTTP/SSE listener to.
-    #[arg(long, env = "TRIBAL_BIND_ADDRESS", help_heading = "Transport")]
-    pub bind: Option<SocketAddr>,
+    #[arg(long, help_heading = "Transport")]
+    pub bind: Option<String>,
 
     /// Project ID (`proj_`-prefixed) to scope the session to.
     #[arg(long, env = "TRIBAL_PROJECT_ID", help_heading = "Session")]
@@ -139,21 +138,25 @@ pub struct ServeArgs {
 }
 
 impl ServeArgs {
-    /// Validates transport/bind constraints.
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
-    /// # Errors
-    ///
-    /// Returns a [`clap::Error`] if `--bind` is supplied with `--transport
-    /// stdio`. The `stdio` transport communicates over stdin/stdout and cannot
-    /// listen on a network address.
-    pub fn validate(&self) -> Result<(), clap::Error> {
-        if self.bind.is_some() && self.transport == Transport::Stdio {
-            return Err(Cli::command().error(
-                ErrorKind::ArgumentConflict,
-                "--bind cannot be used with --transport stdio",
-            ));
-        }
-        Ok(())
+    /// Only flags the user actually supplied on the command line are included;
+    /// absent flags remain `None` so that lower-precedence layers are not
+    /// masked.
+    pub fn into_cli_overrides(self) -> (CliOverrides, Option<String>) {
+        let server = match (&self.transport, &self.bind) {
+            (None, None) => None,
+            // Safe to wrap partial `Some` — `skip_serializing_if` on
+            // `ServerCliOverrides` fields prevents `None` values from
+            // being serialised, so they cannot mask lower-precedence layers.
+            _ => Some(ServerCliOverrides {
+                transport: self.transport.map(Into::into),
+                bind_address: self.bind,
+            }),
+        };
+
+        let overrides = CliOverrides { server };
+        (overrides, self.project)
     }
 }
 
@@ -229,17 +232,12 @@ pub struct TokenRevokeAllArgs {}
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddrV4};
-
     use clap::{CommandFactory, Parser};
+    use tribal_config::TransportKind;
 
     use super::*;
 
     const TEST_BIND_ADDR: &str = "127.0.0.1:7077";
-
-    fn test_bind_addr() -> SocketAddr {
-        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 7077))
-    }
 
     // -- Structural validation -----------------------------------------------
 
@@ -286,74 +284,84 @@ mod tests {
     fn test_serve_defaults() {
         let cli = Cli::try_parse_from(["tribal", "serve"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Serve { ref args })
-            if args.transport == Transport::Stdio
+            if args.transport.is_none()
             && args.project.is_none()
             && args.bind.is_none()
         ));
     }
 
-    // -- Transport/bind validation ------------------------------------------
+    // -- Serve transport/bind parsing ---------------------------------------
 
     #[test]
-    fn test_serve_stdio_with_bind_rejected() {
-        let cli = Cli::try_parse_from([
-            "tribal",
-            "serve",
-            "--transport",
-            "stdio",
-            "--bind",
-            TEST_BIND_ADDR,
-        ])
-        .unwrap();
+    fn test_serve_transport_parsed() {
+        let cli = Cli::try_parse_from(["tribal", "serve", "--transport", "http"]).unwrap();
         let Some(Command::Serve { args }) = cli.command else {
             unreachable!();
         };
-        assert!(args.validate().is_err());
+        assert_eq!(args.transport, Some(Transport::Http));
     }
 
     #[test]
-    fn test_serve_bind_without_transport_rejected() {
+    fn test_serve_bind_parsed_as_string() {
         let cli = Cli::try_parse_from(["tribal", "serve", "--bind", TEST_BIND_ADDR]).unwrap();
         let Some(Command::Serve { args }) = cli.command else {
             unreachable!();
         };
-        assert!(args.validate().is_err());
+        assert_eq!(args.bind.as_deref(), Some(TEST_BIND_ADDR));
+    }
+
+    // -- into_cli_overrides -------------------------------------------------
+
+    #[test]
+    fn test_into_cli_overrides_no_flags() {
+        let args = ServeArgs {
+            transport: None,
+            bind: None,
+            project: None,
+        };
+        let (overrides, project) = args.into_cli_overrides();
+        assert!(overrides.server.is_none());
+        assert!(project.is_none());
     }
 
     #[test]
-    fn test_serve_http_with_bind_accepted() {
-        let cli = Cli::try_parse_from([
-            "tribal",
-            "serve",
-            "--transport",
-            "http",
-            "--bind",
-            TEST_BIND_ADDR,
-        ])
-        .unwrap();
-        let Some(Command::Serve { args }) = cli.command else {
-            unreachable!();
+    fn test_into_cli_overrides_transport_only() {
+        let args = ServeArgs {
+            transport: Some(Transport::Sse),
+            bind: None,
+            project: Some("proj_abc".into()),
         };
-        assert!(args.validate().is_ok());
-        assert_eq!(args.bind, Some(test_bind_addr()));
+        let (overrides, project) = args.into_cli_overrides();
+        let server = overrides.server.unwrap();
+        assert_eq!(server.transport, Some(TransportKind::Sse));
+        assert!(server.bind_address.is_none());
+        assert_eq!(project.as_deref(), Some("proj_abc"));
     }
 
     #[test]
-    fn test_serve_sse_with_bind_accepted() {
-        let cli = Cli::try_parse_from([
-            "tribal",
-            "serve",
-            "--transport",
-            "sse",
-            "--bind",
-            TEST_BIND_ADDR,
-        ])
-        .unwrap();
-        let Some(Command::Serve { args }) = cli.command else {
-            unreachable!();
+    fn test_into_cli_overrides_bind_only() {
+        let args = ServeArgs {
+            transport: None,
+            bind: Some(TEST_BIND_ADDR.into()),
+            project: None,
         };
-        assert!(args.validate().is_ok());
-        assert_eq!(args.bind, Some(test_bind_addr()));
+        let (overrides, _) = args.into_cli_overrides();
+        let server = overrides.server.unwrap();
+        assert!(server.transport.is_none());
+        assert_eq!(server.bind_address.as_deref(), Some(TEST_BIND_ADDR));
+    }
+
+    #[test]
+    fn test_into_cli_overrides_both_flags() {
+        let args = ServeArgs {
+            transport: Some(Transport::Http),
+            bind: Some(TEST_BIND_ADDR.into()),
+            project: None,
+        };
+        let (overrides, _) = args.into_cli_overrides();
+        let server = overrides.server.unwrap();
+        assert_eq!(server.transport, Some(TransportKind::Http));
+        assert_eq!(server.bind_address.as_deref(), Some(TEST_BIND_ADDR));
     }
 
     // -- Invalid input ------------------------------------------------------

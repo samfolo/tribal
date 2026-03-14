@@ -56,7 +56,7 @@ Show me the full draft. Do not create the GitHub issue yet. Wait for my sign-off
 Once I approve, create the GitHub issue:
 
 - Assign the correct label per §4.2.
-- Assign the correct GitHub milestone. The milestone issue ID prefix (the number before the dot in $ARGUMENTS) corresponds to the GitHub milestone number from step 1.
+- Assign the correct GitHub milestone. The `--milestone` flag accepts the milestone **title** (e.g. `"Server Binary"`), not the numeric ID. Look up the title from the `gh api` output in step 1.
 - Assign to me with `--assignee @me`.
 
 **Critical formatting rule:** When creating the issue body with `gh issue create`, every paragraph must be a single unbroken line. Do not insert newlines to wrap text for terminal display. The `gh` CLI line-wrapping creates artificial line breaks that render badly in the GitHub UI. Write each paragraph and each list item on exactly one line, no matter how long.
