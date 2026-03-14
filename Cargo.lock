@@ -3846,9 +3846,6 @@ dependencies = [
  "shellexpand",
  "tempfile",
  "thiserror 2.0.18",
- "tribal-domain",
- "tribal-telemetry",
- "tribal-worker",
 ]
 
 [[package]]
@@ -3863,6 +3860,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tribal-config",
  "tribal-domain",
  "tribal-test-utils",
  "typed-builder",
@@ -3944,7 +3942,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "tribal-domain",
+ "tribal-config",
 ]
 
 [[package]]
@@ -3984,6 +3982,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tribal-config",
  "tribal-db",
  "tribal-domain",
  "tribal-inference",

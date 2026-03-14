@@ -4,7 +4,8 @@
 //! `set_global_default` is process-global and cannot be reset between
 //! inline unit tests.
 
-use tribal_telemetry::{LogFormat, LoggingConfig, TelemetryError};
+use tribal_config::{LogFormat, LoggingConfig};
+use tribal_telemetry::TelemetryError;
 
 #[test]
 fn test_init_subscriber_twice_returns_already_initialised() {
