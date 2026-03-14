@@ -134,7 +134,7 @@ impl TribalServerHandler {
 
         // -- Acquire connection and execute ------------------------------------
 
-        let mut conn = match acquire_connection(&self.pool).await {
+        let mut conn = match acquire_connection(&self.state.pool_mcp).await {
             Ok(c) => c,
             Err(call_result) => return Ok(call_result),
         };

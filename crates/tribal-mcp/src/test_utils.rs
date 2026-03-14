@@ -2,21 +2,32 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use tokio::sync::RwLock;
+use tribal_config::{
+    DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig,
+};
 use tribal_domain::{ProjectId, PromptVersionId};
-use tribal_inference::EmbeddingProvider;
+use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
 use tribal_test_utils::{
-    MockEmbeddingProvider, MockJobRepository, MockKnowledgeItemRepository, MockPrincipalRepository,
-    MockProjectRepository, MockReferenceRepository, MockRelationRepository,
-    MockRetrievalFeedbackRepository, MockStandingRepository, MockTaskRepository,
-    MockTriageResultRepository, lazy_pool,
+    MockEmbeddingProvider, MockInferenceProvider, MockJobRepository,
+    MockKnowledgeItemRepository, MockPrincipalRepository, MockProjectRepository,
+    MockReferenceRepository, MockRelationRepository, MockRetrievalFeedbackRepository,
+    MockStandingRepository, MockTaskRepository, MockTriageResultRepository, lazy_pool,
 };
 use typed_builder::TypedBuilder;
 
 use crate::{
+    app_state::AppState,
     config::HandlerConfig,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
     session::{SessionContext, SessionProject},
 };
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const TEST_PROVIDER_KIND: &str = "ollama";
+const TEST_INSTANCE_ID: &str = "test-host-1-00000000-0000-0000-0000-000000000000";
 
 // ---------------------------------------------------------------------------
 // test_repositories
@@ -74,14 +85,28 @@ pub(crate) struct TestHandler {
 
 impl From<TestHandler> for TribalServerHandler {
     fn from(th: TestHandler) -> Self {
-        Self::new(
-            th.pool,
-            th.repositories,
-            th.embedding_provider,
-            th.active_prompt_versions,
-            th.session,
-            th.config,
-        )
+        let state = Arc::new(AppState {
+            pool_mcp: th.pool.clone(),
+            pool_worker: th.pool,
+            instance_id: Arc::from("test-host-1-00000000-0000-0000-0000-000000000000"),
+            active_prompt_versions: th.active_prompt_versions,
+            provider_registry: Arc::new(
+                ProviderRegistry::new(Vec::new())
+                    .expect("empty registry construction must not fail"),
+            ),
+            embedding_provider: th.embedding_provider,
+            extraction_provider: default_inference_provider(),
+            triage_provider: default_inference_provider(),
+            relation_provider: default_inference_provider(),
+            embedding_key: test_provider_key("ollama", "http://localhost:11434"),
+            extraction_key: test_provider_key("ollama", "http://localhost:11434"),
+            triage_key: test_provider_key("ollama", "http://localhost:11434"),
+            relation_key: test_provider_key("ollama", "http://localhost:11434"),
+            worker_config: WorkerConfig::default(),
+            server_config: Arc::new(ServerConfig::default()),
+            resolved_project: None,
+        });
+        Self::new(state, th.repositories, th.session, th.config)
     }
 }
 
@@ -102,6 +127,10 @@ fn default_embedding_provider() -> Arc<dyn EmbeddingProvider> {
     Arc::new(MockEmbeddingProvider::builder().build())
 }
 
+fn default_inference_provider() -> Arc<dyn InferenceProvider> {
+    Arc::new(MockInferenceProvider::builder().build())
+}
+
 fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
     Arc::new(RwLock::new(ActivePromptVersions {
         extraction_system_prompt_version_id: PromptVersionId::new(),
@@ -111,4 +140,16 @@ fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
         relation_system_prompt_version_id: PromptVersionId::new(),
         relation_user_prompt_version_id: PromptVersionId::new(),
     }))
+}
+
+fn test_provider_key(
+    provider_kind: &str,
+    base_url: &str,
+) -> tribal_inference::ProviderKey {
+    tribal_inference::ProviderKey::new(
+        provider_kind,
+        base_url,
+        tribal_inference::RequestClass::Inference,
+    )
+    .expect("test provider key construction must not fail")
 }

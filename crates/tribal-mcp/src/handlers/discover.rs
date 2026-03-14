@@ -136,6 +136,7 @@ impl TribalServerHandler {
             };
 
         let embedding_response = match self
+            .state
             .embedding_provider
             .embed(EmbeddingRequest {
                 input: request.query.clone(),
@@ -149,7 +150,7 @@ impl TribalServerHandler {
 
         let embedding_model = embedding_response.usage.model.clone();
 
-        let mut conn = match acquire_connection(&self.pool).await {
+        let mut conn = match acquire_connection(&self.state.pool_mcp).await {
             Ok(c) => c,
             Err(call_result) => return Ok(call_result),
         };
