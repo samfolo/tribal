@@ -25,7 +25,9 @@ pub use inference::{InferenceConfig, StageInferenceConfig};
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
 pub use prompts::PromptsConfig;
-pub use provider_kind::ProviderKind;
+pub use provider_kind::{
+    DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL, ProviderKind,
+};
 pub use root::{TribalConfig, VERSION};
 pub use server::{ServerConfig, SseConfig};
 pub use telemetry::{FileRotation, TelemetryConfig};

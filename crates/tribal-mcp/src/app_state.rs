@@ -11,9 +11,7 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tribal_config::{ServerConfig, WorkerConfig};
 use tribal_domain::ProjectId;
-use tribal_inference::{
-    EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry,
-};
+use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
 
 use crate::server_handler::ActivePromptVersions;
 
@@ -46,7 +44,6 @@ pub struct ResolvedProject {
 /// Constructed once during startup and wrapped in `Arc` for sharing.
 pub struct AppState {
     // -- Pools ---------------------------------------------------------------
-
     /// MCP read-path connection pool.
     pub pool_mcp: PgPool,
 
@@ -54,19 +51,16 @@ pub struct AppState {
     pub pool_worker: PgPool,
 
     // -- Identity ------------------------------------------------------------
-
     /// Unique instance identifier: `{hostname}-{pid}-{boot_id}`.
     ///
     /// Written to `tasks.claimed_by` by the worker on every task claim.
     pub instance_id: Arc<str>,
 
     // -- Prompts -------------------------------------------------------------
-
     /// Active prompt version IDs, wrapped in `RwLock` for hot-reload.
     pub active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
 
     // -- Providers -----------------------------------------------------------
-
     /// Provider registry (semaphores and HTTP clients).
     pub provider_registry: Arc<ProviderRegistry>,
 
@@ -83,7 +77,6 @@ pub struct AppState {
     pub relation_provider: Arc<dyn InferenceProvider>,
 
     // -- Provider keys (1 per config section) --------------------------------
-
     /// Registry key for the embedding provider.
     pub embedding_key: ProviderKey,
 
@@ -97,7 +90,6 @@ pub struct AppState {
     pub relation_key: ProviderKey,
 
     // -- Config --------------------------------------------------------------
-
     /// Worker configuration (concurrency, timeouts, thresholds).
     pub worker_config: WorkerConfig,
 
@@ -105,7 +97,6 @@ pub struct AppState {
     pub server_config: Arc<ServerConfig>,
 
     // -- Session -------------------------------------------------------------
-
     /// Resolved project context from the startup cascade, if any.
     pub resolved_project: Option<ResolvedProject>,
 }
