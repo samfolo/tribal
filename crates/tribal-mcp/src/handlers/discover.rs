@@ -107,10 +107,7 @@ impl TribalServerHandler {
     /// Domain errors are returned as error `CallToolResult` values via
     /// `IntoMcpError` / `IntoCallToolResult`. Only protocol-level errors
     /// (malformed JSON) return `Err(McpError)`.
-    async fn apply_discover(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    async fn apply_discover(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
         let request: McpDiscoverRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
@@ -411,23 +408,20 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
-    use tokio::sync::RwLock;
     use tribal_db::SemanticSearchResponse;
-    use tribal_domain::{PromptVersionId, ReferenceKind};
+    use tribal_domain::ReferenceKind;
     use tribal_inference::{EmbeddingProvider, InferenceError};
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
         MockStandingRepository, a_knowledge_item, a_not_found, a_principal, a_project, a_reference,
-        a_standing, lazy_pool, test_context,
+        a_standing, test_context,
     };
 
     use super::*;
     use crate::{
         config::HandlerConfig,
-        server_handler::{ActivePromptVersions, TribalServerHandler},
-        session::SessionContext,
-        test_utils::test_repositories,
+        test_utils::{TestHandler, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
@@ -439,39 +433,6 @@ mod tests {
 
     fn test_vector() -> Vec<f32> {
         vec![0.1, 0.2, 0.3]
-    }
-
-    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-        Arc::new(RwLock::new(ActivePromptVersions {
-            extraction_system_prompt_version_id: PromptVersionId::new(),
-            extraction_user_prompt_version_id: PromptVersionId::new(),
-            triage_system_prompt_version_id: PromptVersionId::new(),
-            triage_user_prompt_version_id: PromptVersionId::new(),
-            relation_system_prompt_version_id: PromptVersionId::new(),
-            relation_user_prompt_version_id: PromptVersionId::new(),
-        }))
-    }
-
-    fn test_embedding_provider() -> Arc<dyn EmbeddingProvider> {
-        Arc::new(MockEmbeddingProvider::builder().build())
-    }
-
-    fn test_handler_with_repos_and_provider(
-        repos: ConnectionRepositories,
-        provider: Arc<dyn EmbeddingProvider>,
-    ) -> TribalServerHandler {
-        TribalServerHandler::new(
-            lazy_pool(),
-            repos,
-            provider,
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
-
-    fn test_handler_with_repos(repos: ConnectionRepositories) -> TribalServerHandler {
-        test_handler_with_repos_and_provider(repos, test_embedding_provider())
     }
 
     fn a_search_result(
@@ -915,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_below_one_is_invalid() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let result = handler
             .apply_discover(serde_json::json!({"query": "test", "limit": 0}))
@@ -929,7 +890,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_above_max_is_invalid() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let max_limit = HandlerConfig::default().discovery.max_limit;
 
         let result = handler
@@ -944,7 +905,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_project_id_prefix() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let wrong_type_id = KnowledgeItemId::new().to_string();
 
         let result = handler
@@ -959,7 +920,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_returns_invalid_params() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let err = handler
             .apply_discover(serde_json::json!({"query": 123}))
@@ -983,7 +944,7 @@ mod tests {
                 )
                 .build(),
         );
-        let handler = test_handler_with_repos_and_provider(test_repositories(), provider);
+        let handler = TestHandler::builder().embedding_provider(provider).build();
 
         let result = handler
             .apply_discover(serde_json::json!({"query": "test"}))

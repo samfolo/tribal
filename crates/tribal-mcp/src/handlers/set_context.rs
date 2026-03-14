@@ -137,20 +137,17 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
-    use tokio::sync::RwLock;
     use tribal_db::DbError;
-    use tribal_domain::{KnowledgeItemId, ProjectId, PromptVersionId};
+    use tribal_domain::{KnowledgeItemId, ProjectId};
     use tribal_test_utils::{
-        ExhaustBehaviour, MockEmbeddingProvider, MockProjectRepository, a_not_found, a_project,
-        lazy_pool, test_context,
+        ExhaustBehaviour, MockProjectRepository, a_not_found, a_project, test_context,
     };
 
     use super::resolve_project;
     use crate::{
-        config::HandlerConfig,
-        server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
-        session::{SessionContext, SessionProject},
-        test_utils::test_repositories,
+        server_handler::ConnectionRepositories,
+        session::SessionProject,
+        test_utils::{TestHandler, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
@@ -159,46 +156,6 @@ mod tests {
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
 
     // -- Helpers -----------------------------------------------------------
-
-    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-        Arc::new(RwLock::new(ActivePromptVersions {
-            extraction_system_prompt_version_id: PromptVersionId::new(),
-            extraction_user_prompt_version_id: PromptVersionId::new(),
-            triage_system_prompt_version_id: PromptVersionId::new(),
-            triage_user_prompt_version_id: PromptVersionId::new(),
-            relation_system_prompt_version_id: PromptVersionId::new(),
-            relation_user_prompt_version_id: PromptVersionId::new(),
-        }))
-    }
-
-    fn test_handler() -> TribalServerHandler {
-        test_handler_with_repos(test_repositories())
-    }
-
-    fn test_handler_with_repos(repos: ConnectionRepositories) -> TribalServerHandler {
-        TribalServerHandler::new(
-            lazy_pool(),
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
-
-    fn test_handler_with_pool_and_repos(
-        pool: sqlx::PgPool,
-        repos: ConnectionRepositories,
-    ) -> TribalServerHandler {
-        TribalServerHandler::new(
-            pool,
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
 
     fn repositories_with_project_mock(mock: MockProjectRepository) -> ConnectionRepositories {
         let mut repos = test_repositories();
@@ -252,7 +209,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_request_returns_unchanged_session() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
             .apply_set_context(serde_json::json!({}))
@@ -271,7 +228,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_model_updates_actor() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
             .apply_set_context(serde_json::json!({ "model": "claude-opus-4-6" }))
@@ -291,7 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_provider_updates_actor() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
             .apply_set_context(serde_json::json!({ "provider": "anthropic" }))
@@ -310,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_model_and_provider() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
             .apply_set_context(serde_json::json!({
@@ -340,7 +297,10 @@ mod tests {
             .on_find_by_id(project.clone(), None)
             .build();
         let repos = repositories_with_project_mock(mock);
-        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
 
         let (result, mutated) = handler
             .apply_set_context(serde_json::json!({ "project_id": project.id().to_string() }))
@@ -364,7 +324,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_partial_updates_are_additive() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
 
         handler
             .apply_set_context(serde_json::json!({ "model": "claude-opus-4-6" }))
@@ -383,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_idempotent_same_values() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let params = serde_json::json!({ "model": "claude-opus-4-6" });
 
         let (result1, first_mutated) = handler
@@ -408,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_project_id_prefix() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let wrong_type_id = KnowledgeItemId::new().to_string();
 
         let (result, mutated) = handler
@@ -425,7 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_project_id_uuid() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
             .apply_set_context(serde_json::json!({ "project_id": "proj_not-a-uuid" }))
@@ -441,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_params() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
 
         let err = handler
             .apply_set_context(serde_json::json!({ "project_id": 123 }))
@@ -455,7 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_response_always_has_principal_key_and_actor() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
 
         let (result, _) = handler
             .apply_set_context(serde_json::json!({}))
@@ -473,7 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_response_project_null_when_unset() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
 
         let (result, _) = handler
             .apply_set_context(serde_json::json!({}))

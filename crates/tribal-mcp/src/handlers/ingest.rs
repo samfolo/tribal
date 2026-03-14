@@ -91,10 +91,7 @@ impl TribalServerHandler {
     /// domain logic. Domain errors are returned as error `CallToolResult`
     /// values via `IntoMcpError` / `IntoCallToolResult`. Only
     /// protocol-level errors (malformed JSON) return `Err(McpError)`.
-    async fn apply_ingest(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    async fn apply_ingest(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
         let request: McpIngestRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
@@ -248,19 +245,16 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
-    use tokio::sync::RwLock;
     use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId};
     use tribal_test_utils::{
-        MockEmbeddingProvider, MockJobRepository, MockPrincipalRepository, MockProjectRepository,
-        MockTaskRepository, a_job, a_principal, a_project, a_task, lazy_pool, test_context,
+        MockJobRepository, MockPrincipalRepository, MockProjectRepository, MockTaskRepository,
+        a_job, a_principal, a_project, a_task, test_context,
     };
 
     use super::*;
     use crate::{
-        config::HandlerConfig,
-        server_handler::TribalServerHandler,
         session::{SessionContext, SessionProject},
-        test_utils::test_repositories,
+        test_utils::{TestHandler, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
@@ -281,35 +275,15 @@ mod tests {
         }
     }
 
-    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-        Arc::new(RwLock::new(test_active_prompt_versions()))
-    }
-
-    fn test_handler_with_repos(repos: ConnectionRepositories) -> TribalServerHandler {
-        TribalServerHandler::new(
-            lazy_pool(),
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
-
     fn test_handler_with_session_project() -> TribalServerHandler {
         let project = SessionProject {
             id: ProjectId::new(),
             name: "tribal".into(),
             git_remote: "git@github.com:user/tribal.git".into(),
         };
-        TribalServerHandler::new(
-            lazy_pool(),
-            test_repositories(),
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(Some(project), "user:test".into()),
-            HandlerConfig::default(),
-        )
+        TestHandler::builder()
+            .session(SessionContext::new(Some(project), "user:test".into()))
+            .build()
     }
 
     async fn call_execute(
@@ -357,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_ingest_malformed_json_returns_protocol_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let err = handler
             .apply_ingest(serde_json::json!({"content": 123}))
@@ -369,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_ingest_no_project_returns_failed_precondition() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let result = handler
             .apply_ingest(serde_json::json!({"content": "some knowledge"}))
@@ -383,11 +357,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_ingest_invalid_project_prefix_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let wrong_prefix_id = KnowledgeItemId::new().to_string();
         let result = handler
-            .apply_ingest(serde_json::json!({"content": "some knowledge", "project_id": wrong_prefix_id}))
+            .apply_ingest(
+                serde_json::json!({"content": "some knowledge", "project_id": wrong_prefix_id}),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 

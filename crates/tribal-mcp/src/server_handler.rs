@@ -284,44 +284,15 @@ mod tests {
         handler::server::ServerHandler,
         model::{ErrorCode, ResourceContents},
     };
-    use tribal_domain::{ProjectId, PromptVersionId};
-    use tribal_test_utils::{MockEmbeddingProvider, lazy_pool};
+    use tribal_domain::ProjectId;
 
     use super::*;
     use crate::{
-        config::HandlerConfig,
         session::{SESSION_RESOURCE_URI, SessionContext, SessionProject},
-        test_utils::test_repositories,
+        test_utils::TestHandler,
     };
 
     // -- Helpers -----------------------------------------------------------
-
-    fn test_embedding_provider() -> Arc<dyn EmbeddingProvider> {
-        Arc::new(MockEmbeddingProvider::builder().build())
-    }
-
-    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-        Arc::new(RwLock::new(ActivePromptVersions {
-            extraction_system_prompt_version_id: PromptVersionId::new(),
-            extraction_user_prompt_version_id: PromptVersionId::new(),
-            triage_system_prompt_version_id: PromptVersionId::new(),
-            triage_user_prompt_version_id: PromptVersionId::new(),
-            relation_system_prompt_version_id: PromptVersionId::new(),
-            relation_user_prompt_version_id: PromptVersionId::new(),
-        }))
-    }
-
-    fn test_handler() -> TribalServerHandler {
-        let session = SessionContext::new(None, "user:test".into());
-        TribalServerHandler::new(
-            lazy_pool(),
-            test_repositories(),
-            test_embedding_provider(),
-            test_prompt_versions(),
-            session,
-            HandlerConfig::default(),
-        )
-    }
 
     fn test_handler_with_project() -> TribalServerHandler {
         let project = SessionProject {
@@ -329,22 +300,16 @@ mod tests {
             name: "tribal".into(),
             git_remote: "git@github.com:user/tribal.git".into(),
         };
-        let session = SessionContext::new(Some(project), "user:test".into());
-        TribalServerHandler::new(
-            lazy_pool(),
-            test_repositories(),
-            test_embedding_provider(),
-            test_prompt_versions(),
-            session,
-            HandlerConfig::default(),
-        )
+        TestHandler::builder()
+            .session(SessionContext::new(Some(project), "user:test".into()))
+            .build()
     }
 
     // -- get_info -----------------------------------------------------------
 
     #[tokio::test]
     async fn test_get_info_advertises_resources() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let info = handler.get_info();
 
         assert!(
@@ -355,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_info_advertises_resource_subscription() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let info = handler.get_info();
         let resources = info.capabilities.resources.expect("resources must be set");
 
@@ -368,7 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_info_advertises_tools() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let info = handler.get_info();
 
         assert!(
@@ -379,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_info_server_identity() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let info = handler.get_info();
 
         assert_eq!(info.server_info.name, SERVER_NAME);
@@ -390,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_tool_found() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let tool = handler.get_tool("tribal_discover");
 
         assert!(tool.is_some());
@@ -399,7 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_tool_not_found() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         assert!(handler.get_tool("nonexistent").is_none());
     }
 
@@ -447,7 +412,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_resource_unknown_uri() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let err = handler
             .read_resource_inner("tribal://unknown")
             .await
@@ -460,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe_success() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         assert!(!handler.session.read().await.subscribed);
 
         handler
@@ -473,7 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe_unknown_uri() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let err = handler
             .subscribe_inner("tribal://unknown")
             .await
@@ -486,7 +451,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unsubscribe_success() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         handler.session.write().await.subscribed = true;
 
         handler
@@ -499,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unsubscribe_unknown_uri() {
-        let handler = test_handler();
+        let handler = TestHandler::builder().build();
         let err = handler
             .unsubscribe_inner("tribal://unknown")
             .await

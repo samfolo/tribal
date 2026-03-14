@@ -106,10 +106,7 @@ impl TribalServerHandler {
     /// returned as error `CallToolResult` values via `IntoMcpError` /
     /// `IntoCallToolResult`. Only protocol-level errors (malformed JSON)
     /// return `Err(McpError)`.
-    async fn apply_explore(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    async fn apply_explore(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
         let request: McpExploreRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
@@ -431,21 +428,18 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
-    use tokio::sync::RwLock;
     use tribal_db::{TraversalNode, TraversalResponse};
-    use tribal_domain::{ProjectId, PromptVersionId, ReferenceKind};
+    use tribal_domain::{ProjectId, ReferenceKind};
     use tribal_test_utils::{
-        MockEmbeddingProvider, MockKnowledgeItemRepository, MockPrincipalRepository,
-        MockReferenceRepository, MockRelationRepository, MockStandingRepository, a_knowledge_item,
-        a_principal, a_reference, a_standing, lazy_pool, test_context,
+        MockKnowledgeItemRepository, MockPrincipalRepository, MockReferenceRepository,
+        MockRelationRepository, MockStandingRepository, a_knowledge_item, a_principal, a_reference,
+        a_standing, test_context,
     };
 
     use super::*;
     use crate::{
         config::HandlerConfig,
-        server_handler::{ActivePromptVersions, TribalServerHandler},
-        session::SessionContext,
-        test_utils::test_repositories,
+        test_utils::{TestHandler, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
@@ -454,42 +448,6 @@ mod tests {
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
 
     // -- Helpers -----------------------------------------------------------
-
-    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-        Arc::new(RwLock::new(ActivePromptVersions {
-            extraction_system_prompt_version_id: PromptVersionId::new(),
-            extraction_user_prompt_version_id: PromptVersionId::new(),
-            triage_system_prompt_version_id: PromptVersionId::new(),
-            triage_user_prompt_version_id: PromptVersionId::new(),
-            relation_system_prompt_version_id: PromptVersionId::new(),
-            relation_user_prompt_version_id: PromptVersionId::new(),
-        }))
-    }
-
-    fn test_handler_with_repos(repos: ConnectionRepositories) -> TribalServerHandler {
-        TribalServerHandler::new(
-            lazy_pool(),
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
-
-    fn test_handler_with_pool_and_repos(
-        pool: sqlx::PgPool,
-        repos: ConnectionRepositories,
-    ) -> TribalServerHandler {
-        TribalServerHandler::new(
-            pool,
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
 
     fn test_anchor(ki_id: KnowledgeItemId, prin_id: PrincipalId) -> tribal_domain::KnowledgeItem {
         a_knowledge_item().id(ki_id).principal_id(prin_id).build()
@@ -1250,7 +1208,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_returns_invalid_params() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let err = handler
             .apply_explore(serde_json::json!({"item_id": 123}))
@@ -1262,7 +1220,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_item_id_prefix() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let wrong_id = ProjectId::new().to_string();
 
         let result = handler
@@ -1277,7 +1235,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_direction_returns_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
         let result = handler
@@ -1292,7 +1250,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_relation_type_returns_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
         let result = handler
@@ -1307,7 +1265,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_depth_below_one_is_invalid() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
         let result = handler
@@ -1322,7 +1280,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_depth_above_max_is_invalid() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
         let max_depth = HandlerConfig::default().exploration.max_depth;
 
@@ -1338,7 +1296,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_below_one_is_invalid() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
         let result = handler
@@ -1353,7 +1311,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_above_max_is_invalid() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
         let max_limit = HandlerConfig::default().exploration.max_limit;
 
@@ -1412,7 +1370,10 @@ mod tests {
                 .build(),
         );
 
-        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
 
         let result = handler
             .apply_explore(serde_json::json!({"item_id": anchor_id.to_string()}))
@@ -1442,7 +1403,10 @@ mod tests {
                 .build(),
         );
 
-        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
 
         let result = handler
             .apply_explore(serde_json::json!({
@@ -1476,7 +1440,10 @@ mod tests {
                 .build(),
         );
 
-        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
 
         let result = handler
             .apply_explore(serde_json::json!({"item_id": anchor_id.to_string()}))
@@ -1490,7 +1457,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_trace_id_empty_string_rejected() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
 
         let result = handler
@@ -1505,7 +1472,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_trace_id_too_long_rejected() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
         let long_trace = "x".repeat(MAX_TRACE_ID_LEN + 1);
 

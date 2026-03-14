@@ -227,21 +227,16 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
-    use tokio::sync::RwLock;
-    use tribal_domain::{JobId, JobOutcome, JobStatus, KnowledgeItemId, PromptVersionId, TaskType};
+    use tribal_domain::{JobId, JobOutcome, JobStatus, KnowledgeItemId, TaskType};
     use tribal_test_utils::{
-        MockEmbeddingProvider, MockJobRepository, MockTaskRepository, MockTriageResultRepository,
-        a_job, a_task, a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed,
-        lazy_pool, test_context,
+        MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job, a_task,
+        a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed, test_context,
     };
 
     use super::*;
     use crate::{
-        config::HandlerConfig,
         polling::ImmediatePollScheduler,
-        server_handler::{ActivePromptVersions, TribalServerHandler},
-        session::SessionContext,
-        test_utils::test_repositories,
+        test_utils::{TestHandler, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
@@ -250,42 +245,6 @@ mod tests {
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
 
     // -- Helpers -----------------------------------------------------------
-
-    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-        Arc::new(RwLock::new(ActivePromptVersions {
-            extraction_system_prompt_version_id: PromptVersionId::new(),
-            extraction_user_prompt_version_id: PromptVersionId::new(),
-            triage_system_prompt_version_id: PromptVersionId::new(),
-            triage_user_prompt_version_id: PromptVersionId::new(),
-            relation_system_prompt_version_id: PromptVersionId::new(),
-            relation_user_prompt_version_id: PromptVersionId::new(),
-        }))
-    }
-
-    fn test_handler_with_repos(repos: ConnectionRepositories) -> TribalServerHandler {
-        TribalServerHandler::new(
-            lazy_pool(),
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
-
-    fn test_handler_with_pool_and_repos(
-        pool: sqlx::PgPool,
-        repos: ConnectionRepositories,
-    ) -> TribalServerHandler {
-        TribalServerHandler::new(
-            pool,
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
 
     async fn call_execute(
         repos: &ConnectionRepositories,
@@ -324,7 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_job_status_malformed_json_returns_protocol_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let err = handler
             .apply_job_status(serde_json::json!({"job_id": 123}), &ImmediatePollScheduler)
@@ -336,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_job_status_invalid_job_prefix_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let wrong_prefix_id = KnowledgeItemId::new().to_string();
         let result = handler
@@ -354,7 +313,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_job_status_wait_seconds_over_30_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let result = handler
             .apply_job_status(
@@ -376,7 +335,7 @@ mod tests {
     /// accepted.
     #[tokio::test]
     async fn test_apply_job_status_wait_seconds_at_boundary_30_accepted() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let result = handler
             .apply_job_status(
@@ -398,7 +357,7 @@ mod tests {
     /// proceed to the pool phase without polling.
     #[tokio::test]
     async fn test_apply_job_status_wait_seconds_zero_accepted() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let result = handler
             .apply_job_status(
@@ -420,7 +379,7 @@ mod tests {
     /// pass validation and proceed to the pool phase without polling.
     #[tokio::test]
     async fn test_apply_job_status_wait_seconds_absent_accepted() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let result = handler
             .apply_job_status(
@@ -640,7 +599,10 @@ mod tests {
                 .build(),
         );
 
-        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
         let result = handler
             .apply_job_status(
                 serde_json::json!({"job_id": job_id.to_string()}),
@@ -691,7 +653,10 @@ mod tests {
                 .build(),
         );
 
-        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
         let result = handler
             .apply_job_status(
                 serde_json::json!({
@@ -758,7 +723,10 @@ mod tests {
                 .build(),
         );
 
-        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
         let result = handler
             .apply_job_status(
                 serde_json::json!({
