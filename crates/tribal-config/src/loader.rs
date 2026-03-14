@@ -158,6 +158,7 @@ mod tests {
     use figment::Jail;
 
     use super::*;
+    use crate::ProviderKind;
 
     #[test]
     fn test_defaults_only() {
@@ -329,7 +330,7 @@ server:
             assert_eq!(config.embedding.dimensions, 1024);
             assert!((config.inference.extraction.temperature - 0.5).abs() < f64::EPSILON);
             assert_eq!(
-                config.limits.providers[&crate::ProviderKind::Ollama].max_in_flight,
+                config.limits.providers[&ProviderKind::Ollama].max_in_flight,
                 4
             );
             assert!(config.prompts.hot_reload);
@@ -339,6 +340,35 @@ server:
             assert_eq!(config.telemetry.service_name, "test-tribal");
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_known_sections_covers_all_config_fields() {
+        let serialised = serde_json::to_value(TribalConfig::default()).unwrap();
+        let top_level_keys: Vec<&str> = serialised
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        for key in &top_level_keys {
+            let prefixed = format!("{key}.");
+            assert!(
+                KNOWN_SECTIONS.contains(&prefixed.as_str()),
+                "config field \"{key}\" is not listed in KNOWN_SECTIONS — \
+                 add \"{prefixed}\" to the array"
+            );
+        }
+
+        for section in KNOWN_SECTIONS {
+            let key = section.trim_end_matches('.');
+            assert!(
+                top_level_keys.contains(&key),
+                "KNOWN_SECTIONS entry \"{section}\" does not correspond to \
+                 any top-level config field"
+            );
+        }
     }
 
     #[test]
