@@ -146,6 +146,9 @@ impl ServeArgs {
     pub fn into_cli_overrides(self) -> (CliOverrides, Option<String>) {
         let server = match (&self.transport, &self.bind) {
             (None, None) => None,
+            // Safe to wrap partial `Some` — `skip_serializing_if` on
+            // `ServerCliOverrides` fields prevents `None` values from
+            // being serialised, so they cannot mask lower-precedence layers.
             _ => Some(ServerCliOverrides {
                 transport: self.transport.map(Into::into),
                 bind_address: self.bind,
