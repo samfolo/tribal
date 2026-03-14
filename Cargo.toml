@@ -55,6 +55,7 @@ strum = { version = "0.28", features = ["derive"] }
 
 # Hashing
 fnv = "1"
+sha2 = "0.10"
 
 # Ordered collections
 indexmap = "2"
@@ -96,6 +97,12 @@ dirs = "6"
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive", "env", "suggestions"] }
+
+# System information
+gethostname = "1"
+
+# Random number generation
+rand = "0.10"
 
 # Testing
 tempfile = "3"
