@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(structured["actor"]["provider"], "anthropic");
     }
 
-    /// Uses a dedicated pool (not `lazy_pool`) because the project_id
+    /// Uses a dedicated pool (not `lazy_pool`) because the `project_id`
     /// path calls `pool.acquire()` internally. A per-test pool avoids
     /// contention with the shared pool under concurrent test execution.
     #[tokio::test]
