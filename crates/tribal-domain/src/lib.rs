@@ -46,7 +46,6 @@ macro_rules! enum_text_conversions {
 
 mod auth_token;
 mod candidate;
-mod database_config;
 mod discovery;
 mod embedding;
 mod embedding_purpose;
@@ -78,7 +77,6 @@ mod triage;
 
 pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
-pub use database_config::DatabaseConfig;
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use embedding::{Embedding, EmbeddingBuilder};
 pub use embedding_purpose::EmbeddingPurpose;
