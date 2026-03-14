@@ -43,6 +43,8 @@
       "Bash(cargo deny check:*)",
       "Bash(cargo doc:*)",
       "Bash(cargo expand:*)",
+      "Bash(cargo license:*)",
+      "Bash(cargo metadata:*)",
       "Bash(cargo search:*)",
       "Bash(cargo test:*)",
       "Bash(cargo tree:*)",
