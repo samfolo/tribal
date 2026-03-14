@@ -84,10 +84,15 @@ fn try_init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, Telemet
                 FileRotation::Never => Rotation::NEVER,
             };
 
+            let suffix = match config.format {
+                LogFormat::Json => "jsonl",
+                LogFormat::Pretty => "log",
+            };
+
             let appender = RollingFileAppender::builder()
                 .rotation(rotation)
                 .filename_prefix("tribal")
-                .filename_suffix("jsonl")
+                .filename_suffix(suffix)
                 .build(&config.file_directory)
                 .map_err(|source| TelemetryError::FileAppenderInit {
                     path: config.file_directory.clone(),
@@ -125,7 +130,7 @@ fn try_init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, Telemet
         }
     }
 
-    if config.used_temp_dir_fallback {
+    if config.output == LogOutput::File && config.used_temp_dir_fallback {
         tracing::warn!(
             directory = %config.file_directory,
             "no standard state/data directory found; using temporary directory for log files",

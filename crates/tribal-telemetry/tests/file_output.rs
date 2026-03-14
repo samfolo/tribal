@@ -38,7 +38,7 @@ fn test_file_output_writes_to_specified_directory() {
     );
 
     let mut found = false;
-    for entry in entries {
+    for entry in &entries {
         let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
         if content.contains("hello from file output test") {
             found = true;
@@ -46,5 +46,15 @@ fn test_file_output_writes_to_specified_directory() {
         }
     }
 
-    assert!(found, "log file should contain the emitted event",);
+    assert!(found, "log file should contain the emitted event");
+
+    // JSON format should produce files with a .jsonl suffix.
+    for entry in &entries {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        assert!(
+            name.ends_with(".jsonl"),
+            "JSON format should produce .jsonl files, got: {name}",
+        );
+    }
 }
