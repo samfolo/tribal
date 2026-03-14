@@ -157,6 +157,9 @@ fn expand_paths(config: &mut TribalConfig) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// `Jail::expect_with` closures return `Result<(), figment::Error>` (208 bytes),
+// which we cannot reduce without wrapping an upstream type.
+#[allow(clippy::result_large_err)]
 mod tests {
     use figment::Jail;
 
