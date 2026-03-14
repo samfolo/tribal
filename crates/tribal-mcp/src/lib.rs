@@ -16,7 +16,7 @@ mod session;
 mod test_utils;
 mod tools;
 
-pub use config::HandlerConfig;
+pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
 pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
 pub use session::{SessionActor, SessionContext, SessionProject};

@@ -4,6 +4,7 @@
 
 mod app;
 mod cli;
+mod config_mapping;
 mod error;
 
 use std::process;

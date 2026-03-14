@@ -5,6 +5,7 @@ use tribal_config::{load_config, validate};
 
 use crate::{
     cli::{Cli, Command, ProjectCommand, TokenCommand},
+    config_mapping::handler_config_from,
     error::AppError,
 };
 
@@ -52,8 +53,9 @@ impl App {
                 let config = load_config(&config_path, Some(cli_overrides))?;
                 validate(&config)?;
 
+                let _handler_config = handler_config_from(&config);
+
                 println!("tribal serve: not yet implemented");
-                let _ = &config;
             }
             Command::Project(command) => match command {
                 ProjectCommand::Register { .. } => {

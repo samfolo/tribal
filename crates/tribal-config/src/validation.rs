@@ -107,11 +107,11 @@ fn validate_provider_timeouts(config: &TribalConfig, errors: &mut Vec<String>) {
 
         if request_timeout == 0 {
             errors.push(format!(
-                "limits.providers.{provider:?}.request_timeout_ms must be greater than zero"
+                "limits.providers.{provider}.request_timeout_ms must be greater than zero"
             ));
         } else if request_timeout >= task_timeout {
             errors.push(format!(
-                "limits.providers.{provider:?}.request_timeout_ms ({request_timeout}) \
+                "limits.providers.{provider}.request_timeout_ms ({request_timeout}) \
                  must be less than worker.task_timeout_millis ({task_timeout})"
             ));
         }
@@ -121,7 +121,7 @@ fn validate_provider_timeouts(config: &TribalConfig, errors: &mut Vec<String>) {
 fn validate_api_key_presence(config: &TribalConfig, errors: &mut Vec<String>) {
     if config.embedding.provider.requires_api_key() && config.embedding.api_key.is_none() {
         errors.push(format!(
-            "embedding.api_key is required when embedding.provider is {:?}",
+            "embedding.api_key is required when embedding.provider is {}",
             config.embedding.provider
         ));
     }
@@ -134,7 +134,7 @@ fn validate_api_key_presence(config: &TribalConfig, errors: &mut Vec<String>) {
     for (path, stage) in stages {
         if stage.provider.requires_api_key() && stage.api_key.is_none() {
             errors.push(format!(
-                "{path}.api_key is required when {path}.provider is {:?}",
+                "{path}.api_key is required when {path}.provider is {}",
                 stage.provider
             ));
         }
@@ -156,6 +156,13 @@ fn validate_discovery(config: &TribalConfig, errors: &mut Vec<String>) {
 
     if config.discovery.overfetch_multiplier == 0 {
         errors.push("discovery.overfetch_multiplier must be greater than zero".into());
+    }
+
+    let threshold = config.discovery.similarity_threshold;
+    if !(threshold > 0.0 && threshold <= 1.0) {
+        errors.push(format!(
+            "discovery.similarity_threshold ({threshold}) must be in (0.0, 1.0]"
+        ));
     }
 }
 
@@ -291,6 +298,32 @@ mod tests {
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("overfetch_multiplier must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_similarity_threshold() {
+        let mut config = valid_config();
+        config.discovery.similarity_threshold = 0.0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("similarity_threshold"));
+        assert!(msg.contains("must be in (0.0, 1.0]"));
+    }
+
+    #[test]
+    fn test_validate_rejects_similarity_threshold_above_one() {
+        let mut config = valid_config();
+        config.discovery.similarity_threshold = 1.5;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("similarity_threshold"));
+    }
+
+    #[test]
+    fn test_validate_accepts_similarity_threshold_at_one() {
+        let mut config = valid_config();
+        config.discovery.similarity_threshold = 1.0;
+        assert!(validate(&config).is_ok());
     }
 
     #[test]
