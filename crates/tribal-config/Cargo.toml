@@ -7,10 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-tribal-domain.workspace = true
-tribal-worker.workspace = true
-tribal-telemetry.workspace = true
-
 figment.workspace = true
 shellexpand.workspace = true
 serde.workspace = true
