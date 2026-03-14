@@ -1,34 +1,33 @@
-//! Handler-specific configuration extracted from [`tribal_config`].
+//! Handler-specific configuration for the MCP layer.
 //!
-//! Each nested struct carries only the fields the MCP handlers need,
-//! keeping the handler layer decoupled from the full configuration shape.
+//! Each nested struct carries only the fields the MCP handlers need.
+//! Conversions from the full configuration shape live in the consumer
+//! crate (`tribal-server`), keeping this crate free of transitive
+//! dependencies on `tribal-config`.
 
-use tribal_config::{
-    DiscoveryConfig as FullDiscoveryConfig, ExplorationConfig as FullExplorationConfig,
-    TribalConfig,
-};
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_DISCOVERY_LIMIT: u32 = 10;
+const MAX_DISCOVERY_LIMIT: u32 = 50;
+const DEFAULT_EXPLORATION_DEPTH: u32 = 1;
+const MAX_EXPLORATION_DEPTH: u32 = 3;
+const DEFAULT_EXPLORATION_LIMIT: u32 = 20;
+const MAX_EXPLORATION_LIMIT: u32 = 100;
 
 // ---------------------------------------------------------------------------
 // HandlerConfig
 // ---------------------------------------------------------------------------
 
 /// Configuration values threaded into [`TribalServerHandler`](crate::TribalServerHandler).
-#[derive(Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HandlerConfig {
     /// Discovery (semantic search) limits.
-    pub(crate) discovery: HandlerDiscoveryConfig,
+    pub discovery: HandlerDiscoveryConfig,
 
     /// Exploration (graph traversal) limits.
-    pub(crate) exploration: HandlerExplorationConfig,
-}
-
-impl From<&TribalConfig> for HandlerConfig {
-    fn from(config: &TribalConfig) -> Self {
-        Self {
-            discovery: HandlerDiscoveryConfig::from(&config.discovery),
-            exploration: HandlerExplorationConfig::from(&config.exploration),
-        }
-    }
+    pub exploration: HandlerExplorationConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -36,26 +35,21 @@ impl From<&TribalConfig> for HandlerConfig {
 // ---------------------------------------------------------------------------
 
 /// Discovery configuration consumed by the `tribal_discover` handler.
-pub(crate) struct HandlerDiscoveryConfig {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandlerDiscoveryConfig {
     /// Default number of results when the caller does not specify a limit.
-    pub(crate) default_limit: u32,
+    pub default_limit: u32,
 
     /// Maximum number of results a caller may request.
-    pub(crate) max_limit: u32,
-}
-
-impl From<&FullDiscoveryConfig> for HandlerDiscoveryConfig {
-    fn from(config: &FullDiscoveryConfig) -> Self {
-        Self {
-            default_limit: config.default_limit,
-            max_limit: config.max_limit,
-        }
-    }
+    pub max_limit: u32,
 }
 
 impl Default for HandlerDiscoveryConfig {
     fn default() -> Self {
-        Self::from(&FullDiscoveryConfig::default())
+        Self {
+            default_limit: DEFAULT_DISCOVERY_LIMIT,
+            max_limit: MAX_DISCOVERY_LIMIT,
+        }
     }
 }
 
@@ -64,34 +58,29 @@ impl Default for HandlerDiscoveryConfig {
 // ---------------------------------------------------------------------------
 
 /// Exploration configuration consumed by the `tribal_explore` handler.
-pub(crate) struct HandlerExplorationConfig {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandlerExplorationConfig {
     /// Default traversal depth when not specified by the caller.
-    pub(crate) default_depth: u32,
+    pub default_depth: u32,
 
     /// Maximum traversal depth (hard cap).
-    pub(crate) max_depth: u32,
+    pub max_depth: u32,
 
     /// Default number of results when the caller does not specify a limit.
-    pub(crate) default_limit: u32,
+    pub default_limit: u32,
 
     /// Maximum number of results a caller may request.
-    pub(crate) max_limit: u32,
-}
-
-impl From<&FullExplorationConfig> for HandlerExplorationConfig {
-    fn from(config: &FullExplorationConfig) -> Self {
-        Self {
-            default_depth: config.default_depth,
-            max_depth: config.max_depth,
-            default_limit: config.default_limit,
-            max_limit: config.max_limit,
-        }
-    }
+    pub max_limit: u32,
 }
 
 impl Default for HandlerExplorationConfig {
     fn default() -> Self {
-        Self::from(&FullExplorationConfig::default())
+        Self {
+            default_depth: DEFAULT_EXPLORATION_DEPTH,
+            max_depth: MAX_EXPLORATION_DEPTH,
+            default_limit: DEFAULT_EXPLORATION_LIMIT,
+            max_limit: MAX_EXPLORATION_LIMIT,
+        }
     }
 }
 
@@ -101,55 +90,28 @@ impl Default for HandlerExplorationConfig {
 
 #[cfg(test)]
 mod tests {
-    use tribal_config::{DiscoveryConfig, ExplorationConfig};
-
     use super::*;
 
     #[test]
-    fn test_handler_discovery_config_from_full() {
-        let full = DiscoveryConfig {
-            default_limit: 5,
-            max_limit: 25,
-            ..DiscoveryConfig::default()
-        };
-        let handler = HandlerDiscoveryConfig::from(&full);
-        assert_eq!(handler.default_limit, 5);
-        assert_eq!(handler.max_limit, 25);
+    fn test_handler_discovery_config_defaults() {
+        let config = HandlerDiscoveryConfig::default();
+        assert_eq!(config.default_limit, DEFAULT_DISCOVERY_LIMIT);
+        assert_eq!(config.max_limit, MAX_DISCOVERY_LIMIT);
     }
 
     #[test]
-    fn test_handler_exploration_config_from_full() {
-        let full = ExplorationConfig {
-            default_depth: 2,
-            max_depth: 5,
-            default_limit: 10,
-            max_limit: 50,
-        };
-        let handler = HandlerExplorationConfig::from(&full);
-        assert_eq!(handler.default_depth, 2);
-        assert_eq!(handler.max_depth, 5);
-        assert_eq!(handler.default_limit, 10);
-        assert_eq!(handler.max_limit, 50);
+    fn test_handler_exploration_config_defaults() {
+        let config = HandlerExplorationConfig::default();
+        assert_eq!(config.default_depth, DEFAULT_EXPLORATION_DEPTH);
+        assert_eq!(config.max_depth, MAX_EXPLORATION_DEPTH);
+        assert_eq!(config.default_limit, DEFAULT_EXPLORATION_LIMIT);
+        assert_eq!(config.max_limit, MAX_EXPLORATION_LIMIT);
     }
 
     #[test]
-    fn test_handler_config_from_tribal_config() {
-        let config = TribalConfig::default();
-        let handler = HandlerConfig::from(&config);
-        assert_eq!(
-            handler.discovery.default_limit,
-            config.discovery.default_limit
-        );
-        assert_eq!(handler.discovery.max_limit, config.discovery.max_limit);
-        assert_eq!(
-            handler.exploration.default_depth,
-            config.exploration.default_depth
-        );
-        assert_eq!(handler.exploration.max_depth, config.exploration.max_depth);
-        assert_eq!(
-            handler.exploration.default_limit,
-            config.exploration.default_limit
-        );
-        assert_eq!(handler.exploration.max_limit, config.exploration.max_limit);
+    fn test_handler_config_default_delegates_to_nested() {
+        let config = HandlerConfig::default();
+        assert_eq!(config.discovery, HandlerDiscoveryConfig::default());
+        assert_eq!(config.exploration, HandlerExplorationConfig::default());
     }
 }

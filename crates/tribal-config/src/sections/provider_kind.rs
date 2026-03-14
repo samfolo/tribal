@@ -32,6 +32,16 @@ impl ProviderKind {
     }
 }
 
+impl std::fmt::Display for ProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ollama => write!(f, "ollama"),
+            Self::Anthropic => write!(f, "anthropic"),
+            Self::OpenAi => write!(f, "openai"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,6 +56,13 @@ mod tests {
     #[test]
     fn test_default_is_ollama() {
         assert_eq!(ProviderKind::default(), ProviderKind::Ollama);
+    }
+
+    #[test]
+    fn test_display_matches_serde_names() {
+        assert_eq!(ProviderKind::Ollama.to_string(), "ollama");
+        assert_eq!(ProviderKind::Anthropic.to_string(), "anthropic");
+        assert_eq!(ProviderKind::OpenAi.to_string(), "openai");
     }
 
     #[test]

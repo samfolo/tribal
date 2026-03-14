@@ -7,7 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-tribal-config.workspace = true
 tribal-domain.workspace = true
 tribal-db.workspace = true
 tribal-inference.workspace = true
