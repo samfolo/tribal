@@ -13,10 +13,9 @@ fn test_init_subscriber_twice_returns_already_initialised() {
         ..LoggingConfig::default()
     };
 
-    let _guard =
-        tribal_telemetry::init_subscriber(config.clone()).expect("first init should succeed");
+    let _guard = tribal_telemetry::init_subscriber(&config).expect("first init should succeed");
 
-    let result = tribal_telemetry::init_subscriber(config);
+    let result = tribal_telemetry::init_subscriber(&config);
     assert!(
         matches!(result, Err(TelemetryError::SubscriberAlreadyInitialised)),
         "second init should return SubscriberAlreadyInitialised, got {result:?}",

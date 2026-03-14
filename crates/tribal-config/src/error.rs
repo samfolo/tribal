@@ -14,7 +14,7 @@ pub enum ConfigError {
     Load {
         /// The underlying figment error.
         #[source]
-        source: figment::Error,
+        source: Box<figment::Error>,
     },
 
     /// The merged configuration failed validation.

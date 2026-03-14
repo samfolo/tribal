@@ -12,13 +12,12 @@ mod sections;
 mod validation;
 
 pub use error::ConfigError;
-pub use loader::{load_config, CliOverrides, ServerCliOverrides};
+pub use loader::{CliOverrides, ServerCliOverrides, load_config};
 pub use sections::{
-    AuthConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, InferenceConfig, LimitsConfig,
-    PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
+    AuthConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation, InferenceConfig,
+    LimitsConfig, PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
     StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig,
 };
-pub use sections::telemetry::FileRotation;
 pub use validation::validate;
 
 // ---------------------------------------------------------------------------

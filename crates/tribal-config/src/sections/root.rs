@@ -6,15 +6,9 @@ use tribal_telemetry::LoggingConfig;
 use tribal_worker::WorkerConfig;
 
 use super::{
-    auth::AuthConfig,
-    discovery::DiscoveryConfig,
-    embedding::EmbeddingConfig,
-    exploration::ExplorationConfig,
-    inference::InferenceConfig,
-    limits::LimitsConfig,
-    prompts::PromptsConfig,
-    server::ServerConfig,
-    telemetry::TelemetryConfig,
+    auth::AuthConfig, discovery::DiscoveryConfig, embedding::EmbeddingConfig,
+    exploration::ExplorationConfig, inference::InferenceConfig, limits::LimitsConfig,
+    prompts::PromptsConfig, server::ServerConfig, telemetry::TelemetryConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -24,7 +18,7 @@ use super::{
 /// Top-level configuration for the Tribal server.
 ///
 /// All fields default to sensible values for local development.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TribalConfig {
     /// Server transport and connection settings.
@@ -74,25 +68,6 @@ pub struct TribalConfig {
     /// OpenTelemetry and trace export settings.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
-}
-
-impl Default for TribalConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            database: DatabaseConfig::default(),
-            auth: AuthConfig::default(),
-            worker: WorkerConfig::default(),
-            embedding: EmbeddingConfig::default(),
-            inference: InferenceConfig::default(),
-            limits: LimitsConfig::default(),
-            prompts: PromptsConfig::default(),
-            discovery: DiscoveryConfig::default(),
-            exploration: ExplorationConfig::default(),
-            logging: LoggingConfig::default(),
-            telemetry: TelemetryConfig::default(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -45,7 +45,7 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 /// # Panics
 ///
 /// Does not panic.  All failure modes return `Err`.
-pub fn init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
+pub fn init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
     if INITIALISED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -66,7 +66,7 @@ pub fn init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, Telemetr
 ///
 /// Separated from [`init_subscriber`] so that the `INITIALISED` flag can
 /// be reset cleanly on failure without duplicating the guard logic.
-fn try_init_subscriber(config: LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
+fn try_init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
     let env_filter = EnvFilter::try_new(&config.level).map_err(|source| {
         TelemetryError::InvalidFilterDirective {
             directive: config.level.clone(),
@@ -154,7 +154,7 @@ mod tests {
             level: "not valid [[".to_owned(),
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(config);
+        let result = init_subscriber(&config);
 
         assert!(
             matches!(result, Err(TelemetryError::InvalidFilterDirective { .. })),
@@ -176,7 +176,7 @@ mod tests {
             file_path: None,
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(config);
+        let result = init_subscriber(&config);
 
         assert!(
             matches!(result, Err(TelemetryError::FileOutputMissingPath)),
@@ -198,7 +198,7 @@ mod tests {
             file_path: Some("/nonexistent/dir/tribal.log".to_owned()),
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(config);
+        let result = init_subscriber(&config);
 
         assert!(
             matches!(result, Err(TelemetryError::FileCreation { .. })),
@@ -220,13 +220,13 @@ mod tests {
             level: "not valid [[".to_owned(),
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(bad_config);
+        let result = init_subscriber(&bad_config);
         assert!(result.is_err());
 
         // Flag was reset — a subsequent call with valid config is not
         // rejected as `SubscriberAlreadyInitialised`.
         let good_config = LoggingConfig::default();
-        let result = init_subscriber(good_config);
+        let result = init_subscriber(&good_config);
 
         // We expect `SetGlobalDefault` (the unit test process may already
         // have a subscriber) rather than `SubscriberAlreadyInitialised`.

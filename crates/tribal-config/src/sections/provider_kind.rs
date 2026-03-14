@@ -19,7 +19,7 @@ pub enum ProviderKind {
     /// Anthropic cloud API.
     Anthropic,
 
-    /// OpenAI cloud API.
+    /// `OpenAI` cloud API.
     #[serde(rename = "openai")]
     OpenAi,
 }
