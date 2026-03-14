@@ -48,64 +48,64 @@ pub struct AppState {
     // -- Pools ---------------------------------------------------------------
 
     /// MCP read-path connection pool.
-    pub(crate) pool_mcp: PgPool,
+    pub pool_mcp: PgPool,
 
     /// Worker write-path connection pool.
-    pub(crate) pool_worker: PgPool,
+    pub pool_worker: PgPool,
 
     // -- Identity ------------------------------------------------------------
 
     /// Unique instance identifier: `{hostname}-{pid}-{boot_id}`.
     ///
     /// Written to `tasks.claimed_by` by the worker on every task claim.
-    pub(crate) instance_id: Arc<str>,
+    pub instance_id: Arc<str>,
 
     // -- Prompts -------------------------------------------------------------
 
     /// Active prompt version IDs, wrapped in `RwLock` for hot-reload.
-    pub(crate) active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
+    pub active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
 
     // -- Providers -----------------------------------------------------------
 
     /// Provider registry (semaphores and HTTP clients).
-    pub(crate) provider_registry: Arc<ProviderRegistry>,
+    pub provider_registry: Arc<ProviderRegistry>,
 
     /// Embedding provider instance.
-    pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
+    pub embedding_provider: Arc<dyn EmbeddingProvider>,
 
     /// Extraction stage inference provider.
-    pub(crate) extraction_provider: Arc<dyn InferenceProvider>,
+    pub extraction_provider: Arc<dyn InferenceProvider>,
 
     /// Triage stage inference provider.
-    pub(crate) triage_provider: Arc<dyn InferenceProvider>,
+    pub triage_provider: Arc<dyn InferenceProvider>,
 
     /// Relation stage inference provider.
-    pub(crate) relation_provider: Arc<dyn InferenceProvider>,
+    pub relation_provider: Arc<dyn InferenceProvider>,
 
     // -- Provider keys (1 per config section) --------------------------------
 
     /// Registry key for the embedding provider.
-    pub(crate) embedding_key: ProviderKey,
+    pub embedding_key: ProviderKey,
 
     /// Registry key for the extraction inference provider.
-    pub(crate) extraction_key: ProviderKey,
+    pub extraction_key: ProviderKey,
 
     /// Registry key for the triage inference provider.
-    pub(crate) triage_key: ProviderKey,
+    pub triage_key: ProviderKey,
 
     /// Registry key for the relation inference provider.
-    pub(crate) relation_key: ProviderKey,
+    pub relation_key: ProviderKey,
 
     // -- Config --------------------------------------------------------------
 
     /// Worker configuration (concurrency, timeouts, thresholds).
-    pub(crate) worker_config: WorkerConfig,
+    pub worker_config: WorkerConfig,
 
     /// Server configuration (transport, bind address, shutdown deadline).
-    pub(crate) server_config: Arc<ServerConfig>,
+    pub server_config: Arc<ServerConfig>,
 
     // -- Session -------------------------------------------------------------
 
     /// Resolved project context from the startup cascade, if any.
-    pub(crate) resolved_project: Option<ResolvedProject>,
+    pub resolved_project: Option<ResolvedProject>,
 }

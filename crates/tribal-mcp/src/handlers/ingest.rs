@@ -126,7 +126,7 @@ impl TribalServerHandler {
         let source_context =
             build_source_context(actor_provider.as_deref(), actor_model.as_deref());
 
-        let active_prompts = self.active_prompt_versions.read().await.clone();
+        let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
         let ingest_params = IngestParams {
             project_id,
@@ -136,7 +136,7 @@ impl TribalServerHandler {
             active_prompts,
         };
 
-        let mut tx = match begin_transaction(&self.pool).await {
+        let mut tx = match begin_transaction(&self.state.pool_mcp).await {
             Ok(tx) => tx,
             Err(call_result) => return Ok(call_result),
         };

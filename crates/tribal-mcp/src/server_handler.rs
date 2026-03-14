@@ -10,7 +10,6 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
 };
-use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, PrincipalRepository, ProjectRepository,
@@ -18,9 +17,9 @@ use tribal_db::{
     TaskRepository, TriageResultRepository,
 };
 use tribal_domain::PromptVersionId;
-use tribal_inference::EmbeddingProvider;
 
 use crate::{
+    app_state::AppState,
     auth::AuthContext,
     config::HandlerConfig,
     error::method_not_found,
@@ -101,38 +100,31 @@ pub struct ActivePromptVersions {
 /// Implements the [`ServerHandler`] trait from `rmcp`, dispatching tool
 /// calls to individual handler methods and managing the per-connection
 /// session state.
+///
+/// Wraps [`AppState`] (shared process-level state) alongside per-connection
+/// fields (`repositories`, `session`, `config`).
 pub struct TribalServerHandler {
-    pub(crate) pool: PgPool,
+    pub(crate) state: Arc<AppState>,
     pub(crate) repositories: ConnectionRepositories,
-    pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
-    pub(crate) active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
     pub(crate) session: Arc<RwLock<SessionContext>>,
     pub(crate) config: HandlerConfig,
 }
 
 impl TribalServerHandler {
-    /// Creates a new handler for the given connection pool, repositories, and
-    /// initial session state.
+    /// Creates a new handler wrapping the shared application state plus
+    /// per-connection state.
     ///
-    /// The pool is used by handlers that need database access (e.g.
-    /// `tribal_set_context` for project lookup). The session is wrapped
-    /// in an `Arc<RwLock<…>>` internally; `active_prompt_versions` is
-    /// accepted pre-wrapped for compatibility with a shared process-level
-    /// cache.
+    /// The session is wrapped in an `Arc<RwLock<…>>` internally.
     #[must_use]
     pub fn new(
-        pool: PgPool,
+        state: Arc<AppState>,
         repositories: ConnectionRepositories,
-        embedding_provider: Arc<dyn EmbeddingProvider>,
-        active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
         session: SessionContext,
         config: HandlerConfig,
     ) -> Self {
         Self {
-            pool,
+            state,
             repositories,
-            embedding_provider,
-            active_prompt_versions,
             session: Arc::new(RwLock::new(session)),
             config,
         }
