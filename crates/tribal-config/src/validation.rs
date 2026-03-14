@@ -120,9 +120,7 @@ fn validate_embedding(config: &TribalConfig, errors: &mut Vec<String>) {
 }
 
 fn validate_worker(config: &TribalConfig, errors: &mut Vec<String>) {
-    if let Err(e) = config.worker.validate() {
-        errors.push(format!("worker: {e}"));
-    }
+    config.worker.validate(errors);
 }
 
 fn validate_pool_sizing(config: &TribalConfig, errors: &mut Vec<String>) {
