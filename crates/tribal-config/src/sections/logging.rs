@@ -5,6 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::telemetry::FileRotation;
+use crate::paths::resolve_directory;
+
 /// Configuration for the tracing subscriber.
 ///
 /// Loaded from the application configuration file.  All fields have
@@ -35,13 +38,27 @@ pub struct LoggingConfig {
     #[serde(default)]
     pub output: LogOutput,
 
-    /// Path to the log file when [`output`](LoggingConfig::output) is
-    /// [`LogOutput::File`].
+    /// Directory for log file output when [`output`](LoggingConfig::output)
+    /// is [`LogOutput::File`].
     ///
-    /// Ignored when output is `Stderr`.  Required when output is `File`;
-    /// omitting it produces a telemetry error.
+    /// Resolved at startup via platform-aware defaults:
+    /// `dirs::state_dir` → `dirs::data_local_dir` → `std::env::temp_dir`,
+    /// each joined with `tribal/logs`.
+    #[serde(default = "default_file_directory")]
+    pub file_directory: String,
+
+    /// Log file rotation policy.
+    ///
+    /// Defaults to [`FileRotation::Daily`].
     #[serde(default)]
-    pub file_path: Option<String>,
+    pub file_rotation: FileRotation,
+
+    /// Whether `std::env::temp_dir` was used as a last-resort fallback
+    /// for `file_directory`.
+    ///
+    /// Set automatically during default construction; not serialised.
+    #[serde(skip)]
+    pub used_temp_dir_fallback: bool,
 
     /// Whether to include raw LLM request/response content in log output.
     ///
@@ -56,13 +73,27 @@ fn default_level() -> String {
     String::from("info")
 }
 
+fn default_file_directory() -> String {
+    let (dir, _) = resolve_directory(dirs::state_dir, dirs::data_local_dir, "tribal/logs");
+    dir
+}
+
+fn default_used_temp_dir_fallback() -> bool {
+    let (_, used_temp) = resolve_directory(dirs::state_dir, dirs::data_local_dir, "tribal/logs");
+    used_temp
+}
+
 impl Default for LoggingConfig {
     fn default() -> Self {
+        let (file_directory, used_temp_dir_fallback) =
+            resolve_directory(dirs::state_dir, dirs::data_local_dir, "tribal/logs");
         Self {
             level: default_level(),
             format: LogFormat::default(),
             output: LogOutput::default(),
-            file_path: None,
+            file_directory,
+            file_rotation: FileRotation::default(),
+            used_temp_dir_fallback,
             include_llm_content: false,
         }
     }
@@ -94,8 +125,8 @@ pub enum LogOutput {
     #[default]
     Stderr,
 
-    /// Write log output to a file specified by
-    /// [`LoggingConfig::file_path`].
+    /// Write log output to a rolling file in
+    /// [`LoggingConfig::file_directory`].
     File,
 }
 
@@ -109,7 +140,9 @@ mod tests {
         assert_eq!(config.level, "info");
         assert_eq!(config.format, LogFormat::Json);
         assert_eq!(config.output, LogOutput::Stderr);
-        assert_eq!(config.file_path, None);
+        assert!(!config.file_directory.is_empty());
+        assert!(config.file_directory.ends_with("tribal/logs"));
+        assert_eq!(config.file_rotation, FileRotation::Daily);
         assert!(!config.include_llm_content);
     }
 
@@ -126,7 +159,10 @@ mod tests {
     #[test]
     fn test_deserialise_empty_object_applies_defaults() {
         let config: LoggingConfig = serde_json::from_str("{}").unwrap();
-        assert_eq!(config, LoggingConfig::default());
+        assert_eq!(config.level, "info");
+        assert_eq!(config.format, LogFormat::Json);
+        assert_eq!(config.output, LogOutput::Stderr);
+        assert!(config.file_directory.ends_with("tribal/logs"));
     }
 
     #[test]
@@ -135,15 +171,28 @@ mod tests {
             "level": "debug,tribal_db=trace",
             "format": "pretty",
             "output": "file",
-            "file_path": "/var/log/tribal.jsonl",
+            "file_directory": "/var/log/tribal",
+            "file_rotation": "hourly",
             "include_llm_content": true
         }"#;
         let config: LoggingConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.level, "debug,tribal_db=trace");
         assert_eq!(config.format, LogFormat::Pretty);
         assert_eq!(config.output, LogOutput::File);
-        assert_eq!(config.file_path.as_deref(), Some("/var/log/tribal.jsonl"));
+        assert_eq!(config.file_directory, "/var/log/tribal");
+        assert_eq!(config.file_rotation, FileRotation::Hourly);
         assert!(config.include_llm_content);
+    }
+
+    #[test]
+    fn test_used_temp_dir_fallback_not_serialised() {
+        let mut config = LoggingConfig::default();
+        config.used_temp_dir_fallback = true;
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            !json.contains("used_temp_dir_fallback"),
+            "used_temp_dir_fallback should be skipped during serialisation"
+        );
     }
 
     /// Roundtrip-tests every `LogFormat` variant through serde.
