@@ -9,6 +9,7 @@ docs/archive/
 docs/draft/
 docs/internal/
 docs/notes/
+docs/reviews/
 
 # OS-specific
 .DS_Store

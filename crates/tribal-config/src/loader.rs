@@ -9,7 +9,9 @@ use figment::{
 };
 use serde::Serialize;
 
-use crate::{TribalConfig, error::ConfigError, sections::TransportKind};
+use crate::{
+    LoggingConfig, TelemetryConfig, TribalConfig, error::ConfigError, sections::TransportKind,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -134,6 +136,7 @@ pub fn load_config(
     })?;
 
     expand_paths(&mut config);
+    restore_temp_dir_fallback_flags(&mut config);
 
     Ok(config)
 }
@@ -142,14 +145,28 @@ pub fn load_config(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Restores `used_temp_dir_fallback` flags lost during serde roundtripping.
+///
+/// `#[serde(skip)]` fields are always `false` after figment extraction.
+/// When the user has not overridden the directory, we restore the flag from
+/// a freshly computed default so the subscriber can emit a warning.
+fn restore_temp_dir_fallback_flags(config: &mut TribalConfig) {
+    let default_logging = LoggingConfig::default();
+    if config.logging.file_directory == default_logging.file_directory {
+        config.logging.used_temp_dir_fallback = default_logging.used_temp_dir_fallback;
+    }
+
+    let default_telemetry = TelemetryConfig::default();
+    if config.telemetry.file_directory == default_telemetry.file_directory {
+        config.telemetry.used_temp_dir_fallback = default_telemetry.used_temp_dir_fallback;
+    }
+}
+
 fn expand_paths(config: &mut TribalConfig) {
     config.prompts.directory = shellexpand::tilde(&config.prompts.directory).into_owned();
     config.telemetry.file_directory =
         shellexpand::tilde(&config.telemetry.file_directory).into_owned();
-
-    if let Some(ref path) = config.logging.file_path {
-        config.logging.file_path = Some(shellexpand::tilde(path).into_owned());
-    }
+    config.logging.file_directory = shellexpand::tilde(&config.logging.file_directory).into_owned();
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +191,7 @@ mod tests {
 
             let mut expected = TribalConfig::default();
             expand_paths(&mut expected);
+            restore_temp_dir_fallback_flags(&mut expected);
             assert_eq!(config, expected);
             Ok(())
         });
@@ -327,7 +345,7 @@ server:
     fn test_env_var_whitelist_covers_all_sections() {
         Jail::expect_with(|jail| {
             jail.set_env("TRIBAL_SERVER__SHUTDOWN_DEADLINE_MS", "5000");
-            jail.set_env("TRIBAL_DATABASE__ACQUIRE_TIMEOUT_SECONDS", "10");
+            jail.set_env("TRIBAL_DATABASE__ACQUIRE_TIMEOUT_MS", "10000");
             jail.set_env("TRIBAL_AUTH__TOKEN_TTL_HOURS", "24");
             jail.set_env("TRIBAL_WORKER__MAX_CONCURRENT_TASKS", "8");
             jail.set_env("TRIBAL_EMBEDDING__DIMENSIONS", "1024");
@@ -343,7 +361,7 @@ server:
             let config = load_config(path.to_str().unwrap(), None).unwrap();
 
             assert_eq!(config.server.shutdown_deadline_ms, 5000);
-            assert_eq!(config.database.acquire_timeout_seconds, 10);
+            assert_eq!(config.database.acquire_timeout_ms, 10_000);
             assert_eq!(config.auth.token_ttl_hours, 24);
             assert_eq!(config.worker.max_concurrent_tasks, 8);
             assert_eq!(config.embedding.dimensions, 1024);
@@ -392,6 +410,25 @@ server:
                  any top-level config field"
             );
         }
+    }
+
+    #[test]
+    fn test_temp_dir_fallback_flags_survive_figment_roundtrip() {
+        Jail::expect_with(|jail| {
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None).unwrap();
+
+            let defaults = TribalConfig::default();
+            assert_eq!(
+                config.logging.used_temp_dir_fallback, defaults.logging.used_temp_dir_fallback,
+                "logging.used_temp_dir_fallback should match Default after figment roundtrip"
+            );
+            assert_eq!(
+                config.telemetry.used_temp_dir_fallback, defaults.telemetry.used_temp_dir_fallback,
+                "telemetry.used_temp_dir_fallback should match Default after figment roundtrip"
+            );
+            Ok(())
+        });
     }
 
     #[test]

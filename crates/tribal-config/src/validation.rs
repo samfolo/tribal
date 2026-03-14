@@ -120,9 +120,7 @@ fn validate_embedding(config: &TribalConfig, errors: &mut Vec<String>) {
 }
 
 fn validate_worker(config: &TribalConfig, errors: &mut Vec<String>) {
-    if let Err(e) = config.worker.validate() {
-        errors.push(format!("worker: {e}"));
-    }
+    config.worker.validate(errors);
 }
 
 fn validate_pool_sizing(config: &TribalConfig, errors: &mut Vec<String>) {
@@ -138,7 +136,7 @@ fn validate_pool_sizing(config: &TribalConfig, errors: &mut Vec<String>) {
 }
 
 fn validate_provider_limits(config: &TribalConfig, errors: &mut Vec<String>) {
-    let task_timeout = config.worker.task_timeout_millis;
+    let task_timeout = config.worker.task_timeout_ms;
 
     for (provider, limits) in &config.limits.providers {
         if limits.max_in_flight == 0 {
@@ -156,7 +154,7 @@ fn validate_provider_limits(config: &TribalConfig, errors: &mut Vec<String>) {
         } else if request_timeout >= task_timeout {
             errors.push(format!(
                 "limits.providers.{provider}.request_timeout_ms ({request_timeout}) \
-                 must be less than worker.task_timeout_millis ({task_timeout})"
+                 must be less than worker.task_timeout_ms ({task_timeout})"
             ));
         }
     }
@@ -326,7 +324,7 @@ mod tests {
     #[test]
     fn test_validate_rejects_request_timeout_exceeding_task_timeout() {
         let mut config = valid_config();
-        config.worker.task_timeout_millis = 100_000;
+        config.worker.task_timeout_ms = 100_000;
         config
             .limits
             .providers

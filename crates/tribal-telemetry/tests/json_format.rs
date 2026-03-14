@@ -4,19 +4,18 @@
 //! This test lives in `tests/` (separate binary) because it installs a
 //! global subscriber.
 
-use tribal_telemetry::{LogFormat, LogOutput, LoggingConfig};
+use tribal_config::{LogFormat, LogOutput, LoggingConfig};
 
 #[test]
 fn test_json_format_produces_structured_output() {
     let dir = tempfile::tempdir().expect("should create temp dir");
-    let log_path = dir.path().join("structured.jsonl");
 
     let config = LoggingConfig {
         level: "info".to_owned(),
         format: LogFormat::Json,
         output: LogOutput::File,
-        file_path: Some(log_path.display().to_string()),
-        include_llm_content: false,
+        file_directory: dir.path().display().to_string(),
+        ..LoggingConfig::default()
     };
 
     let guard = tribal_telemetry::init_subscriber(&config).expect("init should succeed");
@@ -31,7 +30,12 @@ fn test_json_format_produces_structured_output() {
     // all pending writes.
     drop(guard);
 
-    let output = std::fs::read_to_string(&log_path).expect("should read log file");
+    // Read whichever file was created by the rolling appender.
+    let output: String = std::fs::read_dir(dir.path())
+        .expect("should read dir")
+        .filter_map(Result::ok)
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect();
 
     // Each line should be valid JSON.
     let mut found_event = false;

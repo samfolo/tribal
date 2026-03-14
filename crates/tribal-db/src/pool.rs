@@ -4,10 +4,8 @@
 //! read-path pool and once for the worker write-path pool — each with its
 //! own max-connections and statement-timeout settings.
 
-use std::time::Duration;
-
 use sqlx::{Executor, PgPool, postgres::PgPoolOptions};
-use tribal_domain::DatabaseConfig;
+use tribal_config::DatabaseConfig;
 
 use crate::DbError;
 
@@ -15,7 +13,7 @@ use crate::DbError;
 ///
 /// The pool is configured with:
 /// - `max_connections` from the caller (differs between MCP and worker pools)
-/// - `acquire_timeout` from [`DatabaseConfig::acquire_timeout_seconds`]
+/// - `acquire_timeout` from [`DatabaseConfig::acquire_timeout_ms`]
 /// - Per-connection `statement_timeout` set via an `after_connect` callback
 ///
 /// The `pool_name` parameter is used for tracing instrumentation and is the
@@ -30,15 +28,14 @@ pub async fn create_pool(
     config: &DatabaseConfig,
     pool_name: &'static str,
     max_connections: u32,
-    statement_timeout_seconds: u64,
+    statement_timeout_ms: u64,
 ) -> Result<PgPool, DbError> {
     let pool = PgPoolOptions::new()
         .max_connections(max_connections)
-        .acquire_timeout(Duration::from_secs(config.acquire_timeout_seconds))
+        .acquire_timeout(config.acquire_timeout())
         .after_connect(move |conn, _meta| {
             Box::pin(async move {
-                let timeout_ms = statement_timeout_seconds.saturating_mul(1000);
-                conn.execute(format!("SET statement_timeout = {timeout_ms}").as_str())
+                conn.execute(format!("SET statement_timeout = {statement_timeout_ms}").as_str())
                     .await?;
                 Ok(())
             })
@@ -53,8 +50,8 @@ pub async fn create_pool(
     tracing::info!(
         pool_name,
         max_connections,
-        statement_timeout_seconds,
-        acquire_timeout_seconds = config.acquire_timeout_seconds,
+        statement_timeout_ms,
+        acquire_timeout_ms = config.acquire_timeout_ms,
         "database pool created",
     );
 
@@ -72,7 +69,7 @@ mod tests {
 
     async fn assert_connect_fails_with_pool_name(pool_name: &'static str) {
         let config = bogus_config();
-        let err = create_pool(&config, pool_name, 2, 10)
+        let err = create_pool(&config, pool_name, 2, 10_000)
             .await
             .expect_err("should fail with an invalid url");
 

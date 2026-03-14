@@ -1,9 +1,10 @@
 //! Handler-specific configuration for the MCP layer.
 //!
 //! Each nested struct carries only the fields the MCP handlers need.
-//! Conversions from the full configuration shape live in the consumer
-//! crate (`tribal-server`), keeping this crate free of transitive
-//! dependencies on `tribal-config`.
+//! The [`From<&TribalConfig>`] impl projects the full configuration
+//! into this handler-specific subset.
+
+use tribal_config::TribalConfig;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,6 +29,23 @@ pub struct HandlerConfig {
 
     /// Exploration (graph traversal) limits.
     pub exploration: HandlerExplorationConfig,
+}
+
+impl From<&TribalConfig> for HandlerConfig {
+    fn from(config: &TribalConfig) -> Self {
+        Self {
+            discovery: HandlerDiscoveryConfig {
+                default_limit: config.discovery.default_limit,
+                max_limit: config.discovery.max_limit,
+            },
+            exploration: HandlerExplorationConfig {
+                default_depth: config.exploration.default_depth,
+                max_depth: config.exploration.max_depth,
+                default_limit: config.exploration.default_limit,
+                max_limit: config.exploration.max_limit,
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,5 +135,35 @@ mod tests {
         let config = HandlerConfig::default();
         assert_eq!(config.discovery, HandlerDiscoveryConfig::default());
         assert_eq!(config.exploration, HandlerExplorationConfig::default());
+    }
+
+    #[test]
+    fn test_from_tribal_config() {
+        let tribal = TribalConfig::default();
+        let handler = HandlerConfig::from(&tribal);
+        assert_eq!(
+            handler.discovery.default_limit,
+            tribal.discovery.default_limit
+        );
+        assert_eq!(handler.discovery.max_limit, tribal.discovery.max_limit);
+        assert_eq!(
+            handler.exploration.default_depth,
+            tribal.exploration.default_depth
+        );
+        assert_eq!(handler.exploration.max_depth, tribal.exploration.max_depth);
+        assert_eq!(
+            handler.exploration.default_limit,
+            tribal.exploration.default_limit
+        );
+        assert_eq!(handler.exploration.max_limit, tribal.exploration.max_limit);
+    }
+
+    /// Catches divergence if someone changes a default in one crate
+    /// without updating the other.
+    #[test]
+    fn test_handler_defaults_match_tribal_config_defaults() {
+        let handler = HandlerConfig::default();
+        let from_config = HandlerConfig::from(&TribalConfig::default());
+        assert_eq!(handler, from_config);
     }
 }

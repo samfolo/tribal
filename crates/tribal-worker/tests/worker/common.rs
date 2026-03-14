@@ -5,6 +5,7 @@ pub(super) use std::{sync::Arc, time::Duration};
 pub(super) use dashmap::DashMap;
 pub(super) use tokio::sync::watch;
 pub(super) use tokio_util::sync::CancellationToken;
+pub(super) use tribal_config::WorkerConfig;
 pub(super) use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
     JobStatusTransition, KnowledgeItemRepository, NewTagEmbedding, PgEmbeddingRepository,
@@ -38,7 +39,7 @@ pub(super) use tribal_test_utils::{
     seed_extraction_job, seed_multiple_triage_tasks, seed_relation_job, seed_triage_job,
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
 };
-pub(super) use tribal_worker::{Worker, WorkerConfig};
+pub(super) use tribal_worker::Worker;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -201,11 +202,11 @@ pub(super) async fn poll_task_requeued_with_retry(
 pub(super) fn test_config() -> WorkerConfig {
     WorkerConfig {
         max_concurrent_tasks: 4,
-        poll_interval_millis: 100,
-        task_timeout_millis: 5_000,
+        poll_interval_ms: 100,
+        task_timeout_ms: 5_000,
         task_max_retries: 3,
-        heartbeat_interval_millis: 200,
-        reclaim_interval_millis: 100,
+        heartbeat_interval_ms: 200,
+        reclaim_interval_ms: 100,
         max_candidates_per_job: 20,
         triage_search_limit: 10,
         tag_similarity_threshold: 0.85,

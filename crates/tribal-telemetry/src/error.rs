@@ -23,7 +23,7 @@ pub enum TelemetryError {
     /// The filter directive string is invalid.
     ///
     /// The directive comes from the `level` field of
-    /// [`LoggingConfig`](crate::LoggingConfig).  Directive strings support
+    /// [`LoggingConfig`](tribal_config::LoggingConfig).  Directive strings support
     /// per-target granularity, e.g. `"info,tribal_db=debug"`.
     #[error("invalid filter directive: {directive}")]
     InvalidFilterDirective {
@@ -34,12 +34,18 @@ pub enum TelemetryError {
         source: tracing_subscriber::filter::ParseError,
     },
 
-    /// File output was requested but no file path was provided.
+    /// Failed to initialise the rolling file appender.
     ///
-    /// Set [`LoggingConfig::file_path`](crate::LoggingConfig::file_path)
-    /// to `Some(path)` when using [`LogOutput::File`](crate::LogOutput::File).
-    #[error("file output requested but file_path is None")]
-    FileOutputMissingPath,
+    /// Covers directory creation failures, permission errors, and other
+    /// I/O problems during appender setup.
+    #[error("failed to initialise file appender at {path}")]
+    FileAppenderInit {
+        /// The directory path passed to the appender builder.
+        path: String,
+        /// The underlying initialisation error.
+        #[source]
+        source: tracing_appender::rolling::InitError,
+    },
 
     /// Failed to set the global default subscriber.
     ///
@@ -50,16 +56,6 @@ pub enum TelemetryError {
         /// The underlying error from `tracing`.
         #[source]
         source: tracing::subscriber::SetGlobalDefaultError,
-    },
-
-    /// Failed to create or open the log file.
-    #[error("failed to create log file at {path}")]
-    FileCreation {
-        /// The path that could not be opened.
-        path: String,
-        /// The underlying I/O error.
-        #[source]
-        source: std::io::Error,
     },
 }
 
@@ -87,23 +83,26 @@ mod tests {
     }
 
     #[test]
-    fn test_display_file_output_missing_path() {
-        let err = TelemetryError::FileOutputMissingPath;
-        assert_eq!(
-            err.to_string(),
-            "file output requested but file_path is None",
-        );
-    }
+    fn test_display_file_appender_init() {
+        // Use a regular file as the "directory" to guarantee the appender
+        // cannot create it, regardless of process permissions.
+        let tmp = tempfile::NamedTempFile::new().expect("should create temp file");
+        let file_path = tmp.path().display().to_string();
 
-    #[test]
-    fn test_display_file_creation() {
-        let err = TelemetryError::FileCreation {
-            path: "/nonexistent/dir/log.jsonl".to_owned(),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such file or directory"),
+        let result = tracing_appender::rolling::RollingFileAppender::builder()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("tribal")
+            .filename_suffix("jsonl")
+            .build(&file_path);
+
+        let init_error = result.expect_err("should fail when path is a regular file");
+        let err = TelemetryError::FileAppenderInit {
+            path: file_path.clone(),
+            source: init_error,
         };
         assert_eq!(
             err.to_string(),
-            "failed to create log file at /nonexistent/dir/log.jsonl",
+            format!("failed to initialise file appender at {file_path}"),
         );
     }
 }

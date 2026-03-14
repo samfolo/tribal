@@ -1,14 +1,12 @@
 //! Top-level configuration struct composing all sections.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::DatabaseConfig;
-use tribal_telemetry::LoggingConfig;
-use tribal_worker::WorkerConfig;
 
 use super::{
-    auth::AuthConfig, discovery::DiscoveryConfig, embedding::EmbeddingConfig,
-    exploration::ExplorationConfig, inference::InferenceConfig, limits::LimitsConfig,
-    prompts::PromptsConfig, server::ServerConfig, telemetry::TelemetryConfig,
+    auth::AuthConfig, database::DatabaseConfig, discovery::DiscoveryConfig,
+    embedding::EmbeddingConfig, exploration::ExplorationConfig, inference::InferenceConfig,
+    limits::LimitsConfig, logging::LoggingConfig, prompts::PromptsConfig, server::ServerConfig,
+    telemetry::TelemetryConfig, worker::WorkerConfig,
 };
 
 // ---------------------------------------------------------------------------

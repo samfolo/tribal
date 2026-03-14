@@ -1,9 +1,9 @@
 //! Clap command and argument definitions for the Tribal CLI.
 
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
-use tribal_config::{CliOverrides, ServerCliOverrides};
+use tribal_config::{CliOverrides, ServerCliOverrides, TransportKind};
 
-use super::{default_values::DEFAULT_CONFIG_PATH, styles::STYLES, transport::Transport};
+use super::{default_values::DEFAULT_CONFIG_PATH, styles::STYLES};
 
 // ---------------------------------------------------------------------------
 // Long version
@@ -126,7 +126,7 @@ pub enum Command {
 pub struct ServeArgs {
     /// Transport protocol for the MCP server.
     #[arg(long, help_heading = "Transport")]
-    pub transport: Option<Transport>,
+    pub transport: Option<TransportKind>,
 
     /// Socket address to bind the HTTP/SSE listener to.
     #[arg(long, help_heading = "Transport")]
@@ -150,7 +150,7 @@ impl ServeArgs {
             // `ServerCliOverrides` fields prevents `None` values from
             // being serialised, so they cannot mask lower-precedence layers.
             _ => Some(ServerCliOverrides {
-                transport: self.transport.map(Into::into),
+                transport: self.transport,
                 bind_address: self.bind,
             }),
         };
@@ -298,7 +298,7 @@ mod tests {
         let Some(Command::Serve { args }) = cli.command else {
             unreachable!();
         };
-        assert_eq!(args.transport, Some(Transport::Http));
+        assert_eq!(args.transport, Some(TransportKind::Http));
     }
 
     #[test]
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn test_into_cli_overrides_transport_only() {
         let args = ServeArgs {
-            transport: Some(Transport::Sse),
+            transport: Some(TransportKind::Sse),
             bind: None,
             project: Some("proj_abc".into()),
         };
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn test_into_cli_overrides_both_flags() {
         let args = ServeArgs {
-            transport: Some(Transport::Http),
+            transport: Some(TransportKind::Http),
             bind: Some(TEST_BIND_ADDR.into()),
             project: None,
         };
