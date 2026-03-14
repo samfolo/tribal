@@ -22,24 +22,24 @@ pub struct WorkerConfig {
     pub max_concurrent_tasks: usize,
 
     /// Milliseconds between poll cycles.
-    #[serde(default = "default_poll_interval_millis")]
-    pub poll_interval_millis: u64,
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
 
     /// Per-task timeout in milliseconds.
-    #[serde(default = "default_task_timeout_millis")]
-    pub task_timeout_millis: u64,
+    #[serde(default = "default_task_timeout_ms")]
+    pub task_timeout_ms: u64,
 
     /// Maximum retries before a task is dead-lettered.
     #[serde(default = "default_task_max_retries")]
     pub task_max_retries: u32,
 
     /// Milliseconds between heartbeat updates for claimed tasks.
-    #[serde(default = "default_heartbeat_interval_millis")]
-    pub heartbeat_interval_millis: u64,
+    #[serde(default = "default_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u64,
 
     /// Milliseconds between stale-task reclaim sweeps.
-    #[serde(default = "default_reclaim_interval_millis")]
-    pub reclaim_interval_millis: u64,
+    #[serde(default = "default_reclaim_interval_ms")]
+    pub reclaim_interval_ms: u64,
 
     /// Maximum candidate count per job (cap applied during extraction).
     #[serde(default = "default_max_candidates_per_job")]
@@ -58,25 +58,25 @@ impl WorkerConfig {
     /// Returns the poll interval as a [`Duration`].
     #[must_use]
     pub fn poll_interval(&self) -> Duration {
-        Duration::from_millis(self.poll_interval_millis)
+        Duration::from_millis(self.poll_interval_ms)
     }
 
     /// Returns the task timeout as a [`Duration`].
     #[must_use]
     pub fn task_timeout(&self) -> Duration {
-        Duration::from_millis(self.task_timeout_millis)
+        Duration::from_millis(self.task_timeout_ms)
     }
 
     /// Returns the heartbeat interval as a [`Duration`].
     #[must_use]
     pub fn heartbeat_interval(&self) -> Duration {
-        Duration::from_millis(self.heartbeat_interval_millis)
+        Duration::from_millis(self.heartbeat_interval_ms)
     }
 
     /// Returns the reclaim interval as a [`Duration`].
     #[must_use]
     pub fn reclaim_interval(&self) -> Duration {
-        Duration::from_millis(self.reclaim_interval_millis)
+        Duration::from_millis(self.reclaim_interval_ms)
     }
 
     /// Validates the configuration, pushing error messages for every invalid
@@ -88,25 +88,25 @@ impl WorkerConfig {
         if self.max_concurrent_tasks == 0 {
             errors.push("worker.max_concurrent_tasks must be greater than zero".into());
         }
-        if self.poll_interval_millis == 0 {
-            errors.push("worker.poll_interval_millis must be greater than zero".into());
+        if self.poll_interval_ms == 0 {
+            errors.push("worker.poll_interval_ms must be greater than zero".into());
         }
-        if self.task_timeout_millis == 0 {
-            errors.push("worker.task_timeout_millis must be greater than zero".into());
+        if self.task_timeout_ms == 0 {
+            errors.push("worker.task_timeout_ms must be greater than zero".into());
         }
-        if self.heartbeat_interval_millis == 0 {
-            errors.push("worker.heartbeat_interval_millis must be greater than zero".into());
+        if self.heartbeat_interval_ms == 0 {
+            errors.push("worker.heartbeat_interval_ms must be greater than zero".into());
         }
-        if self.heartbeat_interval_millis >= self.task_timeout_millis {
+        if self.heartbeat_interval_ms >= self.task_timeout_ms {
             errors.push(
-                "worker.heartbeat_interval_millis must be less than worker.task_timeout_millis"
+                "worker.heartbeat_interval_ms must be less than worker.task_timeout_ms"
                     .into(),
             );
         }
-        if self.reclaim_interval_millis < self.poll_interval_millis {
+        if self.reclaim_interval_ms < self.poll_interval_ms {
             errors.push(
-                "worker.reclaim_interval_millis must be greater than or equal to \
-                 worker.poll_interval_millis"
+                "worker.reclaim_interval_ms must be greater than or equal to \
+                 worker.poll_interval_ms"
                     .into(),
             );
         }
@@ -126,11 +126,11 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             max_concurrent_tasks: default_max_concurrent_tasks(),
-            poll_interval_millis: default_poll_interval_millis(),
-            task_timeout_millis: default_task_timeout_millis(),
+            poll_interval_ms: default_poll_interval_ms(),
+            task_timeout_ms: default_task_timeout_ms(),
             task_max_retries: default_task_max_retries(),
-            heartbeat_interval_millis: default_heartbeat_interval_millis(),
-            reclaim_interval_millis: default_reclaim_interval_millis(),
+            heartbeat_interval_ms: default_heartbeat_interval_ms(),
+            reclaim_interval_ms: default_reclaim_interval_ms(),
             max_candidates_per_job: default_max_candidates_per_job(),
             triage_search_limit: default_triage_search_limit(),
             tag_similarity_threshold: default_tag_similarity_threshold(),
@@ -145,19 +145,19 @@ impl Default for WorkerConfig {
 const fn default_max_concurrent_tasks() -> usize {
     4
 }
-const fn default_poll_interval_millis() -> u64 {
+const fn default_poll_interval_ms() -> u64 {
     2_000
 }
-const fn default_task_timeout_millis() -> u64 {
+const fn default_task_timeout_ms() -> u64 {
     300_000
 }
 const fn default_task_max_retries() -> u32 {
     3
 }
-const fn default_heartbeat_interval_millis() -> u64 {
+const fn default_heartbeat_interval_ms() -> u64 {
     100_000
 }
-const fn default_reclaim_interval_millis() -> u64 {
+const fn default_reclaim_interval_ms() -> u64 {
     10_000
 }
 const fn default_max_candidates_per_job() -> u32 {
@@ -182,11 +182,11 @@ mod tests {
     fn test_default_values() {
         let config: WorkerConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(config.max_concurrent_tasks, 4);
-        assert_eq!(config.poll_interval_millis, 2_000);
-        assert_eq!(config.task_timeout_millis, 300_000);
+        assert_eq!(config.poll_interval_ms, 2_000);
+        assert_eq!(config.task_timeout_ms, 300_000);
         assert_eq!(config.task_max_retries, 3);
-        assert_eq!(config.heartbeat_interval_millis, 100_000);
-        assert_eq!(config.reclaim_interval_millis, 10_000);
+        assert_eq!(config.heartbeat_interval_ms, 100_000);
+        assert_eq!(config.reclaim_interval_ms, 10_000);
         assert_eq!(config.max_candidates_per_job, 20);
         assert_eq!(config.triage_search_limit, 10);
         assert!((config.tag_similarity_threshold - 0.85).abs() < f64::EPSILON);
@@ -205,11 +205,11 @@ mod tests {
     fn test_serde_roundtrip() {
         let config = WorkerConfig {
             max_concurrent_tasks: 8,
-            poll_interval_millis: 5_000,
-            task_timeout_millis: 600_000,
+            poll_interval_ms: 5_000,
+            task_timeout_ms: 600_000,
             task_max_retries: 5,
-            heartbeat_interval_millis: 200_000,
-            reclaim_interval_millis: 20_000,
+            heartbeat_interval_ms: 200_000,
+            reclaim_interval_ms: 20_000,
             max_candidates_per_job: 50,
             triage_search_limit: 25,
             tag_similarity_threshold: 0.9,
@@ -238,61 +238,61 @@ mod tests {
     #[test]
     fn test_validate_rejects_zero_poll_interval() {
         let config = WorkerConfig {
-            poll_interval_millis: 0,
+            poll_interval_ms: 0,
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("poll_interval_millis")));
+        assert!(errors.iter().any(|e| e.contains("poll_interval_ms")));
     }
 
     #[test]
     fn test_validate_rejects_zero_task_timeout() {
         let config = WorkerConfig {
-            task_timeout_millis: 0,
+            task_timeout_ms: 0,
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("task_timeout_millis")));
+        assert!(errors.iter().any(|e| e.contains("task_timeout_ms")));
     }
 
     #[test]
     fn test_validate_rejects_zero_heartbeat_interval() {
         let config = WorkerConfig {
-            heartbeat_interval_millis: 0,
+            heartbeat_interval_ms: 0,
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("heartbeat_interval_millis"))
+                .any(|e| e.contains("heartbeat_interval_ms"))
         );
     }
 
     #[test]
     fn test_validate_rejects_heartbeat_ge_timeout() {
         let config = WorkerConfig {
-            heartbeat_interval_millis: 300_000,
-            task_timeout_millis: 300_000,
+            heartbeat_interval_ms: 300_000,
+            task_timeout_ms: 300_000,
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("heartbeat_interval_millis"))
+                .any(|e| e.contains("heartbeat_interval_ms"))
         );
     }
 
     #[test]
     fn test_validate_rejects_reclaim_lt_poll() {
         let config = WorkerConfig {
-            reclaim_interval_millis: 1_000,
-            poll_interval_millis: 2_000,
+            reclaim_interval_ms: 1_000,
+            poll_interval_ms: 2_000,
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("reclaim_interval_millis")));
+        assert!(errors.iter().any(|e| e.contains("reclaim_interval_ms")));
     }
 
     #[test]
@@ -385,8 +385,8 @@ mod tests {
     fn test_validate_collects_multiple_errors() {
         let config = WorkerConfig {
             max_concurrent_tasks: 0,
-            poll_interval_millis: 0,
-            task_timeout_millis: 0,
+            poll_interval_ms: 0,
+            task_timeout_ms: 0,
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
