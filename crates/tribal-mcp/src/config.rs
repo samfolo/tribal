@@ -141,11 +141,20 @@ mod tests {
     fn test_from_tribal_config() {
         let tribal = TribalConfig::default();
         let handler = HandlerConfig::from(&tribal);
-        assert_eq!(handler.discovery.default_limit, tribal.discovery.default_limit);
+        assert_eq!(
+            handler.discovery.default_limit,
+            tribal.discovery.default_limit
+        );
         assert_eq!(handler.discovery.max_limit, tribal.discovery.max_limit);
-        assert_eq!(handler.exploration.default_depth, tribal.exploration.default_depth);
+        assert_eq!(
+            handler.exploration.default_depth,
+            tribal.exploration.default_depth
+        );
         assert_eq!(handler.exploration.max_depth, tribal.exploration.max_depth);
-        assert_eq!(handler.exploration.default_limit, tribal.exploration.default_limit);
+        assert_eq!(
+            handler.exploration.default_limit,
+            tribal.exploration.default_limit
+        );
         assert_eq!(handler.exploration.max_limit, tribal.exploration.max_limit);
     }
 
