@@ -78,11 +78,6 @@ fn default_file_directory() -> String {
     dir
 }
 
-fn default_used_temp_dir_fallback() -> bool {
-    let (_, used_temp) = resolve_directory(dirs::state_dir, dirs::data_local_dir, "tribal/logs");
-    used_temp
-}
-
 impl Default for LoggingConfig {
     fn default() -> Self {
         let (file_directory, used_temp_dir_fallback) =
@@ -186,8 +181,10 @@ mod tests {
 
     #[test]
     fn test_used_temp_dir_fallback_not_serialised() {
-        let mut config = LoggingConfig::default();
-        config.used_temp_dir_fallback = true;
+        let config = LoggingConfig {
+            used_temp_dir_fallback: true,
+            ..LoggingConfig::default()
+        };
         let json = serde_json::to_string(&config).unwrap();
         assert!(
             !json.contains("used_temp_dir_fallback"),

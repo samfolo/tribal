@@ -46,8 +46,5 @@ fn test_file_output_writes_to_specified_directory() {
         }
     }
 
-    assert!(
-        found,
-        "log file should contain the emitted event",
-    );
+    assert!(found, "log file should contain the emitted event",);
 }

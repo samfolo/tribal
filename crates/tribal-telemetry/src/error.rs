@@ -83,10 +83,7 @@ mod tests {
     fn test_display_directory_creation() {
         let err = TelemetryError::DirectoryCreation {
             path: "/nonexistent/dir".to_owned(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "permission denied",
-            ),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
         };
         assert_eq!(
             err.to_string(),

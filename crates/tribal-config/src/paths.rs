@@ -48,11 +48,8 @@ mod tests {
 
     #[test]
     fn test_resolve_uses_fallback_when_preferred_absent() {
-        let (path, used_temp) = resolve_directory(
-            || None,
-            || Some(PathBuf::from("/fallback")),
-            "tribal/logs",
-        );
+        let (path, used_temp) =
+            resolve_directory(|| None, || Some(PathBuf::from("/fallback")), "tribal/logs");
         assert_eq!(path, "/fallback/tribal/logs");
         assert!(!used_temp);
     }

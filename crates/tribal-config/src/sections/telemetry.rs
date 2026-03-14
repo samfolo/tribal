@@ -160,8 +160,10 @@ mod tests {
 
     #[test]
     fn test_used_temp_dir_fallback_not_serialised() {
-        let mut config = TelemetryConfig::default();
-        config.used_temp_dir_fallback = true;
+        let config = TelemetryConfig {
+            used_temp_dir_fallback: true,
+            ..TelemetryConfig::default()
+        };
         let json = serde_json::to_string(&config).unwrap();
         assert!(
             !json.contains("used_temp_dir_fallback"),
