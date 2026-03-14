@@ -146,8 +146,7 @@ fn expand_paths(config: &mut TribalConfig) {
     config.prompts.directory = shellexpand::tilde(&config.prompts.directory).into_owned();
     config.telemetry.file_directory =
         shellexpand::tilde(&config.telemetry.file_directory).into_owned();
-    config.logging.file_directory =
-        shellexpand::tilde(&config.logging.file_directory).into_owned();
+    config.logging.file_directory = shellexpand::tilde(&config.logging.file_directory).into_owned();
 }
 
 // ---------------------------------------------------------------------------
