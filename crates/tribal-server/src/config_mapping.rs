@@ -1,8 +1,8 @@
 //! Conversions from full configuration types to consumer-specific projections.
 //!
-//! These live here (not in the consumer crates) because each consumer
-//! crate must remain independent of `tribal-config` to avoid transitive
-//! coupling through `tribal-config`'s interim dependencies.
+//! These live in `tribal-server` (the composition root) because each consumer
+//! crate receives only the subset of configuration it needs, via `From` impls
+//! or free-function projections.
 
 use tribal_config::TribalConfig;
 use tribal_mcp::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
