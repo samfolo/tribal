@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::paths::resolve_directory;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -11,9 +13,6 @@ pub const DEFAULT_OTLP_PROTOCOL: &str = "grpc";
 
 /// Default service name for telemetry spans.
 pub const DEFAULT_SERVICE_NAME: &str = "tribal";
-
-/// Default directory for trace file output.
-pub const DEFAULT_FILE_DIRECTORY: &str = "~/.local/share/tribal";
 
 // ---------------------------------------------------------------------------
 // FileRotation
@@ -68,17 +67,28 @@ pub struct TelemetryConfig {
 
     /// Directory for trace file output.
     ///
-    /// Supports tilde expansion (`~`).
+    /// Resolved at startup via platform-aware defaults:
+    /// `dirs::data_local_dir` → `std::env::temp_dir`,
+    /// each joined with `tribal/traces`.
     #[serde(default = "default_file_directory")]
     pub file_directory: String,
 
     /// Trace file rotation policy.
     #[serde(default)]
     pub file_rotation: FileRotation,
+
+    /// Whether `std::env::temp_dir` was used as a last-resort fallback
+    /// for `file_directory`.
+    ///
+    /// Set automatically during default construction; not serialised.
+    #[serde(skip)]
+    pub used_temp_dir_fallback: bool,
 }
 
 impl Default for TelemetryConfig {
     fn default() -> Self {
+        let (file_directory, used_temp_dir_fallback) =
+            resolve_directory(dirs::data_local_dir, dirs::data_local_dir, "tribal/traces");
         Self {
             enabled: default_enabled(),
             otlp_endpoint: None,
@@ -86,7 +96,8 @@ impl Default for TelemetryConfig {
             service_name: default_service_name(),
             console_export: default_console_export(),
             file_export: false,
-            file_directory: default_file_directory(),
+            file_directory,
+            used_temp_dir_fallback,
             file_rotation: FileRotation::default(),
         }
     }
@@ -109,7 +120,8 @@ const fn default_console_export() -> bool {
 }
 
 fn default_file_directory() -> String {
-    String::from(DEFAULT_FILE_DIRECTORY)
+    let (dir, _) = resolve_directory(dirs::data_local_dir, dirs::data_local_dir, "tribal/traces");
+    dir
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +153,19 @@ mod tests {
         assert_eq!(config.service_name, DEFAULT_SERVICE_NAME);
         assert!(config.console_export);
         assert!(!config.file_export);
-        assert_eq!(config.file_directory, DEFAULT_FILE_DIRECTORY);
+        assert!(!config.file_directory.is_empty());
+        assert!(config.file_directory.ends_with("tribal/traces"));
         assert_eq!(config.file_rotation, FileRotation::Daily);
+    }
+
+    #[test]
+    fn test_used_temp_dir_fallback_not_serialised() {
+        let mut config = TelemetryConfig::default();
+        config.used_temp_dir_fallback = true;
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            !json.contains("used_temp_dir_fallback"),
+            "used_temp_dir_fallback should be skipped during serialisation"
+        );
     }
 }

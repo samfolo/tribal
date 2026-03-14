@@ -34,12 +34,15 @@ pub enum TelemetryError {
         source: tracing_subscriber::filter::ParseError,
     },
 
-    /// File output was requested but no file path was provided.
-    ///
-    /// Set [`LoggingConfig::file_path`](tribal_config::LoggingConfig::file_path)
-    /// to `Some(path)` when using [`LogOutput::File`](tribal_config::LogOutput::File).
-    #[error("file output requested but file_path is None")]
-    FileOutputMissingPath,
+    /// Failed to create the log output directory.
+    #[error("failed to create log directory at {path}")]
+    DirectoryCreation {
+        /// The directory path that could not be created.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
 
     /// Failed to set the global default subscriber.
     ///
@@ -50,16 +53,6 @@ pub enum TelemetryError {
         /// The underlying error from `tracing`.
         #[source]
         source: tracing::subscriber::SetGlobalDefaultError,
-    },
-
-    /// Failed to create or open the log file.
-    #[error("failed to create log file at {path}")]
-    FileCreation {
-        /// The path that could not be opened.
-        path: String,
-        /// The underlying I/O error.
-        #[source]
-        source: std::io::Error,
     },
 }
 
@@ -87,23 +80,17 @@ mod tests {
     }
 
     #[test]
-    fn test_display_file_output_missing_path() {
-        let err = TelemetryError::FileOutputMissingPath;
-        assert_eq!(
-            err.to_string(),
-            "file output requested but file_path is None",
-        );
-    }
-
-    #[test]
-    fn test_display_file_creation() {
-        let err = TelemetryError::FileCreation {
-            path: "/nonexistent/dir/log.jsonl".to_owned(),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such file or directory"),
+    fn test_display_directory_creation() {
+        let err = TelemetryError::DirectoryCreation {
+            path: "/nonexistent/dir".to_owned(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "permission denied",
+            ),
         };
         assert_eq!(
             err.to_string(),
-            "failed to create log file at /nonexistent/dir/log.jsonl",
+            "failed to create log directory at /nonexistent/dir",
         );
     }
 }
