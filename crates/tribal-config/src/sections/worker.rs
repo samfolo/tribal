@@ -5,6 +5,37 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Default maximum number of concurrently executing tasks.
+pub const DEFAULT_MAX_CONCURRENT_TASKS: usize = 4;
+
+/// Default milliseconds between poll cycles.
+pub const DEFAULT_POLL_INTERVAL_MS: u64 = 2_000;
+
+/// Default per-task timeout in milliseconds.
+pub const DEFAULT_TASK_TIMEOUT_MS: u64 = 300_000;
+
+/// Default maximum retries before a task is dead-lettered.
+pub const DEFAULT_TASK_MAX_RETRIES: u32 = 3;
+
+/// Default milliseconds between heartbeat updates for claimed tasks.
+pub const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 100_000;
+
+/// Default milliseconds between stale-task reclaim sweeps.
+pub const DEFAULT_RECLAIM_INTERVAL_MS: u64 = 10_000;
+
+/// Default maximum candidate count per job.
+pub const DEFAULT_MAX_CANDIDATES_PER_JOB: u32 = 20;
+
+/// Default number of similar items returned during triage search.
+pub const DEFAULT_TRIAGE_SEARCH_LIMIT: u32 = 10;
+
+/// Default minimum cosine similarity for semantic tag matching.
+pub const DEFAULT_TAG_SIMILARITY_THRESHOLD: f64 = 0.85;
+
+// ---------------------------------------------------------------------------
 // WorkerConfig
 // ---------------------------------------------------------------------------
 
@@ -12,7 +43,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// All duration fields are expressed as integer milliseconds and converted
 /// to [`Duration`] via convenience methods.  Defaults are applied via
-/// `serde(default)` so that an empty JSON object deserialises to a valid
+/// `serde(default)` so that an empty YAML object deserialises to a valid
 /// configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -124,49 +155,49 @@ impl WorkerConfig {
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_tasks: default_max_concurrent_tasks(),
-            poll_interval_ms: default_poll_interval_ms(),
-            task_timeout_ms: default_task_timeout_ms(),
-            task_max_retries: default_task_max_retries(),
-            heartbeat_interval_ms: default_heartbeat_interval_ms(),
-            reclaim_interval_ms: default_reclaim_interval_ms(),
-            max_candidates_per_job: default_max_candidates_per_job(),
-            triage_search_limit: default_triage_search_limit(),
-            tag_similarity_threshold: default_tag_similarity_threshold(),
+            max_concurrent_tasks: DEFAULT_MAX_CONCURRENT_TASKS,
+            poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
+            task_timeout_ms: DEFAULT_TASK_TIMEOUT_MS,
+            task_max_retries: DEFAULT_TASK_MAX_RETRIES,
+            heartbeat_interval_ms: DEFAULT_HEARTBEAT_INTERVAL_MS,
+            reclaim_interval_ms: DEFAULT_RECLAIM_INTERVAL_MS,
+            max_candidates_per_job: DEFAULT_MAX_CANDIDATES_PER_JOB,
+            triage_search_limit: DEFAULT_TRIAGE_SEARCH_LIMIT,
+            tag_similarity_threshold: DEFAULT_TAG_SIMILARITY_THRESHOLD,
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Defaults
+// Defaults (serde)
 // ---------------------------------------------------------------------------
 
 const fn default_max_concurrent_tasks() -> usize {
-    4
+    DEFAULT_MAX_CONCURRENT_TASKS
 }
 const fn default_poll_interval_ms() -> u64 {
-    2_000
+    DEFAULT_POLL_INTERVAL_MS
 }
 const fn default_task_timeout_ms() -> u64 {
-    300_000
+    DEFAULT_TASK_TIMEOUT_MS
 }
 const fn default_task_max_retries() -> u32 {
-    3
+    DEFAULT_TASK_MAX_RETRIES
 }
 const fn default_heartbeat_interval_ms() -> u64 {
-    100_000
+    DEFAULT_HEARTBEAT_INTERVAL_MS
 }
 const fn default_reclaim_interval_ms() -> u64 {
-    10_000
+    DEFAULT_RECLAIM_INTERVAL_MS
 }
 const fn default_max_candidates_per_job() -> u32 {
-    20
+    DEFAULT_MAX_CANDIDATES_PER_JOB
 }
 const fn default_triage_search_limit() -> u32 {
-    10
+    DEFAULT_TRIAGE_SEARCH_LIMIT
 }
 fn default_tag_similarity_threshold() -> f64 {
-    0.85
+    DEFAULT_TAG_SIMILARITY_THRESHOLD
 }
 
 // ---------------------------------------------------------------------------
@@ -179,25 +210,44 @@ mod tests {
 
     #[test]
     fn test_default_values() {
-        let config: WorkerConfig = serde_json::from_str("{}").unwrap();
-        assert_eq!(config.max_concurrent_tasks, 4);
-        assert_eq!(config.poll_interval_ms, 2_000);
-        assert_eq!(config.task_timeout_ms, 300_000);
-        assert_eq!(config.task_max_retries, 3);
-        assert_eq!(config.heartbeat_interval_ms, 100_000);
-        assert_eq!(config.reclaim_interval_ms, 10_000);
-        assert_eq!(config.max_candidates_per_job, 20);
-        assert_eq!(config.triage_search_limit, 10);
-        assert!((config.tag_similarity_threshold - 0.85).abs() < f64::EPSILON);
+        let yaml = "---";
+        let config: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.max_concurrent_tasks, DEFAULT_MAX_CONCURRENT_TASKS);
+        assert_eq!(config.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
+        assert_eq!(config.task_timeout_ms, DEFAULT_TASK_TIMEOUT_MS);
+        assert_eq!(config.task_max_retries, DEFAULT_TASK_MAX_RETRIES);
+        assert_eq!(config.heartbeat_interval_ms, DEFAULT_HEARTBEAT_INTERVAL_MS);
+        assert_eq!(config.reclaim_interval_ms, DEFAULT_RECLAIM_INTERVAL_MS);
+        assert_eq!(
+            config.max_candidates_per_job,
+            DEFAULT_MAX_CANDIDATES_PER_JOB
+        );
+        assert_eq!(config.triage_search_limit, DEFAULT_TRIAGE_SEARCH_LIMIT);
+        assert!(
+            (config.tag_similarity_threshold - DEFAULT_TAG_SIMILARITY_THRESHOLD).abs()
+                < f64::EPSILON
+        );
     }
 
     #[test]
     fn test_duration_conversions() {
         let config = WorkerConfig::default();
-        assert_eq!(config.poll_interval(), Duration::from_millis(2_000));
-        assert_eq!(config.task_timeout(), Duration::from_millis(300_000));
-        assert_eq!(config.heartbeat_interval(), Duration::from_millis(100_000));
-        assert_eq!(config.reclaim_interval(), Duration::from_millis(10_000));
+        assert_eq!(
+            config.poll_interval(),
+            Duration::from_millis(DEFAULT_POLL_INTERVAL_MS)
+        );
+        assert_eq!(
+            config.task_timeout(),
+            Duration::from_millis(DEFAULT_TASK_TIMEOUT_MS)
+        );
+        assert_eq!(
+            config.heartbeat_interval(),
+            Duration::from_millis(DEFAULT_HEARTBEAT_INTERVAL_MS)
+        );
+        assert_eq!(
+            config.reclaim_interval(),
+            Duration::from_millis(DEFAULT_RECLAIM_INTERVAL_MS)
+        );
     }
 
     #[test]
@@ -213,8 +263,8 @@ mod tests {
             triage_search_limit: 25,
             tag_similarity_threshold: 0.9,
         };
-        let json = serde_json::to_string(&config).unwrap();
-        let parsed: WorkerConfig = serde_json::from_str(&json).unwrap();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let parsed: WorkerConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(config, parsed);
     }
 

@@ -164,9 +164,9 @@ mod tests {
             used_temp_dir_fallback: true,
             ..TelemetryConfig::default()
         };
-        let json = serde_json::to_string(&config).unwrap();
+        let yaml = serde_yaml::to_string(&config).unwrap();
         assert!(
-            !json.contains("used_temp_dir_fallback"),
+            !yaml.contains("used_temp_dir_fallback"),
             "used_temp_dir_fallback should be skipped during serialisation"
         );
     }
