@@ -43,7 +43,7 @@ pub const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 5;
 /// queries and one for worker write-path transactions.  Pool-specific
 /// settings (max connections, statement timeout) are selected by the startup
 /// sequence based on the pool name.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     /// `PostgreSQL` connection URL (e.g.

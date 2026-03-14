@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::subscriber::set_global_default;
-use tracing_appender::rolling::Rotation;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig};
 
@@ -34,8 +34,8 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 ///   has already been called successfully.
 /// - [`TelemetryError::InvalidFilterDirective`] if the filter string
 ///   cannot be parsed.
-/// - [`TelemetryError::DirectoryCreation`] if the log directory cannot
-///   be created.
+/// - [`TelemetryError::FileAppenderInit`] if the rolling file appender
+///   cannot be initialised (e.g. the directory cannot be created).
 /// - [`TelemetryError::SetGlobalDefault`] if another library already
 ///   registered a global subscriber.
 ///
@@ -78,24 +78,21 @@ fn try_init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, Telemet
             (non_blocking, guard)
         }
         LogOutput::File => {
-            std::fs::create_dir_all(&config.file_directory).map_err(|source| {
-                TelemetryError::DirectoryCreation {
-                    path: config.file_directory.clone(),
-                    source,
-                }
-            })?;
-
             let rotation = match config.file_rotation {
                 FileRotation::Daily => Rotation::DAILY,
                 FileRotation::Hourly => Rotation::HOURLY,
                 FileRotation::Never => Rotation::NEVER,
             };
 
-            let appender = tracing_appender::rolling::RollingFileAppender::new(
-                rotation,
-                &config.file_directory,
-                "tribal.log",
-            );
+            let appender = RollingFileAppender::builder()
+                .rotation(rotation)
+                .filename_prefix("tribal")
+                .filename_suffix("jsonl")
+                .build(&config.file_directory)
+                .map_err(|source| TelemetryError::FileAppenderInit {
+                    path: config.file_directory.clone(),
+                    source,
+                })?;
 
             let (non_blocking, guard) = tracing_appender::non_blocking(appender);
             (non_blocking, guard)
@@ -188,8 +185,8 @@ mod tests {
         let result = init_subscriber(&config);
 
         assert!(
-            matches!(result, Err(TelemetryError::DirectoryCreation { .. })),
-            "expected DirectoryCreation, got {result:?}",
+            matches!(result, Err(TelemetryError::FileAppenderInit { .. })),
+            "expected FileAppenderInit, got {result:?}",
         );
         assert!(
             !INITIALISED.load(Ordering::SeqCst),

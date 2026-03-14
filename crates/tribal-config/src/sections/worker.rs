@@ -196,6 +196,7 @@ const fn default_max_candidates_per_job() -> u32 {
 const fn default_triage_search_limit() -> u32 {
     DEFAULT_TRIAGE_SEARCH_LIMIT
 }
+// f64 operations are not const-stable.
 fn default_tag_similarity_threshold() -> f64 {
     DEFAULT_TAG_SIMILARITY_THRESHOLD
 }
