@@ -6,8 +6,6 @@ use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
     service::{RequestContext, RoleServer},
 };
-use sqlx::PgPool;
-use tokio::sync::RwLock;
 use tribal_db::DbError;
 use tribal_domain::{Job, JobId, McpErrorCode, TaskStatus, TaskType, TriageOutcome};
 
@@ -17,7 +15,6 @@ use crate::{
     mapping::{McpJobStatusRequest, McpJobStatusResponse},
     polling::{PollScheduler, TickSource, TimedPollScheduler},
     server_handler::{ConnectionRepositories, TribalServerHandler},
-    session::SessionContext,
 };
 
 // ---------------------------------------------------------------------------
@@ -75,14 +72,7 @@ impl TribalServerHandler {
         let scheduler = TimedPollScheduler {
             interval: POLL_INTERVAL,
         };
-        Self::apply_job_status(
-            &self.pool,
-            &self.repositories,
-            &self.session,
-            params,
-            &scheduler,
-        )
-        .await
+        self.apply_job_status(params, &scheduler).await
     }
 
     /// Core logic for `tribal_job_status`, separated from the outer handler
@@ -94,9 +84,7 @@ impl TribalServerHandler {
     /// polls the database using the provided [`PollScheduler`] until the
     /// job reaches a terminal state or the scheduler's deadline expires.
     async fn apply_job_status<S: PollScheduler>(
-        pool: &PgPool,
-        repositories: &ConnectionRepositories,
-        _session: &RwLock<SessionContext>,
+        &self,
         params: serde_json::Value,
         scheduler: &S,
     ) -> Result<CallToolResult, McpError> {
@@ -122,11 +110,11 @@ impl TribalServerHandler {
         let status_params = JobStatusParams { job_id };
 
         let mut result = {
-            let mut conn = match acquire_connection(pool).await {
+            let mut conn = match acquire_connection(&self.pool).await {
                 Ok(c) => c,
                 Err(call_result) => return Ok(call_result),
             };
-            match execute_job_status(&mut conn, repositories, &status_params).await {
+            match execute_job_status(&mut conn, &self.repositories, &status_params).await {
                 Ok(r) => r,
                 Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
             }
@@ -145,11 +133,11 @@ impl TribalServerHandler {
                 }
 
                 result = {
-                    let mut conn = match acquire_connection(pool).await {
+                    let mut conn = match acquire_connection(&self.pool).await {
                         Ok(c) => c,
                         Err(call_result) => return Ok(call_result),
                     };
-                    match execute_job_status(&mut conn, repositories, &status_params).await {
+                    match execute_job_status(&mut conn, &self.repositories, &status_params).await {
                         Ok(r) => r,
                         Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
                     }
@@ -240,16 +228,20 @@ mod tests {
 
     use rmcp::model::ErrorCode;
     use tokio::sync::RwLock;
-    use tribal_domain::{JobId, JobOutcome, JobStatus, KnowledgeItemId, TaskType};
+    use tribal_domain::{JobId, JobOutcome, JobStatus, KnowledgeItemId, PromptVersionId, TaskType};
     use tribal_test_utils::{
-        MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job, a_task,
-        a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed, lazy_pool,
-        test_context,
+        MockEmbeddingProvider, MockJobRepository, MockTaskRepository, MockTriageResultRepository,
+        a_job, a_task, a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed,
+        lazy_pool, test_context,
     };
 
     use super::*;
     use crate::{
-        polling::ImmediatePollScheduler, session::SessionContext, test_utils::test_repositories,
+        config::HandlerConfig,
+        polling::ImmediatePollScheduler,
+        server_handler::{ActivePromptVersions, TribalServerHandler},
+        session::SessionContext,
+        test_utils::test_repositories,
     };
 
     // -- Constants ---------------------------------------------------------
@@ -259,8 +251,40 @@ mod tests {
 
     // -- Helpers -----------------------------------------------------------
 
-    fn session_without_project() -> Arc<RwLock<SessionContext>> {
-        Arc::new(RwLock::new(SessionContext::new(None, "user:test".into())))
+    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
+        Arc::new(RwLock::new(ActivePromptVersions {
+            extraction_system_prompt_version_id: PromptVersionId::new(),
+            extraction_user_prompt_version_id: PromptVersionId::new(),
+            triage_system_prompt_version_id: PromptVersionId::new(),
+            triage_user_prompt_version_id: PromptVersionId::new(),
+            relation_system_prompt_version_id: PromptVersionId::new(),
+            relation_user_prompt_version_id: PromptVersionId::new(),
+        }))
+    }
+
+    fn test_handler_with_repos(repos: ConnectionRepositories) -> TribalServerHandler {
+        TribalServerHandler::new(
+            lazy_pool(),
+            repos,
+            Arc::new(MockEmbeddingProvider::builder().build()),
+            test_prompt_versions(),
+            SessionContext::new(None, "user:test".into()),
+            HandlerConfig::default(),
+        )
+    }
+
+    fn test_handler_with_pool_and_repos(
+        pool: sqlx::PgPool,
+        repos: ConnectionRepositories,
+    ) -> TribalServerHandler {
+        TribalServerHandler::new(
+            pool,
+            repos,
+            Arc::new(MockEmbeddingProvider::builder().build()),
+            test_prompt_versions(),
+            SessionContext::new(None, "user:test".into()),
+            HandlerConfig::default(),
+        )
     }
 
     async fn call_execute(
@@ -300,39 +324,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_job_status_malformed_json_returns_protocol_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let sess = session_without_project();
+        let handler = test_handler_with_repos(test_repositories());
 
-        let err = TribalServerHandler::apply_job_status(
-            &pool,
-            &repos,
-            &sess,
-            serde_json::json!({"job_id": 123}),
-            &ImmediatePollScheduler,
-        )
-        .await
-        .expect_err("should return Err(McpError) for malformed params");
+        let err = handler
+            .apply_job_status(serde_json::json!({"job_id": 123}), &ImmediatePollScheduler)
+            .await
+            .expect_err("should return Err(McpError) for malformed params");
 
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
     async fn test_apply_job_status_invalid_job_prefix_returns_application_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let sess = session_without_project();
+        let handler = test_handler_with_repos(test_repositories());
 
         let wrong_prefix_id = KnowledgeItemId::new().to_string();
-        let result = TribalServerHandler::apply_job_status(
-            &pool,
-            &repos,
-            &sess,
-            serde_json::json!({"job_id": wrong_prefix_id}),
-            &ImmediatePollScheduler,
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({"job_id": wrong_prefix_id}),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -341,19 +354,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_job_status_wait_seconds_over_30_returns_application_error() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let sess = session_without_project();
+        let handler = test_handler_with_repos(test_repositories());
 
-        let result = TribalServerHandler::apply_job_status(
-            &pool,
-            &repos,
-            &sess,
-            serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 31}),
-            &ImmediatePollScheduler,
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 31}),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -367,19 +376,15 @@ mod tests {
     /// accepted.
     #[tokio::test]
     async fn test_apply_job_status_wait_seconds_at_boundary_30_accepted() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let sess = session_without_project();
+        let handler = test_handler_with_repos(test_repositories());
 
-        let result = TribalServerHandler::apply_job_status(
-            &pool,
-            &repos,
-            &sess,
-            serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 30}),
-            &ImmediatePollScheduler,
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 30}),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -393,19 +398,15 @@ mod tests {
     /// proceed to the pool phase without polling.
     #[tokio::test]
     async fn test_apply_job_status_wait_seconds_zero_accepted() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let sess = session_without_project();
+        let handler = test_handler_with_repos(test_repositories());
 
-        let result = TribalServerHandler::apply_job_status(
-            &pool,
-            &repos,
-            &sess,
-            serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 0}),
-            &ImmediatePollScheduler,
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({"job_id": JobId::new().to_string(), "wait_seconds": 0}),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -419,19 +420,15 @@ mod tests {
     /// pass validation and proceed to the pool phase without polling.
     #[tokio::test]
     async fn test_apply_job_status_wait_seconds_absent_accepted() {
-        let pool = lazy_pool();
-        let repos = test_repositories();
-        let sess = session_without_project();
+        let handler = test_handler_with_repos(test_repositories());
 
-        let result = TribalServerHandler::apply_job_status(
-            &pool,
-            &repos,
-            &sess,
-            serde_json::json!({"job_id": JobId::new().to_string()}),
-            &ImmediatePollScheduler,
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({"job_id": JobId::new().to_string()}),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -643,16 +640,14 @@ mod tests {
                 .build(),
         );
 
-        let sess = session_without_project();
-        let result = TribalServerHandler::apply_job_status(
-            &pool,
-            &repos,
-            &sess,
-            serde_json::json!({"job_id": job_id.to_string()}),
-            &ImmediatePollScheduler,
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({"job_id": job_id.to_string()}),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
@@ -696,19 +691,17 @@ mod tests {
                 .build(),
         );
 
-        let sess = session_without_project();
-        let result = TribalServerHandler::apply_job_status(
-            &pool,
-            &repos,
-            &sess,
-            serde_json::json!({
-                "job_id": job_id.to_string(),
-                "wait_seconds": 5,
-            }),
-            &ImmediatePollScheduler,
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({
+                    "job_id": job_id.to_string(),
+                    "wait_seconds": 5,
+                }),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
@@ -765,19 +758,17 @@ mod tests {
                 .build(),
         );
 
-        let sess = session_without_project();
-        let result = TribalServerHandler::apply_job_status(
-            &pool,
-            &repos,
-            &sess,
-            serde_json::json!({
-                "job_id": job_id.to_string(),
-                "wait_seconds": 5,
-            }),
-            &ImmediatePollScheduler,
-        )
-        .await
-        .expect(NO_PROTOCOL_ERROR);
+        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({
+                    "job_id": job_id.to_string(),
+                    "wait_seconds": 5,
+                }),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
