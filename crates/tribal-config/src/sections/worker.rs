@@ -117,9 +117,7 @@ impl WorkerConfig {
             errors.push("worker.max_candidates_per_job must be greater than zero".into());
         }
         if self.tag_similarity_threshold <= 0.0 || self.tag_similarity_threshold > 1.0 {
-            errors.push(
-                "worker.tag_similarity_threshold must be in the range (0.0, 1.0]".into(),
-            );
+            errors.push("worker.tag_similarity_threshold must be in the range (0.0, 1.0]".into());
         }
     }
 }
@@ -264,9 +262,11 @@ mod tests {
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("heartbeat_interval_millis")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("heartbeat_interval_millis"))
+        );
     }
 
     #[test]
@@ -277,9 +277,11 @@ mod tests {
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("heartbeat_interval_millis")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("heartbeat_interval_millis"))
+        );
     }
 
     #[test]
@@ -290,9 +292,7 @@ mod tests {
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("reclaim_interval_millis")));
+        assert!(errors.iter().any(|e| e.contains("reclaim_interval_millis")));
     }
 
     #[test]
@@ -322,9 +322,11 @@ mod tests {
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("tag_similarity_threshold")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("tag_similarity_threshold"))
+        );
     }
 
     #[test]
@@ -334,9 +336,11 @@ mod tests {
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("tag_similarity_threshold")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("tag_similarity_threshold"))
+        );
     }
 
     #[test]
@@ -346,9 +350,11 @@ mod tests {
             ..WorkerConfig::default()
         };
         let errors = validate_errors(&config);
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("tag_similarity_threshold")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("tag_similarity_threshold"))
+        );
     }
 
     #[test]
@@ -369,7 +375,10 @@ mod tests {
     #[test]
     fn test_validate_accepts_valid_config() {
         let errors = validate_errors(&WorkerConfig::default());
-        assert!(errors.is_empty(), "default config should be valid: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "default config should be valid: {errors:?}"
+        );
     }
 
     #[test]
