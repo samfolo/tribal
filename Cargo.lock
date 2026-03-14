@@ -3917,6 +3917,7 @@ dependencies = [
  "tribal-domain",
  "tribal-inference",
  "tribal-test-utils",
+ "typed-builder",
  "uuid",
 ]
 
