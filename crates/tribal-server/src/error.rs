@@ -7,6 +7,7 @@
 use std::io;
 
 use thiserror::Error;
+use tribal_config::ConfigError;
 
 // ---------------------------------------------------------------------------
 // AppError
@@ -26,6 +27,14 @@ pub enum AppError {
         source: clap::Error,
     },
 
+    /// Configuration loading or validation failed.
+    #[error("{source}")]
+    Config {
+        /// The underlying configuration error.
+        #[source]
+        source: ConfigError,
+    },
+
     /// Failed to write help text to stdout.
     #[error("failed to write help output")]
     HelpOutput {
@@ -38,6 +47,12 @@ pub enum AppError {
 impl From<clap::Error> for AppError {
     fn from(source: clap::Error) -> Self {
         Self::Cli { source }
+    }
+}
+
+impl From<ConfigError> for AppError {
+    fn from(source: ConfigError) -> Self {
+        Self::Config { source }
     }
 }
 
@@ -67,6 +82,19 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("--bind cannot be used with --transport stdio"),
+            "unexpected display: {err}",
+        );
+    }
+
+    #[test]
+    fn test_display_config_error() {
+        let err = AppError::Config {
+            source: ConfigError::ValidationFailed {
+                errors: vec!["database.url must not be empty".into()],
+            },
+        };
+        assert!(
+            err.to_string().contains("database.url"),
             "unexpected display: {err}",
         );
     }
