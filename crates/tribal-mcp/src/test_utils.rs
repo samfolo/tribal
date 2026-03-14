@@ -5,10 +5,10 @@ use tokio::sync::RwLock;
 use tribal_domain::PromptVersionId;
 use tribal_inference::EmbeddingProvider;
 use tribal_test_utils::{
-    MockEmbeddingProvider, MockJobRepository, MockKnowledgeItemRepository,
-    MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
-    MockRelationRepository, MockRetrievalFeedbackRepository, MockStandingRepository,
-    MockTaskRepository, MockTriageResultRepository, lazy_pool,
+    MockEmbeddingProvider, MockJobRepository, MockKnowledgeItemRepository, MockPrincipalRepository,
+    MockProjectRepository, MockReferenceRepository, MockRelationRepository,
+    MockRetrievalFeedbackRepository, MockStandingRepository, MockTaskRepository,
+    MockTriageResultRepository, lazy_pool,
 };
 use typed_builder::TypedBuilder;
 

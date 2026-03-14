@@ -291,8 +291,7 @@ mod tests {
 
     #[test]
     fn test_serve_transport_parsed() {
-        let cli =
-            Cli::try_parse_from(["tribal", "serve", "--transport", "http"]).unwrap();
+        let cli = Cli::try_parse_from(["tribal", "serve", "--transport", "http"]).unwrap();
         let Some(Command::Serve { args }) = cli.command else {
             unreachable!();
         };
@@ -301,8 +300,7 @@ mod tests {
 
     #[test]
     fn test_serve_bind_parsed_as_string() {
-        let cli =
-            Cli::try_parse_from(["tribal", "serve", "--bind", TEST_BIND_ADDR]).unwrap();
+        let cli = Cli::try_parse_from(["tribal", "serve", "--bind", TEST_BIND_ADDR]).unwrap();
         let Some(Command::Serve { args }) = cli.command else {
             unreachable!();
         };

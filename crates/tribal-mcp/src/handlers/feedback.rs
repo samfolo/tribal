@@ -85,10 +85,7 @@ impl TribalServerHandler {
 
     /// Core logic for `tribal_feedback`, separated from the outer handler
     /// so it can be tested without a `Peer<RoleServer>`.
-    async fn apply_feedback(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    async fn apply_feedback(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
         let request: McpFeedbackRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
@@ -196,7 +193,8 @@ impl TribalServerHandler {
             Err(call_result) => return Ok(call_result),
         };
 
-        let feedback = match execute_feedback(&mut conn, &self.repositories, feedback_params).await {
+        let feedback = match execute_feedback(&mut conn, &self.repositories, feedback_params).await
+        {
             Ok(f) => f,
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
@@ -256,20 +254,14 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
-    use tokio::sync::RwLock;
-    use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId};
+    use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
-        MockEmbeddingProvider, MockPrincipalRepository, MockRetrievalFeedbackRepository,
-        a_principal, a_retrieval_feedback, lazy_pool, test_context,
+        MockPrincipalRepository, MockRetrievalFeedbackRepository, a_principal,
+        a_retrieval_feedback, test_context,
     };
 
     use super::*;
-    use crate::{
-        config::HandlerConfig,
-        server_handler::{ActivePromptVersions, TribalServerHandler},
-        session::SessionContext,
-        test_utils::test_repositories,
-    };
+    use crate::test_utils::{TestHandler, test_repositories};
 
     // -- Constants ---------------------------------------------------------
 
@@ -277,42 +269,6 @@ mod tests {
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
 
     // -- Helpers -----------------------------------------------------------
-
-    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-        Arc::new(RwLock::new(ActivePromptVersions {
-            extraction_system_prompt_version_id: PromptVersionId::new(),
-            extraction_user_prompt_version_id: PromptVersionId::new(),
-            triage_system_prompt_version_id: PromptVersionId::new(),
-            triage_user_prompt_version_id: PromptVersionId::new(),
-            relation_system_prompt_version_id: PromptVersionId::new(),
-            relation_user_prompt_version_id: PromptVersionId::new(),
-        }))
-    }
-
-    fn test_handler_with_repos(repos: ConnectionRepositories) -> TribalServerHandler {
-        TribalServerHandler::new(
-            lazy_pool(),
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
-
-    fn test_handler_with_pool_and_repos(
-        pool: sqlx::PgPool,
-        repos: ConnectionRepositories,
-    ) -> TribalServerHandler {
-        TribalServerHandler::new(
-            pool,
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
-    }
 
     fn repos_for_feedback(
         principal: tribal_domain::Principal,
@@ -358,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_feedback_malformed_json_returns_protocol_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let err = handler
             .apply_feedback(serde_json::json!({"trace_id": 123}))
@@ -370,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_feedback_empty_trace_id_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
@@ -390,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_feedback_trace_id_too_long_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
@@ -410,7 +366,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_feedback_empty_query_text_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
@@ -430,7 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_feedback_empty_returned_item_ids_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let result = handler
             .apply_feedback(serde_json::json!({
@@ -449,7 +405,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_feedback_invalid_returned_item_id_prefix_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let wrong_prefix_id = ProjectId::new().to_string();
         let result = handler
@@ -469,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_feedback_invalid_explored_anchor_id_prefix_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let ki_id = KnowledgeItemId::new().to_string();
         let wrong_prefix_id = ProjectId::new().to_string();
@@ -491,7 +447,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_feedback_invalid_rating_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
@@ -515,7 +471,7 @@ mod tests {
     /// validation.
     #[tokio::test]
     async fn test_apply_feedback_lazy_pool_fails_after_validation() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
@@ -545,7 +501,10 @@ mod tests {
 
         let ctx = test_context().await;
         let pool = ctx.create_pool().await.expect("pool");
-        let handler = test_handler_with_pool_and_repos(pool, repos);
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler

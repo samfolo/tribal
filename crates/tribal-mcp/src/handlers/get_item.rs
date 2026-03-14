@@ -95,10 +95,7 @@ impl TribalServerHandler {
     /// returned as error `CallToolResult` values via `IntoMcpError` /
     /// `IntoCallToolResult`. Only protocol-level errors (malformed JSON)
     /// return `Err(McpError)`.
-    async fn apply_get_item(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    async fn apply_get_item(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
         let request: McpGetItemRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
@@ -328,21 +325,15 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::{ErrorCode, RawContent};
-    use tokio::sync::RwLock;
-    use tribal_domain::{ProjectId, PromptVersionId};
+    use tribal_domain::ProjectId;
     use tribal_test_utils::{
-        MockEmbeddingProvider, MockKnowledgeItemRepository, MockPrincipalRepository,
-        MockReferenceRepository, MockStandingRepository, a_knowledge_item, a_principal, a_reference,
-        a_standing, lazy_pool, test_context,
+        MockKnowledgeItemRepository, MockPrincipalRepository, MockReferenceRepository,
+        MockStandingRepository, a_knowledge_item, a_principal, a_reference, a_standing,
+        test_context,
     };
 
     use super::*;
-    use crate::{
-        config::HandlerConfig,
-        server_handler::{ActivePromptVersions, TribalServerHandler},
-        session::SessionContext,
-        test_utils::test_repositories,
-    };
+    use crate::test_utils::{TestHandler, test_repositories};
 
     // -- Constants ---------------------------------------------------------
 
@@ -357,28 +348,6 @@ mod tests {
 
     fn test_principal(id: PrincipalId, key: &str) -> tribal_domain::Principal {
         a_principal().id(id).principal_key(key.to_owned()).build()
-    }
-
-    fn test_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-        Arc::new(RwLock::new(ActivePromptVersions {
-            extraction_system_prompt_version_id: PromptVersionId::new(),
-            extraction_user_prompt_version_id: PromptVersionId::new(),
-            triage_system_prompt_version_id: PromptVersionId::new(),
-            triage_user_prompt_version_id: PromptVersionId::new(),
-            relation_system_prompt_version_id: PromptVersionId::new(),
-            relation_user_prompt_version_id: PromptVersionId::new(),
-        }))
-    }
-
-    fn test_handler_with_repos(repos: ConnectionRepositories) -> TribalServerHandler {
-        TribalServerHandler::new(
-            lazy_pool(),
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        )
     }
 
     fn default_params(item_ids: Vec<KnowledgeItemId>) -> GetItemParams {
@@ -686,14 +655,10 @@ mod tests {
         let found_str = ki_id_found.to_string();
         let missing_str = ki_id_missing.to_string();
 
-        let handler = TribalServerHandler::new(
-            pool,
-            repos,
-            Arc::new(MockEmbeddingProvider::builder().build()),
-            test_prompt_versions(),
-            SessionContext::new(None, "user:test".into()),
-            HandlerConfig::default(),
-        );
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
 
         let result = handler
             .apply_get_item(serde_json::json!({
@@ -727,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_item_ids_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let result = handler
             .apply_get_item(serde_json::json!({"item_ids": []}))
@@ -747,7 +712,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_too_many_item_ids_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let ids: Vec<String> = (0..21)
             .map(|_| KnowledgeItemId::new().to_string())
@@ -771,7 +736,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_prefix_returns_application_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
         let wrong_id = ProjectId::new().to_string();
 
         let result = handler
@@ -786,7 +751,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_returns_protocol_error() {
-        let handler = test_handler_with_repos(test_repositories());
+        let handler = TestHandler::builder().build();
 
         let err = handler
             .apply_get_item(serde_json::json!({"item_ids": 123}))
