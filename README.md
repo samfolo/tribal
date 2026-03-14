@@ -59,4 +59,4 @@ just sqlx-prepare
 
 ## Licence
 
-MIT
+[Elastic License 2.0 (ELv2)](LICENSE)
