@@ -3840,6 +3840,7 @@ dependencies = [
 name = "tribal-config"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "figment",
  "serde",
  "serde_json",

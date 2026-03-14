@@ -8,15 +8,14 @@ use tribal_config::{LogFormat, LogOutput, LoggingConfig};
 #[test]
 fn test_per_target_filter_directive() {
     let dir = tempfile::tempdir().expect("should create temp dir");
-    let log_path = dir.path().join("filter.log");
 
     // Only enable debug for `allowed_target`; everything else stays at error.
     let config = LoggingConfig {
         level: "error,allowed_target=debug".to_owned(),
         format: LogFormat::Json,
         output: LogOutput::File,
-        file_path: Some(log_path.display().to_string()),
-        include_llm_content: false,
+        file_directory: dir.path().display().to_string(),
+        ..LoggingConfig::default()
     };
 
     let guard = tribal_telemetry::init_subscriber(&config).expect("init should succeed");
@@ -32,7 +31,12 @@ fn test_per_target_filter_directive() {
     // all pending writes.
     drop(guard);
 
-    let output = std::fs::read_to_string(&log_path).expect("should read log file");
+    // Read whichever file was created by the rolling appender.
+    let output: String = std::fs::read_dir(dir.path())
+        .expect("should read dir")
+        .filter_map(Result::ok)
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect();
 
     assert!(
         output.contains("allowed debug message"),
