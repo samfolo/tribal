@@ -34,14 +34,17 @@ pub enum TelemetryError {
         source: tracing_subscriber::filter::ParseError,
     },
 
-    /// Failed to create the log output directory.
-    #[error("failed to create log directory at {path}")]
-    DirectoryCreation {
-        /// The directory path that could not be created.
+    /// Failed to initialise the rolling file appender.
+    ///
+    /// Covers directory creation failures, permission errors, and other
+    /// I/O problems during appender setup.
+    #[error("failed to initialise file appender at {path}")]
+    FileAppenderInit {
+        /// The directory path passed to the appender builder.
         path: String,
-        /// The underlying I/O error.
+        /// The underlying initialisation error.
         #[source]
-        source: std::io::Error,
+        source: tracing_appender::rolling::InitError,
     },
 
     /// Failed to set the global default subscriber.
@@ -80,14 +83,22 @@ mod tests {
     }
 
     #[test]
-    fn test_display_directory_creation() {
-        let err = TelemetryError::DirectoryCreation {
-            path: "/nonexistent/dir".to_owned(),
-            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+    fn test_display_file_appender_init() {
+        // Trigger a real InitError by building an appender with an invalid path.
+        let result = tracing_appender::rolling::RollingFileAppender::builder()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("tribal")
+            .filename_suffix("jsonl")
+            .build("/nonexistent/dir/that/cannot/exist");
+
+        let init_error = result.expect_err("should fail for nonexistent directory");
+        let err = TelemetryError::FileAppenderInit {
+            path: "/nonexistent/dir/that/cannot/exist".to_owned(),
+            source: init_error,
         };
         assert_eq!(
             err.to_string(),
-            "failed to create log directory at /nonexistent/dir",
+            "failed to initialise file appender at /nonexistent/dir/that/cannot/exist",
         );
     }
 }

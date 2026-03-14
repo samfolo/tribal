@@ -1,2 +1,3 @@
+# TelemetryConfig has 4 bool fields; default limit is 3.
 max-struct-bools = 4
 too-many-lines-threshold = 150
