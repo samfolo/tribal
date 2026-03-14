@@ -13,6 +13,6 @@ use app::App;
 fn main() {
     if let Err(err) = App::new().run() {
         eprintln!("{err}");
-        process::exit(1);
+        process::exit(err.exit_code());
     }
 }
