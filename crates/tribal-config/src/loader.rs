@@ -23,12 +23,15 @@ const ENV_PREFIX: &str = "TRIBAL_";
 /// `TRIBAL_DATABASE__URL` maps to `database.url`.
 const ENV_SEPARATOR: &str = "__";
 
+/// Top-level scalar fields that should not be overridden via env vars.
+#[cfg(test)]
+const KNOWN_SCALARS: &[&str] = &["version"];
+
 /// Top-level section names in the configuration.
 ///
 /// Only `TRIBAL_*` env vars whose post-prefix-strip, post-split key starts
 /// with one of these sections are accepted.  Stray env vars like
-/// `TRIBAL_CONFIG_PATH` or `TRIBAL_PROJECT_ID` are silently ignored rather
-/// than triggering `deny_unknown_fields` errors.
+/// `TRIBAL_CONFIG_PATH` or `TRIBAL_PROJECT_ID` are silently ignored.
 const KNOWN_SECTIONS: &[&str] = &[
     "server.",
     "database.",
@@ -268,6 +271,19 @@ server:
     }
 
     #[test]
+    fn test_convenience_alias_takes_precedence() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TRIBAL_DATABASE_URL", "postgres://alias-wins/tribal");
+            jail.set_env("TRIBAL_DATABASE__URL", "postgres://nested-loses/tribal");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            assert_eq!(config.database.url, "postgres://alias-wins/tribal");
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_stray_env_var_ignored() {
         Jail::expect_with(|jail| {
             jail.set_env("TRIBAL_CONFIG_PATH", "/some/path");
@@ -341,10 +357,6 @@ server:
             Ok(())
         });
     }
-
-    /// Top-level scalar fields that are not sections and should not be
-    /// overridden via env vars.
-    const KNOWN_SCALARS: &[&str] = &["version"];
 
     #[test]
     fn test_known_sections_covers_all_config_fields() {
