@@ -17,9 +17,9 @@ pub struct LoggingConfig {
     /// Tracing filter directive string.
     ///
     /// Supports per-module granularity, e.g. `"info,tribal_db=debug"`.
-    /// Defaults to `"info"`.  The `TRIBAL_LOG` environment variable
-    /// overrides this field at config loading time, before the subscriber
-    /// is initialised.
+    /// Defaults to `"info"`.  The `TRIBAL_LOG` environment variable,
+    /// mapped by the configuration loader, takes precedence over a
+    /// YAML-supplied value for this field.
     #[serde(default = "default_level")]
     pub level: String,
 
