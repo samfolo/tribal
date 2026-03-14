@@ -3,7 +3,7 @@
 //! This test lives in `tests/` (separate binary) because it installs a
 //! global subscriber.
 
-use tribal_telemetry::{LogFormat, LogOutput, LoggingConfig};
+use tribal_config::{LogFormat, LogOutput, LoggingConfig};
 
 #[test]
 fn test_file_output_writes_to_specified_path() {
