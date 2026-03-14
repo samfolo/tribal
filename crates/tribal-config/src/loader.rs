@@ -342,6 +342,10 @@ server:
         });
     }
 
+    /// Top-level scalar fields that are not sections and should not be
+    /// overridden via env vars.
+    const KNOWN_SCALARS: &[&str] = &["version"];
+
     #[test]
     fn test_known_sections_covers_all_config_fields() {
         let serialised = serde_json::to_value(TribalConfig::default()).unwrap();
@@ -353,11 +357,15 @@ server:
             .collect();
 
         for key in &top_level_keys {
+            if KNOWN_SCALARS.contains(key) {
+                continue;
+            }
             let prefixed = format!("{key}.");
             assert!(
                 KNOWN_SECTIONS.contains(&prefixed.as_str()),
-                "config field \"{key}\" is not listed in KNOWN_SECTIONS — \
-                 add \"{prefixed}\" to the array"
+                "config field \"{key}\" is not listed in KNOWN_SECTIONS or \
+                 KNOWN_SCALARS — add \"{prefixed}\" to KNOWN_SECTIONS or \
+                 \"{key}\" to KNOWN_SCALARS"
             );
         }
 

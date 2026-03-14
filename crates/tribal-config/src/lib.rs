@@ -16,7 +16,7 @@ pub use loader::{CliOverrides, ServerCliOverrides, load_config};
 pub use sections::{
     AuthConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation, InferenceConfig,
     LimitsConfig, PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
-    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig,
+    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig, VERSION,
 };
 pub use validation::validate;
 
