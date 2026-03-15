@@ -7,4 +7,4 @@ mod command;
 mod default_values;
 mod styles;
 
-pub use command::{Cli, Command, ProjectCommand, TokenCommand};
+pub use command::{Cli, Command, ProjectCommand, ServeArgs, TokenCommand};
