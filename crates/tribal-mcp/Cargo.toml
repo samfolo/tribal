@@ -12,6 +12,7 @@ tribal-domain.workspace = true
 tribal-db.workspace = true
 tribal-inference.workspace = true
 chrono = { workspace = true, features = ["serde"] }
+dashmap.workspace = true
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -19,6 +20,7 @@ sqlx.workspace = true
 strum.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+tokio-util.workspace = true
 tracing.workspace = true
 typed-builder.workspace = true
 uuid.workspace = true
