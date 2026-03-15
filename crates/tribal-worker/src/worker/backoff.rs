@@ -10,6 +10,8 @@
 //! Internally, jitter is computed in milliseconds so that low base
 //! durations (2 s, 4 s) still produce non-zero jitter.
 
+use tribal_common::deterministic_jitter;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -45,14 +47,6 @@ const _: () = assert!(
     "JITTER_DIVISOR must equal 1 / JITTER_FRACTION",
 );
 
-/// LCG multiplier from Knuth's MMIX linear congruential generator.
-/// Used by [`deterministic_jitter`] to produce a hash from the retry
-/// count without pulling in a full PRNG crate.
-const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
-
-/// LCG increment from Knuth's MMIX linear congruential generator.
-const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -82,23 +76,6 @@ pub(crate) fn backoff_duration(retry_count: u32, seed: u64) -> chrono::Duration 
     #[allow(clippy::cast_possible_wrap)]
     let total_ms = (base_ms as i64) + jitter_ms;
     chrono::Duration::milliseconds(total_ms.max(1000))
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Produces a deterministic value in `[0, range * 2]` from the retry
-/// count and a per-task seed, using a single LCG step.  This avoids
-/// an RNG dependency while distributing jitter across both the retry
-/// count and the task identity.
-fn deterministic_jitter(retry_count: u32, range: u64, seed: u64) -> u32 {
-    let hash = (u64::from(retry_count) ^ seed)
-        .wrapping_mul(LCG_MULTIPLIER)
-        .wrapping_add(LCG_INCREMENT);
-    #[allow(clippy::cast_possible_truncation)]
-    let result = (hash % (range * 2 + 1)) as u32;
-    result
 }
 
 // ---------------------------------------------------------------------------

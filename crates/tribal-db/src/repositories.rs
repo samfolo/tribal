@@ -12,6 +12,7 @@ mod extraction_result;
 mod item_observation;
 mod job;
 mod knowledge_item;
+mod migration;
 mod principal;
 mod project;
 mod prompt_version;
@@ -41,6 +42,7 @@ pub use knowledge_item::{
     KnowledgeItemRepository, NewKnowledgeItem, PgKnowledgeItemRepository, SemanticSearchParams,
     SemanticSearchResponse, SemanticSearchResult,
 };
+pub use migration::{MigrationRepository, PgMigrationRepository};
 pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
 pub use project::{NewProject, PgProjectRepository, ProjectRepository};
 pub use prompt_version::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
