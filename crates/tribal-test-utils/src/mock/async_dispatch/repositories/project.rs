@@ -1,7 +1,7 @@
 //! Mock implementation of [`ProjectRepository`].
 
 use tribal_db::{NewProject, ProjectRepository};
-use tribal_domain::{Project, ProjectId};
+use tribal_domain::{GitRemote, Project, ProjectId};
 
 use super::mock_repository;
 
@@ -11,8 +11,8 @@ mock_repository! {
             (new_project: &NewProject) { new_project.clone() };
         find_by_id(ProjectId => Project)
             (id: ProjectId) { id };
-        find_by_git_remote(String => Option<Project>)
-            (git_remote: &str) { git_remote.to_owned() };
+        find_by_git_remote(GitRemote => Option<Project>)
+            (git_remote: &GitRemote) { git_remote.clone() };
         list(() => Vec<Project>)
             () { () }
     }
@@ -174,7 +174,7 @@ mod tests {
         let mut tx = ctx.begin_test().await.expect(EXPECT_BEGIN);
 
         let new_project = NewProject::builder()
-            .git_remote("git@github.com:user/test.git".to_owned())
+            .git_remote(GitRemote::from_parts("github.com", "user/test", None))
             .name("test".to_owned())
             .default_branch("main".to_owned())
             .schema_version(1)

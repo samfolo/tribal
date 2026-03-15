@@ -23,7 +23,7 @@ impl From<&SessionContext> for serde_json::Value {
             serde_json::json!({
                 "id": p.id.to_string(),
                 "name": p.name,
-                "git_remote": p.git_remote,
+                "git_remote": p.git_remote.to_string(),
             })
         });
 
@@ -96,7 +96,7 @@ impl From<&SessionContext> for McpSetContextResponse {
             project: ctx.project.as_ref().map(|p| McpSessionProject {
                 id: p.id.to_string(),
                 name: p.name.clone(),
-                git_remote: p.git_remote.clone(),
+                git_remote: p.git_remote.to_string(),
             }),
             principal_key: ctx.principal_key.clone(),
             actor: McpSessionActor {
@@ -166,7 +166,9 @@ mod tests {
             Some(SessionProject {
                 id,
                 name: "tribal".into(),
-                git_remote: "git@github.com:user/tribal.git".into(),
+                git_remote: "git@github.com:user/tribal.git"
+                    .parse()
+                    .expect("valid test git remote"),
             }),
             "user:sam".into(),
         );
@@ -176,7 +178,7 @@ mod tests {
         let project = &json["project"];
         assert_eq!(project["id"], id.to_string());
         assert_eq!(project["name"], "tribal");
-        assert_eq!(project["git_remote"], "git@github.com:user/tribal.git");
+        assert_eq!(project["git_remote"], "github.com/user/tribal");
         assert_eq!(json["principal_key"], "user:sam");
     }
 
@@ -228,7 +230,9 @@ mod tests {
             Some(SessionProject {
                 id,
                 name: "tribal".into(),
-                git_remote: "git@github.com:user/tribal.git".into(),
+                git_remote: "git@github.com:user/tribal.git"
+                    .parse()
+                    .expect("valid test git remote"),
             }),
             "user:sam".into(),
         );
@@ -258,7 +262,9 @@ mod tests {
             Some(SessionProject {
                 id: ProjectId::new(),
                 name: "tribal".into(),
-                git_remote: "git@github.com:user/tribal.git".into(),
+                git_remote: "git@github.com:user/tribal.git"
+                    .parse()
+                    .expect("valid test git remote"),
             }),
             "user:sam".into(),
         );

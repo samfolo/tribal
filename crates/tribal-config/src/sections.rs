@@ -18,14 +18,23 @@ mod worker;
 
 pub use auth::AuthConfig;
 pub use database::DatabaseConfig;
-pub use discovery::DiscoveryConfig;
+pub use discovery::{
+    DEFAULT_LIMIT as DEFAULT_DISCOVERY_LIMIT, DEFAULT_MAX_LIMIT as DEFAULT_DISCOVERY_MAX_LIMIT,
+    DiscoveryConfig,
+};
 pub use embedding::EmbeddingConfig;
-pub use exploration::ExplorationConfig;
+pub use exploration::{
+    DEFAULT_DEPTH as DEFAULT_EXPLORATION_DEPTH, DEFAULT_LIMIT as DEFAULT_EXPLORATION_LIMIT,
+    DEFAULT_MAX_DEPTH as DEFAULT_EXPLORATION_MAX_DEPTH,
+    DEFAULT_MAX_LIMIT as DEFAULT_EXPLORATION_MAX_LIMIT, ExplorationConfig,
+};
 pub use inference::{InferenceConfig, StageInferenceConfig};
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
 pub use prompts::PromptsConfig;
-pub use provider_kind::ProviderKind;
+pub use provider_kind::{
+    DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL, ProviderKind,
+};
 pub use root::{TribalConfig, VERSION};
 pub use server::{ServerConfig, SseConfig};
 pub use telemetry::{FileRotation, TelemetryConfig};

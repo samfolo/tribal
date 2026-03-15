@@ -20,9 +20,9 @@ strum.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+typed-builder.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 tribal-test-utils.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
-typed-builder.workspace = true

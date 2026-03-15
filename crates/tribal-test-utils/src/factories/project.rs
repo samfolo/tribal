@@ -1,12 +1,12 @@
 use chrono::Utc;
 use tribal_db::NewProject;
-use tribal_domain::{Project, ProjectId};
+use tribal_domain::{GitRemote, Project, ProjectId};
 
 define_factory! {
     /// Factory for [`Project`] instances.
     pub struct ProjectFactory for Project {
         id: ProjectId = ProjectId::new(),
-        git_remote: String = "git@github.com:test/test-project.git".to_owned(),
+        git_remote: GitRemote = GitRemote::from_parts("github.com", "test/test-project", None),
         name: String = "test-project".to_owned(),
         default_branch: String = "main".to_owned(),
         project_type: Option<String> = None,
@@ -20,7 +20,7 @@ define_factory! {
 define_factory! {
     /// Factory for [`NewProject`] instances used in repository insert operations.
     pub struct NewProjectFactory for NewProject {
-        git_remote: String = "git@github.com:test/test-project.git".to_owned(),
+        git_remote: GitRemote = GitRemote::from_parts("github.com", "test/test-project", None),
         name: String = "test-project".to_owned(),
         default_branch: String = "main".to_owned(),
         project_type: Option<String> = None,

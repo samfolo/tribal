@@ -22,6 +22,7 @@ use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
+use tribal_common::{clamp_to_i32, clamp_to_u32};
 use tribal_db::{
     NewTagEmbedding, NewTokenUsage, PgTagEmbeddingRepository, PgTokenUsageRepository,
     TagEmbeddingRepository, TokenUsageRepository,
@@ -29,10 +30,7 @@ use tribal_db::{
 use tribal_domain::{EmbeddingPurpose, TokenUsageStage};
 use tribal_inference::{EmbeddingProvider, EmbeddingRequest, EmbeddingUsage};
 
-use crate::{
-    common::{clamp_to_i32, clamp_to_u32},
-    error::SEMAPHORE_CLOSED,
-};
+use crate::error::SEMAPHORE_CLOSED;
 
 // ---------------------------------------------------------------------------
 // Constants

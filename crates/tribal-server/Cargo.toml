@@ -8,9 +8,23 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+gix.workspace = true
+gethostname.workspace = true
+reqwest.workspace = true
+shellexpand.workspace = true
+sqlx.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+tribal-common.workspace = true
 tribal-config.workspace = true
+tribal-db.workspace = true
 tribal-domain.workspace = true
+tribal-inference.workspace = true
 tribal-mcp.workspace = true
-tribal-worker.workspace = true
 tribal-telemetry.workspace = true
+tribal-worker.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

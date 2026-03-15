@@ -233,7 +233,7 @@ pub struct TokenRevokeAllArgs {}
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use tribal_config::TransportKind;
+    use tribal_config::{ENV_CONFIG_PATH, ENV_PROJECT_ID, TransportKind};
 
     use super::*;
 
@@ -378,5 +378,41 @@ mod tests {
     fn test_no_subcommand_is_none() {
         let cli = Cli::try_parse_from(["tribal"]).unwrap();
         assert!(cli.command.is_none());
+    }
+
+    // -- Env var / constant alignment ----------------------------------------
+
+    /// Verifies that the clap `env` attribute on `--config` matches
+    /// [`ENV_CONFIG_PATH`].
+    #[test]
+    fn test_config_env_matches_constant() {
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "config")
+            .expect("--config arg must exist");
+        assert_eq!(
+            arg.get_env().expect("--config must have env").to_str(),
+            Some(ENV_CONFIG_PATH),
+        );
+    }
+
+    /// Verifies that the clap `env` attribute on `serve --project` matches
+    /// [`ENV_PROJECT_ID`].
+    #[test]
+    fn test_project_env_matches_constant() {
+        let cmd = Cli::command();
+        let serve = cmd
+            .get_subcommands()
+            .find(|s| s.get_name() == "serve")
+            .expect("serve subcommand must exist");
+        let arg = serve
+            .get_arguments()
+            .find(|a| a.get_id() == "project")
+            .expect("--project arg must exist");
+        assert_eq!(
+            arg.get_env().expect("--project must have env").to_str(),
+            Some(ENV_PROJECT_ID),
+        );
     }
 }

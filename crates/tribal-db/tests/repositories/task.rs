@@ -3,7 +3,7 @@ use tribal_db::{
     DbError, JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
     PgTaskRepository, PrincipalRepository, ProjectRepository, TaskRepository,
 };
-use tribal_domain::{JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
+use tribal_domain::{GitRemote, JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use tribal_test_utils::{
     a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_task,
     backdate_task_heartbeat, count_tasks_by_status, insert_prompt_version, set_retry_count,
@@ -31,7 +31,11 @@ async fn setup_task_prerequisites(txn: &mut sqlx::PgConnection, suffix: &str) ->
         .insert(
             txn,
             &a_new_project()
-                .git_remote(format!("git@github.com:test/task-{suffix}.git"))
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/task-{suffix}"),
+                    None,
+                ))
                 .build(),
         )
         .await

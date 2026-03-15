@@ -4,7 +4,9 @@
 
 mod app;
 mod cli;
+mod commands;
 mod error;
+mod startup;
 
 use std::process;
 
@@ -13,6 +15,6 @@ use app::App;
 fn main() {
     if let Err(err) = App::new().run() {
         eprintln!("{err}");
-        process::exit(1);
+        process::exit(err.exit_code());
     }
 }

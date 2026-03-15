@@ -3,6 +3,7 @@
 //! MCP layer for Tribal: rmcp integration, tool handlers, session
 //! state management, and transport setup (stdio, HTTP, SSE).
 
+mod app_state;
 mod auth;
 mod config;
 mod error;
@@ -16,6 +17,7 @@ mod session;
 mod test_utils;
 mod tools;
 
+pub use app_state::{AppState, ResolvedProject};
 pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
 pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};

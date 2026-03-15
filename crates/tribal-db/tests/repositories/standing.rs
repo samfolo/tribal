@@ -5,7 +5,7 @@ use tribal_db::{
     StandingRepository,
 };
 use tribal_domain::{
-    EpisodeId, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationKind,
+    EpisodeId, GitRemote, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationKind,
 };
 use tribal_test_utils::{
     a_new_item_observation, a_new_knowledge_item, a_new_knowledge_item_relation, a_new_principal,
@@ -35,7 +35,11 @@ async fn setup_prerequisites(
         .insert(
             txn,
             &a_new_project()
-                .git_remote(format!("git@github.com:test/standing-{suffix}.git"))
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/standing-{suffix}"),
+                    None,
+                ))
                 .build(),
         )
         .await
@@ -249,7 +253,11 @@ async fn test_compute_diversity_metrics() {
         .insert(
             &mut txn,
             &a_new_project()
-                .git_remote("git@github.com:test/standing-diversity-2.git".to_owned())
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    "test/standing-diversity-2",
+                    None,
+                ))
                 .build(),
         )
         .await

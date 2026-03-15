@@ -67,10 +67,11 @@ impl TribalServerHandler {
                 }
             };
 
-            let mut conn = match acquire_connection(&self.pool).await {
-                Ok(c) => c,
-                Err(call_result) => return Ok((call_result, false)),
-            };
+            let mut conn =
+                match acquire_connection(&self.state.pool_mcp, self.config.pool_name).await {
+                    Ok(c) => c,
+                    Err(call_result) => return Ok((call_result, false)),
+                };
 
             match resolve_project(&mut conn, &self.repositories, proj_id).await {
                 Ok(p) => Some(p),
@@ -124,7 +125,7 @@ async fn resolve_project(
     Ok(SessionProject {
         id: project.id(),
         name: project.name().to_owned(),
-        git_remote: project.git_remote().to_owned(),
+        git_remote: project.git_remote().clone(),
     })
 }
 
@@ -186,7 +187,7 @@ mod tests {
 
         assert_eq!(result.id, project.id());
         assert_eq!(result.name, project.name());
-        assert_eq!(result.git_remote, project.git_remote());
+        assert_eq!(result.git_remote, *project.git_remote());
     }
 
     #[tokio::test]
@@ -313,13 +314,16 @@ mod tests {
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["project"]["id"], project.id().to_string());
         assert_eq!(structured["project"]["name"], project.name());
-        assert_eq!(structured["project"]["git_remote"], project.git_remote());
+        assert_eq!(
+            structured["project"]["git_remote"],
+            project.git_remote().as_str()
+        );
 
         let guard = handler.session.read().await;
         let session_project = guard.project.as_ref().expect("project must be set");
         assert_eq!(session_project.id, project.id());
         assert_eq!(session_project.name, project.name());
-        assert_eq!(session_project.git_remote, project.git_remote());
+        assert_eq!(session_project.git_remote, *project.git_remote());
     }
 
     #[tokio::test]

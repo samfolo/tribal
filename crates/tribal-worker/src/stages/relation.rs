@@ -7,6 +7,7 @@ use std::{
 
 use tokio::sync::Semaphore;
 use tracing::Instrument;
+use tribal_common::clamp_to_u32;
 use tribal_db::{
     ExtractionResultRepository, KnowledgeItemRepository, NewKnowledgeItemRelation,
     PgExtractionResultRepository, PgKnowledgeItemRepository, PgTriageResultRepository,
@@ -21,7 +22,7 @@ use tribal_inference::{InferenceProvider, ProviderKey, Usage};
 
 use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{
-    common::{PARSE_PREVIEW_LENGTH, clamp_to_u32},
+    common::PARSE_PREVIEW_LENGTH,
     error::{SEMAPHORE_CLOSED, STAGE_RELATION, StageError},
     parsing::{RelationEdge, RelationTarget, parse_relation_response},
     prompt::{
