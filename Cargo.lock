@@ -4601,11 +4601,13 @@ name = "tribal-domain"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dashmap",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "strum",
  "thiserror 2.0.18",
+ "tokio",
  "typed-builder",
  "uuid",
 ]
