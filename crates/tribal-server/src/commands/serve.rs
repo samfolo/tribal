@@ -10,7 +10,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use dashmap::DashMap;
 use tokio::{
     runtime::Builder,
-    sync::{RwLock, oneshot},
+    sync::{RwLock, oneshot, watch},
 };
 use tokio_util::sync::CancellationToken;
 use tribal_config::{TribalConfig, load_config, validate};
@@ -55,7 +55,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let _telemetry_guard = tribal_telemetry::init_subscriber(&config.logging)?;
 
     let cancellation_token = CancellationToken::new();
-    let job_state_txs: Arc<DashMap<JobId, tokio::sync::watch::Sender<()>>> =
+    let job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>> =
         Arc::new(DashMap::new());
 
     // -- Main runtime --------------------------------------------------------
@@ -146,7 +146,7 @@ async fn bootstrap(
     cli_project: Option<String>,
     _handler_config: HandlerConfig,
     cancellation_token: CancellationToken,
-    job_state_txs: Arc<DashMap<JobId, tokio::sync::watch::Sender<()>>>,
+    job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
 ) -> Result<(Arc<AppState>, Arc<Worker>), AppError> {
     // -- Database pools ------------------------------------------------------
 
