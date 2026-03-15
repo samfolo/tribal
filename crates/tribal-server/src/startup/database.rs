@@ -21,6 +21,7 @@ pub(crate) async fn create_pool_with_retry(
     statement_timeout_ms: u64,
     max_attempts: u32,
 ) -> Result<sqlx::PgPool, AppError> {
+    let max_attempts = max_attempts.max(1);
     let mut backoff = POOL_RETRY_INITIAL_BACKOFF;
 
     // Attempts 1..(max_attempts-1) retry with backoff; the final attempt

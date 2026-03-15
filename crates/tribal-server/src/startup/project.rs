@@ -96,7 +96,8 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
 }
 
 /// Discovers the git repository from the current working directory,
-/// reads the origin remote URL, and looks up the project in the database.
+/// reads the default fetch remote URL, and looks up the project in the
+/// database.
 async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>, AppError> {
     let Some(remote_url) = discover_origin_url(Path::new(".")) else {
         return Ok(None);
@@ -134,9 +135,9 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
 }
 
 /// Uses `gix` to discover the git repository starting from `start_dir`
-/// and extract the origin remote URL, returning it as a [`GitRemote`]
-/// in canonical form. Returns `None` if discovery fails or origin is
-/// not configured.
+/// and extract the default fetch remote URL, returning it as a
+/// [`GitRemote`] in canonical form. Returns `None` if discovery fails
+/// or no default fetch remote is configured.
 fn discover_origin_url(start_dir: &Path) -> Option<GitRemote> {
     let repo = match gix::discover(start_dir) {
         Ok(repo) => repo,

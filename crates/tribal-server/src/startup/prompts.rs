@@ -76,7 +76,14 @@ pub(crate) async fn ensure_prompt_files(prompts_dir: &Path) -> Result<(), AppErr
             })?;
 
         let file_path = stage_dir.join(format!("{}.tera", role.as_str()));
-        if !tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
+        let exists =
+            tokio::fs::try_exists(&file_path)
+                .await
+                .map_err(|source| AppError::PromptIo {
+                    context: format!("check existence of {}", file_path.display()),
+                    source,
+                })?;
+        if !exists {
             let content = embedded_default(*stage, *role);
             tokio::fs::write(&file_path, content)
                 .await

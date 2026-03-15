@@ -1,6 +1,7 @@
 //! Migration infrastructure repository: first-run detection and advisory
 //! lock coordination.
 
+use async_trait::async_trait;
 use sqlx::PgConnection;
 
 use crate::error::DbError;
@@ -10,30 +11,31 @@ use crate::error::DbError;
 // ---------------------------------------------------------------------------
 
 /// Data access operations for migration infrastructure.
+///
+/// All methods take `&mut PgConnection` as an explicit executor,
+/// keeping the repository pool-agnostic.
+#[async_trait]
 pub trait MigrationRepository {
     /// Returns `true` if the `_sqlx_migrations` table exists.
-    fn has_migrations_table(
-        &self,
-        conn: &mut PgConnection,
-    ) -> impl Future<Output = Result<bool, DbError>> + Send;
+    async fn has_migrations_table(&self, conn: &mut PgConnection) -> Result<bool, DbError>;
 
     /// Attempts to acquire the Postgres advisory lock identified by
     /// `lock_id`.  Returns `true` if the lock was acquired, `false` if
     /// it is already held by another session.
-    fn try_advisory_lock(
+    async fn try_advisory_lock(
         &self,
         conn: &mut PgConnection,
         lock_id: i64,
-    ) -> impl Future<Output = Result<bool, DbError>> + Send;
+    ) -> Result<bool, DbError>;
 
     /// Releases the Postgres advisory lock identified by `lock_id`.
     /// Returns `true` if the lock was held and released, `false` if it
     /// was not held.
-    fn release_advisory_lock(
+    async fn release_advisory_lock(
         &self,
         conn: &mut PgConnection,
         lock_id: i64,
-    ) -> impl Future<Output = Result<bool, DbError>> + Send;
+    ) -> Result<bool, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +45,7 @@ pub trait MigrationRepository {
 /// Postgres implementation of [`MigrationRepository`].
 pub struct PgMigrationRepository;
 
+#[async_trait]
 impl MigrationRepository for PgMigrationRepository {
     async fn has_migrations_table(&self, conn: &mut PgConnection) -> Result<bool, DbError> {
         let exists: bool = sqlx::query_scalar(

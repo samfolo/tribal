@@ -11,6 +11,7 @@ clap.workspace = true
 gix.workspace = true
 gethostname.workspace = true
 rand.workspace = true
+reqwest.workspace = true
 sha2.workspace = true
 shellexpand.workspace = true
 sqlx.workspace = true
