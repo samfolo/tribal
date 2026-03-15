@@ -164,11 +164,20 @@ impl AppError {
         }
     }
 
-    /// Wraps a pool-acquire failure as `AppError::Database`.
+    /// Wraps a pool-acquire failure as the appropriate `AppError` variant.
     ///
-    /// Used by startup modules that need a connection from an already-created
-    /// pool.
-    pub(crate) fn pool_acquire(context: &str, source: sqlx::Error) -> Self {
+    /// `PoolTimedOut` is mapped to [`DbError::PoolExhausted`] (preserving
+    /// the pool name); all other errors become [`DbError::QueryFailed`].
+    pub(crate) fn pool_acquire(
+        pool_name: &'static str,
+        context: &str,
+        source: sqlx::Error,
+    ) -> Self {
+        if matches!(source, sqlx::Error::PoolTimedOut) {
+            return Self::Database {
+                source: DbError::PoolExhausted { pool_name },
+            };
+        }
         Self::Database {
             source: DbError::QueryFailed {
                 context: context.into(),

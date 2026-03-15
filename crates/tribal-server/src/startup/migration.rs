@@ -4,8 +4,12 @@ use sqlx::PgPool;
 use tribal_common::random_duration_in_range;
 use tribal_db::{MigrationRepository, PgMigrationRepository};
 
-use super::constants::{
-    ADVISORY_LOCK_ID, MIGRATION_MAX_ATTEMPTS, MIGRATION_RETRY_SLEEP_MAX, MIGRATION_RETRY_SLEEP_MIN,
+use super::{
+    POOL_NAME_MCP,
+    constants::{
+        ADVISORY_LOCK_ID, MIGRATION_MAX_ATTEMPTS, MIGRATION_RETRY_SLEEP_MAX,
+        MIGRATION_RETRY_SLEEP_MIN,
+    },
 };
 use crate::error::AppError;
 
@@ -22,7 +26,7 @@ pub(crate) async fn check_first_run(pool: &PgPool) -> Result<(), AppError> {
     let mut conn = pool
         .acquire()
         .await
-        .map_err(|e| AppError::pool_acquire("first-run check", e))?;
+        .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "first-run check", e))?;
 
     let exists = repo
         .has_migrations_table(&mut conn)
@@ -48,7 +52,7 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
         let mut conn = pool
             .acquire()
             .await
-            .map_err(|e| AppError::pool_acquire("migration", e))?;
+            .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "migration", e))?;
 
         let acquired = repo
             .try_advisory_lock(&mut conn, ADVISORY_LOCK_ID)
