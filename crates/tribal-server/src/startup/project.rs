@@ -3,6 +3,7 @@
 //! Resolution order: CLI flag → `TRIBAL_PROJECT_ID` env var → git remote
 //! heuristic → `None`.
 
+use gix::remote::Direction;
 use sqlx::PgPool;
 use tribal_config::ENV_PROJECT_ID;
 use tribal_db::{PgProjectRepository, ProjectRepository};
@@ -143,7 +144,7 @@ fn discover_origin_url() -> Option<String> {
         }
     };
 
-    let remote = match repo.find_default_remote(gix::remote::Direction::Fetch) {
+    let remote = match repo.find_default_remote(Direction::Fetch) {
         Some(Ok(remote)) => remote,
         Some(Err(e)) => {
             tracing::debug!(%e, "failed to read default fetch remote");
@@ -156,7 +157,7 @@ fn discover_origin_url() -> Option<String> {
     };
 
     remote
-        .url(gix::remote::Direction::Fetch)
+        .url(Direction::Fetch)
         .map(|url| url.to_bstring().to_string())
 }
 

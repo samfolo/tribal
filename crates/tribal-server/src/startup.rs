@@ -19,5 +19,5 @@ pub(crate) use migration::{check_first_run, run_migrations};
 pub(crate) use project::resolve_project;
 pub(crate) use prompts::{ensure_prompt_files, load_prompts};
 pub(crate) use providers::{
-    build_embedding_provider, build_inference_provider, build_provider_registry, probe_embedding,
+    build_embedding_provider, build_inference_provider, build_provider_registry,
 };
