@@ -1,6 +1,6 @@
 //! Provider registry construction, provider instantiation, and embedding probe.
 
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use tribal_config::{
     ConfigError, EmbeddingConfig, ProviderKind, StageInferenceConfig, TribalConfig,
@@ -33,12 +33,10 @@ const ANTHROPIC_EMBEDDING_UNSUPPORTED: &str =
 /// embedding and inference configurations.
 pub(crate) fn build_provider_registry(config: &TribalConfig) -> Result<ProviderRegistry, AppError> {
     let mut entries: Vec<(ProviderKey, ProviderLimits)> = Vec::new();
-    let mut seen: HashSet<(ProviderKind, String, RequestClass)> = HashSet::new();
 
     // Embedding provider entry.
     add_entry(
         &mut entries,
-        &mut seen,
         config.embedding.provider,
         config.embedding.base_url.as_ref(),
         RequestClass::Embedding,
@@ -53,7 +51,6 @@ pub(crate) fn build_provider_registry(config: &TribalConfig) -> Result<ProviderR
     ] {
         add_entry(
             &mut entries,
-            &mut seen,
             stage.provider,
             stage.base_url.as_ref(),
             RequestClass::Inference,
@@ -148,10 +145,10 @@ pub(crate) fn build_inference_provider(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Adds a deduplicated registry entry.
+/// Adds a registry entry, skipping duplicates based on the normalised
+/// [`ProviderKey`].
 fn add_entry(
     entries: &mut Vec<(ProviderKey, ProviderLimits)>,
-    seen: &mut HashSet<(ProviderKind, String, RequestClass)>,
     provider: ProviderKind,
     base_url: Option<&String>,
     request_class: RequestClass,
@@ -161,7 +158,8 @@ fn add_entry(
     let key = ProviderKey::new(provider.to_string(), &url, request_class)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
-    if seen.insert((provider, url, request_class)) {
+    let already_present = entries.iter().any(|(k, _)| k == &key);
+    if !already_present {
         let limits_config =
             config
                 .limits
