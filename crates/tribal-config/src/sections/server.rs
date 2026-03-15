@@ -20,6 +20,12 @@ pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
 /// Default SSE keepalive interval in milliseconds.
 pub const DEFAULT_KEEPALIVE_INTERVAL_MS: u64 = 30_000;
 
+/// Default terminal watch-entry TTL in seconds.
+pub const DEFAULT_JOB_STATE_TTL_SECONDS: u64 = 300;
+
+/// Default hard watch-entry TTL in seconds.
+pub const DEFAULT_JOB_STATE_HARD_TTL_SECONDS: u64 = 3_600;
+
 const fn default_shutdown_deadline_ms() -> u64 {
     DEFAULT_SHUTDOWN_DEADLINE_MS
 }
@@ -34,6 +40,14 @@ const fn default_idle_timeout_ms() -> u64 {
 
 const fn default_keepalive_interval_ms() -> u64 {
     DEFAULT_KEEPALIVE_INTERVAL_MS
+}
+
+const fn default_job_state_ttl_seconds() -> u64 {
+    DEFAULT_JOB_STATE_TTL_SECONDS
+}
+
+const fn default_job_state_hard_ttl_seconds() -> u64 {
+    DEFAULT_JOB_STATE_HARD_TTL_SECONDS
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +76,16 @@ pub struct ServerConfig {
     #[serde(default = "default_shutdown_deadline_ms")]
     pub shutdown_deadline_ms: u64,
 
+    /// How long to retain a watch-channel entry after the job reaches a
+    /// terminal state, in seconds.
+    #[serde(default = "default_job_state_ttl_seconds")]
+    pub job_state_ttl_seconds: u64,
+
+    /// Hard upper bound on watch-channel entry lifetime regardless of
+    /// terminal state, in seconds.
+    #[serde(default = "default_job_state_hard_ttl_seconds")]
+    pub job_state_hard_ttl_seconds: u64,
+
     /// SSE-specific connection settings.
     #[serde(default)]
     pub sse: SseConfig,
@@ -73,6 +97,8 @@ impl Default for ServerConfig {
             transport: TransportKind::default(),
             bind_address: None,
             shutdown_deadline_ms: default_shutdown_deadline_ms(),
+            job_state_ttl_seconds: default_job_state_ttl_seconds(),
+            job_state_hard_ttl_seconds: default_job_state_hard_ttl_seconds(),
             sse: SseConfig::default(),
         }
     }
@@ -129,6 +155,11 @@ mod tests {
         assert_eq!(config.transport, TransportKind::Stdio);
         assert_eq!(config.bind_address, None);
         assert_eq!(config.shutdown_deadline_ms, DEFAULT_SHUTDOWN_DEADLINE_MS);
+        assert_eq!(config.job_state_ttl_seconds, DEFAULT_JOB_STATE_TTL_SECONDS);
+        assert_eq!(
+            config.job_state_hard_ttl_seconds,
+            DEFAULT_JOB_STATE_HARD_TTL_SECONDS
+        );
     }
 
     #[test]
