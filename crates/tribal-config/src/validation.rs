@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 
 use crate::{
     error::ConfigError,
-    sections::{TransportKind, TribalConfig},
+    sections::{ProviderKind, TransportKind, TribalConfig},
 };
 
 // ---------------------------------------------------------------------------
@@ -116,6 +116,14 @@ fn validate_auth(config: &TribalConfig, errors: &mut Vec<String>) {
 fn validate_embedding(config: &TribalConfig, errors: &mut Vec<String>) {
     if config.embedding.dimensions == 0 {
         errors.push("embedding.dimensions must be greater than zero".into());
+    }
+
+    if config.embedding.provider == ProviderKind::Anthropic {
+        errors.push(
+            "embedding.provider cannot be anthropic: \
+             Anthropic does not provide an embedding API"
+                .into(),
+        );
     }
 }
 
@@ -398,6 +406,16 @@ mod tests {
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("server.shutdown_deadline_ms must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_anthropic_embedding_provider() {
+        let mut config = valid_config();
+        config.embedding.provider = ProviderKind::Anthropic;
+        config.embedding.api_key = Some("sk-test".into());
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Anthropic does not provide an embedding API"));
     }
 
     #[test]
