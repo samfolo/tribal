@@ -4,7 +4,9 @@
 
 mod app;
 mod cli;
+mod env;
 mod error;
+mod startup;
 
 use std::process;
 
