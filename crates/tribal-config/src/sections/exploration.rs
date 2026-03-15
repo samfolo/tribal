@@ -16,7 +16,7 @@ pub const DEFAULT_DEPTH: u32 = 1;
 pub const DEFAULT_LIMIT: u32 = 20;
 
 /// Maximum number of results a caller may request.
-pub const MAX_LIMIT: u32 = 100;
+pub const DEFAULT_MAX_LIMIT: u32 = 100;
 
 // ---------------------------------------------------------------------------
 // ExplorationConfig
@@ -41,7 +41,7 @@ pub struct ExplorationConfig {
     pub default_limit: u32,
 
     /// Maximum number of results a caller may request.
-    #[serde(default = "max_limit")]
+    #[serde(default = "default_max_limit")]
     pub max_limit: u32,
 }
 
@@ -51,7 +51,7 @@ impl Default for ExplorationConfig {
             max_depth: DEFAULT_MAX_DEPTH,
             default_depth: DEFAULT_DEPTH,
             default_limit: DEFAULT_LIMIT,
-            max_limit: MAX_LIMIT,
+            max_limit: DEFAULT_MAX_LIMIT,
         }
     }
 }
@@ -68,8 +68,8 @@ const fn default_limit() -> u32 {
     DEFAULT_LIMIT
 }
 
-const fn max_limit() -> u32 {
-    MAX_LIMIT
+const fn default_max_limit() -> u32 {
+    DEFAULT_MAX_LIMIT
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +86,6 @@ mod tests {
         assert_eq!(config.max_depth, DEFAULT_MAX_DEPTH);
         assert_eq!(config.default_depth, DEFAULT_DEPTH);
         assert_eq!(config.default_limit, DEFAULT_LIMIT);
-        assert_eq!(config.max_limit, MAX_LIMIT);
+        assert_eq!(config.max_limit, DEFAULT_MAX_LIMIT);
     }
 }

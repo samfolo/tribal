@@ -4,8 +4,8 @@ use tribal_db::{
     SemanticSearchParams,
 };
 use tribal_domain::{
-    Confidence, EpisodeId, JobOutcome, JobStatus, KnowledgeItemId, KnowledgeKind, PrincipalId,
-    ProjectId, RelationBatchId, RelationKind,
+    Confidence, EpisodeId, GitRemote, JobOutcome, JobStatus, KnowledgeItemId, KnowledgeKind,
+    PrincipalId, ProjectId, RelationBatchId, RelationKind,
 };
 use tribal_test_utils::{
     a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
@@ -39,7 +39,11 @@ async fn setup_prerequisites(
         .insert(
             txn,
             &a_new_project()
-                .git_remote(format!("git@github.com:test/{suffix}.git"))
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/{suffix}"),
+                    None,
+                ))
                 .build(),
         )
         .await

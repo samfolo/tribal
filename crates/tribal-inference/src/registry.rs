@@ -8,7 +8,7 @@
 //!
 //! The registry is eagerly constructed and immutable after construction.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
 use tokio::sync::Semaphore;
 use url::{Host, Url};
@@ -32,6 +32,15 @@ pub enum RequestClass {
     Embedding,
     /// LLM completion (inference) requests.
     Inference,
+}
+
+impl fmt::Display for RequestClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Embedding => write!(f, "embedding"),
+            Self::Inference => write!(f, "inference"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +315,18 @@ fn normalise_registry_url(raw: &str) -> Result<String, ProviderRegistryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- RequestClass Display ------------------------------------------------
+
+    #[test]
+    fn test_display_request_class_embedding() {
+        assert_eq!(RequestClass::Embedding.to_string(), "embedding");
+    }
+
+    #[test]
+    fn test_display_request_class_inference() {
+        assert_eq!(RequestClass::Inference.to_string(), "inference");
+    }
 
     // -- URL normalisation ---------------------------------------------------
 

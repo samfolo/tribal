@@ -8,6 +8,16 @@ use std::io;
 
 use thiserror::Error;
 use tribal_config::ConfigError;
+use tribal_db::DbError;
+use tribal_inference::ProviderRegistryError;
+use tribal_telemetry::TelemetryError;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Exit code for transient migration lock failure (`EX_TEMPFAIL`).
+const EXIT_CODE_MIGRATION_LOCK: i32 = 75;
 
 // ---------------------------------------------------------------------------
 // AppError
@@ -42,7 +52,144 @@ pub enum AppError {
         #[source]
         source: io::Error,
     },
+
+    /// Tracing subscriber initialisation failed.
+    #[error("{source}")]
+    Telemetry {
+        /// The underlying telemetry error.
+        #[source]
+        source: TelemetryError,
+    },
+
+    /// Database pool connection failed after retries.
+    #[error("failed to connect to database pool '{pool_name}' after {attempts} attempts")]
+    PoolConnection {
+        /// Name of the pool that failed to connect.
+        pool_name: &'static str,
+        /// Number of connection attempts made.
+        attempts: u32,
+        /// The error from the final attempt.
+        #[source]
+        source: DbError,
+    },
+
+    /// Database has no migrations table — `tribal setup` required.
+    #[error("database is uninitialised; run `tribal setup` first")]
+    FirstRunRequired,
+
+    /// Migration advisory lock could not be acquired.
+    #[error("could not acquire migration lock after {attempts} attempts")]
+    MigrationLockFailed {
+        /// Number of lock attempts made.
+        attempts: u32,
+    },
+
+    /// Migration execution failed.
+    #[error("migration failed")]
+    MigrationFailed {
+        /// The underlying migration error.
+        #[source]
+        source: sqlx::migrate::MigrateError,
+    },
+
+    /// Provider registry construction failed.
+    #[error("{source}")]
+    ProviderRegistry {
+        /// The underlying registry construction error.
+        #[source]
+        source: ProviderRegistryError,
+    },
+
+    /// Prompt file I/O failed.
+    #[error("prompt I/O failed: {context}")]
+    PromptIo {
+        /// Description of the failed operation.
+        context: String,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// Prompt loading or upsert failed.
+    #[error("prompt loading failed: {context}")]
+    PromptLoading {
+        /// Description of the failed operation.
+        context: String,
+        /// The underlying database error.
+        #[source]
+        source: DbError,
+    },
+
+    /// Provider setup failed during startup.
+    #[error("provider setup failed: {context}")]
+    ProviderSetup {
+        /// Description of the setup failure.
+        context: String,
+    },
+
+    /// Project resolution failed.
+    #[error("project resolution failed: {context}")]
+    ProjectResolution {
+        /// Description of the resolution failure.
+        context: String,
+    },
+
+    /// Tokio runtime creation failed.
+    #[error("failed to create async runtime")]
+    Runtime {
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// General database query error.
+    #[error("{source}")]
+    Database {
+        /// The underlying database error.
+        #[source]
+        source: DbError,
+    },
 }
+
+impl AppError {
+    /// Returns the process exit code for this error.
+    ///
+    /// Migration lock failures use `EX_TEMPFAIL` (75); all other errors
+    /// use exit code 1.
+    #[must_use]
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::MigrationLockFailed { .. } => EXIT_CODE_MIGRATION_LOCK,
+            _ => 1,
+        }
+    }
+
+    /// Wraps a pool-acquire failure as the appropriate `AppError` variant.
+    ///
+    /// `PoolTimedOut` is mapped to [`DbError::PoolExhausted`] (preserving
+    /// the pool name); all other errors become [`DbError::QueryFailed`].
+    pub(crate) fn pool_acquire(
+        pool_name: &'static str,
+        context: &str,
+        source: sqlx::Error,
+    ) -> Self {
+        if matches!(source, sqlx::Error::PoolTimedOut) {
+            return Self::Database {
+                source: DbError::PoolExhausted { pool_name },
+            };
+        }
+        Self::Database {
+            source: DbError::QueryFailed {
+                context: context.into(),
+                source,
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// From impls
+// ---------------------------------------------------------------------------
 
 impl From<clap::Error> for AppError {
     fn from(source: clap::Error) -> Self {
@@ -56,9 +203,15 @@ impl From<ConfigError> for AppError {
     }
 }
 
-impl From<io::Error> for AppError {
-    fn from(source: io::Error) -> Self {
-        Self::HelpOutput { source }
+impl From<TelemetryError> for AppError {
+    fn from(source: TelemetryError) -> Self {
+        Self::Telemetry { source }
+    }
+}
+
+impl From<ProviderRegistryError> for AppError {
+    fn from(source: ProviderRegistryError) -> Self {
+        Self::ProviderRegistry { source }
     }
 }
 
@@ -105,5 +258,37 @@ mod tests {
             source: io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"),
         };
         assert_eq!(err.to_string(), "failed to write help output");
+    }
+
+    #[test]
+    fn test_display_first_run_required() {
+        let err = AppError::FirstRunRequired;
+        assert!(err.to_string().contains("tribal setup"));
+    }
+
+    #[test]
+    fn test_display_migration_lock_failed() {
+        let err = AppError::MigrationLockFailed { attempts: 3 };
+        assert!(err.to_string().contains("3 attempts"));
+    }
+
+    #[test]
+    fn test_display_project_resolution() {
+        let err = AppError::ProjectResolution {
+            context: "project not found in database".into(),
+        };
+        assert!(err.to_string().contains("project not found"));
+    }
+
+    #[test]
+    fn test_exit_code_migration_lock() {
+        let err = AppError::MigrationLockFailed { attempts: 3 };
+        assert_eq!(err.exit_code(), EXIT_CODE_MIGRATION_LOCK);
+    }
+
+    #[test]
+    fn test_exit_code_default() {
+        let err = AppError::FirstRunRequired;
+        assert_eq!(err.exit_code(), 1);
     }
 }

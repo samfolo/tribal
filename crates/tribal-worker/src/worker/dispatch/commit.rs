@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use tracing::Instrument;
+use tribal_common::clamp_to_u32;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
     JobStatusTransition, KnowledgeItemRepository, NewEmbedding, NewExtractionResult,
@@ -19,7 +20,7 @@ use tribal_domain::{
 
 use super::Worker;
 use crate::{
-    common::{EXPECT_BATCH_INDEX, clamp_to_u32},
+    common::EXPECT_BATCH_INDEX,
     error::{STAGE_EXTRACTION, STAGE_RELATION, STAGE_TRIAGE, StageError},
     stages::{RelationCommitDecision, StageCommit, TriageCommitDecision},
     tag_resolution::NewTagWithEmbedding,

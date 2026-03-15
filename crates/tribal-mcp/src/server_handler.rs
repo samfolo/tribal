@@ -10,7 +10,6 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
 };
-use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, PrincipalRepository, ProjectRepository,
@@ -18,9 +17,9 @@ use tribal_db::{
     TaskRepository, TriageResultRepository,
 };
 use tribal_domain::PromptVersionId;
-use tribal_inference::EmbeddingProvider;
 
 use crate::{
+    app_state::AppState,
     auth::AuthContext,
     config::HandlerConfig,
     error::method_not_found,
@@ -34,9 +33,6 @@ use crate::{
 
 const SERVER_NAME: &str = "tribal";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Name used when reporting pool-related errors from the MCP connection pool.
-pub(crate) const POOL_NAME: &str = "mcp";
 
 /// Tool names with explicit `call_tool` match arms.
 #[cfg(test)]
@@ -80,6 +76,8 @@ pub struct ConnectionRepositories {
 /// At startup, the factory closure populates this from the database and
 /// passes it into [`TribalServerHandler::new`].
 #[derive(Clone, Debug)]
+// All fields share the `_prompt_version_id` suffix by convention, matching
+// the column names on the `jobs` table.
 #[allow(clippy::struct_field_names)]
 pub struct ActivePromptVersions {
     pub(crate) extraction_system_prompt_version_id: PromptVersionId,
@@ -88,6 +86,30 @@ pub struct ActivePromptVersions {
     pub(crate) triage_user_prompt_version_id: PromptVersionId,
     pub(crate) relation_system_prompt_version_id: PromptVersionId,
     pub(crate) relation_user_prompt_version_id: PromptVersionId,
+}
+
+impl ActivePromptVersions {
+    /// Creates a new set of active prompt version IDs.
+    #[must_use]
+    // Six prompt version IDs (3 stages × 2 roles) cannot be reduced further.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        extraction_system: PromptVersionId,
+        extraction_user: PromptVersionId,
+        triage_system: PromptVersionId,
+        triage_user: PromptVersionId,
+        relation_system: PromptVersionId,
+        relation_user: PromptVersionId,
+    ) -> Self {
+        Self {
+            extraction_system_prompt_version_id: extraction_system,
+            extraction_user_prompt_version_id: extraction_user,
+            triage_system_prompt_version_id: triage_system,
+            triage_user_prompt_version_id: triage_user,
+            relation_system_prompt_version_id: relation_system,
+            relation_user_prompt_version_id: relation_user,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -99,38 +121,31 @@ pub struct ActivePromptVersions {
 /// Implements the [`ServerHandler`] trait from `rmcp`, dispatching tool
 /// calls to individual handler methods and managing the per-connection
 /// session state.
+///
+/// Wraps [`AppState`] (shared process-level state) alongside per-connection
+/// fields (`repositories`, `session`, `config`).
 pub struct TribalServerHandler {
-    pub(crate) pool: PgPool,
+    pub(crate) state: Arc<AppState>,
     pub(crate) repositories: ConnectionRepositories,
-    pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
-    pub(crate) active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
     pub(crate) session: Arc<RwLock<SessionContext>>,
     pub(crate) config: HandlerConfig,
 }
 
 impl TribalServerHandler {
-    /// Creates a new handler for the given connection pool, repositories, and
-    /// initial session state.
+    /// Creates a new handler wrapping the shared application state plus
+    /// per-connection state.
     ///
-    /// The pool is used by handlers that need database access (e.g.
-    /// `tribal_set_context` for project lookup). The session is wrapped
-    /// in an `Arc<RwLock<…>>` internally; `active_prompt_versions` is
-    /// accepted pre-wrapped for compatibility with a shared process-level
-    /// cache.
+    /// The session is wrapped in an `Arc<RwLock<…>>` internally.
     #[must_use]
     pub fn new(
-        pool: PgPool,
+        state: Arc<AppState>,
         repositories: ConnectionRepositories,
-        embedding_provider: Arc<dyn EmbeddingProvider>,
-        active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
         session: SessionContext,
         config: HandlerConfig,
     ) -> Self {
         Self {
-            pool,
+            state,
             repositories,
-            embedding_provider,
-            active_prompt_versions,
             session: Arc::new(RwLock::new(session)),
             config,
         }

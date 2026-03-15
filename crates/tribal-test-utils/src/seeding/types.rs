@@ -12,8 +12,8 @@ use indexmap::IndexMap;
 use sqlx::PgConnection;
 use tribal_db::NewPromptVersion;
 use tribal_domain::{
-    Confidence, EmbeddingId, ItemObservationId, JobId, KnowledgeItemId, KnowledgeKind, PrincipalId,
-    ProjectId, PromptRole, PromptStage, PromptVersionId, ReferenceId, ReferenceKind,
+    Confidence, EmbeddingId, GitRemote, ItemObservationId, JobId, KnowledgeItemId, KnowledgeKind,
+    PrincipalId, ProjectId, PromptRole, PromptStage, PromptVersionId, ReferenceId, ReferenceKind,
     RelationBatchId, RelationId, RelationKind, SourceType,
 };
 
@@ -30,7 +30,7 @@ pub(crate) enum SeedCommand {
     // Setup phase
     CreateProject {
         label: String,
-        git_remote: String,
+        git_remote: GitRemote,
         name: String,
     },
     CreatePrincipal {
@@ -283,6 +283,13 @@ impl Seed {
     }
 
     /// Registers a project with the given label and git remote URL.
+    ///
+    /// The `git_remote` string is parsed into a [`GitRemote`] in
+    /// canonical form.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `git_remote` cannot be parsed as a valid git remote.
     #[must_use]
     pub fn define_project(
         mut self,
@@ -291,9 +298,13 @@ impl Seed {
     ) -> Self {
         let label = label.into();
         let name = label.clone();
+        let raw = git_remote.into();
+        let parsed: GitRemote = raw
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid git_remote '{raw}': {e}"));
         self.commands.push(SeedCommand::CreateProject {
             label,
-            git_remote: git_remote.into(),
+            git_remote: parsed,
             name,
         });
         self
