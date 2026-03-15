@@ -4,12 +4,13 @@
 //! On first run, prompt files are written to disk from embedded defaults.
 //! On every startup, files are read, hashed, and upserted into the database.
 
+use std::collections::HashMap;
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
 use sqlx::PgPool;
+use tribal_common::sha256_hex;
 use tribal_db::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
-use tribal_domain::{PromptRole, PromptStage};
+use tribal_domain::{PromptRole, PromptStage, PromptVersionId};
 use tribal_mcp::ActivePromptVersions;
 
 use crate::error::AppError;
@@ -50,6 +51,12 @@ const PROMPT_PAIRS: [(PromptStage, PromptRole); 6] = [
     (PromptStage::Relation, PromptRole::System),
     (PromptStage::Relation, PromptRole::User),
 ];
+
+// ---------------------------------------------------------------------------
+// Expect messages
+// ---------------------------------------------------------------------------
+
+const EXPECT_VERSION: &str = "all prompt pairs must be loaded";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -102,7 +109,8 @@ pub(crate) async fn load_prompts(
         },
     })?;
 
-    let mut version_ids = Vec::with_capacity(6);
+    let mut versions: HashMap<(PromptStage, PromptRole), PromptVersionId> =
+        HashMap::with_capacity(PROMPT_PAIRS.len());
 
     for (stage, role) in &PROMPT_PAIRS {
         let file_path = prompts_dir
@@ -141,30 +149,29 @@ pub(crate) async fn load_prompts(
             "loaded prompt version",
         );
 
-        version_ids.push(version.id);
+        versions.insert((*stage, *role), version.id);
     }
 
-    // PROMPT_PAIRS order guarantees exactly 6 elements in this order:
-    // extraction/system, extraction/user, triage/system, triage/user,
-    // relation/system, relation/user.
     Ok(ActivePromptVersions {
-        extraction_system_prompt_version_id: version_ids[0],
-        extraction_user_prompt_version_id: version_ids[1],
-        triage_system_prompt_version_id: version_ids[2],
-        triage_user_prompt_version_id: version_ids[3],
-        relation_system_prompt_version_id: version_ids[4],
-        relation_user_prompt_version_id: version_ids[5],
+        extraction_system_prompt_version_id: versions
+            .remove(&(PromptStage::Extraction, PromptRole::System))
+            .expect(EXPECT_VERSION),
+        extraction_user_prompt_version_id: versions
+            .remove(&(PromptStage::Extraction, PromptRole::User))
+            .expect(EXPECT_VERSION),
+        triage_system_prompt_version_id: versions
+            .remove(&(PromptStage::Triage, PromptRole::System))
+            .expect(EXPECT_VERSION),
+        triage_user_prompt_version_id: versions
+            .remove(&(PromptStage::Triage, PromptRole::User))
+            .expect(EXPECT_VERSION),
+        relation_system_prompt_version_id: versions
+            .remove(&(PromptStage::Relation, PromptRole::System))
+            .expect(EXPECT_VERSION),
+        relation_user_prompt_version_id: versions
+            .remove(&(PromptStage::Relation, PromptRole::User))
+            .expect(EXPECT_VERSION),
     })
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Computes the lowercase hex-encoded SHA-256 digest of the given content.
-fn sha256_hex(content: &str) -> String {
-    let digest = Sha256::digest(content.as_bytes());
-    format!("{digest:x}")
 }
 
 // ---------------------------------------------------------------------------
@@ -184,21 +191,5 @@ mod tests {
                 "embedded default for {stage}/{role} is empty",
             );
         }
-    }
-
-    #[test]
-    fn test_sha256_hex_known_value() {
-        // SHA-256 of "hello" is well-known.
-        let hash = sha256_hex("hello");
-        assert_eq!(
-            hash,
-            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
-        );
-    }
-
-    #[test]
-    fn test_sha256_hex_length() {
-        let hash = sha256_hex("arbitrary content");
-        assert_eq!(hash.len(), 64, "SHA-256 hex digest should be 64 characters");
     }
 }
