@@ -59,6 +59,7 @@ pub fn deterministic_jitter(retry_count: u32, range: u64, seed: u64) -> u32 {
     let hash = (u64::from(retry_count) ^ seed)
         .wrapping_mul(LCG_MULTIPLIER)
         .wrapping_add(LCG_INCREMENT);
+    // Truncation is intentional: the modulo guarantees the value fits in u32.
     #[allow(clippy::cast_possible_truncation)]
     let result = (hash % (range * 2 + 1)) as u32;
     result

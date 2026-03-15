@@ -47,12 +47,13 @@ impl GitRemote {
     /// port components.
     ///
     /// Strips a leading `/` and trailing `.git` from the path, and
-    /// lowercases the host. Default ports (22 for SSH, 443 for HTTPS)
-    /// are stripped; non-standard ports are preserved.
+    /// lowercases both host and path. Default ports (22 for SSH, 443 for
+    /// HTTPS) are stripped; non-standard ports are preserved.
     #[must_use]
     pub fn from_parts(host: &str, path: &str, port: Option<u16>) -> Self {
         let path = path.strip_prefix('/').unwrap_or(path);
         let path = path.strip_suffix(".git").unwrap_or(path);
+        let path = path.to_lowercase();
         let host = host.to_lowercase();
 
         let canonical = match port {
@@ -90,14 +91,22 @@ impl GitRemote {
         format!("https://{}.git", self.canonical)
     }
 
-    /// Reconstructs the SSH (SCP-like) URL form (with `.git` suffix).
+    /// Reconstructs the SSH URL form (with `.git` suffix).
     ///
-    /// The SCP-like syntax has no port field — per the git specification,
-    /// the colon separates host from path, not host from port. Remotes
-    /// with non-standard ports should use `ssh://` URL syntax instead.
+    /// For standard-port remotes, produces SCP-like syntax:
+    /// `git@host:path.git`. For non-standard ports, produces full URL
+    /// syntax: `ssh://git@host:port/path.git` — SCP-like syntax has no
+    /// port field per the git specification.
     #[must_use]
     pub fn as_ssh(&self) -> String {
-        format!("git@{}:{}.git", self.host(), self.path())
+        let host = self.host();
+        let path = self.path();
+
+        if let Some((hostname, port)) = host.rsplit_once(':') {
+            format!("ssh://git@{hostname}:{port}/{path}.git")
+        } else {
+            format!("git@{host}:{path}.git")
+        }
     }
 }
 
@@ -344,6 +353,12 @@ mod tests {
     }
 
     #[test]
+    fn test_from_parts_lowercases_path() {
+        let remote = GitRemote::from_parts("GitHub.COM", "User/Repo.git", None);
+        assert_eq!(remote.as_str(), EXPECTED_CANONICAL);
+    }
+
+    #[test]
     fn test_from_parts_port_handling() {
         let non_standard =
             GitRemote::from_parts("gitlab.company.com", "/group/repo.git", Some(8443));
@@ -396,6 +411,15 @@ mod tests {
     fn test_as_ssh() {
         let remote: GitRemote = "github.com/user/repo".parse().unwrap();
         assert_eq!(remote.as_ssh(), "git@github.com:user/repo.git");
+    }
+
+    #[test]
+    fn test_as_ssh_non_standard_port() {
+        let remote: GitRemote = "gitlab.company.com:8443/group/repo".parse().unwrap();
+        assert_eq!(
+            remote.as_ssh(),
+            "ssh://git@gitlab.company.com:8443/group/repo.git",
+        );
     }
 
     // -- Display / Serialize -----------------------------------------------

@@ -187,12 +187,6 @@ impl From<ConfigError> for AppError {
     }
 }
 
-impl From<io::Error> for AppError {
-    fn from(source: io::Error) -> Self {
-        Self::HelpOutput { source }
-    }
-}
-
 impl From<TelemetryError> for AppError {
     fn from(source: TelemetryError) -> Self {
         Self::Telemetry { source }
