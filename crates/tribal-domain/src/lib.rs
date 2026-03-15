@@ -52,6 +52,7 @@ mod embedding_purpose;
 mod error_code;
 mod extraction_result;
 mod feedback_rating;
+mod git;
 mod ids;
 mod item_observation;
 mod job;
