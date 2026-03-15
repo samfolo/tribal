@@ -7,10 +7,12 @@
 
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
+use tokio_util::sync::CancellationToken;
 use tribal_config::{ServerConfig, WorkerConfig};
-use tribal_domain::{GitRemote, ProjectId};
+use tribal_domain::{GitRemote, JobId, ProjectId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
 use typed_builder::TypedBuilder;
 
@@ -103,6 +105,18 @@ pub struct AppState {
 
     /// Server configuration (transport, bind address, shutdown deadline).
     pub(crate) server_config: Arc<ServerConfig>,
+
+    // -- Coordination --------------------------------------------------------
+    /// Cancellation token shared across the MCP and worker runtimes.
+    ///
+    /// Triggered to initiate graceful shutdown of all subsystems.
+    pub(crate) cancellation_token: CancellationToken,
+
+    /// Per-job watch channels shared between worker and MCP handlers.
+    ///
+    /// The worker sends notifications when job status changes; MCP
+    /// handlers subscribe to observe progress.
+    pub(crate) job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
 
     // -- Session -------------------------------------------------------------
     /// Resolved project context from the startup cascade, if any.
