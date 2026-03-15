@@ -48,18 +48,13 @@ pub struct PgMigrationRepository;
 #[async_trait]
 impl MigrationRepository for PgMigrationRepository {
     async fn has_migrations_table(&self, conn: &mut PgConnection) -> Result<bool, DbError> {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
-                 SELECT 1 FROM information_schema.tables
-                 WHERE table_name = '_sqlx_migrations'
-             )",
-        )
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|source| DbError::QueryFailed {
-            context: "check for _sqlx_migrations table".into(),
-            source,
-        })?;
+        let exists: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|source| DbError::QueryFailed {
+                context: "check for _sqlx_migrations table".into(),
+                source,
+            })?;
 
         Ok(exists)
     }
