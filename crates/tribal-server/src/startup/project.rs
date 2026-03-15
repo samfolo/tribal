@@ -172,4 +172,17 @@ mod tests {
         let url = discover_origin_url();
         assert!(url.is_some(), "expected to discover origin in tribal repo");
     }
+
+    #[test]
+    fn test_discover_origin_url_returns_none_outside_repo() {
+        // A fresh tempdir is guaranteed not to be inside a git repository.
+        let tmp = tempfile::tempdir().expect("should create tempdir");
+        let original_dir = std::env::current_dir().expect("should read cwd");
+        std::env::set_current_dir(tmp.path()).expect("should change to tempdir");
+
+        let result = discover_origin_url();
+
+        std::env::set_current_dir(original_dir).expect("should restore cwd");
+        assert!(result.is_none(), "expected None outside a git repository");
+    }
 }

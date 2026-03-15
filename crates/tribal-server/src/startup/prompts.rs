@@ -176,6 +176,8 @@ pub(crate) async fn load_prompts(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     #[test]
@@ -187,5 +189,82 @@ mod tests {
                 "embedded default for {stage}/{role} is empty",
             );
         }
+    }
+
+    /// Verifies that `PROMPT_PAIRS` covers every combination of
+    /// `PromptStage` and `PromptRole`.
+    ///
+    /// The exhaustiveness of individual enums is enforced by the
+    /// `embedded_default` match, but this test ensures the array itself
+    /// contains no duplicates and has the expected cardinality (3 × 2 = 6).
+    #[test]
+    fn test_prompt_pairs_exhaustiveness() {
+        let all_stages = [
+            PromptStage::Extraction,
+            PromptStage::Triage,
+            PromptStage::Relation,
+        ];
+        let all_roles = [PromptRole::System, PromptRole::User];
+
+        let expected: HashSet<(PromptStage, PromptRole)> = all_stages
+            .iter()
+            .flat_map(|s| all_roles.iter().map(move |r| (*s, *r)))
+            .collect();
+
+        let actual: HashSet<(PromptStage, PromptRole)> = PROMPT_PAIRS.iter().copied().collect();
+
+        assert_eq!(
+            actual, expected,
+            "PROMPT_PAIRS must cover all stage×role combinations"
+        );
+        assert_eq!(
+            PROMPT_PAIRS.len(),
+            6,
+            "PROMPT_PAIRS must contain exactly 6 entries"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ensure_prompt_files_writes_defaults_to_tempdir() {
+        let tmp = tempfile::tempdir().expect("should create tempdir");
+        let prompts_dir = tmp.path();
+
+        ensure_prompt_files(prompts_dir)
+            .await
+            .expect("should write defaults");
+
+        for (stage, role) in &PROMPT_PAIRS {
+            let file_path = prompts_dir
+                .join(stage.as_str())
+                .join(format!("{}.tera", role.as_str()));
+
+            assert!(file_path.exists(), "expected {stage}/{role}.tera to exist");
+
+            let content = std::fs::read_to_string(&file_path).expect("should read file");
+            let expected = embedded_default(*stage, *role);
+            assert_eq!(content, expected, "content mismatch for {stage}/{role}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ensure_prompt_files_does_not_overwrite_existing() {
+        let tmp = tempfile::tempdir().expect("should create tempdir");
+        let prompts_dir = tmp.path();
+
+        // Write defaults first.
+        ensure_prompt_files(prompts_dir)
+            .await
+            .expect("initial write");
+
+        // Overwrite one file with custom content.
+        let custom = "custom content";
+        let custom_path = prompts_dir.join("extraction").join("system.tera");
+        std::fs::write(&custom_path, custom).expect("should overwrite");
+
+        // Run again — should not clobber the custom file.
+        ensure_prompt_files(prompts_dir).await.expect("second run");
+
+        let content = std::fs::read_to_string(&custom_path).expect("should read");
+        assert_eq!(content, custom, "existing file must not be overwritten");
     }
 }
