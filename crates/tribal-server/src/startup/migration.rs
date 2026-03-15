@@ -56,11 +56,16 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
             .map_err(|source| AppError::Database { source })?;
 
         if acquired {
+            // Detach the connection from the pool so the migrator can
+            // acquire a pool slot, while we retain the session that
+            // holds the advisory lock.
+            let mut lock_conn = conn.detach();
+
             let result = tribal_db::MIGRATOR.run(pool).await;
 
-            // Always release the lock, even on migration failure.
+            // Release the lock on the original session, then drop.
             match repo
-                .release_advisory_lock(&mut conn, ADVISORY_LOCK_ID)
+                .release_advisory_lock(&mut lock_conn, ADVISORY_LOCK_ID)
                 .await
             {
                 Ok(true) => {}

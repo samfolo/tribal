@@ -97,10 +97,10 @@ impl From<TestHandler> for TribalServerHandler {
                 .extraction_provider(default_inference_provider())
                 .triage_provider(default_inference_provider())
                 .relation_provider(default_inference_provider())
-                .embedding_key(test_provider_key())
-                .extraction_key(test_provider_key())
-                .triage_key(test_provider_key())
-                .relation_key(test_provider_key())
+                .embedding_key(test_embedding_key())
+                .extraction_key(test_inference_key())
+                .triage_key(test_inference_key())
+                .relation_key(test_inference_key())
                 .worker_config(WorkerConfig::default())
                 .server_config(Arc::new(ServerConfig::default()))
                 .build(),
@@ -143,11 +143,20 @@ fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
     }))
 }
 
-fn test_provider_key() -> tribal_inference::ProviderKey {
+fn test_embedding_key() -> tribal_inference::ProviderKey {
+    tribal_inference::ProviderKey::new(
+        TEST_PROVIDER_KIND,
+        DEFAULT_OLLAMA_BASE_URL,
+        tribal_inference::RequestClass::Embedding,
+    )
+    .expect("test embedding key construction must not fail")
+}
+
+fn test_inference_key() -> tribal_inference::ProviderKey {
     tribal_inference::ProviderKey::new(
         TEST_PROVIDER_KIND,
         DEFAULT_OLLAMA_BASE_URL,
         tribal_inference::RequestClass::Inference,
     )
-    .expect("test provider key construction must not fail")
+    .expect("test inference key construction must not fail")
 }
