@@ -4,19 +4,17 @@
 //! The [`From<&TribalConfig>`] impl projects the full configuration
 //! into this handler-specific subset.
 
-use tribal_config::TribalConfig;
+use tribal_config::{
+    DEFAULT_DISCOVERY_LIMIT, DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EXPLORATION_DEPTH,
+    DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH, DEFAULT_EXPLORATION_MAX_LIMIT,
+    TribalConfig,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const DEFAULT_POOL_NAME: &str = "<anonymous>";
-const DEFAULT_DISCOVERY_LIMIT: u32 = 10;
-const MAX_DISCOVERY_LIMIT: u32 = 50;
-const DEFAULT_EXPLORATION_DEPTH: u32 = 1;
-const MAX_EXPLORATION_DEPTH: u32 = 3;
-const DEFAULT_EXPLORATION_LIMIT: u32 = 20;
-const MAX_EXPLORATION_LIMIT: u32 = 100;
 
 // ---------------------------------------------------------------------------
 // HandlerConfig
@@ -95,7 +93,7 @@ impl Default for HandlerDiscoveryConfig {
     fn default() -> Self {
         Self {
             default_limit: DEFAULT_DISCOVERY_LIMIT,
-            max_limit: MAX_DISCOVERY_LIMIT,
+            max_limit: DEFAULT_DISCOVERY_MAX_LIMIT,
         }
     }
 }
@@ -124,9 +122,9 @@ impl Default for HandlerExplorationConfig {
     fn default() -> Self {
         Self {
             default_depth: DEFAULT_EXPLORATION_DEPTH,
-            max_depth: MAX_EXPLORATION_DEPTH,
+            max_depth: DEFAULT_EXPLORATION_MAX_DEPTH,
             default_limit: DEFAULT_EXPLORATION_LIMIT,
-            max_limit: MAX_EXPLORATION_LIMIT,
+            max_limit: DEFAULT_EXPLORATION_MAX_LIMIT,
         }
     }
 }
@@ -143,16 +141,16 @@ mod tests {
     fn test_handler_discovery_config_defaults() {
         let config = HandlerDiscoveryConfig::default();
         assert_eq!(config.default_limit, DEFAULT_DISCOVERY_LIMIT);
-        assert_eq!(config.max_limit, MAX_DISCOVERY_LIMIT);
+        assert_eq!(config.max_limit, DEFAULT_DISCOVERY_MAX_LIMIT);
     }
 
     #[test]
     fn test_handler_exploration_config_defaults() {
         let config = HandlerExplorationConfig::default();
         assert_eq!(config.default_depth, DEFAULT_EXPLORATION_DEPTH);
-        assert_eq!(config.max_depth, MAX_EXPLORATION_DEPTH);
+        assert_eq!(config.max_depth, DEFAULT_EXPLORATION_MAX_DEPTH);
         assert_eq!(config.default_limit, DEFAULT_EXPLORATION_LIMIT);
-        assert_eq!(config.max_limit, MAX_EXPLORATION_LIMIT);
+        assert_eq!(config.max_limit, DEFAULT_EXPLORATION_MAX_LIMIT);
     }
 
     #[test]
