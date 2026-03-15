@@ -192,15 +192,24 @@ impl FromStr for GitRemote {
                 });
             }
 
-            return Ok(Self {
-                canonical: rest.to_lowercase(),
+            return Err(GitRemoteParseError::InvalidFormat {
+                reason: "missing path component",
             });
         }
 
         // Assume already in host/path form.
-        Ok(Self {
-            canonical: base.to_lowercase(),
-        })
+        let canonical = base.to_lowercase();
+        if canonical.contains(' ') {
+            return Err(GitRemoteParseError::InvalidFormat {
+                reason: "contains whitespace",
+            });
+        }
+        if !canonical.contains('/') {
+            return Err(GitRemoteParseError::InvalidFormat {
+                reason: "missing path component",
+            });
+        }
+        Ok(Self { canonical })
     }
 }
 
@@ -227,12 +236,18 @@ impl From<GitRemote> for String {
 pub enum GitRemoteParseError {
     /// The input string was empty.
     Empty,
+    /// The input could not be parsed as a valid git remote URL.
+    InvalidFormat {
+        /// Description of why the input was rejected.
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for GitRemoteParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty => f.write_str("git remote URL must not be empty"),
+            Self::Empty => write!(f, "invalid git remote URL: input is empty"),
+            Self::InvalidFormat { reason } => write!(f, "invalid git remote URL: {reason}"),
         }
     }
 }
@@ -337,6 +352,22 @@ mod tests {
         assert!(matches!(
             "   ".parse::<GitRemote>(),
             Err(GitRemoteParseError::Empty)
+        ));
+    }
+
+    #[test]
+    fn test_parse_host_only_returns_error() {
+        assert!(matches!(
+            "github.com".parse::<GitRemote>(),
+            Err(GitRemoteParseError::InvalidFormat { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_contains_whitespace_returns_error() {
+        assert!(matches!(
+            "not a url".parse::<GitRemote>(),
+            Err(GitRemoteParseError::InvalidFormat { .. })
         ));
     }
 
