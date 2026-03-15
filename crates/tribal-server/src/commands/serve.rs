@@ -28,10 +28,10 @@ use crate::{
 /// # Errors
 ///
 /// Returns an [`AppError`] if any startup phase fails.
-pub(crate) fn run(config_path: String, args: ServeArgs) -> Result<(), AppError> {
+pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let (cli_overrides, cli_project) = args.into_cli_overrides();
 
-    let config = load_config(&config_path, Some(cli_overrides))?;
+    let config = load_config(config_path, Some(cli_overrides))?;
     validate(&config)?;
 
     let _handler_config = HandlerConfig::from(&config);

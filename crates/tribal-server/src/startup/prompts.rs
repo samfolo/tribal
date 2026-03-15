@@ -136,7 +136,7 @@ pub(crate) async fn load_prompts(
             repo.upsert(&mut conn, &new)
                 .await
                 .map_err(|source| AppError::PromptLoading {
-                    context: format!("upsert {} {} prompt", stage, role),
+                    context: format!("upsert {stage} {role} prompt"),
                     source,
                 })?;
 

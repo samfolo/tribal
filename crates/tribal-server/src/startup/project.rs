@@ -35,11 +35,11 @@ pub(crate) async fn resolve_project(
     }
 
     // 2. Environment variable
-    if let Ok(raw) = std::env::var(ENV_PROJECT_ID) {
-        if !raw.is_empty() {
-            let project = resolve_by_id(pool, &raw).await?;
-            return Ok(Some(project));
-        }
+    if let Ok(raw) = std::env::var(ENV_PROJECT_ID)
+        && !raw.is_empty()
+    {
+        let project = resolve_by_id(pool, &raw).await?;
+        return Ok(Some(project));
     }
 
     // 3. Git remote heuristic
@@ -93,9 +93,8 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
 /// Discovers the git repository from the current working directory,
 /// reads the origin remote URL, and looks up the project in the database.
 async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>, AppError> {
-    let remote_url = match discover_origin_url() {
-        Some(url) => url,
-        None => return Ok(None),
+    let Some(remote_url) = discover_origin_url() else {
+        return Ok(None);
     };
 
     let repo = PgProjectRepository;
@@ -111,24 +110,21 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
         .await
         .map_err(|source| AppError::Database { source })?;
 
-    match project {
-        Some(p) => {
-            tracing::info!(
-                project_id = %p.id(),
-                project_name = %p.name(),
-                git_remote = %remote_url,
-                "resolved project from git remote",
-            );
-            Ok(Some(ResolvedProject {
-                id: p.id(),
-                name: p.name().to_owned(),
-                git_remote: p.git_remote().to_owned(),
-            }))
-        }
-        None => {
-            tracing::debug!(git_remote = %remote_url, "no project registered for this remote");
-            Ok(None)
-        }
+    if let Some(p) = project {
+        tracing::info!(
+            project_id = %p.id(),
+            project_name = %p.name(),
+            git_remote = %remote_url,
+            "resolved project from git remote",
+        );
+        Ok(Some(ResolvedProject {
+            id: p.id(),
+            name: p.name().to_owned(),
+            git_remote: p.git_remote().to_owned(),
+        }))
+    } else {
+        tracing::debug!(git_remote = %remote_url, "no project registered for this remote");
+        Ok(None)
     }
 }
 

@@ -93,6 +93,7 @@ pub struct ActivePromptVersions {
 
 impl ActivePromptVersions {
     /// Creates a new set of active prompt version IDs.
+    #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         extraction_system: PromptVersionId,

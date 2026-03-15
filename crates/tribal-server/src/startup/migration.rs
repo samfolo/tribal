@@ -85,17 +85,14 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
             tracing::warn!(
                 attempt,
                 max_attempts = MIGRATION_MAX_ATTEMPTS,
-                retry_ms = sleep.as_millis() as u64,
+                retry_ms = sleep.as_millis(),
                 "could not acquire migration lock, retrying",
             );
             tokio::time::sleep(sleep).await;
         }
     }
 
-    eprintln!(
-        "error: could not acquire migration lock after {} attempts",
-        MIGRATION_MAX_ATTEMPTS,
-    );
+    eprintln!("error: could not acquire migration lock after {MIGRATION_MAX_ATTEMPTS} attempts");
     Err(AppError::MigrationLockFailed {
         attempts: MIGRATION_MAX_ATTEMPTS,
     })
