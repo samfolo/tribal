@@ -387,7 +387,7 @@ impl Worker {
 
         // Notify job-state watch subscribers so they can observe the
         // claim-time status change.
-        self.notify_job_state(job_id);
+        self.notify_job_state(job_id, JobState::from(target_status));
 
         let Some(claim_token) = task.claim_token() else {
             tracing::error!(task_id = %task.id(), "task has no claim token after claiming");
@@ -541,16 +541,17 @@ impl Worker {
         }
     }
 
-    /// Sends a wake-up signal to any watch subscribers for the given job.
-    pub(super) fn notify_job_state(&self, job_id: JobId) {
-        if let Some(tx) = self.job_state_txs.get(&job_id) {
-            let _ = tx.send(());
+    /// Sends a typed [`JobState`] to any watch subscribers for the given job.
+    ///
+    /// When `state` is terminal, stamps `terminal_at` on the entry so the
+    /// background sweep can evict it after the configured TTL.
+    pub(super) fn notify_job_state(&self, job_id: JobId, state: JobState) {
+        if let Some(mut entry) = self.job_state_txs.get_mut(&job_id) {
+            let _ = entry.sender.send(state);
+            if state.is_terminal() {
+                entry.stamp_terminal();
+            }
         }
-    }
-
-    /// Removes the watch channel entry for a terminal job.
-    pub(super) fn remove_job_state(&self, job_id: JobId) {
-        self.job_state_txs.remove(&job_id);
     }
 
     /// Transitions jobs with dead-lettered extraction or relation tasks
