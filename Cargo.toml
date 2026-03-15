@@ -114,6 +114,7 @@ testcontainers = "0.27"
 wiremock = "0.6"
 
 # Internal crates
+tribal-common = { path = "crates/tribal-common" }
 tribal-domain = { path = "crates/tribal-domain" }
 tribal-db = { path = "crates/tribal-db" }
 tribal-inference = { path = "crates/tribal-inference" }
