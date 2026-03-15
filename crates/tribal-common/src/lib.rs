@@ -49,14 +49,14 @@ const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 /// LCG increment from Knuth's MMIX linear congruential generator.
 const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
 
-/// Produces a deterministic value in `[0, range * 2]` from an input and
-/// a per-caller seed, using a single LCG step.
+/// Produces a deterministic value in `[0, range * 2]` from a retry
+/// count and a per-caller seed, using a single LCG step.
 ///
 /// Avoids an RNG dependency while distributing values across both the
-/// input value and the caller identity.
+/// retry count and the caller identity.
 #[must_use]
-pub fn deterministic_jitter(input: u64, seed: u64, range: u64) -> u32 {
-    let hash = (input ^ seed)
+pub fn deterministic_jitter(retry_count: u32, range: u64, seed: u64) -> u32 {
+    let hash = (u64::from(retry_count) ^ seed)
         .wrapping_mul(LCG_MULTIPLIER)
         .wrapping_add(LCG_INCREMENT);
     #[allow(clippy::cast_possible_truncation)]
@@ -127,9 +127,9 @@ mod tests {
 
     #[test]
     fn test_deterministic_jitter_varies_with_seed() {
-        let a = deterministic_jitter(3, 1, 1000);
-        let b = deterministic_jitter(3, 42, 1000);
-        let c = deterministic_jitter(3, 9999, 1000);
+        let a = deterministic_jitter(3, 1000, 1);
+        let b = deterministic_jitter(3, 1000, 42);
+        let c = deterministic_jitter(3, 1000, 9999);
         assert!(
             a != b || b != c,
             "different seeds should produce different jitter",
@@ -138,8 +138,8 @@ mod tests {
 
     #[test]
     fn test_deterministic_jitter_bounded() {
-        for input in 0..100 {
-            let result = deterministic_jitter(input, 0, 500);
+        for retry_count in 0..100_u32 {
+            let result = deterministic_jitter(retry_count, 500, 0);
             assert!(
                 result <= 1000,
                 "result {result} exceeds range * 2 (1000)",
