@@ -55,8 +55,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let _telemetry_guard = tribal_telemetry::init_subscriber(&config.logging)?;
 
     let cancellation_token = CancellationToken::new();
-    let job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>> =
-        Arc::new(DashMap::new());
+    let job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>> = Arc::new(DashMap::new());
 
     // -- Main runtime --------------------------------------------------------
 
