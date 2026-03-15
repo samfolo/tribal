@@ -110,10 +110,11 @@ impl TribalServerHandler {
         let status_params = JobStatusParams { job_id };
 
         let mut result = {
-            let mut conn = match acquire_connection(&self.state.pool_mcp).await {
-                Ok(c) => c,
-                Err(call_result) => return Ok(call_result),
-            };
+            let mut conn =
+                match acquire_connection(&self.state.pool_mcp, self.config.pool_name).await {
+                    Ok(c) => c,
+                    Err(call_result) => return Ok(call_result),
+                };
             match execute_job_status(&mut conn, &self.repositories, &status_params).await {
                 Ok(r) => r,
                 Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
@@ -133,10 +134,12 @@ impl TribalServerHandler {
                 }
 
                 result = {
-                    let mut conn = match acquire_connection(&self.state.pool_mcp).await {
-                        Ok(c) => c,
-                        Err(call_result) => return Ok(call_result),
-                    };
+                    let mut conn =
+                        match acquire_connection(&self.state.pool_mcp, self.config.pool_name).await
+                        {
+                            Ok(c) => c,
+                            Err(call_result) => return Ok(call_result),
+                        };
                     match execute_job_status(&mut conn, &self.repositories, &status_params).await {
                         Ok(r) => r,
                         Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),

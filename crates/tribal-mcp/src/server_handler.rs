@@ -34,9 +34,6 @@ use crate::{
 const SERVER_NAME: &str = "tribal";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Name used when reporting pool-related errors from the MCP connection pool.
-pub(crate) const POOL_NAME: &str = "mcp";
-
 /// Tool names with explicit `call_tool` match arms.
 #[cfg(test)]
 pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
@@ -94,6 +91,7 @@ pub struct ActivePromptVersions {
 impl ActivePromptVersions {
     /// Creates a new set of active prompt version IDs.
     #[must_use]
+    // Six prompt version IDs (3 stages × 2 roles) cannot be reduced further.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         extraction_system: PromptVersionId,

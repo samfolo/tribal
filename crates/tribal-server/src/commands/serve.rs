@@ -34,7 +34,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let config = load_config(config_path, Some(cli_overrides))?;
     validate(&config)?;
 
-    let _handler_config = HandlerConfig::from(&config);
+    let _handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 
     // Telemetry must be initialised before the async runtime so the guard
     // outlives `block_on` and flushes pending writes on shutdown.
@@ -111,24 +111,28 @@ async fn bootstrap(config: &TribalConfig, cli_project: Option<String>) -> Result
 
     // -- AppState assembly ---------------------------------------------------
 
-    let _state = Arc::new(AppState {
-        pool_mcp,
-        pool_worker,
-        instance_id,
-        active_prompt_versions: Arc::new(RwLock::new(active_prompt_versions)),
-        provider_registry: Arc::new(registry),
-        embedding_provider,
-        extraction_provider,
-        triage_provider,
-        relation_provider,
-        embedding_key,
-        extraction_key,
-        triage_key,
-        relation_key,
-        worker_config: config.worker.clone(),
-        server_config: Arc::new(config.server.clone()),
-        resolved_project,
-    });
+    let mut state_builder = AppState::builder()
+        .pool_mcp(pool_mcp)
+        .pool_worker(pool_worker)
+        .instance_id(instance_id)
+        .active_prompt_versions(Arc::new(RwLock::new(active_prompt_versions)))
+        .provider_registry(Arc::new(registry))
+        .embedding_provider(embedding_provider)
+        .extraction_provider(extraction_provider)
+        .triage_provider(triage_provider)
+        .relation_provider(relation_provider)
+        .embedding_key(embedding_key)
+        .extraction_key(extraction_key)
+        .triage_key(triage_key)
+        .relation_key(relation_key)
+        .worker_config(config.worker.clone())
+        .server_config(Arc::new(config.server.clone()));
+
+    if let Some(project) = resolved_project {
+        state_builder = state_builder.resolved_project(project);
+    }
+
+    let _state = Arc::new(state_builder.build());
 
     tracing::info!("startup sequence complete");
 

@@ -63,12 +63,10 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
     })?;
 
     let repo = PgProjectRepository;
-    let mut conn = pool.acquire().await.map_err(|e| AppError::Database {
-        source: tribal_db::DbError::QueryFailed {
-            context: "acquire connection for project lookup".into(),
-            source: e,
-        },
-    })?;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| AppError::pool_acquire("project lookup", e))?;
 
     let project = repo
         .find_by_id(&mut conn, project_id)
@@ -83,11 +81,11 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
         "resolved project from explicit ID",
     );
 
-    Ok(ResolvedProject {
-        id: project.id(),
-        name: project.name().to_owned(),
-        git_remote: project.git_remote().to_owned(),
-    })
+    Ok(ResolvedProject::builder()
+        .id(project.id())
+        .name(project.name())
+        .git_remote(project.git_remote())
+        .build())
 }
 
 /// Discovers the git repository from the current working directory,
@@ -98,12 +96,10 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
     };
 
     let repo = PgProjectRepository;
-    let mut conn = pool.acquire().await.map_err(|e| AppError::Database {
-        source: tribal_db::DbError::QueryFailed {
-            context: "acquire connection for git remote lookup".into(),
-            source: e,
-        },
-    })?;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| AppError::pool_acquire("git remote lookup", e))?;
 
     let project = repo
         .find_by_git_remote(&mut conn, &remote_url)
@@ -117,11 +113,13 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
             git_remote = %remote_url,
             "resolved project from git remote",
         );
-        Ok(Some(ResolvedProject {
-            id: p.id(),
-            name: p.name().to_owned(),
-            git_remote: p.git_remote().to_owned(),
-        }))
+        Ok(Some(
+            ResolvedProject::builder()
+                .id(p.id())
+                .name(p.name())
+                .git_remote(p.git_remote())
+                .build(),
+        ))
     } else {
         tracing::debug!(git_remote = %remote_url, "no project registered for this remote");
         Ok(None)

@@ -67,10 +67,11 @@ impl TribalServerHandler {
                 }
             };
 
-            let mut conn = match acquire_connection(&self.state.pool_mcp).await {
-                Ok(c) => c,
-                Err(call_result) => return Ok((call_result, false)),
-            };
+            let mut conn =
+                match acquire_connection(&self.state.pool_mcp, self.config.pool_name).await {
+                    Ok(c) => c,
+                    Err(call_result) => return Ok((call_result, false)),
+                };
 
             match resolve_project(&mut conn, &self.repositories, proj_id).await {
                 Ok(p) => Some(p),

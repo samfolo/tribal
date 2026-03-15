@@ -156,6 +156,19 @@ impl AppError {
             _ => 1,
         }
     }
+
+    /// Wraps a pool-acquire failure as `AppError::Database`.
+    ///
+    /// Used by startup modules that need a connection from an already-created
+    /// pool.
+    pub(crate) fn pool_acquire(context: &str, source: sqlx::Error) -> Self {
+        Self::Database {
+            source: DbError::QueryFailed {
+                context: context.into(),
+                source,
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
