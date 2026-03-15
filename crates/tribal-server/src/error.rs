@@ -120,6 +120,13 @@ pub enum AppError {
         source: DbError,
     },
 
+    /// Provider setup failed during startup.
+    #[error("provider setup failed: {context}")]
+    ProviderSetup {
+        /// Description of the setup failure.
+        context: String,
+    },
+
     /// Project resolution failed.
     #[error("project resolution failed: {context}")]
     ProjectResolution {

@@ -14,16 +14,11 @@ use tribal_inference::{
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
-// Expect messages
-// ---------------------------------------------------------------------------
-
-const EXPECT_LIMITS: &str = "provider limits must be configured for all providers";
-const EXPECT_CLIENT: &str = "provider key must have an HTTP client in registry";
-
-// ---------------------------------------------------------------------------
 // Error messages
 // ---------------------------------------------------------------------------
 
+const MISSING_LIMITS: &str = "no limits configured for provider";
+const MISSING_CLIENT: &str = "no HTTP client in registry for provider key";
 const ANTHROPIC_EMBEDDING_UNSUPPORTED: &str =
     "Anthropic does not provide an embedding API; use Ollama or OpenAI for embeddings";
 
@@ -36,11 +31,6 @@ const ANTHROPIC_EMBEDDING_UNSUPPORTED: &str =
 /// Creates one `(ProviderKey, ProviderLimits)` entry for each distinct
 /// (provider kind, base URL, request class) combination across the
 /// embedding and inference configurations.
-///
-/// # Panics
-///
-/// Panics if `config.limits.providers` does not contain limits for a
-/// configured provider kind.
 pub(crate) fn build_provider_registry(config: &TribalConfig) -> Result<ProviderRegistry, AppError> {
     let mut entries: Vec<(ProviderKey, ProviderLimits)> = Vec::new();
     let mut seen: HashSet<(ProviderKind, String, RequestClass)> = HashSet::new();
@@ -79,10 +69,6 @@ pub(crate) fn build_provider_registry(config: &TribalConfig) -> Result<ProviderR
 /// Returns the boxed provider and the registry key for semaphore lookups.
 /// Calls `probe_model` on the concrete provider before boxing — logs a
 /// warning on failure but does not fail startup.
-///
-/// # Panics
-///
-/// Panics if the registry does not contain the provider key.
 pub(crate) async fn build_embedding_provider(
     registry: &ProviderRegistry,
     config: &EmbeddingConfig,
@@ -91,7 +77,7 @@ pub(crate) async fn build_embedding_provider(
     let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Embedding)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
-    let client = registry.client(&key).expect(EXPECT_CLIENT).clone();
+    let client = get_client(registry, &key, config.provider)?.clone();
 
     let provider: Arc<dyn EmbeddingProvider> = match config.provider {
         ProviderKind::Ollama => {
@@ -129,10 +115,6 @@ pub(crate) async fn build_embedding_provider(
 /// Constructs an inference provider for a single pipeline stage.
 ///
 /// Returns the boxed provider and the registry key for semaphore lookups.
-///
-/// # Panics
-///
-/// Panics if the registry does not contain the provider key.
 pub(crate) fn build_inference_provider(
     registry: &ProviderRegistry,
     config: &StageInferenceConfig,
@@ -141,7 +123,7 @@ pub(crate) fn build_inference_provider(
     let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Inference)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
-    let client = registry.client(&key).expect(EXPECT_CLIENT).clone();
+    let client = get_client(registry, &key, config.provider)?.clone();
 
     let provider: Arc<dyn InferenceProvider> = match config.provider {
         ProviderKind::Ollama => Arc::new(OllamaInferenceProvider::new(client, &url, &config.model)),
@@ -167,10 +149,6 @@ pub(crate) fn build_inference_provider(
 // ---------------------------------------------------------------------------
 
 /// Adds a deduplicated registry entry.
-///
-/// # Panics
-///
-/// Panics if `config.limits.providers` does not contain the given provider.
 fn add_entry(
     entries: &mut Vec<(ProviderKey, ProviderLimits)>,
     seen: &mut HashSet<(ProviderKind, String, RequestClass)>,
@@ -184,7 +162,14 @@ fn add_entry(
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
     if seen.insert((provider, url, request_class)) {
-        let limits_config = config.limits.providers.get(&provider).expect(EXPECT_LIMITS);
+        let limits_config =
+            config
+                .limits
+                .providers
+                .get(&provider)
+                .ok_or_else(|| AppError::ProviderSetup {
+                    context: format!("{MISSING_LIMITS}: {provider}"),
+                })?;
 
         entries.push((
             key,
@@ -196,6 +181,17 @@ fn add_entry(
     }
 
     Ok(())
+}
+
+/// Retrieves the HTTP client for a provider key from the registry.
+fn get_client<'a>(
+    registry: &'a ProviderRegistry,
+    key: &ProviderKey,
+    provider: ProviderKind,
+) -> Result<&'a reqwest::Client, AppError> {
+    registry.client(key).ok_or_else(|| AppError::ProviderSetup {
+        context: format!("{MISSING_CLIENT}: {provider}"),
+    })
 }
 
 /// Resolves the base URL for a provider, falling back to the provider's

@@ -4656,6 +4656,7 @@ dependencies = [
  "gethostname",
  "gix",
  "rand 0.10.0",
+ "reqwest",
  "sha2",
  "shellexpand",
  "sqlx",

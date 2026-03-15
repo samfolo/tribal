@@ -162,9 +162,11 @@ impl FromStr for GitRemote {
 
         // SSH SCP format: [user@]host:path (no slashes before colon).
         // Per the git specification, the colon is the path separator in
-        // SCP syntax — there is no port field.
-        if let Some(rest) = base.strip_prefix("git@")
-            && let Some((host, path)) = rest.split_once(':')
+        // SCP syntax — there is no port field. We detect SCP by the
+        // presence of `user@` followed by `host:path` with no `://`.
+        if let Some((user_host, path)) = base.split_once(':')
+            && !base.contains("://")
+            && let Some((_user, host)) = user_host.split_once('@')
         {
             return Ok(Self {
                 canonical: format!("{}/{}", host.to_lowercase(), path.to_lowercase()),
@@ -249,9 +251,11 @@ mod tests {
 
     /// All these formats must normalise to `github.com/user/repo`.
     const STANDARD_INPUTS: &[&str] = &[
-        // SSH SCP syntax
+        // SSH SCP syntax (git@ user)
         "git@github.com:user/repo.git",
         "git@github.com:user/repo",
+        // SSH SCP syntax (arbitrary user)
+        "deploy@github.com:user/repo.git",
         // HTTPS
         "https://github.com/user/repo.git",
         "https://github.com/user/repo",
