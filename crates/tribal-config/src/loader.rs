@@ -10,15 +10,13 @@ use figment::{
 use serde::Serialize;
 
 use crate::{
-    LoggingConfig, TelemetryConfig, TribalConfig, error::ConfigError, sections::TransportKind,
+    LoggingConfig, TelemetryConfig, TribalConfig, env::ENV_PREFIX, error::ConfigError,
+    sections::TransportKind,
 };
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// Prefix stripped from environment variables before mapping to config paths.
-const ENV_PREFIX: &str = "TRIBAL_";
 
 /// Separator used to encode nested paths in environment variable names.
 ///

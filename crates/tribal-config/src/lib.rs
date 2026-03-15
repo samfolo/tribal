@@ -6,12 +6,14 @@
 #![deny(warnings)]
 #![warn(clippy::pedantic)]
 
+mod env;
 mod error;
 mod loader;
 mod paths;
 mod sections;
 mod validation;
 
+pub use env::{ENV_CONFIG_PATH, ENV_PREFIX, ENV_PROJECT_ID};
 pub use error::ConfigError;
 pub use loader::{CliOverrides, ServerCliOverrides, load_config};
 pub use sections::{
