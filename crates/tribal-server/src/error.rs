@@ -183,6 +183,9 @@ impl AppError {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::MigrationLockFailed { .. } => EXIT_CODE_MIGRATION_LOCK,
+            Self::WorkerStartup { .. } | Self::WorkerRuntime { .. } | Self::WorkerDeath => {
+                EXIT_CODE_WORKER_DEATH
+            }
             _ => 1,
         }
     }
@@ -304,9 +307,53 @@ mod tests {
     }
 
     #[test]
+    fn test_display_worker_startup() {
+        let err = AppError::WorkerStartup {
+            source: tribal_worker::WorkerError::Cancelled,
+        };
+        assert_eq!(err.to_string(), "worker startup failed");
+    }
+
+    #[test]
+    fn test_display_worker_runtime() {
+        let err = AppError::WorkerRuntime {
+            source: io::Error::new(io::ErrorKind::Other, "thread pool exhausted"),
+        };
+        assert_eq!(err.to_string(), "failed to create worker runtime");
+    }
+
+    #[test]
+    fn test_display_worker_death() {
+        let err = AppError::WorkerDeath;
+        assert_eq!(err.to_string(), "worker died unexpectedly");
+    }
+
+    #[test]
     fn test_exit_code_migration_lock() {
         let err = AppError::MigrationLockFailed { attempts: 3 };
         assert_eq!(err.exit_code(), EXIT_CODE_MIGRATION_LOCK);
+    }
+
+    #[test]
+    fn test_exit_code_worker_startup() {
+        let err = AppError::WorkerStartup {
+            source: tribal_worker::WorkerError::Cancelled,
+        };
+        assert_eq!(err.exit_code(), EXIT_CODE_WORKER_DEATH);
+    }
+
+    #[test]
+    fn test_exit_code_worker_runtime() {
+        let err = AppError::WorkerRuntime {
+            source: io::Error::new(io::ErrorKind::Other, "thread pool exhausted"),
+        };
+        assert_eq!(err.exit_code(), EXIT_CODE_WORKER_DEATH);
+    }
+
+    #[test]
+    fn test_exit_code_worker_death() {
+        let err = AppError::WorkerDeath;
+        assert_eq!(err.exit_code(), EXIT_CODE_WORKER_DEATH);
     }
 
     #[test]
