@@ -177,8 +177,8 @@ pub enum AppError {
 impl AppError {
     /// Returns the process exit code for this error.
     ///
-    /// Migration lock failures use `EX_TEMPFAIL` (75); all other errors
-    /// use exit code 1.
+    /// Migration lock failures use `EX_TEMPFAIL` (75); worker errors use
+    /// `EX_SOFTWARE` (70); all other errors use exit code 1.
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
