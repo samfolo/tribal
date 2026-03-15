@@ -19,6 +19,9 @@ use tribal_telemetry::TelemetryError;
 /// Exit code for transient migration lock failure (`EX_TEMPFAIL`).
 const EXIT_CODE_MIGRATION_LOCK: i32 = 75;
 
+/// Exit code for worker runtime failure or unexpected death (`EX_SOFTWARE`).
+const EXIT_CODE_WORKER_DEATH: i32 = 70;
+
 // ---------------------------------------------------------------------------
 // AppError
 // ---------------------------------------------------------------------------
@@ -142,6 +145,26 @@ pub enum AppError {
         source: io::Error,
     },
 
+    /// Worker startup failed.
+    #[error("worker startup failed")]
+    WorkerStartup {
+        /// The underlying worker error.
+        #[source]
+        source: tribal_worker::WorkerError,
+    },
+
+    /// Failed to create the worker runtime.
+    #[error("failed to create worker runtime")]
+    WorkerRuntime {
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// The worker exited or panicked unexpectedly during operation.
+    #[error("worker died unexpectedly")]
+    WorkerDeath,
+
     /// General database query error.
     #[error("{source}")]
     Database {
@@ -154,12 +177,15 @@ pub enum AppError {
 impl AppError {
     /// Returns the process exit code for this error.
     ///
-    /// Migration lock failures use `EX_TEMPFAIL` (75); all other errors
-    /// use exit code 1.
+    /// Migration lock failures use `EX_TEMPFAIL` (75); worker errors use
+    /// `EX_SOFTWARE` (70); all other errors use exit code 1.
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::MigrationLockFailed { .. } => EXIT_CODE_MIGRATION_LOCK,
+            Self::WorkerStartup { .. } | Self::WorkerRuntime { .. } | Self::WorkerDeath => {
+                EXIT_CODE_WORKER_DEATH
+            }
             _ => 1,
         }
     }
@@ -281,9 +307,53 @@ mod tests {
     }
 
     #[test]
+    fn test_display_worker_startup() {
+        let err = AppError::WorkerStartup {
+            source: tribal_worker::WorkerError::Cancelled,
+        };
+        assert_eq!(err.to_string(), "worker startup failed");
+    }
+
+    #[test]
+    fn test_display_worker_runtime() {
+        let err = AppError::WorkerRuntime {
+            source: io::Error::other("thread pool exhausted"),
+        };
+        assert_eq!(err.to_string(), "failed to create worker runtime");
+    }
+
+    #[test]
+    fn test_display_worker_death() {
+        let err = AppError::WorkerDeath;
+        assert_eq!(err.to_string(), "worker died unexpectedly");
+    }
+
+    #[test]
     fn test_exit_code_migration_lock() {
         let err = AppError::MigrationLockFailed { attempts: 3 };
         assert_eq!(err.exit_code(), EXIT_CODE_MIGRATION_LOCK);
+    }
+
+    #[test]
+    fn test_exit_code_worker_startup() {
+        let err = AppError::WorkerStartup {
+            source: tribal_worker::WorkerError::Cancelled,
+        };
+        assert_eq!(err.exit_code(), EXIT_CODE_WORKER_DEATH);
+    }
+
+    #[test]
+    fn test_exit_code_worker_runtime() {
+        let err = AppError::WorkerRuntime {
+            source: io::Error::other("thread pool exhausted"),
+        };
+        assert_eq!(err.exit_code(), EXIT_CODE_WORKER_DEATH);
+    }
+
+    #[test]
+    fn test_exit_code_worker_death() {
+        let err = AppError::WorkerDeath;
+        assert_eq!(err.exit_code(), EXIT_CODE_WORKER_DEATH);
     }
 
     #[test]

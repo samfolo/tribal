@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
 use tribal_domain::{ProjectId, PromptVersionId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
@@ -103,6 +105,8 @@ impl From<TestHandler> for TribalServerHandler {
                 .relation_key(test_inference_key())
                 .worker_config(WorkerConfig::default())
                 .server_config(Arc::new(ServerConfig::default()))
+                .cancellation_token(CancellationToken::new())
+                .job_state_txs(Arc::new(DashMap::new()))
                 .build(),
         );
         Self::new(state, th.repositories, th.session, th.config)
