@@ -5,9 +5,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tribal_common::{clamp_to_i32, clamp_to_u32};
 use tribal_config::WorkerConfig;
@@ -15,7 +14,9 @@ use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository, PgTaskRepository,
     PgTokenUsageRepository, TaskRepository, TokenUsageRepository,
 };
-use tribal_domain::{Job, JobId, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage};
+use tribal_domain::{
+    Job, JobId, JobState, JobStateTxs, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage,
+};
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
@@ -54,7 +55,7 @@ pub struct Worker {
     config: WorkerConfig,
     include_llm_content: bool,
     instance_id: String,
-    job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
+    job_state_txs: JobStateTxs,
     /// Current number of in-flight tasks.
     active_tasks: Arc<AtomicUsize>,
     /// High-water mark of simultaneously in-flight tasks.
@@ -82,7 +83,7 @@ impl Worker {
         config: WorkerConfig,
         include_llm_content: bool,
         instance_id: String,
-        job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
+        job_state_txs: JobStateTxs,
     ) -> Self {
         Self {
             pool,
