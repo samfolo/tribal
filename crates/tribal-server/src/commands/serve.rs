@@ -111,7 +111,7 @@ async fn bootstrap(config: &TribalConfig, cli_project: Option<String>) -> Result
 
     // -- AppState assembly ---------------------------------------------------
 
-    let mut state_builder = AppState::builder()
+    let base = AppState::builder()
         .pool_mcp(pool_mcp)
         .pool_worker(pool_worker)
         .instance_id(instance_id)
@@ -128,11 +128,10 @@ async fn bootstrap(config: &TribalConfig, cli_project: Option<String>) -> Result
         .worker_config(config.worker.clone())
         .server_config(Arc::new(config.server.clone()));
 
-    if let Some(project) = resolved_project {
-        state_builder = state_builder.resolved_project(project);
-    }
-
-    let _state = Arc::new(state_builder.build());
+    let _state = Arc::new(match resolved_project {
+        Some(project) => base.resolved_project(project).build(),
+        None => base.build(),
+    });
 
     tracing::info!("startup sequence complete");
 
