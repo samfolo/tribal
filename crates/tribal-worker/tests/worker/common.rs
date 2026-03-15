@@ -3,7 +3,6 @@
 pub(super) use std::{sync::Arc, time::Duration};
 
 pub(super) use dashmap::DashMap;
-pub(super) use tokio::sync::watch;
 pub(super) use tokio_util::sync::CancellationToken;
 pub(super) use tribal_config::WorkerConfig;
 pub(super) use tribal_db::{
@@ -16,9 +15,9 @@ pub(super) use tribal_db::{
     TagRegistryRepository, TaskRepository, TokenUsageRepository, TriageResultRepository,
 };
 pub(super) use tribal_domain::{
-    EmbeddingPurpose, JobId, JobOutcome, JobStatus, KnowledgeItemId, KnowledgeKind, PipelineStage,
-    PrincipalId, ProjectId, PromptVersionId, RelationBatchId, SourceType, TaskErrorKind,
-    TaskStatus, TaskType, TriageOutcome,
+    EmbeddingPurpose, JobId, JobOutcome, JobStateTxs, JobStatus, KnowledgeItemId, KnowledgeKind,
+    PipelineStage, PrincipalId, ProjectId, PromptVersionId, RelationBatchId, SourceType,
+    TaskErrorKind, TaskStatus, TaskType, TriageOutcome,
 };
 pub(super) use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry,
@@ -153,7 +152,7 @@ pub(super) fn build_test_worker(
         .expect("valid registry"),
     );
 
-    let job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>> = Arc::new(DashMap::new());
+    let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
     Arc::new(Worker::new(
         pool,
