@@ -19,12 +19,10 @@ use crate::error::AppError;
 /// `Err(AppError::FirstRunRequired)` otherwise.
 pub(crate) async fn check_first_run(pool: &PgPool) -> Result<(), AppError> {
     let repo = PgMigrationRepository;
-    let mut conn = pool.acquire().await.map_err(|e| AppError::Database {
-        source: tribal_db::DbError::QueryFailed {
-            context: "acquire connection for first-run check".into(),
-            source: e,
-        },
-    })?;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| AppError::pool_acquire("first-run check", e))?;
 
     let exists = repo
         .has_migrations_table(&mut conn)
@@ -38,7 +36,7 @@ pub(crate) async fn check_first_run(pool: &PgPool) -> Result<(), AppError> {
     }
 }
 
-/// Runs pending migrations under a Postgres advisory lock.
+/// Runs pending migrations under a `Postgres` advisory lock.
 ///
 /// Retries lock acquisition up to [`MIGRATION_MAX_ATTEMPTS`] times with
 /// jittered sleep between attempts. If the lock cannot be acquired after
@@ -47,12 +45,10 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
     let repo = PgMigrationRepository;
 
     for attempt in 1..=MIGRATION_MAX_ATTEMPTS {
-        let mut conn = pool.acquire().await.map_err(|e| AppError::Database {
-            source: tribal_db::DbError::QueryFailed {
-                context: "acquire connection for migration".into(),
-                source: e,
-            },
-        })?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|e| AppError::pool_acquire("migration", e))?;
 
         let acquired = repo
             .try_advisory_lock(&mut conn, ADVISORY_LOCK_ID)

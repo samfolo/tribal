@@ -10,6 +10,7 @@ use tribal_config::TribalConfig;
 // Constants
 // ---------------------------------------------------------------------------
 
+const DEFAULT_POOL_NAME: &str = "<anonymous>";
 const DEFAULT_DISCOVERY_LIMIT: u32 = 10;
 const MAX_DISCOVERY_LIMIT: u32 = 50;
 const DEFAULT_EXPLORATION_DEPTH: u32 = 1;
@@ -22,8 +23,12 @@ const MAX_EXPLORATION_LIMIT: u32 = 100;
 // ---------------------------------------------------------------------------
 
 /// Configuration values threaded into [`TribalServerHandler`](crate::TribalServerHandler).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandlerConfig {
+    /// Pool name reported in pool-exhaustion errors, set by the server on
+    /// startup.
+    pub pool_name: &'static str,
+
     /// Discovery (semantic search) limits.
     pub discovery: HandlerDiscoveryConfig,
 
@@ -31,9 +36,29 @@ pub struct HandlerConfig {
     pub exploration: HandlerExplorationConfig,
 }
 
+impl HandlerConfig {
+    /// Sets the pool name on an existing configuration.
+    #[must_use]
+    pub fn with_pool_name(mut self, pool_name: &'static str) -> Self {
+        self.pool_name = pool_name;
+        self
+    }
+}
+
+impl Default for HandlerConfig {
+    fn default() -> Self {
+        Self {
+            pool_name: DEFAULT_POOL_NAME,
+            discovery: HandlerDiscoveryConfig::default(),
+            exploration: HandlerExplorationConfig::default(),
+        }
+    }
+}
+
 impl From<&TribalConfig> for HandlerConfig {
     fn from(config: &TribalConfig) -> Self {
         Self {
+            pool_name: DEFAULT_POOL_NAME,
             discovery: HandlerDiscoveryConfig {
                 default_limit: config.discovery.default_limit,
                 max_limit: config.discovery.max_limit,

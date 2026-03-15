@@ -83,27 +83,28 @@ pub(crate) struct TestHandler {
 
 impl From<TestHandler> for TribalServerHandler {
     fn from(th: TestHandler) -> Self {
-        let state = Arc::new(AppState {
-            pool_mcp: th.pool.clone(),
-            pool_worker: th.pool,
-            instance_id: Arc::from(TEST_INSTANCE_ID),
-            active_prompt_versions: th.active_prompt_versions,
-            provider_registry: Arc::new(
-                ProviderRegistry::new(Vec::new())
-                    .expect("empty registry construction must not fail"),
-            ),
-            embedding_provider: th.embedding_provider,
-            extraction_provider: default_inference_provider(),
-            triage_provider: default_inference_provider(),
-            relation_provider: default_inference_provider(),
-            embedding_key: test_provider_key(),
-            extraction_key: test_provider_key(),
-            triage_key: test_provider_key(),
-            relation_key: test_provider_key(),
-            worker_config: WorkerConfig::default(),
-            server_config: Arc::new(ServerConfig::default()),
-            resolved_project: None,
-        });
+        let state = Arc::new(
+            AppState::builder()
+                .pool_mcp(th.pool.clone())
+                .pool_worker(th.pool)
+                .instance_id(Arc::from(TEST_INSTANCE_ID))
+                .active_prompt_versions(th.active_prompt_versions)
+                .provider_registry(Arc::new(
+                    ProviderRegistry::new(Vec::new())
+                        .expect("empty registry construction must not fail"),
+                ))
+                .embedding_provider(th.embedding_provider)
+                .extraction_provider(default_inference_provider())
+                .triage_provider(default_inference_provider())
+                .relation_provider(default_inference_provider())
+                .embedding_key(test_provider_key())
+                .extraction_key(test_provider_key())
+                .triage_key(test_provider_key())
+                .relation_key(test_provider_key())
+                .worker_config(WorkerConfig::default())
+                .server_config(Arc::new(ServerConfig::default()))
+                .build(),
+        );
         Self::new(state, th.repositories, th.session, th.config)
     }
 }

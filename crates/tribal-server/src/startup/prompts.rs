@@ -101,12 +101,10 @@ pub(crate) async fn load_prompts(
     prompts_dir: &Path,
 ) -> Result<ActivePromptVersions, AppError> {
     let repo = PgPromptVersionRepository;
-    let mut conn = pool.acquire().await.map_err(|e| AppError::Database {
-        source: tribal_db::DbError::QueryFailed {
-            context: "acquire connection for prompt loading".into(),
-            source: e,
-        },
-    })?;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| AppError::pool_acquire("prompt loading", e))?;
 
     let mut versions: HashMap<(PromptStage, PromptRole), PromptVersionId> =
         HashMap::with_capacity(PROMPT_PAIRS.len());
