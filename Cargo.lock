@@ -4631,6 +4631,7 @@ name = "tribal-mcp"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dashmap",
  "rmcp",
  "serde",
  "serde_json",
@@ -4638,6 +4639,7 @@ dependencies = [
  "strum",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "tribal-config",
  "tribal-db",
@@ -4653,6 +4655,7 @@ name = "tribal-server"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dashmap",
  "gethostname",
  "gix",
  "reqwest",
@@ -4661,6 +4664,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "tribal-common",
  "tribal-config",
