@@ -47,8 +47,8 @@ impl GitRemote {
     /// port components.
     ///
     /// Strips a leading `/` and trailing `.git` from the path, and
-    /// lowercases both host and path. Default ports (22 for SSH, 443 for
-    /// HTTPS) are stripped; non-standard ports are preserved.
+    /// lowercases both host and path. Default ports (22, 80, 443, 9418)
+    /// are stripped; non-standard ports are preserved.
     #[must_use]
     pub fn from_parts(host: &str, path: &str, port: Option<u16>) -> Self {
         let path = path.strip_prefix('/').unwrap_or(path);

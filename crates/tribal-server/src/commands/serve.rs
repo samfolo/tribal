@@ -34,7 +34,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let config = load_config(config_path, Some(cli_overrides))?;
     validate(&config)?;
 
-    let _handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
+    let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 
     // Telemetry must be initialised before the async runtime so the guard
     // outlives `block_on` and flushes pending writes on shutdown.
@@ -42,7 +42,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     let rt = Runtime::new().map_err(|source| AppError::Runtime { source })?;
 
-    rt.block_on(async { bootstrap(&config, cli_project).await })?;
+    rt.block_on(async { bootstrap(&config, cli_project, handler_config).await })?;
 
     Ok(())
 }
@@ -53,7 +53,11 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
 /// Asynchronous startup sequence: pools, migrations, providers, prompts,
 /// project resolution, and `AppState` assembly.
-async fn bootstrap(config: &TribalConfig, cli_project: Option<String>) -> Result<(), AppError> {
+async fn bootstrap(
+    config: &TribalConfig,
+    cli_project: Option<String>,
+    _handler_config: HandlerConfig,
+) -> Result<(), AppError> {
     // -- Database pools ------------------------------------------------------
 
     let pool_mcp = create_pool_with_retry(
@@ -135,7 +139,8 @@ async fn bootstrap(config: &TribalConfig, cli_project: Option<String>) -> Result
 
     tracing::info!("startup sequence complete");
 
-    // Transport launch deferred to 6.4.
+    // Transport launch deferred to 6.4 — `_state` and `_handler_config`
+    // will be consumed by connection factory construction.
 
     Ok(())
 }
