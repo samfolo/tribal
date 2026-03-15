@@ -555,8 +555,8 @@ impl Worker {
     }
 
     /// Transitions jobs with dead-lettered extraction or relation tasks
-    /// to `Failed`, notifies watch subscribers, and cleans up the watch
-    /// map.  Best-effort — failures are logged but not propagated.
+    /// to `Failed` and notifies watch subscribers.  Best-effort — failures
+    /// are logged but not propagated.
     async fn heal_dead_lettered_jobs(&self) {
         let mut conn = match self.pool.acquire().await {
             Ok(c) => c,
@@ -572,8 +572,7 @@ impl Worker {
         {
             Ok(job_ids) => {
                 for job_id in &job_ids {
-                    self.notify_job_state(*job_id);
-                    self.remove_job_state(*job_id);
+                    self.notify_job_state(*job_id, JobState::Failed);
                 }
                 if !job_ids.is_empty() {
                     tracing::warn!(count = job_ids.len(), "transitioned stuck jobs to failed");
@@ -643,7 +642,7 @@ impl Worker {
                 continue;
             };
 
-            self.notify_job_state(*job_id);
+            self.notify_job_state(*job_id, JobState::Relating);
         }
 
         if !stuck_job_ids.is_empty() {

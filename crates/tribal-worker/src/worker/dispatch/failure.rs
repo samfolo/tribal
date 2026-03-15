@@ -5,7 +5,7 @@ use chrono::Utc;
 use tribal_db::{
     JobRepository, JobStatusTransition, PgJobRepository, PgTaskRepository, TaskRepository,
 };
-use tribal_domain::{JobOutcome, JobStatus, Task, TaskErrorKind, TaskType};
+use tribal_domain::{JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskType};
 
 use super::Worker;
 use crate::{error::StageError, worker::backoff::backoff_duration};
@@ -160,7 +160,7 @@ impl Worker {
             })?;
 
         if fan_in_fired {
-            self.notify_job_state(task.job_id());
+            self.notify_job_state(task.job_id(), JobState::Relating);
         }
 
         self.log_failure_outcome(task, outcome);
@@ -194,8 +194,7 @@ impl Worker {
         }
 
         if outcome.job_failed {
-            self.notify_job_state(task.job_id());
-            self.remove_job_state(task.job_id());
+            self.notify_job_state(task.job_id(), JobState::Failed);
         }
     }
 }

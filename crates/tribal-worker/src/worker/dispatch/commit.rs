@@ -15,7 +15,8 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    JobId, JobOutcome, JobStatus, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
+    JobId, JobOutcome, JobState, JobStatus, ReferenceKind, RelationBatchId, Task, TriageOutcome,
+    span_attrs,
 };
 
 use super::Worker;
@@ -159,13 +160,13 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_EXTRACTION, "committing transaction", e))?;
 
-            // Notify watch subscribers of the job state change.
-            self.notify_job_state(task.job_id());
-
-            // Clean up watch channel entry for terminal job transitions.
-            if is_empty {
-                self.remove_job_state(task.job_id());
-            }
+            // Notify watch subscribers of the post-extraction job state.
+            let state = if is_empty {
+                JobState::Completed
+            } else {
+                JobState::Triaging
+            };
+            self.notify_job_state(task.job_id(), state);
 
             tracing::info!(
                 task_id = %task.id(),
@@ -277,7 +278,7 @@ impl Worker {
                 .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
 
             if fan_in_fired {
-                self.notify_job_state(job_id);
+                self.notify_job_state(job_id, JobState::Relating);
             }
 
             tracing::Span::current().record(span_attrs::TRIAGE_OUTCOME, outcome);
@@ -372,8 +373,7 @@ impl Worker {
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "committing transaction", e))?;
 
             if is_terminal {
-                self.notify_job_state(job_id);
-                self.remove_job_state(job_id);
+                self.notify_job_state(job_id, JobState::Completed);
             }
 
             tracing::info!(
