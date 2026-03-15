@@ -26,3 +26,6 @@ tribal-inference.workspace = true
 tribal-mcp.workspace = true
 tribal-telemetry.workspace = true
 tribal-worker.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
