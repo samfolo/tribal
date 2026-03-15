@@ -13,6 +13,8 @@ use tribal_inference::{
     ProviderLimits, ProviderRegistry, RequestClass,
 };
 
+use tribal_config::ConfigError;
+
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
@@ -21,6 +23,13 @@ use crate::error::AppError;
 
 const EXPECT_LIMITS: &str = "provider limits must be configured for all providers";
 const EXPECT_CLIENT: &str = "provider key must have an HTTP client in registry";
+
+// ---------------------------------------------------------------------------
+// Error messages
+// ---------------------------------------------------------------------------
+
+const ANTHROPIC_EMBEDDING_UNSUPPORTED: &str =
+    "Anthropic does not provide an embedding API; use Ollama or OpenAI for embeddings";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -40,15 +49,14 @@ pub(crate) fn build_provider_registry(
     config: &TribalConfig,
 ) -> Result<ProviderRegistry, AppError> {
     let mut entries: Vec<(ProviderKey, ProviderLimits)> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<(ProviderKind, String, RequestClass)> = HashSet::new();
 
     // Embedding provider entry.
-    let emb = &config.embedding;
     add_entry(
         &mut entries,
         &mut seen,
-        emb.provider,
-        &emb.base_url,
+        config.embedding.provider,
+        &config.embedding.base_url,
         RequestClass::Embedding,
         config,
     )?;
@@ -75,8 +83,8 @@ pub(crate) fn build_provider_registry(
 /// Constructs the embedding provider from configuration.
 ///
 /// Returns the boxed provider and the registry key for semaphore lookups.
-/// Probes the provider before returning — logs a warning on failure but
-/// does not fail startup.
+/// Calls `probe_model` on the concrete provider before boxing — logs a
+/// warning on failure but does not fail startup.
 ///
 /// # Panics
 ///
@@ -99,7 +107,9 @@ pub(crate) async fn build_embedding_provider(
                 &config.model,
                 config.dimensions,
             );
-            probe_embedding(&p).await;
+            if let Err(e) = p.probe_model().await {
+                tracing::warn!(%e, "embedding model probe failed (non-fatal)");
+            }
             Arc::new(p)
         }
         ProviderKind::OpenAi => {
@@ -110,13 +120,17 @@ pub(crate) async fn build_embedding_provider(
                 config.api_key.as_deref().unwrap_or_default(),
                 config.dimensions,
             );
-            probe_embedding(&p).await;
+            if let Err(e) = p.probe_model().await {
+                tracing::warn!(%e, "embedding model probe failed (non-fatal)");
+            }
             Arc::new(p)
         }
         ProviderKind::Anthropic => {
-            // Validation rejects this configuration, so this arm is
-            // unreachable in normal operation.
-            unreachable!("Anthropic does not provide an embedding API");
+            return Err(AppError::Config {
+                source: ConfigError::ValidationFailed {
+                    errors: vec![ANTHROPIC_EMBEDDING_UNSUPPORTED.into()],
+                },
+            });
         }
     };
 
@@ -172,7 +186,7 @@ pub(crate) fn build_inference_provider(
 /// Panics if `config.limits.providers` does not contain the given provider.
 fn add_entry(
     entries: &mut Vec<(ProviderKey, ProviderLimits)>,
-    seen: &mut HashSet<String>,
+    seen: &mut HashSet<(ProviderKind, String, RequestClass)>,
     provider: ProviderKind,
     base_url: &Option<String>,
     request_class: RequestClass,
@@ -182,8 +196,7 @@ fn add_entry(
     let key = ProviderKey::new(provider.as_str(), &url, request_class)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
-    let dedup_key = format!("{}:{}:{:?}", provider.as_str(), url, request_class);
-    if seen.insert(dedup_key) {
+    if seen.insert((provider, url, request_class)) {
         let limits_config = config
             .limits
             .providers
@@ -209,21 +222,6 @@ fn resolve_base_url(provider: ProviderKind, config_url: &Option<String>) -> Stri
         .as_deref()
         .unwrap_or(provider.default_base_url())
         .to_owned()
-}
-
-/// Sends a lightweight probe request to the embedding provider.
-///
-/// Logs a warning on failure but does not fail startup — the provider may
-/// become available before the first real request arrives.
-async fn probe_embedding(provider: &(impl tribal_inference::EmbeddingProvider + ?Sized)) {
-    let request = tribal_inference::EmbeddingRequest {
-        texts: vec!["probe".into()],
-    };
-
-    match provider.embed(request).await {
-        Ok(_) => tracing::info!("embedding model probe succeeded"),
-        Err(e) => tracing::warn!(%e, "embedding model probe failed (non-fatal)"),
-    }
 }
 
 // ---------------------------------------------------------------------------
