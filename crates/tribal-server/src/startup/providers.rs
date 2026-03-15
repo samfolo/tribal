@@ -50,7 +50,7 @@ pub(crate) fn build_provider_registry(config: &TribalConfig) -> Result<ProviderR
         &mut entries,
         &mut seen,
         config.embedding.provider,
-        &config.embedding.base_url,
+        config.embedding.base_url.as_ref(),
         RequestClass::Embedding,
         config,
     )?;
@@ -65,7 +65,7 @@ pub(crate) fn build_provider_registry(config: &TribalConfig) -> Result<ProviderR
             &mut entries,
             &mut seen,
             stage.provider,
-            &stage.base_url,
+            stage.base_url.as_ref(),
             RequestClass::Inference,
             config,
         )?;
@@ -87,7 +87,7 @@ pub(crate) async fn build_embedding_provider(
     registry: &ProviderRegistry,
     config: &EmbeddingConfig,
 ) -> Result<(Arc<dyn EmbeddingProvider>, ProviderKey), AppError> {
-    let url = resolve_base_url(config.provider, &config.base_url);
+    let url = resolve_base_url(config.provider, config.base_url.as_ref());
     let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Embedding)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
@@ -137,7 +137,7 @@ pub(crate) fn build_inference_provider(
     registry: &ProviderRegistry,
     config: &StageInferenceConfig,
 ) -> Result<(Arc<dyn InferenceProvider>, ProviderKey), AppError> {
-    let url = resolve_base_url(config.provider, &config.base_url);
+    let url = resolve_base_url(config.provider, config.base_url.as_ref());
     let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Inference)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
@@ -175,7 +175,7 @@ fn add_entry(
     entries: &mut Vec<(ProviderKey, ProviderLimits)>,
     seen: &mut HashSet<(ProviderKind, String, RequestClass)>,
     provider: ProviderKind,
-    base_url: &Option<String>,
+    base_url: Option<&String>,
     request_class: RequestClass,
     config: &TribalConfig,
 ) -> Result<(), AppError> {
@@ -200,10 +200,9 @@ fn add_entry(
 
 /// Resolves the base URL for a provider, falling back to the provider's
 /// default when no explicit URL is configured.
-fn resolve_base_url(provider: ProviderKind, config_url: &Option<String>) -> String {
+fn resolve_base_url(provider: ProviderKind, config_url: Option<&String>) -> String {
     config_url
-        .as_deref()
-        .unwrap_or(provider.default_base_url())
+        .map_or(provider.default_base_url(), String::as_str)
         .to_owned()
 }
 
@@ -222,24 +221,24 @@ mod tests {
     #[test]
     fn test_resolve_base_url_uses_default_when_none() {
         assert_eq!(
-            resolve_base_url(ProviderKind::Ollama, &None),
+            resolve_base_url(ProviderKind::Ollama, None),
             DEFAULT_OLLAMA_BASE_URL,
         );
         assert_eq!(
-            resolve_base_url(ProviderKind::Anthropic, &None),
+            resolve_base_url(ProviderKind::Anthropic, None),
             DEFAULT_ANTHROPIC_BASE_URL,
         );
         assert_eq!(
-            resolve_base_url(ProviderKind::OpenAi, &None),
+            resolve_base_url(ProviderKind::OpenAi, None),
             DEFAULT_OPENAI_BASE_URL,
         );
     }
 
     #[test]
     fn test_resolve_base_url_uses_explicit_when_some() {
-        let custom = Some("https://custom.example.com".to_owned());
+        let custom = "https://custom.example.com".to_owned();
         assert_eq!(
-            resolve_base_url(ProviderKind::Ollama, &custom),
+            resolve_base_url(ProviderKind::Ollama, Some(&custom)),
             "https://custom.example.com",
         );
     }

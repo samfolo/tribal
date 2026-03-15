@@ -46,7 +46,7 @@ impl App {
                 println!("tribal setup: not yet implemented");
             }
             Command::Serve { args } => {
-                commands::serve::run(self.cli.global.config, args)?;
+                commands::serve::run(&self.cli.global.config, args)?;
             }
             Command::Project(command) => match command {
                 ProjectCommand::Register { .. } => {
