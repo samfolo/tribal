@@ -8,7 +8,10 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use tokio::{runtime::Builder, sync::RwLock, sync::oneshot};
+use tokio::{
+    runtime::Builder,
+    sync::{RwLock, oneshot},
+};
 use tokio_util::sync::CancellationToken;
 use tribal_config::{TribalConfig, load_config, validate};
 use tribal_domain::JobId;
@@ -118,12 +121,8 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     // -- Graceful shutdown ---------------------------------------------------
 
     let deadline = Duration::from_millis(config.server.shutdown_deadline_ms);
-    let worker_died = main_rt.block_on(async {
-        match tokio::time::timeout(deadline, death_rx).await {
-            Ok(Ok(())) => true,
-            _ => false,
-        }
-    });
+    let worker_died = main_rt
+        .block_on(async { matches!(tokio::time::timeout(deadline, death_rx).await, Ok(Ok(()))) });
 
     drop(worker_rt);
 

@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_display_worker_runtime() {
         let err = AppError::WorkerRuntime {
-            source: io::Error::new(io::ErrorKind::Other, "thread pool exhausted"),
+            source: io::Error::other("thread pool exhausted"),
         };
         assert_eq!(err.to_string(), "failed to create worker runtime");
     }
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn test_exit_code_worker_runtime() {
         let err = AppError::WorkerRuntime {
-            source: io::Error::new(io::ErrorKind::Other, "thread pool exhausted"),
+            source: io::Error::other("thread pool exhausted"),
         };
         assert_eq!(err.exit_code(), EXIT_CODE_WORKER_DEATH);
     }
