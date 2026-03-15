@@ -23,7 +23,7 @@ use tribal_db::{
     TagRegistryRepository,
 };
 use tribal_domain::{
-    EmbeddingId, EpisodeId, ItemObservationId, KnowledgeItemId, PrincipalId, ProjectId,
+    EmbeddingId, EpisodeId, GitRemote, ItemObservationId, KnowledgeItemId, PrincipalId, ProjectId,
     PromptVersionId, ReferenceId, RelationBatchId, RelationId, RelationKind,
 };
 
@@ -298,7 +298,7 @@ fn validate_preamble(commands: &[SeedCommand]) {
 async fn handle_create_project(
     idx: usize,
     label: &str,
-    git_remote: &str,
+    git_remote: &GitRemote,
     name: &str,
     state: &mut ExecutionState,
     conn: &mut PgConnection,
@@ -311,7 +311,7 @@ async fn handle_create_project(
     debug!("seed[{idx}]: CreateProject label={label:?} git_remote={git_remote:?}");
 
     let new_project = NewProject::builder()
-        .git_remote(git_remote.to_owned())
+        .git_remote(git_remote.clone())
         .name(name.to_owned())
         .default_branch("main".to_owned())
         .schema_version(1)

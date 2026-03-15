@@ -7,7 +7,7 @@ use gix::remote::Direction;
 use sqlx::PgPool;
 use tribal_config::ENV_PROJECT_ID;
 use tribal_db::{PgProjectRepository, ProjectRepository};
-use tribal_domain::ProjectId;
+use tribal_domain::{GitRemote, ProjectId};
 use tribal_mcp::ResolvedProject;
 
 use crate::error::AppError;
@@ -84,7 +84,7 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
     Ok(ResolvedProject::builder()
         .id(project.id())
         .name(project.name())
-        .git_remote(project.git_remote())
+        .git_remote(project.git_remote().clone())
         .build())
 }
 
@@ -117,7 +117,7 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
             ResolvedProject::builder()
                 .id(p.id())
                 .name(p.name())
-                .git_remote(p.git_remote())
+                .git_remote(p.git_remote().clone())
                 .build(),
         ))
     } else {
@@ -127,9 +127,9 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
 }
 
 /// Uses `gix` to discover the git repository and extract the origin
-/// remote URL.  Returns `None` if discovery fails or origin is not
-/// configured.
-fn discover_origin_url() -> Option<String> {
+/// remote URL, returning it as a [`GitRemote`] in canonical form.
+/// Returns `None` if discovery fails or origin is not configured.
+fn discover_origin_url() -> Option<GitRemote> {
     let repo = match gix::discover(".") {
         Ok(repo) => repo,
         Err(e) => {
@@ -150,9 +150,12 @@ fn discover_origin_url() -> Option<String> {
         }
     };
 
-    remote
-        .url(Direction::Fetch)
-        .map(|url| url.to_bstring().to_string())
+    let url = remote.url(Direction::Fetch)?;
+    let host = url.host()?;
+    let path = url.path.to_string();
+    let port = url.port;
+
+    Some(GitRemote::from_parts(host, &path, port))
 }
 
 // ---------------------------------------------------------------------------

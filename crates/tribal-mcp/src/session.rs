@@ -3,7 +3,7 @@ use rmcp::{
     service::{Peer, RoleServer},
 };
 use tokio::sync::RwLock;
-use tribal_domain::ProjectId;
+use tribal_domain::{GitRemote, ProjectId};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -23,7 +23,7 @@ pub(crate) const SESSION_RESOURCE_URI: &str = "tribal://session/context";
 pub struct SessionProject {
     pub id: ProjectId,
     pub name: String,
-    pub git_remote: String,
+    pub git_remote: GitRemote,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +144,9 @@ mod tests {
         let project = SessionProject {
             id,
             name: "tribal".into(),
-            git_remote: "git@github.com:user/tribal.git".into(),
+            git_remote: "git@github.com:user/tribal.git"
+                .parse()
+                .expect("valid test git remote"),
         };
         let ctx = SessionContext::new(Some(project), "user:sam".into());
         assert_eq!(ctx.resolved_project_id(), Some(id));

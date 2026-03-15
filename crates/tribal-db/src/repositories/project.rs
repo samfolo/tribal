@@ -7,13 +7,14 @@
 
 use async_trait::async_trait;
 use sqlx::PgConnection;
-use tribal_domain::{Project, ProjectId};
+use tribal_domain::{GitRemote, Project, ProjectId};
 use typed_builder::TypedBuilder;
 
 use crate::DbError;
 
 const SCHEMA_VERSION_EXCEEDS_I32: &str = "schema_version exceeds i32::MAX";
 const SCHEMA_VERSION_OVERFLOW: &str = "negative schema_version in database — data corruption";
+const GIT_REMOTE_PARSE: &str = "stored git_remote must be valid";
 
 /// Input for creating a new project.
 ///
@@ -22,8 +23,8 @@ const SCHEMA_VERSION_OVERFLOW: &str = "negative schema_version in database — d
 /// `DEFAULT` clauses and returned via `RETURNING *`.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct NewProject {
-    /// The git remote URL (stable project identity).
-    pub git_remote: String,
+    /// The git remote identity in canonical form.
+    pub git_remote: GitRemote,
     /// Human-friendly project name.
     pub name: String,
     /// Default branch (e.g. `"main"`).
@@ -78,7 +79,7 @@ pub trait ProjectRepository {
     async fn find_by_git_remote(
         &self,
         conn: &mut PgConnection,
-        git_remote: &str,
+        git_remote: &GitRemote,
     ) -> Result<Option<Project>, DbError>;
 
     /// Lists all projects, ordered by `created_at` ascending.
@@ -111,7 +112,7 @@ impl ProjectRepository for PgProjectRepository {
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *
             "#,
-            new_project.git_remote,
+            new_project.git_remote.as_str(),
             new_project.name,
             new_project.default_branch,
             new_project.project_type,
@@ -124,7 +125,7 @@ impl ProjectRepository for PgProjectRepository {
         match row {
             Ok(r) => Ok(Project::builder()
                 .id(ProjectId::from(r.id))
-                .git_remote(r.git_remote)
+                .git_remote(r.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
                 .name(r.name)
                 .default_branch(r.default_branch)
                 .project_type(r.project_type)
@@ -161,7 +162,7 @@ impl ProjectRepository for PgProjectRepository {
 
         Ok(Project::builder()
             .id(ProjectId::from(r.id))
-            .git_remote(r.git_remote)
+            .git_remote(r.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
             .name(r.name)
             .default_branch(r.default_branch)
             .project_type(r.project_type)
@@ -175,11 +176,11 @@ impl ProjectRepository for PgProjectRepository {
     async fn find_by_git_remote(
         &self,
         conn: &mut PgConnection,
-        git_remote: &str,
+        git_remote: &GitRemote,
     ) -> Result<Option<Project>, DbError> {
         let r = sqlx::query!(
             r#"SELECT * FROM projects WHERE git_remote = $1"#,
-            git_remote,
+            git_remote.as_str(),
         )
         .fetch_optional(&mut *conn)
         .await
@@ -191,7 +192,7 @@ impl ProjectRepository for PgProjectRepository {
         Ok(r.map(|r| {
             Project::builder()
                 .id(ProjectId::from(r.id))
-                .git_remote(r.git_remote)
+                .git_remote(r.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
                 .name(r.name)
                 .default_branch(r.default_branch)
                 .project_type(r.project_type)
@@ -217,7 +218,7 @@ impl ProjectRepository for PgProjectRepository {
             .map(|r| {
                 Project::builder()
                     .id(ProjectId::from(r.id))
-                    .git_remote(r.git_remote)
+                    .git_remote(r.git_remote.parse::<GitRemote>().expect(GIT_REMOTE_PARSE))
                     .name(r.name)
                     .default_branch(r.default_branch)
                     .project_type(r.project_type)

@@ -8,20 +8,21 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::ProjectId;
+use crate::{GitRemote, ProjectId};
 
 /// A project in the Tribal knowledge graph.
 ///
-/// `git_remote` is the stable identity (e.g. `git@github.com:user/tribal.git`).
-/// `name` is human-friendly and mutable. `settings` is opaque JSONB for
-/// project-specific configuration, versioned by `schema_version`.
+/// `git_remote` is the stable identity in canonical form (e.g.
+/// `github.com/user/tribal`). `name` is human-friendly and mutable.
+/// `settings` is opaque JSONB for project-specific configuration,
+/// versioned by `schema_version`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
 #[allow(clippy::struct_field_names)]
 pub struct Project {
     /// Unique identifier with `proj_` prefix.
     id: ProjectId,
-    /// Stable identity — the git remote URL.
-    git_remote: String,
+    /// Stable identity — the git remote in canonical form.
+    git_remote: GitRemote,
     /// Human-friendly project name (mutable).
     name: String,
     /// Default branch (e.g. `"main"`).
@@ -45,8 +46,8 @@ impl Project {
         self.id
     }
 
-    /// Returns the git remote URL.
-    pub fn git_remote(&self) -> &str {
+    /// Returns the git remote identity in canonical form.
+    pub fn git_remote(&self) -> &GitRemote {
         &self.git_remote
     }
 

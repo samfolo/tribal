@@ -4,7 +4,7 @@ use tribal_db::{
     PgTaskRepository, PrincipalRepository, ProjectRepository,
 };
 use tribal_domain::{
-    EpisodeId, JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId,
+    EpisodeId, GitRemote, JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId,
     RelationBatchId, TaskStatus, TaskType,
 };
 use tribal_test_utils::{
@@ -38,7 +38,11 @@ async fn setup_job_prerequisites(
         .insert(
             txn,
             &a_new_project()
-                .git_remote(format!("git@github.com:test/job-{suffix}.git"))
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/job-{suffix}"),
+                    None,
+                ))
                 .build(),
         )
         .await

@@ -1,5 +1,5 @@
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
-use tribal_domain::ProjectId;
+use tribal_domain::{GitRemote, ProjectId};
 use tribal_test_utils::{a_new_project, set_timestamp, test_context};
 
 #[tokio::test]
@@ -9,7 +9,11 @@ async fn test_insert_with_none_optional_fields_returns_none() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote("git@github.com:test/null-fields.git".to_owned())
+        .git_remote(GitRemote::from_parts(
+            "github.com",
+            "test/null-fields",
+            None,
+        ))
         .build();
     let project = repo.insert(&mut txn, &new).await.expect("insert");
 
@@ -23,7 +27,11 @@ async fn test_insert_returns_populated_project() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote("git@github.com:test/insert-test.git".to_owned())
+        .git_remote(GitRemote::from_parts(
+            "github.com",
+            "test/insert-test",
+            None,
+        ))
         .name("insert-test".to_owned())
         .project_type(Some("cli_tool".to_owned()))
         .settings(serde_json::json!({"key": "value"}))
@@ -31,7 +39,7 @@ async fn test_insert_returns_populated_project() {
 
     let project = repo.insert(&mut txn, &new).await.expect("insert");
 
-    assert_eq!(project.git_remote(), "git@github.com:test/insert-test.git");
+    assert_eq!(project.git_remote().as_str(), "github.com/test/insert-test");
     assert_eq!(project.name(), "insert-test");
     assert_eq!(project.default_branch(), "main");
     assert_eq!(project.project_type(), Some("cli_tool"));
@@ -47,7 +55,7 @@ async fn test_insert_duplicate_git_remote_returns_unique_violation() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote("git@github.com:test/dup-remote.git".to_owned())
+        .git_remote(GitRemote::from_parts("github.com", "test/dup-remote", None))
         .build();
     repo.insert(&mut txn, &new).await.expect("first insert");
 
@@ -65,7 +73,7 @@ async fn test_find_by_id_returns_project() {
     let repo = PgProjectRepository;
 
     let new = a_new_project()
-        .git_remote("git@github.com:test/find-id.git".to_owned())
+        .git_remote(GitRemote::from_parts("github.com", "test/find-id", None))
         .build();
     let inserted = repo.insert(&mut txn, &new).await.expect("insert");
 
@@ -97,12 +105,12 @@ async fn test_find_by_git_remote_returns_project() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgProjectRepository;
 
-    let remote = "git@github.com:test/find-remote.git";
-    let new = a_new_project().git_remote(remote.to_owned()).build();
+    let remote = GitRemote::from_parts("github.com", "test/find-remote", None);
+    let new = a_new_project().git_remote(remote.clone()).build();
     let inserted = repo.insert(&mut txn, &new).await.expect("insert");
 
     let found = repo
-        .find_by_git_remote(&mut txn, remote)
+        .find_by_git_remote(&mut txn, &remote)
         .await
         .expect("find_by_git_remote");
 
@@ -117,7 +125,10 @@ async fn test_find_by_git_remote_not_found_returns_none() {
     let repo = PgProjectRepository;
 
     let result = repo
-        .find_by_git_remote(&mut txn, "git@github.com:nonexistent/repo.git")
+        .find_by_git_remote(
+            &mut txn,
+            &GitRemote::from_parts("github.com", "nonexistent/repo", None),
+        )
         .await
         .expect("find_by_git_remote");
 
@@ -134,7 +145,7 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
         .insert(
             &mut txn,
             &a_new_project()
-                .git_remote("git@github.com:test/list-first.git".to_owned())
+                .git_remote(GitRemote::from_parts("github.com", "test/list-first", None))
                 .build(),
         )
         .await
@@ -143,7 +154,11 @@ async fn test_list_returns_all_projects_ordered_by_created_at() {
         .insert(
             &mut txn,
             &a_new_project()
-                .git_remote("git@github.com:test/list-second.git".to_owned())
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    "test/list-second",
+                    None,
+                ))
                 .build(),
         )
         .await
