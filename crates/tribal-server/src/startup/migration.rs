@@ -88,7 +88,7 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
         }
     }
 
-    eprintln!("error: could not acquire migration lock after {MIGRATION_MAX_ATTEMPTS} attempts");
+    eprintln!("tribal: database migration in progress by another instance — retry in ~30s");
     Err(AppError::MigrationLockFailed {
         attempts: MIGRATION_MAX_ATTEMPTS,
     })
