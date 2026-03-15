@@ -85,10 +85,10 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         .block_on(worker.startup())
         .map_err(|source| AppError::WorkerStartup { source })?;
 
-    let (death_tx, death_rx) = oneshot::channel::<()>();
+    let (death_tx, mut death_rx) = oneshot::channel::<()>();
 
     let spawn_token = cancellation_token.clone();
-    worker_rt.spawn(async move {
+    let worker_handle = worker_rt.spawn(async move {
         let mut guard = WorkerDeathGuard {
             cancellation_token: spawn_token,
             death_tx: Some(death_tx),
@@ -118,10 +118,14 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     main_rt.block_on(cancellation_token.cancelled());
 
     // -- Graceful shutdown ---------------------------------------------------
+    // Await worker completion within the shutdown deadline.  This gives
+    // Worker::run()'s internal drain time to finish in-flight tasks
+    // before the runtime is force-dropped.
 
     let deadline = Duration::from_millis(config.server.shutdown_deadline_ms);
-    let worker_died = main_rt
-        .block_on(async { matches!(tokio::time::timeout(deadline, death_rx).await, Ok(Ok(()))) });
+    let _ = worker_rt.block_on(tokio::time::timeout(deadline, worker_handle));
+
+    let worker_died = matches!(death_rx.try_recv(), Ok(()));
 
     drop(worker_rt);
 
@@ -314,5 +318,41 @@ mod tests {
         let result = expand_prompts_dir("~/prompts");
         assert!(!result.to_str().unwrap().starts_with('~'));
         assert!(result.to_str().unwrap().ends_with("/prompts"));
+    }
+
+    #[test]
+    fn test_death_guard_armed_drop_sends_signal_and_cancels() {
+        let token = CancellationToken::new();
+        let (death_tx, mut death_rx) = oneshot::channel::<()>();
+
+        let guard = WorkerDeathGuard {
+            cancellation_token: token.clone(),
+            death_tx: Some(death_tx),
+        };
+
+        drop(guard);
+
+        assert!(token.is_cancelled());
+        assert!(matches!(death_rx.try_recv(), Ok(())));
+    }
+
+    #[test]
+    fn test_death_guard_disarmed_drop_cancels_without_signal() {
+        let token = CancellationToken::new();
+        let (death_tx, mut death_rx) = oneshot::channel::<()>();
+
+        let mut guard = WorkerDeathGuard {
+            cancellation_token: token.clone(),
+            death_tx: Some(death_tx),
+        };
+
+        guard.disarm();
+        drop(guard);
+
+        assert!(token.is_cancelled());
+        assert!(matches!(
+            death_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
     }
 }
