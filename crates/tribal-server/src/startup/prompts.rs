@@ -12,6 +12,7 @@ use tribal_db::{NewPromptVersion, PgPromptVersionRepository, PromptVersionReposi
 use tribal_domain::{PromptRole, PromptStage, PromptVersionId};
 use tribal_mcp::ActivePromptVersions;
 
+use super::POOL_NAME_MCP;
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
@@ -111,7 +112,7 @@ pub(crate) async fn load_prompts(
     let mut conn = pool
         .acquire()
         .await
-        .map_err(|e| AppError::pool_acquire("prompt loading", e))?;
+        .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "prompt loading", e))?;
 
     let mut versions: HashMap<(PromptStage, PromptRole), PromptVersionId> =
         HashMap::with_capacity(PROMPT_PAIRS.len());

@@ -74,7 +74,7 @@ pub(crate) async fn build_embedding_provider(
     let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Embedding)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
-    let client = get_client(registry, &key, config.provider)?.clone();
+    let client = get_client(registry, &key)?.clone();
 
     let provider: Arc<dyn EmbeddingProvider> = match config.provider {
         ProviderKind::Ollama => {
@@ -120,7 +120,7 @@ pub(crate) fn build_inference_provider(
     let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Inference)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
-    let client = get_client(registry, &key, config.provider)?.clone();
+    let client = get_client(registry, &key)?.clone();
 
     let provider: Arc<dyn InferenceProvider> = match config.provider {
         ProviderKind::Ollama => Arc::new(OllamaInferenceProvider::new(client, &url, &config.model)),
@@ -185,10 +185,14 @@ fn add_entry(
 fn get_client<'a>(
     registry: &'a ProviderRegistry,
     key: &ProviderKey,
-    provider: ProviderKind,
 ) -> Result<&'a reqwest::Client, AppError> {
     registry.client(key).ok_or_else(|| AppError::ProviderSetup {
-        context: format!("{MISSING_CLIENT}: {provider}"),
+        context: format!(
+            "{MISSING_CLIENT}: {} ({}, {})",
+            key.provider_kind(),
+            key.normalised_base_url(),
+            key.request_class(),
+        ),
     })
 }
 

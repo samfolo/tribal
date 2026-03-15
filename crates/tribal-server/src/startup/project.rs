@@ -12,6 +12,7 @@ use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
 use tribal_domain::{GitRemote, ProjectId};
 use tribal_mcp::ResolvedProject;
 
+use super::POOL_NAME_MCP;
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
     let mut conn = pool
         .acquire()
         .await
-        .map_err(|e| AppError::pool_acquire("project lookup", e))?;
+        .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "project lookup", e))?;
 
     let project = repo
         .find_by_id(&mut conn, project_id)
@@ -107,7 +108,7 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
     let mut conn = pool
         .acquire()
         .await
-        .map_err(|e| AppError::pool_acquire("git remote lookup", e))?;
+        .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "git remote lookup", e))?;
 
     let project = repo
         .find_by_git_remote(&mut conn, &remote_url)
