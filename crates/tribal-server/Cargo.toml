@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+dashmap.workspace = true
 gix.workspace = true
 gethostname.workspace = true
 reqwest.workspace = true
@@ -15,6 +16,7 @@ shellexpand.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 tribal-common.workspace = true
