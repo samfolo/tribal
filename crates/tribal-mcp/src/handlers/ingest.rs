@@ -1,14 +1,16 @@
 //! Handler for `tribal_ingest` — job and extraction task creation.
 
 use std::str::FromStr;
+use std::time::Instant;
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
     service::{RequestContext, RoleServer},
 };
 use sqlx::PgConnection;
+use tokio::sync::watch;
 use tribal_db::{DbError, NewJob, NewTask};
-use tribal_domain::{JobId, McpErrorCode, ProjectId, TaskType};
+use tribal_domain::{JobId, JobState, JobWatchEntry, McpErrorCode, ProjectId, TaskType};
 
 use super::common::begin_transaction;
 use crate::{
@@ -91,6 +93,11 @@ impl TribalServerHandler {
     /// domain logic. Domain errors are returned as error `CallToolResult`
     /// values via `IntoMcpError` / `IntoCallToolResult`. Only
     /// protocol-level errors (malformed JSON) return `Err(McpError)`.
+    ///
+    /// Submission ordering: the DB transaction is committed before the
+    /// watch channel entry is inserted. If the process crashes between
+    /// the two, subsequent `wait_seconds` requests find no entry and
+    /// fall through to DB polling.
     async fn apply_ingest(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
         let request: McpIngestRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
@@ -153,6 +160,16 @@ impl TribalServerHandler {
             };
             return Ok(db_err.into_mcp_error().into_call_tool_result());
         }
+
+        let (watch_tx, _rx) = watch::channel(JobState::Queued);
+        self.state.job_state_txs.insert(
+            result.job_id,
+            JobWatchEntry {
+                sender: watch_tx,
+                inserted_at: Instant::now(),
+                terminal_at: None,
+            },
+        );
 
         Ok(McpIngestResponse::from(result.job_id).into_call_tool_result())
     }
