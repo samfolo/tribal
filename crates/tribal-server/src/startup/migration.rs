@@ -1,14 +1,14 @@
 //! First-run guard and migration runner with advisory-lock coordination.
 
-use rand::Rng;
 use sqlx::PgPool;
-use tokio::time::Duration;
+use tribal_common::random_duration_in_range;
+use tribal_db::{MigrationRepository, PgMigrationRepository};
 
 use crate::error::AppError;
 
 use super::constants::{
-    ADVISORY_LOCK_ID, MIGRATION_LOCK_TIMEOUT, MIGRATION_MAX_ATTEMPTS,
-    MIGRATION_RETRY_SLEEP_MAX_SECS, MIGRATION_RETRY_SLEEP_MIN_SECS,
+    ADVISORY_LOCK_ID, MIGRATION_MAX_ATTEMPTS, MIGRATION_RETRY_SLEEP_MAX,
+    MIGRATION_RETRY_SLEEP_MIN,
 };
 
 // ---------------------------------------------------------------------------
@@ -20,20 +20,18 @@ use super::constants::{
 /// Returns `Ok(())` if the `_sqlx_migrations` table exists, or
 /// `Err(AppError::FirstRunRequired)` otherwise.
 pub(crate) async fn check_first_run(pool: &PgPool) -> Result<(), AppError> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-             SELECT 1 FROM information_schema.tables
-             WHERE table_name = '_sqlx_migrations'
-         )",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(|e| AppError::Database {
+    let repo = PgMigrationRepository;
+    let mut conn = pool.acquire().await.map_err(|e| AppError::Database {
         source: tribal_db::DbError::QueryFailed {
-            context: "check for _sqlx_migrations table".into(),
+            context: "acquire connection for first-run check".into(),
             source: e,
         },
     })?;
+
+    let exists = repo
+        .has_migrations_table(&mut conn)
+        .await
+        .map_err(|source| AppError::Database { source })?;
 
     if exists {
         Ok(())
@@ -48,27 +46,49 @@ pub(crate) async fn check_first_run(pool: &PgPool) -> Result<(), AppError> {
 /// jittered sleep between attempts. If the lock cannot be acquired after
 /// all attempts, returns `AppError::MigrationLockFailed` (exit code 75).
 pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
+    let repo = PgMigrationRepository;
+
     for attempt in 1..=MIGRATION_MAX_ATTEMPTS {
-        if try_acquire_lock(pool).await? {
+        let mut conn = pool.acquire().await.map_err(|e| AppError::Database {
+            source: tribal_db::DbError::QueryFailed {
+                context: "acquire connection for migration".into(),
+                source: e,
+            },
+        })?;
+
+        let acquired = repo
+            .try_advisory_lock(&mut conn, ADVISORY_LOCK_ID)
+            .await
+            .map_err(|source| AppError::Database { source })?;
+
+        if acquired {
             let result = tribal_db::MIGRATOR.run(pool).await;
 
             // Always release the lock, even on migration failure.
-            release_lock(pool).await;
+            let released = repo
+                .release_advisory_lock(&mut conn, ADVISORY_LOCK_ID)
+                .await;
+            if let Err(e) = &released {
+                tracing::warn!(%e, "failed to release migration advisory lock");
+            } else if released.as_deref() == Ok(&false) {
+                tracing::warn!("advisory lock was not held when release was attempted");
+            }
 
             return result.map_err(|source| AppError::MigrationFailed { source });
         }
 
         if attempt < MIGRATION_MAX_ATTEMPTS {
-            let jitter = rand::rng().random_range(
-                MIGRATION_RETRY_SLEEP_MIN_SECS..=MIGRATION_RETRY_SLEEP_MAX_SECS,
+            let sleep = random_duration_in_range(
+                MIGRATION_RETRY_SLEEP_MIN,
+                MIGRATION_RETRY_SLEEP_MAX,
             );
             tracing::warn!(
                 attempt,
                 max_attempts = MIGRATION_MAX_ATTEMPTS,
-                retry_secs = jitter,
+                retry_ms = sleep.as_millis() as u64,
                 "could not acquire migration lock, retrying",
             );
-            tokio::time::sleep(Duration::from_secs(jitter)).await;
+            tokio::time::sleep(sleep).await;
         }
     }
 
@@ -79,59 +99,4 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
     Err(AppError::MigrationLockFailed {
         attempts: MIGRATION_MAX_ATTEMPTS,
     })
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Attempts to acquire the advisory lock with a statement-level timeout.
-async fn try_acquire_lock(pool: &PgPool) -> Result<bool, AppError> {
-    let timeout_ms = i32::try_from(MIGRATION_LOCK_TIMEOUT.as_millis()).unwrap_or(i32::MAX);
-
-    // Set a statement timeout so the lock attempt does not block indefinitely.
-    sqlx::query(&format!("SET LOCAL statement_timeout = {timeout_ms}"))
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::Database {
-            source: tribal_db::DbError::QueryFailed {
-                context: "set migration lock timeout".into(),
-                source: e,
-            },
-        })?;
-
-    let acquired: bool =
-        sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(ADVISORY_LOCK_ID)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| AppError::Database {
-                source: tribal_db::DbError::QueryFailed {
-                    context: "acquire migration advisory lock".into(),
-                    source: e,
-                },
-            })?;
-
-    Ok(acquired)
-}
-
-/// Releases the advisory lock. Logs a warning on failure but does not
-/// propagate — the lock is session-scoped and will be released when the
-/// connection is returned to the pool.
-async fn release_lock(pool: &PgPool) {
-    let result: Result<bool, _> =
-        sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
-            .bind(ADVISORY_LOCK_ID)
-            .fetch_one(pool)
-            .await;
-
-    match result {
-        Ok(true) => {}
-        Ok(false) => {
-            tracing::warn!("advisory lock was not held when release was attempted");
-        }
-        Err(e) => {
-            tracing::warn!(%e, "failed to release migration advisory lock");
-        }
-    }
 }
