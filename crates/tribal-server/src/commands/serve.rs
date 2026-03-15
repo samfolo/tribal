@@ -123,7 +123,15 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     // before the runtime is force-dropped.
 
     let deadline = Duration::from_millis(config.server.shutdown_deadline_ms);
-    let _ = worker_rt.block_on(tokio::time::timeout(deadline, worker_handle));
+    if worker_rt
+        .block_on(tokio::time::timeout(deadline, worker_handle))
+        .is_err()
+    {
+        tracing::warn!(
+            deadline_ms = config.server.shutdown_deadline_ms,
+            "shutdown deadline expired; dropping worker runtime",
+        );
+    }
 
     let worker_died = matches!(death_rx.try_recv(), Ok(()));
 
