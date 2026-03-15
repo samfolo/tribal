@@ -37,7 +37,9 @@ impl App {
         self.cli.global.validate()?;
 
         let Some(command) = self.cli.command else {
-            Cli::command().print_help()?;
+            Cli::command()
+                .print_help()
+                .map_err(|source| AppError::HelpOutput { source })?;
             return Ok(());
         };
 

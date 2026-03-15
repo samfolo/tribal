@@ -3,10 +3,12 @@
 //! Resolution order: CLI flag → `TRIBAL_PROJECT_ID` env var → git remote
 //! heuristic → `None`.
 
+use std::path::Path;
+
 use gix::remote::Direction;
 use sqlx::PgPool;
 use tribal_config::ENV_PROJECT_ID;
-use tribal_db::{PgProjectRepository, ProjectRepository};
+use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
 use tribal_domain::{GitRemote, ProjectId};
 use tribal_mcp::ResolvedProject;
 
@@ -71,8 +73,13 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
     let project = repo
         .find_by_id(&mut conn, project_id)
         .await
-        .map_err(|source| AppError::ProjectResolution {
-            context: format!("project {raw} not found in database: {source}"),
+        .map_err(|source| match &source {
+            DbError::NotFound { .. } => AppError::ProjectResolution {
+                context: format!("project {raw} not found in database"),
+            },
+            _ => AppError::ProjectResolution {
+                context: format!("failed to look up project {raw}: {source}"),
+            },
         })?;
 
     tracing::info!(
@@ -91,7 +98,7 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
 /// Discovers the git repository from the current working directory,
 /// reads the origin remote URL, and looks up the project in the database.
 async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>, AppError> {
-    let Some(remote_url) = discover_origin_url() else {
+    let Some(remote_url) = discover_origin_url(Path::new(".")) else {
         return Ok(None);
     };
 
@@ -126,11 +133,12 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
     }
 }
 
-/// Uses `gix` to discover the git repository and extract the origin
-/// remote URL, returning it as a [`GitRemote`] in canonical form.
-/// Returns `None` if discovery fails or origin is not configured.
-fn discover_origin_url() -> Option<GitRemote> {
-    let repo = match gix::discover(".") {
+/// Uses `gix` to discover the git repository starting from `start_dir`
+/// and extract the origin remote URL, returning it as a [`GitRemote`]
+/// in canonical form. Returns `None` if discovery fails or origin is
+/// not configured.
+fn discover_origin_url(start_dir: &Path) -> Option<GitRemote> {
+    let repo = match gix::discover(start_dir) {
         Ok(repo) => repo,
         Err(e) => {
             tracing::debug!(%e, "git repository discovery failed");
@@ -169,7 +177,7 @@ mod tests {
     #[test]
     fn test_discover_origin_url_returns_some_in_repo() {
         // This test runs inside the tribal repo, so discovery should succeed.
-        let url = discover_origin_url();
+        let url = discover_origin_url(Path::new("."));
         assert!(url.is_some(), "expected to discover origin in tribal repo");
     }
 
@@ -177,12 +185,8 @@ mod tests {
     fn test_discover_origin_url_returns_none_outside_repo() {
         // A fresh tempdir is guaranteed not to be inside a git repository.
         let tmp = tempfile::tempdir().expect("should create tempdir");
-        let original_dir = std::env::current_dir().expect("should read cwd");
-        std::env::set_current_dir(tmp.path()).expect("should change to tempdir");
 
-        let result = discover_origin_url();
-
-        std::env::set_current_dir(original_dir).expect("should restore cwd");
+        let result = discover_origin_url(tmp.path());
         assert!(result.is_none(), "expected None outside a git repository");
     }
 }
