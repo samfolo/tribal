@@ -78,15 +78,15 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
         })?;
 
     tracing::info!(
-        project_id = %project.id,
-        project_name = %project.name,
+        project_id = %project.id(),
+        project_name = %project.name(),
         "resolved project from explicit ID",
     );
 
     Ok(ResolvedProject {
-        id: project.id,
-        name: project.name,
-        git_remote: project.git_remote,
+        id: project.id(),
+        name: project.name().to_owned(),
+        git_remote: project.git_remote().to_owned(),
     })
 }
 
@@ -114,15 +114,15 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
     match project {
         Some(p) => {
             tracing::info!(
-                project_id = %p.id,
-                project_name = %p.name,
+                project_id = %p.id(),
+                project_name = %p.name(),
                 git_remote = %remote_url,
                 "resolved project from git remote",
             );
             Ok(Some(ResolvedProject {
-                id: p.id,
-                name: p.name,
-                git_remote: p.git_remote,
+                id: p.id(),
+                name: p.name().to_owned(),
+                git_remote: p.git_remote().to_owned(),
             }))
         }
         None => {

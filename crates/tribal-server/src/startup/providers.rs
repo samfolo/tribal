@@ -1,19 +1,15 @@
 //! Provider registry construction, provider instantiation, and embedding probe.
 
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use tribal_config::{
-    EmbeddingConfig, ProviderKind, StageInferenceConfig, TribalConfig,
+    ConfigError, EmbeddingConfig, ProviderKind, StageInferenceConfig, TribalConfig,
 };
 use tribal_inference::{
     AnthropicInferenceProvider, EmbeddingProvider, InferenceProvider, OllamaEmbeddingProvider,
     OllamaInferenceProvider, OpenAiEmbeddingProvider, OpenAiInferenceProvider, ProviderKey,
     ProviderLimits, ProviderRegistry, RequestClass,
 };
-
-use tribal_config::ConfigError;
 
 use crate::error::AppError;
 
@@ -45,9 +41,7 @@ const ANTHROPIC_EMBEDDING_UNSUPPORTED: &str =
 ///
 /// Panics if `config.limits.providers` does not contain limits for a
 /// configured provider kind.
-pub(crate) fn build_provider_registry(
-    config: &TribalConfig,
-) -> Result<ProviderRegistry, AppError> {
+pub(crate) fn build_provider_registry(config: &TribalConfig) -> Result<ProviderRegistry, AppError> {
     let mut entries: Vec<(ProviderKey, ProviderLimits)> = Vec::new();
     let mut seen: HashSet<(ProviderKind, String, RequestClass)> = HashSet::new();
 
@@ -94,19 +88,14 @@ pub(crate) async fn build_embedding_provider(
     config: &EmbeddingConfig,
 ) -> Result<(Arc<dyn EmbeddingProvider>, ProviderKey), AppError> {
     let url = resolve_base_url(config.provider, &config.base_url);
-    let key = ProviderKey::new(config.provider.as_str(), &url, RequestClass::Embedding)
+    let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Embedding)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
     let client = registry.client(&key).expect(EXPECT_CLIENT).clone();
 
     let provider: Arc<dyn EmbeddingProvider> = match config.provider {
         ProviderKind::Ollama => {
-            let p = OllamaEmbeddingProvider::new(
-                client,
-                &url,
-                &config.model,
-                config.dimensions,
-            );
+            let p = OllamaEmbeddingProvider::new(client, &url, &config.model, config.dimensions);
             if let Err(e) = p.probe_model().await {
                 tracing::warn!(%e, "embedding model probe failed (non-fatal)");
             }
@@ -149,15 +138,13 @@ pub(crate) fn build_inference_provider(
     config: &StageInferenceConfig,
 ) -> Result<(Arc<dyn InferenceProvider>, ProviderKey), AppError> {
     let url = resolve_base_url(config.provider, &config.base_url);
-    let key = ProviderKey::new(config.provider.as_str(), &url, RequestClass::Inference)
+    let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Inference)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
     let client = registry.client(&key).expect(EXPECT_CLIENT).clone();
 
     let provider: Arc<dyn InferenceProvider> = match config.provider {
-        ProviderKind::Ollama => {
-            Arc::new(OllamaInferenceProvider::new(client, &url, &config.model))
-        }
+        ProviderKind::Ollama => Arc::new(OllamaInferenceProvider::new(client, &url, &config.model)),
         ProviderKind::OpenAi => Arc::new(OpenAiInferenceProvider::new(
             client,
             &url,
@@ -193,15 +180,11 @@ fn add_entry(
     config: &TribalConfig,
 ) -> Result<(), AppError> {
     let url = resolve_base_url(provider, base_url);
-    let key = ProviderKey::new(provider.as_str(), &url, request_class)
+    let key = ProviderKey::new(provider.to_string(), &url, request_class)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
     if seen.insert((provider, url, request_class)) {
-        let limits_config = config
-            .limits
-            .providers
-            .get(&provider)
-            .expect(EXPECT_LIMITS);
+        let limits_config = config.limits.providers.get(&provider).expect(EXPECT_LIMITS);
 
         entries.push((
             key,

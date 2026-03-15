@@ -44,10 +44,7 @@ pub trait MigrationRepository {
 pub struct PgMigrationRepository;
 
 impl MigrationRepository for PgMigrationRepository {
-    async fn has_migrations_table(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<bool, DbError> {
+    async fn has_migrations_table(&self, conn: &mut PgConnection) -> Result<bool, DbError> {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS (
                  SELECT 1 FROM information_schema.tables
@@ -69,15 +66,14 @@ impl MigrationRepository for PgMigrationRepository {
         conn: &mut PgConnection,
         lock_id: i64,
     ) -> Result<bool, DbError> {
-        let acquired: bool =
-            sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-                .bind(lock_id)
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(|source| DbError::QueryFailed {
-                    context: "acquire migration advisory lock".into(),
-                    source,
-                })?;
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(lock_id)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|source| DbError::QueryFailed {
+                context: "acquire migration advisory lock".into(),
+                source,
+            })?;
 
         Ok(acquired)
     }
@@ -87,15 +83,14 @@ impl MigrationRepository for PgMigrationRepository {
         conn: &mut PgConnection,
         lock_id: i64,
     ) -> Result<bool, DbError> {
-        let released: bool =
-            sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
-                .bind(lock_id)
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(|source| DbError::QueryFailed {
-                    context: "release migration advisory lock".into(),
-                    source,
-                })?;
+        let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+            .bind(lock_id)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|source| DbError::QueryFailed {
+                context: "release migration advisory lock".into(),
+                source,
+            })?;
 
         Ok(released)
     }

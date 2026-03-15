@@ -3,9 +3,8 @@
 use tribal_config::DatabaseConfig;
 use tribal_db::create_pool;
 
-use crate::error::AppError;
-
 use super::constants::POOL_RETRY_INITIAL_BACKOFF;
+use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
 // Public API

@@ -1,7 +1,6 @@
 //! Unique per-process instance identifier.
 
-use std::process;
-use std::sync::Arc;
+use std::{process, sync::Arc};
 
 use uuid::Uuid;
 
