@@ -24,6 +24,8 @@ use crate::server_handler::ActivePromptVersions;
 ///
 /// Populated when the startup cascade (CLI flag, env var, or git remote
 /// heuristic) successfully identifies a registered project.
+// Fields consumed by session and handler code in later milestones.
+#[allow(dead_code)]
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ResolvedProject {
     /// Database identifier for the project.
@@ -46,6 +48,8 @@ pub struct ResolvedProject {
 /// Process-level state shared across all MCP connections and the worker.
 ///
 /// Constructed once during startup and wrapped in `Arc` for sharing.
+// Fields progressively consumed as handler, worker, and transport code lands.
+#[allow(dead_code)]
 #[derive(TypedBuilder)]
 pub struct AppState {
     // -- Pools ---------------------------------------------------------------
