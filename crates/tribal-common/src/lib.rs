@@ -140,7 +140,7 @@ mod tests {
     fn test_deterministic_jitter_bounded() {
         for retry_count in 0..100_u32 {
             let result = deterministic_jitter(retry_count, 500, 0);
-            assert!(result <= 1000, "result {result} exceeds range * 2 (1000)",);
+            assert!(result <= 1000, "result {result} exceeds range * 2 (1000)");
         }
     }
 
