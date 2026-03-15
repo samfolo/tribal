@@ -19,6 +19,9 @@ use tribal_telemetry::TelemetryError;
 /// Exit code for transient migration lock failure (`EX_TEMPFAIL`).
 const EXIT_CODE_MIGRATION_LOCK: i32 = 75;
 
+/// Exit code for worker runtime failure or unexpected death (`EX_SOFTWARE`).
+const EXIT_CODE_WORKER_DEATH: i32 = 70;
+
 // ---------------------------------------------------------------------------
 // AppError
 // ---------------------------------------------------------------------------
@@ -141,6 +144,26 @@ pub enum AppError {
         #[source]
         source: io::Error,
     },
+
+    /// Worker startup failed.
+    #[error("worker startup failed")]
+    WorkerStartup {
+        /// The underlying worker error.
+        #[source]
+        source: tribal_worker::WorkerError,
+    },
+
+    /// Failed to create the worker runtime.
+    #[error("failed to create worker runtime")]
+    WorkerRuntime {
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// The worker exited or panicked unexpectedly during operation.
+    #[error("worker died unexpectedly")]
+    WorkerDeath,
 
     /// General database query error.
     #[error("{source}")]
