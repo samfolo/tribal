@@ -102,6 +102,9 @@ clap = { version = "4", features = ["derive", "env", "suggestions"] }
 # System information
 gethostname = "1"
 
+# Git repository introspection
+gix = { version = "0.80", default-features = false }
+
 # Random number generation
 rand = "0.10"
 
