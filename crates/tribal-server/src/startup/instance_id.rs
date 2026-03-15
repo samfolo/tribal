@@ -1,5 +1,6 @@
 //! Unique per-process instance identifier.
 
+use std::process;
 use std::sync::Arc;
 
 use uuid::Uuid;
@@ -15,7 +16,7 @@ use uuid::Uuid;
 pub(crate) fn generate_instance_id() -> Arc<str> {
     let hostname = gethostname::gethostname();
     let hostname = hostname.to_string_lossy();
-    let pid = std::process::id();
+    let pid = process::id();
     let boot_id = Uuid::new_v4();
 
     Arc::from(format!("{hostname}-{pid}-{boot_id}"))

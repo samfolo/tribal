@@ -24,17 +24,10 @@ pub(crate) async fn create_pool_with_retry(
 ) -> Result<sqlx::PgPool, AppError> {
     let mut backoff = POOL_RETRY_INITIAL_BACKOFF;
 
-    for attempt in 1..=max_attempts {
+    for attempt in 1..max_attempts {
         match create_pool(config, pool_name, max_connections, statement_timeout_ms).await {
             Ok(pool) => return Ok(pool),
             Err(source) => {
-                if attempt == max_attempts {
-                    return Err(AppError::PoolConnection {
-                        pool_name,
-                        attempts: max_attempts,
-                        source,
-                    });
-                }
                 tracing::warn!(
                     pool = pool_name,
                     attempt,
@@ -49,5 +42,12 @@ pub(crate) async fn create_pool_with_retry(
         }
     }
 
-    unreachable!("loop always returns or errors on final attempt")
+    // Final attempt — propagate error directly.
+    create_pool(config, pool_name, max_connections, statement_timeout_ms)
+        .await
+        .map_err(|source| AppError::PoolConnection {
+            pool_name,
+            attempts: max_attempts,
+            source,
+        })
 }
