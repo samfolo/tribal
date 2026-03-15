@@ -117,7 +117,9 @@ pub(crate) fn session_with_project() -> SessionContext {
     let project = SessionProject {
         id: ProjectId::new(),
         name: "tribal".into(),
-        git_remote: "git@github.com:user/tribal.git".into(),
+        git_remote: "git@github.com:user/tribal.git"
+            .parse()
+            .expect("valid test git remote"),
     };
     SessionContext::new(Some(project), "user:test".into())
 }

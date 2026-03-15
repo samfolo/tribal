@@ -84,6 +84,7 @@ pub use embedding_purpose::EmbeddingPurpose;
 pub use error_code::McpErrorCode;
 pub use extraction_result::{ExtractionResult, ExtractionResultBuilder};
 pub use feedback_rating::FeedbackRating;
+pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
     AuthTokenId, EmbeddingId, EpisodeId, ExtractionResultId, IdParseError, ItemObservationId,
     JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId,

@@ -3,8 +3,7 @@
 //! [`GitRemote`] stores the protocol-agnostic identity of a git remote
 //! (`host/path`) and can reconstruct any canonical URL form on demand.
 
-use std::fmt;
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +17,13 @@ use serde::{Deserialize, Serialize};
 /// stripping the transport scheme and `.git` suffix. Two remotes that
 /// point to the same repository — regardless of whether they use SSH,
 /// HTTPS, or SCP syntax — produce the same `GitRemote` value.
+///
+/// Non-standard ports are preserved in the canonical form as
+/// `host:port/path` since different ports may serve different content.
+///
+/// All major git hosts (GitHub, GitLab, Bitbucket, Gitea) treat
+/// organisation and repository names as case-insensitive, so the
+/// canonical form is fully lowercased.
 ///
 /// # Construction
 ///
@@ -37,18 +43,24 @@ pub struct GitRemote {
 }
 
 impl GitRemote {
-    /// Constructs a `GitRemote` from pre-parsed host and path components.
+    /// Constructs a `GitRemote` from pre-parsed host, path, and optional
+    /// port components.
     ///
     /// Strips a leading `/` and trailing `.git` from the path, and
-    /// lowercases the host.
+    /// lowercases the host. Default ports (22 for SSH, 443 for HTTPS)
+    /// are stripped; non-standard ports are preserved.
     #[must_use]
-    pub fn from_parts(host: &str, path: &str) -> Self {
+    pub fn from_parts(host: &str, path: &str, port: Option<u16>) -> Self {
         let path = path.strip_prefix('/').unwrap_or(path);
         let path = path.strip_suffix(".git").unwrap_or(path);
+        let host = host.to_lowercase();
 
-        Self {
-            canonical: format!("{}/{path}", host.to_lowercase()),
-        }
+        let canonical = match port {
+            Some(p) if !is_default_port(p) => format!("{host}:{p}/{path}"),
+            _ => format!("{host}/{path}"),
+        };
+
+        Self { canonical }
     }
 
     /// Returns the canonical `host/path` form as a string slice.
@@ -57,7 +69,8 @@ impl GitRemote {
         &self.canonical
     }
 
-    /// Returns the host portion (everything before the first `/`).
+    /// Returns the host portion (everything before the first `/`),
+    /// potentially including a non-standard port suffix.
     #[must_use]
     pub fn host(&self) -> &str {
         self.canonical
@@ -71,17 +84,43 @@ impl GitRemote {
         self.canonical.split_once('/').map_or("", |(_, p)| p)
     }
 
-    /// Reconstructs the HTTPS URL form.
+    /// Reconstructs the HTTPS URL form (with `.git` suffix).
     #[must_use]
     pub fn as_https(&self) -> String {
-        format!("https://{}", self.canonical)
+        format!("https://{}.git", self.canonical)
     }
 
-    /// Reconstructs the SSH (SCP-like) URL form.
+    /// Reconstructs the SSH (SCP-like) URL form (with `.git` suffix).
+    ///
+    /// The SCP-like syntax has no port field — per the git specification,
+    /// the colon separates host from path, not host from port. Remotes
+    /// with non-standard ports should use `ssh://` URL syntax instead.
     #[must_use]
     pub fn as_ssh(&self) -> String {
-        format!("git@{}:{}", self.host(), self.path())
+        format!("git@{}:{}.git", self.host(), self.path())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Returns `true` for port numbers that are default for git transports.
+const fn is_default_port(port: u16) -> bool {
+    matches!(port, 22 | 443 | 80 | 9418)
+}
+
+/// Strips a default port suffix (`:22`, `:443`, `:80`, `:9418`) from
+/// a `host:port` string, returning just the host. Non-default ports
+/// are preserved.
+fn strip_default_port(host_port: &str) -> &str {
+    if let Some((host, port_str)) = host_port.rsplit_once(':')
+        && let Ok(port) = port_str.parse::<u16>()
+        && is_default_port(port)
+    {
+        return host;
+    }
+    host_port
 }
 
 // ---------------------------------------------------------------------------
@@ -112,13 +151,15 @@ impl FromStr for GitRemote {
         // Strip trailing `.git` suffix.
         let base = trimmed.strip_suffix(".git").unwrap_or(trimmed);
 
-        // SSH SCP format: git@host:path
-        if let Some(rest) = base.strip_prefix("git@") {
-            if let Some((host, path)) = rest.split_once(':') {
-                return Ok(Self {
-                    canonical: format!("{}/{path}", host.to_lowercase()),
-                });
-            }
+        // SSH SCP format: [user@]host:path (no slashes before colon).
+        // Per the git specification, the colon is the path separator in
+        // SCP syntax — there is no port field.
+        if let Some(rest) = base.strip_prefix("git@")
+            && let Some((host, path)) = rest.split_once(':')
+        {
+            return Ok(Self {
+                canonical: format!("{}/{}", host.to_lowercase(), path.to_lowercase()),
+            });
         }
 
         // URL formats: strip scheme and optional user@.
@@ -130,9 +171,15 @@ impl FromStr for GitRemote {
 
         if let Some(rest) = without_scheme {
             // Strip optional user@ (e.g. `git@` in `ssh://git@host/path`).
-            let rest = rest
-                .split_once('@')
-                .map_or(rest, |(_, after_at)| after_at);
+            let rest = rest.split_once('@').map_or(rest, |(_, after_at)| after_at);
+
+            // Strip default ports from the host portion.
+            if let Some((host_port, path)) = rest.split_once('/') {
+                let host = strip_default_port(host_port);
+                return Ok(Self {
+                    canonical: format!("{}/{}", host.to_lowercase(), path.to_lowercase()),
+                });
+            }
 
             return Ok(Self {
                 canonical: rest.to_lowercase(),
@@ -189,49 +236,80 @@ impl std::error::Error for GitRemoteParseError {}
 mod tests {
     use super::*;
 
-    // -- FromStr -----------------------------------------------------------
+    // -- Normalisation -------------------------------------------------------
+
+    /// All these formats must normalise to `github.com/user/repo`.
+    const STANDARD_INPUTS: &[&str] = &[
+        // SSH SCP syntax
+        "git@github.com:user/repo.git",
+        "git@github.com:user/repo",
+        // HTTPS
+        "https://github.com/user/repo.git",
+        "https://github.com/user/repo",
+        // SSH URL syntax
+        "ssh://git@github.com/user/repo.git",
+        // Git protocol
+        "git://github.com/user/repo.git",
+        // HTTP
+        "http://github.com/user/repo.git",
+        // Already canonical
+        "github.com/user/repo",
+        // Case normalisation
+        "git@GitHub.COM:User/Repo.git",
+        "https://GitHub.COM/User/Repo",
+        // Default ports (stripped)
+        "https://github.com:443/user/repo.git",
+        "ssh://git@github.com:22/user/repo.git",
+        "git://github.com:9418/user/repo.git",
+        "http://github.com:80/user/repo.git",
+    ];
+
+    /// Inputs whose canonical form differs from the standard
+    /// `github.com/user/repo`.
+    const OUTLIER_CASES: &[(&str, &str)] = &[
+        // Subgroups
+        (
+            "https://gitlab.company.com/group/subgroup/repo.git",
+            "gitlab.company.com/group/subgroup/repo",
+        ),
+        // Non-standard port (preserved)
+        (
+            "https://gitlab.company.com:8443/group/repo.git",
+            "gitlab.company.com:8443/group/repo",
+        ),
+    ];
+
+    const EXPECTED_CANONICAL: &str = "github.com/user/repo";
 
     #[test]
-    fn test_parse_ssh_scp_with_git_suffix() {
-        let remote: GitRemote = "git@github.com:user/repo.git".parse().unwrap();
-        assert_eq!(remote.as_str(), "github.com/user/repo");
+    fn test_standard_normalisation() {
+        for input in STANDARD_INPUTS {
+            let remote: GitRemote = input
+                .parse()
+                .unwrap_or_else(|e| panic!("failed to parse {input:?}: {e}"));
+            assert_eq!(
+                remote.as_str(),
+                EXPECTED_CANONICAL,
+                "normalisation mismatch for input {input:?}",
+            );
+        }
     }
 
     #[test]
-    fn test_parse_ssh_scp_without_git_suffix() {
-        let remote: GitRemote = "git@github.com:user/repo".parse().unwrap();
-        assert_eq!(remote.as_str(), "github.com/user/repo");
+    fn test_outlier_normalisation() {
+        for (input, expected) in OUTLIER_CASES {
+            let remote: GitRemote = input
+                .parse()
+                .unwrap_or_else(|e| panic!("failed to parse {input:?}: {e}"));
+            assert_eq!(
+                remote.as_str(),
+                *expected,
+                "normalisation mismatch for input {input:?}",
+            );
+        }
     }
 
-    #[test]
-    fn test_parse_https_with_git_suffix() {
-        let remote: GitRemote = "https://github.com/user/repo.git".parse().unwrap();
-        assert_eq!(remote.as_str(), "github.com/user/repo");
-    }
-
-    #[test]
-    fn test_parse_https_without_git_suffix() {
-        let remote: GitRemote = "https://github.com/user/repo".parse().unwrap();
-        assert_eq!(remote.as_str(), "github.com/user/repo");
-    }
-
-    #[test]
-    fn test_parse_ssh_url_format() {
-        let remote: GitRemote = "ssh://git@github.com/user/repo.git".parse().unwrap();
-        assert_eq!(remote.as_str(), "github.com/user/repo");
-    }
-
-    #[test]
-    fn test_parse_git_protocol() {
-        let remote: GitRemote = "git://github.com/user/repo.git".parse().unwrap();
-        assert_eq!(remote.as_str(), "github.com/user/repo");
-    }
-
-    #[test]
-    fn test_parse_already_canonical() {
-        let remote: GitRemote = "github.com/user/repo".parse().unwrap();
-        assert_eq!(remote.as_str(), "github.com/user/repo");
-    }
+    // -- Error cases -------------------------------------------------------
 
     #[test]
     fn test_parse_empty_returns_error() {
@@ -249,46 +327,33 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_parse_lowercases_host() {
-        let remote: GitRemote = "git@GitHub.COM:User/Repo.git".parse().unwrap();
-        assert_eq!(remote.host(), "github.com");
-    }
-
-    #[test]
-    fn test_parse_preserves_path_case() {
-        // Paths on most git hosts are case-sensitive for lookups.
-        // However, our canonical form lowercases everything for
-        // consistent identity matching.
-        let remote: GitRemote = "https://github.com/User/Repo".parse().unwrap();
-        assert_eq!(remote.as_str(), "github.com/user/repo");
-    }
-
-    #[test]
-    fn test_parse_gitlab_subgroups() {
-        let remote: GitRemote =
-            "https://gitlab.company.com/group/subgroup/repo.git".parse().unwrap();
-        assert_eq!(remote.as_str(), "gitlab.company.com/group/subgroup/repo");
-    }
-
     // -- from_parts --------------------------------------------------------
 
     #[test]
-    fn test_from_parts_strips_leading_slash() {
-        let remote = GitRemote::from_parts("github.com", "/user/repo");
-        assert_eq!(remote.as_str(), "github.com/user/repo");
+    fn test_from_parts_strips_leading_slash_and_git_suffix() {
+        let paths: &[&str] = &["/user/repo", "user/repo.git", "/user/repo.git", "user/repo"];
+
+        for path in paths {
+            let remote = GitRemote::from_parts("github.com", path, None);
+            assert_eq!(
+                remote.as_str(),
+                EXPECTED_CANONICAL,
+                "from_parts(\"github.com\", {path:?}, None)",
+            );
+        }
     }
 
     #[test]
-    fn test_from_parts_strips_git_suffix() {
-        let remote = GitRemote::from_parts("github.com", "user/repo.git");
-        assert_eq!(remote.as_str(), "github.com/user/repo");
-    }
+    fn test_from_parts_port_handling() {
+        let non_standard =
+            GitRemote::from_parts("gitlab.company.com", "/group/repo.git", Some(8443));
+        assert_eq!(non_standard.as_str(), "gitlab.company.com:8443/group/repo");
 
-    #[test]
-    fn test_from_parts_strips_both() {
-        let remote = GitRemote::from_parts("github.com", "/user/repo.git");
-        assert_eq!(remote.as_str(), "github.com/user/repo");
+        let default = GitRemote::from_parts("github.com", "/user/repo.git", Some(22));
+        assert_eq!(default.as_str(), "github.com/user/repo");
+
+        let none = GitRemote::from_parts("github.com", "/user/repo.git", None);
+        assert_eq!(none.as_str(), "github.com/user/repo");
     }
 
     // -- Equivalence across formats ----------------------------------------
@@ -305,6 +370,13 @@ mod tests {
         assert_eq!(ssh_url, bare);
     }
 
+    #[test]
+    fn test_default_ports_equivalent_to_no_port() {
+        let with_port: GitRemote = "ssh://git@github.com:22/user/repo.git".parse().unwrap();
+        let without_port: GitRemote = "ssh://git@github.com/user/repo.git".parse().unwrap();
+        assert_eq!(with_port, without_port);
+    }
+
     // -- Accessors ---------------------------------------------------------
 
     #[test]
@@ -317,13 +389,13 @@ mod tests {
     #[test]
     fn test_as_https() {
         let remote: GitRemote = "github.com/user/repo".parse().unwrap();
-        assert_eq!(remote.as_https(), "https://github.com/user/repo");
+        assert_eq!(remote.as_https(), "https://github.com/user/repo.git");
     }
 
     #[test]
     fn test_as_ssh() {
         let remote: GitRemote = "github.com/user/repo".parse().unwrap();
-        assert_eq!(remote.as_ssh(), "git@github.com:user/repo");
+        assert_eq!(remote.as_ssh(), "git@github.com:user/repo.git");
     }
 
     // -- Display / Serialize -----------------------------------------------
@@ -340,5 +412,12 @@ mod tests {
         let json = serde_json::to_string(&remote).expect("serialise");
         let parsed: GitRemote = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(remote, parsed);
+    }
+
+    #[test]
+    fn test_serde_deserialises_raw_url() {
+        let json = "\"git@github.com:user/repo.git\"";
+        let remote: GitRemote = serde_json::from_str(json).expect("deserialise");
+        assert_eq!(remote.as_str(), "github.com/user/repo");
     }
 }

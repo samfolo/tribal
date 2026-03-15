@@ -10,7 +10,7 @@ use std::sync::Arc;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tribal_config::{ServerConfig, WorkerConfig};
-use tribal_domain::ProjectId;
+use tribal_domain::{GitRemote, ProjectId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
 use typed_builder::TypedBuilder;
 
@@ -36,9 +36,8 @@ pub struct ResolvedProject {
     #[builder(setter(into))]
     pub(crate) name: String,
 
-    /// Normalised git remote URL used as the project's stable identity.
-    #[builder(setter(into))]
-    pub(crate) git_remote: String,
+    /// Normalised git remote identity used as the project's stable identity.
+    pub(crate) git_remote: GitRemote,
 }
 
 // ---------------------------------------------------------------------------

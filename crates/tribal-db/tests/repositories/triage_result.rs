@@ -4,7 +4,7 @@ use tribal_db::{
     PgProjectRepository, PgTriageResultRepository, PrincipalRepository, ProjectRepository,
     TriageResultRepository,
 };
-use tribal_domain::{JobId, KnowledgeItemId, PrincipalId, ProjectId, TriageOutcome};
+use tribal_domain::{GitRemote, JobId, KnowledgeItemId, PrincipalId, ProjectId, TriageOutcome};
 use tribal_test_utils::{
     a_new_item_observation, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project,
     a_new_prompt_version, a_new_triage_result_created, a_new_triage_result_duplicate,
@@ -35,7 +35,11 @@ async fn setup_prerequisites(
         .insert(
             txn,
             &a_new_project()
-                .git_remote(format!("git@github.com:test/tr-{suffix}.git"))
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/tr-{suffix}"),
+                    None,
+                ))
                 .build(),
         )
         .await

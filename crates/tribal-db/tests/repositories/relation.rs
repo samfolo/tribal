@@ -4,7 +4,7 @@ use tribal_db::{
     TraversalDirection,
 };
 use tribal_domain::{
-    Direction, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationKind,
+    Direction, GitRemote, KnowledgeItemId, PrincipalId, ProjectId, RelationBatchId, RelationKind,
 };
 use tribal_test_utils::{
     a_new_knowledge_item, a_new_knowledge_item_relation, a_new_principal, a_new_project,
@@ -37,7 +37,11 @@ async fn setup_prerequisites(
         .insert(
             txn,
             &a_new_project()
-                .git_remote(format!("git@github.com:test/{suffix}.git"))
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/{suffix}"),
+                    None,
+                ))
                 .build(),
         )
         .await

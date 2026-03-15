@@ -3,6 +3,7 @@ use tribal_db::{
     PgJobRepository, PgPrincipalRepository, PgProjectRepository, PrincipalRepository,
     ProjectRepository,
 };
+use tribal_domain::GitRemote;
 use tribal_test_utils::{
     a_new_extraction_result, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
     insert_prompt_version, test_context,
@@ -29,7 +30,11 @@ async fn setup_job(txn: &mut sqlx::PgConnection, suffix: &str) -> tribal_domain:
         .insert(
             txn,
             &a_new_project()
-                .git_remote(format!("git@github.com:test/exr-{suffix}.git"))
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/exr-{suffix}"),
+                    None,
+                ))
                 .build(),
         )
         .await

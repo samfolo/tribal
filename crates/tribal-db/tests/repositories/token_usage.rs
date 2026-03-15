@@ -3,7 +3,7 @@ use tribal_db::{
     PgTokenUsageRepository, PrincipalRepository, ProjectRepository, TokenUsageRepository,
 };
 use tribal_domain::{
-    EmbeddingPurpose, JobId, PipelineStage, PrincipalId, ProjectId, TokenUsageStage,
+    EmbeddingPurpose, GitRemote, JobId, PipelineStage, PrincipalId, ProjectId, TokenUsageStage,
 };
 use tribal_test_utils::{
     a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_token_usage,
@@ -33,7 +33,11 @@ async fn setup_prerequisites(
         .insert(
             txn,
             &a_new_project()
-                .git_remote(format!("git@github.com:test/token-usage-{suffix}.git"))
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/token-usage-{suffix}"),
+                    None,
+                ))
                 .build(),
         )
         .await

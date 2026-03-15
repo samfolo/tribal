@@ -2,7 +2,7 @@ use tribal_db::{
     KnowledgeItemRepository, PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
     PgReferenceRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
 };
-use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId, ReferenceKind};
+use tribal_domain::{GitRemote, KnowledgeItemId, PrincipalId, ProjectId, ReferenceKind};
 use tribal_test_utils::{
     a_new_knowledge_item, a_new_principal, a_new_project, a_new_reference, test_context,
 };
@@ -33,7 +33,11 @@ async fn setup_prerequisites(
         .insert(
             txn,
             &a_new_project()
-                .git_remote(format!("git@github.com:test/{suffix}.git"))
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    &format!("test/{suffix}"),
+                    None,
+                ))
                 .build(),
         )
         .await
