@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
-use tribal_domain::{ProjectId, PromptVersionId};
+use tribal_domain::{JobStateTxs, ProjectId, PromptVersionId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
@@ -81,6 +81,12 @@ pub(crate) struct TestHandler {
 
     #[builder(default)]
     config: HandlerConfig,
+
+    #[builder(default = Arc::new(DashMap::new()))]
+    job_state_txs: JobStateTxs,
+
+    #[builder(default = CancellationToken::new())]
+    cancellation_token: CancellationToken,
 }
 
 impl From<TestHandler> for TribalServerHandler {
@@ -105,8 +111,8 @@ impl From<TestHandler> for TribalServerHandler {
                 .relation_key(test_inference_key())
                 .worker_config(WorkerConfig::default())
                 .server_config(Arc::new(ServerConfig::default()))
-                .cancellation_token(CancellationToken::new())
-                .job_state_txs(Arc::new(DashMap::new()))
+                .cancellation_token(th.cancellation_token)
+                .job_state_txs(th.job_state_txs)
                 .build(),
         );
         Self::new(state, th.repositories, th.session, th.config)
