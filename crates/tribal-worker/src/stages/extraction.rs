@@ -4,11 +4,10 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 use tracing::Instrument;
+use tribal_common::clamp_to_u32;
 use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
-
-use tribal_common::clamp_to_u32;
 
 use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{

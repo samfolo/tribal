@@ -4,12 +4,10 @@ use sqlx::PgPool;
 use tribal_common::random_duration_in_range;
 use tribal_db::{MigrationRepository, PgMigrationRepository};
 
-use crate::error::AppError;
-
 use super::constants::{
-    ADVISORY_LOCK_ID, MIGRATION_MAX_ATTEMPTS, MIGRATION_RETRY_SLEEP_MAX,
-    MIGRATION_RETRY_SLEEP_MIN,
+    ADVISORY_LOCK_ID, MIGRATION_MAX_ATTEMPTS, MIGRATION_RETRY_SLEEP_MAX, MIGRATION_RETRY_SLEEP_MIN,
 };
+use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -65,23 +63,25 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
             let result = tribal_db::MIGRATOR.run(pool).await;
 
             // Always release the lock, even on migration failure.
-            let released = repo
+            match repo
                 .release_advisory_lock(&mut conn, ADVISORY_LOCK_ID)
-                .await;
-            if let Err(e) = &released {
-                tracing::warn!(%e, "failed to release migration advisory lock");
-            } else if released.as_deref() == Ok(&false) {
-                tracing::warn!("advisory lock was not held when release was attempted");
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!("advisory lock was not held when release was attempted");
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "failed to release migration advisory lock");
+                }
             }
 
             return result.map_err(|source| AppError::MigrationFailed { source });
         }
 
         if attempt < MIGRATION_MAX_ATTEMPTS {
-            let sleep = random_duration_in_range(
-                MIGRATION_RETRY_SLEEP_MIN,
-                MIGRATION_RETRY_SLEEP_MAX,
-            );
+            let sleep =
+                random_duration_in_range(MIGRATION_RETRY_SLEEP_MIN, MIGRATION_RETRY_SLEEP_MAX);
             tracing::warn!(
                 attempt,
                 max_attempts = MIGRATION_MAX_ATTEMPTS,

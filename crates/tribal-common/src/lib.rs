@@ -140,10 +140,7 @@ mod tests {
     fn test_deterministic_jitter_bounded() {
         for retry_count in 0..100_u32 {
             let result = deterministic_jitter(retry_count, 500, 0);
-            assert!(
-                result <= 1000,
-                "result {result} exceeds range * 2 (1000)",
-            );
+            assert!(result <= 1000, "result {result} exceeds range * 2 (1000)",);
         }
     }
 
@@ -153,7 +150,10 @@ mod tests {
         let max = Duration::from_secs(5);
         for _ in 0..50 {
             let d = random_duration_in_range(min, max);
-            assert!(d >= min && d <= max, "duration {d:?} out of [{min:?}, {max:?}]");
+            assert!(
+                d >= min && d <= max,
+                "duration {d:?} out of [{min:?}, {max:?}]"
+            );
         }
     }
 

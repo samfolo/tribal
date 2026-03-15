@@ -4,8 +4,7 @@
 //! On first run, prompt files are written to disk from embedded defaults.
 //! On every startup, files are read, hashed, and upserted into the database.
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use sqlx::PgPool;
 use tribal_common::sha256_hex;
@@ -117,13 +116,12 @@ pub(crate) async fn load_prompts(
             .join(stage.as_str())
             .join(format!("{}.tera", role.as_str()));
 
-        let content =
-            tokio::fs::read_to_string(&file_path)
-                .await
-                .map_err(|source| AppError::PromptIo {
-                    context: format!("read {}", file_path.display()),
-                    source,
-                })?;
+        let content = tokio::fs::read_to_string(&file_path)
+            .await
+            .map_err(|source| AppError::PromptIo {
+                context: format!("read {}", file_path.display()),
+                source,
+            })?;
 
         let content_hash = sha256_hex(&content);
 
@@ -134,44 +132,44 @@ pub(crate) async fn load_prompts(
             .content(content)
             .build();
 
-        let version = repo
-            .upsert(&mut conn, &new)
-            .await
-            .map_err(|source| AppError::PromptLoading {
-                context: format!("upsert {} {} prompt", stage, role),
-                source,
-            })?;
+        let version =
+            repo.upsert(&mut conn, &new)
+                .await
+                .map_err(|source| AppError::PromptLoading {
+                    context: format!("upsert {} {} prompt", stage, role),
+                    source,
+                })?;
 
         tracing::info!(
             stage = stage.as_str(),
             role = role.as_str(),
-            version_id = %version.id,
+            version_id = %version.id(),
             "loaded prompt version",
         );
 
-        versions.insert((*stage, *role), version.id);
+        versions.insert((*stage, *role), version.id());
     }
 
-    Ok(ActivePromptVersions {
-        extraction_system_prompt_version_id: versions
+    Ok(ActivePromptVersions::new(
+        versions
             .remove(&(PromptStage::Extraction, PromptRole::System))
             .expect(EXPECT_VERSION),
-        extraction_user_prompt_version_id: versions
+        versions
             .remove(&(PromptStage::Extraction, PromptRole::User))
             .expect(EXPECT_VERSION),
-        triage_system_prompt_version_id: versions
+        versions
             .remove(&(PromptStage::Triage, PromptRole::System))
             .expect(EXPECT_VERSION),
-        triage_user_prompt_version_id: versions
+        versions
             .remove(&(PromptStage::Triage, PromptRole::User))
             .expect(EXPECT_VERSION),
-        relation_system_prompt_version_id: versions
+        versions
             .remove(&(PromptStage::Relation, PromptRole::System))
             .expect(EXPECT_VERSION),
-        relation_user_prompt_version_id: versions
+        versions
             .remove(&(PromptStage::Relation, PromptRole::User))
             .expect(EXPECT_VERSION),
-    })
+    ))
 }
 
 // ---------------------------------------------------------------------------

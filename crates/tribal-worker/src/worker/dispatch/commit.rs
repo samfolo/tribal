@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use tracing::Instrument;
+use tribal_common::clamp_to_u32;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
     JobStatusTransition, KnowledgeItemRepository, NewEmbedding, NewExtractionResult,
@@ -16,8 +17,6 @@ use tribal_db::{
 use tribal_domain::{
     JobId, JobOutcome, JobStatus, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
 };
-
-use tribal_common::clamp_to_u32;
 
 use super::Worker;
 use crate::{

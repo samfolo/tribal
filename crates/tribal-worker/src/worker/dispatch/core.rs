@@ -9,6 +9,7 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
+use tribal_common::{clamp_to_i32, clamp_to_u32};
 use tribal_config::WorkerConfig;
 use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository, PgTaskRepository,
@@ -18,8 +19,6 @@ use tribal_domain::{Job, JobId, JobStatus, PromptVersionId, Task, TaskType, Toke
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
-
-use tribal_common::{clamp_to_i32, clamp_to_u32};
 
 use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},

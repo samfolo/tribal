@@ -91,6 +91,28 @@ pub struct ActivePromptVersions {
     pub(crate) relation_user_prompt_version_id: PromptVersionId,
 }
 
+impl ActivePromptVersions {
+    /// Creates a new set of active prompt version IDs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        extraction_system: PromptVersionId,
+        extraction_user: PromptVersionId,
+        triage_system: PromptVersionId,
+        triage_user: PromptVersionId,
+        relation_system: PromptVersionId,
+        relation_user: PromptVersionId,
+    ) -> Self {
+        Self {
+            extraction_system_prompt_version_id: extraction_system,
+            extraction_user_prompt_version_id: extraction_user,
+            triage_system_prompt_version_id: triage_system,
+            triage_user_prompt_version_id: triage_user,
+            relation_system_prompt_version_id: relation_system,
+            relation_user_prompt_version_id: relation_user,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TribalServerHandler
 // ---------------------------------------------------------------------------

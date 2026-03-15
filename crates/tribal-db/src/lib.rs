@@ -22,11 +22,11 @@ pub use pool::create_pool;
 #[cfg(feature = "test-helpers")]
 pub use repositories::JobStateOverride;
 pub use repositories::{
-    AuthTokenRepository, EmbeddingRepository, ExtractionResultRepository, MigrationRepository,
+    AuthTokenRepository, EmbeddingRepository, ExtractionResultRepository,
     ItemObservationRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,
-    NewAuthToken, NewEmbedding, NewExtractionResult, NewItemObservation, NewJob, NewKnowledgeItem,
-    NewKnowledgeItemRelation, NewPrincipal, NewProject, NewPromptVersion, NewReference,
-    NewRetrievalFeedback, NewTagEmbedding, NewTask, NewTokenUsage, NewTriageResult,
+    MigrationRepository, NewAuthToken, NewEmbedding, NewExtractionResult, NewItemObservation,
+    NewJob, NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject, NewPromptVersion,
+    NewReference, NewRetrievalFeedback, NewTagEmbedding, NewTask, NewTokenUsage, NewTriageResult,
     NewTriageSimilarItemDecision, PgAuthTokenRepository, PgEmbeddingRepository,
     PgExtractionResultRepository, PgItemObservationRepository, PgJobRepository,
     PgKnowledgeItemRepository, PgMigrationRepository, PgPrincipalRepository, PgProjectRepository,
