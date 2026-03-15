@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_LIMIT: u32 = 10;
 
 /// Maximum number of results allowed in a discovery query.
-pub const MAX_LIMIT: u32 = 50;
+pub const DEFAULT_MAX_LIMIT: u32 = 50;
 
 /// Default overfetch multiplier for the initial semantic search.
 pub const DEFAULT_OVERFETCH_MULTIPLIER: u32 = 3;
@@ -34,7 +34,7 @@ pub struct DiscoveryConfig {
     pub default_limit: u32,
 
     /// Maximum number of results a caller may request.
-    #[serde(default = "max_limit")]
+    #[serde(default = "default_max_limit")]
     pub max_limit: u32,
 
     /// Multiplier applied to the limit for the initial semantic search.
@@ -53,7 +53,7 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             default_limit: DEFAULT_LIMIT,
-            max_limit: MAX_LIMIT,
+            max_limit: DEFAULT_MAX_LIMIT,
             overfetch_multiplier: DEFAULT_OVERFETCH_MULTIPLIER,
             similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
         }
@@ -64,8 +64,8 @@ const fn default_limit() -> u32 {
     DEFAULT_LIMIT
 }
 
-const fn max_limit() -> u32 {
-    MAX_LIMIT
+const fn default_max_limit() -> u32 {
+    DEFAULT_MAX_LIMIT
 }
 
 const fn default_overfetch_multiplier() -> u32 {
@@ -88,7 +88,7 @@ mod tests {
     fn test_default_values() {
         let config = DiscoveryConfig::default();
         assert_eq!(config.default_limit, DEFAULT_LIMIT);
-        assert_eq!(config.max_limit, MAX_LIMIT);
+        assert_eq!(config.max_limit, DEFAULT_MAX_LIMIT);
         assert_eq!(config.overfetch_multiplier, DEFAULT_OVERFETCH_MULTIPLIER);
         assert!((config.similarity_threshold - DEFAULT_SIMILARITY_THRESHOLD).abs() < f64::EPSILON);
     }

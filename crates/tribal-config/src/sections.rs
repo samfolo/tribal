@@ -18,9 +18,16 @@ mod worker;
 
 pub use auth::AuthConfig;
 pub use database::DatabaseConfig;
-pub use discovery::DiscoveryConfig;
+pub use discovery::{
+    DEFAULT_LIMIT as DEFAULT_DISCOVERY_LIMIT, DEFAULT_MAX_LIMIT as DEFAULT_DISCOVERY_MAX_LIMIT,
+    DiscoveryConfig,
+};
 pub use embedding::EmbeddingConfig;
-pub use exploration::ExplorationConfig;
+pub use exploration::{
+    DEFAULT_DEPTH as DEFAULT_EXPLORATION_DEPTH, DEFAULT_LIMIT as DEFAULT_EXPLORATION_LIMIT,
+    DEFAULT_MAX_DEPTH as DEFAULT_EXPLORATION_MAX_DEPTH,
+    DEFAULT_MAX_LIMIT as DEFAULT_EXPLORATION_MAX_LIMIT, ExplorationConfig,
+};
 pub use inference::{InferenceConfig, StageInferenceConfig};
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
