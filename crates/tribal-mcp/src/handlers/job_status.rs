@@ -306,10 +306,16 @@ async fn execute_job_status(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Instant};
 
+    use dashmap::DashMap;
     use rmcp::model::ErrorCode;
-    use tribal_domain::{JobId, JobOutcome, JobStatus, KnowledgeItemId, TaskType};
+    use tokio::sync::watch;
+    use tokio_util::sync::CancellationToken;
+    use tribal_domain::{
+        JobId, JobOutcome, JobState, JobStateTxs, JobStatus, JobWatchEntry, KnowledgeItemId,
+        TaskType,
+    };
     use tribal_test_utils::{
         MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job, a_task,
         a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed, test_context,
@@ -833,5 +839,234 @@ mod tests {
         assert_eq!(structured["outcome"], "success");
         assert_eq!(structured["tasks_completed"], 1);
         assert_eq!(structured["items_created"], 1);
+    }
+
+    // -- Watch path helpers ------------------------------------------------
+
+    /// Creates a `JobStateTxs` map with a single watch entry for the
+    /// given job ID. Returns the map and the sender so tests can send
+    /// state transitions.
+    fn watch_entry_for(job_id: JobId) -> (JobStateTxs, watch::Sender<JobState>) {
+        let (tx, _rx) = watch::channel(JobState::Queued);
+        let txs: JobStateTxs = Arc::new(DashMap::new());
+        txs.insert(
+            job_id,
+            JobWatchEntry {
+                sender: tx.clone(),
+                inserted_at: Instant::now(),
+                terminal_at: None,
+            },
+        );
+        (txs, tx)
+    }
+
+    /// Builds a `TestHandler` with a real pool and mocks returning
+    /// `first_job` on the initial query and `second_job` on the second.
+    /// Returns the handler and a reference to the job mock for asserting
+    /// call counts.
+    ///
+    /// Pool creation must happen before `tokio::time::pause()` because
+    /// sqlx uses internal timers that would auto-advance to zero under
+    /// paused time. Call this first, then pause.
+    async fn watch_test_handler(
+        first_job: Job,
+        second_job: Job,
+        job_state_txs: JobStateTxs,
+        cancellation_token: CancellationToken,
+    ) -> (TribalServerHandler, Arc<MockJobRepository>) {
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
+
+        let job_mock = Arc::new(
+            MockJobRepository::builder()
+                .on_find_by_id(first_job, None)
+                .on_find_by_id(second_job, None)
+                .build(),
+        );
+        let job_mock_ref = Arc::clone(&job_mock);
+
+        let mut repos = test_repositories();
+        repos.job = job_mock;
+        repos.task = Arc::new(
+            MockTaskRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .on_find_by_job_id(vec![], None)
+                .build(),
+        );
+        repos.triage_result = Arc::new(
+            MockTriageResultRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .on_find_by_job_id(vec![], None)
+                .build(),
+        );
+
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .job_state_txs(job_state_txs)
+            .cancellation_token(cancellation_token)
+            .build();
+
+        (handler, job_mock_ref)
+    }
+
+    // -- Watch path behaviour ----------------------------------------------
+    //
+    // Signal and cancellation tests resolve via `rx.changed()` or
+    // `cancel` — the sleep arm never wins — so no paused time is needed
+    // and they complete instantly. The timeout test uses `wait_seconds=1`
+    // (real wall-clock time) because `tokio::time::pause()` also affects
+    // the pool's internal timers, breaking the post-wait DB read.
+
+    /// When a watch entry exists and a terminal state is sent while the
+    /// handler is waiting, it wakes up and does a final DB read.
+    /// Total DB reads: exactly 2 (initial + final).
+    #[tokio::test]
+    async fn test_apply_job_status_watch_path_wakes_on_state_change() {
+        let job_id = JobId::new();
+        let (txs, watch_tx) = watch_entry_for(job_id);
+
+        // Yield once so the handler enters the select! first, then send.
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let _ = watch_tx.send(JobState::Completed);
+        });
+
+        let first = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let second = a_job()
+            .id(job_id)
+            .status(JobStatus::Completed)
+            .outcome(Some(JobOutcome::Success))
+            .build();
+        let (handler, job_mock) =
+            watch_test_handler(first, second, txs, CancellationToken::new()).await;
+
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({
+                    "job_id": job_id.to_string(),
+                    "wait_seconds": 10,
+                }),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            job_mock.find_by_id_call_count(),
+            2,
+            "watch path should make exactly 2 DB reads",
+        );
+    }
+
+    /// When the watch channel already holds a terminal state before the
+    /// handler subscribes, the race-elimination check skips the wait
+    /// and proceeds directly to the final DB read.
+    #[tokio::test]
+    async fn test_apply_job_status_watch_path_terminal_before_subscribe() {
+        let job_id = JobId::new();
+        let (txs, watch_tx) = watch_entry_for(job_id);
+        let _ = watch_tx.send(JobState::Completed);
+
+        let first = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let second = a_job()
+            .id(job_id)
+            .status(JobStatus::Completed)
+            .outcome(Some(JobOutcome::Success))
+            .build();
+        let (handler, job_mock) =
+            watch_test_handler(first, second, txs, CancellationToken::new()).await;
+
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({
+                    "job_id": job_id.to_string(),
+                    "wait_seconds": 10,
+                }),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            job_mock.find_by_id_call_count(),
+            2,
+            "race-elimination should skip wait, still 2 DB reads",
+        );
+    }
+
+    /// When no state change arrives within the wait period, the handler
+    /// returns after the timeout with exactly 2 DB reads.
+    #[tokio::test]
+    async fn test_apply_job_status_watch_path_timeout() {
+        let job_id = JobId::new();
+        let (txs, _watch_tx) = watch_entry_for(job_id);
+
+        let first = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let second = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let (handler, job_mock) =
+            watch_test_handler(first, second, txs, CancellationToken::new()).await;
+
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({
+                    "job_id": job_id.to_string(),
+                    "wait_seconds": 1,
+                }),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            job_mock.find_by_id_call_count(),
+            2,
+            "watch timeout should still make exactly 2 DB reads",
+        );
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["status"], "triaging");
+    }
+
+    /// When the cancellation token fires while the handler is waiting
+    /// on the watch path, it wakes up and does a final DB read.
+    #[tokio::test]
+    async fn test_apply_job_status_watch_path_cancellation() {
+        let job_id = JobId::new();
+        let (txs, _watch_tx) = watch_entry_for(job_id);
+        let cancel_token = CancellationToken::new();
+
+        // Yield once so the handler enters the select! first, then cancel.
+        let cancel_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            cancel_clone.cancel();
+        });
+
+        let first = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let second = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let (handler, job_mock) = watch_test_handler(first, second, txs, cancel_token).await;
+
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({
+                    "job_id": job_id.to_string(),
+                    "wait_seconds": 30,
+                }),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            job_mock.find_by_id_call_count(),
+            2,
+            "cancellation should wake, then do 1 final DB read",
+        );
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["status"], "triaging");
     }
 }
