@@ -111,6 +111,9 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     });
 
     // -- Job-state sweep -------------------------------------------------------
+    // JoinHandle discarded — the sweep is a performance optimisation, not
+    // a correctness mechanism. If it panics, watch entries accumulate
+    // until the process restarts; the DB remains authoritative.
 
     let terminal_ttl = Duration::from_secs(config.server.job_state_ttl_seconds);
     let hard_ttl = Duration::from_secs(config.server.job_state_hard_ttl_seconds);
