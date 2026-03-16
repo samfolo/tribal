@@ -344,10 +344,15 @@ impl Drop for WorkerDeathGuard {
 /// # Errors
 ///
 /// Returns [`AppError::SignalHandler`] if the OS signal handlers (SIGINT,
-/// SIGTERM) cannot be registered.
+/// SIGTERM) cannot be registered (unix only — the non-unix branch falls
+/// back to programmatic cancellation if `ctrl_c()` registration fails).
 async fn await_shutdown_trigger(
     cancellation_token: &CancellationToken,
 ) -> Result<Option<&'static str>, AppError> {
+    if cancellation_token.is_cancelled() {
+        return Ok(None);
+    }
+
     #[cfg(unix)]
     {
         let mut sigint = unix_signal(SignalKind::interrupt())
