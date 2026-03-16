@@ -135,20 +135,27 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     // programmatic cancellation, e.g. WorkerDeathGuard).  The MCP transport
     // future will be added as a third arm in a subsequent ticket.
     main_rt.block_on(async {
-        let signal_name = await_shutdown_trigger(&cancellation_token).await?;
-
-        if let Some(name) = signal_name {
-            tracing::info!(trigger = name, "received OS signal, initiating shutdown");
-            cancellation_token.cancel();
-        } else {
-            tracing::info!(
-                trigger = "programmatic",
-                "shutdown triggered programmatically"
-            );
+        match await_shutdown_trigger(&cancellation_token).await {
+            Ok(Some(name)) => {
+                tracing::info!(trigger = name, "received OS signal, initiating shutdown");
+                cancellation_token.cancel();
+            }
+            Ok(None) => {
+                tracing::info!(
+                    trigger = "programmatic",
+                    "shutdown triggered programmatically",
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "signal handler registration failed; \
+                     falling back to programmatic cancellation",
+                );
+                cancellation_token.cancelled().await;
+            }
         }
-
-        Ok::<(), AppError>(())
-    })?;
+    });
 
     // -- Graceful shutdown ---------------------------------------------------
     // Await worker completion within the shutdown deadline.  This gives
