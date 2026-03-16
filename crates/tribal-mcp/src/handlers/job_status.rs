@@ -6,8 +6,9 @@ use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
     service::{RequestContext, RoleServer},
 };
+use tokio::sync::watch;
 use tribal_db::DbError;
-use tribal_domain::{Job, JobId, McpErrorCode, TaskStatus, TaskType, TriageOutcome};
+use tribal_domain::{Job, JobId, JobState, McpErrorCode, TaskStatus, TaskType, TriageOutcome};
 
 use super::common::acquire_connection;
 use crate::{
@@ -188,11 +189,7 @@ impl TribalServerHandler {
     /// server is shutting down — whichever comes first.
     ///
     /// After this method returns, the caller does one final DB read.
-    async fn wait_via_watch(
-        &self,
-        mut rx: tokio::sync::watch::Receiver<tribal_domain::JobState>,
-        deadline: Duration,
-    ) {
+    async fn wait_via_watch(&self, mut rx: watch::Receiver<JobState>, deadline: Duration) {
         // A terminal transition may have arrived between the initial DB
         // read and subscription. If so, skip the wait entirely.
         if rx.borrow().is_terminal() {
