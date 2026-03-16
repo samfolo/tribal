@@ -343,8 +343,8 @@ impl Drop for WorkerDeathGuard {
 ///
 /// # Errors
 ///
-/// Returns [`AppError::SignalHandler`] if the SIGTERM handler cannot be
-/// registered.
+/// Returns [`AppError::SignalHandler`] if the OS signal handlers (SIGINT,
+/// SIGTERM) cannot be registered.
 async fn await_shutdown_trigger(
     cancellation_token: &CancellationToken,
 ) -> Result<Option<&'static str>, AppError> {
@@ -356,8 +356,8 @@ async fn await_shutdown_trigger(
             .map_err(|source| AppError::SignalHandler { source })?;
 
         Ok(tokio::select! {
-            _ = sigint.recv() => Some("SIGINT"),
-            _ = sigterm.recv() => Some("SIGTERM"),
+            Some(()) = sigint.recv() => Some("SIGINT"),
+            Some(()) = sigterm.recv() => Some("SIGTERM"),
             () = cancellation_token.cancelled() => None,
         })
     }
