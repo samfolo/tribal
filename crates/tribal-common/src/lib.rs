@@ -6,8 +6,11 @@
 //! The module is flat by default; extract submodules only when a single
 //! concern grows large enough to warrant its own file.
 
+mod job_watch;
+
 use std::time::Duration;
 
+pub use job_watch::{JobStateTxs, JobWatchEntry};
 use rand::RngExt;
 use sha2::{Digest, Sha256};
 

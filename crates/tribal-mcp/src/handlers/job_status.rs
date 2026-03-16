@@ -184,9 +184,14 @@ impl TribalServerHandler {
             .map_err(|e| e.into_mcp_error().into_call_tool_result())
     }
 
-    /// Watch path: subscribe to the watch channel, then sleep until the
-    /// channel signals a state change, the deadline expires, or the
-    /// server is shutting down — whichever comes first.
+    /// Watch path: wait until the watch channel reaches a terminal state,
+    /// the deadline expires, or the server is shutting down — whichever
+    /// comes first.
+    ///
+    /// Uses `wait_for(is_terminal)` rather than `changed()` so that
+    /// intermediate transitions (e.g. queued → extracting) do not cause
+    /// an early return with a non-terminal status. This keeps the watch
+    /// path semantically aligned with the poll path.
     ///
     /// After this method returns, the caller does one final DB read.
     async fn wait_via_watch(&self, mut rx: watch::Receiver<JobState>, deadline: Duration) {
@@ -198,7 +203,7 @@ impl TribalServerHandler {
 
         let cancel = self.state.cancellation_token.cancelled();
         tokio::select! {
-            _ = rx.changed() => {}
+            _ = rx.wait_for(|s| s.is_terminal()) => {}
             () = tokio::time::sleep(deadline) => {}
             () = cancel => {}
         }
@@ -311,10 +316,8 @@ mod tests {
     use rmcp::model::ErrorCode;
     use tokio::sync::watch;
     use tokio_util::sync::CancellationToken;
-    use tribal_domain::{
-        JobId, JobOutcome, JobState, JobStateTxs, JobStatus, JobWatchEntry, KnowledgeItemId,
-        TaskType,
-    };
+    use tribal_common::{JobStateTxs, JobWatchEntry};
+    use tribal_domain::{JobId, JobOutcome, JobState, JobStatus, KnowledgeItemId, TaskType};
     use tribal_test_utils::{
         MockJobRepository, MockTaskRepository, MockTriageResultRepository, a_job, a_task,
         a_triage_result_created, a_triage_result_duplicate, a_triage_result_failed, test_context,

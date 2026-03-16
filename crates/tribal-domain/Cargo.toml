@@ -8,6 +8,7 @@ publish.workspace = true
 
 [features]
 schema = ["dep:schemars"]
+test-helpers = []
 
 [dependencies]
 chrono = { workspace = true }
