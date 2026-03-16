@@ -132,13 +132,13 @@ impl TribalServerHandler {
         {
             let wait_duration = Duration::from_secs(u64::from(wait));
 
-            let has_watch_entry = self
+            let watch_rx = self
                 .state
                 .job_state_txs
                 .get(&job_id)
                 .map(|entry| entry.sender.subscribe());
 
-            match has_watch_entry {
+            match watch_rx {
                 Some(rx) => {
                     self.wait_via_watch(rx, wait_duration).await;
                     result = match self.query_job_status(&status_params).await {
@@ -147,8 +147,12 @@ impl TribalServerHandler {
                     };
                 }
                 None => {
-                    self.wait_via_poll(scheduler, &status_params, wait_duration, &mut result)
-                        .await?;
+                    if let Err(call_result) = self
+                        .wait_via_poll(scheduler, &status_params, wait_duration, &mut result)
+                        .await
+                    {
+                        return Ok(call_result);
+                    }
                 }
             }
         }
@@ -208,14 +212,15 @@ impl TribalServerHandler {
     /// is shutting down.
     ///
     /// Used as a fallback when no watch channel entry exists for the job
-    /// (e.g. after a server restart).
+    /// (e.g. after a server restart). If a DB query fails, the error is
+    /// returned immediately — no retry inside the wait loop.
     async fn wait_via_poll<S: PollScheduler>(
         &self,
         scheduler: &S,
         params: &JobStatusParams,
         wait_duration: Duration,
         result: &mut JobStatusResult,
-    ) -> Result<(), McpError> {
+    ) -> Result<(), CallToolResult> {
         let ticker = scheduler.create_ticker(wait_duration);
 
         loop {
@@ -229,10 +234,7 @@ impl TribalServerHandler {
                 break;
             }
 
-            let Ok(r) = self.query_job_status(params).await else {
-                break;
-            };
-            *result = r;
+            *result = self.query_job_status(params).await?;
 
             if result.job.status().is_terminal() {
                 break;
