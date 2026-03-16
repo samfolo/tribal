@@ -10,11 +10,11 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use dashmap::DashMap;
 use tokio::{
     runtime::Builder,
-    sync::{RwLock, oneshot, watch},
+    sync::{RwLock, oneshot},
 };
 use tokio_util::sync::CancellationToken;
+use tribal_common::JobStateTxs;
 use tribal_config::{TribalConfig, load_config, validate};
-use tribal_domain::JobId;
 use tribal_mcp::{AppState, HandlerConfig};
 use tribal_worker::{Worker, WorkerError};
 
@@ -55,7 +55,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let _telemetry_guard = tribal_telemetry::init_subscriber(&config.logging)?;
 
     let cancellation_token = CancellationToken::new();
-    let job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>> = Arc::new(DashMap::new());
+    let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
     // -- Main runtime --------------------------------------------------------
 
@@ -110,6 +110,20 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         }
     });
 
+    // -- Job-state sweep -------------------------------------------------------
+    // JoinHandle discarded — the sweep is a performance optimisation, not
+    // a correctness mechanism. If it panics, watch entries accumulate
+    // until the process restarts; the DB remains authoritative.
+
+    let terminal_ttl = Duration::from_secs(config.server.job_state_ttl_seconds);
+    let hard_ttl = Duration::from_secs(config.server.job_state_hard_ttl_seconds);
+    drop(main_rt.spawn(tribal_mcp::sweep::run_job_state_sweep(
+        Arc::clone(&job_state_txs),
+        terminal_ttl,
+        hard_ttl,
+        cancellation_token.clone(),
+    )));
+
     tracing::info!("startup sequence complete");
 
     // -- MCP transport placeholder -------------------------------------------
@@ -157,7 +171,7 @@ async fn bootstrap(
     cli_project: Option<String>,
     _handler_config: HandlerConfig,
     cancellation_token: CancellationToken,
-    job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
+    job_state_txs: JobStateTxs,
 ) -> Result<(Arc<AppState>, Arc<Worker>), AppError> {
     // -- Database pools ------------------------------------------------------
 

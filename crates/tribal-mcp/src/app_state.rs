@@ -7,12 +7,12 @@
 
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::sync::{RwLock, watch};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
-use tribal_domain::{GitRemote, JobId, ProjectId};
+use tribal_domain::{GitRemote, ProjectId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
 use typed_builder::TypedBuilder;
 
@@ -114,9 +114,10 @@ pub struct AppState {
 
     /// Per-job watch channels shared between worker and MCP handlers.
     ///
-    /// The worker sends notifications when job status changes; MCP
-    /// handlers subscribe to observe progress.
-    pub(crate) job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
+    /// The worker sends typed [`tribal_domain::JobState`] transitions;
+    /// MCP handlers subscribe to observe progress. A background sweep
+    /// task evicts stale entries based on TTL thresholds.
+    pub(crate) job_state_txs: JobStateTxs,
 
     // -- Session -------------------------------------------------------------
     /// Resolved project context from the startup cascade, if any.

@@ -83,6 +83,58 @@ enum_text_conversions!(JobOutcome {
     JobOutcome::Failure => "failure",
 });
 
+/// In-memory signalling state for a job.
+///
+/// Mirrors [`JobStatus`] variants but exists as a separate type — it
+/// represents watch-channel state used by the MCP handler fast path,
+/// not a database row status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JobState {
+    /// Waiting for extraction.
+    #[default]
+    Queued,
+    /// Extraction task running.
+    Extracting,
+    /// Triage tasks running.
+    Triaging,
+    /// Relation task running.
+    Relating,
+    /// Terminal; pipeline completed.
+    Completed,
+    /// Terminal; pipeline failed.
+    Failed,
+}
+
+impl JobState {
+    /// Returns `true` if this state is terminal (`Completed` or `Failed`).
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed)
+    }
+}
+
+impl From<JobStatus> for JobState {
+    fn from(status: JobStatus) -> Self {
+        match status {
+            JobStatus::Queued => Self::Queued,
+            JobStatus::Extracting => Self::Extracting,
+            JobStatus::Triaging => Self::Triaging,
+            JobStatus::Relating => Self::Relating,
+            JobStatus::Completed => Self::Completed,
+            JobStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+enum_text_conversions!(JobState {
+    JobState::Queued => "queued",
+    JobState::Extracting => "extracting",
+    JobState::Triaging => "triaging",
+    JobState::Relating => "relating",
+    JobState::Completed => "completed",
+    JobState::Failed => "failed",
+});
+
 /// An ingest pipeline job.
 ///
 /// # Invariants
@@ -305,6 +357,41 @@ mod tests {
         JobOutcome::Failure => "failure",
     });
 
+    // -- JobState ----------------------------------------------------------
+
+    enum_text_tests!(test_job_state_text_roundtrip, JobState {
+        JobState::Queued => "queued",
+        JobState::Extracting => "extracting",
+        JobState::Triaging => "triaging",
+        JobState::Relating => "relating",
+        JobState::Completed => "completed",
+        JobState::Failed => "failed",
+    });
+
+    #[test]
+    fn test_job_state_default_is_queued() {
+        assert_eq!(JobState::default(), JobState::Queued);
+    }
+
+    #[test]
+    fn test_job_state_from_job_status() {
+        let pairs = [
+            (JobStatus::Queued, JobState::Queued),
+            (JobStatus::Extracting, JobState::Extracting),
+            (JobStatus::Triaging, JobState::Triaging),
+            (JobStatus::Relating, JobState::Relating),
+            (JobStatus::Completed, JobState::Completed),
+            (JobStatus::Failed, JobState::Failed),
+        ];
+        for (status, expected_state) in pairs {
+            assert_eq!(
+                JobState::from(status),
+                expected_state,
+                "JobState::from({status:?})"
+            );
+        }
+    }
+
     // -- is_terminal -------------------------------------------------------
 
     #[test]
@@ -323,6 +410,25 @@ mod tests {
             JobStatus::Relating,
         ] {
             assert!(!status.is_terminal(), "{status:?} should not be terminal");
+        }
+    }
+
+    #[test]
+    fn test_job_state_is_terminal() {
+        for state in [JobState::Completed, JobState::Failed] {
+            assert!(state.is_terminal(), "{state:?} should be terminal");
+        }
+    }
+
+    #[test]
+    fn test_job_state_is_not_terminal() {
+        for state in [
+            JobState::Queued,
+            JobState::Extracting,
+            JobState::Triaging,
+            JobState::Relating,
+        ] {
+            assert!(!state.is_terminal(), "{state:?} should not be terminal");
         }
     }
 }
