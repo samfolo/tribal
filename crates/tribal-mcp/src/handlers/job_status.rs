@@ -846,16 +846,9 @@ mod tests {
     /// given job ID. Returns the map and the sender so tests can send
     /// state transitions.
     fn watch_entry_for(job_id: JobId) -> (JobStateTxs, watch::Sender<JobState>) {
-        let (tx, _rx) = watch::channel(JobState::Queued);
+        let (tx, rx) = watch::channel(JobState::Queued);
         let txs: JobStateTxs = Arc::new(DashMap::new());
-        txs.insert(
-            job_id,
-            JobWatchEntry {
-                sender: tx.clone(),
-                inserted_at: Instant::now(),
-                terminal_at: None,
-            },
-        );
+        txs.insert(job_id, JobWatchEntry::new(tx.clone(), rx));
         (txs, tx)
     }
 

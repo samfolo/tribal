@@ -60,11 +60,11 @@ fn sweep_once(
 ) {
     txs.retain(|_id, entry| {
         if let Some(terminal_at) = entry.terminal_at
-            && now.duration_since(terminal_at) >= terminal_ttl
+            && now.saturating_duration_since(terminal_at) >= terminal_ttl
         {
             return false;
         }
-        if now.duration_since(entry.inserted_at) >= hard_ttl {
+        if now.saturating_duration_since(entry.inserted_at) >= hard_ttl {
             return false;
         }
         true
@@ -86,15 +86,14 @@ mod tests {
 
     fn make_entry(inserted_ago: Duration, terminal_ago: Option<Duration>) -> JobWatchEntry {
         let now = Instant::now();
-        let (tx, _rx) = watch::channel(JobState::Queued);
-        JobWatchEntry {
-            sender: tx,
-            inserted_at: now
-                .checked_sub(inserted_ago)
+        let (tx, rx) = watch::channel(JobState::Queued);
+        JobWatchEntry::with_timestamps_for_test(
+            tx,
+            rx,
+            now.checked_sub(inserted_ago)
                 .expect("test duration within range"),
-            terminal_at: terminal_ago
-                .map(|d| now.checked_sub(d).expect("test duration within range")),
-        }
+            terminal_ago.map(|d| now.checked_sub(d).expect("test duration within range")),
+        )
     }
 
     #[test]
