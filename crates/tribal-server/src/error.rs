@@ -153,6 +153,14 @@ pub enum AppError {
         source: tribal_worker::WorkerError,
     },
 
+    /// OS signal handler registration failed.
+    #[error("failed to register OS signal handler")]
+    SignalHandler {
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
     /// Failed to create the worker runtime.
     #[error("failed to create worker runtime")]
     WorkerRuntime {
@@ -320,6 +328,14 @@ mod tests {
             source: io::Error::other("thread pool exhausted"),
         };
         assert_eq!(err.to_string(), "failed to create worker runtime");
+    }
+
+    #[test]
+    fn test_display_signal_handler() {
+        let err = AppError::SignalHandler {
+            source: io::Error::other("permission denied"),
+        };
+        assert_eq!(err.to_string(), "failed to register OS signal handler");
     }
 
     #[test]
