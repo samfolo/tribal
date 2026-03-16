@@ -153,6 +153,14 @@ pub enum AppError {
         source: tribal_worker::WorkerError,
     },
 
+    /// OS signal handler registration failed.
+    #[error("failed to register OS signal handler")]
+    SignalHandler {
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
     /// Failed to create the worker runtime.
     #[error("failed to create worker runtime")]
     WorkerRuntime {
