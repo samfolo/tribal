@@ -8,11 +8,12 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
+#[cfg(not(unix))]
+use tokio::signal;
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio::{
     runtime::Builder,
-    signal,
     sync::{RwLock, oneshot},
 };
 use tokio_util::sync::CancellationToken;
@@ -137,10 +138,13 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         let signal_name = await_shutdown_trigger(&cancellation_token).await?;
 
         if let Some(name) = signal_name {
-            tracing::info!(signal = name, "received OS signal, initiating shutdown");
+            tracing::info!(trigger = name, "received OS signal, initiating shutdown");
             cancellation_token.cancel();
         } else {
-            tracing::info!("shutdown triggered programmatically");
+            tracing::info!(
+                trigger = "programmatic",
+                "shutdown triggered programmatically"
+            );
         }
 
         Ok::<(), AppError>(())
@@ -346,11 +350,13 @@ async fn await_shutdown_trigger(
 ) -> Result<Option<&'static str>, AppError> {
     #[cfg(unix)]
     {
+        let mut sigint = unix_signal(SignalKind::interrupt())
+            .map_err(|source| AppError::SignalHandler { source })?;
         let mut sigterm = unix_signal(SignalKind::terminate())
             .map_err(|source| AppError::SignalHandler { source })?;
 
         Ok(tokio::select! {
-            _ = signal::ctrl_c() => Some("SIGINT"),
+            _ = sigint.recv() => Some("SIGINT"),
             _ = sigterm.recv() => Some("SIGTERM"),
             () = cancellation_token.cancelled() => None,
         })
@@ -358,8 +364,12 @@ async fn await_shutdown_trigger(
 
     #[cfg(not(unix))]
     {
+        // `Ok(())` pattern: if `ctrl_c()` returns `Err`, the arm is skipped
+        // and the system falls back to programmatic cancellation only.  This
+        // branch is dead code on all target platforms (macOS and Linux are
+        // both unix) and exists only for compilation completeness.
         Ok(tokio::select! {
-            _ = signal::ctrl_c() => Some("SIGINT"),
+            Ok(()) = signal::ctrl_c() => Some("SIGINT"),
             () = cancellation_token.cancelled() => None,
         })
     }
@@ -389,6 +399,15 @@ mod tests {
         let result = expand_prompts_dir("~/prompts");
         assert!(!result.to_str().unwrap().starts_with('~'));
         assert!(result.to_str().unwrap().ends_with("/prompts"));
+    }
+
+    #[tokio::test]
+    async fn test_await_shutdown_trigger_returns_none_on_pre_cancelled_token() {
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let result = await_shutdown_trigger(&token).await;
+        assert!(matches!(result, Ok(None)));
     }
 
     #[test]
