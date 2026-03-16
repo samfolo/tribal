@@ -8,13 +8,13 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio::{
     runtime::Builder,
     signal,
     sync::{RwLock, oneshot},
 };
-#[cfg(unix)]
-use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{TribalConfig, load_config, validate};
@@ -346,8 +346,8 @@ async fn await_shutdown_trigger(
 ) -> Result<Option<&'static str>, AppError> {
     #[cfg(unix)]
     {
-        let mut sigterm =
-            unix_signal(SignalKind::terminate()).map_err(|source| AppError::SignalHandler { source })?;
+        let mut sigterm = unix_signal(SignalKind::terminate())
+            .map_err(|source| AppError::SignalHandler { source })?;
 
         Ok(tokio::select! {
             _ = signal::ctrl_c() => Some("SIGINT"),

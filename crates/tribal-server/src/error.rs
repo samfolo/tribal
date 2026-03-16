@@ -331,6 +331,14 @@ mod tests {
     }
 
     #[test]
+    fn test_display_signal_handler() {
+        let err = AppError::SignalHandler {
+            source: io::Error::other("permission denied"),
+        };
+        assert_eq!(err.to_string(), "failed to register OS signal handler");
+    }
+
+    #[test]
     fn test_display_worker_death() {
         let err = AppError::WorkerDeath;
         assert_eq!(err.to_string(), "worker died unexpectedly");
