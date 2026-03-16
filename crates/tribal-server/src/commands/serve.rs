@@ -358,9 +358,10 @@ impl Drop for WorkerDeathGuard {
 ///
 /// # Errors
 ///
-/// Returns [`AppError::SignalHandler`] if the OS signal handlers (SIGINT,
-/// SIGTERM) cannot be registered (unix only — the non-unix branch falls
-/// back to programmatic cancellation if `ctrl_c()` registration fails).
+/// Returns [`AppError::SignalHandler`] if the SIGINT handler cannot be
+/// registered (unix only — the non-unix branch falls back to programmatic
+/// cancellation if `ctrl_c()` registration fails).  SIGTERM registration
+/// is best-effort: failure is logged but does not prevent shutdown.
 async fn await_shutdown_trigger(
     cancellation_token: &CancellationToken,
 ) -> Result<Option<&'static str>, AppError> {
@@ -372,12 +373,27 @@ async fn await_shutdown_trigger(
     {
         let mut sigint = unix_signal(SignalKind::interrupt())
             .map_err(|source| AppError::SignalHandler { source })?;
-        let mut sigterm = unix_signal(SignalKind::terminate())
-            .map_err(|source| AppError::SignalHandler { source })?;
+
+        let mut sigterm = match unix_signal(SignalKind::terminate()) {
+            Ok(stream) => Some(stream),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "SIGTERM handler registration failed; \
+                     SIGINT and programmatic cancellation remain active",
+                );
+                None
+            }
+        };
 
         Ok(tokio::select! {
             Some(()) = sigint.recv() => Some("SIGINT"),
-            Some(()) = sigterm.recv() => Some("SIGTERM"),
+            Some(()) = async {
+                match sigterm.as_mut() {
+                    Some(s) => s.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => Some("SIGTERM"),
             () = cancellation_token.cancelled() => None,
         })
     }
