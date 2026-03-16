@@ -86,6 +86,22 @@ fn validate_server(config: &TribalConfig, errors: &mut Vec<String>) {
         errors.push("server.shutdown_deadline_ms must be greater than zero".into());
     }
 
+    if config.server.job_state_ttl_seconds == 0 {
+        errors.push("server.job_state_ttl_seconds must be greater than zero".into());
+    }
+
+    if config.server.job_state_hard_ttl_seconds == 0 {
+        errors.push("server.job_state_hard_ttl_seconds must be greater than zero".into());
+    } else if config.server.job_state_ttl_seconds > 0
+        && config.server.job_state_hard_ttl_seconds < config.server.job_state_ttl_seconds
+    {
+        errors.push(format!(
+            "server.job_state_hard_ttl_seconds ({}) must be greater than or equal to \
+             server.job_state_ttl_seconds ({})",
+            config.server.job_state_hard_ttl_seconds, config.server.job_state_ttl_seconds
+        ));
+    }
+
     let sse = &config.server.sse;
 
     if sse.max_connection_age_ms == 0 {
@@ -406,6 +422,46 @@ mod tests {
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("server.shutdown_deadline_ms must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_job_state_ttl() {
+        let mut config = valid_config();
+        config.server.job_state_ttl_seconds = 0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("server.job_state_ttl_seconds must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_job_state_hard_ttl() {
+        let mut config = valid_config();
+        config.server.job_state_hard_ttl_seconds = 0;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("server.job_state_hard_ttl_seconds must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_hard_ttl_less_than_terminal_ttl() {
+        let mut config = valid_config();
+        config.server.job_state_ttl_seconds = 600;
+        config.server.job_state_hard_ttl_seconds = 300;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(
+                "server.job_state_hard_ttl_seconds (300) must be greater than or equal to"
+            )
+        );
+    }
+
+    #[test]
+    fn test_validate_accepts_hard_ttl_equal_to_terminal_ttl() {
+        let mut config = valid_config();
+        config.server.job_state_ttl_seconds = 300;
+        config.server.job_state_hard_ttl_seconds = 300;
+        assert!(validate(&config).is_ok());
     }
 
     #[test]

@@ -5,17 +5,18 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
-use tribal_common::{clamp_to_i32, clamp_to_u32};
+use tribal_common::{JobStateTxs, clamp_to_i32, clamp_to_u32};
 use tribal_config::WorkerConfig;
 use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository, PgTaskRepository,
     PgTokenUsageRepository, TaskRepository, TokenUsageRepository,
 };
-use tribal_domain::{Job, JobId, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage};
+use tribal_domain::{
+    Job, JobId, JobState, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage,
+};
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
@@ -54,7 +55,7 @@ pub struct Worker {
     config: WorkerConfig,
     include_llm_content: bool,
     instance_id: String,
-    job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
+    job_state_txs: JobStateTxs,
     /// Current number of in-flight tasks.
     active_tasks: Arc<AtomicUsize>,
     /// High-water mark of simultaneously in-flight tasks.
@@ -82,7 +83,7 @@ impl Worker {
         config: WorkerConfig,
         include_llm_content: bool,
         instance_id: String,
-        job_state_txs: Arc<DashMap<JobId, watch::Sender<()>>>,
+        job_state_txs: JobStateTxs,
     ) -> Self {
         Self {
             pool,
@@ -386,7 +387,7 @@ impl Worker {
 
         // Notify job-state watch subscribers so they can observe the
         // claim-time status change.
-        self.notify_job_state(job_id);
+        self.notify_job_state(job_id, JobState::from(target_status));
 
         let Some(claim_token) = task.claim_token() else {
             tracing::error!(task_id = %task.id(), "task has no claim token after claiming");
@@ -540,21 +541,22 @@ impl Worker {
         }
     }
 
-    /// Sends a wake-up signal to any watch subscribers for the given job.
-    pub(super) fn notify_job_state(&self, job_id: JobId) {
-        if let Some(tx) = self.job_state_txs.get(&job_id) {
-            let _ = tx.send(());
+    /// Sends a typed [`JobState`] to any watch subscribers for the given job.
+    ///
+    /// When `state` is terminal, stamps `terminal_at` on the entry so the
+    /// background sweep can evict it after the configured TTL.
+    pub(super) fn notify_job_state(&self, job_id: JobId, state: JobState) {
+        if let Some(mut entry) = self.job_state_txs.get_mut(&job_id) {
+            let _ = entry.sender.send(state);
+            if state.is_terminal() {
+                entry.stamp_terminal();
+            }
         }
     }
 
-    /// Removes the watch channel entry for a terminal job.
-    pub(super) fn remove_job_state(&self, job_id: JobId) {
-        self.job_state_txs.remove(&job_id);
-    }
-
     /// Transitions jobs with dead-lettered extraction or relation tasks
-    /// to `Failed`, notifies watch subscribers, and cleans up the watch
-    /// map.  Best-effort — failures are logged but not propagated.
+    /// to `Failed` and notifies watch subscribers.  Best-effort — failures
+    /// are logged but not propagated.
     async fn heal_dead_lettered_jobs(&self) {
         let mut conn = match self.pool.acquire().await {
             Ok(c) => c,
@@ -570,8 +572,7 @@ impl Worker {
         {
             Ok(job_ids) => {
                 for job_id in &job_ids {
-                    self.notify_job_state(*job_id);
-                    self.remove_job_state(*job_id);
+                    self.notify_job_state(*job_id, JobState::Failed);
                 }
                 if !job_ids.is_empty() {
                     tracing::warn!(count = job_ids.len(), "transitioned stuck jobs to failed");
@@ -641,7 +642,7 @@ impl Worker {
                 continue;
             };
 
-            self.notify_job_state(*job_id);
+            self.notify_job_state(*job_id, JobState::Relating);
         }
 
         if !stuck_job_ids.is_empty() {

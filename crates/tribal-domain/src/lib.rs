@@ -92,7 +92,7 @@ pub use ids::{
     TriageSimilarItemDecisionId,
 };
 pub use item_observation::{ItemObservation, ItemObservationBuilder};
-pub use job::{Job, JobBuilder, JobOutcome, JobStatus};
+pub use job::{Job, JobBuilder, JobOutcome, JobState, JobStatus};
 pub use knowledge::{Confidence, KnowledgeItem, KnowledgeItemBuilder, KnowledgeKind};
 pub use pipeline_stage::PipelineStage;
 pub use principal::{Principal, PrincipalBuilder};
