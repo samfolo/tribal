@@ -78,21 +78,23 @@ impl TribalServerHandler {
     /// Core logic for `tribal_job_status`, separated from the outer handler
     /// so it can be tested without a `Peer<RoleServer>`.
     ///
-    /// Parses the request, validates the job ID prefix and `wait_seconds`
-    /// range, then queries the database for the job and its aggregate
-    /// counts. When `wait_seconds > 0` and the job is not yet terminal,
-    /// the handler tries the watch fast path first (subscribe to the
-    /// per-job watch channel, `select!` on change/timeout/cancel, then a
-    /// single final DB read). If no watch entry exists, falls back to
-    /// the poll path using the provided [`PollScheduler`].
-    ///
-    /// The watch path makes exactly 2 DB reads (initial + final). The
-    /// poll path makes `1 + ceil(wait / interval)` reads worst case.
+    /// 1. Parse + validate the request.
+    /// 2. Query the database for the current job state (first DB read).
+    /// 3. If the caller asked to wait and the job is not yet terminal:
+    ///    - **Watch path** (fast): subscribe to the in-memory watch
+    ///      channel, sleep until a state change / timeout / cancellation,
+    ///      then do one final DB read. Total: exactly 2 DB reads.
+    ///    - **Poll path** (fallback): if no watch entry exists (e.g.
+    ///      after a restart), poll the database on a timer until
+    ///      terminal or timeout.
+    /// 4. Build and return the response.
     async fn apply_job_status<S: PollScheduler>(
         &self,
         params: serde_json::Value,
         scheduler: &S,
     ) -> Result<CallToolResult, McpError> {
+        // -- 1. Parse + validate ---------------------------------------------
+
         let request: McpJobStatusRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
@@ -114,94 +116,44 @@ impl TribalServerHandler {
 
         let status_params = JobStatusParams { job_id };
 
-        let mut result = {
-            let mut conn =
-                match acquire_connection(&self.state.pool_mcp, self.config.pool_name).await {
-                    Ok(c) => c,
-                    Err(call_result) => return Ok(call_result),
-                };
-            match execute_job_status(&mut conn, &self.repositories, &status_params).await {
-                Ok(r) => r,
-                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-            }
+        // -- 2. Initial DB read ----------------------------------------------
+
+        let mut result = match self.query_job_status(&status_params).await {
+            Ok(r) => r,
+            Err(call_result) => return Ok(call_result),
         };
+
+        // -- 3. Wait (if requested and not already terminal) -----------------
 
         if let Some(wait) = request
             .wait_seconds
             .filter(|&w| w > 0)
             .filter(|_| !result.job.status().is_terminal())
         {
-            // Try watch fast path: subscribe if an entry exists.
-            let maybe_rx = self
+            let wait_duration = Duration::from_secs(u64::from(wait));
+
+            let has_watch_entry = self
                 .state
                 .job_state_txs
                 .get(&job_id)
                 .map(|entry| entry.sender.subscribe());
 
-            if let Some(mut rx) = maybe_rx {
-                // Race elimination: a terminal transition may have
-                // arrived between the initial DB read and the
-                // subscription.
-                if !rx.borrow().is_terminal() {
-                    let deadline = Duration::from_secs(u64::from(wait));
-                    let cancel = self.state.cancellation_token.cancelled();
-                    tokio::select! {
-                        _ = rx.changed() => {}
-                        () = tokio::time::sleep(deadline) => {}
-                        () = cancel => {}
-                    }
-                }
-
-                // Exactly one final DB read (2nd and last).
-                result = {
-                    let mut conn =
-                        match acquire_connection(&self.state.pool_mcp, self.config.pool_name).await
-                        {
-                            Ok(c) => c,
-                            Err(call_result) => return Ok(call_result),
-                        };
-                    match execute_job_status(&mut conn, &self.repositories, &status_params).await {
+            match has_watch_entry {
+                Some(rx) => {
+                    self.wait_via_watch(rx, wait_duration).await;
+                    result = match self.query_job_status(&status_params).await {
                         Ok(r) => r,
-                        Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-                    }
-                };
-            } else {
-                // Fallback: no watch entry — poll path with cancellation.
-                // The cancellation arm always breaks; ticker.tick() is not
-                // assumed cancel-safe.
-                let ticker = scheduler.create_ticker(Duration::from_secs(u64::from(wait)));
-
-                loop {
-                    let should_continue = tokio::select! {
-                        cont = ticker.tick() => cont,
-                        () = self.state.cancellation_token.cancelled() => false,
+                        Err(call_result) => return Ok(call_result),
                     };
-                    if !should_continue {
-                        break;
-                    }
-
-                    result = {
-                        let mut conn =
-                            match acquire_connection(&self.state.pool_mcp, self.config.pool_name)
-                                .await
-                            {
-                                Ok(c) => c,
-                                Err(call_result) => return Ok(call_result),
-                            };
-                        match execute_job_status(&mut conn, &self.repositories, &status_params)
-                            .await
-                        {
-                            Ok(r) => r,
-                            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-                        }
-                    };
-
-                    if result.job.status().is_terminal() {
-                        break;
-                    }
+                }
+                None => {
+                    self.wait_via_poll(scheduler, &status_params, wait_duration, &mut result)
+                        .await?;
                 }
             }
         }
+
+        // -- 4. Response -----------------------------------------------------
 
         let response = McpJobStatusResponse::from_domain(
             &result.job,
@@ -212,6 +164,82 @@ impl TribalServerHandler {
         );
 
         Ok(response.into_call_tool_result())
+    }
+
+    /// Acquires a connection and queries the database for the current
+    /// job status and aggregate counts. Returns a `CallToolResult` on
+    /// error (pool or query failure) so callers can forward it directly.
+    async fn query_job_status(
+        &self,
+        params: &JobStatusParams,
+    ) -> Result<JobStatusResult, CallToolResult> {
+        let mut conn = acquire_connection(&self.state.pool_mcp, self.config.pool_name).await?;
+        execute_job_status(&mut conn, &self.repositories, params)
+            .await
+            .map_err(|e| e.into_mcp_error().into_call_tool_result())
+    }
+
+    /// Watch path: subscribe to the watch channel, then sleep until the
+    /// channel signals a state change, the deadline expires, or the
+    /// server is shutting down — whichever comes first.
+    ///
+    /// After this method returns, the caller does one final DB read.
+    async fn wait_via_watch(
+        &self,
+        mut rx: tokio::sync::watch::Receiver<tribal_domain::JobState>,
+        deadline: Duration,
+    ) {
+        // A terminal transition may have arrived between the initial DB
+        // read and subscription. If so, skip the wait entirely.
+        if rx.borrow().is_terminal() {
+            return;
+        }
+
+        let cancel = self.state.cancellation_token.cancelled();
+        tokio::select! {
+            _ = rx.changed() => {}
+            () = tokio::time::sleep(deadline) => {}
+            () = cancel => {}
+        }
+    }
+
+    /// Poll path: repeatedly query the database on a timer until the
+    /// job reaches a terminal state, the deadline expires, or the server
+    /// is shutting down.
+    ///
+    /// Used as a fallback when no watch channel entry exists for the job
+    /// (e.g. after a server restart).
+    async fn wait_via_poll<S: PollScheduler>(
+        &self,
+        scheduler: &S,
+        params: &JobStatusParams,
+        wait_duration: Duration,
+        result: &mut JobStatusResult,
+    ) -> Result<(), McpError> {
+        let ticker = scheduler.create_ticker(wait_duration);
+
+        loop {
+            // The cancellation arm always breaks. ticker.tick() is not
+            // assumed cancel-safe — we never re-enter it after cancel.
+            let should_continue = tokio::select! {
+                cont = ticker.tick() => cont,
+                () = self.state.cancellation_token.cancelled() => false,
+            };
+            if !should_continue {
+                break;
+            }
+
+            let Ok(r) = self.query_job_status(params).await else {
+                break;
+            };
+            *result = r;
+
+            if result.job.status().is_terminal() {
+                break;
+            }
+        }
+
+        Ok(())
     }
 }
 
