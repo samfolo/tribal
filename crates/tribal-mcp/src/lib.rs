@@ -13,6 +13,7 @@ mod mapping;
 mod polling;
 mod server_handler;
 mod session;
+pub mod sweep;
 #[cfg(test)]
 mod test_utils;
 mod tools;
