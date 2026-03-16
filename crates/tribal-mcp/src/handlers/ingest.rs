@@ -1,6 +1,6 @@
 //! Handler for `tribal_ingest` — job and extraction task creation.
 
-use std::{str::FromStr, time::Instant};
+use std::str::FromStr;
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -160,15 +160,10 @@ impl TribalServerHandler {
             return Ok(db_err.into_mcp_error().into_call_tool_result());
         }
 
-        let (watch_tx, _rx) = watch::channel(JobState::Queued);
-        self.state.job_state_txs.insert(
-            result.job_id,
-            JobWatchEntry {
-                sender: watch_tx,
-                inserted_at: Instant::now(),
-                terminal_at: None,
-            },
-        );
+        let (watch_tx, keepalive_rx) = watch::channel(JobState::Queued);
+        self.state
+            .job_state_txs
+            .insert(result.job_id, JobWatchEntry::new(watch_tx, keepalive_rx));
 
         Ok(McpIngestResponse::from(result.job_id).into_call_tool_result())
     }
