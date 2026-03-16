@@ -8,6 +8,10 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
+#[cfg(not(unix))]
+use tokio::signal;
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio::{
     runtime::Builder,
     sync::{RwLock, oneshot},
@@ -126,10 +130,40 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     tracing::info!("startup sequence complete");
 
-    // -- MCP transport placeholder -------------------------------------------
-    // Blocks until the cancellation token fires.  Replaced by transport
-    // launch in a subsequent ticket.
-    main_rt.block_on(cancellation_token.cancelled());
+    // -- Signal handling / MCP transport placeholder -------------------------
+    // Races OS signals against the cancellation token (which fires on
+    // programmatic cancellation, e.g. WorkerDeathGuard).  The MCP transport
+    // future will be added as a third arm in a subsequent ticket.
+    main_rt.block_on(async {
+        match await_shutdown_trigger(&cancellation_token).await {
+            Ok(Some(name)) => {
+                tracing::info!(trigger = name, "received OS signal, initiating shutdown");
+                cancellation_token.cancel();
+            }
+            Ok(None) => {
+                tracing::info!(
+                    trigger = "programmatic",
+                    "shutdown triggered programmatically",
+                );
+            }
+            Err(AppError::SignalHandler { source }) => {
+                tracing::warn!(
+                    error = %source,
+                    "signal handler registration failed; \
+                     falling back to programmatic cancellation",
+                );
+                cancellation_token.cancelled().await;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "shutdown trigger failed; \
+                     falling back to programmatic cancellation",
+                );
+                cancellation_token.cancelled().await;
+            }
+        }
+    });
 
     // -- Graceful shutdown ---------------------------------------------------
     // Await worker completion within the shutdown deadline.  This gives
@@ -151,7 +185,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     drop(worker_rt);
 
-    tracing::info!("shutdown complete");
+    tracing::info!(worker_died, "shutdown complete");
 
     if worker_died {
         return Err(AppError::WorkerDeath);
@@ -316,6 +350,67 @@ impl Drop for WorkerDeathGuard {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Waits for either an OS signal or the cancellation token to fire.
+///
+/// Returns `Ok(Some(signal_name))` if an OS signal triggered shutdown, or
+/// `Ok(None)` if the cancellation token was fired programmatically (e.g. by
+/// [`WorkerDeathGuard`]).
+///
+/// # Errors
+///
+/// Returns [`AppError::SignalHandler`] if the SIGINT handler cannot be
+/// registered (unix only — the non-unix branch falls back to programmatic
+/// cancellation if `ctrl_c()` registration fails).  SIGTERM registration
+/// is best-effort: failure is logged but does not prevent shutdown.
+async fn await_shutdown_trigger(
+    cancellation_token: &CancellationToken,
+) -> Result<Option<&'static str>, AppError> {
+    if cancellation_token.is_cancelled() {
+        return Ok(None);
+    }
+
+    #[cfg(unix)]
+    {
+        let mut sigint = unix_signal(SignalKind::interrupt())
+            .map_err(|source| AppError::SignalHandler { source })?;
+
+        let mut sigterm = match unix_signal(SignalKind::terminate()) {
+            Ok(stream) => Some(stream),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "SIGTERM handler registration failed; \
+                     SIGINT and programmatic cancellation remain active",
+                );
+                None
+            }
+        };
+
+        Ok(tokio::select! {
+            Some(()) = sigint.recv() => Some("SIGINT"),
+            Some(()) = async {
+                match sigterm.as_mut() {
+                    Some(s) => s.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => Some("SIGTERM"),
+            () = cancellation_token.cancelled() => None,
+        })
+    }
+
+    #[cfg(not(unix))]
+    {
+        // `Ok(())` pattern: if `ctrl_c()` returns `Err`, the arm is skipped
+        // and the system falls back to programmatic cancellation only.  This
+        // branch is not exercised on any supported platform (macOS and Linux
+        // are both unix) and exists only for cross-platform compilation.
+        Ok(tokio::select! {
+            Ok(()) = signal::ctrl_c() => Some("SIGINT"),
+            () = cancellation_token.cancelled() => None,
+        })
+    }
+}
+
 /// Expands tilde (`~`) in the prompts directory path.
 fn expand_prompts_dir(raw: &str) -> PathBuf {
     PathBuf::from(shellexpand::tilde(raw).as_ref())
@@ -340,6 +435,15 @@ mod tests {
         let result = expand_prompts_dir("~/prompts");
         assert!(!result.to_str().unwrap().starts_with('~'));
         assert!(result.to_str().unwrap().ends_with("/prompts"));
+    }
+
+    #[tokio::test]
+    async fn test_await_shutdown_trigger_returns_none_on_pre_cancelled_token() {
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let result = await_shutdown_trigger(&token).await;
+        assert!(matches!(result, Ok(None)));
     }
 
     #[test]
