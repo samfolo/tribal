@@ -1,7 +1,6 @@
 //! Handler for `tribal_ingest` — job and extraction task creation.
 
-use std::str::FromStr;
-use std::time::Instant;
+use std::{str::FromStr, time::Instant};
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},

@@ -15,7 +15,7 @@ pub(super) use tribal_db::{
     TagRegistryRepository, TaskRepository, TokenUsageRepository, TriageResultRepository,
 };
 pub(super) use tribal_domain::{
-    EmbeddingPurpose, JobId, JobOutcome, JobStateTxs, JobStatus, KnowledgeItemId, KnowledgeKind,
+    EmbeddingPurpose, JobOutcome, JobStateTxs, JobStatus, KnowledgeItemId, KnowledgeKind,
     PipelineStage, PrincipalId, ProjectId, PromptVersionId, RelationBatchId, SourceType,
     TaskErrorKind, TaskStatus, TaskType, TriageOutcome,
 };
