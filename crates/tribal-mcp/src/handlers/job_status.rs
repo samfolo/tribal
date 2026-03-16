@@ -305,7 +305,7 @@ async fn execute_job_status(
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Instant};
+    use std::sync::Arc;
 
     use dashmap::DashMap;
     use rmcp::model::ErrorCode;
