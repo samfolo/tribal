@@ -60,10 +60,10 @@ fn sweep_once(
     now: Instant,
 ) {
     txs.retain(|_id, entry| {
-        if let Some(terminal_at) = entry.terminal_at {
-            if now.duration_since(terminal_at) >= terminal_ttl {
-                return false;
-            }
+        if let Some(terminal_at) = entry.terminal_at
+            && now.duration_since(terminal_at) >= terminal_ttl
+        {
+            return false;
         }
         if now.duration_since(entry.inserted_at) >= hard_ttl {
             return false;
