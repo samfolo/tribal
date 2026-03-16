@@ -146,9 +146,9 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
                     "shutdown triggered programmatically",
                 );
             }
-            Err(error) => {
+            Err(AppError::SignalHandler { source }) => {
                 tracing::warn!(
-                    %error,
+                    error = %source,
                     "signal handler registration failed; \
                      falling back to programmatic cancellation",
                 );
@@ -378,8 +378,8 @@ async fn await_shutdown_trigger(
     {
         // `Ok(())` pattern: if `ctrl_c()` returns `Err`, the arm is skipped
         // and the system falls back to programmatic cancellation only.  This
-        // branch is dead code on all target platforms (macOS and Linux are
-        // both unix) and exists only for compilation completeness.
+        // branch is not exercised on any supported platform (macOS and Linux
+        // are both unix) and exists only for cross-platform compilation.
         Ok(tokio::select! {
             Ok(()) = signal::ctrl_c() => Some("SIGINT"),
             () = cancellation_token.cancelled() => None,
