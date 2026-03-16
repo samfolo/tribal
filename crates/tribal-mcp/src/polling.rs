@@ -2,8 +2,9 @@
 //!
 //! Production code uses [`TimedPollScheduler`] which sleeps between
 //! iterations and respects a deadline. Tests substitute
-//! [`ImmediatePollScheduler`] to drive iterations without wall-clock
-//! delays — iteration count is controlled by the mock queue depth.
+//! [`ImmediatePollScheduler`] for instant iteration (controlled by mock
+//! queue depth), or [`YieldingPollScheduler`] when a scheduling point
+//! between ticks is needed (e.g. to test cancellation).
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -109,6 +110,47 @@ pub(crate) struct ImmediateTickSource {
 #[cfg(test)]
 impl TickSource for ImmediateTickSource {
     async fn tick(&self) -> bool {
+        self.remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// YieldingPollScheduler (tests)
+// ---------------------------------------------------------------------------
+
+/// Test scheduler whose tick source yields once before returning `true`.
+///
+/// The yield creates a scheduling point where a spawned cancellation
+/// task can fire, allowing tests to exercise the cancellation arm of
+/// the poll-path `select!` without wall-clock delays.
+#[cfg(test)]
+pub(crate) struct YieldingPollScheduler;
+
+#[cfg(test)]
+impl PollScheduler for YieldingPollScheduler {
+    type Ticker = YieldingTickSource;
+
+    fn create_ticker(&self, wait: Duration) -> Self::Ticker {
+        YieldingTickSource {
+            remaining: AtomicU32::new(u32::try_from(wait.as_secs()).unwrap_or(u32::MAX)),
+        }
+    }
+}
+
+/// Tick source that yields once per tick, then returns `true` up to a
+/// budget. The yield is the key difference from [`ImmediateTickSource`]:
+/// it gives other tasks a chance to run between ticks.
+#[cfg(test)]
+pub(crate) struct YieldingTickSource {
+    remaining: AtomicU32,
+}
+
+#[cfg(test)]
+impl TickSource for YieldingTickSource {
+    async fn tick(&self) -> bool {
+        tokio::task::yield_now().await;
         self.remaining
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
             .is_ok()
