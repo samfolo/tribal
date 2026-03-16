@@ -110,6 +110,17 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         }
     });
 
+    // -- Job-state sweep -------------------------------------------------------
+
+    let terminal_ttl = Duration::from_secs(config.server.job_state_ttl_seconds);
+    let hard_ttl = Duration::from_secs(config.server.job_state_hard_ttl_seconds);
+    _ = main_rt.spawn(tribal_mcp::sweep::run_job_state_sweep(
+        Arc::clone(&job_state_txs),
+        terminal_ttl,
+        hard_ttl,
+        cancellation_token.clone(),
+    ));
+
     tracing::info!("startup sequence complete");
 
     // -- MCP transport placeholder -------------------------------------------
