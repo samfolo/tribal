@@ -154,6 +154,14 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
                 );
                 cancellation_token.cancelled().await;
             }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "shutdown trigger failed; \
+                     falling back to programmatic cancellation",
+                );
+                cancellation_token.cancelled().await;
+            }
         }
     });
 
