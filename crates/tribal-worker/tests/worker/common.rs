@@ -4,6 +4,7 @@ pub(super) use std::{sync::Arc, time::Duration};
 
 pub(super) use dashmap::DashMap;
 pub(super) use tokio_util::sync::CancellationToken;
+pub(super) use tribal_common::JobStateTxs;
 pub(super) use tribal_config::WorkerConfig;
 pub(super) use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
@@ -15,9 +16,9 @@ pub(super) use tribal_db::{
     TagRegistryRepository, TaskRepository, TokenUsageRepository, TriageResultRepository,
 };
 pub(super) use tribal_domain::{
-    EmbeddingPurpose, JobOutcome, JobStateTxs, JobStatus, KnowledgeItemId, KnowledgeKind,
-    PipelineStage, PrincipalId, ProjectId, PromptVersionId, RelationBatchId, SourceType,
-    TaskErrorKind, TaskStatus, TaskType, TriageOutcome,
+    EmbeddingPurpose, JobOutcome, JobStatus, KnowledgeItemId, KnowledgeKind, PipelineStage,
+    PrincipalId, ProjectId, PromptVersionId, RelationBatchId, SourceType, TaskErrorKind,
+    TaskStatus, TaskType, TriageOutcome,
 };
 pub(super) use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry,

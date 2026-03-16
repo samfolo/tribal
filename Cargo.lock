@@ -4559,8 +4559,11 @@ dependencies = [
 name = "tribal-common"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "rand 0.10.0",
  "sha2",
+ "tokio",
+ "tribal-domain",
 ]
 
 [[package]]
@@ -4643,6 +4646,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tribal-common",
  "tribal-config",
  "tribal-db",
  "tribal-domain",

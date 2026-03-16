@@ -4,8 +4,9 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use tribal_common::JobStateTxs;
 use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
-use tribal_domain::{JobStateTxs, ProjectId, PromptVersionId};
+use tribal_domain::{ProjectId, PromptVersionId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,

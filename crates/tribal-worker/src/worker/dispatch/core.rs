@@ -8,14 +8,14 @@ use std::sync::{
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
-use tribal_common::{clamp_to_i32, clamp_to_u32};
+use tribal_common::{JobStateTxs, clamp_to_i32, clamp_to_u32};
 use tribal_config::WorkerConfig;
 use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository, PgTaskRepository,
     PgTokenUsageRepository, TaskRepository, TokenUsageRepository,
 };
 use tribal_domain::{
-    Job, JobId, JobState, JobStateTxs, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage,
+    Job, JobId, JobState, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage,
 };
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,

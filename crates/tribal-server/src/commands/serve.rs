@@ -13,8 +13,8 @@ use tokio::{
     sync::{RwLock, oneshot},
 };
 use tokio_util::sync::CancellationToken;
+use tribal_common::JobStateTxs;
 use tribal_config::{TribalConfig, load_config, validate};
-use tribal_domain::JobStateTxs;
 use tribal_mcp::{AppState, HandlerConfig};
 use tribal_worker::{Worker, WorkerError};
 

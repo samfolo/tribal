@@ -8,8 +8,9 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tokio::sync::watch;
+use tribal_common::JobWatchEntry;
 use tribal_db::{DbError, NewJob, NewTask};
-use tribal_domain::{JobId, JobState, JobWatchEntry, McpErrorCode, ProjectId, TaskType};
+use tribal_domain::{JobId, JobState, McpErrorCode, ProjectId, TaskType};
 
 use super::common::begin_transaction;
 use crate::{

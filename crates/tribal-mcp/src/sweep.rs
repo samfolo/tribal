@@ -8,8 +8,10 @@
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
-use tribal_domain::{JobId, JobStateTxs, JobWatchEntry};
+use tribal_common::{JobStateTxs, JobWatchEntry};
+use tribal_domain::JobId;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,6 +38,9 @@ pub async fn run_job_state_sweep(
     cancellation_token: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(SWEEP_INTERVAL_SECONDS));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Skip the immediate first tick — no entries to sweep at startup.
+    interval.tick().await;
 
     loop {
         tokio::select! {
@@ -80,7 +85,8 @@ mod tests {
     use std::time::Duration;
 
     use tokio::sync::watch;
-    use tribal_domain::{JobId, JobState, JobWatchEntry};
+    use tribal_common::JobWatchEntry;
+    use tribal_domain::{JobId, JobState};
 
     use super::*;
 
