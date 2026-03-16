@@ -325,7 +325,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        polling::ImmediatePollScheduler,
+        polling::{ImmediatePollScheduler, YieldingPollScheduler},
         test_utils::{TestHandler, test_repositories},
     };
 
@@ -1140,5 +1140,73 @@ mod tests {
         );
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["status"], "completed");
+    }
+
+    /// When the cancellation token fires during the poll path, the
+    /// handler exits the loop and returns the last-known result.
+    /// [`YieldingPollScheduler`] creates a scheduling point between
+    /// ticks so the spawned cancellation task can fire.
+    #[tokio::test]
+    async fn test_apply_job_status_poll_path_cancellation() {
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
+
+        let job_id = JobId::new();
+        let triaging_job = a_job().id(job_id).status(JobStatus::Triaging).build();
+
+        let job_mock = Arc::new(
+            MockJobRepository::builder()
+                .on_find_by_id(triaging_job, None)
+                .build(),
+        );
+        let job_mock_ref = Arc::clone(&job_mock);
+
+        let mut repos = test_repositories();
+        repos.job = job_mock;
+        repos.task = Arc::new(
+            MockTaskRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .build(),
+        );
+        repos.triage_result = Arc::new(
+            MockTriageResultRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .build(),
+        );
+
+        let empty_txs: JobStateTxs = Arc::new(DashMap::new());
+        let cancel_token = CancellationToken::new();
+
+        let cancel_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            cancel_clone.cancel();
+        });
+
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .job_state_txs(empty_txs)
+            .cancellation_token(cancel_token)
+            .build();
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({
+                    "job_id": job_id.to_string(),
+                    "wait_seconds": 30,
+                }),
+                &YieldingPollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            job_mock_ref.find_by_id_call_count(),
+            1,
+            "cancellation should exit before any poll iteration",
+        );
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["status"], "triaging");
     }
 }
