@@ -1071,4 +1071,74 @@ mod tests {
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["status"], "triaging");
     }
+
+    // -- Poll fallback behaviour -------------------------------------------
+
+    /// When no watch entry exists (e.g. after a restart), the handler
+    /// falls back to the poll path. With `ImmediatePollScheduler` the
+    /// poll resolves instantly once the mock returns a terminal state.
+    #[tokio::test]
+    async fn test_apply_job_status_poll_fallback_when_no_watch_entry() {
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
+
+        let job_id = JobId::new();
+        let triaging_job = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let completed_job = a_job()
+            .id(job_id)
+            .status(JobStatus::Completed)
+            .outcome(Some(JobOutcome::Success))
+            .build();
+
+        let job_mock = Arc::new(
+            MockJobRepository::builder()
+                .on_find_by_id(triaging_job, None)
+                .on_find_by_id(completed_job, None)
+                .build(),
+        );
+        let job_mock_ref = Arc::clone(&job_mock);
+
+        let mut repos = test_repositories();
+        repos.job = job_mock;
+        repos.task = Arc::new(
+            MockTaskRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .on_find_by_job_id(vec![], None)
+                .build(),
+        );
+        repos.triage_result = Arc::new(
+            MockTriageResultRepository::builder()
+                .on_find_by_job_id(vec![], None)
+                .on_find_by_job_id(vec![], None)
+                .build(),
+        );
+
+        // Explicitly empty map — no watch entry for this job.
+        let empty_txs: JobStateTxs = Arc::new(DashMap::new());
+
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .job_state_txs(empty_txs)
+            .build();
+        let result = handler
+            .apply_job_status(
+                serde_json::json!({
+                    "job_id": job_id.to_string(),
+                    "wait_seconds": 5,
+                }),
+                &ImmediatePollScheduler,
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            job_mock_ref.find_by_id_call_count(),
+            2,
+            "poll fallback should query until terminal",
+        );
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["status"], "completed");
+    }
 }
