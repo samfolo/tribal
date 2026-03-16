@@ -840,7 +840,7 @@ mod tests {
         assert_eq!(structured["items_created"], 1);
     }
 
-    // -- Watch path helpers ------------------------------------------------
+    // -- Wait-path helpers -------------------------------------------------
 
     /// Creates a `JobStateTxs` map with a single watch entry for the
     /// given job ID. Returns the map and the sender so tests can send
@@ -864,10 +864,11 @@ mod tests {
     /// Returns the handler and a reference to the job mock for asserting
     /// call counts.
     ///
-    /// Pool creation must happen before `tokio::time::pause()` because
-    /// sqlx uses internal timers that would auto-advance to zero under
-    /// paused time. Call this first, then pause.
-    async fn watch_test_handler(
+    /// Used by both watch-path and poll-fallback tests. Pool creation
+    /// must happen before `tokio::time::pause()` because sqlx uses
+    /// internal timers that would auto-advance to zero under paused
+    /// time.
+    async fn wait_path_handler(
         first_job: Job,
         second_job: Job,
         job_state_txs: JobStateTxs,
@@ -938,7 +939,7 @@ mod tests {
             .outcome(Some(JobOutcome::Success))
             .build();
         let (handler, job_mock) =
-            watch_test_handler(first, second, txs, CancellationToken::new()).await;
+            wait_path_handler(first, second, txs, CancellationToken::new()).await;
 
         let result = handler
             .apply_job_status(
@@ -975,7 +976,7 @@ mod tests {
             .outcome(Some(JobOutcome::Success))
             .build();
         let (handler, job_mock) =
-            watch_test_handler(first, second, txs, CancellationToken::new()).await;
+            wait_path_handler(first, second, txs, CancellationToken::new()).await;
 
         let result = handler
             .apply_job_status(
@@ -1006,7 +1007,7 @@ mod tests {
         let first = a_job().id(job_id).status(JobStatus::Triaging).build();
         let second = a_job().id(job_id).status(JobStatus::Triaging).build();
         let (handler, job_mock) =
-            watch_test_handler(first, second, txs, CancellationToken::new()).await;
+            wait_path_handler(first, second, txs, CancellationToken::new()).await;
 
         let result = handler
             .apply_job_status(
@@ -1046,7 +1047,7 @@ mod tests {
 
         let first = a_job().id(job_id).status(JobStatus::Triaging).build();
         let second = a_job().id(job_id).status(JobStatus::Triaging).build();
-        let (handler, job_mock) = watch_test_handler(first, second, txs, cancel_token).await;
+        let (handler, job_mock) = wait_path_handler(first, second, txs, cancel_token).await;
 
         let result = handler
             .apply_job_status(
@@ -1076,48 +1077,18 @@ mod tests {
     /// poll resolves instantly once the mock returns a terminal state.
     #[tokio::test]
     async fn test_apply_job_status_poll_fallback_when_no_watch_entry() {
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("pool");
-
         let job_id = JobId::new();
-        let triaging_job = a_job().id(job_id).status(JobStatus::Triaging).build();
-        let completed_job = a_job()
+        let empty_txs: JobStateTxs = Arc::new(DashMap::new());
+
+        let first = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let second = a_job()
             .id(job_id)
             .status(JobStatus::Completed)
             .outcome(Some(JobOutcome::Success))
             .build();
+        let (handler, job_mock) =
+            wait_path_handler(first, second, empty_txs, CancellationToken::new()).await;
 
-        let job_mock = Arc::new(
-            MockJobRepository::builder()
-                .on_find_by_id(triaging_job, None)
-                .on_find_by_id(completed_job, None)
-                .build(),
-        );
-        let job_mock_ref = Arc::clone(&job_mock);
-
-        let mut repos = test_repositories();
-        repos.job = job_mock;
-        repos.task = Arc::new(
-            MockTaskRepository::builder()
-                .on_find_by_job_id(vec![], None)
-                .on_find_by_job_id(vec![], None)
-                .build(),
-        );
-        repos.triage_result = Arc::new(
-            MockTriageResultRepository::builder()
-                .on_find_by_job_id(vec![], None)
-                .on_find_by_job_id(vec![], None)
-                .build(),
-        );
-
-        // Explicitly empty map — no watch entry for this job.
-        let empty_txs: JobStateTxs = Arc::new(DashMap::new());
-
-        let handler = TestHandler::builder()
-            .pool(pool)
-            .repositories(repos)
-            .job_state_txs(empty_txs)
-            .build();
         let result = handler
             .apply_job_status(
                 serde_json::json!({
@@ -1131,7 +1102,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock_ref.find_by_id_call_count(),
+            job_mock.find_by_id_call_count(),
             2,
             "poll fallback should query until terminal",
         );
@@ -1145,32 +1116,7 @@ mod tests {
     /// ticks so the spawned cancellation task can fire.
     #[tokio::test]
     async fn test_apply_job_status_poll_path_cancellation() {
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("pool");
-
         let job_id = JobId::new();
-        let triaging_job = a_job().id(job_id).status(JobStatus::Triaging).build();
-
-        let job_mock = Arc::new(
-            MockJobRepository::builder()
-                .on_find_by_id(triaging_job, None)
-                .build(),
-        );
-        let job_mock_ref = Arc::clone(&job_mock);
-
-        let mut repos = test_repositories();
-        repos.job = job_mock;
-        repos.task = Arc::new(
-            MockTaskRepository::builder()
-                .on_find_by_job_id(vec![], None)
-                .build(),
-        );
-        repos.triage_result = Arc::new(
-            MockTriageResultRepository::builder()
-                .on_find_by_job_id(vec![], None)
-                .build(),
-        );
-
         let empty_txs: JobStateTxs = Arc::new(DashMap::new());
         let cancel_token = CancellationToken::new();
 
@@ -1180,12 +1126,12 @@ mod tests {
             cancel_clone.cancel();
         });
 
-        let handler = TestHandler::builder()
-            .pool(pool)
-            .repositories(repos)
-            .job_state_txs(empty_txs)
-            .cancellation_token(cancel_token)
-            .build();
+        // Second response is never consumed — cancellation fires before
+        // the first poll iteration.
+        let first = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let second = a_job().id(job_id).status(JobStatus::Triaging).build();
+        let (handler, job_mock) = wait_path_handler(first, second, empty_txs, cancel_token).await;
+
         let result = handler
             .apply_job_status(
                 serde_json::json!({
@@ -1199,7 +1145,7 @@ mod tests {
 
         assert_eq!(result.is_error, Some(false));
         assert_eq!(
-            job_mock_ref.find_by_id_call_count(),
+            job_mock.find_by_id_call_count(),
             1,
             "cancellation should exit before any poll iteration",
         );
