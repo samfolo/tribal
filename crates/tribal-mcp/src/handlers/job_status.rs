@@ -81,8 +81,13 @@ impl TribalServerHandler {
     /// Parses the request, validates the job ID prefix and `wait_seconds`
     /// range, then queries the database for the job and its aggregate
     /// counts. When `wait_seconds > 0` and the job is not yet terminal,
-    /// polls the database using the provided [`PollScheduler`] until the
-    /// job reaches a terminal state or the scheduler's deadline expires.
+    /// the handler tries the watch fast path first (subscribe to the
+    /// per-job watch channel, `select!` on change/timeout/cancel, then a
+    /// single final DB read). If no watch entry exists, falls back to
+    /// the poll path using the provided [`PollScheduler`].
+    ///
+    /// The watch path makes exactly 2 DB reads (initial + final). The
+    /// poll path makes `1 + ceil(wait / interval)` reads worst case.
     async fn apply_job_status<S: PollScheduler>(
         &self,
         params: serde_json::Value,
@@ -126,13 +131,28 @@ impl TribalServerHandler {
             .filter(|&w| w > 0)
             .filter(|_| !result.job.status().is_terminal())
         {
-            let ticker = scheduler.create_ticker(Duration::from_secs(u64::from(wait)));
+            // Try watch fast path: subscribe if an entry exists.
+            let maybe_rx = self
+                .state
+                .job_state_txs
+                .get(&job_id)
+                .map(|entry| entry.sender.subscribe());
 
-            loop {
-                if !ticker.tick().await {
-                    break;
+            if let Some(mut rx) = maybe_rx {
+                // Race elimination: a terminal transition may have
+                // arrived between the initial DB read and the
+                // subscription.
+                if !rx.borrow().is_terminal() {
+                    let deadline = Duration::from_secs(u64::from(wait));
+                    let cancel = self.state.cancellation_token.cancelled();
+                    tokio::select! {
+                        _ = rx.changed() => {}
+                        () = tokio::time::sleep(deadline) => {}
+                        () = cancel => {}
+                    }
                 }
 
+                // Exactly one final DB read (2nd and last).
                 result = {
                     let mut conn =
                         match acquire_connection(&self.state.pool_mcp, self.config.pool_name).await
@@ -145,9 +165,40 @@ impl TribalServerHandler {
                         Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
                     }
                 };
+            } else {
+                // Fallback: no watch entry — poll path with cancellation.
+                // The cancellation arm always breaks; ticker.tick() is not
+                // assumed cancel-safe.
+                let ticker = scheduler.create_ticker(Duration::from_secs(u64::from(wait)));
 
-                if result.job.status().is_terminal() {
-                    break;
+                loop {
+                    let should_continue = tokio::select! {
+                        cont = ticker.tick() => cont,
+                        () = self.state.cancellation_token.cancelled() => false,
+                    };
+                    if !should_continue {
+                        break;
+                    }
+
+                    result = {
+                        let mut conn =
+                            match acquire_connection(&self.state.pool_mcp, self.config.pool_name)
+                                .await
+                            {
+                                Ok(c) => c,
+                                Err(call_result) => return Ok(call_result),
+                            };
+                        match execute_job_status(&mut conn, &self.repositories, &status_params)
+                            .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+                        }
+                    };
+
+                    if result.job.status().is_terminal() {
+                        break;
+                    }
                 }
             }
         }
