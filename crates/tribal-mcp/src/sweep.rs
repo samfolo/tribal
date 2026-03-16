@@ -7,11 +7,9 @@
 
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
-use tribal_common::{JobStateTxs, JobWatchEntry};
-use tribal_domain::JobId;
+use tribal_common::JobStateTxs;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,12 +55,7 @@ pub async fn run_job_state_sweep(
 /// Executes a single sweep pass, evicting stale entries.
 ///
 /// Accepts `now` as a parameter for deterministic testing.
-fn sweep_once(
-    txs: &DashMap<JobId, JobWatchEntry>,
-    terminal_ttl: Duration,
-    hard_ttl: Duration,
-    now: Instant,
-) {
+fn sweep_once(txs: &JobStateTxs, terminal_ttl: Duration, hard_ttl: Duration, now: Instant) {
     txs.retain(|_id, entry| {
         if let Some(terminal_at) = entry.terminal_at
             && now.saturating_duration_since(terminal_at) >= terminal_ttl
@@ -82,8 +75,9 @@ fn sweep_once(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
+    use dashmap::DashMap;
     use tokio::sync::watch;
     use tribal_common::JobWatchEntry;
     use tribal_domain::{JobId, JobState};
@@ -104,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_sweep_once_evicts_terminal_past_ttl() {
-        let txs = DashMap::new();
+        let txs = Arc::new(DashMap::new());
         let job_id = JobId::new();
         txs.insert(
             job_id,
@@ -120,7 +114,7 @@ mod tests {
 
     #[test]
     fn test_sweep_once_retains_terminal_within_ttl() {
-        let txs = DashMap::new();
+        let txs = Arc::new(DashMap::new());
         let job_id = JobId::new();
         txs.insert(
             job_id,
@@ -136,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_sweep_once_evicts_hard_ttl_regardless_of_terminal() {
-        let txs = DashMap::new();
+        let txs = Arc::new(DashMap::new());
         let job_id = JobId::new();
         // Non-terminal entry past hard TTL.
         txs.insert(job_id, make_entry(Duration::from_secs(4000), None));
@@ -153,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_sweep_once_retains_fresh_non_terminal() {
-        let txs = DashMap::new();
+        let txs = Arc::new(DashMap::new());
         let job_id = JobId::new();
         txs.insert(job_id, make_entry(Duration::from_secs(10), None));
 
