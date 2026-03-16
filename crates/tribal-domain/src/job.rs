@@ -5,8 +5,7 @@
 //! Terminal states (`Completed`, `Failed`) enforce outcome constraints via
 //! database CHECK constraints.
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;

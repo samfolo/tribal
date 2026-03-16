@@ -35,8 +35,7 @@ pub async fn run_job_state_sweep(
     hard_ttl: Duration,
     cancellation_token: CancellationToken,
 ) {
-    let mut interval =
-        tokio::time::interval(Duration::from_secs(SWEEP_INTERVAL_SECONDS));
+    let mut interval = tokio::time::interval(Duration::from_secs(SWEEP_INTERVAL_SECONDS));
 
     loop {
         tokio::select! {
@@ -90,8 +89,11 @@ mod tests {
         let (tx, _rx) = watch::channel(JobState::Queued);
         JobWatchEntry {
             sender: tx,
-            inserted_at: now - inserted_ago,
-            terminal_at: terminal_ago.map(|d| now - d),
+            inserted_at: now
+                .checked_sub(inserted_ago)
+                .expect("test duration within range"),
+            terminal_at: terminal_ago
+                .map(|d| now.checked_sub(d).expect("test duration within range")),
         }
     }
 
@@ -154,10 +156,6 @@ mod tests {
         let hard_ttl = Duration::from_secs(3600);
         sweep_once(&txs, terminal_ttl, hard_ttl, Instant::now());
 
-        assert_eq!(
-            txs.len(),
-            1,
-            "fresh non-terminal entry should be retained",
-        );
+        assert_eq!(txs.len(), 1, "fresh non-terminal entry should be retained",);
     }
 }
