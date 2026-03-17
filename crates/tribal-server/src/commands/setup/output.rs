@@ -25,6 +25,11 @@ pub(super) fn database_connected() {
     eprintln!("  database: connected");
 }
 
+/// Prints a hint when the database connection fails.
+pub(super) fn database_unreachable() {
+    eprintln!("  hint: verify that PostgreSQL is running and the target database exists");
+}
+
 /// Reports that migrations completed.
 pub(super) fn migrations_complete() {
     eprintln!("  migrations: complete");

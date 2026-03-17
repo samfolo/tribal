@@ -58,7 +58,7 @@ pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
     let command_defaults = [("database.url", DEFAULT_DATABASE_URL)];
 
     let config = load_config(config_path, Some(cli_overrides), Some(&command_defaults))?;
-    validate_ttl(config.auth.token_ttl_hours)?;
+    let expires_at = Utc::now() + ttl_to_delta(config.auth.token_ttl_hours)?;
 
     let expanded_config_path = shellexpand::tilde(config_path).into_owned();
 
@@ -67,7 +67,7 @@ pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    rt.block_on(run_async(&config, &expanded_config_path))
+    rt.block_on(run_async(&config, &expanded_config_path, expires_at))
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +75,11 @@ pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
 // ---------------------------------------------------------------------------
 
 /// Executes the setup steps asynchronously.
-async fn run_async(config: &TribalConfig, config_path: &str) -> Result<(), AppError> {
+async fn run_async(
+    config: &TribalConfig,
+    config_path: &str,
+    expires_at: DateTime<Utc>,
+) -> Result<(), AppError> {
     let config_dir = Path::new(config_path)
         .parent()
         .unwrap_or_else(|| Path::new("."));
@@ -98,7 +102,10 @@ async fn run_async(config: &TribalConfig, config_path: &str) -> Result<(), AppEr
         SETUP_STATEMENT_TIMEOUT_MS,
     )
     .await
-    .map_err(|source| AppError::Database { source })?;
+    .map_err(|source| {
+        output::database_unreachable();
+        AppError::Database { source }
+    })?;
     output::database_connected();
 
     run_migrations(&pool).await?;
@@ -113,7 +120,6 @@ async fn run_async(config: &TribalConfig, config_path: &str) -> Result<(), AppEr
 
     let raw_token = token::generate_raw_token();
     let token_hash = sha256_hex(&raw_token);
-    let expires_at = compute_expiry(config.auth.token_ttl_hours)?;
 
     let new_token = NewAuthToken::builder()
         .token_hash(token_hash)
@@ -176,13 +182,14 @@ async fn find_or_create_principal(
     }
 }
 
-/// Validates that the token TTL is non-zero and within representable range.
+/// Converts a token TTL in hours to a [`TimeDelta`], validating that the
+/// value is non-zero and within the representable range.
 ///
 /// # Errors
 ///
 /// Returns [`AppError::Config`] if the TTL is zero or exceeds the
 /// representable range for `TimeDelta`.
-fn validate_ttl(ttl_hours: u64) -> Result<(), AppError> {
+fn ttl_to_delta(ttl_hours: u64) -> Result<TimeDelta, AppError> {
     if ttl_hours == 0 {
         return Err(AppError::Config {
             source: ConfigError::ValidationFailed {
@@ -201,31 +208,7 @@ fn validate_ttl(ttl_hours: u64) -> Result<(), AppError> {
         source: ConfigError::ValidationFailed {
             errors: vec![ERR_TTL_OUT_OF_RANGE.into()],
         },
-    })?;
-
-    Ok(())
-}
-
-/// Computes the token expiry timestamp from the configured TTL.
-///
-/// # Errors
-///
-/// Returns [`AppError::Config`] if the TTL value exceeds the representable
-/// range for `TimeDelta`.
-fn compute_expiry(ttl_hours: u64) -> Result<DateTime<Utc>, AppError> {
-    let hours = i64::try_from(ttl_hours).map_err(|_| AppError::Config {
-        source: ConfigError::ValidationFailed {
-            errors: vec![ERR_TTL_OUT_OF_RANGE.into()],
-        },
-    })?;
-
-    let delta = TimeDelta::try_hours(hours).ok_or_else(|| AppError::Config {
-        source: ConfigError::ValidationFailed {
-            errors: vec![ERR_TTL_OUT_OF_RANGE.into()],
-        },
-    })?;
-
-    Ok(Utc::now() + delta)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -236,16 +219,17 @@ fn compute_expiry(ttl_hours: u64) -> Result<DateTime<Utc>, AppError> {
 mod tests {
     use super::*;
 
-    // -- TTL validation -----------------------------------------------------
+    // -- TTL conversion -----------------------------------------------------
 
     #[test]
-    fn test_validate_ttl_accepts_default() {
-        assert!(validate_ttl(8760).is_ok());
+    fn test_ttl_to_delta_accepts_default() {
+        let delta = ttl_to_delta(8760).unwrap();
+        assert_eq!(delta, TimeDelta::try_hours(8760).unwrap());
     }
 
     #[test]
-    fn test_validate_ttl_rejects_zero() {
-        let err = validate_ttl(0).unwrap_err();
+    fn test_ttl_to_delta_rejects_zero() {
+        let err = ttl_to_delta(0).unwrap_err();
         assert!(
             err.to_string().contains(ERR_TTL_ZERO),
             "unexpected error: {err}",
@@ -253,26 +237,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_ttl_rejects_overflow() {
-        let err = validate_ttl(u64::MAX).unwrap_err();
+    fn test_ttl_to_delta_rejects_overflow() {
+        let err = ttl_to_delta(u64::MAX).unwrap_err();
         assert!(
             err.to_string().contains(ERR_TTL_OUT_OF_RANGE),
             "unexpected error: {err}",
         );
-    }
-
-    // -- Expiry computation -------------------------------------------------
-
-    #[test]
-    fn test_compute_expiry_is_in_future() {
-        let before = Utc::now();
-        let expires_at = compute_expiry(8760).unwrap();
-        assert!(expires_at > before);
-    }
-
-    #[test]
-    fn test_compute_expiry_rejects_overflow() {
-        let result = compute_expiry(u64::MAX);
-        assert!(result.is_err());
     }
 }
