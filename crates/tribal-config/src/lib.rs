@@ -1,7 +1,8 @@
 //! Configuration loading and validation for the Tribal server.
 //!
-//! Merges four sources in precedence order:
-//! compiled defaults → YAML file → environment variables → CLI flags.
+//! Merges up to six sources in precedence order:
+//! compiled defaults → command defaults → YAML file → nested env vars
+//! → convenience alias env vars → CLI flags.
 
 #![deny(warnings)]
 #![warn(clippy::pedantic)]
