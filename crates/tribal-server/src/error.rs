@@ -173,6 +173,16 @@ pub enum AppError {
     #[error("worker died unexpectedly")]
     WorkerDeath,
 
+    /// Setup I/O operation failed (directory creation, config file write).
+    #[error("setup I/O failed: {context}")]
+    SetupIo {
+        /// Description of the failed operation.
+        context: String,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
     /// General database query error.
     #[error("{source}")]
     Database {
@@ -342,6 +352,18 @@ mod tests {
     fn test_display_worker_death() {
         let err = AppError::WorkerDeath;
         assert_eq!(err.to_string(), "worker died unexpectedly");
+    }
+
+    #[test]
+    fn test_display_setup_io() {
+        let err = AppError::SetupIo {
+            context: "create config directory /tmp/tribal".into(),
+            source: io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"),
+        };
+        assert!(
+            err.to_string().contains("create config directory"),
+            "unexpected display: {err}",
+        );
     }
 
     #[test]
