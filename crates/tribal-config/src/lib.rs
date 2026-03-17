@@ -15,7 +15,7 @@ mod validation;
 
 pub use env::{ENV_CONFIG_PATH, ENV_PREFIX, ENV_PROJECT_ID};
 pub use error::ConfigError;
-pub use loader::{CliOverrides, ServerCliOverrides, load_config};
+pub use loader::{CliOverrides, DatabaseCliOverrides, ServerCliOverrides, load_config};
 pub use sections::{
     AuthConfig, DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_DISCOVERY_LIMIT, DEFAULT_DISCOVERY_MAX_LIMIT,
     DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH,
