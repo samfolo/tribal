@@ -4666,7 +4666,6 @@ dependencies = [
  "gix",
  "rand 0.10.0",
  "reqwest",
- "serde_yaml",
  "shellexpand",
  "sqlx",
  "tempfile",
