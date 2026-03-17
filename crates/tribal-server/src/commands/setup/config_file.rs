@@ -3,8 +3,7 @@
 //! Handles writing the minimal `tribal.yaml` on first run and detecting
 //! when the resolved configuration diverges from an existing file.
 
-use std::io;
-use std::path::Path;
+use std::{io, path::Path};
 
 use serde::Serialize;
 use tribal_config::TribalConfig;
@@ -28,8 +27,7 @@ pub(super) const WARNING_CONFIG_UNPARSEABLE: &str =
 
 /// Warning emitted when the resolved database URL differs from the value
 /// in the existing config file.
-pub(super) const WARNING_DATABASE_URL_DIVERGENCE: &str =
-    "resolved database URL differs from the config file's database.url; \
+pub(super) const WARNING_DATABASE_URL_DIVERGENCE: &str = "resolved database URL differs from the config file's database.url; \
      the config file was not updated";
 
 // ---------------------------------------------------------------------------
@@ -277,9 +275,7 @@ mod tests {
         let path = dir.path().join("tribal.yaml");
         let path_str = path.to_str().unwrap();
 
-        tokio::fs::write(&path, "{{{{not valid yaml")
-            .await
-            .unwrap();
+        tokio::fs::write(&path, "{{{{not valid yaml").await.unwrap();
 
         let config = TribalConfig::default();
         let warnings = check_divergence(path_str, &config).await;
