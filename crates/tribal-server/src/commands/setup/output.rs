@@ -1,8 +1,6 @@
 //! Terminal output for the `tribal setup` command.
 //!
-//! All user-facing presentation lives here, separated from business logic
-//! to enable future polish (coloured output, spinners, TUI) without
-//! touching the setup flow.
+//! All user-facing presentation lives here, separated from business logic.
 
 use super::config_file::ConfigFileOutcome;
 
