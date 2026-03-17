@@ -7,11 +7,15 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64.workspace = true
+chrono.workspace = true
 clap.workspace = true
 dashmap.workspace = true
 gix.workspace = true
 gethostname.workspace = true
+rand.workspace = true
 reqwest.workspace = true
+serde_yaml.workspace = true
 shellexpand.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
