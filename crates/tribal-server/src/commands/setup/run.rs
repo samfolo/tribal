@@ -129,7 +129,7 @@ async fn run_async(config: &TribalConfig, config_path: &str) -> Result<(), AppEr
         .build();
 
     PgAuthTokenRepository
-        .insert(&mut *conn, &new_token)
+        .insert(&mut conn, &new_token)
         .await
         .map_err(|source| AppError::Database { source })?;
     output::token_created(&expires_at.format("%Y-%m-%d %H:%M:%S UTC").to_string());
@@ -156,7 +156,7 @@ async fn find_or_create_principal(
     conn: &mut PoolConnection<Postgres>,
 ) -> Result<Principal, AppError> {
     if let Some(existing) = PgPrincipalRepository
-        .find_by_key(&mut *conn, LOCAL_PRINCIPAL_KEY)
+        .find_by_key(conn, LOCAL_PRINCIPAL_KEY)
         .await
         .map_err(|source| AppError::Database { source })?
     {
@@ -167,10 +167,10 @@ async fn find_or_create_principal(
         .principal_key(LOCAL_PRINCIPAL_KEY.to_owned())
         .build();
 
-    match PgPrincipalRepository.insert(&mut *conn, &new).await {
+    match PgPrincipalRepository.insert(conn, &new).await {
         Ok(principal) => Ok(principal),
         Err(DbError::UniqueViolation { .. }) => PgPrincipalRepository
-            .find_by_key(&mut *conn, LOCAL_PRINCIPAL_KEY)
+            .find_by_key(conn, LOCAL_PRINCIPAL_KEY)
             .await
             .map_err(|source| AppError::Database { source })?
             .ok_or_else(|| AppError::Database {
