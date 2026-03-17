@@ -41,6 +41,11 @@ const SETUP_POOL_MAX_CONNECTIONS: u32 = 1;
 /// Statement timeout for setup operations (migrations + inserts).
 const SETUP_STATEMENT_TIMEOUT_MS: u64 = 60_000;
 
+/// Error message for a zero token TTL.
+///
+/// Parallels the same check in `tribal_config::validation::validate_auth`.
+const ERR_TTL_ZERO: &str = "auth.token_ttl_hours must be greater than zero";
+
 /// Error message for a token TTL that exceeds the representable range.
 const ERR_TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
 
@@ -58,14 +63,7 @@ pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
     let command_defaults = [("database.url", DEFAULT_DATABASE_URL)];
 
     let config = load_config(config_path, Some(cli_overrides), Some(&command_defaults))?;
-
-    if config.auth.token_ttl_hours == 0 {
-        return Err(AppError::Config {
-            source: ConfigError::ValidationFailed {
-                errors: vec!["auth.token_ttl_hours must be greater than zero".into()],
-            },
-        });
-    }
+    validate_ttl(config.auth.token_ttl_hours)?;
 
     let expanded_config_path = shellexpand::tilde(config_path).into_owned();
 
@@ -183,6 +181,36 @@ async fn find_or_create_principal(
     }
 }
 
+/// Validates that the token TTL is non-zero and within representable range.
+///
+/// # Errors
+///
+/// Returns [`AppError::Config`] if the TTL is zero or exceeds the
+/// representable range for `TimeDelta`.
+fn validate_ttl(ttl_hours: u64) -> Result<(), AppError> {
+    if ttl_hours == 0 {
+        return Err(AppError::Config {
+            source: ConfigError::ValidationFailed {
+                errors: vec![ERR_TTL_ZERO.into()],
+            },
+        });
+    }
+
+    let hours = i64::try_from(ttl_hours).map_err(|_| AppError::Config {
+        source: ConfigError::ValidationFailed {
+            errors: vec![ERR_TTL_OUT_OF_RANGE.into()],
+        },
+    })?;
+
+    TimeDelta::try_hours(hours).ok_or_else(|| AppError::Config {
+        source: ConfigError::ValidationFailed {
+            errors: vec![ERR_TTL_OUT_OF_RANGE.into()],
+        },
+    })?;
+
+    Ok(())
+}
+
 /// Computes the token expiry timestamp from the configured TTL.
 ///
 /// # Errors
@@ -212,6 +240,31 @@ fn compute_expiry(ttl_hours: u64) -> Result<DateTime<Utc>, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- TTL validation -----------------------------------------------------
+
+    #[test]
+    fn test_validate_ttl_accepts_default() {
+        assert!(validate_ttl(8760).is_ok());
+    }
+
+    #[test]
+    fn test_validate_ttl_rejects_zero() {
+        let err = validate_ttl(0).unwrap_err();
+        assert!(
+            err.to_string().contains(ERR_TTL_ZERO),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_validate_ttl_rejects_overflow() {
+        let err = validate_ttl(u64::MAX).unwrap_err();
+        assert!(
+            err.to_string().contains(ERR_TTL_OUT_OF_RANGE),
+            "unexpected error: {err}",
+        );
+    }
 
     // -- Expiry computation -------------------------------------------------
 
