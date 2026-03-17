@@ -4658,11 +4658,15 @@ dependencies = [
 name = "tribal-server"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "chrono",
  "clap",
  "dashmap",
  "gethostname",
  "gix",
+ "rand 0.10.0",
  "reqwest",
+ "serde_yaml",
  "shellexpand",
  "sqlx",
  "tempfile",

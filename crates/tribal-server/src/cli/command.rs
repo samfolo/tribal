@@ -442,9 +442,7 @@ mod tests {
 
     #[test]
     fn test_setup_into_cli_overrides_no_flags() {
-        let args = SetupArgs {
-            database_url: None,
-        };
+        let args = SetupArgs { database_url: None };
         let overrides = args.into_cli_overrides();
         assert!(overrides.server.is_none());
         assert!(overrides.database.is_none());
