@@ -14,6 +14,9 @@ use crate::{
 // Constants
 // ---------------------------------------------------------------------------
 
+/// Error message for a zero `auth.token_ttl_hours` value.
+pub const ERR_TTL_ZERO: &str = "auth.token_ttl_hours must be greater than zero";
+
 /// Additional connections the worker pool requires beyond the concurrent task
 /// count (heartbeat, reclaim, poll, and one spare).
 const POOL_CONNECTION_OVERHEAD: usize = 4;
@@ -125,7 +128,7 @@ fn validate_server(config: &TribalConfig, errors: &mut Vec<String>) {
 
 fn validate_auth(config: &TribalConfig, errors: &mut Vec<String>) {
     if config.auth.token_ttl_hours == 0 {
-        errors.push("auth.token_ttl_hours must be greater than zero".into());
+        errors.push(ERR_TTL_ZERO.into());
     }
 }
 
@@ -412,7 +415,7 @@ mod tests {
         config.auth.token_ttl_hours = 0;
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("auth.token_ttl_hours must be greater than zero"));
+        assert!(msg.contains(ERR_TTL_ZERO));
     }
 
     #[test]

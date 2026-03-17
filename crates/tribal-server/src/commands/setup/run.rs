@@ -5,7 +5,7 @@ use std::path::Path;
 use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::{Postgres, pool::PoolConnection};
 use tribal_common::sha256_hex;
-use tribal_config::{ConfigError, TribalConfig, load_config};
+use tribal_config::{ConfigError, ERR_TTL_ZERO, TribalConfig, load_config};
 use tribal_db::{
     AuthTokenRepository, DbError, NewAuthToken, NewPrincipal, PgAuthTokenRepository,
     PgPrincipalRepository, PrincipalRepository,
@@ -40,11 +40,6 @@ const SETUP_POOL_MAX_CONNECTIONS: u32 = 1;
 
 /// Statement timeout for setup operations (migrations + inserts).
 const SETUP_STATEMENT_TIMEOUT_MS: u64 = 60_000;
-
-/// Error message for a zero token TTL.
-///
-/// Parallels the same check in `tribal_config::validation::validate_auth`.
-const ERR_TTL_ZERO: &str = "auth.token_ttl_hours must be greater than zero";
 
 /// Error message for a token TTL that exceeds the representable range.
 const ERR_TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";

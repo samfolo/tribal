@@ -25,7 +25,7 @@ pub use sections::{
     ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig,
     TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
 };
-pub use validation::validate;
+pub use validation::{ERR_TTL_ZERO, validate};
 
 // ---------------------------------------------------------------------------
 // Test utilities
