@@ -174,7 +174,7 @@ impl ServeArgs {
 /// Arguments for the `setup` subcommand.
 #[derive(Debug, Args)]
 pub struct SetupArgs {
-    /// PostgreSQL connection URL for the Tribal database.
+    /// `PostgreSQL` connection URL for the Tribal database.
     #[arg(long = "database-url", short = 'd', help_heading = "Database")]
     pub database_url: Option<String>,
 }

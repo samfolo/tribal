@@ -114,7 +114,7 @@ fn render_minimal(database_url: &str) -> Result<String, AppError> {
 
     let body = serde_yaml::to_string(&minimal).map_err(|err| AppError::SetupIo {
         context: "serialise minimal config".to_owned(),
-        source: io::Error::new(io::ErrorKind::Other, err),
+        source: io::Error::other(err),
     })?;
 
     Ok(format!("{CONFIG_HEADER}\n{body}"))
