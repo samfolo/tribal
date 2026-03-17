@@ -1,7 +1,7 @@
 //! Clap command and argument definitions for the Tribal CLI.
 
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
-use tribal_config::{CliOverrides, ServerCliOverrides, TransportKind};
+use tribal_config::{CliOverrides, DatabaseCliOverrides, ServerCliOverrides, TransportKind};
 
 use super::{default_values::DEFAULT_CONFIG_PATH, styles::STYLES};
 
@@ -101,7 +101,11 @@ pub enum Command {
 
     /// Run first-time database setup and migrations.
     #[command(display_order = 1)]
-    Setup,
+    Setup {
+        /// Arguments for the setup subcommand.
+        #[command(flatten)]
+        args: SetupArgs,
+    },
 
     /// Manage projects.
     #[command(subcommand, display_order = 2)]
@@ -155,8 +159,41 @@ impl ServeArgs {
             }),
         };
 
-        let overrides = CliOverrides { server };
+        let overrides = CliOverrides {
+            server,
+            database: None,
+        };
         (overrides, self.project)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `setup` subcommand.
+#[derive(Debug, Args)]
+pub struct SetupArgs {
+    /// `PostgreSQL` connection URL for the Tribal database.
+    #[arg(long = "database-url", short = 'd', help_heading = "Database")]
+    pub database_url: Option<String>,
+}
+
+impl SetupArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// Only flags the user actually supplied on the command line are included;
+    /// absent flags remain `None` so that lower-precedence layers are not
+    /// masked.
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        let database = self
+            .database_url
+            .map(|url| DatabaseCliOverrides { url: Some(url) });
+
+        CliOverrides {
+            server: None,
+            database,
+        }
     }
 }
 
@@ -370,6 +407,55 @@ mod tests {
     fn test_serve_invalid_transport_rejected() {
         let result = Cli::try_parse_from(["tribal", "serve", "--transport", "grpc"]);
         assert!(result.is_err());
+    }
+
+    // -- Setup defaults ------------------------------------------------------
+
+    #[test]
+    fn test_setup_parses_without_args() {
+        let cli = Cli::try_parse_from(["tribal", "setup"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Setup { ref args })
+            if args.database_url.is_none()
+        ));
+    }
+
+    #[test]
+    fn test_setup_parses_database_url_long() {
+        let cli =
+            Cli::try_parse_from(["tribal", "setup", "--database-url", "postgres://h/db"]).unwrap();
+        let Some(Command::Setup { args }) = cli.command else {
+            unreachable!();
+        };
+        assert_eq!(args.database_url.as_deref(), Some("postgres://h/db"));
+    }
+
+    #[test]
+    fn test_setup_parses_database_url_short() {
+        let cli = Cli::try_parse_from(["tribal", "setup", "-d", "postgres://h/db"]).unwrap();
+        let Some(Command::Setup { args }) = cli.command else {
+            unreachable!();
+        };
+        assert_eq!(args.database_url.as_deref(), Some("postgres://h/db"));
+    }
+
+    // -- setup into_cli_overrides -------------------------------------------
+
+    #[test]
+    fn test_setup_into_cli_overrides_no_flags() {
+        let args = SetupArgs { database_url: None };
+        let overrides = args.into_cli_overrides();
+        assert!(overrides.server.is_none());
+        assert!(overrides.database.is_none());
+    }
+
+    #[test]
+    fn test_setup_into_cli_overrides_with_url() {
+        let args = SetupArgs {
+            database_url: Some("postgres://h/db".into()),
+        };
+        let overrides = args.into_cli_overrides();
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
     }
 
     // -- No subcommand ------------------------------------------------------

@@ -1,13 +1,14 @@
 //! Figment-based layered configuration loading.
 //!
-//! Merges four sources in precedence order:
-//! compiled defaults → YAML file → environment variables → CLI flags.
+//! Merges five sources in precedence order:
+//! compiled defaults → command defaults → YAML file → environment variables → CLI flags.
 
 use figment::{
     Figment,
     providers::{Env, Format, Serialized, Yaml},
 };
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 
 use crate::{
     LoggingConfig, TelemetryConfig, TribalConfig, env::ENV_PREFIX, error::ConfigError,
@@ -60,6 +61,10 @@ pub struct CliOverrides {
     /// Server-related CLI overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server: Option<ServerCliOverrides>,
+
+    /// Database-related CLI overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<DatabaseCliOverrides>,
 }
 
 /// Server-related CLI flag overrides.
@@ -74,6 +79,14 @@ pub struct ServerCliOverrides {
     pub bind_address: Option<String>,
 }
 
+/// Database-related CLI flag overrides.
+#[derive(Debug, Serialize)]
+pub struct DatabaseCliOverrides {
+    /// Database URL override from `--database-url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -85,9 +98,15 @@ pub struct ServerCliOverrides {
 /// 2. Convenience alias env vars (`TRIBAL_DATABASE_URL`, etc.)
 /// 3. Nested env vars (`TRIBAL_DATABASE__URL`, etc.)
 /// 4. YAML file
-/// 5. Compiled defaults
+/// 5. Command defaults (subcommand-specific fallbacks)
+/// 6. Compiled defaults
 ///
 /// A missing YAML file is not an error — defaults are used instead.
+///
+/// The `command_defaults` parameter injects subcommand-specific default
+/// values between compiled defaults and the YAML file. Each entry is a
+/// dot-separated key and a string value (e.g. `("database.url", "...")`).
+/// Pass `None` when no command-specific defaults are needed.
 ///
 /// # Errors
 ///
@@ -95,6 +114,7 @@ pub struct ServerCliOverrides {
 pub fn load_config(
     config_path: &str,
     cli_overrides: Option<CliOverrides>,
+    command_defaults: Option<&[(&str, &str)]>,
 ) -> Result<TribalConfig, ConfigError> {
     let expanded_path = shellexpand::tilde(config_path);
 
@@ -120,7 +140,14 @@ pub fn load_config(
             _ => key.into(),
         });
 
-    let mut figment = Figment::from(Serialized::defaults(TribalConfig::default()))
+    let mut figment = Figment::from(Serialized::defaults(TribalConfig::default()));
+
+    if let Some(defaults) = command_defaults {
+        let value = build_nested_json(defaults);
+        figment = figment.merge(Serialized::defaults(value));
+    }
+
+    figment = figment
         .merge(Yaml::file(expanded_path.as_ref()))
         .merge(nested_env)
         .merge(alias_env);
@@ -142,6 +169,44 @@ pub fn load_config(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Builds a nested `serde_json::Value` from dot-separated key-value pairs.
+///
+/// All values are stored as JSON strings. Figment coerces string values
+/// into the target type during extraction (e.g. `"32"` → `u32`,
+/// `"true"` → `bool`), so this is sufficient for all configuration fields.
+///
+/// For example, `("database.url", "postgres://...")` becomes:
+/// `{"database": {"url": "postgres://..."}}`.
+fn build_nested_json(pairs: &[(&str, &str)]) -> JsonValue {
+    let mut root = serde_json::Map::new();
+
+    for &(key, value) in pairs {
+        let parts: Vec<&str> = key.split('.').collect();
+        insert_nested(&mut root, &parts, value);
+    }
+
+    JsonValue::Object(root)
+}
+
+/// Recursively inserts a value into a nested JSON object at the path
+/// specified by `parts`.
+fn insert_nested(map: &mut serde_json::Map<String, JsonValue>, parts: &[&str], value: &str) {
+    match parts {
+        [] => {}
+        [leaf] => {
+            map.insert((*leaf).to_owned(), JsonValue::String(value.to_owned()));
+        }
+        [head, rest @ ..] => {
+            let entry = map
+                .entry((*head).to_owned())
+                .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+            if let JsonValue::Object(child) = entry {
+                insert_nested(child, rest, value);
+            }
+        }
+    }
+}
 
 /// Restores `used_temp_dir_fallback` flags lost during serde roundtripping.
 ///
@@ -185,7 +250,7 @@ mod tests {
     fn test_defaults_only() {
         Jail::expect_with(|jail| {
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
 
             let mut expected = TribalConfig::default();
             expand_paths(&mut expected);
@@ -209,7 +274,7 @@ server:
             )?;
 
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(config.database.url, "postgres://yaml-host/tribal");
             assert_eq!(config.server.transport, TransportKind::Http);
             Ok(())
@@ -220,7 +285,7 @@ server:
     fn test_missing_yaml_file_not_error() {
         Jail::expect_with(|jail| {
             let path = jail.directory().join("nonexistent.yaml");
-            let result = load_config(path.to_str().unwrap(), None);
+            let result = load_config(path.to_str().unwrap(), None, None);
             assert!(result.is_ok());
             Ok(())
         });
@@ -230,7 +295,7 @@ server:
     fn test_tilde_expansion() {
         Jail::expect_with(|jail| {
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert!(
                 !config.prompts.directory.starts_with('~'),
                 "prompts.directory should be expanded: {}",
@@ -252,7 +317,7 @@ server:
             jail.set_env("TRIBAL_DATABASE__POOL_MCP_MAX_CONNECTIONS", "32");
 
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(config.database.pool_mcp_max_connections, 32);
             Ok(())
         });
@@ -268,10 +333,11 @@ server:
                     transport: Some(TransportKind::Sse),
                     bind_address: None,
                 }),
+                database: None,
             };
 
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), Some(overrides)).unwrap();
+            let config = load_config(path.to_str().unwrap(), Some(overrides), None).unwrap();
             assert_eq!(config.server.transport, TransportKind::Sse);
             Ok(())
         });
@@ -283,7 +349,7 @@ server:
             jail.set_env("TRIBAL_DATABASE_URL", "postgres://alias/tribal");
 
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(config.database.url, "postgres://alias/tribal");
             Ok(())
         });
@@ -296,7 +362,7 @@ server:
             jail.set_env("TRIBAL_DATABASE__URL", "postgres://nested-loses/tribal");
 
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(config.database.url, "postgres://alias-wins/tribal");
             Ok(())
         });
@@ -309,7 +375,7 @@ server:
             jail.set_env("TRIBAL_PROJECT_ID", "my-project");
 
             let path = jail.directory().join("tribal.yaml");
-            let result = load_config(path.to_str().unwrap(), None);
+            let result = load_config(path.to_str().unwrap(), None, None);
             assert!(result.is_ok(), "stray env vars should be silently ignored");
             Ok(())
         });
@@ -321,7 +387,7 @@ server:
             jail.create_file("tribal.yaml", "nonexistent_section:\n  foo: bar\n")?;
 
             let path = jail.directory().join("tribal.yaml");
-            let result = load_config(path.to_str().unwrap(), None);
+            let result = load_config(path.to_str().unwrap(), None, None);
             assert!(result.is_err(), "unknown top-level YAML key should fail");
             Ok(())
         });
@@ -333,7 +399,7 @@ server:
             jail.create_file("tribal.yaml", "database:\n  nonexistent: true\n")?;
 
             let path = jail.directory().join("tribal.yaml");
-            let result = load_config(path.to_str().unwrap(), None);
+            let result = load_config(path.to_str().unwrap(), None, None);
             assert!(result.is_err(), "unknown nested YAML key should fail");
             Ok(())
         });
@@ -356,7 +422,7 @@ server:
             jail.set_env("TRIBAL_TELEMETRY__SERVICE_NAME", "test-tribal");
 
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
 
             assert_eq!(config.server.shutdown_deadline_ms, 5000);
             assert_eq!(config.database.acquire_timeout_ms, 10_000);
@@ -414,7 +480,7 @@ server:
     fn test_temp_dir_fallback_flags_survive_figment_roundtrip() {
         Jail::expect_with(|jail| {
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
 
             let defaults = TribalConfig::default();
             assert_eq!(
@@ -435,8 +501,61 @@ server:
             jail.set_env("TRIBAL_SERVER__SSE__IDLE_TIMEOUT_MS", "60000");
 
             let path = jail.directory().join("tribal.yaml");
-            let config = load_config(path.to_str().unwrap(), None).unwrap();
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(config.server.sse.idle_timeout_ms, 60_000);
+            Ok(())
+        });
+    }
+
+    // -- Command defaults ----------------------------------------------------
+
+    #[test]
+    fn test_command_defaults_override_compiled_defaults() {
+        Jail::expect_with(|jail| {
+            let path = jail.directory().join("tribal.yaml");
+            let defaults = [("database.url", "postgres://cmd-default/tribal")];
+            let config = load_config(path.to_str().unwrap(), None, Some(&defaults)).unwrap();
+            assert_eq!(config.database.url, "postgres://cmd-default/tribal");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_yaml_overrides_command_defaults() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                "database:\n  url: \"postgres://yaml-wins/tribal\"\n",
+            )?;
+
+            let path = jail.directory().join("tribal.yaml");
+            let defaults = [("database.url", "postgres://cmd-default/tribal")];
+            let config = load_config(path.to_str().unwrap(), None, Some(&defaults)).unwrap();
+            assert_eq!(config.database.url, "postgres://yaml-wins/tribal");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_database_cli_overrides_take_highest_precedence() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                "database:\n  url: \"postgres://yaml/tribal\"\n",
+            )?;
+
+            let overrides = CliOverrides {
+                server: None,
+                database: Some(DatabaseCliOverrides {
+                    url: Some("postgres://cli-wins/tribal".into()),
+                }),
+            };
+
+            let path = jail.directory().join("tribal.yaml");
+            let defaults = [("database.url", "postgres://cmd-default/tribal")];
+            let config =
+                load_config(path.to_str().unwrap(), Some(overrides), Some(&defaults)).unwrap();
+            assert_eq!(config.database.url, "postgres://cli-wins/tribal");
             Ok(())
         });
     }
