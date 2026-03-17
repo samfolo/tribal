@@ -25,6 +25,14 @@ pub enum ConfigError {
         /// All validation errors collected during the check.
         errors: Vec<String>,
     },
+
+    /// Config file rendering failed.
+    #[error("failed to render config file: {source}")]
+    Render {
+        /// The underlying serialisation error.
+        #[source]
+        source: Box<serde_yaml::Error>,
+    },
 }
 
 fn format_errors(errors: &[String]) -> String {

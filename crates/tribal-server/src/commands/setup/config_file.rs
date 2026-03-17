@@ -1,21 +1,17 @@
-//! Config file rendering, writing, and divergence detection.
+//! Config file writing and divergence detection.
 //!
 //! Handles writing the minimal `tribal.yaml` on first run and detecting
 //! when the resolved configuration diverges from an existing file.
 
-use std::{io, path::Path};
+use std::path::Path;
 
-use serde::Serialize;
-use tribal_config::TribalConfig;
+use tribal_config::{TribalConfig, render_minimal_config};
 
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// Header comment written at the top of the generated config file.
-const CONFIG_HEADER: &str = "# Tribal configuration\n# See documentation for full options.\n";
 
 /// Warning emitted when the existing config file cannot be read.
 pub(super) const WARNING_CONFIG_UNREADABLE: &str =
@@ -48,20 +44,6 @@ pub(super) enum ConfigFileOutcome {
     },
 }
 
-/// Minimal config file structure containing only the database URL.
-///
-/// Serialised via `serde_yaml` to guarantee valid YAML output.
-#[derive(Serialize)]
-struct MinimalConfig<'a> {
-    database: MinimalDatabaseConfig<'a>,
-}
-
-/// Database section of the minimal config file.
-#[derive(Serialize)]
-struct MinimalDatabaseConfig<'a> {
-    url: &'a str,
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -84,7 +66,8 @@ pub(super) async fn write_if_absent(
         return Ok(ConfigFileOutcome::AlreadyExists { warnings });
     }
 
-    let content = render_minimal(&config.database.url)?;
+    let content = render_minimal_config(&config.database.url)
+        .map_err(|source| AppError::Config { source })?;
 
     tokio::fs::write(path, content)
         .await
@@ -96,28 +79,6 @@ pub(super) async fn write_if_absent(
     Ok(ConfigFileOutcome::Written {
         path: config_path.to_owned(),
     })
-}
-
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
-/// Renders the minimal config file content.
-///
-/// # Errors
-///
-/// Returns [`AppError::SetupIo`] if YAML serialisation fails.
-fn render_minimal(database_url: &str) -> Result<String, AppError> {
-    let minimal = MinimalConfig {
-        database: MinimalDatabaseConfig { url: database_url },
-    };
-
-    let body = serde_yaml::to_string(&minimal).map_err(|err| AppError::SetupIo {
-        context: "serialise minimal config".to_owned(),
-        source: io::Error::other(err),
-    })?;
-
-    Ok(format!("{CONFIG_HEADER}\n{body}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -176,26 +137,6 @@ fn check_database_url_divergence(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -- Rendering ----------------------------------------------------------
-
-    #[test]
-    fn test_render_minimal_is_valid_yaml() {
-        let content = render_minimal("postgres://h/db").unwrap();
-        let parsed: serde_yaml::Value =
-            serde_yaml::from_str(&content).expect("rendered config should be valid YAML");
-        let url = parsed
-            .get("database")
-            .and_then(|d| d.get("url"))
-            .and_then(|u| u.as_str());
-        assert_eq!(url, Some("postgres://h/db"));
-    }
-
-    #[test]
-    fn test_render_minimal_contains_header() {
-        let content = render_minimal("postgres://h/db").unwrap();
-        assert!(content.starts_with(CONFIG_HEADER));
-    }
 
     // -- Write behaviour ----------------------------------------------------
 
