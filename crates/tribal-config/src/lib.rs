@@ -1,21 +1,28 @@
 //! Configuration loading and validation for the Tribal server.
 //!
-//! Merges four sources in precedence order:
-//! compiled defaults → YAML file → environment variables → CLI flags.
+//! Merges up to six sources in precedence order:
+//! compiled defaults → command defaults → YAML file → nested env vars
+//! → convenience alias env vars → CLI flags.
 
 #![deny(warnings)]
 #![warn(clippy::pedantic)]
 
+mod divergence;
 mod env;
 mod error;
 mod loader;
 mod paths;
+mod render;
 mod sections;
 mod validation;
 
+pub use divergence::{
+    WARNING_CONFIG_UNPARSEABLE, WARNING_DATABASE_URL_DIVERGENCE, check_config_divergence,
+};
 pub use env::{ENV_CONFIG_PATH, ENV_PREFIX, ENV_PROJECT_ID};
 pub use error::ConfigError;
-pub use loader::{CliOverrides, ServerCliOverrides, load_config};
+pub use loader::{CliOverrides, DatabaseCliOverrides, ServerCliOverrides, load_config};
+pub use render::render_minimal_config;
 pub use sections::{
     AuthConfig, DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_DISCOVERY_LIMIT, DEFAULT_DISCOVERY_MAX_LIMIT,
     DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH,
@@ -25,7 +32,7 @@ pub use sections::{
     ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig,
     TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
 };
-pub use validation::validate;
+pub use validation::{ERR_TTL_ZERO, validate};
 
 // ---------------------------------------------------------------------------
 // Test utilities

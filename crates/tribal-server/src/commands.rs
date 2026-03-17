@@ -4,3 +4,4 @@
 //! dispatcher delegates to the corresponding `run` function.
 
 pub(crate) mod serve;
+pub(crate) mod setup;

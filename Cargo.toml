@@ -58,6 +58,9 @@ strum = { version = "0.28", features = ["derive"] }
 fnv = "1"
 sha2 = "0.10"
 
+# Encoding
+base64 = "0.22"
+
 # Ordered collections
 indexmap = "2"
 
