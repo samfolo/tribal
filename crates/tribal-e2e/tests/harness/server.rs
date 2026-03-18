@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rmcp::{ServiceExt, service::{RoleClient, RunningService}};
+use sqlx::{PgPool, pool::PoolConnection, Postgres};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use tribal_config::TribalConfig;
@@ -30,7 +31,7 @@ pub struct TestHarness {
     pub client: RunningService<RoleClient, ()>,
 
     /// Connection pool for direct database access in assertions.
-    pub pool: sqlx::PgPool,
+    pub pool: PgPool,
 
     /// Prompt template directory — cleaned up on drop.
     _prompts_dir: TempDir,
@@ -57,7 +58,7 @@ impl TestHarness {
 
     /// Truncates all application tables for test isolation.
     pub async fn teardown(&self) {
-        let mut conn = self
+        let mut conn: PoolConnection<Postgres> = self
             .pool
             .acquire()
             .await

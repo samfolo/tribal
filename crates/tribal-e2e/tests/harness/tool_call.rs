@@ -1,5 +1,5 @@
 use rmcp::{
-    model::{CallToolRequestParams, CallToolResult, Content, RawContent},
+    model::{CallToolRequestParams, CallToolResult, RawContent},
     service::{Peer, RoleClient},
 };
 use serde_json::Value;
@@ -12,19 +12,19 @@ use serde_json::Value;
 ///
 /// # Panics
 ///
-/// Panics on protocol-level transport errors.
+/// Panics on protocol-level transport errors or if `arguments` is not a
+/// JSON object or null.
 pub async fn call_tool(
     client: &Peer<RoleClient>,
     name: &str,
     arguments: Value,
 ) -> CallToolResult {
-    let params = CallToolRequestParams {
-        name: name.into(),
-        arguments: match arguments {
-            Value::Object(map) => Some(map),
-            Value::Null => None,
-            other => panic!("call_tool arguments must be a JSON object, got {other}"),
-        },
+    let params = match arguments {
+        Value::Object(map) => {
+            CallToolRequestParams::new(name.to_owned()).with_arguments(map)
+        }
+        Value::Null => CallToolRequestParams::new(name.to_owned()),
+        other => panic!("call_tool arguments must be a JSON object, got {other}"),
     };
     client.call_tool(params).await.expect("tool call failed at protocol level")
 }
@@ -51,15 +51,22 @@ pub fn tool_result_text(result: &CallToolResult) -> String {
         .expect("expected text content in tool result")
 }
 
-/// Parses the text content of the first content block as JSON.
+/// Returns the structured JSON content of a tool result.
+///
+/// Prefers `structured_content` (machine-readable) over parsing the text
+/// content block.
 ///
 /// # Panics
 ///
-/// Panics if the content is not valid JSON.
+/// Panics if neither `structured_content` nor parseable JSON text is
+/// present.
 #[must_use]
 pub fn tool_result_json(result: &CallToolResult) -> Value {
+    if let Some(structured) = &result.structured_content {
+        return structured.clone();
+    }
     let text = tool_result_text(result);
-    serde_json::from_str(&text).expect("tool result text is not valid JSON")
+    serde_json::from_str(&text).expect("tool result has no structured_content and text is not valid JSON")
 }
 
 /// Asserts the tool result does not indicate an error.

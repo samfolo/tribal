@@ -12,7 +12,7 @@ use tribal_test_utils::{
 use harness::{
     config::test_config,
     server::build_harness,
-    tool_call::{assert_error, assert_success, call_tool, tool_result_json},
+    tool_call::{assert_success, call_tool, tool_result_json},
     wiremock_setup::{
         EMBEDDING_MODEL, EXTRACTION_MODEL, SMALL_MODEL, duplicate_triage_response,
         extraction_response, mount_chat_mock, mount_chat_sequence, mount_embed_mock,
@@ -31,6 +31,11 @@ async fn test_ingest_pipeline_end_to_end() {
     let extraction_server = wiremock::MockServer::start().await;
     let triage_server = wiremock::MockServer::start().await;
     let relation_server = wiremock::MockServer::start().await;
+
+    // -- Clean slate ---------------------------------------------------------
+    let mut conn = ctx.pool().acquire().await.expect("acquire connection");
+    tribal_test_utils::truncate_all_tables(&mut conn).await;
+    drop(conn);
 
     // -- Infrastructure scaffolding ------------------------------------------
     let mut conn = ctx.pool().acquire().await.expect("acquire connection");
@@ -185,9 +190,9 @@ async fn test_ingest_pipeline_end_to_end() {
     .await;
     assert_success(&get_result);
     let get_json = tool_result_json(&get_result);
-    let fetched_content = get_json[novel_item_id]["content"]
+    let fetched_content = get_json["items"][novel_item_id]["item"]["content"]
         .as_str()
-        .expect("content field");
+        .expect("content field in get_item response");
     assert!(
         fetched_content.contains("memory safety"),
         "expected content to contain 'memory safety', got: {fetched_content}",
