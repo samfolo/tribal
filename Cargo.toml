@@ -11,6 +11,7 @@ members = [
     "crates/tribal-config",
     "crates/tribal-server",
     "crates/tribal-test-utils",
+    "crates/tribal-e2e",
 ]
 
 [workspace.package]

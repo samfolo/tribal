@@ -16,7 +16,7 @@ use tribal_domain::{GitRemote, ProjectId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
 use typed_builder::TypedBuilder;
 
-use crate::server_handler::ActivePromptVersions;
+use crate::{server_handler::ActivePromptVersions, session::SessionProject};
 
 // ---------------------------------------------------------------------------
 // ResolvedProject
@@ -26,8 +26,6 @@ use crate::server_handler::ActivePromptVersions;
 ///
 /// Populated when the startup cascade (CLI flag, env var, or git remote
 /// heuristic) successfully identifies a registered project.
-// Fields consumed by session and handler code in later milestones.
-#[allow(dead_code)]
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ResolvedProject {
     /// Database identifier for the project.
@@ -42,6 +40,16 @@ pub struct ResolvedProject {
     pub(crate) git_remote: GitRemote,
 }
 
+impl From<&ResolvedProject> for SessionProject {
+    fn from(rp: &ResolvedProject) -> Self {
+        Self {
+            id: rp.id,
+            name: rp.name.clone(),
+            git_remote: rp.git_remote.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
@@ -49,8 +57,6 @@ pub struct ResolvedProject {
 /// Process-level state shared across all MCP connections and the worker.
 ///
 /// Constructed once during startup and wrapped in `Arc` for sharing.
-// Fields progressively consumed as handler, worker, and transport code lands.
-#[allow(dead_code)]
 #[derive(TypedBuilder)]
 pub struct AppState {
     // -- Pools ---------------------------------------------------------------
@@ -123,4 +129,18 @@ pub struct AppState {
     /// Resolved project context from the startup cascade, if any.
     #[builder(default, setter(strip_option))]
     pub(crate) resolved_project: Option<ResolvedProject>,
+}
+
+impl AppState {
+    /// Returns a reference to the MCP read-path connection pool.
+    #[must_use]
+    pub fn mcp_pool(&self) -> &PgPool {
+        &self.pool_mcp
+    }
+
+    /// Returns the project resolved during startup, if any.
+    #[must_use]
+    pub fn resolved_project(&self) -> Option<&ResolvedProject> {
+        self.resolved_project.as_ref()
+    }
 }
