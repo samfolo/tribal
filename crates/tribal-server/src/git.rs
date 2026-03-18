@@ -15,15 +15,15 @@ use crate::error::AppError;
 // ---------------------------------------------------------------------------
 
 /// Error when `gix::discover` fails to find a git repository.
-pub(crate) const ERR_NOT_A_GIT_REPOSITORY: &str =
+pub(crate) const NOT_A_GIT_REPOSITORY: &str =
     "not inside a git repository — use --remote to specify the remote URL";
 
 /// Error when no default fetch remote is configured.
-pub(crate) const ERR_NO_FETCH_REMOTE: &str =
+pub(crate) const NO_FETCH_REMOTE: &str =
     "no default fetch remote configured — use --remote to specify the remote URL";
 
 /// Error when the remote URL has no host component.
-pub(crate) const ERR_REMOTE_URL_MISSING_HOST: &str =
+pub(crate) const REMOTE_URL_MISSING_HOST: &str =
     "remote URL has no host component — use --remote to specify the remote URL";
 
 // ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppE
     let repo = gix::discover(start_dir).map_err(|e| {
         tracing::debug!(%e, "git repository discovery failed");
         AppError::GitDetection {
-            reason: ERR_NOT_A_GIT_REPOSITORY.to_owned(),
+            reason: NOT_A_GIT_REPOSITORY.to_owned(),
         }
     })?;
 
@@ -69,27 +69,27 @@ pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppE
         .ok_or_else(|| {
             tracing::debug!("no default fetch remote configured");
             AppError::GitDetection {
-                reason: ERR_NO_FETCH_REMOTE.to_owned(),
+                reason: NO_FETCH_REMOTE.to_owned(),
             }
         })?
         .map_err(|e| {
             tracing::debug!(%e, "failed to read default fetch remote");
             AppError::GitDetection {
-                reason: ERR_NO_FETCH_REMOTE.to_owned(),
+                reason: NO_FETCH_REMOTE.to_owned(),
             }
         })?;
 
     let url = remote.url(Direction::Fetch).ok_or_else(|| {
         tracing::debug!("fetch remote has no URL");
         AppError::GitDetection {
-            reason: ERR_NO_FETCH_REMOTE.to_owned(),
+            reason: NO_FETCH_REMOTE.to_owned(),
         }
     })?;
 
     let host = url.host().ok_or_else(|| {
         tracing::debug!(path = %url.path, "remote URL has no host component");
         AppError::GitDetection {
-            reason: ERR_REMOTE_URL_MISSING_HOST.to_owned(),
+            reason: REMOTE_URL_MISSING_HOST.to_owned(),
         }
     })?;
 
@@ -118,7 +118,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("should create tempdir");
         let err = detect_git_remote_from(tmp.path()).unwrap_err();
         assert!(
-            err.to_string().contains(ERR_NOT_A_GIT_REPOSITORY),
+            err.to_string().contains(NOT_A_GIT_REPOSITORY),
             "unexpected error: {err}",
         );
     }

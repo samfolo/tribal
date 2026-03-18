@@ -37,7 +37,7 @@ const POOL_NAME_SETUP: &str = "setup";
 const SETUP_STATEMENT_TIMEOUT_MS: u64 = 60_000;
 
 /// Error message for a token TTL that exceeds the representable range.
-const ERR_TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
+const TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -195,13 +195,13 @@ fn ttl_to_delta(ttl_hours: u64) -> Result<TimeDelta, AppError> {
 
     let hours = i64::try_from(ttl_hours).map_err(|_| AppError::Config {
         source: ConfigError::ValidationFailed {
-            errors: vec![ERR_TTL_OUT_OF_RANGE.into()],
+            errors: vec![TTL_OUT_OF_RANGE.into()],
         },
     })?;
 
     TimeDelta::try_hours(hours).ok_or_else(|| AppError::Config {
         source: ConfigError::ValidationFailed {
-            errors: vec![ERR_TTL_OUT_OF_RANGE.into()],
+            errors: vec![TTL_OUT_OF_RANGE.into()],
         },
     })
 }
@@ -235,7 +235,7 @@ mod tests {
     fn test_ttl_to_delta_rejects_overflow() {
         let err = ttl_to_delta(u64::MAX).unwrap_err();
         assert!(
-            err.to_string().contains(ERR_TTL_OUT_OF_RANGE),
+            err.to_string().contains(TTL_OUT_OF_RANGE),
             "unexpected error: {err}",
         );
     }

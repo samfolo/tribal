@@ -27,10 +27,6 @@ const DEFAULT_BRANCH: &str = "main";
 /// Pool name for the register connection.
 const POOL_NAME_REGISTER: &str = "register";
 
-/// Error when looking up an existing project after a duplicate insert.
-const ERR_DUPLICATE_LOOKUP_FAILED: &str =
-    "project insert reported duplicate but lookup returned nothing";
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
