@@ -26,7 +26,7 @@ impl App {
     /// Parses command-line arguments from `std::env::args()` and constructs
     /// the application.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn parse() -> Self {
         Self { cli: Cli::parse() }
     }
 

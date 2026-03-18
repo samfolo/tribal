@@ -12,7 +12,7 @@ use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
 use tribal_config::{load_config, validate};
 
-use crate::{cli::ServeArgs, error::AppError};
+use crate::{cli::ServeArgs, error::AppError, orchestration};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -40,11 +40,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     let cancellation_token = CancellationToken::new();
 
-    let handle = crate::orchestration::start_server(
-        &config,
-        cli_project,
-        cancellation_token.clone(),
-    )?;
+    let handle = orchestration::start_server(&config, cli_project, cancellation_token.clone())?;
 
     tracing::info!("startup sequence complete");
 

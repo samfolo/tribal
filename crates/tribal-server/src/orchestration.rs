@@ -69,12 +69,6 @@ impl ServerHandle {
         &self.main_rt
     }
 
-    /// Returns the cancellation token for programmatic shutdown.
-    #[must_use]
-    pub(crate) fn cancellation_token(&self) -> &CancellationToken {
-        &self.cancellation_token
-    }
-
     /// Initiates graceful shutdown and blocks until complete.
     ///
     /// Cancels the token (no-op if already cancelled), waits for the worker
@@ -94,11 +88,14 @@ impl ServerHandle {
 
         if self
             .worker_rt
-            .block_on(tokio::time::timeout(self.shutdown_deadline, self.worker_handle))
+            .block_on(tokio::time::timeout(
+                self.shutdown_deadline,
+                self.worker_handle,
+            ))
             .is_err()
         {
             tracing::warn!(
-                deadline_ms = self.shutdown_deadline.as_millis() as u64,
+                deadline_ms = self.shutdown_deadline.as_millis(),
                 "shutdown deadline expired; dropping worker runtime",
             );
         }
