@@ -58,18 +58,12 @@ pub struct ServerHandle {
 
 impl ServerHandle {
     /// Returns the shared application state.
-    ///
-    /// E2E tests use this to construct `TribalServerHandler` instances
-    /// for direct method invocation.
     #[must_use]
     pub fn state(&self) -> &Arc<AppState> {
         &self.state
     }
 
     /// Returns a reference to the main runtime.
-    ///
-    /// Used by the CLI signal-handling path to block on
-    /// [`await_shutdown_trigger`](super::commands::serve).
     #[must_use]
     pub(crate) fn main_runtime(&self) -> &Runtime {
         &self.main_rt
@@ -95,7 +89,7 @@ impl ServerHandle {
     ///
     /// Returns [`AppError::WorkerDeath`] if the worker exited unexpectedly
     /// before shutdown was initiated.
-    pub fn shutdown(self) -> Result<(), AppError> {
+    pub fn shutdown(mut self) -> Result<(), AppError> {
         self.cancellation_token.cancel();
 
         if self

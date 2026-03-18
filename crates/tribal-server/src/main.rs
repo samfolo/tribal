@@ -2,16 +2,9 @@
 #![deny(warnings)]
 //! Tribal server binary — CLI entry point.
 
-mod app;
-mod cli;
-mod commands;
-mod error;
-mod git;
-mod startup;
-
 use std::process;
 
-use app::App;
+use tribal_server::App;
 
 fn main() {
     if let Err(err) = App::new().run() {
