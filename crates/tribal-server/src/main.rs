@@ -6,6 +6,7 @@ mod app;
 mod cli;
 mod commands;
 mod error;
+mod git;
 mod startup;
 
 use std::process;
