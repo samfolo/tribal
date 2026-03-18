@@ -110,20 +110,24 @@ impl ServerHandle {
             );
         }
 
+        // When the deadline expires, the JoinHandle is dropped, aborting the
+        // worker task.  This triggers WorkerDeathGuard, making death_rx a
+        // false positive.  Check deadline_exceeded first to avoid masking it
+        // with WorkerDeath.
         let worker_died = matches!(self.death_rx.try_recv(), Ok(()));
 
         drop(self.worker_rt);
 
         tracing::info!(worker_died, deadline_exceeded, "shutdown complete");
 
-        if worker_died {
-            return Err(AppError::WorkerDeath);
-        }
-
         if deadline_exceeded {
             return Err(AppError::ShutdownDeadlineExceeded {
                 deadline_ms: self.shutdown_deadline.as_millis(),
             });
+        }
+
+        if worker_died {
+            return Err(AppError::WorkerDeath);
         }
 
         Ok(())
