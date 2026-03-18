@@ -1,0 +1,25 @@
+[package]
+name = "tribal-e2e"
+edition.workspace = true
+version.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+rmcp.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+wiremock.workspace = true
+
+tribal-common.workspace = true
+tribal-config.workspace = true
+tribal-db.workspace = true
+tribal-domain.workspace = true
+tribal-inference.workspace = true
+tribal-mcp.workspace = true
+tribal-server.workspace = true
+tribal-test-utils.workspace = true
