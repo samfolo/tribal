@@ -2,6 +2,7 @@
 
 use tribal_config::{DatabaseConfig, load_config};
 use tribal_db::{PgProjectRepository, ProjectRepository};
+use tribal_domain::Project;
 
 use super::output;
 use crate::{
@@ -30,7 +31,7 @@ const POOL_NAME_LIST: &str = "list";
 /// Returns an [`AppError`] if config loading, database connection,
 /// or the query fails.
 pub(crate) fn run(config_path: &str, args: ProjectListArgs) -> Result<(), AppError> {
-    let cli_overrides = args.database.into_cli_overrides();
+    let cli_overrides = args.into_cli_overrides();
     let config = load_config(
         config_path,
         Some(cli_overrides),
@@ -42,15 +43,18 @@ pub(crate) fn run(config_path: &str, args: ProjectListArgs) -> Result<(), AppErr
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    rt.block_on(run_async(&config.database))
+    let projects = rt.block_on(fetch_projects(&config.database))?;
+    output::project_table(&projects);
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Async flow
 // ---------------------------------------------------------------------------
 
-/// Fetches all projects and prints the table.
-async fn run_async(db_config: &DatabaseConfig) -> Result<(), AppError> {
+/// Fetches all projects from the database.
+async fn fetch_projects(db_config: &DatabaseConfig) -> Result<Vec<Project>, AppError> {
     let pool = tribal_db::create_pool(
         db_config,
         POOL_NAME_LIST,
@@ -65,12 +69,82 @@ async fn run_async(db_config: &DatabaseConfig) -> Result<(), AppError> {
         .await
         .map_err(|err| AppError::pool_acquire(POOL_NAME_LIST, "acquiring list connection", err))?;
 
-    let projects = PgProjectRepository
+    PgProjectRepository
         .list(&mut conn)
         .await
-        .map_err(|source| AppError::Database { source })?;
+        .map_err(|source| AppError::Database { source })
+}
 
-    output::project_table(&projects);
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use tribal_domain::GitRemote;
+    use tribal_test_utils::{a_new_project, serial_lock, test_context, truncate_all_tables};
+
+    use super::*;
+
+    fn test_db_config(url: &str) -> DatabaseConfig {
+        serde_json::from_value(serde_json::json!({ "url": url })).expect("valid DatabaseConfig")
+    }
+
+    async fn teardown(ctx: &tribal_test_utils::TestContext) {
+        let mut conn = ctx.raw_connection().await.expect("raw_connection");
+        truncate_all_tables(&mut conn).await;
+    }
+
+    #[tokio::test]
+    async fn test_fetch_projects_empty() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+
+        let db_config = test_db_config(ctx.database_url());
+        let projects = fetch_projects(&db_config).await.expect("fetch_projects");
+
+        assert!(projects.is_empty());
+
+        teardown(ctx).await;
+    }
+
+    #[tokio::test]
+    async fn test_fetch_projects_returns_inserted() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+
+        {
+            let mut conn = ctx.raw_connection().await.expect("raw_connection");
+            PgProjectRepository
+                .insert(
+                    &mut conn,
+                    &a_new_project()
+                        .git_remote(GitRemote::from_parts("github.com", "integ/list-a", None))
+                        .name("list-a".to_owned())
+                        .build(),
+                )
+                .await
+                .expect("insert first");
+            PgProjectRepository
+                .insert(
+                    &mut conn,
+                    &a_new_project()
+                        .git_remote(GitRemote::from_parts("github.com", "integ/list-b", None))
+                        .name("list-b".to_owned())
+                        .build(),
+                )
+                .await
+                .expect("insert second");
+        }
+
+        let db_config = test_db_config(ctx.database_url());
+        let projects = fetch_projects(&db_config).await.expect("fetch_projects");
+
+        assert_eq!(projects.len(), 2);
+        let names: Vec<&str> = projects.iter().map(|p| p.name()).collect();
+        assert!(names.contains(&"list-a"));
+        assert!(names.contains(&"list-b"));
+
+        teardown(ctx).await;
+    }
 }

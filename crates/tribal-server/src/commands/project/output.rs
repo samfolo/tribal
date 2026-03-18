@@ -31,6 +31,9 @@ const MIN_COL_WIDTH_GIT_REMOTE: usize = 10;
 /// Minimum width for the Default Branch column in the project table.
 const MIN_COL_WIDTH_DEFAULT_BRANCH: usize = 14;
 
+/// Number of spaces between table columns.
+const COL_GAP: usize = 2;
+
 // ---------------------------------------------------------------------------
 // Register output
 // ---------------------------------------------------------------------------
@@ -132,6 +135,9 @@ pub(super) fn project_table(projects: &[Project]) {
         remote_w = remote_width,
         branch_w = branch_width,
     );
+
+    let total_width = id_width + name_width + remote_width + branch_width + (COL_GAP * 3);
+    println!("{}", "-".repeat(total_width));
 
     for project in projects {
         println!(
