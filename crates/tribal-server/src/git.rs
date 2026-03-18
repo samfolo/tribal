@@ -15,16 +15,16 @@ use crate::error::AppError;
 // ---------------------------------------------------------------------------
 
 /// Error when `gix::discover` fails to find a git repository.
-pub(crate) const NOT_A_GIT_REPOSITORY: &str =
-    "not inside a git repository — use --remote to specify the remote URL";
+pub(crate) const NOT_A_GIT_REPOSITORY: &str = "not inside a git repository";
 
 /// Error when no default fetch remote is configured.
-pub(crate) const NO_FETCH_REMOTE: &str =
-    "no default fetch remote configured — use --remote to specify the remote URL";
+pub(crate) const NO_FETCH_REMOTE: &str = "no default fetch remote configured";
+
+/// Error when the default fetch remote exists but has no URL.
+pub(crate) const FETCH_REMOTE_NO_URL: &str = "default fetch remote has no URL";
 
 /// Error when the remote URL has no host component.
-pub(crate) const REMOTE_URL_MISSING_HOST: &str =
-    "remote URL has no host component — use --remote to specify the remote URL";
+pub(crate) const REMOTE_URL_MISSING_HOST: &str = "remote URL has no host component";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -38,8 +38,8 @@ pub(crate) const REMOTE_URL_MISSING_HOST: &str =
 /// # Errors
 ///
 /// Returns [`AppError::GitDetection`] if the current directory is not
-/// inside a git repository, no default fetch remote is configured, or the
-/// remote URL cannot be parsed.
+/// inside a git repository, no default fetch remote is configured, or
+/// the remote URL has no host component.
 pub(crate) fn detect_git_remote() -> Result<GitRemote, AppError> {
     detect_git_remote_from(Path::new("."))
 }
@@ -55,6 +55,7 @@ pub(crate) fn detect_git_remote() -> Result<GitRemote, AppError> {
 /// Returns [`AppError::GitDetection`] if:
 /// - `start_dir` is not inside a git repository
 /// - no default fetch remote is configured
+/// - the default fetch remote has no URL
 /// - the remote URL has no host component
 pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppError> {
     let repo = gix::discover(start_dir).map_err(|e| {
@@ -82,7 +83,7 @@ pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppE
     let url = remote.url(Direction::Fetch).ok_or_else(|| {
         tracing::debug!("fetch remote has no URL");
         AppError::GitDetection {
-            reason: NO_FETCH_REMOTE.to_owned(),
+            reason: FETCH_REMOTE_NO_URL.to_owned(),
         }
     })?;
 
