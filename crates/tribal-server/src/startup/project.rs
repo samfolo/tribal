@@ -5,15 +5,14 @@
 
 use std::path::Path;
 
-use gix::remote::Direction;
 use sqlx::PgPool;
 use tribal_config::ENV_PROJECT_ID;
 use tribal_db::{DbError, PgProjectRepository, ProjectRepository};
-use tribal_domain::{GitRemote, ProjectId};
+use tribal_domain::ProjectId;
 use tribal_mcp::ResolvedProject;
 
 use super::POOL_NAME_MCP;
-use crate::error::AppError;
+use crate::{error::AppError, git::detect_git_remote_from};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -100,7 +99,7 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
 /// reads the default fetch remote URL, and looks up the project in the
 /// database.
 async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>, AppError> {
-    let Some(remote_url) = discover_origin_url(Path::new(".")) else {
+    let Some(remote_url) = detect_git_remote_from(Path::new(".")).ok() else {
         return Ok(None);
     };
 
@@ -132,63 +131,5 @@ async fn resolve_by_git_remote(pool: &PgPool) -> Result<Option<ResolvedProject>,
     } else {
         tracing::debug!(git_remote = %remote_url, "no project registered for this remote");
         Ok(None)
-    }
-}
-
-/// Uses `gix` to discover the git repository starting from `start_dir`
-/// and extract the default fetch remote URL, returning it as a
-/// [`GitRemote`] in canonical form. Returns `None` if discovery fails
-/// or no default fetch remote is configured.
-fn discover_origin_url(start_dir: &Path) -> Option<GitRemote> {
-    let repo = match gix::discover(start_dir) {
-        Ok(repo) => repo,
-        Err(e) => {
-            tracing::debug!(%e, "git repository discovery failed");
-            return None;
-        }
-    };
-
-    let remote = match repo.find_default_remote(Direction::Fetch) {
-        Some(Ok(remote)) => remote,
-        Some(Err(e)) => {
-            tracing::debug!(%e, "failed to read default fetch remote");
-            return None;
-        }
-        None => {
-            tracing::debug!("no default fetch remote configured");
-            return None;
-        }
-    };
-
-    let url = remote.url(Direction::Fetch)?;
-    let host = url.host()?;
-    let path = url.path.to_string();
-    let port = url.port;
-
-    Some(GitRemote::from_parts(host, &path, port))
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_discover_origin_url_returns_some_in_repo() {
-        // This test runs inside the tribal repo, so discovery should succeed.
-        let url = discover_origin_url(Path::new("."));
-        assert!(url.is_some(), "expected to discover origin in tribal repo");
-    }
-
-    #[test]
-    fn test_discover_origin_url_returns_none_outside_repo() {
-        // A fresh tempdir is guaranteed not to be inside a git repository.
-        let tmp = tempfile::tempdir().expect("should create tempdir");
-
-        let result = discover_origin_url(tmp.path());
-        assert!(result.is_none(), "expected None outside a git repository");
     }
 }

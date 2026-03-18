@@ -183,6 +183,13 @@ pub enum AppError {
         source: io::Error,
     },
 
+    /// Git remote detection failed.
+    #[error("git remote detection failed: {reason}")]
+    GitDetection {
+        /// Description of why detection failed.
+        reason: String,
+    },
+
     /// General database query error.
     #[error("{source}")]
     Database {
@@ -352,6 +359,17 @@ mod tests {
     fn test_display_worker_death() {
         let err = AppError::WorkerDeath;
         assert_eq!(err.to_string(), "worker died unexpectedly");
+    }
+
+    #[test]
+    fn test_display_git_detection() {
+        let err = AppError::GitDetection {
+            reason: "not inside a git repository".into(),
+        };
+        assert!(
+            err.to_string().contains("not inside a git repository"),
+            "unexpected display: {err}",
+        );
     }
 
     #[test]
