@@ -12,9 +12,12 @@ use rmcp::{
 };
 use tokio::sync::RwLock;
 use tribal_db::{
-    JobRepository, KnowledgeItemRepository, PrincipalRepository, ProjectRepository,
-    ReferenceRepository, RelationRepository, RetrievalFeedbackRepository, StandingRepository,
-    TaskRepository, TriageResultRepository,
+    JobRepository, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
+    PgPrincipalRepository, PgProjectRepository, PgReferenceRepository, PgRelationRepository,
+    PgRetrievalFeedbackRepository, PgStandingRepository, PgTaskRepository,
+    PgTriageResultRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
+    RelationRepository, RetrievalFeedbackRepository, StandingRepository, TaskRepository,
+    TriageResultRepository,
 };
 use tribal_domain::PromptVersionId;
 
@@ -64,6 +67,25 @@ pub struct ConnectionRepositories {
     pub(crate) relation: Arc<dyn RelationRepository + Send + Sync>,
     pub(crate) principal: Arc<dyn PrincipalRepository + Send + Sync>,
     pub(crate) triage_result: Arc<dyn TriageResultRepository + Send + Sync>,
+}
+
+impl ConnectionRepositories {
+    /// Constructs real database-backed repositories for all MCP handlers.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            knowledge_item: Arc::new(PgKnowledgeItemRepository),
+            project: Arc::new(PgProjectRepository),
+            job: Arc::new(PgJobRepository),
+            task: Arc::new(PgTaskRepository),
+            retrieval_feedback: Arc::new(PgRetrievalFeedbackRepository),
+            standing: Arc::new(PgStandingRepository),
+            reference: Arc::new(PgReferenceRepository),
+            relation: Arc::new(PgRelationRepository),
+            principal: Arc::new(PgPrincipalRepository),
+            triage_result: Arc::new(PgTriageResultRepository),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
