@@ -12,8 +12,7 @@ use tribal_domain::ProjectId;
 use tribal_mcp::ResolvedProject;
 
 use super::POOL_NAME_MCP;
-use crate::error::AppError;
-use crate::git::detect_git_remote_from;
+use crate::{error::AppError, git::detect_git_remote_from};
 
 // ---------------------------------------------------------------------------
 // Public API

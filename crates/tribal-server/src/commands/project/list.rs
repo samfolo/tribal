@@ -57,9 +57,10 @@ async fn run_async(db_config: &tribal_config::DatabaseConfig) -> Result<(), AppE
     .await
     .map_err(|source| AppError::Database { source })?;
 
-    let mut conn = pool.acquire().await.map_err(|err| {
-        AppError::pool_acquire(POOL_NAME_LIST, "acquiring list connection", err)
-    })?;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|err| AppError::pool_acquire(POOL_NAME_LIST, "acquiring list connection", err))?;
 
     let projects = PgProjectRepository
         .list(&mut conn)
