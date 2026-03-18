@@ -63,9 +63,10 @@ impl ServerHandle {
         &self.state
     }
 
-    /// Returns a reference to the main runtime.
+    /// Returns a reference to the main runtime for blocking on transport
+    /// or signal-handling futures.
     #[must_use]
-    pub(crate) fn main_runtime(&self) -> &Runtime {
+    pub fn main_runtime(&self) -> &Runtime {
         &self.main_rt
     }
 
