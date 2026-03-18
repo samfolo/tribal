@@ -4681,6 +4681,7 @@ dependencies = [
  "tribal-inference",
  "tribal-mcp",
  "tribal-telemetry",
+ "tribal-test-utils",
  "tribal-worker",
  "uuid",
 ]

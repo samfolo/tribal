@@ -60,19 +60,26 @@ pub(super) fn project_id(project: &Project) {
 /// Uses the convention `tribal@namespace/repo` as the server key,
 /// where `namespace/repo` is the git remote path portion.
 pub(super) fn mcp_snippet(project: &Project) {
+    let snippet = build_mcp_snippet(project);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&snippet).expect("JSON serialisation cannot fail"),
+    );
+}
+
+/// Builds the MCP server configuration JSON for a project.
+///
+/// The key follows the `tribal@namespace/repo` convention.
+fn build_mcp_snippet(project: &Project) -> serde_json::Value {
     let key = format!("tribal@{}", project.git_remote().path());
-    let snippet = serde_json::json!({
+    serde_json::json!({
         "mcpServers": {
             (key): {
                 "command": "tribal",
                 "args": ["serve", "--project", project.id().to_string()]
             }
         }
-    });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&snippet).expect("JSON serialisation cannot fail"),
-    );
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +144,62 @@ pub(super) fn project_table(projects: &[Project]) {
             name_w = name_width,
             remote_w = remote_width,
             branch_w = branch_width,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use tribal_domain::{GitRemote, ProjectId};
+    use tribal_test_utils::a_project;
+
+    use super::*;
+
+    // -- MCP snippet ---------------------------------------------------------
+
+    #[test]
+    fn test_build_mcp_snippet_structure() {
+        let project = a_project()
+            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
+            .build();
+
+        let snippet = build_mcp_snippet(&project);
+        let servers = &snippet["mcpServers"];
+
+        assert!(
+            servers["tribal@acme/widgets"].is_object(),
+            "expected key 'tribal@acme/widgets', got: {servers}",
+        );
+
+        let entry = &servers["tribal@acme/widgets"];
+        assert_eq!(entry["command"], "tribal");
+
+        let args = entry["args"].as_array().expect("args should be an array");
+        assert_eq!(args[0], "serve");
+        assert_eq!(args[1], "--project");
+
+        let project_arg = args[2].as_str().expect("project arg should be a string");
+        let _: ProjectId = project_arg
+            .parse()
+            .expect("project arg should be a valid ProjectId");
+    }
+
+    #[test]
+    fn test_build_mcp_snippet_preserves_slashes_in_key() {
+        let project = a_project()
+            .git_remote(GitRemote::from_parts("gitlab.com", "org/sub/repo", None))
+            .build();
+
+        let snippet = build_mcp_snippet(&project);
+        let servers = &snippet["mcpServers"];
+
+        assert!(
+            servers["tribal@org/sub/repo"].is_object(),
+            "slashes in key must be preserved, got: {servers}",
         );
     }
 }
