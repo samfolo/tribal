@@ -53,7 +53,10 @@ pub(super) fn registered(project: &Project, already_existed: bool) {
     eprintln!("  {msg}: {} ({})", project.name(), project.id());
 }
 
-/// Prints the project ID to stdout.
+/// Prints the bare project ID to stdout.
+///
+/// Emitted as the first stdout line so that scripted consumers can
+/// capture it via `tribal project register | head -1`.
 pub(super) fn project_id(project: &Project) {
     println!("{}", project.id());
 }

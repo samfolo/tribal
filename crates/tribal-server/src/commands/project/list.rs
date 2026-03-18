@@ -89,10 +89,7 @@ mod tests {
     use tribal_test_utils::{a_new_project, serial_lock, test_context, truncate_all_tables};
 
     use super::*;
-
-    fn test_db_config(url: &str) -> DatabaseConfig {
-        serde_json::from_value(serde_json::json!({ "url": url })).expect("valid DatabaseConfig")
-    }
+    use crate::commands::common::test_db_config;
 
     async fn teardown(ctx: &tribal_test_utils::TestContext) {
         let mut conn = ctx.raw_connection().await.expect("raw_connection");
