@@ -6,6 +6,10 @@ license-file.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "tribal"
+path = "src/main.rs"
+
 [dependencies]
 base64.workspace = true
 chrono.workspace = true
