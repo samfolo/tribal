@@ -105,16 +105,34 @@ pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppE
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
-    #[test]
-    fn test_detect_git_remote_from_repo() {
-        let result = detect_git_remote_from(Path::new("."));
-        assert!(result.is_ok(), "expected to discover remote in tribal repo");
+    /// Creates a temporary git repository with an origin fetch remote.
+    fn init_temp_repo_with_remote(remote_url: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("should create tempdir");
+        gix::init(tmp.path()).expect("gix::init should succeed");
+
+        let config_path = tmp.path().join(".git/config");
+        let existing = fs::read_to_string(&config_path).unwrap_or_default();
+        let remote_section = format!(
+            "\n[remote \"origin\"]\n\turl = {remote_url}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+        );
+        fs::write(&config_path, existing + &remote_section).expect("should write git config");
+
+        tmp
     }
 
     #[test]
-    fn test_detect_git_remote_from_tempdir() {
+    fn test_detect_git_remote_from_repo_with_origin() {
+        let tmp = init_temp_repo_with_remote("git@github.com:acme/widgets.git");
+        let remote = detect_git_remote_from(tmp.path()).expect("should detect remote");
+        assert_eq!(remote.as_str(), "github.com/acme/widgets");
+    }
+
+    #[test]
+    fn test_detect_git_remote_from_non_repo() {
         let tmp = tempfile::tempdir().expect("should create tempdir");
         let err = detect_git_remote_from(tmp.path()).unwrap_err();
         assert!(
