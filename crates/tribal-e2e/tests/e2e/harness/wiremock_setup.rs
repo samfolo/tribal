@@ -83,9 +83,7 @@ fn chat_envelope(content: &Value) -> Value {
 pub async fn mount_chat_mock(server: &MockServer, response_content: &Value) {
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(chat_envelope(response_content)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_envelope(response_content)))
         .mount(server)
         .await;
 }
@@ -98,9 +96,7 @@ pub async fn mount_chat_sequence(server: &MockServer, responses: &[Value]) {
     for response in responses.iter().rev() {
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(chat_envelope(response)),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(chat_envelope(response)))
             .up_to_n_times(1)
             .mount(server)
             .await;

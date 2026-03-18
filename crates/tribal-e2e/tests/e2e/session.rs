@@ -1,11 +1,11 @@
-mod harness;
-
 use serde_json::json;
-use tribal_db::{PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository};
+use tribal_db::{
+    PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
+};
 use tribal_domain::GitRemote;
 use tribal_test_utils::{a_new_principal, a_new_project, serial_lock, test_context};
 
-use harness::{
+use crate::harness::{
     config::test_config,
     server::build_harness,
     tool_call::{assert_error, assert_success, call_tool, tool_result_json},
@@ -18,10 +18,11 @@ use harness::{
 async fn test_session_context_lifecycle() {
     let _guard = serial_lock().await;
     let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create per-test pool");
     let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");
 
     // -- Clean slate ---------------------------------------------------------
-    let mut conn = ctx.pool().acquire().await.expect("acquire connection");
+    let mut conn = pool.acquire().await.expect("acquire connection");
     tribal_test_utils::truncate_all_tables(&mut conn).await;
     drop(conn);
 
@@ -33,7 +34,7 @@ async fn test_session_context_lifecycle() {
     mount_embed_mock(&mock_server).await;
 
     // -- Infrastructure scaffolding ------------------------------------------
-    let mut conn = ctx.pool().acquire().await.expect("acquire connection");
+    let mut conn = pool.acquire().await.expect("acquire connection");
 
     let project_1 = PgProjectRepository
         .insert(
@@ -88,7 +89,7 @@ async fn test_session_context_lifecycle() {
         prompts_dir.path().to_str().expect("prompts dir to str"),
     );
 
-    let mut harness = build_harness(config, prompts_dir, None, "e2e-session-principal").await;
+    let mut harness = build_harness(config, prompts_dir, None, "e2e-session-principal", pool).await;
 
     let project_1_id = project_1.id().to_string();
     let project_2_id = project_2.id().to_string();
@@ -171,7 +172,7 @@ async fn test_session_context_lifecycle() {
         "discover should scope to project 2 after context switch",
     );
 
-    // -- Shutdown ------------------------------------------------------------
-    harness.shutdown().await;
+    // -- Cleanup (teardown before shutdown — pool closes with the server) ----
     harness.teardown().await;
+    harness.shutdown().await;
 }

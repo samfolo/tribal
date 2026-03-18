@@ -4,6 +4,7 @@ use tribal_config::TribalConfig;
 // Constants
 // ---------------------------------------------------------------------------
 
+const POOL_MAX_CONNECTIONS: u32 = 4;
 const POLL_INTERVAL_MS: u64 = 100;
 const HEARTBEAT_INTERVAL_MS: u64 = 200;
 const TASK_TIMEOUT_MS: u64 = 5_000;
@@ -31,6 +32,8 @@ pub fn test_config(
     // -- Database ------------------------------------------------------------
     config.database.url = database_url.to_owned();
     config.database.max_connect_attempts = 1;
+    config.database.pool_mcp_max_connections = POOL_MAX_CONNECTIONS;
+    config.database.pool_worker_max_connections = POOL_MAX_CONNECTIONS;
 
     // -- Providers -----------------------------------------------------------
     config.embedding.base_url = Some(embedding_url.to_owned());

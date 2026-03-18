@@ -14,19 +14,16 @@ use serde_json::Value;
 ///
 /// Panics on protocol-level transport errors or if `arguments` is not a
 /// JSON object or null.
-pub async fn call_tool(
-    client: &Peer<RoleClient>,
-    name: &str,
-    arguments: Value,
-) -> CallToolResult {
+pub async fn call_tool(client: &Peer<RoleClient>, name: &str, arguments: Value) -> CallToolResult {
     let params = match arguments {
-        Value::Object(map) => {
-            CallToolRequestParams::new(name.to_owned()).with_arguments(map)
-        }
+        Value::Object(map) => CallToolRequestParams::new(name.to_owned()).with_arguments(map),
         Value::Null => CallToolRequestParams::new(name.to_owned()),
         other => panic!("call_tool arguments must be a JSON object, got {other}"),
     };
-    client.call_tool(params).await.expect("tool call failed at protocol level")
+    client
+        .call_tool(params)
+        .await
+        .expect("tool call failed at protocol level")
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +63,8 @@ pub fn tool_result_json(result: &CallToolResult) -> Value {
         return structured.clone();
     }
     let text = tool_result_text(result);
-    serde_json::from_str(&text).expect("tool result has no structured_content and text is not valid JSON")
+    serde_json::from_str(&text)
+        .expect("tool result has no structured_content and text is not valid JSON")
 }
 
 /// Asserts the tool result does not indicate an error.

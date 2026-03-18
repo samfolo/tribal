@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
-use rmcp::{ServiceExt, service::{RoleClient, RunningService}};
-use sqlx::{PgPool, pool::PoolConnection, Postgres};
+use rmcp::{
+    ServiceExt,
+    service::{RoleClient, RunningService},
+};
+use sqlx::PgPool;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use tribal_config::TribalConfig;
@@ -58,7 +61,7 @@ impl TestHarness {
 
     /// Truncates all application tables for test isolation.
     pub async fn teardown(&self) {
-        let mut conn: PoolConnection<Postgres> = self
+        let mut conn = self
             .pool
             .acquire()
             .await
@@ -77,11 +80,23 @@ impl TestHarness {
 /// # Panics
 ///
 /// Panics if server startup or client connection fails.
+/// Starts the full Tribal server and connects an MCP client over a duplex
+/// transport.
+///
+/// `pool` is an independently-owned pool for test setup, assertions, and
+/// teardown.  It must not be the shared `test_context().pool()` — use
+/// `test_context().create_pool()` instead to avoid connection exhaustion
+/// across sequential test runs.
+///
+/// # Panics
+///
+/// Panics if server startup or client connection fails.
 pub async fn build_harness(
     config: TribalConfig,
     prompts_dir: TempDir,
     cli_project: Option<String>,
     principal_key: &str,
+    pool: PgPool,
 ) -> TestHarness {
     let token = CancellationToken::new();
     let spawn_token = token.clone();
@@ -89,14 +104,12 @@ pub async fn build_harness(
     // start_server creates its own runtimes via block_on — must run
     // outside the test's tokio runtime.
     let handle = tokio::task::spawn_blocking(move || {
-        start_server(&config, cli_project, spawn_token)
-            .expect("server startup failed")
+        start_server(&config, cli_project, spawn_token).expect("server startup failed")
     })
     .await
     .expect("start_server task panicked");
 
     let state = Arc::clone(handle.state());
-    let pool = state.mcp_pool().clone();
 
     // Wire session project from the startup cascade.
     let session_project = state.resolved_project().map(SessionProject::from);

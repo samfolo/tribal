@@ -1,5 +1,3 @@
-mod harness;
-
 use serde_json::json;
 use tribal_db::{
     KnowledgeItemRepository, PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
@@ -9,7 +7,7 @@ use tribal_test_utils::{
     a_new_knowledge_item, a_new_principal, a_new_project, serial_lock, test_context,
 };
 
-use harness::{
+use crate::harness::{
     config::test_config,
     server::build_harness,
     tool_call::{assert_success, call_tool, tool_result_json},
@@ -26,6 +24,8 @@ async fn test_ingest_pipeline_end_to_end() {
     let ctx = test_context().await;
     let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");
 
+    let pool = ctx.create_pool().await.expect("create per-test pool");
+
     // -- Wiremock servers (one per provider role) -----------------------------
     let embedding_server = wiremock::MockServer::start().await;
     let extraction_server = wiremock::MockServer::start().await;
@@ -33,12 +33,12 @@ async fn test_ingest_pipeline_end_to_end() {
     let relation_server = wiremock::MockServer::start().await;
 
     // -- Clean slate ---------------------------------------------------------
-    let mut conn = ctx.pool().acquire().await.expect("acquire connection");
+    let mut conn = pool.acquire().await.expect("acquire connection");
     tribal_test_utils::truncate_all_tables(&mut conn).await;
     drop(conn);
 
     // -- Infrastructure scaffolding ------------------------------------------
-    let mut conn = ctx.pool().acquire().await.expect("acquire connection");
+    let mut conn = pool.acquire().await.expect("acquire connection");
 
     let project = PgProjectRepository
         .insert(&mut conn, &a_new_project().build())
@@ -81,8 +81,16 @@ async fn test_ingest_pipeline_end_to_end() {
         &extraction_server,
         &extraction_response(
             &[
-                ("fact", "Rust ensures memory safety without a garbage collector", &["rust", "memory-safety"]),
-                ("heuristic", "Use lifetimes to express ownership relationships", &["rust", "lifetimes"]),
+                (
+                    "fact",
+                    "Rust ensures memory safety without a garbage collector",
+                    &["rust", "memory-safety"],
+                ),
+                (
+                    "heuristic",
+                    "Use lifetimes to express ownership relationships",
+                    &["rust", "lifetimes"],
+                ),
             ],
             &[],
         ),
@@ -100,11 +108,7 @@ async fn test_ingest_pipeline_end_to_end() {
     .await;
 
     mount_tags_mock(&relation_server, SMALL_MODEL).await;
-    mount_chat_mock(
-        &relation_server,
-        &relation_response(&[(0, 1, "supports")]),
-    )
-    .await;
+    mount_chat_mock(&relation_server, &relation_response(&[(0, 1, "supports")])).await;
 
     // -- Start server and connect client -------------------------------------
     let config = test_config(
@@ -121,6 +125,7 @@ async fn test_ingest_pipeline_end_to_end() {
         prompts_dir,
         Some(project.id().to_string()),
         "e2e-test-principal",
+        pool,
     )
     .await;
 
@@ -177,9 +182,7 @@ async fn test_ingest_pipeline_end_to_end() {
                 .is_some_and(|c| c.contains("memory safety"))
         })
         .expect("novel item should appear in discover results");
-    let novel_item_id = novel_item["item"]["id"]
-        .as_str()
-        .expect("novel item id");
+    let novel_item_id = novel_item["item"]["id"].as_str().expect("novel item id");
 
     // -- Verify via get_item -------------------------------------------------
     let get_result = call_tool(
@@ -214,7 +217,7 @@ async fn test_ingest_pipeline_end_to_end() {
         "duplicate candidate should not appear as a new knowledge item",
     );
 
-    // -- Shutdown ------------------------------------------------------------
-    harness.shutdown().await;
+    // -- Cleanup (teardown before shutdown — pool closes with the server) ----
     harness.teardown().await;
+    harness.shutdown().await;
 }
