@@ -38,3 +38,14 @@ pub(crate) const COMMAND_STATEMENT_TIMEOUT_MS: u64 = 30_000;
 /// that requires migration of existing values. There is no canonical
 /// source elsewhere — this is the single definition.
 pub(crate) const PROJECT_SCHEMA_VERSION: u32 = 1;
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+/// Builds a [`DatabaseConfig`](tribal_config::DatabaseConfig) from a raw
+/// connection URL, using serde defaults for all other fields.
+#[cfg(test)]
+pub(crate) fn test_db_config(url: &str) -> tribal_config::DatabaseConfig {
+    serde_json::from_value(serde_json::json!({ "url": url })).expect("valid DatabaseConfig")
+}
