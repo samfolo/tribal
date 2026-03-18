@@ -20,6 +20,9 @@ pub(crate) const NOT_A_GIT_REPOSITORY: &str = "not inside a git repository";
 /// Error when no default fetch remote is configured.
 pub(crate) const NO_FETCH_REMOTE: &str = "no default fetch remote configured";
 
+/// Error when the default fetch remote is configured but could not be read.
+pub(crate) const FETCH_REMOTE_UNREADABLE: &str = "default fetch remote could not be read";
+
 /// Error when the default fetch remote exists but has no URL.
 pub(crate) const FETCH_REMOTE_NO_URL: &str = "default fetch remote has no URL";
 
@@ -55,6 +58,7 @@ pub(crate) fn detect_git_remote() -> Result<GitRemote, AppError> {
 /// Returns [`AppError::GitDetection`] if:
 /// - `start_dir` is not inside a git repository
 /// - no default fetch remote is configured
+/// - the default fetch remote could not be read
 /// - the default fetch remote has no URL
 /// - the remote URL has no host component
 pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppError> {
@@ -76,7 +80,7 @@ pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppE
         .map_err(|e| {
             tracing::debug!(%e, "failed to read default fetch remote");
             AppError::GitDetection {
-                reason: format!("{NO_FETCH_REMOTE}: {e}"),
+                reason: format!("{FETCH_REMOTE_UNREADABLE}: {e}"),
             }
         })?;
 
