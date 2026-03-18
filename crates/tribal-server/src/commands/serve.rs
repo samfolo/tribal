@@ -48,10 +48,9 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     tracing::info!("startup sequence complete");
 
-    // -- Signal handling / MCP transport placeholder -------------------------
+    // -- Signal handling -----------------------------------------------------
     // Races OS signals against the cancellation token (which fires on
-    // programmatic cancellation, e.g. WorkerDeathGuard).  The MCP transport
-    // future will be added as a third arm in a subsequent ticket.
+    // programmatic cancellation, e.g. WorkerDeathGuard).
     handle.main_runtime().block_on(async {
         match await_shutdown_trigger(&cancellation_token).await {
             Ok(Some(name)) => {
