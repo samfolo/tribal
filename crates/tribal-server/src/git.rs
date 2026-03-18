@@ -60,7 +60,7 @@ pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppE
     let repo = gix::discover(start_dir).map_err(|e| {
         tracing::debug!(%e, "git repository discovery failed");
         AppError::GitDetection {
-            reason: NOT_A_GIT_REPOSITORY.to_owned(),
+            reason: format!("{NOT_A_GIT_REPOSITORY}: {e}"),
         }
     })?;
 
@@ -75,7 +75,7 @@ pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppE
         .map_err(|e| {
             tracing::debug!(%e, "failed to read default fetch remote");
             AppError::GitDetection {
-                reason: NO_FETCH_REMOTE.to_owned(),
+                reason: format!("{NO_FETCH_REMOTE}: {e}"),
             }
         })?;
 

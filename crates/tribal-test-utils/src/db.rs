@@ -137,6 +137,15 @@ impl TestContext {
         })
     }
 
+    /// Returns the database connection URL.
+    ///
+    /// Useful for constructing a `DatabaseConfig` or other configuration
+    /// types that need the raw URL string.
+    #[must_use]
+    pub fn database_url(&self) -> &str {
+        &self.database_url
+    }
+
     /// Returns a reference to the connection pool.
     ///
     /// Prefer [`begin_test`](Self::begin_test) for individual tests to

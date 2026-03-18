@@ -274,6 +274,15 @@ pub struct ProjectListArgs {
     pub database: DatabaseArgs,
 }
 
+impl ProjectListArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// Delegates to [`DatabaseArgs::into_cli_overrides`].
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        self.database.into_cli_overrides()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Token
 // ---------------------------------------------------------------------------
@@ -599,6 +608,20 @@ mod tests {
             args.database.database_url.as_deref(),
             Some("postgres://h/db")
         );
+    }
+
+    // -- project list into_cli_overrides ------------------------------------
+
+    #[test]
+    fn test_project_list_into_cli_overrides_delegates_to_database_args() {
+        let args = ProjectListArgs {
+            database: DatabaseArgs {
+                database_url: Some("postgres://h/db".into()),
+            },
+        };
+        let overrides = args.into_cli_overrides();
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
     }
 
     // -- No subcommand ------------------------------------------------------
