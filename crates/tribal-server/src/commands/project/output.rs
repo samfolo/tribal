@@ -31,8 +31,9 @@ const MIN_COL_WIDTH_GIT_REMOTE: usize = 10;
 /// Minimum width for the Default Branch column in the project table.
 const MIN_COL_WIDTH_DEFAULT_BRANCH: usize = 14;
 
-/// Number of spaces between table columns.
-const COL_GAP: usize = 2;
+/// Spacing between table columns, used in format strings as literal spaces
+/// and in separator width calculation.
+const COL_SEPARATOR: &str = "  ";
 
 // ---------------------------------------------------------------------------
 // Register output
@@ -128,27 +129,30 @@ pub(super) fn project_table(projects: &[Project]) {
         .max(MIN_COL_WIDTH_DEFAULT_BRANCH);
 
     println!(
-        "{:<id_w$}  {:<name_w$}  {:<remote_w$}  {:<branch_w$}",
+        "{:<id_w$}{sep}{:<name_w$}{sep}{:<remote_w$}{sep}{:<branch_w$}",
         "ID",
         "Name",
         "Git Remote",
         "Default Branch",
+        sep = COL_SEPARATOR,
         id_w = id_width,
         name_w = name_width,
         remote_w = remote_width,
         branch_w = branch_width,
     );
 
-    let total_width = id_width + name_width + remote_width + branch_width + (COL_GAP * 3);
+    let total_width =
+        id_width + name_width + remote_width + branch_width + (COL_SEPARATOR.len() * 3);
     println!("{}", "-".repeat(total_width));
 
     for project in projects {
         println!(
-            "{:<id_w$}  {:<name_w$}  {:<remote_w$}  {:<branch_w$}",
+            "{:<id_w$}{sep}{:<name_w$}{sep}{:<remote_w$}{sep}{:<branch_w$}",
             project.id(),
             project.name(),
             project.git_remote(),
             project.default_branch(),
+            sep = COL_SEPARATOR,
             id_w = id_width,
             name_w = name_width,
             remote_w = remote_width,
