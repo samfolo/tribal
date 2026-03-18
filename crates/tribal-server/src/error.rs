@@ -367,8 +367,7 @@ mod tests {
             reason: "not inside a git repository".into(),
         };
         assert!(
-            err.to_string()
-                .contains("not inside a git repository"),
+            err.to_string().contains("not inside a git repository"),
             "unexpected display: {err}",
         );
     }
