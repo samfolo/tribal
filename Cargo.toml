@@ -126,4 +126,5 @@ tribal-worker = { path = "crates/tribal-worker" }
 tribal-mcp = { path = "crates/tribal-mcp" }
 tribal-telemetry = { path = "crates/tribal-telemetry" }
 tribal-config = { path = "crates/tribal-config" }
+tribal-server = { path = "crates/tribal-server" }
 tribal-test-utils = { path = "crates/tribal-test-utils" }

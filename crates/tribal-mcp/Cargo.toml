@@ -7,11 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-tribal-common.workspace = true
-tribal-config.workspace = true
-tribal-domain.workspace = true
-tribal-db.workspace = true
-tribal-inference.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 dashmap.workspace = true
 rmcp.workspace = true
@@ -20,13 +15,18 @@ serde_json.workspace = true
 sqlx.workspace = true
 strum.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 typed-builder.workspace = true
 uuid.workspace = true
 
+tribal-common.workspace = true
+tribal-config.workspace = true
+tribal-db.workspace = true
+tribal-domain.workspace = true
+tribal-inference.workspace = true
+
 [dev-dependencies]
 tribal-common = { workspace = true, features = ["test-helpers"] }
 tribal-test-utils.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
