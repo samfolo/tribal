@@ -168,19 +168,23 @@ impl ServeArgs {
 }
 
 // ---------------------------------------------------------------------------
-// Setup
+// Shared database arguments
 // ---------------------------------------------------------------------------
 
-/// Arguments for the `setup` subcommand.
+/// Database connection arguments shared across CLI commands.
+///
+/// Flattened into command-specific args structs via `#[command(flatten)]`.
+/// The `into_cli_overrides` method projects the database URL into the
+/// figment overlay layer.
 #[derive(Debug, Args)]
-pub struct SetupArgs {
+pub struct DatabaseArgs {
     /// `PostgreSQL` connection URL for the Tribal database.
     #[arg(long = "database-url", short = 'd', help_heading = "Database")]
     pub database_url: Option<String>,
 }
 
-impl SetupArgs {
-    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+impl DatabaseArgs {
+    /// Builds [`CliOverrides`] from the database URL flag.
     ///
     /// Only flags the user actually supplied on the command line are included;
     /// absent flags remain `None` so that lower-precedence layers are not
@@ -194,6 +198,27 @@ impl SetupArgs {
             server: None,
             database,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `setup` subcommand.
+#[derive(Debug, Args)]
+pub struct SetupArgs {
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+}
+
+impl SetupArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// Delegates to [`DatabaseArgs::into_cli_overrides`].
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        self.database.into_cli_overrides()
     }
 }
 
@@ -212,12 +237,51 @@ pub enum ProjectCommand {
     },
 
     /// List all registered projects.
-    List,
+    List {
+        /// Arguments for project listing.
+        #[command(flatten)]
+        args: ProjectListArgs,
+    },
 }
 
 /// Arguments for `project register`.
 #[derive(Debug, Args)]
-pub struct ProjectRegisterArgs {}
+pub struct ProjectRegisterArgs {
+    /// Git remote URL to register. Detected from the current repository
+    /// if omitted.
+    #[arg(long, help_heading = "Project")]
+    pub remote: Option<String>,
+
+    /// Human-friendly project name. Derived from the git remote path
+    /// if omitted.
+    #[arg(long, help_heading = "Project")]
+    pub name: Option<String>,
+
+    /// Default branch name.
+    #[arg(long, help_heading = "Project")]
+    pub branch: Option<String>,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+}
+
+/// Arguments for `project list`.
+#[derive(Debug, Args)]
+pub struct ProjectListArgs {
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+}
+
+impl ProjectListArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// Delegates to [`DatabaseArgs::into_cli_overrides`].
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        self.database.into_cli_overrides()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Token
@@ -409,13 +473,33 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // -- DatabaseArgs into_cli_overrides ------------------------------------
+
+    #[test]
+    fn test_database_args_into_cli_overrides_no_flags() {
+        let args = DatabaseArgs { database_url: None };
+        let overrides = args.into_cli_overrides();
+        assert!(overrides.server.is_none());
+        assert!(overrides.database.is_none());
+    }
+
+    #[test]
+    fn test_database_args_into_cli_overrides_with_url() {
+        let args = DatabaseArgs {
+            database_url: Some("postgres://h/db".into()),
+        };
+        let overrides = args.into_cli_overrides();
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
+    }
+
     // -- Setup defaults ------------------------------------------------------
 
     #[test]
     fn test_setup_parses_without_args() {
         let cli = Cli::try_parse_from(["tribal", "setup"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Setup { ref args })
-            if args.database_url.is_none()
+            if args.database.database_url.is_none()
         ));
     }
 
@@ -426,7 +510,10 @@ mod tests {
         let Some(Command::Setup { args }) = cli.command else {
             unreachable!();
         };
-        assert_eq!(args.database_url.as_deref(), Some("postgres://h/db"));
+        assert_eq!(
+            args.database.database_url.as_deref(),
+            Some("postgres://h/db")
+        );
     }
 
     #[test]
@@ -435,23 +522,102 @@ mod tests {
         let Some(Command::Setup { args }) = cli.command else {
             unreachable!();
         };
-        assert_eq!(args.database_url.as_deref(), Some("postgres://h/db"));
+        assert_eq!(
+            args.database.database_url.as_deref(),
+            Some("postgres://h/db")
+        );
     }
 
     // -- setup into_cli_overrides -------------------------------------------
 
     #[test]
-    fn test_setup_into_cli_overrides_no_flags() {
-        let args = SetupArgs { database_url: None };
+    fn test_setup_into_cli_overrides_delegates_to_database_args() {
+        let args = SetupArgs {
+            database: DatabaseArgs {
+                database_url: Some("postgres://h/db".into()),
+            },
+        };
         let overrides = args.into_cli_overrides();
-        assert!(overrides.server.is_none());
-        assert!(overrides.database.is_none());
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
+    }
+
+    // -- Project register ---------------------------------------------------
+
+    #[test]
+    fn test_project_register_parses_without_args() {
+        let cli = Cli::try_parse_from(["tribal", "project", "register"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Project(ProjectCommand::Register { ref args }))
+            if args.remote.is_none()
+                && args.name.is_none()
+                && args.branch.is_none()
+                && args.database.database_url.is_none()
+        ));
     }
 
     #[test]
-    fn test_setup_into_cli_overrides_with_url() {
-        let args = SetupArgs {
-            database_url: Some("postgres://h/db".into()),
+    fn test_project_register_parses_all_flags() {
+        let cli = Cli::try_parse_from([
+            "tribal",
+            "project",
+            "register",
+            "--remote",
+            "git@github.com:user/repo.git",
+            "--name",
+            "my-project",
+            "--branch",
+            "develop",
+            "-d",
+            "postgres://h/db",
+        ])
+        .unwrap();
+        let Some(Command::Project(ProjectCommand::Register { args })) = cli.command else {
+            unreachable!();
+        };
+        assert_eq!(args.remote.as_deref(), Some("git@github.com:user/repo.git"),);
+        assert_eq!(args.name.as_deref(), Some("my-project"));
+        assert_eq!(args.branch.as_deref(), Some("develop"));
+        assert_eq!(
+            args.database.database_url.as_deref(),
+            Some("postgres://h/db")
+        );
+    }
+
+    // -- Project list -------------------------------------------------------
+
+    #[test]
+    fn test_project_list_parses_without_args() {
+        let cli = Cli::try_parse_from(["tribal", "project", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Project(ProjectCommand::List { ref args }))
+            if args.database.database_url.is_none()
+        ));
+    }
+
+    #[test]
+    fn test_project_list_parses_database_url() {
+        let cli =
+            Cli::try_parse_from(["tribal", "project", "list", "-d", "postgres://h/db"]).unwrap();
+        let Some(Command::Project(ProjectCommand::List { args })) = cli.command else {
+            unreachable!();
+        };
+        assert_eq!(
+            args.database.database_url.as_deref(),
+            Some("postgres://h/db")
+        );
+    }
+
+    // -- project list into_cli_overrides ------------------------------------
+
+    #[test]
+    fn test_project_list_into_cli_overrides_delegates_to_database_args() {
+        let args = ProjectListArgs {
+            database: DatabaseArgs {
+                database_url: Some("postgres://h/db".into()),
+            },
         };
         let overrides = args.into_cli_overrides();
         let database = overrides.database.unwrap();

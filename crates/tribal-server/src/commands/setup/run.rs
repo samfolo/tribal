@@ -15,6 +15,7 @@ use tribal_domain::Principal;
 use super::{config_file, output, token};
 use crate::{
     cli::SetupArgs,
+    commands::common::{COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS},
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
 };
@@ -26,23 +27,17 @@ use crate::{
 /// Principal key for the local stdio transport identity.
 const LOCAL_PRINCIPAL_KEY: &str = "principal:local";
 
-/// Default database URL used when no other source provides one.
-///
-/// Injected as a command-defaults-layer value so that the figment cascade
-/// still respects YAML, env vars, and CLI overrides.
-const DEFAULT_DATABASE_URL: &str = "postgresql://tribal@localhost:5432/tribal";
-
 /// Pool name for the single setup connection.
 const POOL_NAME_SETUP: &str = "setup";
 
-/// Maximum connections for the setup pool.
-const SETUP_POOL_MAX_CONNECTIONS: u32 = 1;
-
 /// Statement timeout for setup operations (migrations + inserts).
+///
+/// Longer than the shared `COMMAND_STATEMENT_TIMEOUT_MS` because setup
+/// runs migrations in addition to inserts.
 const SETUP_STATEMENT_TIMEOUT_MS: u64 = 60_000;
 
 /// Error message for a token TTL that exceeds the representable range.
-const ERR_TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
+const TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -55,9 +50,11 @@ const ERR_TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
 /// Returns an [`AppError`] if any phase of the setup fails.
 pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
     let cli_overrides = args.into_cli_overrides();
-    let command_defaults = [("database.url", DEFAULT_DATABASE_URL)];
-
-    let config = load_config(config_path, Some(cli_overrides), Some(&command_defaults))?;
+    let config = load_config(
+        config_path,
+        Some(cli_overrides),
+        Some(&DATABASE_COMMAND_DEFAULTS),
+    )?;
     let expires_at = Utc::now() + ttl_to_delta(config.auth.token_ttl_hours)?;
 
     let expanded_config_path = shellexpand::tilde(config_path).into_owned();
@@ -98,7 +95,7 @@ async fn run_async(
     let pool = tribal_db::create_pool(
         &config.database,
         POOL_NAME_SETUP,
-        SETUP_POOL_MAX_CONNECTIONS,
+        COMMAND_POOL_MAX_CONNECTIONS,
         SETUP_STATEMENT_TIMEOUT_MS,
     )
     .await
@@ -200,13 +197,13 @@ fn ttl_to_delta(ttl_hours: u64) -> Result<TimeDelta, AppError> {
 
     let hours = i64::try_from(ttl_hours).map_err(|_| AppError::Config {
         source: ConfigError::ValidationFailed {
-            errors: vec![ERR_TTL_OUT_OF_RANGE.into()],
+            errors: vec![TTL_OUT_OF_RANGE.into()],
         },
     })?;
 
     TimeDelta::try_hours(hours).ok_or_else(|| AppError::Config {
         source: ConfigError::ValidationFailed {
-            errors: vec![ERR_TTL_OUT_OF_RANGE.into()],
+            errors: vec![TTL_OUT_OF_RANGE.into()],
         },
     })
 }
@@ -240,7 +237,7 @@ mod tests {
     fn test_ttl_to_delta_rejects_overflow() {
         let err = ttl_to_delta(u64::MAX).unwrap_err();
         assert!(
-            err.to_string().contains(ERR_TTL_OUT_OF_RANGE),
+            err.to_string().contains(TTL_OUT_OF_RANGE),
             "unexpected error: {err}",
         );
     }

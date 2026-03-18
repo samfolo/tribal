@@ -45,17 +45,17 @@ impl App {
 
         match command {
             Command::Setup { args } => {
-                commands::setup::run(&self.cli.global.config, args)?;
+                commands::setup(&self.cli.global.config, args)?;
             }
             Command::Serve { args } => {
-                commands::serve::run(&self.cli.global.config, args)?;
+                commands::serve(&self.cli.global.config, args)?;
             }
             Command::Project(command) => match command {
-                ProjectCommand::Register { .. } => {
-                    println!("tribal project register: not yet implemented");
+                ProjectCommand::Register { args } => {
+                    commands::project::register(&self.cli.global.config, args)?;
                 }
-                ProjectCommand::List => {
-                    println!("tribal project list: not yet implemented");
+                ProjectCommand::List { args } => {
+                    commands::project::list(&self.cli.global.config, args)?;
                 }
             },
             Command::Token(command) => match command {

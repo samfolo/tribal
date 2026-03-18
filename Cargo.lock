@@ -4666,6 +4666,7 @@ dependencies = [
  "gix",
  "rand 0.10.0",
  "reqwest",
+ "serde_json",
  "shellexpand",
  "sqlx",
  "tempfile",
@@ -4680,6 +4681,7 @@ dependencies = [
  "tribal-inference",
  "tribal-mcp",
  "tribal-telemetry",
+ "tribal-test-utils",
  "tribal-worker",
  "uuid",
 ]
