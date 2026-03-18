@@ -57,6 +57,9 @@ impl From<&ResolvedProject> for SessionProject {
 /// Process-level state shared across all MCP connections and the worker.
 ///
 /// Constructed once during startup and wrapped in `Arc` for sharing.
+// Several fields are wired at startup but consumed by transport code in
+// later milestones.
+#[allow(dead_code)]
 #[derive(TypedBuilder)]
 pub struct AppState {
     // -- Pools ---------------------------------------------------------------
