@@ -1,5 +1,7 @@
 //! Application entry point and subcommand dispatch.
 
+use std::ffi::OsString;
+
 use clap::{CommandFactory, Parser};
 
 use crate::{
@@ -21,10 +23,29 @@ pub struct App {
 }
 
 impl App {
-    /// Parses command-line arguments and constructs the application.
+    /// Parses command-line arguments from `std::env::args()` and constructs
+    /// the application.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn parse() -> Self {
         Self { cli: Cli::parse() }
+    }
+
+    /// Constructs the application from explicit arguments.
+    ///
+    /// Useful in contexts where reading `std::env::args()` is undesirable,
+    /// such as integration tests or embedded usage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AppError`] if argument parsing fails.
+    pub fn try_from_args<I, T>(args: I) -> Result<Self, AppError>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        Ok(Self {
+            cli: Cli::try_parse_from(args)?,
+        })
     }
 
     /// Dispatches to the requested subcommand.

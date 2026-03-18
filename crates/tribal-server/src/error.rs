@@ -173,6 +173,13 @@ pub enum AppError {
     #[error("worker died unexpectedly")]
     WorkerDeath,
 
+    /// The worker did not finish within the configured shutdown deadline.
+    #[error("shutdown deadline exceeded ({deadline_ms}ms)")]
+    ShutdownDeadlineExceeded {
+        /// The configured deadline in milliseconds.
+        deadline_ms: u128,
+    },
+
     /// Setup I/O operation failed (directory creation, config file write).
     #[error("setup I/O failed: {context}")]
     SetupIo {
@@ -208,9 +215,10 @@ impl AppError {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::MigrationLockFailed { .. } => EXIT_CODE_MIGRATION_LOCK,
-            Self::WorkerStartup { .. } | Self::WorkerRuntime { .. } | Self::WorkerDeath => {
-                EXIT_CODE_WORKER_DEATH
-            }
+            Self::WorkerStartup { .. }
+            | Self::WorkerRuntime { .. }
+            | Self::WorkerDeath
+            | Self::ShutdownDeadlineExceeded { .. } => EXIT_CODE_WORKER_DEATH,
             _ => 1,
         }
     }
@@ -410,6 +418,18 @@ mod tests {
     fn test_exit_code_worker_death() {
         let err = AppError::WorkerDeath;
         assert_eq!(err.exit_code(), EXIT_CODE_WORKER_DEATH);
+    }
+
+    #[test]
+    fn test_exit_code_shutdown_deadline_exceeded() {
+        let err = AppError::ShutdownDeadlineExceeded { deadline_ms: 5000 };
+        assert_eq!(err.exit_code(), EXIT_CODE_WORKER_DEATH);
+    }
+
+    #[test]
+    fn test_display_shutdown_deadline_exceeded() {
+        let err = AppError::ShutdownDeadlineExceeded { deadline_ms: 5000 };
+        assert_eq!(err.to_string(), "shutdown deadline exceeded (5000ms)");
     }
 
     #[test]
