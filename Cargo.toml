@@ -86,7 +86,7 @@ tera = "1"
 schemars = { version = "0.8", features = ["uuid1"] }
 
 # MCP server
-rmcp = { version = "1", features = ["macros", "server", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "1", features = ["macros", "server", "client", "transport-io", "transport-async-rw", "transport-streamable-http-server"] }
 
 # Async futures utilities
 futures = "0.3"
