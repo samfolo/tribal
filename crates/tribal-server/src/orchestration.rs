@@ -17,7 +17,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::TribalConfig;
-use tribal_mcp::{AppState, HandlerConfig};
+use tribal_mcp::AppState;
 use tribal_worker::{Worker, WorkerError};
 
 use crate::{
@@ -83,18 +83,21 @@ impl ServerHandle {
     /// # Errors
     ///
     /// Returns [`AppError::WorkerDeath`] if the worker exited unexpectedly
-    /// before shutdown was initiated.
+    /// before shutdown was initiated, or
+    /// [`AppError::ShutdownDeadlineExceeded`] if the worker did not finish
+    /// within the configured deadline.
     pub fn shutdown(mut self) -> Result<(), AppError> {
         self.cancellation_token.cancel();
 
-        if self
+        let deadline_exceeded = self
             .worker_rt
             .block_on(tokio::time::timeout(
                 self.shutdown_deadline,
                 self.worker_handle,
             ))
-            .is_err()
-        {
+            .is_err();
+
+        if deadline_exceeded {
             tracing::warn!(
                 deadline_ms = self.shutdown_deadline.as_millis(),
                 "shutdown deadline expired; dropping worker runtime",
@@ -105,10 +108,16 @@ impl ServerHandle {
 
         drop(self.worker_rt);
 
-        tracing::info!(worker_died, "shutdown complete");
+        tracing::info!(worker_died, deadline_exceeded, "shutdown complete");
 
         if worker_died {
             return Err(AppError::WorkerDeath);
+        }
+
+        if deadline_exceeded {
+            return Err(AppError::ShutdownDeadlineExceeded {
+                deadline_ms: self.shutdown_deadline.as_millis(),
+            });
         }
 
         Ok(())
@@ -128,6 +137,12 @@ impl ServerHandle {
 /// Returns a [`ServerHandle`] providing access to the running server's state
 /// and shutdown mechanism.
 ///
+/// # Panics
+///
+/// Must be called from outside a tokio runtime.  This function creates its
+/// own runtimes and calls [`Runtime::block_on`](tokio::runtime::Runtime::block_on),
+/// which panics if invoked from within an existing runtime context.
+///
 /// # Errors
 ///
 /// Returns [`AppError`] if runtime creation, database connection, migration,
@@ -138,7 +153,6 @@ pub fn start_server(
     cli_project: Option<String>,
     cancellation_token: CancellationToken,
 ) -> Result<ServerHandle, AppError> {
-    let handler_config = HandlerConfig::from(config).with_pool_name(POOL_NAME_MCP);
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
     // -- Main runtime --------------------------------------------------------
@@ -152,7 +166,6 @@ pub fn start_server(
     let (state, worker) = main_rt.block_on(bootstrap(
         config,
         cli_project,
-        handler_config,
         cancellation_token.clone(),
         Arc::clone(&job_state_txs),
     ))?;
@@ -228,7 +241,6 @@ pub fn start_server(
 async fn bootstrap(
     config: &TribalConfig,
     cli_project: Option<String>,
-    _handler_config: HandlerConfig,
     cancellation_token: CancellationToken,
     job_state_txs: JobStateTxs,
 ) -> Result<(Arc<AppState>, Arc<Worker>), AppError> {
