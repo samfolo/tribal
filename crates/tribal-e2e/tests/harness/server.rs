@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use rmcp::{
-    handler::client::ClientHandler,
-    service::{RoleClient, RunningService, ServiceExt},
-};
+use rmcp::{ServiceExt, service::{RoleClient, RunningService}};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use tribal_config::TribalConfig;
