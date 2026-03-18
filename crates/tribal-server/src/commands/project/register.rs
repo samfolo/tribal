@@ -2,7 +2,7 @@
 
 use std::str::FromStr;
 
-use tribal_config::load_config;
+use tribal_config::{DatabaseConfig, load_config};
 use tribal_db::{DbError, NewProject, PgProjectRepository, ProjectRepository};
 use tribal_domain::GitRemote;
 
@@ -10,7 +10,7 @@ use super::output;
 use crate::{
     cli::ProjectRegisterArgs,
     commands::common::{
-        COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DEFAULT_DATABASE_URL,
+        COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
         PROJECT_SCHEMA_VERSION,
     },
     error::AppError,
@@ -52,8 +52,11 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
     let name = name.unwrap_or_else(|| git_remote.path().to_owned());
     let branch = branch.unwrap_or_else(|| DEFAULT_BRANCH.to_owned());
 
-    let command_defaults = [("database.url", DEFAULT_DATABASE_URL)];
-    let config = load_config(config_path, Some(cli_overrides), Some(&command_defaults))?;
+    let config = load_config(
+        config_path,
+        Some(cli_overrides),
+        Some(&DATABASE_COMMAND_DEFAULTS),
+    )?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -70,7 +73,7 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
 /// Connects to the database, inserts (or finds) the project, and prints
 /// the result.
 async fn run_async(
-    db_config: &tribal_config::DatabaseConfig,
+    db_config: &DatabaseConfig,
     git_remote: &GitRemote,
     name: &str,
     branch: &str,
@@ -149,17 +152,14 @@ mod tests {
 
     #[test]
     fn test_resolve_git_remote_explicit_valid() {
-        let result = resolve_git_remote(Some("git@github.com:user/repo.git"));
-        assert!(result.is_ok());
-        let remote = result.unwrap();
+        let remote = resolve_git_remote(Some("git@github.com:user/repo.git")).unwrap();
         assert_eq!(remote.as_str(), "github.com/user/repo");
+        assert_eq!(remote.path(), "user/repo");
     }
 
     #[test]
     fn test_resolve_git_remote_explicit_invalid() {
-        let result = resolve_git_remote(Some(""));
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = resolve_git_remote(Some("")).unwrap_err();
         assert!(
             err.to_string().contains("git remote detection failed"),
             "unexpected error: {err}",
