@@ -11,13 +11,13 @@ use tribal_domain::Project;
 // ---------------------------------------------------------------------------
 
 /// Message when a project is successfully registered.
-pub(super) const MSG_PROJECT_REGISTERED: &str = "project registered";
+pub(super) const PROJECT_REGISTERED: &str = "project registered";
 
 /// Message when the project already exists.
-pub(super) const MSG_PROJECT_ALREADY_EXISTS: &str = "project already registered";
+pub(super) const PROJECT_ALREADY_EXISTS: &str = "project already registered";
 
 /// Message when no projects exist.
-pub(super) const MSG_NO_PROJECTS: &str = "no projects registered";
+pub(super) const NO_PROJECTS: &str = "no projects registered";
 
 /// Minimum width for the ID column in the project table.
 const MIN_COL_WIDTH_ID: usize = 2;
@@ -43,9 +43,9 @@ pub(super) fn git_remote_resolved(remote: &str) {
 /// Reports a successful registration or existing project to stderr.
 pub(super) fn registered(project: &Project, already_existed: bool) {
     let msg = if already_existed {
-        MSG_PROJECT_ALREADY_EXISTS
+        PROJECT_ALREADY_EXISTS
     } else {
-        MSG_PROJECT_REGISTERED
+        PROJECT_REGISTERED
     };
     eprintln!("  {msg}: {} ({})", project.name(), project.id());
 }
@@ -85,7 +85,7 @@ pub(super) fn mcp_snippet(project: &Project) {
 /// calculated dynamically from content.
 pub(super) fn project_table(projects: &[Project]) {
     if projects.is_empty() {
-        eprintln!("{MSG_NO_PROJECTS}");
+        eprintln!("{NO_PROJECTS}");
         return;
     }
 
