@@ -43,15 +43,19 @@ pub(crate) fn run(config_path: &str, args: ProjectListArgs) -> Result<(), AppErr
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    let projects = rt.block_on(fetch_projects(&config.database))?;
-    output::project_table(&projects);
-
-    Ok(())
+    rt.block_on(run_async(&config.database))
 }
 
 // ---------------------------------------------------------------------------
 // Async flow
 // ---------------------------------------------------------------------------
+
+/// Fetches all projects from the database and prints the table.
+async fn run_async(db_config: &DatabaseConfig) -> Result<(), AppError> {
+    let projects = fetch_projects(db_config).await?;
+    output::project_table(&projects);
+    Ok(())
+}
 
 /// Fetches all projects from the database.
 async fn fetch_projects(db_config: &DatabaseConfig) -> Result<Vec<Project>, AppError> {
@@ -141,7 +145,7 @@ mod tests {
         let projects = fetch_projects(&db_config).await.expect("fetch_projects");
 
         assert_eq!(projects.len(), 2);
-        let names: Vec<&str> = projects.iter().map(|p| p.name()).collect();
+        let names: Vec<&str> = projects.iter().map(Project::name).collect();
         assert!(names.contains(&"list-a"));
         assert!(names.contains(&"list-b"));
 
