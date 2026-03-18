@@ -15,6 +15,7 @@ use tribal_domain::Principal;
 use super::{config_file, output, token};
 use crate::{
     cli::SetupArgs,
+    commands::common::{COMMAND_POOL_MAX_CONNECTIONS, DEFAULT_DATABASE_URL},
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
 };
@@ -26,19 +27,13 @@ use crate::{
 /// Principal key for the local stdio transport identity.
 const LOCAL_PRINCIPAL_KEY: &str = "principal:local";
 
-/// Default database URL used when no other source provides one.
-///
-/// Injected as a command-defaults-layer value so that the figment cascade
-/// still respects YAML, env vars, and CLI overrides.
-const DEFAULT_DATABASE_URL: &str = "postgresql://tribal@localhost:5432/tribal";
-
 /// Pool name for the single setup connection.
 const POOL_NAME_SETUP: &str = "setup";
 
-/// Maximum connections for the setup pool.
-const SETUP_POOL_MAX_CONNECTIONS: u32 = 1;
-
 /// Statement timeout for setup operations (migrations + inserts).
+///
+/// Longer than [`COMMAND_STATEMENT_TIMEOUT_MS`] because setup runs
+/// migrations in addition to inserts.
 const SETUP_STATEMENT_TIMEOUT_MS: u64 = 60_000;
 
 /// Error message for a token TTL that exceeds the representable range.
@@ -98,7 +93,7 @@ async fn run_async(
     let pool = tribal_db::create_pool(
         &config.database,
         POOL_NAME_SETUP,
-        SETUP_POOL_MAX_CONNECTIONS,
+        COMMAND_POOL_MAX_CONNECTIONS,
         SETUP_STATEMENT_TIMEOUT_MS,
     )
     .await
