@@ -4614,6 +4614,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tribal-e2e"
+version = "0.1.0"
+dependencies = [
+ "rmcp",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tribal-common",
+ "tribal-config",
+ "tribal-db",
+ "tribal-domain",
+ "tribal-inference",
+ "tribal-mcp",
+ "tribal-server",
+ "tribal-test-utils",
+ "wiremock",
+]
+
+[[package]]
 name = "tribal-inference"
 version = "0.1.0"
 dependencies = [
