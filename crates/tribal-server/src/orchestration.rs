@@ -80,6 +80,12 @@ impl ServerHandle {
     /// of this function.  The sweep task terminates via the already-cancelled
     /// [`CancellationToken`].
     ///
+    /// # Panics
+    ///
+    /// Must be called from outside a tokio runtime.  This method uses
+    /// [`Runtime::block_on`](tokio::runtime::Runtime::block_on) internally,
+    /// which panics if invoked from within an existing runtime context.
+    ///
     /// # Errors
     ///
     /// Returns [`AppError::WorkerDeath`] if the worker exited unexpectedly
