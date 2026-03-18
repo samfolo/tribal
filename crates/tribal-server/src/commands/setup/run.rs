@@ -15,7 +15,7 @@ use tribal_domain::Principal;
 use super::{config_file, output, token};
 use crate::{
     cli::SetupArgs,
-    commands::common::{COMMAND_POOL_MAX_CONNECTIONS, DEFAULT_DATABASE_URL},
+    commands::common::{COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS},
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
 };
@@ -32,8 +32,8 @@ const POOL_NAME_SETUP: &str = "setup";
 
 /// Statement timeout for setup operations (migrations + inserts).
 ///
-/// Longer than [`COMMAND_STATEMENT_TIMEOUT_MS`] because setup runs
-/// migrations in addition to inserts.
+/// Longer than the shared `COMMAND_STATEMENT_TIMEOUT_MS` because setup
+/// runs migrations in addition to inserts.
 const SETUP_STATEMENT_TIMEOUT_MS: u64 = 60_000;
 
 /// Error message for a token TTL that exceeds the representable range.
@@ -50,9 +50,11 @@ const TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
 /// Returns an [`AppError`] if any phase of the setup fails.
 pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
     let cli_overrides = args.into_cli_overrides();
-    let command_defaults = [("database.url", DEFAULT_DATABASE_URL)];
-
-    let config = load_config(config_path, Some(cli_overrides), Some(&command_defaults))?;
+    let config = load_config(
+        config_path,
+        Some(cli_overrides),
+        Some(&DATABASE_COMMAND_DEFAULTS),
+    )?;
     let expires_at = Utc::now() + ttl_to_delta(config.auth.token_ttl_hours)?;
 
     let expanded_config_path = shellexpand::tilde(config_path).into_owned();

@@ -10,6 +10,12 @@
 /// still respects YAML, env vars, and CLI overrides.
 pub(crate) const DEFAULT_DATABASE_URL: &str = "postgresql://tribal@localhost:5432/tribal";
 
+/// Figment command-defaults layer for the database URL.
+///
+/// Pass to `load_config` as the `command_defaults` parameter.
+pub(crate) const DATABASE_COMMAND_DEFAULTS: [(&str, &str); 1] =
+    [("database.url", DEFAULT_DATABASE_URL)];
+
 // ---------------------------------------------------------------------------
 // Pool configuration
 // ---------------------------------------------------------------------------

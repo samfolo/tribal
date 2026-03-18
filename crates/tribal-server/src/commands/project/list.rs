@@ -1,13 +1,13 @@
 //! Core list flow: entry point and async orchestration.
 
-use tribal_config::load_config;
+use tribal_config::{DatabaseConfig, load_config};
 use tribal_db::{PgProjectRepository, ProjectRepository};
 
 use super::output;
 use crate::{
     cli::ProjectListArgs,
     commands::common::{
-        COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DEFAULT_DATABASE_URL,
+        COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
     },
     error::AppError,
 };
@@ -31,8 +31,11 @@ const POOL_NAME_LIST: &str = "list";
 /// or the query fails.
 pub(crate) fn run(config_path: &str, args: ProjectListArgs) -> Result<(), AppError> {
     let cli_overrides = args.database.into_cli_overrides();
-    let command_defaults = [("database.url", DEFAULT_DATABASE_URL)];
-    let config = load_config(config_path, Some(cli_overrides), Some(&command_defaults))?;
+    let config = load_config(
+        config_path,
+        Some(cli_overrides),
+        Some(&DATABASE_COMMAND_DEFAULTS),
+    )?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -47,7 +50,7 @@ pub(crate) fn run(config_path: &str, args: ProjectListArgs) -> Result<(), AppErr
 // ---------------------------------------------------------------------------
 
 /// Fetches all projects and prints the table.
-async fn run_async(db_config: &tribal_config::DatabaseConfig) -> Result<(), AppError> {
+async fn run_async(db_config: &DatabaseConfig) -> Result<(), AppError> {
     let pool = tribal_db::create_pool(
         db_config,
         POOL_NAME_LIST,
