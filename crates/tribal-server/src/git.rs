@@ -40,9 +40,7 @@ pub(crate) const REMOTE_URL_MISSING_HOST: &str = "remote URL has no host compone
 ///
 /// # Errors
 ///
-/// Returns [`AppError::GitDetection`] if the current directory is not
-/// inside a git repository, no default fetch remote is configured, or
-/// the remote URL has no host component.
+/// See [`detect_git_remote_from`] for the full set of failure modes.
 pub(crate) fn detect_git_remote() -> Result<GitRemote, AppError> {
     detect_git_remote_from(Path::new("."))
 }
