@@ -69,6 +69,12 @@ pub struct ConnectionRepositories {
     pub(crate) triage_result: Arc<dyn TriageResultRepository + Send + Sync>,
 }
 
+impl Default for ConnectionRepositories {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConnectionRepositories {
     /// Constructs real database-backed repositories for all MCP handlers.
     #[must_use]
