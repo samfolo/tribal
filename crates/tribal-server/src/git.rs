@@ -57,27 +57,40 @@ pub(crate) fn detect_git_remote() -> Result<GitRemote, AppError> {
 /// - no default fetch remote is configured
 /// - the remote URL has no host component
 pub(crate) fn detect_git_remote_from(start_dir: &Path) -> Result<GitRemote, AppError> {
-    let repo = gix::discover(start_dir).map_err(|_| AppError::GitDetection {
-        reason: ERR_NOT_A_GIT_REPOSITORY.to_owned(),
+    let repo = gix::discover(start_dir).map_err(|e| {
+        tracing::debug!(%e, "git repository discovery failed");
+        AppError::GitDetection {
+            reason: ERR_NOT_A_GIT_REPOSITORY.to_owned(),
+        }
     })?;
 
     let remote = repo
         .find_default_remote(Direction::Fetch)
-        .ok_or_else(|| AppError::GitDetection {
-            reason: ERR_NO_FETCH_REMOTE.to_owned(),
+        .ok_or_else(|| {
+            tracing::debug!("no default fetch remote configured");
+            AppError::GitDetection {
+                reason: ERR_NO_FETCH_REMOTE.to_owned(),
+            }
         })?
-        .map_err(|_| AppError::GitDetection {
-            reason: ERR_NO_FETCH_REMOTE.to_owned(),
+        .map_err(|e| {
+            tracing::debug!(%e, "failed to read default fetch remote");
+            AppError::GitDetection {
+                reason: ERR_NO_FETCH_REMOTE.to_owned(),
+            }
         })?;
 
-    let url = remote
-        .url(Direction::Fetch)
-        .ok_or_else(|| AppError::GitDetection {
+    let url = remote.url(Direction::Fetch).ok_or_else(|| {
+        tracing::debug!("fetch remote has no URL");
+        AppError::GitDetection {
             reason: ERR_NO_FETCH_REMOTE.to_owned(),
-        })?;
+        }
+    })?;
 
-    let host = url.host().ok_or_else(|| AppError::GitDetection {
-        reason: ERR_REMOTE_URL_MISSING_HOST.to_owned(),
+    let host = url.host().ok_or_else(|| {
+        tracing::debug!(path = %url.path, "remote URL has no host component");
+        AppError::GitDetection {
+            reason: ERR_REMOTE_URL_MISSING_HOST.to_owned(),
+        }
     })?;
 
     let path = url.path.to_string();

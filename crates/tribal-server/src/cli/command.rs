@@ -501,7 +501,10 @@ mod tests {
         let Some(Command::Setup { args }) = cli.command else {
             unreachable!();
         };
-        assert_eq!(args.database.database_url.as_deref(), Some("postgres://h/db"));
+        assert_eq!(
+            args.database.database_url.as_deref(),
+            Some("postgres://h/db")
+        );
     }
 
     #[test]
@@ -510,7 +513,10 @@ mod tests {
         let Some(Command::Setup { args }) = cli.command else {
             unreachable!();
         };
-        assert_eq!(args.database.database_url.as_deref(), Some("postgres://h/db"));
+        assert_eq!(
+            args.database.database_url.as_deref(),
+            Some("postgres://h/db")
+        );
     }
 
     // -- setup into_cli_overrides -------------------------------------------
@@ -561,13 +567,13 @@ mod tests {
         let Some(Command::Project(ProjectCommand::Register { args })) = cli.command else {
             unreachable!();
         };
-        assert_eq!(
-            args.remote.as_deref(),
-            Some("git@github.com:user/repo.git"),
-        );
+        assert_eq!(args.remote.as_deref(), Some("git@github.com:user/repo.git"),);
         assert_eq!(args.name.as_deref(), Some("my-project"));
         assert_eq!(args.branch.as_deref(), Some("develop"));
-        assert_eq!(args.database.database_url.as_deref(), Some("postgres://h/db"));
+        assert_eq!(
+            args.database.database_url.as_deref(),
+            Some("postgres://h/db")
+        );
     }
 
     // -- Project list -------------------------------------------------------
@@ -584,18 +590,15 @@ mod tests {
 
     #[test]
     fn test_project_list_parses_database_url() {
-        let cli = Cli::try_parse_from([
-            "tribal",
-            "project",
-            "list",
-            "-d",
-            "postgres://h/db",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["tribal", "project", "list", "-d", "postgres://h/db"]).unwrap();
         let Some(Command::Project(ProjectCommand::List { args })) = cli.command else {
             unreachable!();
         };
-        assert_eq!(args.database.database_url.as_deref(), Some("postgres://h/db"));
+        assert_eq!(
+            args.database.database_url.as_deref(),
+            Some("postgres://h/db")
+        );
     }
 
     // -- No subcommand ------------------------------------------------------
