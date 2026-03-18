@@ -1,4 +1,4 @@
-//! Constants shared across CLI command implementations.
+//! Shared utilities for CLI command implementations.
 
 // ---------------------------------------------------------------------------
 // Database defaults
