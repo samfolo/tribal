@@ -1,6 +1,9 @@
 {
   "permissions": {
     "allow": [
+      "Read(//tmp/**)",
+      "Read(~/.cargo/registry/**)",
+
       "Skill(reviewing-tribal-plan)",
       "Skill(reviewing-tribal-ticket)",
 
