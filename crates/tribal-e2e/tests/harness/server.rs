@@ -1,4 +1,12 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use rmcp::{
     ServiceExt,
@@ -202,6 +210,7 @@ pub struct TestHarness {
     relation_server: MockServer,
 
     labels: HashMap<String, String>,
+    epoch: Arc<AtomicU64>,
     principal_key: String,
     cli_project: Option<String>,
 
@@ -330,6 +339,7 @@ impl TestHarness {
             triage_server,
             relation_server,
             labels,
+            epoch: Arc::new(AtomicU64::new(0)),
             principal_key: setup.principal_key,
             cli_project,
             _prompts_dir: prompts_dir,
@@ -353,7 +363,7 @@ impl TestHarness {
             .take()
             .expect("shutdown called more than once");
         tokio::task::spawn_blocking(move || {
-            let _ = handle.shutdown();
+            handle.shutdown().expect("server shutdown failed");
         })
         .await
         .expect("shutdown task panicked");
@@ -383,6 +393,8 @@ impl TestHarness {
             "restart() requires a prior shutdown()",
         );
 
+        self.invalidate_client_handles();
+
         let token = CancellationToken::new();
         let (handle, state, client) = start_and_connect(
             &self.config,
@@ -396,6 +408,14 @@ impl TestHarness {
         self.cancellation_token = token;
         self.state = state;
         self.client = client;
+    }
+
+    /// Advances the epoch, invalidating all outstanding `ClientHandle`s.
+    ///
+    /// Any subsequent `call_tool` on a stale handle will panic rather than
+    /// silently using a session that no longer exists.
+    fn invalidate_client_handles(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     // -----------------------------------------------------------------------
@@ -532,7 +552,11 @@ impl TestHarness {
 
         let client = ().serve(client_transport).await.expect("client MCP handshake failed");
 
-        ClientHandle { client }
+        ClientHandle {
+            client,
+            birth_epoch: self.epoch.load(Ordering::SeqCst),
+            current_epoch: Arc::clone(&self.epoch),
+        }
     }
 }
 
@@ -541,14 +565,37 @@ impl TestHarness {
 // ---------------------------------------------------------------------------
 
 /// An additional MCP client connected to the same server.
+///
+/// Tracks the harness epoch at creation time. Calling `call_tool` after a
+/// `restart()` panics with a clear message — the handle is stale because
+/// sessions are per-connection and do not survive restarts.
 pub struct ClientHandle {
     client: RunningService<RoleClient, ()>,
+    birth_epoch: u64,
+    current_epoch: Arc<AtomicU64>,
 }
 
 impl ClientHandle {
     /// Calls a tool via JSON-RPC and returns the result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the harness has been restarted since this handle was
+    /// created — the underlying session is no longer valid.
     pub async fn call_tool(&self, name: &str, arguments: Value) -> CallToolResult {
+        self.assert_valid();
         tool_call::call_tool(&self.client, name, arguments).await
+    }
+
+    /// Panics if the harness epoch has advanced past this handle's birth.
+    fn assert_valid(&self) {
+        let current = self.current_epoch.load(Ordering::SeqCst);
+        assert_eq!(
+            self.birth_epoch, current,
+            "stale ClientHandle from epoch {}, current epoch is {current} — \
+             sessions do not survive restart()",
+            self.birth_epoch,
+        );
     }
 }
 
