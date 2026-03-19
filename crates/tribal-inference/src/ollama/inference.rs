@@ -22,7 +22,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const PROVIDER_NAME: &str = "ollama";
-const CHAT_PATH: &str = "/api/chat";
+pub const CHAT_PATH: &str = "/api/chat";
 
 // ---------------------------------------------------------------------------
 // Private serde types

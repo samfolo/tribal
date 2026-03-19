@@ -24,7 +24,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const PROVIDER_NAME: &str = "openai";
-const EMBED_PATH: &str = "/v1/embeddings";
+pub const EMBED_PATH: &str = "/v1/embeddings";
 
 // ---------------------------------------------------------------------------
 // Private serde types

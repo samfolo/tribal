@@ -23,7 +23,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const PROVIDER_NAME: &str = "openai";
-const CHAT_PATH: &str = "/v1/chat/completions";
+pub const CHAT_PATH: &str = "/v1/chat/completions";
 
 // ---------------------------------------------------------------------------
 // Private serde types

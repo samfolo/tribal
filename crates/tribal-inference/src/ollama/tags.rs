@@ -4,7 +4,7 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-pub(super) const TAGS_PATH: &str = "/api/tags";
+pub const TAGS_PATH: &str = "/api/tags";
 
 // ---------------------------------------------------------------------------
 // Private serde types
