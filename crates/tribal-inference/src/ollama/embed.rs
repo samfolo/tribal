@@ -23,7 +23,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const PROVIDER_NAME: &str = "ollama";
-const EMBED_PATH: &str = "/api/embed";
+pub const EMBED_PATH: &str = "/api/embed";
 
 // ---------------------------------------------------------------------------
 // Private serde types
