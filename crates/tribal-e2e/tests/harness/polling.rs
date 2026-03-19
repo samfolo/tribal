@@ -1,8 +1,10 @@
 use serde_json::json;
 
-use super::diagnostics::DiagnosticContext;
-use super::server::TestHarness;
-use super::tool_call::{tool_result_json, tool_result_text};
+use super::{
+    diagnostics::DiagnosticContext,
+    server::TestHarness,
+    tool_call::{tool_result_json, tool_result_text},
+};
 
 // ---------------------------------------------------------------------------
 // Constants

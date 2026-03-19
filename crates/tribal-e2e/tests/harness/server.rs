@@ -1,7 +1,4 @@
-use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use rmcp::{
     ServiceExt,
@@ -30,13 +27,17 @@ use wiremock::{
     matchers::{body_string_contains, method, path},
 };
 
-use super::config::test_config;
-use super::mocks::envelope::{
-    chat_path, embed_path, fixed_embedding_vector, tags_path, wrap_completion, wrap_embedding,
+use super::{
+    config::test_config,
+    mocks::{
+        envelope::{
+            chat_path, embed_path, fixed_embedding_vector, tags_path, wrap_completion,
+            wrap_embedding,
+        },
+        mounting::StageMountBuilder,
+    },
+    polling, tool_call,
 };
-use super::mocks::mounting::StageMountBuilder;
-use super::polling;
-use super::tool_call;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,10 +58,7 @@ const DEFAULT_PRINCIPAL_KEY: &str = "e2e-principal";
 /// The higher-ranked lifetime is necessary because the returned future
 /// borrows `SeedContext` mutably — its lifetime is tied to the borrow.
 type AsyncSeedFn = Box<
-    dyn for<'a> FnOnce(
-            &'a mut SeedContext,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
-        + Send,
+    dyn for<'a> FnOnce(&'a mut SeedContext) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send,
 >;
 
 // ---------------------------------------------------------------------------
@@ -240,10 +238,7 @@ impl TestHarness {
         setup_fn(&mut setup);
 
         // 5. Insert project + principal
-        let mut raw_conn = ctx
-            .raw_connection()
-            .await
-            .expect("raw connection for seed");
+        let mut raw_conn = ctx.raw_connection().await.expect("raw connection for seed");
 
         let project = if setup.no_project {
             None
@@ -532,10 +527,7 @@ impl TestHarness {
             server.waiting().await.expect("server MCP session error");
         });
 
-        let client = ()
-            .serve(client_transport)
-            .await
-            .expect("client MCP handshake failed");
+        let client = ().serve(client_transport).await.expect("client MCP handshake failed");
 
         ClientHandle { client }
     }
@@ -596,10 +588,7 @@ async fn start_and_connect(
         server.waiting().await.expect("server MCP session error");
     });
 
-    let client = ()
-        .serve(client_transport)
-        .await
-        .expect("client MCP handshake failed");
+    let client = ().serve(client_transport).await.expect("client MCP handshake failed");
 
     (handle, state, client)
 }
