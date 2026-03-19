@@ -10,8 +10,8 @@ use crate::harness::{
     tool_call::{assert_success, call_tool, tool_result_json},
     wiremock_setup::{
         EMBEDDING_MODEL, EXTRACTION_MODEL, SMALL_MODEL, extraction_response, mount_chat_mock,
-        mount_chat_sequence, mount_embed_mock, mount_tags_mock, novel_triage_response,
-        relation_response,
+        mount_chat_sequence, mount_embed_mock, mount_inference_probe_mock, mount_tags_mock,
+        novel_triage_response, relation_response,
     },
 };
 
@@ -59,6 +59,7 @@ async fn test_explore_graph_traversal() {
     mount_embed_mock(&embedding_server).await;
 
     mount_tags_mock(&extraction_server, EXTRACTION_MODEL).await;
+    mount_inference_probe_mock(&extraction_server).await;
     mount_chat_mock(
         &extraction_server,
         &extraction_response(
@@ -86,6 +87,7 @@ async fn test_explore_graph_traversal() {
 
     // Triage: all Novel (3 calls)
     mount_tags_mock(&triage_server, SMALL_MODEL).await;
+    mount_inference_probe_mock(&triage_server).await;
     mount_chat_sequence(
         &triage_server,
         &[
@@ -98,6 +100,7 @@ async fn test_explore_graph_traversal() {
 
     // Relation: A→B (supports), B→C (contradicts)
     mount_tags_mock(&relation_server, SMALL_MODEL).await;
+    mount_inference_probe_mock(&relation_server).await;
     mount_chat_mock(
         &relation_server,
         &relation_response(&[(0, 1, "supports"), (1, 2, "contradicts")]),

@@ -10,7 +10,8 @@ use crate::harness::{
     server::build_harness,
     tool_call::{assert_error, assert_success, call_tool, tool_result_json},
     wiremock_setup::{
-        EMBEDDING_MODEL, EXTRACTION_MODEL, SMALL_MODEL, mount_embed_mock, mount_tags_mock,
+        EMBEDDING_MODEL, EXTRACTION_MODEL, SMALL_MODEL, mount_embed_mock,
+        mount_inference_probe_mock, mount_tags_mock,
     },
 };
 
@@ -32,6 +33,7 @@ async fn test_session_context_lifecycle() {
     mount_tags_mock(&mock_server, EXTRACTION_MODEL).await;
     mount_tags_mock(&mock_server, SMALL_MODEL).await;
     mount_embed_mock(&mock_server).await;
+    mount_inference_probe_mock(&mock_server).await;
 
     // -- Infrastructure scaffolding ------------------------------------------
     let mut conn = pool.acquire().await.expect("acquire connection");

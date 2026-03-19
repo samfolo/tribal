@@ -14,7 +14,7 @@ use crate::harness::{
     wiremock_setup::{
         EMBEDDING_MODEL, EXTRACTION_MODEL, SMALL_MODEL, duplicate_triage_response,
         extraction_response, mount_chat_content_match, mount_chat_mock, mount_embed_mock,
-        mount_tags_mock, novel_triage_response, relation_response,
+        mount_inference_probe_mock, mount_tags_mock, novel_triage_response, relation_response,
     },
 };
 
@@ -77,6 +77,7 @@ async fn test_ingest_pipeline_end_to_end() {
     mount_embed_mock(&embedding_server).await;
 
     mount_tags_mock(&extraction_server, EXTRACTION_MODEL).await;
+    mount_inference_probe_mock(&extraction_server).await;
     mount_chat_mock(
         &extraction_server,
         &extraction_response(
@@ -98,16 +99,21 @@ async fn test_ingest_pipeline_end_to_end() {
     .await;
 
     mount_tags_mock(&triage_server, SMALL_MODEL).await;
+    mount_inference_probe_mock(&triage_server).await;
     mount_chat_content_match(
         &triage_server,
         &[
             ("memory safety", novel_triage_response()),
-            ("lifetimes", duplicate_triage_response(&existing_item.id().to_string())),
+            (
+                "lifetimes",
+                duplicate_triage_response(&existing_item.id().to_string()),
+            ),
         ],
     )
     .await;
 
     mount_tags_mock(&relation_server, SMALL_MODEL).await;
+    mount_inference_probe_mock(&relation_server).await;
     mount_chat_mock(&relation_server, &relation_response(&[(0, 1, "supports")])).await;
 
     // -- Start server and connect client -------------------------------------
