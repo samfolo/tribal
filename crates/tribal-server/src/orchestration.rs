@@ -297,13 +297,13 @@ async fn bootstrap(
         build_embedding_provider(&registry, &config.embedding).await?;
 
     let (extraction_provider, extraction_key) =
-        build_inference_provider(&registry, &config.inference.extraction)?;
+        build_inference_provider(&registry, &config.inference.extraction).await?;
 
     let (triage_provider, triage_key) =
-        build_inference_provider(&registry, &config.inference.triage)?;
+        build_inference_provider(&registry, &config.inference.triage).await?;
 
     let (relation_provider, relation_key) =
-        build_inference_provider(&registry, &config.inference.relation)?;
+        build_inference_provider(&registry, &config.inference.relation).await?;
 
     // -- Project resolution --------------------------------------------------
 
