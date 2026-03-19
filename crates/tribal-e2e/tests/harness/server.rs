@@ -13,8 +13,10 @@ use sqlx::PgPool;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use tribal_config::{ProviderKind, TribalConfig, validate};
-use tribal_db::{PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository};
-use tribal_domain::{GitRemote, PrincipalId, ProjectId};
+use tribal_db::{
+    NewProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
+};
+use tribal_domain::{PrincipalId, Project};
 use tribal_mcp::{
     AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
     TribalServerHandler,
@@ -23,13 +25,17 @@ use tribal_server::{ServerHandle, start_server};
 use tribal_test_utils::{
     a_new_principal, a_new_project, serial_lock, test_context, truncate_all_tables,
 };
-use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{body_string_contains, method, path}};
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{body_string_contains, method, path},
+};
 
 use super::config::test_config;
 use super::mocks::envelope::{
     chat_path, embed_path, fixed_embedding_vector, tags_path, wrap_completion, wrap_embedding,
 };
 use super::mocks::mounting::StageMountBuilder;
+use super::polling;
 use super::tool_call;
 
 // ---------------------------------------------------------------------------
@@ -39,39 +45,23 @@ use super::tool_call;
 /// Buffer size for the in-process duplex transport between server and client.
 const DUPLEX_BUFFER_SIZE: usize = 65_536;
 
+/// Principal key used when no override is provided.
+const DEFAULT_PRINCIPAL_KEY: &str = "e2e-principal";
+
 // ---------------------------------------------------------------------------
 // Seed closure type
 // ---------------------------------------------------------------------------
 
+/// The stored form of an async seed closure.
+///
+/// The higher-ranked lifetime is necessary because the returned future
+/// borrows `SeedContext` mutably — its lifetime is tied to the borrow.
 type AsyncSeedFn = Box<
     dyn for<'a> FnOnce(
             &'a mut SeedContext,
         ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
         + Send,
 >;
-
-// ---------------------------------------------------------------------------
-// seed! macro
-// ---------------------------------------------------------------------------
-
-/// Wraps an async seed closure, hiding the HRTB boxing ceremony.
-///
-/// ```ignore
-/// seed!(setup, |seed| {
-///     let item = PgKnowledgeItemRepository
-///         .insert(seed.conn(), &a_new_knowledge_item()...build())
-///         .await
-///         .expect("insert");
-///     seed.label("item", item.id());
-/// });
-/// ```
-macro_rules! seed {
-    ($setup:expr, |$seed:ident| $body:block) => {
-        $setup.seed(|$seed| ::std::boxed::Box::pin(async move $body))
-    };
-}
-
-pub(crate) use seed;
 
 // ---------------------------------------------------------------------------
 // HarnessSetup
@@ -81,7 +71,7 @@ pub(crate) use seed;
 /// care about — everything else uses sensible defaults.
 pub struct HarnessSetup {
     principal_key: String,
-    project: Option<tribal_domain::NewProject>,
+    project: Option<NewProject>,
     no_project: bool,
     config_override: Option<Box<dyn FnOnce(&mut TribalConfig)>>,
     seed: Option<AsyncSeedFn>,
@@ -90,7 +80,7 @@ pub struct HarnessSetup {
 impl HarnessSetup {
     fn new() -> Self {
         Self {
-            principal_key: "e2e-principal".to_owned(),
+            principal_key: DEFAULT_PRINCIPAL_KEY.to_owned(),
             project: None,
             no_project: false,
             config_override: None,
@@ -104,15 +94,16 @@ impl HarnessSetup {
     }
 
     /// Overrides the default project.
-    pub fn project(&mut self, project: tribal_domain::NewProject) {
+    pub fn project(&mut self, project: NewProject) {
         self.project = Some(project);
     }
 
     /// Suppresses default project creation and startup resolution.
     ///
     /// When set, `cli_project` is `None` and the server starts without a
-    /// resolved project. `SeedContext::project_id()` will panic — manage
-    /// projects manually via the seed closure.
+    /// resolved project. `SeedContext::project_id()` and
+    /// `SeedContext::project_git_remote()` will panic — manage projects
+    /// manually via the seed closure.
     pub fn no_project(&mut self) {
         self.no_project = true;
     }
@@ -123,16 +114,9 @@ impl HarnessSetup {
     }
 
     /// Registers an async seed closure that runs after project and
-    /// principal insertion.
-    pub fn seed(
-        &mut self,
-        f: impl for<'a> FnOnce(
-                &'a mut SeedContext,
-            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
-            + Send
-            + 'static,
-    ) {
-        self.seed = Some(Box::new(f));
+    /// principal insertion. See the `seed!` macro for ergonomic usage.
+    pub fn seed(&mut self, f: AsyncSeedFn) {
+        self.seed = Some(f);
     }
 }
 
@@ -143,9 +127,8 @@ impl HarnessSetup {
 /// Provides database access and label storage during the seed phase.
 pub struct SeedContext {
     conn: sqlx::PgConnection,
-    project_id: Option<ProjectId>,
+    project: Option<Project>,
     principal_id: PrincipalId,
-    project_git_remote: Option<GitRemote>,
     principal_key: String,
     labels: HashMap<String, String>,
 }
@@ -161,9 +144,11 @@ impl SeedContext {
     /// # Panics
     ///
     /// Panics if `no_project()` was set on `HarnessSetup`.
-    pub fn project_id(&self) -> ProjectId {
-        self.project_id
+    pub fn project_id(&self) -> tribal_domain::ProjectId {
+        self.project
+            .as_ref()
             .expect("project_id unavailable — no_project() was set")
+            .id()
     }
 
     /// ID of the auto-created principal.
@@ -176,10 +161,11 @@ impl SeedContext {
     /// # Panics
     ///
     /// Panics if `no_project()` was set on `HarnessSetup`.
-    pub fn project_git_remote(&self) -> &GitRemote {
-        self.project_git_remote
+    pub fn project_git_remote(&self) -> &tribal_domain::GitRemote {
+        self.project
             .as_ref()
             .expect("project_git_remote unavailable — no_project() was set")
+            .git_remote()
     }
 
     /// Principal key string.
@@ -205,7 +191,8 @@ pub struct TestHarness {
     client: RunningService<RoleClient, ()>,
     state: Arc<AppState>,
 
-    /// Connection pool for assertions and teardown (independent of server pools).
+    /// Connection pool for assertions and teardown (independent of server
+    /// pools).
     pub pool: PgPool,
 
     embedding_server: MockServer,
@@ -258,20 +245,18 @@ impl TestHarness {
             .await
             .expect("raw connection for seed");
 
-        let mut project_id = None;
-        let mut project_git_remote = None;
-        let mut cli_project = None;
-
-        if !setup.no_project {
+        let project = if setup.no_project {
+            None
+        } else {
             let new_project = setup.project.unwrap_or_else(|| a_new_project().build());
             let project = PgProjectRepository
                 .insert(&mut raw_conn, &new_project)
                 .await
                 .expect("insert project");
-            project_id = Some(project.id());
-            project_git_remote = Some(project.git_remote().clone());
-            cli_project = Some(project.id().to_string());
-        }
+            Some(project)
+        };
+
+        let cli_project = project.as_ref().map(|p| p.id().to_string());
 
         let principal = PgPrincipalRepository
             .insert(
@@ -288,15 +273,13 @@ impl TestHarness {
         if let Some(seed_fn) = setup.seed {
             let mut seed_ctx = SeedContext {
                 conn: raw_conn,
-                project_id,
+                project,
                 principal_id: principal.id(),
-                project_git_remote: project_git_remote.clone(),
                 principal_key: setup.principal_key.clone(),
                 labels: HashMap::new(),
             };
             seed_fn(&mut seed_ctx).await;
             labels = seed_ctx.labels;
-            // Connection is consumed by SeedContext and dropped here.
         }
 
         // 7. Build config
@@ -327,7 +310,7 @@ impl TestHarness {
         )
         .await;
 
-        // 10. Start server
+        // 10. Start server and connect client
         let token = CancellationToken::new();
         let (handle, state, client) = start_and_connect(
             &config,
@@ -436,7 +419,7 @@ impl TestHarness {
     ///
     /// Panics with rich diagnostic context if the job does not complete.
     pub async fn expect_completion(&self, job_id: &str) {
-        super::polling::expect_completion(self, job_id).await;
+        polling::expect_completion(self, job_id).await;
     }
 
     // -----------------------------------------------------------------------
@@ -462,31 +445,42 @@ impl TestHarness {
     /// Mounts extraction stage mocks via a closure-based builder.
     pub async fn mount_extraction(&self, f: impl FnOnce(&mut StageMountBuilder<'_>)) {
         let provider = self.config.inference.extraction.provider;
-        let mut builder =
-            StageMountBuilder::new(&self.extraction_server, "extraction", provider);
-        f(&mut builder);
-        builder.mount().await;
+        self.mount_stage(&self.extraction_server, "extraction", provider, f)
+            .await;
     }
 
     /// Mounts triage stage mocks via a closure-based builder.
     pub async fn mount_triage(&self, f: impl FnOnce(&mut StageMountBuilder<'_>)) {
         let provider = self.config.inference.triage.provider;
-        let mut builder = StageMountBuilder::new(&self.triage_server, "triage", provider);
-        f(&mut builder);
-        builder.mount().await;
+        self.mount_stage(&self.triage_server, "triage", provider, f)
+            .await;
     }
 
     /// Mounts relation stage mocks via a closure-based builder.
     pub async fn mount_relation(&self, f: impl FnOnce(&mut StageMountBuilder<'_>)) {
         let provider = self.config.inference.relation.provider;
-        let mut builder =
-            StageMountBuilder::new(&self.relation_server, "relation", provider);
+        self.mount_stage(&self.relation_server, "relation", provider, f)
+            .await;
+    }
+
+    async fn mount_stage(
+        &self,
+        server: &MockServer,
+        stage: &'static str,
+        provider: ProviderKind,
+        f: impl FnOnce(&mut StageMountBuilder<'_>),
+    ) {
+        let mut builder = StageMountBuilder::new(server, stage, provider);
         f(&mut builder);
         builder.mount().await;
     }
 
     // -----------------------------------------------------------------------
     // Escape hatches
+    //
+    // Direct access to the underlying wiremock servers for mock patterns
+    // that the `StageMountBuilder` API does not cover (e.g. custom body
+    // matchers, partial JSON matching, or provider-specific assertions).
     // -----------------------------------------------------------------------
 
     #[must_use]
@@ -564,9 +558,10 @@ impl ClientHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Server startup helper
+// Server startup
 // ---------------------------------------------------------------------------
 
+/// Starts the server and connects an MCP client over a duplex transport.
 async fn start_and_connect(
     config: &TribalConfig,
     cli_project: Option<String>,
@@ -615,9 +610,9 @@ async fn start_and_connect(
 
 /// Mounts provider probes and embedding mocks based on the finalised config.
 ///
-/// Two categories of mocks are mounted:
-/// - **Embedding:** tags (if Ollama) + embed endpoint with fixed vector
-/// - **Inference probes:** tags (if Ollama) + probe absorber on each
+/// Two categories:
+/// - **Embedding:** tags (if `Ollama`) + embed endpoint with fixed vector
+/// - **Inference probes:** tags (if `Ollama`) + probe absorber on each
 ///   inference server using `body_string_contains(INFERENCE_PROBE_INPUT)`
 async fn mount_infrastructure_mocks(
     config: &TribalConfig,
@@ -626,32 +621,45 @@ async fn mount_infrastructure_mocks(
     triage_server: &MockServer,
     relation_server: &MockServer,
 ) {
-    let embed_provider = config.embedding.provider;
+    let embedding_provider = config.embedding.provider;
 
     // -- Embedding server ----------------------------------------------------
-    if let Some(tp) = tags_path(embed_provider) {
-        mount_tags(embedding_server, tp, &config.embedding.model).await;
+    if let Some(tags_endpoint) = tags_path(embedding_provider) {
+        mount_tags(embedding_server, tags_endpoint, &config.embedding.model).await;
     }
 
     let vector = fixed_embedding_vector(config.embedding.dimensions);
-    let embed_body = wrap_embedding(&vector, embed_provider);
-    let ep = embed_path(embed_provider);
+    let embed_response = wrap_embedding(&vector, embedding_provider);
+    let embedding_endpoint = embed_path(embedding_provider);
+
     Mock::given(method("POST"))
-        .and(path(ep))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embed_body))
+        .and(path(embedding_endpoint))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embed_response))
         .mount(embedding_server)
         .await;
 
     // -- Inference servers (extraction, triage, relation) ---------------------
     let stages: &[(&MockServer, ProviderKind, &str)] = &[
-        (extraction_server, config.inference.extraction.provider, &config.inference.extraction.model),
-        (triage_server, config.inference.triage.provider, &config.inference.triage.model),
-        (relation_server, config.inference.relation.provider, &config.inference.relation.model),
+        (
+            extraction_server,
+            config.inference.extraction.provider,
+            &config.inference.extraction.model,
+        ),
+        (
+            triage_server,
+            config.inference.triage.provider,
+            &config.inference.triage.model,
+        ),
+        (
+            relation_server,
+            config.inference.relation.provider,
+            &config.inference.relation.model,
+        ),
     ];
 
     for &(server, provider, model) in stages {
-        if let Some(tp) = tags_path(provider) {
-            mount_tags(server, tp, model).await;
+        if let Some(tags_endpoint) = tags_path(provider) {
+            mount_tags(server, tags_endpoint, model).await;
         }
         mount_probe_absorber(server, provider).await;
     }
