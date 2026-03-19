@@ -156,14 +156,7 @@ async fn test_explore_graph_traversal() {
     assert_eq!(status, "completed", "job did not complete");
 
     // -- Discover items to get their IDs -------------------------------------
-    let discover_result = call_tool(
-        &harness.client,
-        "tribal_discover",
-        json!({ "query": "ownership borrowing concurrency" }),
-    )
-    .await;
-    assert_success(&discover_result);
-    let discover_json = tool_result_json(&discover_result);
+    let discover_json = poll_discover(&harness, "ownership borrowing concurrency", 3).await;
     let items = discover_json["items"].as_array().expect("items array");
     assert!(
         items.len() >= 3,
@@ -287,4 +280,37 @@ async fn test_explore_graph_traversal() {
     // -- Cleanup (teardown before shutdown — pool closes with the server) ----
     harness.teardown().await;
     harness.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Polls `tribal_discover` until at least `min_items` results appear.
+async fn poll_discover(
+    harness: &crate::harness::server::TestHarness,
+    query: &str,
+    min_items: usize,
+) -> serde_json::Value {
+    for attempt in 0..10 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let result = call_tool(
+            &harness.client,
+            "tribal_discover",
+            json!({ "query": query }),
+        )
+        .await;
+        assert_success(&result);
+        let json = tool_result_json(&result);
+        if let Some(items) = json["items"].as_array()
+            && items.len() >= min_items
+        {
+            return json;
+        }
+    }
+    panic!(
+        "discover returned fewer than {min_items} items after 10 attempts for query: {query}",
+    );
 }

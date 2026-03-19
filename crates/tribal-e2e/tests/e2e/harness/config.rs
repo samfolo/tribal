@@ -1,14 +1,34 @@
-use tribal_config::TribalConfig;
+use tribal_config::{TribalConfig, validate};
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const POOL_MAX_CONNECTIONS: u32 = 4;
+/// Read-path pool size for MCP handlers.
+const POOL_MCP_MAX_CONNECTIONS: u32 = 4;
+
+/// Write-path pool size for the worker.
+///
+/// Must satisfy `max_concurrent_tasks + POOL_CONNECTION_OVERHEAD` from
+/// `tribal-config` validation (default 4 + 4 = 8).
+const POOL_WORKER_MAX_CONNECTIONS: u32 = 8;
+
+/// Milliseconds between worker poll cycles.
 const POLL_INTERVAL_MS: u64 = 100;
+
+/// Milliseconds between heartbeat updates for claimed tasks.
 const HEARTBEAT_INTERVAL_MS: u64 = 200;
+
+/// Per-task timeout in milliseconds.
 const TASK_TIMEOUT_MS: u64 = 5_000;
+
+/// Milliseconds between stale-task reclaim sweeps.
 const RECLAIM_INTERVAL_MS: u64 = 500;
+
+/// Per-request timeout for provider calls.
+///
+/// Must be less than `TASK_TIMEOUT_MS` to satisfy validation.
+const REQUEST_TIMEOUT_MS: u64 = 4_000;
 
 // ---------------------------------------------------------------------------
 // Config builder
@@ -16,9 +36,12 @@ const RECLAIM_INTERVAL_MS: u64 = 500;
 
 /// Constructs a [`TribalConfig`] for E2E testing.
 ///
-/// Starts from compiled defaults and overrides database URL, provider
-/// base URLs, prompts directory, and worker timings for fast test
-/// execution.
+/// Starts from compiled defaults and applies overrides for fast,
+/// deterministic test execution.
+///
+/// # Panics
+///
+/// Panics if the constructed config fails validation.
 pub fn test_config(
     database_url: &str,
     embedding_url: &str,
@@ -32,8 +55,8 @@ pub fn test_config(
     // -- Database ------------------------------------------------------------
     config.database.url = database_url.to_owned();
     config.database.max_connect_attempts = 1;
-    config.database.pool_mcp_max_connections = POOL_MAX_CONNECTIONS;
-    config.database.pool_worker_max_connections = POOL_MAX_CONNECTIONS;
+    config.database.pool_mcp_max_connections = POOL_MCP_MAX_CONNECTIONS;
+    config.database.pool_worker_max_connections = POOL_WORKER_MAX_CONNECTIONS;
 
     // -- Providers -----------------------------------------------------------
     config.embedding.base_url = Some(embedding_url.to_owned());
@@ -49,6 +72,13 @@ pub fn test_config(
     config.worker.heartbeat_interval_ms = HEARTBEAT_INTERVAL_MS;
     config.worker.task_timeout_ms = TASK_TIMEOUT_MS;
     config.worker.reclaim_interval_ms = RECLAIM_INTERVAL_MS;
+
+    // -- Provider limits -----------------------------------------------------
+    for limits in config.limits.providers.values_mut() {
+        limits.request_timeout_ms = REQUEST_TIMEOUT_MS;
+    }
+
+    validate(&config).expect("E2E test config must pass validation");
 
     config
 }
