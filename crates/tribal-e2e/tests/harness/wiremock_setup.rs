@@ -34,6 +34,22 @@ pub async fn mount_tags_mock(server: &MockServer, model_name: &str) {
         .await;
 }
 
+/// Mounts a `POST /api/chat` handler that absorbs startup probe calls.
+///
+/// Inference providers call `probe_model()` at startup, which sends a chat
+/// request containing the probe input. This persistent mock absorbs those
+/// calls so they do not consume stage-specific mocks mounted later.
+pub async fn mount_inference_probe_mock(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(body_string_contains(
+            tribal_inference::INFERENCE_PROBE_INPUT,
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_envelope(&json!("OK"))))
+        .mount(server)
+        .await;
+}
+
 // ---------------------------------------------------------------------------
 // Embedding mocks
 // ---------------------------------------------------------------------------
@@ -108,10 +124,7 @@ pub async fn mount_chat_sequence(server: &MockServer, responses: &[Value]) {
 /// Each entry is `(body_substring, response)`. When a request body contains
 /// the substring, the corresponding response is returned. This avoids
 /// ordering dependencies when concurrent requests hit the same server.
-pub async fn mount_chat_content_match(
-    server: &MockServer,
-    matches: &[(&str, Value)],
-) {
+pub async fn mount_chat_content_match(server: &MockServer, matches: &[(&str, Value)]) {
     for (substring, response) in matches {
         Mock::given(method("POST"))
             .and(path("/api/chat"))
