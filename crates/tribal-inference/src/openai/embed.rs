@@ -15,7 +15,7 @@ use crate::{
     EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage, InferenceError,
     ProviderIdentity,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
-    http::{latency_ms, normalise_base_url},
+    http::{EMBEDDING_PROBE_INPUT, latency_ms, normalise_base_url},
     validation::validate_embeddings,
 };
 
@@ -24,7 +24,6 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const PROVIDER_NAME: &str = "openai";
-const PROBE_INPUT: &str = "tribal probe";
 const EMBED_PATH: &str = "/v1/embeddings";
 
 // ---------------------------------------------------------------------------
@@ -120,7 +119,7 @@ impl OpenAiEmbeddingProvider {
 
         async {
             let request = EmbeddingRequest {
-                input: PROBE_INPUT.to_owned(),
+                input: EMBEDDING_PROBE_INPUT.to_owned(),
                 purpose: EmbeddingPurpose::Candidate,
             };
             let _response = self.embed(request).await?;

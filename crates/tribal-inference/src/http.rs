@@ -21,6 +21,12 @@ const ANTHROPIC_OVERLOADED: u16 = 529;
 /// Default `max_tokens` for completion probe requests.
 pub(crate) const PROBE_MAX_TOKENS: u32 = 8;
 
+/// Content sent by inference provider `probe_model()` calls.
+pub const INFERENCE_PROBE_INPUT: &str = "Respond with OK";
+
+/// Content sent by embedding provider `probe_model()` calls.
+pub const EMBEDDING_PROBE_INPUT: &str = "tribal probe";
+
 // ---------------------------------------------------------------------------
 // Status classification
 // ---------------------------------------------------------------------------

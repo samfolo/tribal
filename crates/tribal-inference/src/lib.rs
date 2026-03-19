@@ -17,6 +17,7 @@ mod validation;
 
 pub use anthropic::AnthropicInferenceProvider;
 pub use error::InferenceError;
+pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
 pub use ollama::{OllamaEmbeddingProvider, OllamaInferenceProvider};
 pub use openai::{OpenAiEmbeddingProvider, OpenAiInferenceProvider};
 pub use provider::{EmbeddingProvider, InferenceProvider, ProviderIdentity};
