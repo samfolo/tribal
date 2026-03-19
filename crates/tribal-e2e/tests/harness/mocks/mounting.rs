@@ -72,11 +72,7 @@ pub struct StageMountBuilder<'a> {
 }
 
 impl<'a> StageMountBuilder<'a> {
-    pub(crate) fn new(
-        server: &'a MockServer,
-        stage: &'static str,
-        provider: ProviderKind,
-    ) -> Self {
+    pub(crate) fn new(server: &'a MockServer, stage: &'static str, provider: ProviderKind) -> Self {
         Self {
             server,
             stage,
@@ -98,11 +94,7 @@ impl<'a> StageMountBuilder<'a> {
     ///
     /// Wiremock returns 404 for requests beyond the sequence length,
     /// which surfaces as a provider error in the worker.
-    pub fn on_content(
-        &mut self,
-        matcher: impl Into<ContentMatcher>,
-        responses: &[MockResponse],
-    ) {
+    pub fn on_content(&mut self, matcher: impl Into<ContentMatcher>, responses: &[MockResponse]) {
         self.add_entry(matcher.into(), responses, false);
     }
 
@@ -145,9 +137,10 @@ impl<'a> StageMountBuilder<'a> {
                 self.has_any = true;
             }
             ContentMatcher::Contains(substring) => {
-                let duplicate = self.entries.iter().any(|e| {
-                    matches!(&e.matcher, ContentMatcher::Contains(s) if s == substring)
-                });
+                let duplicate = self
+                    .entries
+                    .iter()
+                    .any(|e| matches!(&e.matcher, ContentMatcher::Contains(s) if s == substring));
                 assert!(
                     !duplicate,
                     "{}: duplicate content matcher for '{substring}'",

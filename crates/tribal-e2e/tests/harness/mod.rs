@@ -1,3 +1,6 @@
+// mod.rs is required here — cargo discovers top-level files in tests/ as
+// separate binaries, so harness.rs would conflict with the harness/ directory.
+
 pub mod assertions;
 pub mod config;
 pub mod diagnostics;

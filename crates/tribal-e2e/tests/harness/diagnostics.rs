@@ -1,5 +1,4 @@
-use std::fmt::Write;
-use std::str::FromStr;
+use std::{fmt::Write, str::FromStr};
 
 use sqlx::PgPool;
 use tribal_db::{PgTaskRepository, TaskRepository};
@@ -88,7 +87,11 @@ impl DiagnosticContext<'_> {
 
         let excerpts = request_excerpts(busiest_server, 5).await;
         if !excerpts.is_empty() {
-            writeln!(out, "\n  Wiremock request excerpts ({busiest_name}, last 5):").unwrap();
+            writeln!(
+                out,
+                "\n  Wiremock request excerpts ({busiest_name}, last 5):"
+            )
+            .unwrap();
             for (i, excerpt) in excerpts.iter().enumerate() {
                 writeln!(out, "    [{}] {excerpt}", i + 1).unwrap();
             }
