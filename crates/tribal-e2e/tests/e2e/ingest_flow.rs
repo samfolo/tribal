@@ -3,23 +3,25 @@ use tribal_db::{KnowledgeItemRepository, PgKnowledgeItemRepository};
 use tribal_test_utils::a_new_knowledge_item;
 
 use crate::harness::{
-    assertions::{assert_error, assert_success},
+    assertions::assert_success,
     fixtures::{ExtractionFixture, RelationFixture, candidate, duplicate, intra_batch, novel},
     macros::seed,
     server::TestHarness,
-    tool_call::{tool_result_json, tool_result_text},
+    tool_call::tool_result_json,
 };
 
 #[tokio::test]
 async fn test_ingest_pipeline_end_to_end() {
-    let harness = TestHarness::init(|setup| {
+    let mut harness = TestHarness::init(|setup| {
         seed!(setup, |seed| {
+            let project_id = seed.project_id();
+            let principal_id = seed.principal_id();
             let existing = PgKnowledgeItemRepository
                 .insert(
                     seed.conn(),
                     &a_new_knowledge_item()
-                        .project_id(seed.project_id())
-                        .principal_id(seed.principal_id())
+                        .project_id(project_id)
+                        .principal_id(principal_id)
                         .content("Pre-existing item for duplicate matching".to_owned())
                         .build(),
                 )

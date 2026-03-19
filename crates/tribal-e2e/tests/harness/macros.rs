@@ -13,10 +13,12 @@
 /// });
 /// ```
 ///
-/// Expands to `setup.seed(|seed| Box::pin(async move { ... }))`.
+/// Expands to `setup.seed(Box::new(|seed| Box::pin(async move { ... })))`.
 macro_rules! seed {
     ($setup:expr, |$seed:ident| $body:block) => {
-        $setup.seed(|$seed| ::std::boxed::Box::pin(async move $body))
+        $setup.seed(::std::boxed::Box::new(
+            |$seed| ::std::boxed::Box::pin(async move $body),
+        ))
     };
 }
 

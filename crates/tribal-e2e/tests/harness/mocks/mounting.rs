@@ -1,7 +1,7 @@
 use serde_json::Value;
 use tribal_config::ProviderKind;
 use wiremock::{
-    Mock, MockServer, ResponseTemplate,
+    Mock, MockBuilder, MockServer, ResponseTemplate,
     matchers::{body_string_contains, method, path},
 };
 
@@ -191,7 +191,7 @@ impl<'a> StageMountBuilder<'a> {
             // For repeat_last, mount a persistent fallback with the last response.
             if entry.repeat_last {
                 let last = wrapped.last().expect("non-empty responses");
-                let mock = self.build_mock(endpoint, &entry.matcher);
+                let mock = self.build_when(endpoint, &entry.matcher);
                 mock.respond_with(last.clone()).mount(self.server).await;
             }
 
@@ -207,7 +207,7 @@ impl<'a> StageMountBuilder<'a> {
             };
 
             for template in sequence.iter().rev() {
-                let mock = self.build_mock(endpoint, &entry.matcher);
+                let mock = self.build_when(endpoint, &entry.matcher);
                 mock.respond_with(template.clone())
                     .up_to_n_times(1)
                     .mount(self.server)
@@ -226,7 +226,7 @@ impl<'a> StageMountBuilder<'a> {
         }
     }
 
-    fn build_mock(&self, endpoint: &str, matcher: &ContentMatcher) -> Mock {
+    fn build_when(&self, endpoint: &str, matcher: &ContentMatcher) -> MockBuilder {
         let base = Mock::given(method("POST")).and(path(endpoint));
         match matcher {
             ContentMatcher::Any => base,

@@ -12,7 +12,7 @@ use crate::harness::{
 
 #[tokio::test]
 async fn test_session_context_lifecycle() {
-    let harness = TestHarness::init(|setup| {
+    let mut harness = TestHarness::init(|setup| {
         setup.principal_key("e2e-session-principal");
         setup.no_project();
 

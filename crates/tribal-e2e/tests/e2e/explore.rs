@@ -9,7 +9,7 @@ use crate::harness::{
 
 #[tokio::test]
 async fn test_explore_graph_traversal() {
-    let harness = TestHarness::init(|setup| {
+    let mut harness = TestHarness::init(|setup| {
         setup.principal_key("e2e-explore-principal");
     })
     .await;
@@ -121,7 +121,8 @@ async fn test_explore_graph_traversal() {
         .await;
     assert_success!(result);
 
-    let related = tool_result_json(&result)["related_items"]
+    let explore_json = tool_result_json(&result);
+    let related = explore_json["related_items"]
         .as_array()
         .expect("related_items");
     let related_ids: Vec<&str> = related
@@ -143,7 +144,8 @@ async fn test_explore_graph_traversal() {
         .await;
     assert_success!(result);
 
-    let related = tool_result_json(&result)["related_items"]
+    let explore_json = tool_result_json(&result);
+    let related = explore_json["related_items"]
         .as_array()
         .expect("related_items");
     let related_ids: Vec<&str> = related
@@ -169,7 +171,8 @@ async fn test_explore_graph_traversal() {
         .await;
     assert_success!(result);
 
-    let related = tool_result_json(&result)["related_items"]
+    let explore_json = tool_result_json(&result);
+    let related = explore_json["related_items"]
         .as_array()
         .expect("related_items");
     let outbound_ids: Vec<&str> = related
@@ -196,7 +199,8 @@ async fn test_explore_graph_traversal() {
         .await;
     assert_success!(result);
 
-    let related = tool_result_json(&result)["related_items"]
+    let explore_json = tool_result_json(&result);
+    let related = explore_json["related_items"]
         .as_array()
         .expect("related_items");
     let supports_ids: Vec<&str> = related
