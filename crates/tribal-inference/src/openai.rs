@@ -3,9 +3,9 @@
 mod embed;
 mod inference;
 
-pub use embed::OpenAiEmbeddingProvider;
 #[cfg(feature = "test-helpers")]
 pub use embed::EMBED_PATH;
-pub use inference::OpenAiInferenceProvider;
+pub use embed::OpenAiEmbeddingProvider;
 #[cfg(feature = "test-helpers")]
 pub use inference::CHAT_PATH;
+pub use inference::OpenAiInferenceProvider;
