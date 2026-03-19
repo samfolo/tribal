@@ -20,8 +20,13 @@ pub struct DiagnosticContext<'a> {
 
 impl DiagnosticContext<'_> {
     /// Formats a failure diagnostic for the given job.
-    pub async fn format_failure(&self, job_id: &str, status: &str) -> String {
-        let mut out = format!("Job {job_id} did not complete successfully.\n  Status: {status}\n");
+    pub async fn format_failure(&self, job_id: &str, status: &str, outcome: &str) -> String {
+        let outcome_display = if outcome.is_empty() { "n/a" } else { outcome };
+        let mut out = format!(
+            "Job {job_id} did not complete successfully.\
+             \n  Status: {status}\
+             \n  Outcome: {outcome_display}\n",
+        );
 
         self.append_task_statuses(&mut out, job_id).await;
         self.append_wiremock_summary(&mut out).await;
@@ -118,6 +123,10 @@ fn format_task(out: &mut String, task: &Task) {
     }
     if let Some(claimed_by) = task.claimed_by() {
         write!(out, "\n      claimed_by: {claimed_by}").unwrap();
+    }
+    write!(out, "\n      available_at: {}", task.available_at()).unwrap();
+    if let Some(heartbeat_at) = task.heartbeat_at() {
+        write!(out, "\n      heartbeat_at: {heartbeat_at}").unwrap();
     }
     out.push('\n');
 }
