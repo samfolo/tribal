@@ -61,6 +61,9 @@ type AsyncSeedFn = Box<
     dyn for<'a> FnOnce(&'a mut SeedContext) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send,
 >;
 
+/// Boxed per-test config mutation closure.
+type ConfigOverrideFn = Box<dyn FnOnce(&mut TribalConfig)>;
+
 // ---------------------------------------------------------------------------
 // HarnessSetup
 // ---------------------------------------------------------------------------
@@ -71,7 +74,7 @@ pub struct HarnessSetup {
     principal_key: String,
     project: Option<NewProject>,
     no_project: bool,
-    config_override: Option<Box<dyn FnOnce(&mut TribalConfig)>>,
+    config_override: Option<ConfigOverrideFn>,
     seed: Option<AsyncSeedFn>,
 }
 

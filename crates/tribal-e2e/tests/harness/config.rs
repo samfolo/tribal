@@ -1,4 +1,4 @@
-use tribal_config::{TribalConfig, validate};
+use tribal_config::TribalConfig;
 
 // ---------------------------------------------------------------------------
 // Constants
