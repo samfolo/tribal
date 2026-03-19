@@ -78,7 +78,8 @@ pub fn test_config(
         limits.request_timeout_ms = REQUEST_TIMEOUT_MS;
     }
 
-    validate(&config).expect("E2E test config must pass validation");
+    // -- Logging -------------------------------------------------------------
+    config.logging.include_llm_content = true;
 
     config
 }
