@@ -6,6 +6,9 @@ license-file.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+test-helpers = []
+
 [dependencies]
 async-trait.workspace = true
 reqwest.workspace = true
