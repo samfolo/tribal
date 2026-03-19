@@ -66,21 +66,3 @@ pub fn tool_result_json(result: &CallToolResult) -> Value {
     serde_json::from_str(&text)
         .expect("tool result has no structured_content and text is not valid JSON")
 }
-
-/// Asserts the tool result does not indicate an error.
-pub fn assert_success(result: &CallToolResult) {
-    assert!(
-        !result.is_error.unwrap_or(false),
-        "expected tool success, got error: {}",
-        tool_result_text(result),
-    );
-}
-
-/// Asserts the tool result indicates an error.
-pub fn assert_error(result: &CallToolResult) {
-    assert!(
-        result.is_error.unwrap_or(false),
-        "expected tool error, got success: {}",
-        tool_result_text(result),
-    );
-}
