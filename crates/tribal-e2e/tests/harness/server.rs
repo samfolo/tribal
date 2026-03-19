@@ -423,6 +423,11 @@ impl TestHarness {
     // -----------------------------------------------------------------------
 
     /// Calls a tool via JSON-RPC and returns the result.
+    ///
+    /// # Panics
+    ///
+    /// Panics on protocol-level transport errors or if `arguments` is not a
+    /// JSON object or null.
     pub async fn call_tool(&self, name: &str, arguments: Value) -> CallToolResult {
         tool_call::call_tool(&self.client, name, arguments).await
     }
@@ -461,6 +466,10 @@ impl TestHarness {
     // -----------------------------------------------------------------------
 
     /// Mounts extraction stage mocks via a closure-based builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the closure does not configure at least one mock response.
     pub async fn mount_extraction(&self, f: impl FnOnce(&mut StageMountBuilder<'_>)) {
         let provider = self.config.inference.extraction.provider;
         self.mount_stage(&self.extraction_server, "extraction", provider, f)
@@ -468,6 +477,10 @@ impl TestHarness {
     }
 
     /// Mounts triage stage mocks via a closure-based builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the closure does not configure at least one mock response.
     pub async fn mount_triage(&self, f: impl FnOnce(&mut StageMountBuilder<'_>)) {
         let provider = self.config.inference.triage.provider;
         self.mount_stage(&self.triage_server, "triage", provider, f)
@@ -475,6 +488,10 @@ impl TestHarness {
     }
 
     /// Mounts relation stage mocks via a closure-based builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the closure does not configure at least one mock response.
     pub async fn mount_relation(&self, f: impl FnOnce(&mut StageMountBuilder<'_>)) {
         let provider = self.config.inference.relation.provider;
         self.mount_stage(&self.relation_server, "relation", provider, f)
@@ -529,6 +546,11 @@ impl TestHarness {
     ///
     /// The new client shares the same server and wiremock infrastructure
     /// but has its own `SessionContext` bound to the given principal key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the MCP handshake fails on either side of the duplex
+    /// transport.
     pub async fn connect_client(&self, principal_key: &str) -> ClientHandle {
         let session = SessionContext::new(None, principal_key.to_owned());
         let repositories = ConnectionRepositories::new();

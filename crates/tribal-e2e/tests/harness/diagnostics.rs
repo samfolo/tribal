@@ -68,37 +68,25 @@ impl DiagnosticContext<'_> {
     }
 
     async fn append_wiremock_summary(&self, out: &mut String) {
-        let counts = [
-            ("embedding", request_count(self.embedding_server).await),
-            ("extraction", request_count(self.extraction_server).await),
-            ("triage", request_count(self.triage_server).await),
-            ("relation", request_count(self.relation_server).await),
+        let servers: [(&str, &MockServer); 4] = [
+            ("embedding", self.embedding_server),
+            ("extraction", self.extraction_server),
+            ("triage", self.triage_server),
+            ("relation", self.relation_server),
         ];
 
         writeln!(out, "\n  Wiremock request counts:").unwrap();
-        for (name, count) in &counts {
-            writeln!(out, "    {name}: {count} calls").unwrap();
+        for (name, server) in &servers {
+            writeln!(out, "    {name}: {} calls", request_count(server).await).unwrap();
         }
 
-        let (busiest_name, busiest_server) = [
-            ("triage", self.triage_server),
-            ("extraction", self.extraction_server),
-            ("relation", self.relation_server),
-            ("embedding", self.embedding_server),
-        ]
-        .into_iter()
-        .max_by_key(|(name, _)| counts.iter().find(|(n, _)| n == name).map(|(_, c)| *c))
-        .expect("non-empty server list");
-
-        let excerpts = request_excerpts(busiest_server, 5).await;
-        if !excerpts.is_empty() {
-            writeln!(
-                out,
-                "\n  Wiremock request excerpts ({busiest_name}, last 5):"
-            )
-            .unwrap();
-            for (i, excerpt) in excerpts.iter().enumerate() {
-                writeln!(out, "    [{}] {excerpt}", i + 1).unwrap();
+        for (name, server) in &servers {
+            let excerpts = request_excerpts(server, 5).await;
+            if !excerpts.is_empty() {
+                writeln!(out, "\n  Wiremock request excerpts ({name}, last 5):").unwrap();
+                for (i, excerpt) in excerpts.iter().enumerate() {
+                    writeln!(out, "    [{}] {excerpt}", i + 1).unwrap();
+                }
             }
         }
     }
