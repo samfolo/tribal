@@ -1,180 +1,100 @@
 use serde_json::json;
-use tribal_db::{
-    PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
-};
-use tribal_test_utils::{a_new_principal, a_new_project, serial_lock, test_context};
 
-use crate::harness::{
-    config::test_config,
-    server::build_harness,
-    tool_call::{assert_success, call_tool, tool_result_json},
-    wiremock_setup::{
-        EMBEDDING_MODEL, EXTRACTION_MODEL, SMALL_MODEL, extraction_response, mount_chat_mock,
-        mount_chat_sequence, mount_embed_mock, mount_inference_probe_mock, mount_tags_mock,
-        novel_triage_response, relation_response,
-    },
+use crate::harness::assertions::assert_success;
+use crate::harness::fixtures::{
+    ExtractionFixture, RelationFixture, candidate, intra_batch, novel,
 };
+use crate::harness::server::TestHarness;
+use crate::harness::tool_call::tool_result_json;
 
 #[tokio::test]
 async fn test_explore_graph_traversal() {
-    let _guard = serial_lock().await;
-    let ctx = test_context().await;
-    let pool = ctx.create_pool().await.expect("create per-test pool");
-    let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");
+    let harness = TestHarness::init(|setup| {
+        setup.principal_key("e2e-explore-principal");
+    })
+    .await;
 
-    // -- Clean slate ---------------------------------------------------------
-    let mut conn = pool.acquire().await.expect("acquire connection");
-    tribal_test_utils::truncate_all_tables(&mut conn).await;
-    drop(conn);
+    // -- Mount mocks ----------------------------------------------------------
 
-    // -- Wiremock servers (one per provider role) -----------------------------
-    let embedding_server = wiremock::MockServer::start().await;
-    let extraction_server = wiremock::MockServer::start().await;
-    let triage_server = wiremock::MockServer::start().await;
-    let relation_server = wiremock::MockServer::start().await;
+    harness
+        .mount_extraction(|m| {
+            m.respond(
+                ExtractionFixture::builder()
+                    .candidate(
+                        candidate("fact", "Ownership rules prevent data races in Rust")
+                            .tags(&["rust", "ownership"]),
+                    )
+                    .candidate(
+                        candidate("heuristic", "Borrow checker enforces aliasing discipline")
+                            .tags(&["rust", "borrowing"]),
+                    )
+                    .candidate(
+                        candidate("procedure", "Use Arc for shared ownership across threads")
+                            .tags(&["rust", "concurrency"]),
+                    )
+                    .build(),
+            );
+        })
+        .await;
 
-    // -- Infrastructure scaffolding ------------------------------------------
-    let mut conn = pool.acquire().await.expect("acquire connection");
+    harness
+        .mount_triage(|m| {
+            m.respond(novel().build());
+        })
+        .await;
 
-    let project = PgProjectRepository
-        .insert(&mut conn, &a_new_project().build())
-        .await
-        .expect("insert project");
+    harness
+        .mount_relation(|m| {
+            m.respond(
+                RelationFixture::builder()
+                    .edge(intra_batch(0, 1, "supports"))
+                    .edge(intra_batch(1, 2, "contradicts"))
+                    .build(),
+            );
+        })
+        .await;
 
-    PgPrincipalRepository
-        .insert(
-            &mut conn,
-            &a_new_principal()
-                .principal_key("e2e-explore-principal".to_owned())
-                .build(),
+    // -- Ingest and wait for pipeline completion ------------------------------
+
+    let ingest_result = harness
+        .call_tool(
+            "tribal_ingest",
+            json!({
+                "content": "Ownership rules prevent data races. \
+                            Borrow checker enforces aliasing. \
+                            Use Arc for shared ownership."
+            }),
         )
-        .await
-        .expect("insert principal");
+        .await;
+    assert_success!(ingest_result);
 
-    drop(conn);
-
-    // -- Mount wiremock mocks ------------------------------------------------
-    // Extraction: 3 candidates (A, B, C)
-    mount_tags_mock(&embedding_server, EMBEDDING_MODEL).await;
-    mount_embed_mock(&embedding_server).await;
-
-    mount_tags_mock(&extraction_server, EXTRACTION_MODEL).await;
-    mount_inference_probe_mock(&extraction_server).await;
-    mount_chat_mock(
-        &extraction_server,
-        &extraction_response(
-            &[
-                (
-                    "fact",
-                    "Ownership rules prevent data races in Rust",
-                    &["rust", "ownership"],
-                ),
-                (
-                    "heuristic",
-                    "Borrow checker enforces aliasing discipline",
-                    &["rust", "borrowing"],
-                ),
-                (
-                    "procedure",
-                    "Use Arc for shared ownership across threads",
-                    &["rust", "concurrency"],
-                ),
-            ],
-            &[],
-        ),
-    )
-    .await;
-
-    // Triage: all Novel (3 calls)
-    mount_tags_mock(&triage_server, SMALL_MODEL).await;
-    mount_inference_probe_mock(&triage_server).await;
-    mount_chat_sequence(
-        &triage_server,
-        &[
-            novel_triage_response(),
-            novel_triage_response(),
-            novel_triage_response(),
-        ],
-    )
-    .await;
-
-    // Relation: A→B (supports), B→C (contradicts)
-    mount_tags_mock(&relation_server, SMALL_MODEL).await;
-    mount_inference_probe_mock(&relation_server).await;
-    mount_chat_mock(
-        &relation_server,
-        &relation_response(&[(0, 1, "supports"), (1, 2, "contradicts")]),
-    )
-    .await;
-
-    // -- Start server and connect client -------------------------------------
-    let config = test_config(
-        ctx.database_url(),
-        &embedding_server.uri(),
-        &extraction_server.uri(),
-        &triage_server.uri(),
-        &relation_server.uri(),
-        prompts_dir.path().to_str().expect("prompts dir to str"),
-    );
-
-    let mut harness = build_harness(
-        config,
-        prompts_dir,
-        Some(project.id().to_string()),
-        "e2e-explore-principal",
-        pool,
-    )
-    .await;
-
-    // -- Ingest and wait for pipeline completion -----------------------------
-    let ingest_result = call_tool(
-        &harness.client,
-        "tribal_ingest",
-        json!({ "content": "Ownership rules prevent data races. Borrow checker enforces aliasing. Use Arc for shared ownership." }),
-    )
-    .await;
-    assert_success(&ingest_result);
     let job_id = tool_result_json(&ingest_result)["job_id"]
         .as_str()
         .expect("job_id")
         .to_owned();
 
-    let mut status = String::new();
-    for _ in 0..60 {
-        let result = call_tool(
-            &harness.client,
-            "tribal_job_status",
-            json!({ "job_id": &job_id, "wait_seconds": 2 }),
+    harness.expect_completion(&job_id).await;
+
+    // -- Discover items to get their IDs --------------------------------------
+
+    let discover_result = harness
+        .call_tool(
+            "tribal_discover",
+            json!({ "query": "ownership borrowing concurrency" }),
         )
         .await;
-        assert_success(&result);
-        status = tool_result_json(&result)["status"]
-            .as_str()
-            .expect("status")
-            .to_owned();
-        if status == "completed" || status == "failed" {
-            break;
-        }
-    }
-    assert_eq!(status, "completed", "job did not complete");
+    assert_success!(discover_result);
 
-    // -- Discover items to get their IDs -------------------------------------
-    let discover_result = call_tool(
-        &harness.client,
-        "tribal_discover",
-        json!({ "query": "ownership borrowing concurrency" }),
-    )
-    .await;
-    assert_success(&discover_result);
     let discover_json = tool_result_json(&discover_result);
-    let items = discover_json["items"].as_array().expect("items array");
+    let items = discover_json["items"]
+        .as_array()
+        .expect("items array");
     assert!(
         items.len() >= 3,
         "expected at least 3 items, got {}",
         items.len()
     );
 
-    // Map content substrings to item IDs.
     let find_id = |substring: &str| -> String {
         items
             .iter()
@@ -193,16 +113,17 @@ async fn test_explore_graph_traversal() {
     let id_b = find_id("borrow checker");
     let id_c = find_id("arc for shared");
 
-    // -- Explore depth 1 from A (both directions) → should find B ------------
-    let result = call_tool(
-        &harness.client,
-        "tribal_explore",
-        json!({ "item_id": &id_a, "depth": 1, "direction": "both" }),
-    )
-    .await;
-    assert_success(&result);
-    let explore_json = tool_result_json(&result);
-    let related = explore_json["related_items"]
+    // -- Explore depth 1 from A → should find B ------------------------------
+
+    let result = harness
+        .call_tool(
+            "tribal_explore",
+            json!({ "item_id": &id_a, "depth": 1, "direction": "both" }),
+        )
+        .await;
+    assert_success!(result);
+
+    let related = tool_result_json(&result)["related_items"]
         .as_array()
         .expect("related_items");
     let related_ids: Vec<&str> = related
@@ -214,16 +135,17 @@ async fn test_explore_graph_traversal() {
         "depth-1 from A should include B; got {related_ids:?}",
     );
 
-    // -- Explore depth 2 from A (both directions) → should find B and C ------
-    let result = call_tool(
-        &harness.client,
-        "tribal_explore",
-        json!({ "item_id": &id_a, "depth": 2, "direction": "both" }),
-    )
-    .await;
-    assert_success(&result);
-    let explore_json = tool_result_json(&result);
-    let related = explore_json["related_items"]
+    // -- Explore depth 2 from A → should find B and C ------------------------
+
+    let result = harness
+        .call_tool(
+            "tribal_explore",
+            json!({ "item_id": &id_a, "depth": 2, "direction": "both" }),
+        )
+        .await;
+    assert_success!(result);
+
+    let related = tool_result_json(&result)["related_items"]
         .as_array()
         .expect("related_items");
     let related_ids: Vec<&str> = related
@@ -239,45 +161,50 @@ async fn test_explore_graph_traversal() {
         "depth-2 from A should include C; got {related_ids:?}",
     );
 
-    // -- Explore with direction filter (outbound from A) ---------------------
-    let result = call_tool(
-        &harness.client,
-        "tribal_explore",
-        json!({ "item_id": &id_a, "direction": "outbound", "depth": 2 }),
-    )
-    .await;
-    assert_success(&result);
-    let explore_json = tool_result_json(&result);
-    let related = explore_json["related_items"]
+    // -- Explore with direction filter (outbound from A) ----------------------
+
+    let result = harness
+        .call_tool(
+            "tribal_explore",
+            json!({ "item_id": &id_a, "direction": "outbound", "depth": 2 }),
+        )
+        .await;
+    assert_success!(result);
+
+    let related = tool_result_json(&result)["related_items"]
         .as_array()
         .expect("related_items");
     let outbound_ids: Vec<&str> = related
         .iter()
         .filter_map(|r| r["item"]["id"].as_str())
         .collect();
-    // A→B is outbound from A, B→C is outbound from B (reachable at depth 2).
     assert!(
         outbound_ids.contains(&id_b.as_str()),
         "outbound from A should include B; got {outbound_ids:?}",
     );
 
-    // -- Explore with relation_types filter ----------------------------------
-    let result = call_tool(
-        &harness.client,
-        "tribal_explore",
-        json!({ "item_id": &id_a, "relation_types": ["supports"], "depth": 2, "direction": "both" }),
-    )
-    .await;
-    assert_success(&result);
-    let explore_json = tool_result_json(&result);
-    let related = explore_json["related_items"]
+    // -- Explore with relation_types filter -----------------------------------
+
+    let result = harness
+        .call_tool(
+            "tribal_explore",
+            json!({
+                "item_id": &id_a,
+                "relation_types": ["supports"],
+                "depth": 2,
+                "direction": "both",
+            }),
+        )
+        .await;
+    assert_success!(result);
+
+    let related = tool_result_json(&result)["related_items"]
         .as_array()
         .expect("related_items");
     let supports_ids: Vec<&str> = related
         .iter()
         .filter_map(|r| r["item"]["id"].as_str())
         .collect();
-    // Only A→B is "supports"; B→C is "contradicts" so C should not appear.
     assert!(
         supports_ids.contains(&id_b.as_str()),
         "supports filter should include B; got {supports_ids:?}",
@@ -288,6 +215,7 @@ async fn test_explore_graph_traversal() {
     );
 
     // -- Cleanup --------------------------------------------------------------
+
     harness.shutdown().await;
     harness.teardown().await;
 }
