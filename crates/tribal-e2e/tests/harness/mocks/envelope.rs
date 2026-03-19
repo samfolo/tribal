@@ -81,9 +81,9 @@ pub fn wrap_embedding(vector: &[f32], provider: ProviderKind) -> Value {
 #[must_use]
 pub fn chat_path(provider: ProviderKind) -> &'static str {
     match provider {
-        ProviderKind::Ollama => "/api/chat",
-        ProviderKind::OpenAi => "/v1/chat/completions",
-        ProviderKind::Anthropic => "/v1/messages",
+        ProviderKind::Ollama => tribal_inference::OLLAMA_CHAT_PATH,
+        ProviderKind::OpenAi => tribal_inference::OPENAI_CHAT_PATH,
+        ProviderKind::Anthropic => tribal_inference::ANTHROPIC_MESSAGES_PATH,
     }
 }
 
@@ -95,8 +95,8 @@ pub fn chat_path(provider: ProviderKind) -> &'static str {
 #[must_use]
 pub fn embed_path(provider: ProviderKind) -> &'static str {
     match provider {
-        ProviderKind::Ollama => "/api/embed",
-        ProviderKind::OpenAi => "/v1/embeddings",
+        ProviderKind::Ollama => tribal_inference::OLLAMA_EMBED_PATH,
+        ProviderKind::OpenAi => tribal_inference::OPENAI_EMBED_PATH,
         ProviderKind::Anthropic => panic!("Anthropic does not provide an embedding service"),
     }
 }
@@ -108,7 +108,7 @@ pub fn embed_path(provider: ProviderKind) -> &'static str {
 #[must_use]
 pub fn tags_path(provider: ProviderKind) -> Option<&'static str> {
     match provider {
-        ProviderKind::Ollama => Some("/api/tags"),
+        ProviderKind::Ollama => Some(tribal_inference::OLLAMA_TAGS_PATH),
         ProviderKind::OpenAi | ProviderKind::Anthropic => None,
     }
 }
