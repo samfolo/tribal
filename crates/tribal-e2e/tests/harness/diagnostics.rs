@@ -1,4 +1,9 @@
-use sqlx::{PgPool, Row};
+use std::fmt::Write;
+use std::str::FromStr;
+
+use sqlx::PgPool;
+use tribal_db::{PgTaskRepository, TaskRepository};
+use tribal_domain::{JobId, Task};
 use wiremock::MockServer;
 
 // ---------------------------------------------------------------------------
@@ -17,85 +22,101 @@ pub struct DiagnosticContext<'a> {
 impl DiagnosticContext<'_> {
     /// Formats a failure diagnostic for the given job.
     pub async fn format_failure(&self, job_id: &str, status: &str) -> String {
-        let mut output =
-            format!("Job {job_id} did not complete successfully.\n  Status: {status}\n");
+        let mut out = format!("Job {job_id} did not complete successfully.\n  Status: {status}\n");
 
-        // -- Task statuses ---------------------------------------------------
-        let task_info = self.query_tasks(job_id).await;
-        if !task_info.is_empty() {
-            output.push_str("\n  Task statuses:\n");
-            output.push_str(&task_info);
+        self.append_task_statuses(&mut out, job_id).await;
+        self.append_wiremock_summary(&mut out).await;
+
+        out
+    }
+
+    async fn append_task_statuses(&self, out: &mut String, job_id: &str) {
+        let Ok(parsed_id) = JobId::from_str(job_id) else {
+            writeln!(out, "\n  (could not parse job ID for task lookup)").unwrap();
+            return;
+        };
+
+        let mut conn = match self.pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                writeln!(out, "\n  (could not acquire connection: {e})").unwrap();
+                return;
+            }
+        };
+
+        let tasks = match PgTaskRepository.find_by_job_id(&mut conn, parsed_id).await {
+            Ok(t) => t,
+            Err(e) => {
+                writeln!(out, "\n  (task query failed: {e})").unwrap();
+                return;
+            }
+        };
+
+        if tasks.is_empty() {
+            writeln!(out, "\n  No tasks found for this job.").unwrap();
+            return;
         }
 
-        // -- Wiremock request counts -----------------------------------------
-        let embed_count = request_count(self.embedding_server).await;
-        let extract_count = request_count(self.extraction_server).await;
-        let triage_count = request_count(self.triage_server).await;
-        let relation_count = request_count(self.relation_server).await;
+        writeln!(out, "\n  Task statuses:").unwrap();
+        for task in &tasks {
+            format_task(out, task);
+        }
+    }
 
-        output.push_str("\n  Wiremock request counts:\n");
-        output.push_str(&format!("    embedding: {embed_count} calls\n"));
-        output.push_str(&format!("    extraction: {extract_count} calls\n"));
-        output.push_str(&format!("    triage: {triage_count} calls\n"));
-        output.push_str(&format!("    relation: {relation_count} calls\n"));
-
-        // -- Request excerpts for the busiest server -------------------------
-        let servers = [
-            ("triage", self.triage_server, triage_count),
-            ("extraction", self.extraction_server, extract_count),
-            ("relation", self.relation_server, relation_count),
-            ("embedding", self.embedding_server, embed_count),
+    async fn append_wiremock_summary(&self, out: &mut String) {
+        let counts = [
+            ("embedding", request_count(self.embedding_server).await),
+            ("extraction", request_count(self.extraction_server).await),
+            ("triage", request_count(self.triage_server).await),
+            ("relation", request_count(self.relation_server).await),
         ];
-        if let Some((name, server, _)) = servers.iter().max_by_key(|(_, _, c)| c) {
-            let excerpts = request_excerpts(server, 5).await;
-            if !excerpts.is_empty() {
-                output.push_str(&format!("\n  Wiremock request excerpts ({name}, last 5):\n"));
-                for (i, excerpt) in excerpts.iter().enumerate() {
-                    output.push_str(&format!("    [{}] {excerpt}\n", i + 1));
-                }
-            }
+
+        writeln!(out, "\n  Wiremock request counts:").unwrap();
+        for (name, count) in &counts {
+            writeln!(out, "    {name}: {count} calls").unwrap();
         }
 
-        output
-    }
+        let (busiest_name, busiest_server) = [
+            ("triage", self.triage_server),
+            ("extraction", self.extraction_server),
+            ("relation", self.relation_server),
+            ("embedding", self.embedding_server),
+        ]
+        .into_iter()
+        .max_by_key(|(name, _)| counts.iter().find(|(n, _)| n == name).map(|(_, c)| *c))
+        .expect("non-empty server list");
 
-    async fn query_tasks(&self, job_id: &str) -> String {
-        let uuid_str = job_id.strip_prefix("ji_").unwrap_or(job_id);
-
-        let rows = sqlx::query(
-            "SELECT stage::text, batch_index, status::text, \
-             error_kind, error_message, retry_count \
-             FROM tasks WHERE job_id = $1::uuid \
-             ORDER BY stage, batch_index",
-        )
-        .bind(uuid_str)
-        .fetch_all(self.pool)
-        .await
-        .unwrap_or_default();
-
-        let mut output = String::new();
-        for row in &rows {
-            let stage: &str = row.get("stage");
-            let batch_index: i32 = row.get("batch_index");
-            let status: &str = row.get("status");
-            output.push_str(&format!("    {stage}_{batch_index}: {status}"));
-
-            let error_kind: Option<&str> = row.try_get("error_kind").ok().flatten();
-            if let Some(ek) = error_kind {
-                output.push_str(&format!("\n      error_kind: {ek}"));
+        let excerpts = request_excerpts(busiest_server, 5).await;
+        if !excerpts.is_empty() {
+            writeln!(out, "\n  Wiremock request excerpts ({busiest_name}, last 5):").unwrap();
+            for (i, excerpt) in excerpts.iter().enumerate() {
+                writeln!(out, "    [{}] {excerpt}", i + 1).unwrap();
             }
-            let error_message: Option<&str> = row.try_get("error_message").ok().flatten();
-            if let Some(em) = error_message {
-                output.push_str(&format!("\n      error_message: \"{em}\""));
-            }
-            let retry_count: i32 = row.get("retry_count");
-            if retry_count > 0 {
-                output.push_str(&format!("\n      retry_count: {retry_count}"));
-            }
-            output.push('\n');
         }
-        output
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task formatting
+// ---------------------------------------------------------------------------
+
+fn format_task(out: &mut String, task: &Task) {
+    let batch = task.batch_index().unwrap_or(0);
+    write!(out, "    {}_{batch}: {}", task.task_type(), task.status()).unwrap();
+
+    if let Some(error_kind) = task.error_kind() {
+        write!(out, "\n      error_kind: {error_kind}").unwrap();
+    }
+    if let Some(error_message) = task.error_message() {
+        write!(out, "\n      error_message: \"{error_message}\"").unwrap();
+    }
+    if task.retry_count() > 0 {
+        write!(out, "\n      retry_count: {}", task.retry_count()).unwrap();
+    }
+    if let Some(claimed_by) = task.claimed_by() {
+        write!(out, "\n      claimed_by: {claimed_by}").unwrap();
+    }
+    out.push('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -103,10 +124,7 @@ impl DiagnosticContext<'_> {
 // ---------------------------------------------------------------------------
 
 async fn request_count(server: &MockServer) -> usize {
-    server
-        .received_requests()
-        .await
-        .map_or(0, |r| r.len())
+    server.received_requests().await.map_or(0, |r| r.len())
 }
 
 async fn request_excerpts(server: &MockServer, limit: usize) -> Vec<String> {
