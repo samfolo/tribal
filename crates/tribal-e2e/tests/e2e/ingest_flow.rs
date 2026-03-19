@@ -2,13 +2,13 @@ use serde_json::json;
 use tribal_db::{KnowledgeItemRepository, PgKnowledgeItemRepository};
 use tribal_test_utils::a_new_knowledge_item;
 
-use crate::harness::assertions::{assert_success, assert_error};
-use crate::harness::fixtures::{
-    ExtractionFixture, RelationFixture, candidate, duplicate, intra_batch, novel,
+use crate::harness::{
+    assertions::{assert_error, assert_success},
+    fixtures::{ExtractionFixture, RelationFixture, candidate, duplicate, intra_batch, novel},
+    macros::seed,
+    server::TestHarness,
+    tool_call::{tool_result_json, tool_result_text},
 };
-use crate::harness::macros::seed;
-use crate::harness::server::TestHarness;
-use crate::harness::tool_call::{tool_result_json, tool_result_text};
 
 #[tokio::test]
 async fn test_ingest_pipeline_end_to_end() {
@@ -39,12 +39,18 @@ async fn test_ingest_pipeline_end_to_end() {
             m.respond(
                 ExtractionFixture::builder()
                     .candidate(
-                        candidate("fact", "Rust ensures memory safety without a garbage collector")
-                            .tags(&["rust", "memory-safety"]),
+                        candidate(
+                            "fact",
+                            "Rust ensures memory safety without a garbage collector",
+                        )
+                        .tags(&["rust", "memory-safety"]),
                     )
                     .candidate(
-                        candidate("heuristic", "Use lifetimes to express ownership relationships")
-                            .tags(&["rust", "lifetimes"]),
+                        candidate(
+                            "heuristic",
+                            "Use lifetimes to express ownership relationships",
+                        )
+                        .tags(&["rust", "lifetimes"]),
                     )
                     .build(),
             );
@@ -82,9 +88,7 @@ async fn test_ingest_pipeline_end_to_end() {
     assert_success!(ingest_result);
 
     let ingest_json = tool_result_json(&ingest_result);
-    let job_id = ingest_json["job_id"]
-        .as_str()
-        .expect("job_id in response");
+    let job_id = ingest_json["job_id"].as_str().expect("job_id in response");
 
     // -- Wait for pipeline completion -----------------------------------------
 
@@ -98,9 +102,7 @@ async fn test_ingest_pipeline_end_to_end() {
     assert_success!(discover_result);
 
     let discover_json = tool_result_json(&discover_result);
-    let items = discover_json["items"]
-        .as_array()
-        .expect("items array");
+    let items = discover_json["items"].as_array().expect("items array");
 
     let novel_item = items
         .iter()
@@ -110,9 +112,7 @@ async fn test_ingest_pipeline_end_to_end() {
                 .is_some_and(|c| c.contains("memory safety"))
         })
         .expect("novel item should appear in discover results");
-    let novel_item_id = novel_item["item"]["id"]
-        .as_str()
-        .expect("novel item id");
+    let novel_item_id = novel_item["item"]["id"].as_str().expect("novel item id");
 
     // -- Verify via get_item --------------------------------------------------
 

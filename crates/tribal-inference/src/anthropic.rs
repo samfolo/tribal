@@ -2,4 +2,4 @@
 
 mod inference;
 
-pub use inference::AnthropicInferenceProvider;
+pub use inference::{AnthropicInferenceProvider, MESSAGES_PATH};

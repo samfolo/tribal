@@ -1,11 +1,11 @@
 use serde_json::json;
 
-use crate::harness::assertions::assert_success;
-use crate::harness::fixtures::{
-    ExtractionFixture, RelationFixture, candidate, intra_batch, novel,
+use crate::harness::{
+    assertions::assert_success,
+    fixtures::{ExtractionFixture, RelationFixture, candidate, intra_batch, novel},
+    server::TestHarness,
+    tool_call::tool_result_json,
 };
-use crate::harness::server::TestHarness;
-use crate::harness::tool_call::tool_result_json;
 
 #[tokio::test]
 async fn test_explore_graph_traversal() {
@@ -86,9 +86,7 @@ async fn test_explore_graph_traversal() {
     assert_success!(discover_result);
 
     let discover_json = tool_result_json(&discover_result);
-    let items = discover_json["items"]
-        .as_array()
-        .expect("items array");
+    let items = discover_json["items"].as_array().expect("items array");
     assert!(
         items.len() >= 3,
         "expected at least 3 items, got {}",
