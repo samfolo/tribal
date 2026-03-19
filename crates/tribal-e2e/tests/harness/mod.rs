@@ -1,4 +1,9 @@
+pub mod assertions;
 pub mod config;
+pub mod diagnostics;
+pub mod fixtures;
+pub mod macros;
+pub mod mocks;
+pub mod polling;
 pub mod server;
 pub mod tool_call;
-pub mod wiremock_setup;
