@@ -15,7 +15,7 @@ use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
     Message, ProviderIdentity, ResponseFormat, Role,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
-    http::{PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
+    http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,6 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const PROVIDER_NAME: &str = "anthropic";
-const PROBE_INPUT: &str = "Respond with OK";
 const MESSAGES_PATH: &str = "/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
@@ -150,7 +149,7 @@ impl AnthropicInferenceProvider {
                 system: None,
                 messages: vec![Message {
                     role: Role::User,
-                    content: PROBE_INPUT.to_owned(),
+                    content: INFERENCE_PROBE_INPUT.to_owned(),
                 }],
                 temperature: Some(0.0),
                 max_tokens: Some(PROBE_MAX_TOKENS),
