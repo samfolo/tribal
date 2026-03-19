@@ -13,7 +13,7 @@ use crate::harness::{
     tool_call::{assert_success, call_tool, tool_result_json},
     wiremock_setup::{
         EMBEDDING_MODEL, EXTRACTION_MODEL, SMALL_MODEL, duplicate_triage_response,
-        extraction_response, mount_chat_mock, mount_chat_sequence, mount_embed_mock,
+        extraction_response, mount_chat_content_match, mount_chat_mock, mount_embed_mock,
         mount_tags_mock, novel_triage_response, relation_response,
     },
 };
@@ -98,11 +98,11 @@ async fn test_ingest_pipeline_end_to_end() {
     .await;
 
     mount_tags_mock(&triage_server, SMALL_MODEL).await;
-    mount_chat_sequence(
+    mount_chat_content_match(
         &triage_server,
         &[
-            novel_triage_response(),
-            duplicate_triage_response(&existing_item.id().to_string()),
+            ("memory safety", novel_triage_response()),
+            ("lifetimes", duplicate_triage_response(&existing_item.id().to_string())),
         ],
     )
     .await;
@@ -162,14 +162,9 @@ async fn test_ingest_pipeline_end_to_end() {
     assert_eq!(status, "completed", "job did not complete");
 
     // -- Verify via discover -------------------------------------------------
-    let discover_result = call_tool(
-        &harness.client,
-        "tribal_discover",
-        json!({ "query": "memory safety" }),
-    )
-    .await;
-    assert_success(&discover_result);
-    let discover_json = tool_result_json(&discover_result);
+    // The embedding for newly created items may be indexed slightly after
+    // the job transitions to completed. Poll until discover returns results.
+    let discover_json = poll_discover(&harness, "memory safety").await;
     let items = discover_json["items"].as_array().expect("items array");
 
     // The novel candidate should be discoverable; the duplicate should not
@@ -220,4 +215,37 @@ async fn test_ingest_pipeline_end_to_end() {
     // -- Cleanup (teardown before shutdown — pool closes with the server) ----
     harness.teardown().await;
     harness.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Polls `tribal_discover` until results appear or the retry limit is reached.
+///
+/// The embedding for newly created items may be indexed slightly after the
+/// job transitions to completed.
+async fn poll_discover(
+    harness: &crate::harness::server::TestHarness,
+    query: &str,
+) -> serde_json::Value {
+    for attempt in 0..10 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let result = call_tool(
+            &harness.client,
+            "tribal_discover",
+            json!({ "query": query }),
+        )
+        .await;
+        assert_success(&result);
+        let json = tool_result_json(&result);
+        if let Some(items) = json["items"].as_array()
+            && !items.is_empty()
+        {
+            return json;
+        }
+    }
+    panic!("discover returned no items after 10 attempts for query: {query}");
 }

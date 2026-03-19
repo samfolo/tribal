@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{body_string_contains, method, path},
 };
 
 // ---------------------------------------------------------------------------
@@ -98,6 +98,25 @@ pub async fn mount_chat_sequence(server: &MockServer, responses: &[Value]) {
             .and(path("/api/chat"))
             .respond_with(ResponseTemplate::new(200).set_body_json(chat_envelope(response)))
             .up_to_n_times(1)
+            .mount(server)
+            .await;
+    }
+}
+
+/// Mounts `POST /api/chat` responses matched by request body content.
+///
+/// Each entry is `(body_substring, response)`. When a request body contains
+/// the substring, the corresponding response is returned. This avoids
+/// ordering dependencies when concurrent requests hit the same server.
+pub async fn mount_chat_content_match(
+    server: &MockServer,
+    matches: &[(&str, Value)],
+) {
+    for (substring, response) in matches {
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains(substring.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(chat_envelope(response)))
             .mount(server)
             .await;
     }
