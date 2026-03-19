@@ -172,7 +172,7 @@ async fn test_session_context_lifecycle() {
         "discover should scope to project 2 after context switch",
     );
 
-    // -- Cleanup (teardown before shutdown — pool closes with the server) ----
-    harness.teardown().await;
+    // -- Cleanup --------------------------------------------------------------
     harness.shutdown().await;
+    harness.teardown().await;
 }

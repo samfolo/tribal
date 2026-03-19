@@ -162,9 +162,14 @@ async fn test_ingest_pipeline_end_to_end() {
     assert_eq!(status, "completed", "job did not complete");
 
     // -- Verify via discover -------------------------------------------------
-    // The embedding for newly created items may be indexed slightly after
-    // the job transitions to completed. Poll until discover returns results.
-    let discover_json = poll_discover(&harness, "memory safety").await;
+    let discover_result = call_tool(
+        &harness.client,
+        "tribal_discover",
+        json!({ "query": "memory safety" }),
+    )
+    .await;
+    assert_success(&discover_result);
+    let discover_json = tool_result_json(&discover_result);
     let items = discover_json["items"].as_array().expect("items array");
 
     // The novel candidate should be discoverable; the duplicate should not
@@ -212,40 +217,7 @@ async fn test_ingest_pipeline_end_to_end() {
         "duplicate candidate should not appear as a new knowledge item",
     );
 
-    // -- Cleanup (teardown before shutdown — pool closes with the server) ----
-    harness.teardown().await;
+    // -- Cleanup --------------------------------------------------------------
     harness.shutdown().await;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Polls `tribal_discover` until results appear or the retry limit is reached.
-///
-/// The embedding for newly created items may be indexed slightly after the
-/// job transitions to completed.
-async fn poll_discover(
-    harness: &crate::harness::server::TestHarness,
-    query: &str,
-) -> serde_json::Value {
-    for attempt in 0..10 {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
-        let result = call_tool(
-            &harness.client,
-            "tribal_discover",
-            json!({ "query": query }),
-        )
-        .await;
-        assert_success(&result);
-        let json = tool_result_json(&result);
-        if let Some(items) = json["items"].as_array()
-            && !items.is_empty()
-        {
-            return json;
-        }
-    }
-    panic!("discover returned no items after 10 attempts for query: {query}");
+    harness.teardown().await;
 }
