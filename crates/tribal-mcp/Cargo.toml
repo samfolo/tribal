@@ -28,5 +28,7 @@ tribal-domain.workspace = true
 tribal-inference.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
 tribal-common = { workspace = true, features = ["test-helpers"] }
 tribal-test-utils.workspace = true
