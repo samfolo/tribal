@@ -4,5 +4,6 @@ mod embed;
 mod inference;
 mod tags;
 
-pub use embed::OllamaEmbeddingProvider;
-pub use inference::OllamaInferenceProvider;
+pub use embed::{EMBED_PATH, OllamaEmbeddingProvider};
+pub use inference::{CHAT_PATH, OllamaInferenceProvider};
+pub use tags::TAGS_PATH;

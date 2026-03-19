@@ -3,10 +3,12 @@ use tribal_db::{PgProjectRepository, ProjectRepository};
 use tribal_domain::GitRemote;
 use tribal_test_utils::a_new_project;
 
-use crate::harness::assertions::{assert_error, assert_success};
-use crate::harness::macros::seed;
-use crate::harness::server::TestHarness;
-use crate::harness::tool_call::tool_result_json;
+use crate::harness::{
+    assertions::{assert_error, assert_success},
+    macros::seed,
+    server::TestHarness,
+    tool_call::tool_result_json,
+};
 
 #[tokio::test]
 async fn test_session_context_lifecycle() {
