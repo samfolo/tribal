@@ -1,4 +1,3 @@
-#[path = "e2e/harness/mod.rs"]
 mod harness;
 
 // Test modules — each file exercises a different cross-cutting E2E flow.
