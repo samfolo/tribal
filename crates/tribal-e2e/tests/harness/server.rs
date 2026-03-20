@@ -122,7 +122,14 @@ impl HarnessSetup {
     /// resolved project. `SeedContext::project_id()` and
     /// `SeedContext::project_git_remote()` will panic — manage projects
     /// manually via the seed closure.
+    /// # Panics
+    ///
+    /// Panics if `graph()` has already been called.
     pub fn no_project(&mut self) {
+        assert!(
+            self.graph_fn.is_none(),
+            "no_project() and graph() are mutually exclusive",
+        );
         self.no_project = true;
     }
 

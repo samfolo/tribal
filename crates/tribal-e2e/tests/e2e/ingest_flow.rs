@@ -149,11 +149,17 @@ async fn test_ingest_pipeline_end_to_end() {
             .is_some_and(|c| c.contains("Blue-green deployment strategy"))
     });
     if has_duplicate {
+        let all_contents: Vec<_> = items
+            .iter()
+            .filter_map(|i| i["item"]["content"].as_str())
+            .collect();
         let ctx = harness.diagnostic_context();
         let diagnostic = ctx.format_failure(job_id, "completed", "success").await;
         panic!(
             "duplicate candidate should not appear as a new knowledge item\n\n\
-             {diagnostic}",
+             Discover returned {} items:\n{:#?}\n\n{diagnostic}",
+            items.len(),
+            all_contents,
         );
     }
 
