@@ -1,4 +1,5 @@
 use serde_json::json;
+use tribal_config::ProviderKind;
 use tribal_domain::KnowledgeKind;
 use tribal_test_utils::item;
 
@@ -22,6 +23,12 @@ use crate::harness::{
 #[tokio::test]
 async fn test_cross_batch_relations() {
     let mut harness = TestHarness::init(|setup| {
+        // Anthropic triage exercises the Anthropic envelope abstraction.
+        setup.config(|c| {
+            c.inference.triage.provider = ProviderKind::Anthropic;
+            c.inference.triage.api_key = Some("sk-ant-e2e-000000".to_owned());
+        });
+
         setup.graph(|g| {
             g.as_principal("default")
                 .for_project("test-project", |store| {

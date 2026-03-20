@@ -1,4 +1,5 @@
 use serde_json::json;
+use tribal_config::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,
@@ -15,7 +16,14 @@ use crate::harness::{
 /// invalidation procedure.
 #[tokio::test]
 async fn test_explore_graph_traversal() {
-    let mut harness = TestHarness::init(|_setup| {}).await;
+    let mut harness = TestHarness::init(|setup| {
+        // Anthropic extraction exercises the Anthropic envelope abstraction.
+        setup.config(|c| {
+            c.inference.extraction.provider = ProviderKind::Anthropic;
+            c.inference.extraction.api_key = Some("sk-ant-e2e-000000".to_owned());
+        });
+    })
+    .await;
 
     // -- Mount mocks ----------------------------------------------------------
 
