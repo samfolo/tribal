@@ -127,10 +127,7 @@ async fn test_relation_normalisation_drops_invalid_edges() {
     // -- Verify the valid edge survived via explore ---------------------------
 
     let discover_result = harness
-        .call_tool(
-            "tribal_discover",
-            json!({ "query": "JWT authentication" }),
-        )
+        .call_tool("tribal_discover", json!({ "query": "JWT authentication" }))
         .await;
     assert_success!(discover_result);
 
@@ -145,10 +142,7 @@ async fn test_relation_normalisation_drops_invalid_edges() {
                 .is_some_and(|c| c.contains("JWT tokens"))
         })
         .expect("JWT fact should appear in discover results");
-    let jwt_id = jwt_item["item"]["id"]
-        .as_str()
-        .expect("item id")
-        .to_owned();
+    let jwt_id = jwt_item["item"]["id"].as_str().expect("item id").to_owned();
 
     let explore_result = harness
         .call_tool(

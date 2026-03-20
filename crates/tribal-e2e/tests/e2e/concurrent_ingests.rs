@@ -3,7 +3,7 @@ use serde_json::json;
 use crate::harness::{
     assertions::assert_success,
     fixtures::{ExtractionFixture, RelationFixture, candidate, novel},
-    server::{TestHarness, DEFAULT_PRINCIPAL_KEY},
+    server::{DEFAULT_PRINCIPAL_KEY, TestHarness},
     tool_call::tool_result_json,
 };
 
@@ -76,10 +76,7 @@ async fn test_concurrent_identical_ingests() {
         .to_owned();
 
     let result = client_2
-        .call_tool(
-            "tribal_set_context",
-            json!({ "project_id": &project_id }),
-        )
+        .call_tool("tribal_set_context", json!({ "project_id": &project_id }))
         .await;
     assert_success!(result);
 
