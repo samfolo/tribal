@@ -7,22 +7,20 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-tribal-domain.workspace = true
-tribal-db = { workspace = true, features = ["test-helpers"] }
-tribal-inference.workspace = true
 async-trait.workspace = true
-chrono = { workspace = true }
+chrono.workspace = true
 fnv.workspace = true
 indexmap.workspace = true
-serde_json = { workspace = true }
+pastey.workspace = true
+pgvector.workspace = true
+serde_json.workspace = true
 sqlx = { workspace = true, features = ["migrate"] }
 testcontainers.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
-pastey.workspace = true
+tokio.workspace = true
 tracing.workspace = true
-pgvector.workspace = true
 uuid.workspace = true
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tribal-db = { workspace = true, features = ["test-helpers"] }
+tribal-domain.workspace = true
+tribal-inference.workspace = true

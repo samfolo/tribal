@@ -10,18 +10,20 @@ publish.workspace = true
 test-helpers = []
 
 [dependencies]
-tribal-config.workspace = true
-tribal-domain.workspace = true
-sqlx = { workspace = true, features = ["migrate", "macros"] }
-pgvector.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+pgvector.workspace = true
 serde_json.workspace = true
+sqlx = { workspace = true, features = ["migrate", "macros"] }
+thiserror.workspace = true
+tracing.workspace = true
 typed-builder.workspace = true
 uuid.workspace = true
 
+tribal-config.workspace = true
+tribal-domain.workspace = true
+
 [dev-dependencies]
+tokio.workspace = true
+
 tribal-test-utils.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }

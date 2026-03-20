@@ -15,7 +15,7 @@ use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
     Message, ProviderIdentity, ResponseFormat, Role,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
-    http::{PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
+    http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
 
 // ---------------------------------------------------------------------------
@@ -23,8 +23,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const PROVIDER_NAME: &str = "openai";
-const PROBE_INPUT: &str = "Respond with OK";
-const CHAT_PATH: &str = "/v1/chat/completions";
+pub const CHAT_PATH: &str = "/v1/chat/completions";
 
 // ---------------------------------------------------------------------------
 // Private serde types
@@ -133,7 +132,7 @@ impl OpenAiInferenceProvider {
                 system: None,
                 messages: vec![Message {
                     role: Role::User,
-                    content: PROBE_INPUT.to_owned(),
+                    content: INFERENCE_PROBE_INPUT.to_owned(),
                 }],
                 temperature: Some(0.0),
                 max_tokens: Some(PROBE_MAX_TOKENS),

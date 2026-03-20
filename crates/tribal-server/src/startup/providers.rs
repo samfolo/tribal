@@ -1,4 +1,4 @@
-//! Provider registry construction, provider instantiation, and embedding probe.
+//! Provider registry construction, provider instantiation, and startup probes.
 
 use std::{sync::Arc, time::Duration};
 
@@ -112,7 +112,9 @@ pub(crate) async fn build_embedding_provider(
 /// Constructs an inference provider for a single pipeline stage.
 ///
 /// Returns the boxed provider and the registry key for semaphore lookups.
-pub(crate) fn build_inference_provider(
+/// Calls `probe_model` on the concrete provider before boxing — logs a
+/// warning on failure but does not fail startup.
+pub(crate) async fn build_inference_provider(
     registry: &ProviderRegistry,
     config: &StageInferenceConfig,
 ) -> Result<(Arc<dyn InferenceProvider>, ProviderKey), AppError> {
@@ -123,19 +125,37 @@ pub(crate) fn build_inference_provider(
     let client = get_client(registry, &key)?.clone();
 
     let provider: Arc<dyn InferenceProvider> = match config.provider {
-        ProviderKind::Ollama => Arc::new(OllamaInferenceProvider::new(client, &url, &config.model)),
-        ProviderKind::OpenAi => Arc::new(OpenAiInferenceProvider::new(
-            client,
-            &url,
-            &config.model,
-            config.api_key.as_deref().unwrap_or_default(),
-        )),
-        ProviderKind::Anthropic => Arc::new(AnthropicInferenceProvider::new(
-            client,
-            &url,
-            &config.model,
-            config.api_key.as_deref().unwrap_or_default(),
-        )),
+        ProviderKind::Ollama => {
+            let p = OllamaInferenceProvider::new(client, &url, &config.model);
+            if let Err(e) = p.probe_model().await {
+                tracing::warn!(%e, "inference model probe failed (non-fatal)");
+            }
+            Arc::new(p)
+        }
+        ProviderKind::OpenAi => {
+            let p = OpenAiInferenceProvider::new(
+                client,
+                &url,
+                &config.model,
+                config.api_key.as_deref().unwrap_or_default(),
+            );
+            if let Err(e) = p.probe_model().await {
+                tracing::warn!(%e, "inference model probe failed (non-fatal)");
+            }
+            Arc::new(p)
+        }
+        ProviderKind::Anthropic => {
+            let p = AnthropicInferenceProvider::new(
+                client,
+                &url,
+                &config.model,
+                config.api_key.as_deref().unwrap_or_default(),
+            );
+            if let Err(e) = p.probe_model().await {
+                tracing::warn!(%e, "inference model probe failed (non-fatal)");
+            }
+            Arc::new(p)
+        }
     };
 
     Ok((provider, key))
