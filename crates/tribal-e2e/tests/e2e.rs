@@ -19,6 +19,8 @@ mod ingest_flow;
 mod multi_session;
 #[path = "e2e/provider_retry.rs"]
 mod provider_retry;
+#[path = "e2e/relation_normalisation.rs"]
+mod relation_normalisation;
 #[path = "e2e/session.rs"]
 mod session;
 #[path = "e2e/standing.rs"]
