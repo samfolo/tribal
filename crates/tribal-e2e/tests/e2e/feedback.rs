@@ -1,4 +1,5 @@
 use serde_json::json;
+use tribal_config::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,
@@ -17,7 +18,14 @@ use crate::harness::{
 /// the retrieval session positively.
 #[tokio::test]
 async fn test_feedback_after_discovery() {
-    let mut harness = TestHarness::init(|_setup| {}).await;
+    let mut harness = TestHarness::init(|setup| {
+        // OpenAI embedding exercises the OpenAI embed envelope abstraction.
+        setup.config(|c| {
+            c.embedding.provider = ProviderKind::OpenAi;
+            c.embedding.api_key = Some("sk-e2e-000000".to_owned());
+        });
+    })
+    .await;
 
     // -- Mount mocks ----------------------------------------------------------
 
