@@ -67,9 +67,9 @@ async fn test_ingest_pipeline_end_to_end() {
 
     harness
         .mount_triage(|m| {
-            m.on_content_repeat_last("canary analysis", &[novel().build().into()]);
+            m.on_content_repeat_last("canary analysis for 15 minutes", &[novel().build().into()]);
             m.on_content_repeat_last(
-                "deployment strategy",
+                "Blue-green deployment strategy",
                 &[duplicate(existing_id).build().into()],
             );
         })
@@ -143,18 +143,19 @@ async fn test_ingest_pipeline_end_to_end() {
 
     // -- Verify duplicate was not inserted as a new item ----------------------
 
-    let duplicate_items: Vec<_> = items
-        .iter()
-        .filter(|i| {
-            i["item"]["content"]
-                .as_str()
-                .is_some_and(|c| c.contains("deployment strategy"))
-        })
-        .collect();
-    assert!(
-        duplicate_items.is_empty(),
-        "duplicate candidate should not appear as a new knowledge item",
-    );
+    let has_duplicate = items.iter().any(|i| {
+        i["item"]["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("Blue-green deployment strategy"))
+    });
+    if has_duplicate {
+        let ctx = harness.diagnostic_context();
+        let diagnostic = ctx.format_failure(job_id, "completed", "success").await;
+        panic!(
+            "duplicate candidate should not appear as a new knowledge item\n\n\
+             {diagnostic}",
+        );
+    }
 
     // -- Cleanup --------------------------------------------------------------
 
