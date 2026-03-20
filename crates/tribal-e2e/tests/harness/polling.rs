@@ -102,8 +102,6 @@ pub async fn expect_completion(harness: &TestHarness, job_id: &str) {
 /// expect_condition!("description", wait: 30_000, { body });
 /// expect_condition!("description", wait: 5_000, interval: 100, { body });
 /// ```
-// No current consumers — kept exported so the utility is discoverable.
-#[allow(unused_macros)]
 macro_rules! expect_condition {
     ($desc:expr, wait: $wait:expr, interval: $interval:expr, $body:block) => {{
         let start = ::std::time::Instant::now();
@@ -142,6 +140,4 @@ macro_rules! expect_condition {
     };
 }
 
-// No current consumers — kept exported so the utility is discoverable.
-#[allow(unused_imports)]
 pub(crate) use expect_condition;

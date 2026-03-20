@@ -44,10 +44,10 @@ async fn test_provider_failure_and_retry() {
     // First extraction call → 503; retry → fixture.
     harness
         .mount_extraction(|m| {
-            m.on_content_repeat_last(ContentMatcher::Any, &[
-                error(503),
-                extraction_fixture.into(),
-            ]);
+            m.on_content_repeat_last(
+                ContentMatcher::Any,
+                &[error(503), extraction_fixture.into()],
+            );
         })
         .await;
 

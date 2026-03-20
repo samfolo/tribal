@@ -5,7 +5,7 @@ use tribal_test_utils::a_new_knowledge_item;
 use crate::harness::{
     assertions::assert_success,
     fixtures::{
-        ExtractionFixture, RelationFixture, ReferenceSpec, SimilarItemSpec, candidate, hint,
+        ExtractionFixture, ReferenceSpec, RelationFixture, SimilarItemSpec, candidate, hint,
         intra_batch, novel, to_existing,
     },
     server::{TestHarness, seed},
@@ -107,12 +107,10 @@ async fn test_cross_batch_relations() {
         .mount_relation(|m| {
             m.respond(
                 RelationFixture::builder()
-                    .edge(
-                        to_existing(0, "supports", decision_id).justification(
-                            "Storage cost reduction validates the event sourcing \
+                    .edge(to_existing(0, "supports", decision_id).justification(
+                        "Storage cost reduction validates the event sourcing \
                              architecture decision",
-                        ),
-                    )
+                    ))
                     .edge(intra_batch(1, "derived_from", 0))
                     .build(),
             );

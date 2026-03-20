@@ -1,8 +1,8 @@
 use serde_json::json;
-use tribal_config::sections::embedding::{DEFAULT_DIMENSIONS, DEFAULT_MODEL};
+use tribal_config::{DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL};
 use tribal_db::{
-    EmbeddingRepository, KnowledgeItemRepository, PgEmbeddingRepository,
-    PgKnowledgeItemRepository, PgProjectRepository, ProjectRepository,
+    EmbeddingRepository, KnowledgeItemRepository, PgEmbeddingRepository, PgKnowledgeItemRepository,
+    PgProjectRepository, ProjectRepository,
 };
 use tribal_domain::GitRemote;
 use tribal_test_utils::{a_new_embedding, a_new_knowledge_item, a_new_project};
@@ -11,7 +11,7 @@ use crate::harness::{
     assertions::{assert_error, assert_success},
     fixtures::{ExtractionFixture, RelationFixture, candidate, novel},
     mocks::fixed_embedding_vector,
-    server::{TestHarness, seed, DEFAULT_PRINCIPAL_KEY},
+    server::{DEFAULT_PRINCIPAL_KEY, TestHarness, seed},
     tool_call::tool_result_json,
 };
 
@@ -81,12 +81,13 @@ async fn test_multi_session_isolation() {
 
             // Pre-seed a knowledge item in the platform project so the
             // global query returns items from more than one project.
+            let principal_id = seed.principal_id();
             let platform_item = PgKnowledgeItemRepository
                 .insert(
                     seed.conn(),
                     &a_new_knowledge_item()
                         .project_id(platform.id())
-                        .principal_id(seed.principal_id())
+                        .principal_id(principal_id)
                         .content(
                             "The canopy-platform shared library provides a circuit \
                              breaker implementation used by all backend services"
@@ -102,9 +103,9 @@ async fn test_multi_session_isolation() {
                     seed.conn(),
                     &a_new_embedding()
                         .knowledge_item_id(platform_item.id())
-                        .model(DEFAULT_MODEL.to_owned())
-                        .dimensions(DEFAULT_DIMENSIONS)
-                        .embedding(fixed_embedding_vector(DEFAULT_DIMENSIONS))
+                        .model(DEFAULT_EMBEDDING_MODEL.to_owned())
+                        .dimensions(DEFAULT_EMBEDDING_DIMENSIONS)
+                        .embedding(fixed_embedding_vector(DEFAULT_EMBEDDING_DIMENSIONS))
                         .build(),
                 )
                 .await
@@ -154,10 +155,7 @@ async fn test_multi_session_isolation() {
     // -- Primary client: set context to backend, ingest -----------------------
 
     let result = harness
-        .call_tool(
-            "tribal_set_context",
-            json!({ "project_id": &backend_id }),
-        )
+        .call_tool("tribal_set_context", json!({ "project_id": &backend_id }))
         .await;
     assert_success!(result);
 
@@ -179,10 +177,7 @@ async fn test_multi_session_isolation() {
 
     // Primary client discovers the item via session context (backend).
     let result = harness
-        .call_tool(
-            "tribal_discover",
-            json!({ "query": "canopy services" }),
-        )
+        .call_tool("tribal_discover", json!({ "query": "canopy services" }))
         .await;
     assert_success!(result);
 
@@ -206,19 +201,13 @@ async fn test_multi_session_isolation() {
 
     // Step 2: set context to frontend project.
     let result = client_2
-        .call_tool(
-            "tribal_set_context",
-            json!({ "project_id": &frontend_id }),
-        )
+        .call_tool("tribal_set_context", json!({ "project_id": &frontend_id }))
         .await;
     assert_success!(result);
 
     // Step 3: session-scoped discover (frontend) — nothing ingested there.
     let result = client_2
-        .call_tool(
-            "tribal_discover",
-            json!({ "query": "canopy services" }),
-        )
+        .call_tool("tribal_discover", json!({ "query": "canopy services" }))
         .await;
     assert_success!(result);
 
