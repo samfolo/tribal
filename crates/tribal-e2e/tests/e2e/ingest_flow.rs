@@ -5,8 +5,7 @@ use tribal_test_utils::a_new_knowledge_item;
 use crate::harness::{
     assertions::assert_success,
     fixtures::{ExtractionFixture, RelationFixture, candidate, duplicate, intra_batch, novel},
-    macros::seed,
-    server::TestHarness,
+    server::{TestHarness, seed},
     tool_call::tool_result_json,
 };
 

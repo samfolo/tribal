@@ -5,8 +5,7 @@ use tribal_test_utils::a_new_project;
 
 use crate::harness::{
     assertions::{assert_error, assert_success},
-    macros::seed,
-    server::TestHarness,
+    server::{TestHarness, seed},
     tool_call::tool_result_json,
 };
 
@@ -56,10 +55,10 @@ async fn test_session_context_lifecycle() {
     let project_1_id = harness.label("project_1");
     let project_2_id = harness.label("project_2");
 
-    // -- Step 1: ingest without a project → error -----------------------------
+    // -- Step 1: discover without a project → error ----------------------------
 
     let result = harness
-        .call_tool("tribal_ingest", json!({ "content": "test content" }))
+        .call_tool("tribal_discover", json!({ "query": "test" }))
         .await;
     assert_error!(result);
 
