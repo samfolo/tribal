@@ -50,6 +50,7 @@
       "Bash(cargo metadata:*)",
       "Bash(cargo search:*)",
       "Bash(cargo test:*)",
+      "Bash(cargo run watch:*)",
       "Bash(cargo tree:*)",
 
       "Bash(docker info:*)",
@@ -74,6 +75,9 @@
       "Bash(jq:*)",
       "Bash(ls:*)",
       "Bash(wc:*)"
+    ],
+    "ask": [
+      "Bash(cargo update:*)"
     ],
     "deny": [
       "Read(.env)",
