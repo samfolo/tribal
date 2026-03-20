@@ -61,7 +61,7 @@ async fn test_provider_failure_and_retry() {
         .mount_relation(|m| {
             m.respond(
                 RelationFixture::builder()
-                    .edge(intra_batch(0, 1, "supports"))
+                    .edge(intra_batch(0, "supports", 1))
                     .build(),
             );
         })

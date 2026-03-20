@@ -69,7 +69,7 @@ async fn test_ingest_pipeline_end_to_end() {
         .mount_relation(|m| {
             m.respond(
                 RelationFixture::builder()
-                    .edge(intra_batch(0, 1, "supports"))
+                    .edge(intra_batch(0, "supports", 1))
                     .build(),
             );
         })

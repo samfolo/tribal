@@ -42,8 +42,11 @@ pub fn candidate(kind: &str, content: &str) -> CandidateSpec {
 }
 
 /// Creates a relation hint between two batch indices.
+///
+/// Argument order reads as a sentence: `hint(1, "derived_from", 0)`
+/// → "batch item 1 derived_from batch item 0".
 #[must_use]
-pub fn hint(source: usize, target: usize, hint_type: &str) -> RelationHintSpec {
+pub fn hint(source: usize, hint_type: &str, target: usize) -> RelationHintSpec {
     RelationHintSpec {
         source,
         target,
