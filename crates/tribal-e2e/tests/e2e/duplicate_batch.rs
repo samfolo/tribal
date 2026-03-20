@@ -4,7 +4,7 @@ use tribal_test_utils::a_new_knowledge_item;
 
 use crate::harness::{
     assertions::assert_success,
-    fixtures::{ExtractionFixture, candidate, duplicate},
+    fixtures::{ExtractionFixture, RelationFixture, candidate, duplicate},
     polling::expect_condition,
     server::{TestHarness, seed},
     tool_call::tool_result_json,
@@ -72,7 +72,13 @@ async fn test_duplicate_only_batch() {
         })
         .await;
 
-    // Relation stage should not be called (no novel items to relate).
+    // Relation stage still runs (computes outcome from triage results)
+    // but produces no relations.
+    harness
+        .mount_relation(|m| {
+            m.respond(RelationFixture::builder().build());
+        })
+        .await;
 
     // -- Ingest ---------------------------------------------------------------
 

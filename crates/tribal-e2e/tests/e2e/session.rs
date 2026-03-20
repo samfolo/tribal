@@ -54,10 +54,10 @@ async fn test_session_context_lifecycle() {
     let project_1_id = harness.label("project_1");
     let project_2_id = harness.label("project_2");
 
-    // -- Step 1: discover without a project → error ----------------------------
+    // -- Step 1: ingest without a project → error -------------------------------
 
     let result = harness
-        .call_tool("tribal_discover", json!({ "query": "test" }))
+        .call_tool("tribal_ingest", json!({ "content": "test content" }))
         .await;
     assert_error!(result);
 
