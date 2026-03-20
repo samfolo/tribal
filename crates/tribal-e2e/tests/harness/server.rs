@@ -23,7 +23,7 @@ use tribal_config::{
 use tribal_db::{
     NewProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
 };
-use tribal_domain::{PrincipalId, Project};
+use tribal_domain::{JobOutcome, PrincipalId, Project};
 use tribal_inference::RequestClass;
 use tribal_mcp::{
     AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
@@ -135,7 +135,15 @@ impl HarnessSetup {
     /// principal insertion. See the `seed!` macro for ergonomic usage.
     ///
     /// Mutually exclusive with [`graph()`](Self::graph).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `graph()` has already been called.
     pub fn seed(&mut self, f: AsyncSeedFn) {
+        assert!(
+            self.graph_fn.is_none(),
+            "seed() and graph() are mutually exclusive",
+        );
         self.seed = Some(f);
     }
 
@@ -149,7 +157,19 @@ impl HarnessSetup {
     ///
     /// Mutually exclusive with [`seed()`](Self::seed) and
     /// [`no_project()`](Self::no_project).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `seed()` or `no_project()` has already been called.
     pub fn graph(&mut self, f: impl FnOnce(Seed) -> Seed + 'static) {
+        assert!(
+            self.seed.is_none(),
+            "graph() and seed() are mutually exclusive",
+        );
+        assert!(
+            !self.no_project,
+            "graph() and no_project() are mutually exclusive",
+        );
         self.graph_fn = Some(Box::new(f));
     }
 }
@@ -518,13 +538,27 @@ impl TestHarness {
     // Polling
     // -----------------------------------------------------------------------
 
-    /// Polls `tribal_job_status` until the job completes or fails.
+    /// Polls `tribal_job_status` until the job reaches a terminal
+    /// state, then asserts that the outcome matches `expected`.
     ///
     /// # Panics
     ///
-    /// Panics with rich diagnostic context if the job does not complete.
+    /// Panics with rich diagnostic context if the outcome does not
+    /// match within the poll limit.
+    pub async fn expect_outcome(&self, job_id: &str, expected: JobOutcome) {
+        polling::expect_outcome(self, job_id, expected).await;
+    }
+
+    /// Polls `tribal_job_status` until the job completes with the
+    /// `success` outcome. Shorthand for
+    /// `expect_outcome(job_id, JobOutcome::Success)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics with rich diagnostic context if the job does not
+    /// complete successfully.
     pub async fn expect_completion(&self, job_id: &str) {
-        polling::expect_completion(self, job_id).await;
+        self.expect_outcome(job_id, JobOutcome::Success).await;
     }
 
     // -----------------------------------------------------------------------

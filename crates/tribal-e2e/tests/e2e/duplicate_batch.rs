@@ -1,12 +1,11 @@
 use serde_json::json;
 use tribal_config::ProviderKind;
-use tribal_domain::KnowledgeKind;
+use tribal_domain::{JobOutcome, KnowledgeKind};
 use tribal_test_utils::item;
 
 use crate::harness::{
     assertions::assert_success,
     fixtures::{ExtractionFixture, RelationFixture, candidate, duplicate},
-    polling::expect_condition,
     server::TestHarness,
     tool_call::tool_result_json,
 };
@@ -97,25 +96,12 @@ async fn test_duplicate_only_batch() {
         .await;
     assert_success!(result);
 
-    let job_id = tool_result_json(&result)["job_id"]
-        .as_str()
-        .expect("job_id")
-        .to_owned();
+    let ingest_json = tool_result_json(&result);
+    let job_id = ingest_json["job_id"].as_str().expect("job_id").to_owned();
 
     // -- Wait for pipeline completion -----------------------------------------
 
-    // All duplicates → "empty" outcome (no novel items created).
-    expect_condition!("job completes with empty outcome", wait: 30_000, {
-        let status_result = harness
-            .call_tool(
-                "tribal_job_status",
-                json!({ "job_id": &job_id, "wait_seconds": 2 }),
-            )
-            .await;
-        let json = tool_result_json(&status_result);
-        json["status"].as_str() == Some("completed")
-            && json["outcome"].as_str() == Some("empty")
-    });
+    harness.expect_outcome(&job_id, JobOutcome::Empty).await;
 
     // -- Verify ---------------------------------------------------------------
 

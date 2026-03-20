@@ -1,8 +1,9 @@
 use serde_json::json;
+use tribal_domain::JobOutcome;
 
 use crate::harness::{
-    assertions::assert_success, fixtures::ExtractionFixture, polling::expect_condition,
-    server::TestHarness, tool_call::tool_result_json,
+    assertions::assert_success, fixtures::ExtractionFixture, server::TestHarness,
+    tool_call::tool_result_json,
 };
 
 /// Verifies that ingesting trivial content which yields no knowledge
@@ -36,26 +37,12 @@ async fn test_zero_candidate_extraction() {
         .await;
     assert_success!(result);
 
-    let job_id = tool_result_json(&result)["job_id"]
-        .as_str()
-        .expect("job_id")
-        .to_owned();
+    let ingest_json = tool_result_json(&result);
+    let job_id = ingest_json["job_id"].as_str().expect("job_id").to_owned();
 
     // -- Wait for pipeline completion -----------------------------------------
 
-    // Job should complete with "empty" outcome — no candidates extracted.
-    // Cannot use expect_completion, which only accepts "success".
-    expect_condition!("job completes with empty outcome", wait: 30_000, {
-        let status_result = harness
-            .call_tool(
-                "tribal_job_status",
-                json!({ "job_id": &job_id, "wait_seconds": 2 }),
-            )
-            .await;
-        let json = tool_result_json(&status_result);
-        json["status"].as_str() == Some("completed")
-            && json["outcome"].as_str() == Some("empty")
-    });
+    harness.expect_outcome(&job_id, JobOutcome::Empty).await;
 
     // -- Verify ---------------------------------------------------------------
 
