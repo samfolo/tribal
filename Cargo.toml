@@ -11,6 +11,7 @@ members = [
     "crates/tribal-config",
     "crates/tribal-server",
     "crates/tribal-test-utils",
+    "crates/tribal-e2e",
 ]
 
 [workspace.package]
@@ -86,7 +87,7 @@ tera = "1"
 schemars = { version = "0.8", features = ["uuid1"] }
 
 # MCP server
-rmcp = { version = "1", features = ["macros", "server", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "1", features = ["macros", "server", "client", "transport-io", "transport-async-rw", "transport-streamable-http-server"] }
 
 # Async futures utilities
 futures = "0.3"
@@ -112,6 +113,7 @@ gix = { version = "0.80", default-features = false }
 rand = "0.10"
 
 # Testing
+pretty_assertions = "1"
 tempfile = "3"
 testcontainers = "0.27"
 wiremock = "0.6"
@@ -125,4 +127,5 @@ tribal-worker = { path = "crates/tribal-worker" }
 tribal-mcp = { path = "crates/tribal-mcp" }
 tribal-telemetry = { path = "crates/tribal-telemetry" }
 tribal-config = { path = "crates/tribal-config" }
+tribal-server = { path = "crates/tribal-server" }
 tribal-test-utils = { path = "crates/tribal-test-utils" }

@@ -148,12 +148,7 @@ fn resolve_git_remote(explicit: Option<&str>) -> Result<GitRemote, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use tribal_test_utils::{serial_lock, test_context, truncate_all_tables};
-
     use super::*;
-    use crate::commands::common::test_db_config;
-
-    // -- resolve_git_remote --------------------------------------------------
 
     #[test]
     fn test_resolve_git_remote_explicit_valid() {
@@ -169,85 +164,5 @@ mod tests {
             matches!(err, AppError::GitDetection { .. }),
             "expected GitDetection, got: {err}",
         );
-    }
-
-    // -- run_async -----------------------------------------------------------
-
-    async fn teardown(ctx: &tribal_test_utils::TestContext) {
-        let mut conn = ctx.raw_connection().await.expect("raw_connection");
-        truncate_all_tables(&mut conn).await;
-    }
-
-    #[tokio::test]
-    async fn test_register_inserts_project() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-
-        let db_config = test_db_config(ctx.database_url());
-        let remote = GitRemote::from_parts("github.com", "integ/register-happy", None);
-
-        run_async(&db_config, &remote, "register-happy", "main")
-            .await
-            .expect("run_async");
-
-        let mut conn = ctx.raw_connection().await.expect("raw_connection");
-        let project = PgProjectRepository
-            .find_by_git_remote(&mut conn, &remote)
-            .await
-            .expect("find_by_git_remote")
-            .expect("project should exist after registration");
-
-        assert_eq!(project.name(), "register-happy");
-        assert_eq!(project.default_branch(), "main");
-        assert_eq!(
-            project.git_remote().as_str(),
-            "github.com/integ/register-happy",
-        );
-        assert_eq!(project.schema_version(), PROJECT_SCHEMA_VERSION);
-        assert_eq!(project.settings(), &serde_json::json!({}));
-
-        teardown(ctx).await;
-    }
-
-    #[tokio::test]
-    async fn test_register_duplicate_returns_existing() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-
-        let db_config = test_db_config(ctx.database_url());
-        let remote = GitRemote::from_parts("github.com", "integ/register-dup", None);
-
-        run_async(&db_config, &remote, "first-name", "main")
-            .await
-            .expect("first registration");
-
-        let original_id = {
-            let mut conn = ctx.raw_connection().await.expect("raw_connection");
-            PgProjectRepository
-                .find_by_git_remote(&mut conn, &remote)
-                .await
-                .expect("find_by_git_remote")
-                .expect("project should exist")
-                .id()
-        };
-
-        // Second registration with the same remote succeeds without error.
-        run_async(&db_config, &remote, "different-name", "develop")
-            .await
-            .expect("duplicate registration");
-
-        // The project in the database is unchanged — the first registration wins.
-        let mut conn = ctx.raw_connection().await.expect("raw_connection");
-        let after = PgProjectRepository
-            .find_by_git_remote(&mut conn, &remote)
-            .await
-            .expect("find_by_git_remote")
-            .expect("project should still exist");
-
-        assert_eq!(after.id(), original_id);
-        assert_eq!(after.name(), "first-name");
-        assert_eq!(after.default_branch(), "main");
-
-        teardown(ctx).await;
     }
 }

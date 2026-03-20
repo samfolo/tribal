@@ -16,8 +16,18 @@ mod usage;
 mod validation;
 
 pub use anthropic::AnthropicInferenceProvider;
+#[cfg(feature = "test-helpers")]
+pub use anthropic::MESSAGES_PATH as ANTHROPIC_MESSAGES_PATH;
 pub use error::InferenceError;
+#[cfg(feature = "test-helpers")]
+pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
+#[cfg(feature = "test-helpers")]
+pub use ollama::{
+    CHAT_PATH as OLLAMA_CHAT_PATH, EMBED_PATH as OLLAMA_EMBED_PATH, TAGS_PATH as OLLAMA_TAGS_PATH,
+};
 pub use ollama::{OllamaEmbeddingProvider, OllamaInferenceProvider};
+#[cfg(feature = "test-helpers")]
+pub use openai::{CHAT_PATH as OPENAI_CHAT_PATH, EMBED_PATH as OPENAI_EMBED_PATH};
 pub use openai::{OpenAiEmbeddingProvider, OpenAiInferenceProvider};
 pub use provider::{EmbeddingProvider, InferenceProvider, ProviderIdentity};
 pub use registry::{
