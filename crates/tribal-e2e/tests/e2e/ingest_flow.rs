@@ -1,6 +1,4 @@
 use serde_json::json;
-use tribal_domain::KnowledgeKind;
-use tribal_test_utils::item;
 
 use crate::harness::{
     assertions::assert_success,
@@ -11,8 +9,8 @@ use crate::harness::{
 
 /// Verifies the full ingest pipeline: extraction produces two novel
 /// candidates, triage classifies both as novel, relations are
-/// committed, and both items are discoverable via semantic search
-/// and retrievable via `tribal_get_item`.
+/// committed, and both items are discoverable via semantic search,
+/// retrievable via `tribal_get_item`, and connected via explore.
 ///
 /// This is the happy-path pipeline test. Duplicate handling is
 /// covered by `test_duplicate_only_batch`; content-matched triage
@@ -23,22 +21,7 @@ use crate::harness::{
 /// fact and a rollback procedure, related by a "supports" edge.
 #[tokio::test]
 async fn test_ingest_pipeline_end_to_end() {
-    let mut harness = TestHarness::init(|setup| {
-        setup.graph(|g| {
-            g.as_principal("default")
-                .for_project("test-project", |store| {
-                    store.add_item(
-                        "existing",
-                        item(
-                            KnowledgeKind::Fact,
-                            "Canopy uses blue-green deployments to achieve \
-                             zero-downtime releases for the collaboration service",
-                        ),
-                    );
-                })
-        });
-    })
-    .await;
+    let mut harness = TestHarness::init(|_setup| {}).await;
 
     // -- Mount mocks ----------------------------------------------------------
 
@@ -125,9 +108,12 @@ async fn test_ingest_pipeline_end_to_end() {
                 .is_some_and(|c| c.contains("canary analysis"))
         })
         .expect("canary item should appear in discover results");
-    let canary_id = canary_item["item"]["id"].as_str().expect("canary item id");
+    let canary_id = canary_item["item"]["id"]
+        .as_str()
+        .expect("canary item id")
+        .to_owned();
 
-    items
+    let rollback_item = items
         .iter()
         .find(|i| {
             i["item"]["content"]
@@ -135,21 +121,33 @@ async fn test_ingest_pipeline_end_to_end() {
                 .is_some_and(|c| c.contains("roll back"))
         })
         .expect("rollback item should appear in discover results");
+    let rollback_id = rollback_item["item"]["id"]
+        .as_str()
+        .expect("rollback item id")
+        .to_owned();
 
     // -- Verify via get_item --------------------------------------------------
 
     let get_result = harness
-        .call_tool("tribal_get_item", json!({ "item_ids": [canary_id] }))
+        .call_tool(
+            "tribal_get_item",
+            json!({ "item_ids": [&canary_id, &rollback_id] }),
+        )
         .await;
     assert_success!(get_result);
 
     let get_json = tool_result_json(&get_result);
-    let fetched_content = get_json["items"][canary_id]["item"]["content"]
-        .as_str()
-        .expect("content field in get_item response");
     assert!(
-        fetched_content.contains("canary analysis"),
-        "expected content to contain 'canary analysis', got: {fetched_content}",
+        get_json["items"][&canary_id]["item"]["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("canary analysis")),
+        "get_item should return the canary item",
+    );
+    assert!(
+        get_json["items"][&rollback_id]["item"]["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("roll back")),
+        "get_item should return the rollback item",
     );
 
     // -- Verify relation via explore ------------------------------------------
@@ -157,7 +155,7 @@ async fn test_ingest_pipeline_end_to_end() {
     let explore_result = harness
         .call_tool(
             "tribal_explore",
-            json!({ "item_id": canary_id, "direction": "outbound", "depth": 1 }),
+            json!({ "item_id": &canary_id, "direction": "outbound", "depth": 1 }),
         )
         .await;
     assert_success!(explore_result);
