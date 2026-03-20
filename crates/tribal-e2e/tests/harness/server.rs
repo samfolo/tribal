@@ -55,7 +55,7 @@ use super::{
 const DUPLEX_BUFFER_SIZE: usize = 65_536;
 
 /// Principal key used when no override is provided.
-const DEFAULT_PRINCIPAL_KEY: &str = "e2e-principal";
+pub const DEFAULT_PRINCIPAL_KEY: &str = "e2e-principal";
 
 // ---------------------------------------------------------------------------
 // Seed closure type
