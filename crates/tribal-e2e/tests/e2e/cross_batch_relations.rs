@@ -1,6 +1,6 @@
 use serde_json::json;
-use tribal_db::{KnowledgeItemRepository, PgKnowledgeItemRepository};
-use tribal_test_utils::a_new_knowledge_item;
+use tribal_domain::KnowledgeKind;
+use tribal_test_utils::item;
 
 use crate::harness::{
     assertions::assert_success,
@@ -8,7 +8,7 @@ use crate::harness::{
         ExtractionFixture, ReferenceSpec, RelationFixture, SimilarItemSpec, candidate, hint,
         intra_batch, novel, to_existing,
     },
-    server::{TestHarness, seed},
+    server::TestHarness,
     tool_call::tool_result_json,
 };
 
@@ -22,25 +22,19 @@ use crate::harness::{
 #[tokio::test]
 async fn test_cross_batch_relations() {
     let mut harness = TestHarness::init(|setup| {
-        seed!(setup, |seed| {
-            let project_id = seed.project_id();
-            let principal_id = seed.principal_id();
-            let decision = PgKnowledgeItemRepository
-                .insert(
-                    seed.conn(),
-                    &a_new_knowledge_item()
-                        .project_id(project_id)
-                        .principal_id(principal_id)
-                        .content(
-                            "Meridian chose event sourcing for Canopy's document history \
-                             service to support arbitrary undo depth and audit compliance"
-                                .to_owned(),
-                        )
-                        .build(),
-                )
-                .await
-                .expect("insert architecture decision");
-            seed.label("decision", decision.id());
+        setup.graph(|g| {
+            g.as_principal("default")
+                .for_project("test-project", |store| {
+                    store.add_item(
+                        "decision",
+                        item(
+                            KnowledgeKind::DecisionRecord,
+                            "Meridian chose event sourcing for Canopy's document \
+                             history service to support arbitrary undo depth and \
+                             audit compliance",
+                        ),
+                    );
+                })
         });
     })
     .await;
