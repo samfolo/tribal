@@ -1,7 +1,6 @@
 use serde_json::json;
 
 use super::{
-    diagnostics::DiagnosticContext,
     server::TestHarness,
     tool_call::{tool_result_json, tool_result_text},
 };
@@ -75,13 +74,7 @@ pub async fn expect_completion(harness: &TestHarness, job_id: &str) {
     }
 
     // Build diagnostic context and panic.
-    let ctx = DiagnosticContext {
-        pool: &harness.pool,
-        embedding_server: harness.embedding_server(),
-        extraction_server: harness.extraction_server(),
-        triage_server: harness.triage_server(),
-        relation_server: harness.relation_server(),
-    };
+    let ctx = harness.diagnostic_context();
     let diagnostic = ctx.format_failure(job_id, &status, &outcome).await;
     panic!("{diagnostic}");
 }
