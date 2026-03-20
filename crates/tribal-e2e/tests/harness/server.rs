@@ -24,6 +24,7 @@ use tribal_db::{
     NewProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
 };
 use tribal_domain::{PrincipalId, Project};
+use tribal_inference::RequestClass;
 use tribal_mcp::{
     AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
     TribalServerHandler,
@@ -39,6 +40,7 @@ use wiremock::{
 
 use super::{
     config::test_config,
+    diagnostics::{DiagnosticContext, ServerDiagnostic},
     mocks::{
         envelope::{
             chat_path, embed_path, fixed_embedding_vector, tags_path, wrap_completion,
@@ -459,7 +461,7 @@ impl TestHarness {
         truncate_all_tables(&mut conn).await;
     }
 
-    /// Restarts the server after a prior `shutdown()`.
+    /// Restarts the server after a prior [`shutdown()`](Self::shutdown).
     ///
     /// Preserves the database pool, wiremock servers, config, and labels.
     /// Connects a fresh MCP client with a new session.
@@ -616,6 +618,44 @@ impl TestHarness {
     #[must_use]
     pub fn relation_server(&self) -> &MockServer {
         &self.relation_server
+    }
+
+    // -----------------------------------------------------------------------
+    // Diagnostics
+    // -----------------------------------------------------------------------
+
+    /// Builds a [`DiagnosticContext`] with provider metadata for each
+    /// wiremock server, enabling provider-aware request formatting.
+    pub fn diagnostic_context(&self) -> DiagnosticContext<'_> {
+        DiagnosticContext {
+            pool: &self.pool,
+            servers: vec![
+                ServerDiagnostic {
+                    name: "embedding",
+                    server: &self.embedding_server,
+                    provider: self.config.embedding.provider,
+                    request_class: RequestClass::Embedding,
+                },
+                ServerDiagnostic {
+                    name: "extraction",
+                    server: &self.extraction_server,
+                    provider: self.config.inference.extraction.provider,
+                    request_class: RequestClass::Inference,
+                },
+                ServerDiagnostic {
+                    name: "triage",
+                    server: &self.triage_server,
+                    provider: self.config.inference.triage.provider,
+                    request_class: RequestClass::Inference,
+                },
+                ServerDiagnostic {
+                    name: "relation",
+                    server: &self.relation_server,
+                    provider: self.config.inference.relation.provider,
+                    request_class: RequestClass::Inference,
+                },
+            ],
+        }
     }
 
     // -----------------------------------------------------------------------

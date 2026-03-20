@@ -2,7 +2,7 @@
 
 /// Truncates `s` to at most `max` characters, appending `"..."` if
 /// truncated. Safe for multi-byte UTF-8.
-pub(crate) fn truncate(s: &str, max: usize) -> String {
+pub fn truncate(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {
         Some((idx, _)) => format!("{}...", &s[..idx]),
         None => s.to_owned(),
