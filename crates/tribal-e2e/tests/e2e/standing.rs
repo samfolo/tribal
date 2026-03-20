@@ -1,4 +1,5 @@
 use serde_json::json;
+use tribal_config::ProviderKind;
 use tribal_domain::{KnowledgeKind, RelationKind};
 use tribal_test_utils::item;
 
@@ -23,6 +24,12 @@ use crate::harness::{
 #[tokio::test]
 async fn test_standing_and_supersession() {
     let mut harness = TestHarness::init(|setup| {
+        // Anthropic relation exercises the Anthropic envelope abstraction.
+        setup.config(|c| {
+            c.inference.relation.provider = ProviderKind::Anthropic;
+            c.inference.relation.api_key = Some("sk-ant-e2e-000000".to_owned());
+        });
+
         setup.graph(|g| {
             g.as_principal("default")
                 .for_project("test-project", |store| {

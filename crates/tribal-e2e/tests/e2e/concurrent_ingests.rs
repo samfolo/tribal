@@ -1,4 +1,5 @@
 use serde_json::json;
+use tribal_config::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,
@@ -22,7 +23,14 @@ use crate::harness::{
 /// Canopy observability insight.
 #[tokio::test]
 async fn test_concurrent_identical_ingests() {
-    let mut harness = TestHarness::init(|_setup| {}).await;
+    let mut harness = TestHarness::init(|setup| {
+        // OpenAI relation exercises the OpenAI envelope abstraction.
+        setup.config(|c| {
+            c.inference.relation.provider = ProviderKind::OpenAi;
+            c.inference.relation.api_key = Some("sk-e2e-000000".to_owned());
+        });
+    })
+    .await;
 
     // -- Mount mocks ----------------------------------------------------------
 
