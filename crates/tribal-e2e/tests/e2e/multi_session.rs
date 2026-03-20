@@ -193,9 +193,12 @@ async fn test_multi_session_isolation() {
 
     let client_2 = harness.connect_client(DEFAULT_PRINCIPAL_KEY).await;
 
-    // Step 1: without a project context, discover should fail.
+    // Step 1: without a project context, ingest should fail.
     let result = client_2
-        .call_tool("tribal_discover", json!({ "query": "canopy services" }))
+        .call_tool(
+            "tribal_ingest",
+            json!({ "content": "this should fail without a project" }),
+        )
         .await;
     assert_error!(result);
 
