@@ -9,6 +9,14 @@ use crate::harness::{
     tool_call::tool_result_json,
 };
 
+/// Verifies the full ingest pipeline: extraction produces two
+/// candidates, triage classifies one as novel and one as a duplicate
+/// of a seeded item, relations are committed, and the novel item is
+/// discoverable while the duplicate is not inserted as a new item.
+///
+/// Theme: Canopy's deployment infrastructure — a canary analysis
+/// fact is novel, while a blue-green deployment fact duplicates
+/// existing knowledge.
 #[tokio::test]
 async fn test_ingest_pipeline_end_to_end() {
     let mut harness = TestHarness::init(|setup| {
@@ -19,7 +27,8 @@ async fn test_ingest_pipeline_end_to_end() {
                         "existing",
                         item(
                             KnowledgeKind::Fact,
-                            "Pre-existing item for duplicate matching",
+                            "Canopy uses blue-green deployments to achieve \
+                             zero-downtime releases for the collaboration service",
                         ),
                     );
                 })
@@ -38,16 +47,18 @@ async fn test_ingest_pipeline_end_to_end() {
                     .candidate(
                         candidate(
                             "fact",
-                            "Rust ensures memory safety without a garbage collector",
+                            "The deployment pipeline runs canary analysis for 15 \
+                             minutes before promoting to full traffic",
                         )
-                        .tags(&["rust", "memory-safety"]),
+                        .tags(&["deployment", "canary"]),
                     )
                     .candidate(
                         candidate(
-                            "heuristic",
-                            "Use lifetimes to express ownership relationships",
+                            "fact",
+                            "Blue-green deployment strategy enables zero-downtime \
+                             releases for the collaboration service",
                         )
-                        .tags(&["rust", "lifetimes"]),
+                        .tags(&["deployment", "blue-green"]),
                     )
                     .build(),
             );
@@ -56,8 +67,11 @@ async fn test_ingest_pipeline_end_to_end() {
 
     harness
         .mount_triage(|m| {
-            m.on_content_repeat_last("memory safety", &[novel().build().into()]);
-            m.on_content_repeat_last("lifetimes", &[duplicate(existing_id).build().into()]);
+            m.on_content_repeat_last("canary analysis", &[novel().build().into()]);
+            m.on_content_repeat_last(
+                "deployment strategy",
+                &[duplicate(existing_id).build().into()],
+            );
         })
         .await;
 
@@ -77,8 +91,8 @@ async fn test_ingest_pipeline_end_to_end() {
         .call_tool(
             "tribal_ingest",
             json!({
-                "content": "Rust ensures memory safety without a garbage collector. \
-                            Use lifetimes to express ownership relationships."
+                "content": "The deployment pipeline runs canary analysis before \
+                            promoting. Blue-green deployments enable zero-downtime."
             }),
         )
         .await;
@@ -94,7 +108,7 @@ async fn test_ingest_pipeline_end_to_end() {
     // -- Verify via discover --------------------------------------------------
 
     let discover_result = harness
-        .call_tool("tribal_discover", json!({ "query": "memory safety" }))
+        .call_tool("tribal_discover", json!({ "query": "deployment canary" }))
         .await;
     assert_success!(discover_result);
 
@@ -106,7 +120,7 @@ async fn test_ingest_pipeline_end_to_end() {
         .find(|i| {
             i["item"]["content"]
                 .as_str()
-                .is_some_and(|c| c.contains("memory safety"))
+                .is_some_and(|c| c.contains("canary analysis"))
         })
         .expect("novel item should appear in discover results");
     let novel_item_id = novel_item["item"]["id"].as_str().expect("novel item id");
@@ -123,8 +137,8 @@ async fn test_ingest_pipeline_end_to_end() {
         .as_str()
         .expect("content field in get_item response");
     assert!(
-        fetched_content.contains("memory safety"),
-        "expected content to contain 'memory safety', got: {fetched_content}",
+        fetched_content.contains("canary analysis"),
+        "expected content to contain 'canary analysis', got: {fetched_content}",
     );
 
     // -- Verify duplicate was not inserted as a new item ----------------------
@@ -134,7 +148,7 @@ async fn test_ingest_pipeline_end_to_end() {
         .filter(|i| {
             i["item"]["content"]
                 .as_str()
-                .is_some_and(|c| c.contains("lifetimes"))
+                .is_some_and(|c| c.contains("deployment strategy"))
         })
         .collect();
     assert!(

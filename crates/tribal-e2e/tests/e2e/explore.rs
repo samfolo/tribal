@@ -7,6 +7,12 @@ use crate::harness::{
     tool_call::tool_result_json,
 };
 
+/// Verifies graph traversal via `tribal_explore`: depth control,
+/// direction filtering, and relation type filtering.
+///
+/// Theme: Canopy's caching layer — a write-through cache fact
+/// supports a debugging heuristic, which contradicts a cache
+/// invalidation procedure.
 #[tokio::test]
 async fn test_explore_graph_traversal() {
     let mut harness = TestHarness::init(|_setup| {}).await;
@@ -18,16 +24,29 @@ async fn test_explore_graph_traversal() {
             m.respond(
                 ExtractionFixture::builder()
                     .candidate(
-                        candidate("fact", "Ownership rules prevent data races in Rust")
-                            .tags(&["rust", "ownership"]),
+                        candidate(
+                            "fact",
+                            "Canopy's session store uses a write-through cache to \
+                             reduce database load during peak collaboration sessions",
+                        )
+                        .tags(&["caching", "session-store"]),
                     )
                     .candidate(
-                        candidate("heuristic", "Borrow checker enforces aliasing discipline")
-                            .tags(&["rust", "borrowing"]),
+                        candidate(
+                            "heuristic",
+                            "When cache hit rate drops below 90%, investigate \
+                             connection pool saturation before adding cache nodes",
+                        )
+                        .tags(&["caching", "debugging"]),
                     )
                     .candidate(
-                        candidate("procedure", "Use Arc for shared ownership across threads")
-                            .tags(&["rust", "concurrency"]),
+                        candidate(
+                            "procedure",
+                            "To invalidate the session cache, publish a cache-bust \
+                             event to the shared message bus rather than clearing \
+                             directly",
+                        )
+                        .tags(&["caching", "invalidation"]),
                     )
                     .build(),
             );
@@ -57,9 +76,9 @@ async fn test_explore_graph_traversal() {
         .call_tool(
             "tribal_ingest",
             json!({
-                "content": "Ownership rules prevent data races. \
-                            Borrow checker enforces aliasing. \
-                            Use Arc for shared ownership."
+                "content": "Canopy's session store uses a write-through cache. \
+                            When cache hit rate drops, investigate pool saturation. \
+                            To invalidate, publish a cache-bust event."
             }),
         )
         .await;
@@ -77,7 +96,7 @@ async fn test_explore_graph_traversal() {
     let discover_result = harness
         .call_tool(
             "tribal_discover",
-            json!({ "query": "ownership borrowing concurrency" }),
+            json!({ "query": "session cache invalidation" }),
         )
         .await;
     assert_success!(discover_result);
@@ -104,9 +123,9 @@ async fn test_explore_graph_traversal() {
             .to_owned()
     };
 
-    let id_a = find_id("ownership rules");
-    let id_b = find_id("borrow checker");
-    let id_c = find_id("arc for shared");
+    let id_a = find_id("write-through cache");
+    let id_b = find_id("cache hit rate");
+    let id_c = find_id("cache-bust event");
 
     // -- Explore depth 1 from A → should find B ------------------------------
 
