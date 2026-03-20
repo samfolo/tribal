@@ -116,13 +116,7 @@ async fn test_ingest_pipeline_end_to_end() {
     let discover_json = tool_result_json(&discover_result);
     let items = discover_json["items"].as_array().expect("items array");
 
-    // Both novel candidates + the seeded item should appear.
-    assert!(
-        items.len() >= 2,
-        "expected at least 2 items from the pipeline, got {}",
-        items.len(),
-    );
-
+    // Both novel candidates should be discoverable.
     let canary_item = items
         .iter()
         .find(|i| {
@@ -132,6 +126,15 @@ async fn test_ingest_pipeline_end_to_end() {
         })
         .expect("canary item should appear in discover results");
     let canary_id = canary_item["item"]["id"].as_str().expect("canary item id");
+
+    items
+        .iter()
+        .find(|i| {
+            i["item"]["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("roll back"))
+        })
+        .expect("rollback item should appear in discover results");
 
     // -- Verify via get_item --------------------------------------------------
 
@@ -163,11 +166,18 @@ async fn test_ingest_pipeline_end_to_end() {
     let related = explore_json["related_items"]
         .as_array()
         .expect("related_items");
-    assert!(
-        related.iter().any(|r| r["item"]["content"]
-            .as_str()
-            .is_some_and(|c| c.contains("roll back"))),
-        "canary item should have an outbound relation to the rollback procedure",
+    let rollback_edge = related
+        .iter()
+        .find(|r| {
+            r["item"]["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("roll back"))
+        })
+        .expect("canary item should have an outbound relation to the rollback procedure");
+    assert_eq!(
+        rollback_edge["relation_type"].as_str(),
+        Some("supports"),
+        "edge to rollback procedure should be 'supports'",
     );
 
     // -- Cleanup --------------------------------------------------------------
