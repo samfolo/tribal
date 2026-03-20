@@ -9,10 +9,7 @@ use crate::harness::{
 
 #[tokio::test]
 async fn test_explore_graph_traversal() {
-    let mut harness = TestHarness::init(|setup| {
-        setup.principal_key("e2e-explore-principal");
-    })
-    .await;
+    let mut harness = TestHarness::init(|_setup| {}).await;
 
     // -- Mount mocks ----------------------------------------------------------
 
