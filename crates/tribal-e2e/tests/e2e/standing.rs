@@ -1,14 +1,9 @@
 use serde_json::json;
-use tribal_config::{DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL};
-use tribal_db::{EmbeddingRepository, PgEmbeddingRepository};
 use tribal_domain::{KnowledgeKind, RelationKind};
-use tribal_test_utils::{Seed, a_new_embedding, item};
+use tribal_test_utils::item;
 
 use crate::harness::{
-    assertions::assert_success,
-    mocks::fixed_embedding_vector,
-    server::{TestHarness, seed},
-    tool_call::tool_result_json,
+    assertions::assert_success, server::TestHarness, tool_call::tool_result_json,
 };
 
 /// Verifies that discover and explore correctly reflect standing
@@ -28,18 +23,9 @@ use crate::harness::{
 #[tokio::test]
 async fn test_standing_and_supersession() {
     let mut harness = TestHarness::init(|setup| {
-        setup.no_project();
-
-        seed!(setup, |seed| {
-            let result = Seed::new()
-                .define_project("canopy", "git@github.com:meridian/canopy.git")
-                .define_principal("engineer", "seed-engineer")
-                .set_embedding_model(
-                    DEFAULT_EMBEDDING_MODEL,
-                    DEFAULT_EMBEDDING_DIMENSIONS as usize,
-                )
-                .as_principal("engineer")
-                .for_project("canopy", |store| {
+        setup.graph(|g| {
+            g.as_principal("default")
+                .for_project("test-project", |store| {
                     store
                         .add_item(
                             "a",
@@ -47,8 +33,7 @@ async fn test_standing_and_supersession() {
                                 KnowledgeKind::Fact,
                                 "Canopy stores event replay snapshots on local disk for \
                                  sub-millisecond access during document reconstruction",
-                            )
-                            .skip_embed(),
+                            ),
                         )
                         .add_item(
                             "b",
@@ -57,8 +42,7 @@ async fn test_standing_and_supersession() {
                                 "After the February incident, snapshot storage was \
                                  migrated from local disk to S3 to survive instance \
                                  termination",
-                            )
-                            .skip_embed(),
+                            ),
                         )
                         .add_item(
                             "c",
@@ -66,8 +50,7 @@ async fn test_standing_and_supersession() {
                                 KnowledgeKind::Fact,
                                 "S3-backed snapshots reduced event replay P99 from 2.1s \
                                  to 340ms, validating the migration decision",
-                            )
-                            .skip_embed(),
+                            ),
                         )
                         .add_item(
                             "d",
@@ -75,56 +58,21 @@ async fn test_standing_and_supersession() {
                                 KnowledgeKind::Heuristic,
                                 "Cold-start latency increased by 3x with S3 snapshots \
                                  because the first replay must fetch over the network",
-                            )
-                            .skip_embed(),
+                            ),
                         );
                 })
                 .relate("b", RelationKind::Supersedes, "a")
                 .relate("c", RelationKind::Supports, "b")
                 .relate("d", RelationKind::Contradicts, "c")
                 .commit_relations("snapshot-arc")
-                .execute(seed.conn())
-                .await;
-
-            // Insert embeddings manually so they match the infrastructure
-            // mock's fixed vector (ensuring discover returns all items).
-            let embedding = fixed_embedding_vector(DEFAULT_EMBEDDING_DIMENSIONS);
-            for label in ["a", "b", "c", "d"] {
-                PgEmbeddingRepository
-                    .insert(
-                        seed.conn(),
-                        &a_new_embedding()
-                            .knowledge_item_id(result.item_id(label))
-                            .model(DEFAULT_EMBEDDING_MODEL.to_owned())
-                            .dimensions(DEFAULT_EMBEDDING_DIMENSIONS)
-                            .embedding(embedding.clone())
-                            .build(),
-                    )
-                    .await
-                    .expect("insert embedding");
-            }
-
-            seed.label("project", result.project_id("canopy"));
-            seed.label("a", result.item_id("a"));
-            seed.label("b", result.item_id("b"));
-            seed.label("c", result.item_id("c"));
-            seed.label("d", result.item_id("d"));
         });
     })
     .await;
 
-    let project_id = harness.label("project").to_owned();
     let id_a = harness.label("a").to_owned();
     let id_b = harness.label("b").to_owned();
     let id_c = harness.label("c").to_owned();
     let id_d = harness.label("d").to_owned();
-
-    // -- Set project context --------------------------------------------------
-
-    let result = harness
-        .call_tool("tribal_set_context", json!({ "project_id": &project_id }))
-        .await;
-    assert_success!(result);
 
     // -- Discover (default: exclude superseded) -------------------------------
 

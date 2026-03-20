@@ -1,12 +1,12 @@
 use serde_json::json;
-use tribal_db::{KnowledgeItemRepository, PgKnowledgeItemRepository};
-use tribal_test_utils::a_new_knowledge_item;
+use tribal_domain::KnowledgeKind;
+use tribal_test_utils::item;
 
 use crate::harness::{
     assertions::assert_success,
     fixtures::{ExtractionFixture, RelationFixture, candidate, duplicate},
     polling::expect_condition,
-    server::{TestHarness, seed},
+    server::TestHarness,
     tool_call::tool_result_json,
 };
 
@@ -20,25 +20,18 @@ use crate::harness::{
 #[tokio::test]
 async fn test_duplicate_only_batch() {
     let mut harness = TestHarness::init(|setup| {
-        seed!(setup, |seed| {
-            let project_id = seed.project_id();
-            let principal_id = seed.principal_id();
-            let existing = PgKnowledgeItemRepository
-                .insert(
-                    seed.conn(),
-                    &a_new_knowledge_item()
-                        .project_id(project_id)
-                        .principal_id(principal_id)
-                        .content(
-                            "Canopy's notification service uses a fan-out-on-write pattern \
-                             to pre-compute per-user notification feeds"
-                                .to_owned(),
-                        )
-                        .build(),
-                )
-                .await
-                .expect("insert existing notification item");
-            seed.label("notification_item", existing.id());
+        setup.graph(|g| {
+            g.as_principal("default")
+                .for_project("test-project", |store| {
+                    store.add_item(
+                        "notification_item",
+                        item(
+                            KnowledgeKind::Fact,
+                            "Canopy's notification service uses a fan-out-on-write \
+                             pattern to pre-compute per-user notification feeds",
+                        ),
+                    );
+                })
         });
     })
     .await;

@@ -17,7 +17,9 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
-use tribal_config::{ProviderKind, TribalConfig, validate};
+use tribal_config::{
+    DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL, ProviderKind, TribalConfig, validate,
+};
 use tribal_db::{
     NewProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
 };
@@ -28,7 +30,7 @@ use tribal_mcp::{
 };
 use tribal_server::{ServerHandle, start_server};
 use tribal_test_utils::{
-    a_new_principal, a_new_project, serial_lock, test_context, truncate_all_tables,
+    Seed, a_new_principal, a_new_project, serial_lock, test_context, truncate_all_tables,
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -72,6 +74,9 @@ type AsyncSeedFn = Box<
 /// Boxed per-test config mutation closure.
 type ConfigOverrideFn = Box<dyn FnOnce(&mut TribalConfig)>;
 
+/// Synchronous closure that configures a [`Seed`] knowledge graph.
+type GraphFn = Box<dyn FnOnce(Seed) -> Seed>;
+
 // ---------------------------------------------------------------------------
 // HarnessSetup
 // ---------------------------------------------------------------------------
@@ -84,6 +89,7 @@ pub struct HarnessSetup {
     no_project: bool,
     config_override: Option<ConfigOverrideFn>,
     seed: Option<AsyncSeedFn>,
+    graph_fn: Option<GraphFn>,
 }
 
 impl HarnessSetup {
@@ -94,6 +100,7 @@ impl HarnessSetup {
             no_project: false,
             config_override: None,
             seed: None,
+            graph_fn: None,
         }
     }
 
@@ -124,8 +131,24 @@ impl HarnessSetup {
 
     /// Registers an async seed closure that runs after project and
     /// principal insertion. See the `seed!` macro for ergonomic usage.
+    ///
+    /// Mutually exclusive with [`graph()`](Self::graph).
     pub fn seed(&mut self, f: AsyncSeedFn) {
         self.seed = Some(f);
+    }
+
+    /// Registers a declarative knowledge graph to seed before server
+    /// startup.
+    ///
+    /// The closure receives a [`Seed`] pre-configured with a default
+    /// project and the harness principal. Add items, relations, and
+    /// other graph structure; the harness executes the seed, transfers
+    /// item labels, and starts the server with the seeded project.
+    ///
+    /// Mutually exclusive with [`seed()`](Self::seed) and
+    /// [`no_project()`](Self::no_project).
+    pub fn graph(&mut self, f: impl FnOnce(Seed) -> Seed + 'static) {
+        self.graph_fn = Some(Box::new(f));
     }
 }
 
@@ -279,45 +302,72 @@ impl TestHarness {
         let mut setup = HarnessSetup::new();
         setup_fn(&mut setup);
 
-        // 5. Insert project + principal
+        // 5–6. Seed data (graph path or manual path)
         let mut raw_conn = ctx.raw_connection().await.expect("raw connection for seed");
 
-        let project = if setup.no_project {
-            None
-        } else {
+        let (cli_project, labels) = if let Some(graph_fn) = setup.graph_fn {
+            // Graph path: Seed manages project, principal, items, and
+            // relations. The harness transfers item labels and uses the
+            // Seed's project for server startup.
             let new_project = setup.project.unwrap_or_else(|| a_new_project().build());
-            let project = PgProjectRepository
-                .insert(&mut raw_conn, &new_project)
-                .await
-                .expect("insert project");
-            Some(project)
-        };
+            let pre_configured = Seed::new()
+                .define_project(&new_project.name, new_project.git_remote.to_string())
+                .define_principal("default", &setup.principal_key)
+                .set_embedding_model(
+                    DEFAULT_EMBEDDING_MODEL,
+                    DEFAULT_EMBEDDING_DIMENSIONS as usize,
+                );
 
-        let cli_project = project.as_ref().map(|p| p.id().to_string());
+            let configured = graph_fn(pre_configured);
+            let result = configured.execute(&mut raw_conn).await;
 
-        let principal = PgPrincipalRepository
-            .insert(
-                &mut raw_conn,
-                &a_new_principal()
-                    .principal_key(setup.principal_key.clone())
-                    .build(),
-            )
-            .await
-            .expect("insert principal");
+            let cli_project = Some(result.project_id(&new_project.name).to_string());
+            let mut labels = HashMap::new();
+            for label in result.item_labels() {
+                labels.insert(label.clone(), result.item_id(&label).to_string());
+            }
 
-        // 6. Execute seed closure
-        let mut labels = HashMap::new();
-        if let Some(seed_fn) = setup.seed {
-            let mut seed_ctx = SeedContext {
-                conn: raw_conn,
-                project,
-                principal_id: principal.id(),
-                principal_key: setup.principal_key.clone(),
-                labels: HashMap::new(),
+            (cli_project, labels)
+        } else {
+            // Manual path: harness manages project and principal directly.
+            let project = if setup.no_project {
+                None
+            } else {
+                let new_project = setup.project.unwrap_or_else(|| a_new_project().build());
+                let project = PgProjectRepository
+                    .insert(&mut raw_conn, &new_project)
+                    .await
+                    .expect("insert project");
+                Some(project)
             };
-            seed_fn(&mut seed_ctx).await;
-            labels = seed_ctx.labels;
-        }
+
+            let cli_project = project.as_ref().map(|p| p.id().to_string());
+
+            let principal = PgPrincipalRepository
+                .insert(
+                    &mut raw_conn,
+                    &a_new_principal()
+                        .principal_key(setup.principal_key.clone())
+                        .build(),
+                )
+                .await
+                .expect("insert principal");
+
+            let mut labels = HashMap::new();
+            if let Some(seed_fn) = setup.seed {
+                let mut seed_ctx = SeedContext {
+                    conn: raw_conn,
+                    project,
+                    principal_id: principal.id(),
+                    principal_key: setup.principal_key.clone(),
+                    labels: HashMap::new(),
+                };
+                seed_fn(&mut seed_ctx).await;
+                labels = seed_ctx.labels;
+            }
+
+            (cli_project, labels)
+        };
 
         // 7. Build config
         let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");

@@ -1,32 +1,28 @@
 use serde_json::json;
-use tribal_db::{KnowledgeItemRepository, PgKnowledgeItemRepository};
-use tribal_test_utils::a_new_knowledge_item;
+use tribal_domain::KnowledgeKind;
+use tribal_test_utils::item;
 
 use crate::harness::{
     assertions::assert_success,
     fixtures::{ExtractionFixture, RelationFixture, candidate, duplicate, intra_batch, novel},
-    server::{TestHarness, seed},
+    server::TestHarness,
     tool_call::tool_result_json,
 };
 
 #[tokio::test]
 async fn test_ingest_pipeline_end_to_end() {
     let mut harness = TestHarness::init(|setup| {
-        seed!(setup, |seed| {
-            let project_id = seed.project_id();
-            let principal_id = seed.principal_id();
-            let existing = PgKnowledgeItemRepository
-                .insert(
-                    seed.conn(),
-                    &a_new_knowledge_item()
-                        .project_id(project_id)
-                        .principal_id(principal_id)
-                        .content("Pre-existing item for duplicate matching".to_owned())
-                        .build(),
-                )
-                .await
-                .expect("insert existing knowledge item");
-            seed.label("existing", existing.id());
+        setup.graph(|g| {
+            g.as_principal("default")
+                .for_project("test-project", |store| {
+                    store.add_item(
+                        "existing",
+                        item(
+                            KnowledgeKind::Fact,
+                            "Pre-existing item for duplicate matching",
+                        ),
+                    );
+                })
         });
     })
     .await;
