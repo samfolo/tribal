@@ -218,13 +218,11 @@ fn format_request_excerpt(
 /// the provider's wire format.
 fn extract_embed_input(json: &Value, provider: ProviderKind) -> String {
     match provider {
-        ProviderKind::Ollama => json["input"].as_str().unwrap_or("<nil>").to_owned(),
-        ProviderKind::OpenAi => json["input"]
-            .as_array()
-            .and_then(|a| a.first())
-            .and_then(|v| v.as_str())
-            .unwrap_or("<nil>")
-            .to_owned(),
+        // Both `Ollama` and `OpenAI` serialise embed input as a plain string.
+        ProviderKind::Ollama | ProviderKind::OpenAi => {
+            json["input"].as_str().unwrap_or("<nil>").to_owned()
+        }
+        // `Anthropic` does not provide an embedding service.
         ProviderKind::Anthropic => "<nil>".to_owned(),
     }
 }
