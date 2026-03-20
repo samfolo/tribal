@@ -1,42 +1,27 @@
 use serde_json::json;
-use tribal_domain::KnowledgeKind;
-use tribal_test_utils::item;
 
 use crate::harness::{
     assertions::assert_success,
-    fixtures::{ExtractionFixture, RelationFixture, candidate, duplicate, intra_batch, novel},
+    fixtures::{ExtractionFixture, RelationFixture, candidate, intra_batch, novel},
     server::TestHarness,
     tool_call::tool_result_json,
 };
 
-/// Verifies the full ingest pipeline: extraction produces two
-/// candidates, triage classifies one as novel and one as a duplicate
-/// of a seeded item, relations are committed, and the novel item is
-/// discoverable while the duplicate is not inserted as a new item.
+/// Verifies the full ingest pipeline: extraction produces two novel
+/// candidates, triage classifies both as novel, relations are
+/// committed, and both items are discoverable via semantic search,
+/// retrievable via `tribal_get_item`, and connected via explore.
+///
+/// This is the happy-path pipeline test. Duplicate handling is
+/// covered by `test_duplicate_only_batch`; content-matched triage
+/// mocks with mixed outcomes are avoided here to prevent wiremock
+/// concurrent matching flakes.
 ///
 /// Theme: Canopy's deployment infrastructure — a canary analysis
-/// fact is novel, while a blue-green deployment fact duplicates
-/// existing knowledge.
+/// fact and a rollback procedure, related by a "supports" edge.
 #[tokio::test]
 async fn test_ingest_pipeline_end_to_end() {
-    let mut harness = TestHarness::init(|setup| {
-        setup.graph(|g| {
-            g.as_principal("default")
-                .for_project("test-project", |store| {
-                    store.add_item(
-                        "existing",
-                        item(
-                            KnowledgeKind::Fact,
-                            "Canopy uses blue-green deployments to achieve \
-                             zero-downtime releases for the collaboration service",
-                        ),
-                    );
-                })
-        });
-    })
-    .await;
-
-    let existing_id = harness.label("existing");
+    let mut harness = TestHarness::init(|_setup| {}).await;
 
     // -- Mount mocks ----------------------------------------------------------
 
@@ -54,11 +39,11 @@ async fn test_ingest_pipeline_end_to_end() {
                     )
                     .candidate(
                         candidate(
-                            "fact",
-                            "Blue-green deployment strategy enables zero-downtime \
-                             releases for the collaboration service",
+                            "procedure",
+                            "To roll back a failed Canopy deployment, revert the \
+                             target group weight to the previous stable version",
                         )
-                        .tags(&["deployment", "blue-green"]),
+                        .tags(&["deployment", "rollback"]),
                     )
                     .build(),
             );
@@ -67,11 +52,7 @@ async fn test_ingest_pipeline_end_to_end() {
 
     harness
         .mount_triage(|m| {
-            m.on_content_repeat_last("canary analysis for 15 minutes", &[novel().build().into()]);
-            m.on_content_repeat_last(
-                "Blue-green deployment strategy",
-                &[duplicate(existing_id).build().into()],
-            );
+            m.respond(novel().build());
         })
         .await;
 
@@ -92,7 +73,7 @@ async fn test_ingest_pipeline_end_to_end() {
             "tribal_ingest",
             json!({
                 "content": "The deployment pipeline runs canary analysis before \
-                            promoting. Blue-green deployments enable zero-downtime."
+                            promoting. To roll back, revert the target group weight."
             }),
         )
         .await;
@@ -108,60 +89,94 @@ async fn test_ingest_pipeline_end_to_end() {
     // -- Verify via discover --------------------------------------------------
 
     let discover_result = harness
-        .call_tool("tribal_discover", json!({ "query": "deployment canary" }))
+        .call_tool(
+            "tribal_discover",
+            json!({ "query": "deployment canary rollback" }),
+        )
         .await;
     assert_success!(discover_result);
 
     let discover_json = tool_result_json(&discover_result);
     let items = discover_json["items"].as_array().expect("items array");
 
-    let novel_item = items
+    // Both novel candidates should be discoverable.
+    let canary_item = items
         .iter()
         .find(|i| {
             i["item"]["content"]
                 .as_str()
                 .is_some_and(|c| c.contains("canary analysis"))
         })
-        .expect("novel item should appear in discover results");
-    let novel_item_id = novel_item["item"]["id"].as_str().expect("novel item id");
+        .expect("canary item should appear in discover results");
+    let canary_id = canary_item["item"]["id"]
+        .as_str()
+        .expect("canary item id")
+        .to_owned();
+
+    let rollback_item = items
+        .iter()
+        .find(|i| {
+            i["item"]["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("roll back"))
+        })
+        .expect("rollback item should appear in discover results");
+    let rollback_id = rollback_item["item"]["id"]
+        .as_str()
+        .expect("rollback item id")
+        .to_owned();
 
     // -- Verify via get_item --------------------------------------------------
 
     let get_result = harness
-        .call_tool("tribal_get_item", json!({ "item_ids": [novel_item_id] }))
+        .call_tool(
+            "tribal_get_item",
+            json!({ "item_ids": [&canary_id, &rollback_id] }),
+        )
         .await;
     assert_success!(get_result);
 
     let get_json = tool_result_json(&get_result);
-    let fetched_content = get_json["items"][novel_item_id]["item"]["content"]
-        .as_str()
-        .expect("content field in get_item response");
     assert!(
-        fetched_content.contains("canary analysis"),
-        "expected content to contain 'canary analysis', got: {fetched_content}",
+        get_json["items"][&canary_id]["item"]["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("canary analysis")),
+        "get_item should return the canary item",
+    );
+    assert!(
+        get_json["items"][&rollback_id]["item"]["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("roll back")),
+        "get_item should return the rollback item",
     );
 
-    // -- Verify duplicate was not inserted as a new item ----------------------
+    // -- Verify relation via explore ------------------------------------------
 
-    let has_duplicate = items.iter().any(|i| {
-        i["item"]["content"]
-            .as_str()
-            .is_some_and(|c| c.contains("Blue-green deployment strategy"))
-    });
-    if has_duplicate {
-        let all_contents: Vec<_> = items
-            .iter()
-            .filter_map(|i| i["item"]["content"].as_str())
-            .collect();
-        let ctx = harness.diagnostic_context();
-        let diagnostic = ctx.format_failure(job_id, "completed", "success").await;
-        panic!(
-            "duplicate candidate should not appear as a new knowledge item\n\n\
-             Discover returned {} items:\n{:#?}\n\n{diagnostic}",
-            items.len(),
-            all_contents,
-        );
-    }
+    let explore_result = harness
+        .call_tool(
+            "tribal_explore",
+            json!({ "item_id": &canary_id, "direction": "outbound", "depth": 1 }),
+        )
+        .await;
+    assert_success!(explore_result);
+
+    let explore_json = tool_result_json(&explore_result);
+    let related = explore_json["related_items"]
+        .as_array()
+        .expect("related_items");
+    let rollback_edge = related
+        .iter()
+        .find(|r| {
+            r["item"]["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("roll back"))
+        })
+        .expect("canary item should have an outbound relation to the rollback procedure");
+    assert_eq!(
+        rollback_edge["relation_type"].as_str(),
+        Some("supports"),
+        "edge to rollback procedure should be 'supports'",
+    );
 
     // -- Cleanup --------------------------------------------------------------
 
