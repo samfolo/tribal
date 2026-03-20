@@ -30,6 +30,7 @@ impl From<&str> for ContentMatcher {
 // ---------------------------------------------------------------------------
 
 /// A single entry in a mock response sequence.
+#[derive(Clone)]
 pub enum MockResponse {
     /// A successful response wrapping a stage fixture.
     Fixture(Value),
@@ -150,19 +151,9 @@ impl<'a> StageMountBuilder<'a> {
             }
         }
 
-        // Clone responses into owned entries. MockResponse cannot implement
-        // Clone (Value is Clone, but we handle both variants explicitly).
-        let owned: Vec<MockResponse> = responses
-            .iter()
-            .map(|r| match r {
-                MockResponse::Fixture(v) => MockResponse::Fixture(v.clone()),
-                MockResponse::Error(status) => MockResponse::Error(*status),
-            })
-            .collect();
-
         self.entries.push(MountEntry {
             matcher,
-            responses: owned,
+            responses: responses.to_vec(),
             repeat_last,
         });
     }
