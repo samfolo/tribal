@@ -1,13 +1,8 @@
 use serde_json::json;
 use tribal_config::sections::embedding::{DEFAULT_DIMENSIONS, DEFAULT_MODEL};
-use tribal_db::{
-    EmbeddingRepository, KnowledgeItemRepository, PgEmbeddingRepository,
-    PgKnowledgeItemRepository, PgRelationRepository, RelationRepository,
-};
-use tribal_domain::{KnowledgeKind, RelationBatchId, RelationKind};
-use tribal_test_utils::{
-    a_new_embedding, a_new_knowledge_item, a_new_knowledge_item_relation, commit_relation_batch,
-};
+use tribal_db::{EmbeddingRepository, PgEmbeddingRepository};
+use tribal_domain::{KnowledgeKind, RelationKind};
+use tribal_test_utils::{Seed, a_new_embedding, item};
 
 use crate::harness::{
     assertions::assert_success,
@@ -33,89 +28,70 @@ use crate::harness::{
 #[tokio::test]
 async fn test_standing_and_supersession() {
     let mut harness = TestHarness::init(|setup| {
+        setup.no_project();
+
         seed!(setup, |seed| {
-            let project_id = seed.project_id();
-            let principal_id = seed.principal_id();
+            let result = Seed::new()
+                .define_project("canopy", "git@github.com:meridian/canopy.git")
+                .define_principal("engineer", "seed-engineer")
+                .set_embedding_model(DEFAULT_MODEL, DEFAULT_DIMENSIONS as usize)
+                .as_principal("engineer")
+                .for_project("canopy", |store| {
+                    store
+                        .add_item(
+                            "a",
+                            item(
+                                KnowledgeKind::Fact,
+                                "Canopy stores event replay snapshots on local disk for \
+                                 sub-millisecond access during document reconstruction",
+                            )
+                            .skip_embed(),
+                        )
+                        .add_item(
+                            "b",
+                            item(
+                                KnowledgeKind::Fact,
+                                "After the February incident, snapshot storage was \
+                                 migrated from local disk to S3 to survive instance \
+                                 termination",
+                            )
+                            .skip_embed(),
+                        )
+                        .add_item(
+                            "c",
+                            item(
+                                KnowledgeKind::Fact,
+                                "S3-backed snapshots reduced event replay P99 from 2.1s \
+                                 to 340ms, validating the migration decision",
+                            )
+                            .skip_embed(),
+                        )
+                        .add_item(
+                            "d",
+                            item(
+                                KnowledgeKind::Heuristic,
+                                "Cold-start latency increased by 3x with S3 snapshots \
+                                 because the first replay must fetch over the network",
+                            )
+                            .skip_embed(),
+                        );
+                })
+                .relate("b", RelationKind::Supersedes, "a")
+                .relate("c", RelationKind::Supports, "b")
+                .relate("d", RelationKind::Contradicts, "c")
+                .commit_relations("snapshot-arc")
+                .execute(seed.conn())
+                .await;
+
+            // Insert embeddings manually so they match the infrastructure
+            // mock's fixed vector (ensuring discover returns all items).
             let embedding = fixed_embedding_vector(DEFAULT_DIMENSIONS);
-
-            // -- Insert knowledge items ---------------------------------------
-
-            let item_a = PgKnowledgeItemRepository
-                .insert(
-                    seed.conn(),
-                    &a_new_knowledge_item()
-                        .project_id(project_id)
-                        .principal_id(principal_id)
-                        .kind(KnowledgeKind::Fact)
-                        .content(
-                            "Canopy stores event replay snapshots on local disk for \
-                             sub-millisecond access during document reconstruction"
-                                .to_owned(),
-                        )
-                        .build(),
-                )
-                .await
-                .expect("insert item A");
-
-            let item_b = PgKnowledgeItemRepository
-                .insert(
-                    seed.conn(),
-                    &a_new_knowledge_item()
-                        .project_id(project_id)
-                        .principal_id(principal_id)
-                        .kind(KnowledgeKind::Fact)
-                        .content(
-                            "After the February incident, snapshot storage was migrated \
-                             from local disk to S3 to survive instance termination"
-                                .to_owned(),
-                        )
-                        .build(),
-                )
-                .await
-                .expect("insert item B");
-
-            let item_c = PgKnowledgeItemRepository
-                .insert(
-                    seed.conn(),
-                    &a_new_knowledge_item()
-                        .project_id(project_id)
-                        .principal_id(principal_id)
-                        .kind(KnowledgeKind::Fact)
-                        .content(
-                            "S3-backed snapshots reduced event replay P99 from 2.1s to \
-                             340ms, validating the migration decision"
-                                .to_owned(),
-                        )
-                        .build(),
-                )
-                .await
-                .expect("insert item C");
-
-            let item_d = PgKnowledgeItemRepository
-                .insert(
-                    seed.conn(),
-                    &a_new_knowledge_item()
-                        .project_id(project_id)
-                        .principal_id(principal_id)
-                        .kind(KnowledgeKind::Heuristic)
-                        .content(
-                            "Cold-start latency increased by 3x with S3 snapshots \
-                             because the first replay must fetch over the network"
-                                .to_owned(),
-                        )
-                        .build(),
-                )
-                .await
-                .expect("insert item D");
-
-            // -- Insert embeddings --------------------------------------------
-
-            for item in [&item_a, &item_b, &item_c, &item_d] {
+            for label in ["a", "b", "c", "d"] {
                 PgEmbeddingRepository
                     .insert(
                         seed.conn(),
                         &a_new_embedding()
-                            .knowledge_item_id(item.id())
+                            .knowledge_item_id(result.item_id(label))
                             .model(DEFAULT_MODEL.to_owned())
                             .dimensions(DEFAULT_DIMENSIONS)
                             .embedding(embedding.clone())
@@ -125,65 +101,30 @@ async fn test_standing_and_supersession() {
                     .expect("insert embedding");
             }
 
-            // -- Insert relations ---------------------------------------------
-
-            let batch_id = RelationBatchId::new();
-
-            commit_relation_batch(
-                seed.conn(),
-                project_id,
-                principal_id,
-                batch_id,
-            )
-            .await;
-
-            PgRelationRepository
-                .batch_insert(
-                    seed.conn(),
-                    &[
-                        // B supersedes A
-                        a_new_knowledge_item_relation()
-                            .relation_batch_id(batch_id)
-                            .source_id(item_b.id())
-                            .target_id(item_a.id())
-                            .relation_type(RelationKind::Supersedes)
-                            .principal_id(principal_id)
-                            .build(),
-                        // C supports B
-                        a_new_knowledge_item_relation()
-                            .relation_batch_id(batch_id)
-                            .source_id(item_c.id())
-                            .target_id(item_b.id())
-                            .relation_type(RelationKind::Supports)
-                            .principal_id(principal_id)
-                            .build(),
-                        // D contradicts C
-                        a_new_knowledge_item_relation()
-                            .relation_batch_id(batch_id)
-                            .source_id(item_d.id())
-                            .target_id(item_c.id())
-                            .relation_type(RelationKind::Contradicts)
-                            .principal_id(principal_id)
-                            .build(),
-                    ],
-                )
-                .await
-                .expect("insert relations");
-
-            // -- Labels -------------------------------------------------------
-
-            seed.label("a", item_a.id());
-            seed.label("b", item_b.id());
-            seed.label("c", item_c.id());
-            seed.label("d", item_d.id());
+            seed.label("project", result.project_id("canopy"));
+            seed.label("a", result.item_id("a"));
+            seed.label("b", result.item_id("b"));
+            seed.label("c", result.item_id("c"));
+            seed.label("d", result.item_id("d"));
         });
     })
     .await;
 
+    let project_id = harness.label("project").to_owned();
     let id_a = harness.label("a").to_owned();
     let id_b = harness.label("b").to_owned();
     let id_c = harness.label("c").to_owned();
     let id_d = harness.label("d").to_owned();
+
+    // -- Set project context --------------------------------------------------
+
+    let result = harness
+        .call_tool(
+            "tribal_set_context",
+            json!({ "project_id": &project_id }),
+        )
+        .await;
+    assert_success!(result);
 
     // -- Discover (default: exclude superseded) -------------------------------
 
