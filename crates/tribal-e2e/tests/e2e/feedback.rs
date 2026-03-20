@@ -83,12 +83,12 @@ async fn test_feedback_after_discovery() {
         .to_owned();
 
     let items = discover_json["items"].as_array().expect("items array");
-    assert!(!items.is_empty(), "discover should return the ingested item");
+    assert!(
+        !items.is_empty(),
+        "discover should return the ingested item"
+    );
 
-    let anchor_id = items[0]["item"]["id"]
-        .as_str()
-        .expect("item id")
-        .to_owned();
+    let anchor_id = items[0]["item"]["id"].as_str().expect("item id").to_owned();
 
     let returned_ids: Vec<&str> = items
         .iter()

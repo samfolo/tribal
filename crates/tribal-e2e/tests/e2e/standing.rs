@@ -1,5 +1,5 @@
 use serde_json::json;
-use tribal_config::sections::embedding::{DEFAULT_DIMENSIONS, DEFAULT_MODEL};
+use tribal_config::{DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL};
 use tribal_db::{EmbeddingRepository, PgEmbeddingRepository};
 use tribal_domain::{KnowledgeKind, RelationKind};
 use tribal_test_utils::{Seed, a_new_embedding, item};
@@ -34,7 +34,10 @@ async fn test_standing_and_supersession() {
             let result = Seed::new()
                 .define_project("canopy", "git@github.com:meridian/canopy.git")
                 .define_principal("engineer", "seed-engineer")
-                .set_embedding_model(DEFAULT_MODEL, DEFAULT_DIMENSIONS as usize)
+                .set_embedding_model(
+                    DEFAULT_EMBEDDING_MODEL,
+                    DEFAULT_EMBEDDING_DIMENSIONS as usize,
+                )
                 .as_principal("engineer")
                 .for_project("canopy", |store| {
                     store
@@ -85,15 +88,15 @@ async fn test_standing_and_supersession() {
 
             // Insert embeddings manually so they match the infrastructure
             // mock's fixed vector (ensuring discover returns all items).
-            let embedding = fixed_embedding_vector(DEFAULT_DIMENSIONS);
+            let embedding = fixed_embedding_vector(DEFAULT_EMBEDDING_DIMENSIONS);
             for label in ["a", "b", "c", "d"] {
                 PgEmbeddingRepository
                     .insert(
                         seed.conn(),
                         &a_new_embedding()
                             .knowledge_item_id(result.item_id(label))
-                            .model(DEFAULT_MODEL.to_owned())
-                            .dimensions(DEFAULT_DIMENSIONS)
+                            .model(DEFAULT_EMBEDDING_MODEL.to_owned())
+                            .dimensions(DEFAULT_EMBEDDING_DIMENSIONS)
                             .embedding(embedding.clone())
                             .build(),
                     )
@@ -119,10 +122,7 @@ async fn test_standing_and_supersession() {
     // -- Set project context --------------------------------------------------
 
     let result = harness
-        .call_tool(
-            "tribal_set_context",
-            json!({ "project_id": &project_id }),
-        )
+        .call_tool("tribal_set_context", json!({ "project_id": &project_id }))
         .await;
     assert_success!(result);
 
@@ -241,28 +241,16 @@ async fn test_standing_and_supersession() {
         .iter()
         .find(|r| r["item"]["id"].as_str() == Some(&id_b))
         .expect("B should appear in C's neighbourhood");
-    assert_eq!(
-        edge_to_b["relation_type"].as_str(),
-        Some("supports"),
-    );
-    assert_eq!(
-        edge_to_b["relation_direction"].as_str(),
-        Some("outbound"),
-    );
+    assert_eq!(edge_to_b["relation_type"].as_str(), Some("supports"),);
+    assert_eq!(edge_to_b["relation_direction"].as_str(), Some("outbound"),);
 
     // D contradicts C → inbound edge from D.
     let edge_from_d = related
         .iter()
         .find(|r| r["item"]["id"].as_str() == Some(&id_d))
         .expect("D should appear in C's neighbourhood");
-    assert_eq!(
-        edge_from_d["relation_type"].as_str(),
-        Some("contradicts"),
-    );
-    assert_eq!(
-        edge_from_d["relation_direction"].as_str(),
-        Some("inbound"),
-    );
+    assert_eq!(edge_from_d["relation_type"].as_str(), Some("contradicts"),);
+    assert_eq!(edge_from_d["relation_direction"].as_str(), Some("inbound"),);
 
     // -- Verify via get_item --------------------------------------------------
 

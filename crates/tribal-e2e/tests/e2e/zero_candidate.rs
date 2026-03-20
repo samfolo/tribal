@@ -1,11 +1,8 @@
 use serde_json::json;
 
 use crate::harness::{
-    assertions::assert_success,
-    fixtures::ExtractionFixture,
-    polling::expect_condition,
-    server::TestHarness,
-    tool_call::tool_result_json,
+    assertions::assert_success, fixtures::ExtractionFixture, polling::expect_condition,
+    server::TestHarness, tool_call::tool_result_json,
 };
 
 /// Verifies that ingesting trivial content which yields no knowledge
