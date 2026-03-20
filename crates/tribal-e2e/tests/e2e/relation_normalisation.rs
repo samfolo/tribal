@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::harness::{
     assertions::assert_success,
-    fixtures::{ExtractionFixture, RelationFixture, candidate, intra_batch, novel, to_existing},
+    fixtures::{ExtractionFixture, RelationFixture, candidate, intra_batch, novel},
     server::TestHarness,
     tool_call::tool_result_json,
 };
@@ -14,8 +14,8 @@ use crate::harness::{
 /// - A valid intra-batch edge (0 supports 1)
 /// - A supersedes edge (always dropped by normalisation step 1)
 /// - An edge with an out-of-range batch index (unresolvable, step 3)
-/// - An edge targeting a non-existent knowledge item ID (step 3)
 /// - A self-edge (dropped after resolution, step 4)
+/// - An exact duplicate of the valid edge (deduplicated, step 5)
 ///
 /// The normalisation layer drops all four invalid edges and commits
 /// only the valid one. The job completes with `success` outcome.
@@ -82,14 +82,10 @@ async fn test_relation_normalisation_drops_invalid_edges() {
                     .edge(intra_batch(0, "supersedes", 2))
                     // Dropped (step 3): batch index 99 does not exist.
                     .edge(intra_batch(99, "contradicts", 0))
-                    // Dropped (step 3): non-existent knowledge item ID.
-                    .edge(to_existing(
-                        0,
-                        "derived_from",
-                        "ki_00000000-0000-0000-0000-000000000000",
-                    ))
                     // Dropped (step 4): self-edge after resolution.
-                    .edge(intra_batch(0, "contradicts", 0))
+                    .edge(intra_batch(0, "derived_from", 0))
+                    // Dropped (step 5): exact duplicate of the valid edge.
+                    .edge(intra_batch(0, "supports", 1))
                     .build(),
             );
         })
