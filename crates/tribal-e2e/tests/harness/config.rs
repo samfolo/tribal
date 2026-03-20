@@ -37,11 +37,9 @@ const REQUEST_TIMEOUT_MS: u64 = 4_000;
 /// Constructs a [`TribalConfig`] for E2E testing.
 ///
 /// Starts from compiled defaults and applies overrides for fast,
-/// deterministic test execution.
-///
-/// # Panics
-///
-/// Panics if the constructed config fails validation.
+/// deterministic test execution. Validation is deferred to
+/// [`TestHarness::init`] so that per-test config overrides are
+/// applied before the check runs.
 pub fn test_config(
     database_url: &str,
     embedding_url: &str,
