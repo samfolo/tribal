@@ -22,8 +22,11 @@ enum RelationTargetSpec {
 // ---------------------------------------------------------------------------
 
 /// Creates an edge between two candidates in the same batch.
+///
+/// Argument order reads as a sentence: `intra_batch(0, "supports", 1)`
+/// → "batch item 0 supports batch item 1".
 #[must_use]
-pub fn intra_batch(source: usize, target: usize, relation_type: &str) -> EdgeSpec {
+pub fn intra_batch(source: usize, relation_type: &str, target: usize) -> EdgeSpec {
     EdgeSpec {
         source: RelationTargetSpec::BatchIndex(source),
         target: RelationTargetSpec::BatchIndex(target),
@@ -33,8 +36,11 @@ pub fn intra_batch(source: usize, target: usize, relation_type: &str) -> EdgeSpe
 }
 
 /// Creates an edge from a batch candidate to an existing knowledge item.
+///
+/// Argument order reads as a sentence: `to_existing(0, "supports", id)`
+/// → "batch item 0 supports existing item".
 #[must_use]
-pub fn to_existing(source_index: usize, target_id: &str, relation_type: &str) -> EdgeSpec {
+pub fn to_existing(source_index: usize, relation_type: &str, target_id: &str) -> EdgeSpec {
     EdgeSpec {
         source: RelationTargetSpec::BatchIndex(source_index),
         target: RelationTargetSpec::ItemId(target_id.to_owned()),

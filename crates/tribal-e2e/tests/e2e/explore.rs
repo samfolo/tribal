@@ -44,8 +44,8 @@ async fn test_explore_graph_traversal() {
         .mount_relation(|m| {
             m.respond(
                 RelationFixture::builder()
-                    .edge(intra_batch(0, 1, "supports"))
-                    .edge(intra_batch(1, 2, "contradicts"))
+                    .edge(intra_batch(0, "supports", 1))
+                    .edge(intra_batch(1, "contradicts", 2))
                     .build(),
             );
         })

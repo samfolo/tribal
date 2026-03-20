@@ -76,7 +76,7 @@ async fn test_cross_batch_relations() {
                         )
                         .tags(&["event-sourcing", "monitoring"]),
                     )
-                    .relation_hint(hint(1, 0, "derived_from"))
+                    .relation_hint(hint(1, "derived_from", 0))
                     .build(),
             );
         })
@@ -108,12 +108,12 @@ async fn test_cross_batch_relations() {
             m.respond(
                 RelationFixture::builder()
                     .edge(
-                        to_existing(0, decision_id, "supports").justification(
+                        to_existing(0, "supports", decision_id).justification(
                             "Storage cost reduction validates the event sourcing \
                              architecture decision",
                         ),
                     )
-                    .edge(intra_batch(1, 0, "derived_from"))
+                    .edge(intra_batch(1, "derived_from", 0))
                     .build(),
             );
         })
