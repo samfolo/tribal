@@ -19,6 +19,7 @@ mod test_utils;
 mod tools;
 
 pub use app_state::{AppState, ResolvedProject};
+pub use auth::{AuthContext, AuthError, AuthenticatedPrincipal, Authenticator};
 pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
 pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
