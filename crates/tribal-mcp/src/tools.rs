@@ -2,6 +2,7 @@ use std::sync::{Arc, LazyLock};
 
 use rmcp::model::Tool;
 use serde_json::{Map, Value};
+use tribal_domain::Scope;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -13,6 +14,7 @@ pub(crate) const TOOL_PREFIX: &str = "tribal_";
 const INPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded input schema must be valid JSON";
 const OUTPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded output schema must be valid JSON";
 const SCHEMA_MUST_BE_OBJECT: &str = "invariant: schema must be a JSON object";
+const SCOPE_PARSE_FAILED: &str = "invariant: tool required_scope must be a valid scope";
 
 // ---------------------------------------------------------------------------
 // ToolEntry
@@ -238,17 +240,21 @@ with current status.",
 ///
 /// # Panics
 ///
-/// Panics on first access if any embedded schema is not valid JSON.
+/// Panics on first access if any embedded schema is not valid JSON or
+/// any `required_scope` is not a valid scope string.
 pub(crate) static PARSED_TOOLS: LazyLock<Vec<ParsedToolEntry>> = LazyLock::new(|| {
     TOOLS
         .iter()
-        .map(|t| ParsedToolEntry {
-            name: t.name,
-            title: t.title,
-            description: t.description,
-            input_schema: parse_schema_object(t.input_schema, INPUT_SCHEMA_PARSE_FAILED),
-            output_schema: parse_schema_object(t.output_schema, OUTPUT_SCHEMA_PARSE_FAILED),
-            required_scope: t.required_scope,
+        .map(|t| {
+            Scope::parse(t.required_scope).expect(SCOPE_PARSE_FAILED);
+            ParsedToolEntry {
+                name: t.name,
+                title: t.title,
+                description: t.description,
+                input_schema: parse_schema_object(t.input_schema, INPUT_SCHEMA_PARSE_FAILED),
+                output_schema: parse_schema_object(t.output_schema, OUTPUT_SCHEMA_PARSE_FAILED),
+                required_scope: t.required_scope,
+            }
         })
         .collect()
 });

@@ -2,7 +2,7 @@ use chrono::{SubsecRound, Utc};
 use tribal_db::{
     AuthTokenRepository, DbError, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
 };
-use tribal_domain::{AuthTokenId, PrincipalId};
+use tribal_domain::{AuthTokenId, PrincipalId, Scope, full_access_scopes};
 use tribal_test_utils::{a_new_auth_token, a_new_principal, shift_timestamp_by_id, test_context};
 
 // ---------------------------------------------------------------------------
@@ -53,8 +53,35 @@ async fn test_insert_returns_populated_auth_token() {
     assert!(token.id().to_string().starts_with("at_"));
     assert_eq!(token.token_hash(), hash);
     assert_eq!(token.principal_id(), principal_id);
+    assert_eq!(token.scopes(), full_access_scopes());
     assert_eq!(token.expires_at(), expires_at);
     assert!(token.revoked_at().is_none());
+}
+
+#[tokio::test]
+async fn test_insert_roundtrips_narrowed_scopes() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "narrowed-scopes").await;
+    let narrowed = vec![Scope::parse("tribal.knowledge:read").unwrap()];
+
+    let new = a_new_auth_token()
+        .token_hash(make_token_hash())
+        .principal_id(principal_id)
+        .scopes(narrowed.clone())
+        .build();
+
+    let token = repo.insert(&mut txn, &new).await.expect("insert");
+    assert_eq!(token.scopes(), narrowed);
+
+    let found = repo
+        .find_by_hash(&mut txn, token.token_hash())
+        .await
+        .expect("find")
+        .expect("token should exist");
+    assert_eq!(found.scopes(), narrowed);
 }
 
 #[tokio::test]
