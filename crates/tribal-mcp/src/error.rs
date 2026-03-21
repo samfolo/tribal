@@ -157,4 +157,27 @@ mod tests {
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
         assert!(err.message.contains("bad param"));
     }
+
+    #[test]
+    fn test_into_protocol_error_permission_denied() {
+        let err = McpToolError {
+            code: McpErrorCode::PermissionDenied,
+            message: "insufficient scope".into(),
+            details: serde_json::json!({}),
+        };
+        let protocol = err.into_protocol_error();
+        assert_eq!(protocol.code, ErrorCode::INVALID_REQUEST);
+        assert!(protocol.message.contains("insufficient scope"));
+    }
+
+    #[test]
+    fn test_into_protocol_error_internal() {
+        let err = McpToolError {
+            code: McpErrorCode::Internal,
+            message: "db failure".into(),
+            details: serde_json::json!({}),
+        };
+        let protocol = err.into_protocol_error();
+        assert_eq!(protocol.code, ErrorCode::INTERNAL_ERROR);
+    }
 }

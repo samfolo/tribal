@@ -8,8 +8,10 @@ use tribal_db::DbError;
 use tribal_domain::{IdParseError, McpErrorCode};
 use tribal_inference::InferenceError;
 
-use crate::auth::AuthError;
-use crate::error::{IntoMcpError, McpToolError};
+use crate::{
+    auth::AuthError,
+    error::{IntoMcpError, McpToolError},
+};
 
 // ---------------------------------------------------------------------------
 // DbError → McpToolError
@@ -241,5 +243,73 @@ mod tests {
         let mcp = err.into_mcp_error();
         assert_eq!(mcp.code, McpErrorCode::Internal);
         assert!(mcp.message.contains("JSON object"));
+    }
+
+    // -- AuthError --------------------------------------------------------
+
+    #[test]
+    fn test_auth_invalid_token_maps_to_unauthenticated() {
+        let err = AuthError::InvalidToken {
+            token_hash: "abc".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn test_auth_token_revoked_maps_to_unauthenticated() {
+        let err = AuthError::TokenRevoked {
+            token_hash: "abc".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn test_auth_token_expired_maps_to_unauthenticated() {
+        let err = AuthError::TokenExpired {
+            token_hash: "abc".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn test_auth_principal_not_found_maps_to_internal() {
+        let err = AuthError::PrincipalNotFound {
+            principal_id: tribal_domain::PrincipalId::new(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Internal);
+    }
+
+    #[test]
+    fn test_auth_local_principal_missing_maps_to_internal() {
+        let err = AuthError::LocalPrincipalMissing {
+            principal_key: "principal:local".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Internal);
+    }
+
+    #[test]
+    fn test_auth_database_unavailable_maps_to_internal() {
+        let err = AuthError::DatabaseUnavailable {
+            context: "test".to_owned(),
+            source: Box::new(std::io::Error::other("boom")),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Internal);
+    }
+
+    #[test]
+    fn test_auth_insufficient_scope_maps_to_permission_denied() {
+        let err = AuthError::InsufficientScope {
+            required_scope: "tribal:write".to_owned(),
+            granted_scopes: vec!["tribal.knowledge:read".to_owned()],
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::PermissionDenied);
+        assert!(mcp.message.contains("tribal:write"));
     }
 }

@@ -9,7 +9,7 @@ use tribal_db::{
     AuthTokenRepository, NewAuthToken, NewPrincipal, PgAuthTokenRepository, PgPrincipalRepository,
     PrincipalRepository,
 };
-use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, full_access_scopes};
 use tribal_mcp::{AuthError, Authenticator};
 use tribal_test_utils::{
     MockAuthTokenRepository, MockPrincipalRepository, TEST_PRINCIPAL_KEY, a_not_found, a_principal,
@@ -335,6 +335,7 @@ async fn test_verify_token_integration() {
             &NewAuthToken::builder()
                 .token_hash(token_hash)
                 .principal_id(principal.id())
+                .scopes(full_access_scopes())
                 .expires_at(Utc::now() + Duration::hours(24))
                 .build(),
         )
