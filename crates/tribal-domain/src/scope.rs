@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 const SCOPE_PREFIX: &str = "tribal";
-const FULL_ACCESS_READ: &str = "tribal:read";
-const FULL_ACCESS_WRITE: &str = "tribal:write";
 
 const INVALID_SCOPE: &str = "invalid scope";
 const EXPECT_HARDCODED_SCOPE: &str = "invariant: hard-coded scope literal is valid";
@@ -45,6 +43,12 @@ pub enum ScopeParseError {
 pub struct Scope(String);
 
 impl Scope {
+    /// Root read scope — grants read access to all resources.
+    pub const FULL_ACCESS_READ: &str = "tribal:read";
+
+    /// Root write scope — grants write access to all resources.
+    pub const FULL_ACCESS_WRITE: &str = "tribal:write";
+
     /// Parses and validates a raw scope string.
     ///
     /// # Errors
@@ -135,8 +139,8 @@ pub fn is_authorised(granted: &[Scope], required: &Scope) -> bool {
 #[must_use]
 pub fn full_access_scopes() -> Vec<Scope> {
     vec![
-        Scope::parse(FULL_ACCESS_READ).expect(EXPECT_HARDCODED_SCOPE),
-        Scope::parse(FULL_ACCESS_WRITE).expect(EXPECT_HARDCODED_SCOPE),
+        Scope::parse(Scope::FULL_ACCESS_READ).expect(EXPECT_HARDCODED_SCOPE),
+        Scope::parse(Scope::FULL_ACCESS_WRITE).expect(EXPECT_HARDCODED_SCOPE),
     ]
 }
 
@@ -350,7 +354,7 @@ mod tests {
     fn test_full_access_scopes() {
         let scopes = full_access_scopes();
         assert_eq!(scopes.len(), 2);
-        assert_eq!(scopes[0].as_str(), FULL_ACCESS_READ);
-        assert_eq!(scopes[1].as_str(), FULL_ACCESS_WRITE);
+        assert_eq!(scopes[0].as_str(), Scope::FULL_ACCESS_READ);
+        assert_eq!(scopes[1].as_str(), Scope::FULL_ACCESS_WRITE);
     }
 }
