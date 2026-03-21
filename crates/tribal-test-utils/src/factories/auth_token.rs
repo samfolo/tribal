@@ -1,6 +1,6 @@
 use chrono::Utc;
 use tribal_db::NewAuthToken;
-use tribal_domain::{AuthToken, AuthTokenId, PrincipalId};
+use tribal_domain::{AuthToken, AuthTokenId, PrincipalId, Scope, full_access_scopes};
 
 define_factory! {
     /// Factory for [`AuthToken`] instances.
@@ -8,6 +8,7 @@ define_factory! {
         id: AuthTokenId = AuthTokenId::new(),
         token_hash: String = "a".repeat(64),
         principal_id: PrincipalId = PrincipalId::new(),
+        scopes: Vec<Scope> = full_access_scopes(),
         expires_at: chrono::DateTime<Utc> = Utc::now() + chrono::Duration::hours(24),
         created_at: chrono::DateTime<Utc> = Utc::now(),
         revoked_at: Option<chrono::DateTime<Utc>> = None,
@@ -25,6 +26,7 @@ define_factory! {
     pub struct NewAuthTokenFactory for NewAuthToken {
         token_hash: String = "a".repeat(64),
         principal_id: PrincipalId = PrincipalId::new(),
+        scopes: Vec<Scope> = full_access_scopes(),
         expires_at: chrono::DateTime<Utc> = Utc::now() + chrono::Duration::hours(24),
     }
 }
