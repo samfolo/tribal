@@ -24,6 +24,7 @@ impl McpToolError {
     ///
     /// Maps application error codes to JSON-RPC error codes at the
     /// `call_tool` dispatch boundary.
+    #[must_use]
     pub fn into_protocol_error(self) -> McpError {
         let code = match self.code {
             McpErrorCode::Unauthenticated | McpErrorCode::PermissionDenied => {
