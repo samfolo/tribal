@@ -66,6 +66,7 @@ mod prompt_version;
 mod reference;
 mod reference_kind;
 mod relation;
+mod scope;
 mod retrieval_feedback;
 mod source_type;
 pub mod span_attrs;
@@ -102,6 +103,7 @@ pub use prompt_stage::PromptStage;
 pub use prompt_version::{PromptVersion, PromptVersionBuilder};
 pub use reference::{Reference, ReferenceBuilder};
 pub use reference_kind::ReferenceKind;
+pub use scope::{Scope, ScopeParseError, full_access_scopes, is_authorised};
 pub use relation::{
     KnowledgeItemRelation, KnowledgeItemRelationBuilder, RelationHintType, RelationKind,
     RelationSuggestion,
