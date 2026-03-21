@@ -307,9 +307,7 @@ impl ServerHandler for TribalServerHandler {
         let scopes = self.auth.principal().scopes();
         let entry = PARSED_TOOLS
             .iter()
-            .find(|t| {
-                t.name == request.name.as_ref() && is_authorised(scopes, &t.required_scope)
-            })
+            .find(|t| t.name == request.name.as_ref() && is_authorised(scopes, &t.required_scope))
             .ok_or_else(|| method_not_found(&request.name))?;
 
         let params = request.arguments.map_or_else(
