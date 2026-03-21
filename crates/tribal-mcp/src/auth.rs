@@ -37,6 +37,7 @@ const DISPLAY_TOKEN_EXPIRED: &str = "token expired";
 /// Carries the resolved [`PrincipalId`] and human-readable principal key.
 /// Its existence guarantees the holder passed either token verification
 /// or the stdio bypass path.
+#[derive(Debug)]
 pub struct AuthenticatedPrincipal {
     principal_id: PrincipalId,
     principal_key: String,
