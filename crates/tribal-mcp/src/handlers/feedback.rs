@@ -496,9 +496,18 @@ mod tests {
         let expected_id = feedback.id();
         let expected_rating = feedback.rating();
 
-        let repos = repos_for_feedback(feedback);
+        let mut repos = test_repositories();
+        repos.retrieval_feedback = Arc::new(
+            MockRetrievalFeedbackRepository::builder()
+                .when_insert(move |new_fb| new_fb.principal_id == prin_id)
+                .respond_with(feedback, None)
+                .build(),
+        );
 
-        let params = default_params();
+        let params = FeedbackParams {
+            principal_id: prin_id,
+            ..default_params()
+        };
         let result = call_execute(&repos, params).await.expect("should succeed");
 
         assert_eq!(result.id(), expected_id);
