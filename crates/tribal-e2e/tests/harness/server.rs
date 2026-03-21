@@ -706,7 +706,8 @@ impl TestHarness {
     /// Connects a new MCP client with an independent session.
     ///
     /// The new client shares the same server and wiremock infrastructure
-    /// but has its own `SessionContext` bound to the given principal key.
+    /// but has its own `SessionContext` and `AuthContext` for the given
+    /// principal.
     ///
     /// # Panics
     ///
