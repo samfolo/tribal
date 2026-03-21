@@ -12,8 +12,8 @@ use tribal_db::{
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
 use tribal_mcp::{AuthError, Authenticator};
 use tribal_test_utils::{
-    MockAuthTokenRepository, MockPrincipalRepository, TEST_PRINCIPAL_KEY, a_not_found,
-    a_principal, a_query_failed, an_auth_token, test_context,
+    MockAuthTokenRepository, MockPrincipalRepository, TEST_PRINCIPAL_KEY, a_not_found, a_principal,
+    a_query_failed, an_auth_token, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -171,10 +171,7 @@ async fn test_verify_token_principal_not_found() {
             .on_find_by_hash(Some(token), None)
             .build(),
         MockPrincipalRepository::builder()
-            .on_find_by_id_error(
-                a_not_found("principal", principal_id.to_string()),
-                None,
-            )
+            .on_find_by_id_error(a_not_found("principal", principal_id.to_string()), None)
             .build(),
     );
 

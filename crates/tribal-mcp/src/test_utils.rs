@@ -81,7 +81,7 @@ pub(crate) struct TestHandler {
     #[builder(default = default_prompt_versions())]
     active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
 
-    #[builder(default = SessionContext::new(None, TEST_PRINCIPAL_KEY.into()))]
+    #[builder(default = SessionContext::new(None))]
     session: SessionContext,
 
     #[builder(default)]
@@ -136,7 +136,7 @@ pub(crate) fn session_with_project() -> SessionContext {
             .parse()
             .expect("valid test git remote"),
     };
-    SessionContext::new(Some(project), TEST_PRINCIPAL_KEY.into())
+    SessionContext::new(Some(project))
 }
 
 fn default_auth_context() -> AuthContext {
