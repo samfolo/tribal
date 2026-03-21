@@ -105,7 +105,7 @@ impl TribalServerHandler {
             changed = true;
         }
 
-        let mut response = set_context_response(&*ctx, self.auth.principal().principal_key());
+        let mut response = set_context_response(&ctx, self.auth.principal().principal_key());
         response.mutated = changed;
         Ok((response.into_call_tool_result(), changed))
     }

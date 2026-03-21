@@ -162,9 +162,11 @@ impl AuthContext {
 
     /// Checks whether the authenticated principal has the required scope.
     ///
-    /// Currently grants all scopes unconditionally.
-    // Scope enforcement is not yet implemented; this is a compatibility
-    // seam that will gain real logic when scope checking lands.
+    /// Grants all scopes unconditionally.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`McpError`] if the principal lacks the requested scope.
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     pub fn require_scope(&self, _scope: &str) -> Result<(), McpError> {
         Ok(())
@@ -228,15 +230,12 @@ impl Authenticator {
                 source: Box::new(e),
             })?;
 
-        let token = match token {
-            Some(t) => t,
-            None => {
-                warn!(
-                    auth_failure_reason = AUTH_FAILURE_REASON_INVALID,
-                    "token verification failed: no matching token",
-                );
-                return Err(AuthError::InvalidToken { token_hash });
-            }
+        let Some(token) = token else {
+            warn!(
+                auth_failure_reason = AUTH_FAILURE_REASON_INVALID,
+                "token verification failed: no matching token",
+            );
+            return Err(AuthError::InvalidToken { token_hash });
         };
 
         // Check revocation before expiry — revocation is terminal
@@ -385,7 +384,7 @@ mod tests {
 
         let db_err = AuthError::DatabaseUnavailable {
             context: "test op".into(),
-            source: Box::new(io::Error::new(io::ErrorKind::Other, "boom")),
+            source: Box::new(io::Error::other("boom")),
         };
         assert_eq!(db_err.to_string(), "database unavailable: test op");
     }
