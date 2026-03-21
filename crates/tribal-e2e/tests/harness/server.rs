@@ -714,7 +714,7 @@ impl TestHarness {
     /// transport.
     pub async fn connect_client(&self, principal_key: &str) -> ClientHandle {
         let auth = resolve_e2e_auth(&self.state, principal_key).await;
-        let session = SessionContext::new(None, principal_key.to_owned());
+        let session = SessionContext::new(None);
         let repositories = ConnectionRepositories::new();
         let handler_config = HandlerConfig::default();
         let handler = TribalServerHandler::new(
@@ -808,7 +808,7 @@ async fn start_and_connect(
 
     let auth = resolve_e2e_auth(&state, principal_key).await;
     let session_project = state.resolved_project().map(SessionProject::from);
-    let session = SessionContext::new(session_project, principal_key.to_owned());
+    let session = SessionContext::new(session_project);
     let repositories = ConnectionRepositories::new();
     let handler_config = HandlerConfig::default();
     let handler = TribalServerHandler::new(

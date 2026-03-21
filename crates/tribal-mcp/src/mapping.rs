@@ -13,4 +13,6 @@ pub(crate) use knowledge::{
     McpExploreRequest, McpExploreResponse, McpGetItemEntry, McpGetItemRequest, McpGetItemResponse,
     McpKnowledgeItem, McpReference, McpRelationDirection, McpStanding,
 };
-pub(crate) use session::{McpSetContextRequest, McpSetContextResponse};
+pub(crate) use session::{
+    McpSetContextRequest, McpSetContextResponse, session_to_json, set_context_response,
+};

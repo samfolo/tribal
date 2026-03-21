@@ -10,7 +10,7 @@ use sqlx::PgConnection;
 use tokio::sync::watch;
 use tribal_common::JobWatchEntry;
 use tribal_db::{DbError, NewJob, NewTask};
-use tribal_domain::{JobId, JobState, McpErrorCode, ProjectId, TaskType};
+use tribal_domain::{JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType};
 
 use super::common::begin_transaction;
 use crate::{
@@ -33,7 +33,7 @@ const NO_PROJECT: &str =
 /// Domain-level parameters for the ingest service function.
 struct IngestParams {
     project_id: ProjectId,
-    principal_key: String,
+    principal_id: PrincipalId,
     source_context: serde_json::Value,
     content: String,
     active_prompts: ActivePromptVersions,
@@ -50,22 +50,12 @@ struct IngestResult {
 enum IngestError {
     #[error(transparent)]
     Db(#[from] DbError),
-
-    #[error("principal not found for key: {principal_key}")]
-    PrincipalNotFound { principal_key: String },
 }
 
 impl IntoMcpError for IngestError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
-            Self::PrincipalNotFound { principal_key } => McpToolError {
-                code: McpErrorCode::FailedPrecondition,
-                message: format!(
-                    "session principal_key \"{principal_key}\" does not resolve to a known principal"
-                ),
-                details: serde_json::json!({}),
-            },
         }
     }
 }
@@ -102,11 +92,10 @@ impl TribalServerHandler {
         let request: McpIngestRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
-        let (session_project_id, principal_key, actor_provider, actor_model) = {
+        let (session_project_id, actor_provider, actor_model) = {
             let guard = self.session.read().await;
             (
                 guard.project.as_ref().map(|p| p.id),
-                guard.principal_key.clone(),
                 guard.actor.provider.clone(),
                 guard.actor.model.clone(),
             )
@@ -130,6 +119,8 @@ impl TribalServerHandler {
             },
         };
 
+        let principal_id = self.auth.principal().principal_id();
+
         let source_context =
             build_source_context(actor_provider.as_deref(), actor_model.as_deref());
 
@@ -137,7 +128,7 @@ impl TribalServerHandler {
 
         let ingest_params = IngestParams {
             project_id,
-            principal_key,
+            principal_id,
             source_context,
             content: request.content,
             active_prompts,
@@ -213,17 +204,9 @@ async fn execute_ingest(
         .find_by_id(conn, params.project_id)
         .await?;
 
-    let principal = repositories
-        .principal
-        .find_by_key(conn, &params.principal_key)
-        .await?
-        .ok_or_else(|| IngestError::PrincipalNotFound {
-            principal_key: params.principal_key.clone(),
-        })?;
-
     let new_job = NewJob::builder()
         .project_id(params.project_id)
-        .principal_id(principal.id())
+        .principal_id(params.principal_id)
         .source_context(params.source_context)
         .raw_input(params.content)
         .extraction_system_prompt_version_id(

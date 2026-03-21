@@ -8,7 +8,7 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tribal_db::DbError;
-use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode};
+use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode, PrincipalId};
 
 use super::common::acquire_connection;
 use crate::{
@@ -39,7 +39,7 @@ struct FeedbackParams {
     embedding_model: String,
     returned_item_ids: Vec<KnowledgeItemId>,
     explored_anchor_ids: Vec<KnowledgeItemId>,
-    principal_key: String,
+    principal_id: PrincipalId,
     rating: FeedbackRating,
     notes: Option<String>,
 }
@@ -49,22 +49,12 @@ struct FeedbackParams {
 enum FeedbackError {
     #[error(transparent)]
     Db(#[from] DbError),
-
-    #[error("principal not found for key: {principal_key}")]
-    PrincipalNotFound { principal_key: String },
 }
 
 impl IntoMcpError for FeedbackError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
-            Self::PrincipalNotFound { principal_key } => McpToolError {
-                code: McpErrorCode::FailedPrecondition,
-                message: format!(
-                    "session principal_key \"{principal_key}\" does not resolve to a known principal"
-                ),
-                details: serde_json::json!({}),
-            },
         }
     }
 }
@@ -164,12 +154,9 @@ impl TribalServerHandler {
             .into_call_tool_result());
         };
 
-        // -- Session state ----------------------------------------------------
+        // -- Identity ---------------------------------------------------------
 
-        let principal_key = {
-            let guard = self.session.read().await;
-            guard.principal_key.clone()
-        };
+        let principal_id = self.auth.principal().principal_id();
 
         // -- Embedding model --------------------------------------------------
 
@@ -183,7 +170,7 @@ impl TribalServerHandler {
             embedding_model,
             returned_item_ids,
             explored_anchor_ids,
-            principal_key,
+            principal_id,
             rating,
             notes: request.notes,
         };
@@ -207,8 +194,8 @@ impl TribalServerHandler {
 // Service function
 // ---------------------------------------------------------------------------
 
-/// Executes the feedback operation: resolves the principal,
-/// builds the new feedback record, and inserts it.
+/// Executes the feedback operation: builds the new feedback record
+/// and inserts it.
 ///
 /// All inputs and outputs are domain types — no MCP types cross this
 /// boundary.
@@ -217,21 +204,13 @@ async fn execute_feedback(
     repositories: &ConnectionRepositories,
     params: FeedbackParams,
 ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
-    let principal = repositories
-        .principal
-        .find_by_key(conn, &params.principal_key)
-        .await?
-        .ok_or_else(|| FeedbackError::PrincipalNotFound {
-            principal_key: params.principal_key.clone(),
-        })?;
-
     let new_feedback = tribal_db::NewRetrievalFeedback::builder()
         .trace_id(params.trace_id)
         .query_text(params.query_text)
         .embedding_model(params.embedding_model)
         .returned_item_ids(params.returned_item_ids)
         .explored_anchor_ids(params.explored_anchor_ids)
-        .principal_id(principal.id())
+        .principal_id(params.principal_id)
         .rating(params.rating)
         .notes(params.notes)
         .policy_version(None)
