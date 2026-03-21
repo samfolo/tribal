@@ -262,7 +262,7 @@ fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> AuthToken {
     let scope_strings: Vec<String> = r.get("scopes");
     let scopes = scope_strings
         .iter()
-        .map(|s| Scope::parse(s).expect(EXPECT_VALID_SCOPE_IN_DB))
+        .map(|s| Scope::parse(s).unwrap_or_else(|_| panic!("{EXPECT_VALID_SCOPE_IN_DB}: {s:?}")))
         .collect();
 
     AuthToken::builder()

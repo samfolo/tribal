@@ -251,7 +251,12 @@ pub(crate) static PARSED_TOOLS: LazyLock<Vec<ParsedToolEntry>> = LazyLock::new(|
             description: t.description,
             input_schema: parse_schema_object(t.input_schema, INPUT_SCHEMA_PARSE_FAILED),
             output_schema: parse_schema_object(t.output_schema, OUTPUT_SCHEMA_PARSE_FAILED),
-            required_scope: Scope::parse(t.required_scope).expect(SCOPE_PARSE_FAILED),
+            required_scope: Scope::parse(t.required_scope).unwrap_or_else(|e| {
+                panic!(
+                    "{SCOPE_PARSE_FAILED} for tool '{}' with required_scope '{}': {e}",
+                    t.name, t.required_scope,
+                )
+            }),
         })
         .collect()
 });
