@@ -9,12 +9,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use rmcp::model::ErrorData as McpError;
 use sqlx::PgConnection;
 use tracing::{debug, error, warn};
 use tribal_common::sha256_hex;
 use tribal_db::{AuthTokenRepository, DbError, PrincipalRepository};
-use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, Scope, full_access_scopes, is_authorised};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -41,6 +40,7 @@ const DISPLAY_TOKEN_EXPIRED: &str = "token expired";
 pub struct AuthenticatedPrincipal {
     principal_id: PrincipalId,
     principal_key: String,
+    scopes: Vec<Scope>,
 }
 
 impl AuthenticatedPrincipal {
@@ -55,20 +55,31 @@ impl AuthenticatedPrincipal {
     pub fn principal_key(&self) -> &str {
         &self.principal_key
     }
+
+    /// Returns the permission scopes granted to this principal.
+    #[must_use]
+    pub fn scopes(&self) -> &[Scope] {
+        &self.scopes
+    }
 }
 
 #[cfg(any(test, feature = "test-helpers"))]
 impl AuthenticatedPrincipal {
     /// Test-only constructor that bypasses verification.
     ///
-    /// The caller supplies the [`PrincipalId`] directly. Use a random ID
-    /// for mock-backed tests; use the real ID from the database for tests
-    /// that hit FK-constrained tables.
+    /// The caller supplies the [`PrincipalId`] and scopes directly. Use
+    /// a random ID for mock-backed tests; use the real ID from the
+    /// database for tests that hit FK-constrained tables.
     #[must_use]
-    pub fn for_test(principal_id: PrincipalId, principal_key: &str) -> Self {
+    pub fn for_test(
+        principal_id: PrincipalId,
+        principal_key: &str,
+        scopes: Vec<Scope>,
+    ) -> Self {
         Self {
             principal_id,
             principal_key: principal_key.to_owned(),
+            scopes,
         }
     }
 }
