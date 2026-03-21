@@ -8,7 +8,7 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tribal_db::DbError;
-use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode};
+use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode, PrincipalId};
 
 use super::common::acquire_connection;
 use crate::{
@@ -39,7 +39,7 @@ struct FeedbackParams {
     embedding_model: String,
     returned_item_ids: Vec<KnowledgeItemId>,
     explored_anchor_ids: Vec<KnowledgeItemId>,
-    principal_key: String,
+    principal_id: PrincipalId,
     rating: FeedbackRating,
     notes: Option<String>,
 }
@@ -49,22 +49,12 @@ struct FeedbackParams {
 enum FeedbackError {
     #[error(transparent)]
     Db(#[from] DbError),
-
-    #[error("principal not found for key: {principal_key}")]
-    PrincipalNotFound { principal_key: String },
 }
 
 impl IntoMcpError for FeedbackError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
-            Self::PrincipalNotFound { principal_key } => McpToolError {
-                code: McpErrorCode::FailedPrecondition,
-                message: format!(
-                    "session principal_key \"{principal_key}\" does not resolve to a known principal"
-                ),
-                details: serde_json::json!({}),
-            },
         }
     }
 }
@@ -164,12 +154,9 @@ impl TribalServerHandler {
             .into_call_tool_result());
         };
 
-        // -- Session state ----------------------------------------------------
+        // -- Identity ---------------------------------------------------------
 
-        let principal_key = {
-            let guard = self.session.read().await;
-            guard.principal_key.clone()
-        };
+        let principal_id = self.auth.principal().principal_id();
 
         // -- Embedding model --------------------------------------------------
 
@@ -183,7 +170,7 @@ impl TribalServerHandler {
             embedding_model,
             returned_item_ids,
             explored_anchor_ids,
-            principal_key,
+            principal_id,
             rating,
             notes: request.notes,
         };
@@ -207,8 +194,8 @@ impl TribalServerHandler {
 // Service function
 // ---------------------------------------------------------------------------
 
-/// Executes the feedback operation: resolves the principal,
-/// builds the new feedback record, and inserts it.
+/// Executes the feedback operation: builds the new feedback record
+/// and inserts it.
 ///
 /// All inputs and outputs are domain types — no MCP types cross this
 /// boundary.
@@ -217,21 +204,13 @@ async fn execute_feedback(
     repositories: &ConnectionRepositories,
     params: FeedbackParams,
 ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
-    let principal = repositories
-        .principal
-        .find_by_key(conn, &params.principal_key)
-        .await?
-        .ok_or_else(|| FeedbackError::PrincipalNotFound {
-            principal_key: params.principal_key.clone(),
-        })?;
-
     let new_feedback = tribal_db::NewRetrievalFeedback::builder()
         .trace_id(params.trace_id)
         .query_text(params.query_text)
         .embedding_model(params.embedding_model)
         .returned_item_ids(params.returned_item_ids)
         .explored_anchor_ids(params.explored_anchor_ids)
-        .principal_id(principal.id())
+        .principal_id(params.principal_id)
         .rating(params.rating)
         .notes(params.notes)
         .policy_version(None)
@@ -255,10 +234,7 @@ mod tests {
 
     use rmcp::model::ErrorCode;
     use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, ProjectId};
-    use tribal_test_utils::{
-        MockPrincipalRepository, MockRetrievalFeedbackRepository, a_principal,
-        a_retrieval_feedback, test_context,
-    };
+    use tribal_test_utils::{MockRetrievalFeedbackRepository, a_retrieval_feedback, test_context};
 
     use super::*;
     use crate::test_utils::{TestHandler, test_repositories};
@@ -270,16 +246,8 @@ mod tests {
 
     // -- Helpers -----------------------------------------------------------
 
-    fn repos_for_feedback(
-        principal: tribal_domain::Principal,
-        feedback: tribal_domain::RetrievalFeedback,
-    ) -> ConnectionRepositories {
+    fn repos_for_feedback(feedback: tribal_domain::RetrievalFeedback) -> ConnectionRepositories {
         let mut repos = test_repositories();
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(Some(principal), None)
-                .build(),
-        );
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
                 .on_insert(feedback, None)
@@ -304,7 +272,7 @@ mod tests {
             embedding_model: "mock-model".into(),
             returned_item_ids: vec![KnowledgeItemId::new()],
             explored_anchor_ids: Vec::new(),
-            principal_key: "user:test".into(),
+            principal_id: PrincipalId::new(),
             rating: FeedbackRating::Positive,
             notes: None,
         }
@@ -495,9 +463,8 @@ mod tests {
     #[tokio::test]
     async fn test_apply_feedback_optional_fields_omitted_succeeds() {
         let prin_id = PrincipalId::new();
-        let principal = a_principal().id(prin_id).build();
         let feedback = a_retrieval_feedback().principal_id(prin_id).build();
-        let repos = repos_for_feedback(principal, feedback);
+        let repos = repos_for_feedback(feedback);
 
         let ctx = test_context().await;
         let pool = ctx.create_pool().await.expect("pool");
@@ -525,14 +492,22 @@ mod tests {
     #[tokio::test]
     async fn test_execute_feedback_happy_path() {
         let prin_id = PrincipalId::new();
-        let principal = a_principal().id(prin_id).build();
         let feedback = a_retrieval_feedback().principal_id(prin_id).build();
         let expected_id = feedback.id();
         let expected_rating = feedback.rating();
 
-        let repos = repos_for_feedback(principal, feedback);
+        let mut repos = test_repositories();
+        repos.retrieval_feedback = Arc::new(
+            MockRetrievalFeedbackRepository::builder()
+                .when_insert(move |new_fb| new_fb.principal_id == prin_id)
+                .respond_with(feedback, None)
+                .build(),
+        );
 
-        let params = default_params();
+        let params = FeedbackParams {
+            principal_id: prin_id,
+            ..default_params()
+        };
         let result = call_execute(&repos, params).await.expect("should succeed");
 
         assert_eq!(result.id(), expected_id);
@@ -545,37 +520,8 @@ mod tests {
     // -- Service: error paths ----------------------------------------------
 
     #[tokio::test]
-    async fn test_execute_feedback_principal_not_found() {
-        let mut repos = test_repositories();
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(None, None)
-                .build(),
-        );
-
-        let params = FeedbackParams {
-            principal_key: "user:unknown".into(),
-            ..default_params()
-        };
-
-        let err = call_execute(&repos, params).await.expect_err("should fail");
-
-        assert!(
-            matches!(err, FeedbackError::PrincipalNotFound { principal_key } if principal_key == "user:unknown")
-        );
-    }
-
-    #[tokio::test]
     async fn test_execute_feedback_db_error_on_insert() {
-        let prin_id = PrincipalId::new();
-        let principal = a_principal().id(prin_id).build();
-
         let mut repos = test_repositories();
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(Some(principal), None)
-                .build(),
-        );
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
                 .on_insert_error(

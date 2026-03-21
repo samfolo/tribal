@@ -10,7 +10,7 @@ use tribal_db::{
     AuthTokenRepository, DbError, NewAuthToken, NewPrincipal, PgAuthTokenRepository,
     PgPrincipalRepository, PrincipalRepository,
 };
-use tribal_domain::Principal;
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, Principal};
 
 use super::{config_file, output, token};
 use crate::{
@@ -23,9 +23,6 @@ use crate::{
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// Principal key for the local stdio transport identity.
-const LOCAL_PRINCIPAL_KEY: &str = "principal:local";
 
 /// Pool name for the single setup connection.
 const POOL_NAME_SETUP: &str = "setup";

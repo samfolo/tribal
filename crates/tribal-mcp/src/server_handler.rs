@@ -26,6 +26,7 @@ use crate::{
     auth::AuthContext,
     config::HandlerConfig,
     error::method_not_found,
+    mapping::session_to_json,
     session::{self, SESSION_RESOURCE_URI, SessionContext},
     tools::{PARSED_TOOLS, to_tool},
 };
@@ -154,6 +155,7 @@ impl ActivePromptVersions {
 /// fields (`repositories`, `session`, `config`).
 pub struct TribalServerHandler {
     pub(crate) state: Arc<AppState>,
+    pub(crate) auth: AuthContext,
     pub(crate) repositories: ConnectionRepositories,
     pub(crate) session: Arc<RwLock<SessionContext>>,
     pub(crate) config: HandlerConfig,
@@ -167,12 +169,14 @@ impl TribalServerHandler {
     #[must_use]
     pub fn new(
         state: Arc<AppState>,
+        auth: AuthContext,
         repositories: ConnectionRepositories,
         session: SessionContext,
         config: HandlerConfig,
     ) -> Self {
         Self {
             state,
+            auth,
             repositories,
             session: Arc::new(RwLock::new(session)),
             config,
@@ -191,9 +195,9 @@ impl TribalServerHandler {
             return Err(McpError::invalid_params("unknown resource URI", None));
         }
 
-        let json: serde_json::Value = {
+        let json = {
             let session = self.session.read().await;
-            (&*session).into()
+            session_to_json(&session, self.auth.principal().principal_key())
         };
 
         let text =
@@ -296,8 +300,7 @@ impl ServerHandler for TribalServerHandler {
             .find(|t| t.name == request.name.as_ref())
             .ok_or_else(|| method_not_found(&request.name))?;
 
-        let auth = AuthContext::from_context(&context);
-        auth.require_scope(entry.required_scope)?;
+        self.auth.require_scope(entry.required_scope)?;
 
         let params = request.arguments.map_or_else(
             || serde_json::Value::Object(serde_json::Map::default()),

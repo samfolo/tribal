@@ -48,20 +48,18 @@ pub struct SessionActor {
 /// write-locked by `tribal_set_context`.
 pub struct SessionContext {
     pub(crate) project: Option<SessionProject>,
-    pub(crate) principal_key: String,
     pub(crate) actor: SessionActor,
     pub(crate) subscribed: bool,
 }
 
 impl SessionContext {
-    /// Creates a new session with the given project and principal.
+    /// Creates a new session with the given project.
     ///
     /// Actor fields default to `None`; subscription starts inactive.
     #[must_use]
-    pub fn new(project: Option<SessionProject>, principal_key: String) -> Self {
+    pub fn new(project: Option<SessionProject>) -> Self {
         Self {
             project,
-            principal_key,
             actor: SessionActor {
                 client_name: None,
                 client_version: None,
@@ -121,10 +119,9 @@ mod tests {
 
     #[test]
     fn test_session_context_new_defaults() {
-        let ctx = SessionContext::new(None, "user:sam".into());
+        let ctx = SessionContext::new(None);
 
         assert!(ctx.project.is_none());
-        assert_eq!(ctx.principal_key, "user:sam");
         assert!(ctx.actor.client_name.is_none());
         assert!(ctx.actor.client_version.is_none());
         assert!(ctx.actor.model.is_none());
@@ -134,7 +131,7 @@ mod tests {
 
     #[test]
     fn test_resolved_project_id_none() {
-        let ctx = SessionContext::new(None, "user:sam".into());
+        let ctx = SessionContext::new(None);
         assert!(ctx.resolved_project_id().is_none());
     }
 
@@ -148,7 +145,7 @@ mod tests {
                 .parse()
                 .expect("valid test git remote"),
         };
-        let ctx = SessionContext::new(Some(project), "user:sam".into());
+        let ctx = SessionContext::new(Some(project));
         assert_eq!(ctx.resolved_project_id(), Some(id));
     }
 
