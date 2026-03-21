@@ -39,7 +39,7 @@ pub(crate) struct ParsedToolEntry {
     pub(crate) description: &'static str,
     pub(crate) input_schema: Arc<Map<String, Value>>,
     pub(crate) output_schema: Arc<Map<String, Value>>,
-    pub(crate) required_scope: &'static str,
+    pub(crate) required_scope: Scope,
 }
 
 // ---------------------------------------------------------------------------
@@ -245,16 +245,13 @@ with current status.",
 pub(crate) static PARSED_TOOLS: LazyLock<Vec<ParsedToolEntry>> = LazyLock::new(|| {
     TOOLS
         .iter()
-        .map(|t| {
-            Scope::parse(t.required_scope).expect(SCOPE_PARSE_FAILED);
-            ParsedToolEntry {
-                name: t.name,
-                title: t.title,
-                description: t.description,
-                input_schema: parse_schema_object(t.input_schema, INPUT_SCHEMA_PARSE_FAILED),
-                output_schema: parse_schema_object(t.output_schema, OUTPUT_SCHEMA_PARSE_FAILED),
-                required_scope: t.required_scope,
-            }
+        .map(|t| ParsedToolEntry {
+            name: t.name,
+            title: t.title,
+            description: t.description,
+            input_schema: parse_schema_object(t.input_schema, INPUT_SCHEMA_PARSE_FAILED),
+            output_schema: parse_schema_object(t.output_schema, OUTPUT_SCHEMA_PARSE_FAILED),
+            required_scope: Scope::parse(t.required_scope).expect(SCOPE_PARSE_FAILED),
         })
         .collect()
 });

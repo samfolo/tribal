@@ -94,7 +94,8 @@ impl Scope {
         }
 
         required_resource == granted_resource
-            || required_resource.starts_with(&format!("{granted_resource}."))
+            || (required_resource.starts_with(granted_resource)
+                && required_resource.as_bytes().get(granted_resource.len()) == Some(&b'.'))
     }
 }
 

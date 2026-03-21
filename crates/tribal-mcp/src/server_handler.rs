@@ -301,7 +301,7 @@ impl ServerHandler for TribalServerHandler {
             .ok_or_else(|| method_not_found(&request.name))?;
 
         self.auth
-            .require_scope(entry.required_scope)
+            .require_scope(&entry.required_scope)
             .map_err(|e| e.into_mcp_error().into_protocol_error())?;
 
         let params = request.arguments.map_or_else(
