@@ -6,8 +6,7 @@
 //! existence guarantees the holder passed either token verification or
 //! the stdio bypass path.
 
-use std::string::ToString;
-use std::sync::Arc;
+use std::{string::ToString, sync::Arc};
 
 use chrono::Utc;
 use sqlx::PgConnection;
