@@ -66,6 +66,40 @@ async fn test_verify_token_valid() {
 }
 
 #[tokio::test]
+async fn test_verify_token_preserves_narrowed_scopes() {
+    let principal_id = PrincipalId::new();
+    let principal = a_principal()
+        .id(principal_id)
+        .principal_key(TEST_PRINCIPAL_KEY.to_owned())
+        .build();
+    let narrowed = vec![tribal_domain::Scope::parse("tribal.knowledge:read").unwrap()];
+    let token = an_auth_token()
+        .principal_id(principal_id)
+        .scopes(narrowed.clone())
+        .expires_at(Utc::now() + Duration::hours(1))
+        .build();
+
+    let authenticator = test_authenticator(
+        MockAuthTokenRepository::builder()
+            .on_find_by_hash(Some(token), None)
+            .build(),
+        MockPrincipalRepository::builder()
+            .on_find_by_id(principal, None)
+            .build(),
+    );
+
+    let ctx = test_context().await;
+    let mut tx = ctx.begin_test().await.expect("begin");
+
+    let result = authenticator
+        .verify_token(&mut tx, "raw-token")
+        .await
+        .expect("verification should succeed");
+
+    assert_eq!(result.scopes(), narrowed);
+}
+
+#[tokio::test]
 async fn test_verify_token_invalid_hash() {
     let authenticator = test_authenticator(
         MockAuthTokenRepository::builder()
@@ -356,4 +390,5 @@ async fn test_verify_token_integration() {
 
     assert_eq!(result.principal_id(), principal.id());
     assert_eq!(result.principal_key(), principal.principal_key());
+    assert_eq!(result.scopes(), full_access_scopes());
 }
