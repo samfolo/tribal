@@ -6,6 +6,7 @@
 //! existence guarantees the holder passed either token verification or
 //! the stdio bypass path.
 
+use std::string::ToString;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -200,7 +201,7 @@ impl AuthContext {
                     .principal
                     .scopes()
                     .iter()
-                    .map(|s| s.to_string())
+                    .map(ToString::to_string)
                     .collect(),
             })
         }
