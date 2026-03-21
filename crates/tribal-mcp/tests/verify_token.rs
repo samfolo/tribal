@@ -9,7 +9,7 @@ use tribal_db::{
     AuthTokenRepository, NewAuthToken, NewPrincipal, PgAuthTokenRepository, PgPrincipalRepository,
     PrincipalRepository,
 };
-use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, full_access_scopes};
 use tribal_mcp::{AuthError, Authenticator};
 use tribal_test_utils::{
     MockAuthTokenRepository, MockPrincipalRepository, TEST_PRINCIPAL_KEY, a_not_found, a_principal,
@@ -62,6 +62,41 @@ async fn test_verify_token_valid() {
 
     assert_eq!(result.principal_id(), principal_id);
     assert_eq!(result.principal_key(), TEST_PRINCIPAL_KEY);
+    assert_eq!(result.scopes(), full_access_scopes());
+}
+
+#[tokio::test]
+async fn test_verify_token_preserves_narrowed_scopes() {
+    let principal_id = PrincipalId::new();
+    let principal = a_principal()
+        .id(principal_id)
+        .principal_key(TEST_PRINCIPAL_KEY.to_owned())
+        .build();
+    let narrowed = vec![tribal_domain::Scope::parse("tribal.knowledge:read").unwrap()];
+    let token = an_auth_token()
+        .principal_id(principal_id)
+        .scopes(narrowed.clone())
+        .expires_at(Utc::now() + Duration::hours(1))
+        .build();
+
+    let authenticator = test_authenticator(
+        MockAuthTokenRepository::builder()
+            .on_find_by_hash(Some(token), None)
+            .build(),
+        MockPrincipalRepository::builder()
+            .on_find_by_id(principal, None)
+            .build(),
+    );
+
+    let ctx = test_context().await;
+    let mut tx = ctx.begin_test().await.expect("begin");
+
+    let result = authenticator
+        .verify_token(&mut tx, "raw-token")
+        .await
+        .expect("verification should succeed");
+
+    assert_eq!(result.scopes(), narrowed);
 }
 
 #[tokio::test]
@@ -264,6 +299,7 @@ async fn test_resolve_stdio_principal_success() {
 
     assert_eq!(result.principal_id(), principal_id);
     assert_eq!(result.principal_key(), LOCAL_PRINCIPAL_KEY);
+    assert_eq!(result.scopes(), full_access_scopes());
 }
 
 #[tokio::test]
@@ -335,6 +371,7 @@ async fn test_verify_token_integration() {
             &NewAuthToken::builder()
                 .token_hash(token_hash)
                 .principal_id(principal.id())
+                .scopes(full_access_scopes())
                 .expires_at(Utc::now() + Duration::hours(24))
                 .build(),
         )
@@ -353,4 +390,5 @@ async fn test_verify_token_integration() {
 
     assert_eq!(result.principal_id(), principal.id());
     assert_eq!(result.principal_key(), principal.principal_key());
+    assert_eq!(result.scopes(), full_access_scopes());
 }

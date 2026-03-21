@@ -67,6 +67,7 @@ mod reference;
 mod reference_kind;
 mod relation;
 mod retrieval_feedback;
+mod scope;
 mod source_type;
 pub mod span_attrs;
 mod standing;
@@ -107,6 +108,7 @@ pub use relation::{
     RelationSuggestion,
 };
 pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
+pub use scope::{Scope, ScopeParseError, full_access_scopes, is_authorised};
 pub use source_type::SourceType;
 pub use standing::{Standing, StandingBuilder};
 pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};

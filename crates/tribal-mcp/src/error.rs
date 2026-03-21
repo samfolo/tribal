@@ -19,6 +19,29 @@ pub struct McpToolError {
     pub details: serde_json::Value,
 }
 
+impl McpToolError {
+    /// Converts this application error into an rmcp protocol error.
+    ///
+    /// Maps application error codes to JSON-RPC error codes at the
+    /// `call_tool` dispatch boundary.
+    #[must_use]
+    pub fn into_protocol_error(self) -> McpError {
+        let code = match self.code {
+            McpErrorCode::Unauthenticated | McpErrorCode::PermissionDenied => {
+                ErrorCode::INVALID_REQUEST
+            }
+            McpErrorCode::InvalidArgument | McpErrorCode::NotFound => ErrorCode::INVALID_PARAMS,
+            _ => ErrorCode::INTERNAL_ERROR,
+        };
+        let data = serde_json::json!({
+            "code": self.code,
+            "details": self.details,
+        });
+
+        McpError::new(code, self.message, Some(data))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // IntoMcpError
 // ---------------------------------------------------------------------------
@@ -139,5 +162,34 @@ mod tests {
         let err = invalid_argument("bad param");
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
         assert!(err.message.contains("bad param"));
+    }
+
+    #[test]
+    fn test_into_protocol_error_permission_denied() {
+        let err = McpToolError {
+            code: McpErrorCode::PermissionDenied,
+            message: "insufficient scope".into(),
+            details: serde_json::json!({}),
+        };
+        let protocol = err.into_protocol_error();
+        assert_eq!(protocol.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(protocol.message, "insufficient scope");
+
+        let data = protocol.data.expect("data should be present");
+        assert_eq!(data["code"], "permission_denied");
+    }
+
+    #[test]
+    fn test_into_protocol_error_internal() {
+        let err = McpToolError {
+            code: McpErrorCode::Internal,
+            message: "db failure".into(),
+            details: serde_json::json!({}),
+        };
+        let protocol = err.into_protocol_error();
+        assert_eq!(protocol.code, ErrorCode::INTERNAL_ERROR);
+
+        let data = protocol.data.expect("data should be present");
+        assert_eq!(data["code"], "internal");
     }
 }

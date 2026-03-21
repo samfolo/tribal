@@ -143,6 +143,7 @@ fn default_auth_context() -> AuthContext {
     AuthContext::new(AuthenticatedPrincipal::for_test(
         PrincipalId::new(),
         TEST_PRINCIPAL_KEY,
+        tribal_domain::full_access_scopes(),
     ))
 }
 

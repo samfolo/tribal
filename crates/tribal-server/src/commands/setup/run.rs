@@ -10,7 +10,7 @@ use tribal_db::{
     AuthTokenRepository, DbError, NewAuthToken, NewPrincipal, PgAuthTokenRepository,
     PgPrincipalRepository, PrincipalRepository,
 };
-use tribal_domain::{LOCAL_PRINCIPAL_KEY, Principal};
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, Principal, full_access_scopes};
 
 use super::{config_file, output, token};
 use crate::{
@@ -118,6 +118,7 @@ async fn run_async(
     let new_token = NewAuthToken::builder()
         .token_hash(token_hash)
         .principal_id(principal.id())
+        .scopes(full_access_scopes())
         .expires_at(expires_at)
         .build();
 

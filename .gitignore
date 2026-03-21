@@ -4,9 +4,5 @@
 # Environment
 .env
 
-# Private context (symlinked from tribal-context)
-.claude
-docs
-
 # OS-specific
 .DS_Store

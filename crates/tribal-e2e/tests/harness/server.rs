@@ -862,6 +862,7 @@ async fn resolve_e2e_auth(state: &AppState, principal_key: &str) -> AuthContext 
     AuthContext::new(AuthenticatedPrincipal::for_test(
         principal.id(),
         principal_key,
+        tribal_domain::full_access_scopes(),
     ))
 }
 

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{AuthTokenId, PrincipalId};
+use crate::{AuthTokenId, PrincipalId, Scope};
 
 /// An authentication token for a principal.
 ///
@@ -22,6 +22,8 @@ pub struct AuthToken {
     token_hash: String,
     /// The principal this token authenticates.
     principal_id: PrincipalId,
+    /// Permission scopes granted to this token.
+    scopes: Vec<Scope>,
     /// When this token expires.
     expires_at: DateTime<Utc>,
     /// When this token was created.
@@ -45,6 +47,11 @@ impl AuthToken {
     /// Returns the principal this token authenticates.
     pub fn principal_id(&self) -> PrincipalId {
         self.principal_id
+    }
+
+    /// Returns the permission scopes granted to this token.
+    pub fn scopes(&self) -> &[Scope] {
+        &self.scopes
     }
 
     /// Returns when this token expires.

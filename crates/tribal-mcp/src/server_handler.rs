@@ -19,7 +19,7 @@ use tribal_db::{
     RelationRepository, RetrievalFeedbackRepository, StandingRepository, TaskRepository,
     TriageResultRepository,
 };
-use tribal_domain::PromptVersionId;
+use tribal_domain::{PromptVersionId, is_authorised};
 
 use crate::{
     app_state::AppState,
@@ -248,14 +248,23 @@ impl ServerHandler for TribalServerHandler {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
+        let scopes = self.auth.principal().scopes();
         std::future::ready(Ok(ListToolsResult {
-            tools: PARSED_TOOLS.iter().map(to_tool).collect(),
+            tools: PARSED_TOOLS
+                .iter()
+                .filter(|t| is_authorised(scopes, &t.required_scope))
+                .map(to_tool)
+                .collect(),
             ..Default::default()
         }))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        PARSED_TOOLS.iter().find(|t| t.name == name).map(to_tool)
+        let scopes = self.auth.principal().scopes();
+        PARSED_TOOLS
+            .iter()
+            .find(|t| t.name == name && is_authorised(scopes, &t.required_scope))
+            .map(to_tool)
     }
 
     fn list_resources(
@@ -295,12 +304,11 @@ impl ServerHandler for TribalServerHandler {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        let scopes = self.auth.principal().scopes();
         let entry = PARSED_TOOLS
             .iter()
-            .find(|t| t.name == request.name.as_ref())
+            .find(|t| t.name == request.name.as_ref() && is_authorised(scopes, &t.required_scope))
             .ok_or_else(|| method_not_found(&request.name))?;
-
-        self.auth.require_scope(entry.required_scope)?;
 
         let params = request.arguments.map_or_else(
             || serde_json::Value::Object(serde_json::Map::default()),
