@@ -312,4 +312,21 @@ mod tests {
         assert_eq!(mcp.code, McpErrorCode::PermissionDenied);
         assert_eq!(mcp.message, "insufficient scope: requires tribal:write",);
     }
+
+    #[test]
+    fn test_auth_insufficient_scope_full_chain_to_protocol_error() {
+        use rmcp::model::ErrorCode;
+
+        let err = AuthError::InsufficientScope {
+            required_scope: tribal_domain::Scope::parse("tribal:write").unwrap(),
+            granted_scopes: vec![tribal_domain::Scope::parse("tribal.knowledge:read").unwrap()],
+        };
+        let protocol = err.into_mcp_error().into_protocol_error();
+
+        assert_eq!(protocol.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(protocol.message, "insufficient scope: requires tribal:write");
+
+        let data = protocol.data.expect("data should carry structured error");
+        assert_eq!(data["code"], "permission_denied");
+    }
 }

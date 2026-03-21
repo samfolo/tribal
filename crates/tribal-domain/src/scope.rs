@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn test_parse_error_display() {
         let err = Scope::parse("bad").unwrap_err();
-        assert!(err.to_string().starts_with(INVALID_SCOPE));
+        assert_eq!(err.to_string(), format!("{INVALID_SCOPE}: {:?}", "bad"));
     }
 
     // -- Satisfaction (table tests) ----------------------------------------
