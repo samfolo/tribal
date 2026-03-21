@@ -73,11 +73,7 @@ impl AuthenticatedPrincipal {
     /// a random ID for mock-backed tests; use the real ID from the
     /// database for tests that hit FK-constrained tables.
     #[must_use]
-    pub fn for_test(
-        principal_id: PrincipalId,
-        principal_key: &str,
-        scopes: Vec<Scope>,
-    ) -> Self {
+    pub fn for_test(principal_id: PrincipalId, principal_key: &str, scopes: Vec<Scope>) -> Self {
         Self {
             principal_id,
             principal_key: principal_key.to_owned(),
@@ -317,6 +313,7 @@ impl Authenticator {
         Ok(AuthenticatedPrincipal {
             principal_id: principal.id(),
             principal_key: principal.principal_key().to_owned(),
+            scopes: token.scopes().to_vec(),
         })
     }
 
@@ -350,6 +347,7 @@ impl Authenticator {
             Some(p) => Ok(AuthenticatedPrincipal {
                 principal_id: p.id(),
                 principal_key: p.principal_key().to_owned(),
+                scopes: full_access_scopes(),
             }),
             None => Err(AuthError::LocalPrincipalMissing {
                 principal_key: LOCAL_PRINCIPAL_KEY.to_owned(),
