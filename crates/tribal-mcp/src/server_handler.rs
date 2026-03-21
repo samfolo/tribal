@@ -26,6 +26,7 @@ use crate::{
     auth::AuthContext,
     config::HandlerConfig,
     error::method_not_found,
+    mapping::session_to_json,
     session::{self, SESSION_RESOURCE_URI, SessionContext},
     tools::{PARSED_TOOLS, to_tool},
 };
@@ -194,9 +195,9 @@ impl TribalServerHandler {
             return Err(McpError::invalid_params("unknown resource URI", None));
         }
 
-        let json: serde_json::Value = {
+        let json = {
             let session = self.session.read().await;
-            (&*session).into()
+            session_to_json(&session, self.auth.principal().principal_key())
         };
 
         let text =

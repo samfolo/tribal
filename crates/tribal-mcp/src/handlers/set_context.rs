@@ -11,7 +11,7 @@ use tribal_domain::ProjectId;
 use super::common::acquire_connection;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, invalid_argument},
-    mapping::{McpSetContextRequest, McpSetContextResponse},
+    mapping::{McpSetContextRequest, set_context_response},
     server_handler::{ConnectionRepositories, TribalServerHandler},
     session::{SessionProject, notify_session_updated},
 };
@@ -55,7 +55,8 @@ impl TribalServerHandler {
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
         if request == McpSetContextRequest::default() {
-            let response = McpSetContextResponse::from(&*self.session.read().await);
+            let principal_key = self.auth.principal().principal_key();
+            let response = set_context_response(&*self.session.read().await, principal_key);
             return Ok((response.into_call_tool_result(), false));
         }
 
@@ -104,7 +105,7 @@ impl TribalServerHandler {
             changed = true;
         }
 
-        let mut response = McpSetContextResponse::from(&*ctx);
+        let mut response = set_context_response(&*ctx, self.auth.principal().principal_key());
         response.mutated = changed;
         Ok((response.into_call_tool_result(), changed))
     }
