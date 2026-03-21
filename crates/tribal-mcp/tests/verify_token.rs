@@ -62,6 +62,7 @@ async fn test_verify_token_valid() {
 
     assert_eq!(result.principal_id(), principal_id);
     assert_eq!(result.principal_key(), TEST_PRINCIPAL_KEY);
+    assert_eq!(result.scopes(), full_access_scopes());
 }
 
 #[tokio::test]
@@ -264,6 +265,7 @@ async fn test_resolve_stdio_principal_success() {
 
     assert_eq!(result.principal_id(), principal_id);
     assert_eq!(result.principal_key(), LOCAL_PRINCIPAL_KEY);
+    assert_eq!(result.scopes(), full_access_scopes());
 }
 
 #[tokio::test]

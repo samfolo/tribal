@@ -39,7 +39,7 @@ pub enum ScopeParseError {
 /// dot-segmented resource path (starting with `tribal`, lowercase
 /// ASCII only) from an operation (`read` or `write`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
 pub struct Scope(String);
 
 impl Scope {
@@ -117,6 +117,20 @@ impl TryFrom<&str> for Scope {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::parse(value)
+    }
+}
+
+impl TryFrom<String> for Scope {
+    type Error = ScopeParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<Scope> for String {
+    fn from(scope: Scope) -> Self {
+        scope.0
     }
 }
 
@@ -346,6 +360,24 @@ mod tests {
         assert_eq!(scope.as_str(), "tribal:read");
 
         assert!(Scope::try_from("bad").is_err());
+    }
+
+    // -- Serde roundtrip ---------------------------------------------------
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let scope = Scope::parse("tribal.knowledge:read").unwrap();
+        let json = serde_json::to_string(&scope).unwrap();
+        assert_eq!(json, "\"tribal.knowledge:read\"");
+
+        let parsed: Scope = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, scope);
+    }
+
+    #[test]
+    fn test_serde_rejects_invalid_scope() {
+        let result = serde_json::from_str::<Scope>("\"bad\"");
+        assert!(result.is_err());
     }
 
     // -- full_access_scopes ------------------------------------------------

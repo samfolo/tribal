@@ -6,7 +6,7 @@
 //! existence guarantees the holder passed either token verification or
 //! the stdio bypass path.
 
-use std::{string::ToString, sync::Arc};
+use std::sync::Arc;
 
 use chrono::Utc;
 use sqlx::PgConnection;
@@ -147,9 +147,9 @@ pub enum AuthError {
     #[error("insufficient scope: requires {required_scope}")]
     InsufficientScope {
         /// The scope the operation requires.
-        required_scope: String,
+        required_scope: Scope,
         /// The scopes the token was granted.
-        granted_scopes: Vec<String>,
+        granted_scopes: Vec<Scope>,
     },
 }
 
@@ -195,13 +195,8 @@ impl AuthContext {
             Ok(())
         } else {
             Err(AuthError::InsufficientScope {
-                required_scope: scope.to_owned(),
-                granted_scopes: self
-                    .principal
-                    .scopes()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
+                required_scope: required,
+                granted_scopes: self.principal.scopes().to_vec(),
             })
         }
     }
@@ -464,9 +459,12 @@ mod tests {
         assert_eq!(db_err.to_string(), "database unavailable: test op");
 
         let insufficient = AuthError::InsufficientScope {
-            required_scope: "tribal:write".into(),
-            granted_scopes: vec!["tribal.knowledge:read".into()],
+            required_scope: Scope::parse("tribal:write").unwrap(),
+            granted_scopes: vec![Scope::parse("tribal.knowledge:read").unwrap()],
         };
-        assert!(insufficient.to_string().contains("tribal:write"));
+        assert_eq!(
+            insufficient.to_string(),
+            "insufficient scope: requires tribal:write",
+        );
     }
 }
