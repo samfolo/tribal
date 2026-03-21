@@ -26,8 +26,8 @@ use tribal_db::{
 use tribal_domain::{JobOutcome, PrincipalId, Project};
 use tribal_inference::RequestClass;
 use tribal_mcp::{
-    AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
-    TribalServerHandler,
+    AppState, AuthContext, AuthenticatedPrincipal, ConnectionRepositories, HandlerConfig,
+    SessionContext, SessionProject, TribalServerHandler,
 };
 use tribal_server::{ServerHandle, start_server};
 use tribal_test_utils::{
@@ -713,11 +713,13 @@ impl TestHarness {
     /// Panics if the MCP handshake fails on either side of the duplex
     /// transport.
     pub async fn connect_client(&self, principal_key: &str) -> ClientHandle {
+        let auth = resolve_e2e_auth(&self.state, principal_key).await;
         let session = SessionContext::new(None, principal_key.to_owned());
         let repositories = ConnectionRepositories::new();
         let handler_config = HandlerConfig::default();
         let handler = TribalServerHandler::new(
             Arc::clone(&self.state),
+            auth,
             repositories,
             session,
             handler_config,
@@ -804,12 +806,18 @@ async fn start_and_connect(
 
     let state = Arc::clone(handle.state());
 
+    let auth = resolve_e2e_auth(&state, principal_key).await;
     let session_project = state.resolved_project().map(SessionProject::from);
     let session = SessionContext::new(session_project, principal_key.to_owned());
     let repositories = ConnectionRepositories::new();
     let handler_config = HandlerConfig::default();
-    let handler =
-        TribalServerHandler::new(Arc::clone(&state), repositories, session, handler_config);
+    let handler = TribalServerHandler::new(
+        Arc::clone(&state),
+        auth,
+        repositories,
+        session,
+        handler_config,
+    );
 
     let (server_transport, client_transport) = tokio::io::duplex(DUPLEX_BUFFER_SIZE);
 
@@ -824,6 +832,34 @@ async fn start_and_connect(
     let client = ().serve(client_transport).await.expect("client MCP handshake failed");
 
     (handle, state, client)
+}
+
+// ---------------------------------------------------------------------------
+// Auth helper
+// ---------------------------------------------------------------------------
+
+/// Resolves the E2E principal from the database and wraps it in an
+/// [`AuthContext`] for handler construction.
+///
+/// # Panics
+///
+/// Panics if the principal cannot be found — the harness setup must
+/// have seeded it beforehand.
+async fn resolve_e2e_auth(state: &AppState, principal_key: &str) -> AuthContext {
+    let mut conn = state
+        .mcp_pool()
+        .acquire()
+        .await
+        .expect("acquire connection for auth");
+    let principal = PgPrincipalRepository
+        .find_by_key(&mut conn, principal_key)
+        .await
+        .expect("find principal by key")
+        .unwrap_or_else(|| panic!("principal '{principal_key}' not found — run harness setup first"));
+    AuthContext::new(AuthenticatedPrincipal::for_test(
+        principal.id(),
+        principal_key,
+    ))
 }
 
 // ---------------------------------------------------------------------------
