@@ -27,8 +27,6 @@ const DISPLAY_INVALID_TOKEN: &str = "invalid token";
 const DISPLAY_TOKEN_REVOKED: &str = "token revoked";
 const DISPLAY_TOKEN_EXPIRED: &str = "token expired";
 
-const EXPECT_VALID_TOOL_SCOPE: &str = "invariant: tool-registry scopes are compile-time valid";
-
 // ---------------------------------------------------------------------------
 // AuthenticatedPrincipal
 // ---------------------------------------------------------------------------
@@ -184,18 +182,12 @@ impl AuthContext {
     ///
     /// Returns [`AuthError::InsufficientScope`] if no granted scope
     /// satisfies the required scope.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `scope` is not a valid scope string. All tool-registry
-    /// scopes are compile-time valid, so this is an invariant violation.
-    pub fn require_scope(&self, scope: &str) -> Result<(), AuthError> {
-        let required = Scope::parse(scope).expect(EXPECT_VALID_TOOL_SCOPE);
-        if is_authorised(self.principal.scopes(), &required) {
+    pub fn require_scope(&self, scope: &Scope) -> Result<(), AuthError> {
+        if is_authorised(self.principal.scopes(), scope) {
             Ok(())
         } else {
             Err(AuthError::InsufficientScope {
-                required_scope: required,
+                required_scope: scope.clone(),
                 granted_scopes: self.principal.scopes().to_vec(),
             })
         }
@@ -381,13 +373,17 @@ mod tests {
             full_access_scopes(),
         ));
 
-        let tool_scopes = [
+        let tool_scopes: Vec<Scope> = [
             "tribal:write",
             "tribal.knowledge:read",
             "tribal.knowledge:write",
             "tribal.jobs:read",
-        ];
-        for scope in tool_scopes {
+        ]
+        .iter()
+        .map(|s| Scope::parse(s).unwrap())
+        .collect();
+
+        for scope in &tool_scopes {
             assert!(
                 auth.require_scope(scope).is_ok(),
                 "expected {scope} to pass"
@@ -404,8 +400,9 @@ mod tests {
             scopes,
         ));
 
+        let required = Scope::parse("tribal:write").unwrap();
         let err = auth
-            .require_scope("tribal:write")
+            .require_scope(&required)
             .expect_err("should reject missing scope");
 
         assert!(matches!(err, AuthError::InsufficientScope { .. }));
@@ -420,7 +417,8 @@ mod tests {
             scopes,
         ));
 
-        assert!(auth.require_scope("tribal.knowledge:read").is_ok());
+        let required = Scope::parse("tribal.knowledge:read").unwrap();
+        assert!(auth.require_scope(&required).is_ok());
     }
 
     #[test]
