@@ -324,7 +324,10 @@ mod tests {
         let protocol = err.into_mcp_error().into_protocol_error();
 
         assert_eq!(protocol.code, ErrorCode::INVALID_REQUEST);
-        assert_eq!(protocol.message, "insufficient scope: requires tribal:write");
+        assert_eq!(
+            protocol.message,
+            "insufficient scope: requires tribal:write"
+        );
 
         let data = protocol.data.expect("data should carry structured error");
         assert_eq!(data["code"], "permission_denied");
