@@ -4,6 +4,8 @@
 //! Handlers never construct `McpToolError` directly for domain errors —
 //! they call `.into_mcp_error()` instead.
 
+use std::string::ToString;
+
 use tribal_db::DbError;
 use tribal_domain::{IdParseError, McpErrorCode};
 use tribal_inference::InferenceError;
@@ -85,20 +87,33 @@ impl IntoMcpError for InferenceError {
 
 impl IntoMcpError for AuthError {
     fn into_mcp_error(self) -> McpToolError {
-        let code = match &self {
+        let (code, details) = match &self {
             AuthError::InvalidToken { .. }
             | AuthError::TokenRevoked { .. }
-            | AuthError::TokenExpired { .. } => McpErrorCode::Unauthenticated,
+            | AuthError::TokenExpired { .. } => {
+                (McpErrorCode::Unauthenticated, serde_json::json!({}))
+            }
             AuthError::PrincipalNotFound { .. }
             | AuthError::LocalPrincipalMissing { .. }
-            | AuthError::DatabaseUnavailable { .. } => McpErrorCode::Internal,
-            AuthError::InsufficientScope { .. } => McpErrorCode::PermissionDenied,
+            | AuthError::DatabaseUnavailable { .. } => {
+                (McpErrorCode::Internal, serde_json::json!({}))
+            }
+            AuthError::InsufficientScope {
+                required_scope,
+                granted_scopes,
+            } => (
+                McpErrorCode::PermissionDenied,
+                serde_json::json!({
+                    "required_scope": required_scope.to_string(),
+                    "granted_scopes": granted_scopes.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                }),
+            ),
         };
 
         McpToolError {
             code,
             message: self.to_string(),
-            details: serde_json::json!({}),
+            details,
         }
     }
 }
@@ -310,7 +325,9 @@ mod tests {
         };
         let mcp = err.into_mcp_error();
         assert_eq!(mcp.code, McpErrorCode::PermissionDenied);
-        assert_eq!(mcp.message, "insufficient scope: requires tribal:write",);
+        assert_eq!(mcp.message, "insufficient scope: requires tribal:write");
+        assert_eq!(mcp.details["required_scope"], "tribal:write");
+        assert_eq!(mcp.details["granted_scopes"][0], "tribal.knowledge:read");
     }
 
     #[test]

@@ -25,7 +25,7 @@ use crate::{
     app_state::AppState,
     auth::AuthContext,
     config::HandlerConfig,
-    error::{IntoMcpError, method_not_found},
+    error::method_not_found,
     mapping::session_to_json,
     session::{self, SESSION_RESOURCE_URI, SessionContext},
     tools::{PARSED_TOOLS, to_tool},
@@ -304,14 +304,13 @@ impl ServerHandler for TribalServerHandler {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        let scopes = self.auth.principal().scopes();
         let entry = PARSED_TOOLS
             .iter()
-            .find(|t| t.name == request.name.as_ref())
+            .find(|t| {
+                t.name == request.name.as_ref() && is_authorised(scopes, &t.required_scope)
+            })
             .ok_or_else(|| method_not_found(&request.name))?;
-
-        self.auth
-            .require_scope(&entry.required_scope)
-            .map_err(|e| e.into_mcp_error().into_protocol_error())?;
 
         let params = request.arguments.map_or_else(
             || serde_json::Value::Object(serde_json::Map::default()),

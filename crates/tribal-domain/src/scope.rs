@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 // Constants
 // ---------------------------------------------------------------------------
 
-const SCOPE_PREFIX: &str = "tribal";
+const SCOPE_ROOT: &str = "tribal";
 
 const INVALID_SCOPE: &str = "invalid scope";
 const EXPECT_HARDCODED_SCOPE: &str = "invariant: hard-coded scope literal is valid";
@@ -188,9 +188,12 @@ fn is_valid_scope(raw: &str) -> bool {
         return false;
     }
 
-    // Must start with the tribal prefix, followed by either end-of-string
-    // or a dot (to prevent "tribalist" matching).
-    if resource != SCOPE_PREFIX && !resource.starts_with(&format!("{SCOPE_PREFIX}.")) {
+    // Must be exactly the root or start with "tribal." (prevents
+    // "tribalist" matching without allocating).
+    if resource != SCOPE_ROOT
+        && !(resource.starts_with(SCOPE_ROOT)
+            && resource.as_bytes().get(SCOPE_ROOT.len()) == Some(&b'.'))
+    {
         return false;
     }
 
