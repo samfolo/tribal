@@ -855,7 +855,9 @@ async fn resolve_e2e_auth(state: &AppState, principal_key: &str) -> AuthContext 
         .find_by_key(&mut conn, principal_key)
         .await
         .expect("find principal by key")
-        .unwrap_or_else(|| panic!("principal '{principal_key}' not found — run harness setup first"));
+        .unwrap_or_else(|| {
+            panic!("principal '{principal_key}' not found — run harness setup first")
+        });
     AuthContext::new(AuthenticatedPrincipal::for_test(
         principal.id(),
         principal_key,
