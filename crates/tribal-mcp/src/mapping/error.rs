@@ -8,6 +8,7 @@ use tribal_db::DbError;
 use tribal_domain::{IdParseError, McpErrorCode};
 use tribal_inference::InferenceError;
 
+use crate::auth::AuthError;
 use crate::error::{IntoMcpError, McpToolError};
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,30 @@ impl IntoMcpError for InferenceError {
     fn into_mcp_error(self) -> McpToolError {
         McpToolError {
             code: McpErrorCode::Internal,
+            message: self.to_string(),
+            details: serde_json::json!({}),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AuthError → McpToolError
+// ---------------------------------------------------------------------------
+
+impl IntoMcpError for AuthError {
+    fn into_mcp_error(self) -> McpToolError {
+        let code = match &self {
+            AuthError::InvalidToken { .. }
+            | AuthError::TokenRevoked { .. }
+            | AuthError::TokenExpired { .. } => McpErrorCode::Unauthenticated,
+            AuthError::PrincipalNotFound { .. }
+            | AuthError::LocalPrincipalMissing { .. }
+            | AuthError::DatabaseUnavailable { .. } => McpErrorCode::Internal,
+            AuthError::InsufficientScope { .. } => McpErrorCode::PermissionDenied,
+        };
+
+        McpToolError {
+            code,
             message: self.to_string(),
             details: serde_json::json!({}),
         }

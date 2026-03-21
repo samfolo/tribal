@@ -19,6 +19,23 @@ pub struct McpToolError {
     pub details: serde_json::Value,
 }
 
+impl McpToolError {
+    /// Converts this application error into an rmcp protocol error.
+    ///
+    /// Maps application error codes to JSON-RPC error codes at the
+    /// `call_tool` dispatch boundary.
+    pub fn into_protocol_error(self) -> McpError {
+        let code = match self.code {
+            McpErrorCode::Unauthenticated | McpErrorCode::PermissionDenied => {
+                ErrorCode::INVALID_REQUEST
+            }
+            McpErrorCode::InvalidArgument | McpErrorCode::NotFound => ErrorCode::INVALID_PARAMS,
+            _ => ErrorCode::INTERNAL_ERROR,
+        };
+        McpError::new(code, self.message, None)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // IntoMcpError
 // ---------------------------------------------------------------------------
