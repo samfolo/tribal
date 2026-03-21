@@ -305,11 +305,11 @@ mod tests {
     #[test]
     fn test_auth_insufficient_scope_maps_to_permission_denied() {
         let err = AuthError::InsufficientScope {
-            required_scope: "tribal:write".to_owned(),
-            granted_scopes: vec!["tribal.knowledge:read".to_owned()],
+            required_scope: tribal_domain::Scope::parse("tribal:write").unwrap(),
+            granted_scopes: vec![tribal_domain::Scope::parse("tribal.knowledge:read").unwrap()],
         };
         let mcp = err.into_mcp_error();
         assert_eq!(mcp.code, McpErrorCode::PermissionDenied);
-        assert!(mcp.message.contains("tribal:write"));
+        assert_eq!(mcp.message, "insufficient scope: requires tribal:write",);
     }
 }

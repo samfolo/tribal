@@ -33,7 +33,12 @@ impl McpToolError {
             McpErrorCode::InvalidArgument | McpErrorCode::NotFound => ErrorCode::INVALID_PARAMS,
             _ => ErrorCode::INTERNAL_ERROR,
         };
-        McpError::new(code, self.message, None)
+        let data = serde_json::json!({
+            "code": self.code,
+            "details": self.details,
+        });
+
+        McpError::new(code, self.message, Some(data))
     }
 }
 
@@ -168,7 +173,10 @@ mod tests {
         };
         let protocol = err.into_protocol_error();
         assert_eq!(protocol.code, ErrorCode::INVALID_REQUEST);
-        assert!(protocol.message.contains("insufficient scope"));
+        assert_eq!(protocol.message, "insufficient scope");
+
+        let data = protocol.data.expect("data should be present");
+        assert_eq!(data["code"], "permission_denied");
     }
 
     #[test]
@@ -180,5 +188,8 @@ mod tests {
         };
         let protocol = err.into_protocol_error();
         assert_eq!(protocol.code, ErrorCode::INTERNAL_ERROR);
+
+        let data = protocol.data.expect("data should be present");
+        assert_eq!(data["code"], "internal");
     }
 }
