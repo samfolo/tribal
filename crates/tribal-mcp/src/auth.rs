@@ -371,22 +371,59 @@ mod tests {
     #[test]
     fn test_authenticated_principal_accessors() {
         let id = PrincipalId::new();
-        let principal = AuthenticatedPrincipal::for_test(id, "user:sam");
+        let principal =
+            AuthenticatedPrincipal::for_test(id, "user:sam", full_access_scopes());
 
         assert_eq!(principal.principal_id(), id);
         assert_eq!(principal.principal_key(), "user:sam");
+        assert_eq!(principal.scopes().len(), 2);
     }
 
     #[test]
-    fn test_auth_context_require_scope_always_succeeds() {
+    fn test_require_scope_full_access_accepts_all_tool_scopes() {
         let auth = AuthContext::new(AuthenticatedPrincipal::for_test(
             PrincipalId::new(),
             "user:test",
+            full_access_scopes(),
         ));
 
-        assert!(auth.require_scope("read").is_ok());
-        assert!(auth.require_scope("write").is_ok());
-        assert!(auth.require_scope("admin").is_ok());
+        let tool_scopes = [
+            "tribal:write",
+            "tribal.knowledge:read",
+            "tribal.knowledge:write",
+            "tribal.jobs:read",
+        ];
+        for scope in tool_scopes {
+            assert!(auth.require_scope(scope).is_ok(), "expected {scope} to pass");
+        }
+    }
+
+    #[test]
+    fn test_require_scope_insufficient_scope() {
+        let scopes = vec![Scope::parse("tribal.knowledge:read").unwrap()];
+        let auth = AuthContext::new(AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            "user:test",
+            scopes,
+        ));
+
+        let err = auth
+            .require_scope("tribal:write")
+            .expect_err("should reject missing scope");
+
+        assert!(matches!(err, AuthError::InsufficientScope { .. }));
+    }
+
+    #[test]
+    fn test_require_scope_prefix_satisfaction() {
+        let scopes = vec![Scope::parse("tribal:read").unwrap()];
+        let auth = AuthContext::new(AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            "user:test",
+            scopes,
+        ));
+
+        assert!(auth.require_scope("tribal.knowledge:read").is_ok());
     }
 
     #[test]
@@ -423,5 +460,11 @@ mod tests {
             source: Box::new(io::Error::other("boom")),
         };
         assert_eq!(db_err.to_string(), "database unavailable: test op");
+
+        let insufficient = AuthError::InsufficientScope {
+            required_scope: "tribal:write".into(),
+            granted_scopes: vec!["tribal.knowledge:read".into()],
+        };
+        assert!(insufficient.to_string().contains("tribal:write"));
     }
 }
