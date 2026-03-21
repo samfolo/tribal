@@ -1,7 +1,6 @@
 //! Permission scope type and satisfaction logic.
 
-use std::fmt;
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -245,7 +244,10 @@ mod tests {
             (" tribal:read", "leading space"),
         ];
         for (raw, description) in invalid {
-            assert!(Scope::parse(raw).is_err(), "expected invalid ({description}): {raw:?}");
+            assert!(
+                Scope::parse(raw).is_err(),
+                "expected invalid ({description}): {raw:?}"
+            );
         }
     }
 
@@ -290,7 +292,10 @@ mod tests {
         for (granted, required) in cases {
             let g = Scope::parse(granted).unwrap();
             let r = Scope::parse(required).unwrap();
-            assert!(!g.satisfies(&r), "expected {granted} NOT to satisfy {required}");
+            assert!(
+                !g.satisfies(&r),
+                "expected {granted} NOT to satisfy {required}"
+            );
         }
     }
 
