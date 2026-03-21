@@ -27,6 +27,8 @@ const DISPLAY_INVALID_TOKEN: &str = "invalid token";
 const DISPLAY_TOKEN_REVOKED: &str = "token revoked";
 const DISPLAY_TOKEN_EXPIRED: &str = "token expired";
 
+const EXPECT_VALID_TOOL_SCOPE: &str = "invariant: tool-registry scopes are compile-time valid";
+
 // ---------------------------------------------------------------------------
 // AuthenticatedPrincipal
 // ---------------------------------------------------------------------------
@@ -144,6 +146,15 @@ pub enum AuthError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    /// The token is valid but lacks the required scope.
+    #[error("insufficient scope: requires {required_scope}")]
+    InsufficientScope {
+        /// The scope the operation requires.
+        required_scope: String,
+        /// The scopes the token was granted.
+        granted_scopes: Vec<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -173,14 +184,30 @@ impl AuthContext {
 
     /// Checks whether the authenticated principal has the required scope.
     ///
-    /// Grants all scopes unconditionally.
-    ///
     /// # Errors
     ///
-    /// Returns an [`McpError`] if the principal lacks the requested scope.
-    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
-    pub fn require_scope(&self, _scope: &str) -> Result<(), McpError> {
-        Ok(())
+    /// Returns [`AuthError::InsufficientScope`] if no granted scope
+    /// satisfies the required scope.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `scope` is not a valid scope string. All tool-registry
+    /// scopes are compile-time valid, so this is an invariant violation.
+    pub fn require_scope(&self, scope: &str) -> Result<(), AuthError> {
+        let required = Scope::parse(scope).expect(EXPECT_VALID_TOOL_SCOPE);
+        if is_authorised(self.principal.scopes(), &required) {
+            Ok(())
+        } else {
+            Err(AuthError::InsufficientScope {
+                required_scope: scope.to_owned(),
+                granted_scopes: self
+                    .principal
+                    .scopes()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            })
+        }
     }
 }
 
