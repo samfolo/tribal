@@ -2,6 +2,7 @@ use std::sync::{Arc, LazyLock};
 
 use rmcp::model::Tool;
 use serde_json::{Map, Value};
+use tribal_domain::Scope;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -13,6 +14,7 @@ pub(crate) const TOOL_PREFIX: &str = "tribal_";
 const INPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded input schema must be valid JSON";
 const OUTPUT_SCHEMA_PARSE_FAILED: &str = "invariant: embedded output schema must be valid JSON";
 const SCHEMA_MUST_BE_OBJECT: &str = "invariant: schema must be a JSON object";
+const SCOPE_PARSE_FAILED: &str = "invariant: tool required_scope must be a valid scope";
 
 // ---------------------------------------------------------------------------
 // ToolEntry
@@ -37,7 +39,7 @@ pub(crate) struct ParsedToolEntry {
     pub(crate) description: &'static str,
     pub(crate) input_schema: Arc<Map<String, Value>>,
     pub(crate) output_schema: Arc<Map<String, Value>>,
-    pub(crate) required_scope: &'static str,
+    pub(crate) required_scope: Scope,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +240,8 @@ with current status.",
 ///
 /// # Panics
 ///
-/// Panics on first access if any embedded schema is not valid JSON.
+/// Panics on first access if any embedded schema is not valid JSON or
+/// any `required_scope` is not a valid scope string.
 pub(crate) static PARSED_TOOLS: LazyLock<Vec<ParsedToolEntry>> = LazyLock::new(|| {
     TOOLS
         .iter()
@@ -248,7 +251,12 @@ pub(crate) static PARSED_TOOLS: LazyLock<Vec<ParsedToolEntry>> = LazyLock::new(|
             description: t.description,
             input_schema: parse_schema_object(t.input_schema, INPUT_SCHEMA_PARSE_FAILED),
             output_schema: parse_schema_object(t.output_schema, OUTPUT_SCHEMA_PARSE_FAILED),
-            required_scope: t.required_scope,
+            required_scope: Scope::parse(t.required_scope).unwrap_or_else(|e| {
+                panic!(
+                    "{SCOPE_PARSE_FAILED} for tool '{}' with required_scope '{}': {e}",
+                    t.name, t.required_scope,
+                )
+            }),
         })
         .collect()
 });

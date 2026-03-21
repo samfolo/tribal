@@ -4,11 +4,16 @@
 //! Handlers never construct `McpToolError` directly for domain errors —
 //! they call `.into_mcp_error()` instead.
 
+use std::string::ToString;
+
 use tribal_db::DbError;
 use tribal_domain::{IdParseError, McpErrorCode};
 use tribal_inference::InferenceError;
 
-use crate::error::{IntoMcpError, McpToolError};
+use crate::{
+    auth::AuthError,
+    error::{IntoMcpError, McpToolError},
+};
 
 // ---------------------------------------------------------------------------
 // DbError → McpToolError
@@ -72,6 +77,43 @@ impl IntoMcpError for InferenceError {
             code: McpErrorCode::Internal,
             message: self.to_string(),
             details: serde_json::json!({}),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AuthError → McpToolError
+// ---------------------------------------------------------------------------
+
+impl IntoMcpError for AuthError {
+    fn into_mcp_error(self) -> McpToolError {
+        let (code, details) = match &self {
+            AuthError::InvalidToken { .. }
+            | AuthError::TokenRevoked { .. }
+            | AuthError::TokenExpired { .. } => {
+                (McpErrorCode::Unauthenticated, serde_json::json!({}))
+            }
+            AuthError::PrincipalNotFound { .. }
+            | AuthError::LocalPrincipalMissing { .. }
+            | AuthError::DatabaseUnavailable { .. } => {
+                (McpErrorCode::Internal, serde_json::json!({}))
+            }
+            AuthError::InsufficientScope {
+                required_scope,
+                granted_scopes,
+            } => (
+                McpErrorCode::PermissionDenied,
+                serde_json::json!({
+                    "required_scope": required_scope.to_string(),
+                    "granted_scopes": granted_scopes.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                }),
+            ),
+        };
+
+        McpToolError {
+            code,
+            message: self.to_string(),
+            details,
         }
     }
 }
@@ -216,5 +258,95 @@ mod tests {
         let mcp = err.into_mcp_error();
         assert_eq!(mcp.code, McpErrorCode::Internal);
         assert!(mcp.message.contains("JSON object"));
+    }
+
+    // -- AuthError --------------------------------------------------------
+
+    #[test]
+    fn test_auth_invalid_token_maps_to_unauthenticated() {
+        let err = AuthError::InvalidToken {
+            token_hash: "abc".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn test_auth_token_revoked_maps_to_unauthenticated() {
+        let err = AuthError::TokenRevoked {
+            token_hash: "abc".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn test_auth_token_expired_maps_to_unauthenticated() {
+        let err = AuthError::TokenExpired {
+            token_hash: "abc".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn test_auth_principal_not_found_maps_to_internal() {
+        let err = AuthError::PrincipalNotFound {
+            principal_id: tribal_domain::PrincipalId::new(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Internal);
+    }
+
+    #[test]
+    fn test_auth_local_principal_missing_maps_to_internal() {
+        let err = AuthError::LocalPrincipalMissing {
+            principal_key: "principal:local".to_owned(),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Internal);
+    }
+
+    #[test]
+    fn test_auth_database_unavailable_maps_to_internal() {
+        let err = AuthError::DatabaseUnavailable {
+            context: "test".to_owned(),
+            source: Box::new(std::io::Error::other("boom")),
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::Internal);
+    }
+
+    #[test]
+    fn test_auth_insufficient_scope_maps_to_permission_denied() {
+        let err = AuthError::InsufficientScope {
+            required_scope: tribal_domain::Scope::parse("tribal:write").unwrap(),
+            granted_scopes: vec![tribal_domain::Scope::parse("tribal.knowledge:read").unwrap()],
+        };
+        let mcp = err.into_mcp_error();
+        assert_eq!(mcp.code, McpErrorCode::PermissionDenied);
+        assert_eq!(mcp.message, "insufficient scope: requires tribal:write");
+        assert_eq!(mcp.details["required_scope"], "tribal:write");
+        assert_eq!(mcp.details["granted_scopes"][0], "tribal.knowledge:read");
+    }
+
+    #[test]
+    fn test_auth_insufficient_scope_full_chain_to_protocol_error() {
+        use rmcp::model::ErrorCode;
+
+        let err = AuthError::InsufficientScope {
+            required_scope: tribal_domain::Scope::parse("tribal:write").unwrap(),
+            granted_scopes: vec![tribal_domain::Scope::parse("tribal.knowledge:read").unwrap()],
+        };
+        let protocol = err.into_mcp_error().into_protocol_error();
+
+        assert_eq!(protocol.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(
+            protocol.message,
+            "insufficient scope: requires tribal:write"
+        );
+
+        let data = protocol.data.expect("data should carry structured error");
+        assert_eq!(data["code"], "permission_denied");
     }
 }

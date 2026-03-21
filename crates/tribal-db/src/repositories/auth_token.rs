@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
-use tribal_domain::{AuthToken, AuthTokenId, PrincipalId};
+use tribal_domain::{AuthToken, AuthTokenId, PrincipalId, Scope};
 use typed_builder::TypedBuilder;
 
 use super::common::columns::Columns;
@@ -22,6 +22,7 @@ const COLUMNS: Columns = Columns(&[
     "id",
     "token_hash",
     "principal_id",
+    "scopes",
     "expires_at",
     "created_at",
     "revoked_at",
@@ -42,6 +43,8 @@ pub struct NewAuthToken {
     pub token_hash: String,
     /// The principal this token authenticates.
     pub principal_id: PrincipalId,
+    /// Permission scopes granted to this token.
+    pub scopes: Vec<Scope>,
     /// When this token expires.
     pub expires_at: DateTime<Utc>,
 }
@@ -129,14 +132,17 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         new: &NewAuthToken,
     ) -> Result<AuthToken, DbError> {
         let sql = format!(
-            "INSERT INTO auth_tokens (token_hash, principal_id, expires_at) \
-             VALUES ($1, $2, $3) \
+            "INSERT INTO auth_tokens (token_hash, principal_id, scopes, expires_at) \
+             VALUES ($1, $2, $3, $4) \
              RETURNING {COLUMNS}",
         );
+
+        let scope_strings: Vec<&str> = new.scopes.iter().map(Scope::as_str).collect();
 
         let result = sqlx::query(&sql)
             .bind(&new.token_hash)
             .bind(new.principal_id.inner())
+            .bind(&scope_strings)
             .bind(new.expires_at)
             .fetch_one(&mut *conn)
             .await;
@@ -242,13 +248,28 @@ impl AuthTokenRepository for PgAuthTokenRepository {
 // Row mapping
 // ---------------------------------------------------------------------------
 
+const EXPECT_VALID_SCOPE_IN_DB: &str = "invariant: database contains valid scopes";
+
 /// Maps a raw `sqlx::Row` from an auth token query into an
 /// [`AuthToken`].
+///
+/// # Panics
+///
+/// Panics if a scope value stored in the database fails to parse. The
+/// application only writes validated scopes, so invalid values indicate
+/// data corruption.
 fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> AuthToken {
+    let scope_strings: Vec<String> = r.get("scopes");
+    let scopes = scope_strings
+        .iter()
+        .map(|s| Scope::parse(s).unwrap_or_else(|_| panic!("{EXPECT_VALID_SCOPE_IN_DB}: {s:?}")))
+        .collect();
+
     AuthToken::builder()
         .id(AuthTokenId::from(r.get::<uuid::Uuid, _>("id")))
         .token_hash(r.get("token_hash"))
         .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
+        .scopes(scopes)
         .expires_at(r.get("expires_at"))
         .created_at(r.get("created_at"))
         .revoked_at(r.get("revoked_at"))

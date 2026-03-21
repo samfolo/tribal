@@ -9,12 +9,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use rmcp::model::ErrorData as McpError;
 use sqlx::PgConnection;
 use tracing::{debug, error, warn};
 use tribal_common::sha256_hex;
 use tribal_db::{AuthTokenRepository, DbError, PrincipalRepository};
-use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, Scope, full_access_scopes, is_authorised};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -41,6 +40,7 @@ const DISPLAY_TOKEN_EXPIRED: &str = "token expired";
 pub struct AuthenticatedPrincipal {
     principal_id: PrincipalId,
     principal_key: String,
+    scopes: Vec<Scope>,
 }
 
 impl AuthenticatedPrincipal {
@@ -55,20 +55,27 @@ impl AuthenticatedPrincipal {
     pub fn principal_key(&self) -> &str {
         &self.principal_key
     }
+
+    /// Returns the permission scopes granted to this principal.
+    #[must_use]
+    pub fn scopes(&self) -> &[Scope] {
+        &self.scopes
+    }
 }
 
 #[cfg(any(test, feature = "test-helpers"))]
 impl AuthenticatedPrincipal {
     /// Test-only constructor that bypasses verification.
     ///
-    /// The caller supplies the [`PrincipalId`] directly. Use a random ID
-    /// for mock-backed tests; use the real ID from the database for tests
-    /// that hit FK-constrained tables.
+    /// The caller supplies the [`PrincipalId`] and scopes directly. Use
+    /// a random ID for mock-backed tests; use the real ID from the
+    /// database for tests that hit FK-constrained tables.
     #[must_use]
-    pub fn for_test(principal_id: PrincipalId, principal_key: &str) -> Self {
+    pub fn for_test(principal_id: PrincipalId, principal_key: &str, scopes: Vec<Scope>) -> Self {
         Self {
             principal_id,
             principal_key: principal_key.to_owned(),
+            scopes,
         }
     }
 }
@@ -133,6 +140,15 @@ pub enum AuthError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    /// The token is valid but lacks the required scope.
+    #[error("insufficient scope: requires {required_scope}")]
+    InsufficientScope {
+        /// The scope the operation requires.
+        required_scope: Scope,
+        /// The scopes the token was granted.
+        granted_scopes: Vec<Scope>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -162,14 +178,19 @@ impl AuthContext {
 
     /// Checks whether the authenticated principal has the required scope.
     ///
-    /// Grants all scopes unconditionally.
-    ///
     /// # Errors
     ///
-    /// Returns an [`McpError`] if the principal lacks the requested scope.
-    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
-    pub fn require_scope(&self, _scope: &str) -> Result<(), McpError> {
-        Ok(())
+    /// Returns [`AuthError::InsufficientScope`] if no granted scope
+    /// satisfies the required scope.
+    pub fn require_scope(&self, scope: &Scope) -> Result<(), AuthError> {
+        if is_authorised(self.principal.scopes(), scope) {
+            Ok(())
+        } else {
+            Err(AuthError::InsufficientScope {
+                required_scope: scope.clone(),
+                granted_scopes: self.principal.scopes().to_vec(),
+            })
+        }
     }
 }
 
@@ -279,6 +300,7 @@ impl Authenticator {
         Ok(AuthenticatedPrincipal {
             principal_id: principal.id(),
             principal_key: principal.principal_key().to_owned(),
+            scopes: token.scopes().to_vec(),
         })
     }
 
@@ -312,6 +334,7 @@ impl Authenticator {
             Some(p) => Ok(AuthenticatedPrincipal {
                 principal_id: p.id(),
                 principal_key: p.principal_key().to_owned(),
+                scopes: full_access_scopes(),
             }),
             None => Err(AuthError::LocalPrincipalMissing {
                 principal_key: LOCAL_PRINCIPAL_KEY.to_owned(),
@@ -335,22 +358,67 @@ mod tests {
     #[test]
     fn test_authenticated_principal_accessors() {
         let id = PrincipalId::new();
-        let principal = AuthenticatedPrincipal::for_test(id, "user:sam");
+        let principal = AuthenticatedPrincipal::for_test(id, "user:sam", full_access_scopes());
 
         assert_eq!(principal.principal_id(), id);
         assert_eq!(principal.principal_key(), "user:sam");
+        assert_eq!(principal.scopes().len(), 2);
     }
 
     #[test]
-    fn test_auth_context_require_scope_always_succeeds() {
+    fn test_require_scope_full_access_accepts_all_tool_scopes() {
         let auth = AuthContext::new(AuthenticatedPrincipal::for_test(
             PrincipalId::new(),
             "user:test",
+            full_access_scopes(),
         ));
 
-        assert!(auth.require_scope("read").is_ok());
-        assert!(auth.require_scope("write").is_ok());
-        assert!(auth.require_scope("admin").is_ok());
+        let tool_scopes: Vec<Scope> = [
+            "tribal:write",
+            "tribal.knowledge:read",
+            "tribal.knowledge:write",
+            "tribal.jobs:read",
+        ]
+        .iter()
+        .map(|s| Scope::parse(s).unwrap())
+        .collect();
+
+        for scope in &tool_scopes {
+            assert!(
+                auth.require_scope(scope).is_ok(),
+                "expected {scope} to pass"
+            );
+        }
+    }
+
+    #[test]
+    fn test_require_scope_insufficient_scope() {
+        let scopes = vec![Scope::parse("tribal.knowledge:read").unwrap()];
+        let auth = AuthContext::new(AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            "user:test",
+            scopes,
+        ));
+
+        let required = Scope::parse("tribal:write").unwrap();
+        let err = auth
+            .require_scope(&required)
+            .expect_err("should reject missing scope");
+
+        assert!(matches!(err, AuthError::InsufficientScope { .. }));
+    }
+
+    #[test]
+    fn test_require_scope_prefix_satisfaction() {
+        let scopes = vec![Scope::parse("tribal:read").unwrap()];
+        let auth = AuthContext::new(AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            "user:test",
+            scopes,
+        ));
+
+        let required = Scope::parse("tribal.knowledge:read").unwrap();
+        assert!(auth.require_scope(&required).is_ok());
     }
 
     #[test]
@@ -387,5 +455,14 @@ mod tests {
             source: Box::new(io::Error::other("boom")),
         };
         assert_eq!(db_err.to_string(), "database unavailable: test op");
+
+        let insufficient = AuthError::InsufficientScope {
+            required_scope: Scope::parse("tribal:write").unwrap(),
+            granted_scopes: vec![Scope::parse("tribal.knowledge:read").unwrap()],
+        };
+        assert_eq!(
+            insufficient.to_string(),
+            "insufficient scope: requires tribal:write",
+        );
     }
 }
