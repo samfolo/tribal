@@ -11,6 +11,16 @@ use typed_builder::TypedBuilder;
 
 use crate::PrincipalId;
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Principal key for the local stdio transport identity.
+///
+/// Created during `tribal setup` and used as the hardcoded bypass
+/// identity for stdio connections.
+pub const LOCAL_PRINCIPAL_KEY: &str = "principal:local";
+
 /// A principal (user or agent) in the system.
 ///
 /// Principals are the attribution target for all write operations.
