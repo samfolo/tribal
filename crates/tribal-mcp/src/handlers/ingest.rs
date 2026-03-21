@@ -279,7 +279,7 @@ mod tests {
     fn default_params() -> IngestParams {
         IngestParams {
             project_id: ProjectId::new(),
-            principal_key: "user:test".into(),
+            principal_id: PrincipalId::new(),
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "some knowledge".into(),
             active_prompts: test_active_prompt_versions(),
@@ -393,7 +393,7 @@ mod tests {
 
         let params = IngestParams {
             project_id: proj_id,
-            principal_key: "user:test".into(),
+            principal_id: PrincipalId::new(),
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "learned something".into(),
             active_prompts: test_active_prompt_versions(),
@@ -453,7 +453,7 @@ mod tests {
 
         let params = IngestParams {
             project_id: proj_id,
-            principal_key: "user:test".into(),
+            principal_id: PrincipalId::new(),
             source_context: serde_json::json!({}),
             content: "test content".into(),
             active_prompts: prompts,
@@ -500,7 +500,7 @@ mod tests {
 
         let params = IngestParams {
             project_id: proj_id,
-            principal_key: "user:test".into(),
+            principal_id: PrincipalId::new(),
             source_context: source_ctx,
             content: "test content".into(),
             active_prompts: test_active_prompt_versions(),
@@ -532,36 +532,6 @@ mod tests {
 
         assert!(
             matches!(err, IngestError::Db(DbError::NotFound { entity, .. }) if entity == "project")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_execute_ingest_principal_not_found() {
-        let proj_id = ProjectId::new();
-        let project = a_project().id(proj_id).build();
-
-        let mut repos = test_repositories();
-        repos.project = Arc::new(
-            MockProjectRepository::builder()
-                .on_find_by_id(project, None)
-                .build(),
-        );
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(None, None)
-                .build(),
-        );
-
-        let params = IngestParams {
-            project_id: proj_id,
-            principal_key: "user:unknown".into(),
-            ..default_params()
-        };
-
-        let err = call_execute(&repos, params).await.expect_err("should fail");
-
-        assert!(
-            matches!(err, IngestError::PrincipalNotFound { principal_key } if principal_key == "user:unknown")
         );
     }
 

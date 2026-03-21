@@ -234,10 +234,7 @@ mod tests {
 
     use rmcp::model::ErrorCode;
     use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, ProjectId};
-    use tribal_test_utils::{
-        MockPrincipalRepository, MockRetrievalFeedbackRepository, a_principal,
-        a_retrieval_feedback, test_context,
-    };
+    use tribal_test_utils::{MockRetrievalFeedbackRepository, a_retrieval_feedback, test_context};
 
     use super::*;
     use crate::test_utils::{TestHandler, test_repositories};
@@ -249,16 +246,8 @@ mod tests {
 
     // -- Helpers -----------------------------------------------------------
 
-    fn repos_for_feedback(
-        principal: tribal_domain::Principal,
-        feedback: tribal_domain::RetrievalFeedback,
-    ) -> ConnectionRepositories {
+    fn repos_for_feedback(feedback: tribal_domain::RetrievalFeedback) -> ConnectionRepositories {
         let mut repos = test_repositories();
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(Some(principal), None)
-                .build(),
-        );
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
                 .on_insert(feedback, None)
@@ -283,7 +272,7 @@ mod tests {
             embedding_model: "mock-model".into(),
             returned_item_ids: vec![KnowledgeItemId::new()],
             explored_anchor_ids: Vec::new(),
-            principal_key: "user:test".into(),
+            principal_id: PrincipalId::new(),
             rating: FeedbackRating::Positive,
             notes: None,
         }
@@ -474,9 +463,8 @@ mod tests {
     #[tokio::test]
     async fn test_apply_feedback_optional_fields_omitted_succeeds() {
         let prin_id = PrincipalId::new();
-        let principal = a_principal().id(prin_id).build();
         let feedback = a_retrieval_feedback().principal_id(prin_id).build();
-        let repos = repos_for_feedback(principal, feedback);
+        let repos = repos_for_feedback(feedback);
 
         let ctx = test_context().await;
         let pool = ctx.create_pool().await.expect("pool");
@@ -504,12 +492,11 @@ mod tests {
     #[tokio::test]
     async fn test_execute_feedback_happy_path() {
         let prin_id = PrincipalId::new();
-        let principal = a_principal().id(prin_id).build();
         let feedback = a_retrieval_feedback().principal_id(prin_id).build();
         let expected_id = feedback.id();
         let expected_rating = feedback.rating();
 
-        let repos = repos_for_feedback(principal, feedback);
+        let repos = repos_for_feedback(feedback);
 
         let params = default_params();
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -524,37 +511,8 @@ mod tests {
     // -- Service: error paths ----------------------------------------------
 
     #[tokio::test]
-    async fn test_execute_feedback_principal_not_found() {
-        let mut repos = test_repositories();
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(None, None)
-                .build(),
-        );
-
-        let params = FeedbackParams {
-            principal_key: "user:unknown".into(),
-            ..default_params()
-        };
-
-        let err = call_execute(&repos, params).await.expect_err("should fail");
-
-        assert!(
-            matches!(err, FeedbackError::PrincipalNotFound { principal_key } if principal_key == "user:unknown")
-        );
-    }
-
-    #[tokio::test]
     async fn test_execute_feedback_db_error_on_insert() {
-        let prin_id = PrincipalId::new();
-        let principal = a_principal().id(prin_id).build();
-
         let mut repos = test_repositories();
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(Some(principal), None)
-                .build(),
-        );
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
                 .on_insert_error(
