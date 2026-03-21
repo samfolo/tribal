@@ -371,8 +371,7 @@ mod tests {
     #[test]
     fn test_authenticated_principal_accessors() {
         let id = PrincipalId::new();
-        let principal =
-            AuthenticatedPrincipal::for_test(id, "user:sam", full_access_scopes());
+        let principal = AuthenticatedPrincipal::for_test(id, "user:sam", full_access_scopes());
 
         assert_eq!(principal.principal_id(), id);
         assert_eq!(principal.principal_key(), "user:sam");
@@ -394,7 +393,10 @@ mod tests {
             "tribal.jobs:read",
         ];
         for scope in tool_scopes {
-            assert!(auth.require_scope(scope).is_ok(), "expected {scope} to pass");
+            assert!(
+                auth.require_scope(scope).is_ok(),
+                "expected {scope} to pass"
+            );
         }
     }
 
