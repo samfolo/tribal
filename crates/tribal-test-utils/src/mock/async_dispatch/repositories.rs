@@ -5,6 +5,7 @@
 //! and configurable exhaustion behaviour — matching the dispatch
 //! semantics of the inference provider mocks.
 
+mod auth_token;
 mod error_factories;
 mod job;
 mod knowledge_item;
@@ -17,6 +18,7 @@ mod standing;
 mod task;
 mod triage_result;
 
+pub use auth_token::MockAuthTokenRepository;
 pub use error_factories::{
     DbErrorFactory, a_not_found, a_pool_exhausted, a_query_failed, a_unique_violation,
 };
