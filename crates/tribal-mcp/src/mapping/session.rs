@@ -17,27 +17,29 @@ const SERIALISE_SET_CONTEXT_RESPONSE: &str =
 // Outbound mapping: SessionContext → JSON (session resource)
 // ---------------------------------------------------------------------------
 
-impl From<&SessionContext> for serde_json::Value {
-    fn from(ctx: &SessionContext) -> Self {
-        let project = ctx.project.as_ref().map_or(serde_json::Value::Null, |p| {
-            serde_json::json!({
-                "id": p.id.to_string(),
-                "name": p.name,
-                "git_remote": p.git_remote.to_string(),
-            })
-        });
-
+/// Renders a [`SessionContext`] as JSON for the session resource.
+///
+/// The `principal_key` is sourced from the authenticated principal on
+/// the handler, not from the session itself.
+pub(crate) fn session_to_json(ctx: &SessionContext, principal_key: &str) -> serde_json::Value {
+    let project = ctx.project.as_ref().map_or(serde_json::Value::Null, |p| {
         serde_json::json!({
-            "project": project,
-            "principal_key": ctx.principal_key,
-            "actor": {
-                "client_name": ctx.actor.client_name,
-                "client_version": ctx.actor.client_version,
-                "model": ctx.actor.model,
-                "provider": ctx.actor.provider,
-            },
+            "id": p.id.to_string(),
+            "name": p.name,
+            "git_remote": p.git_remote.to_string(),
         })
-    }
+    });
+
+    serde_json::json!({
+        "project": project,
+        "principal_key": principal_key,
+        "actor": {
+            "client_name": ctx.actor.client_name,
+            "client_version": ctx.actor.client_version,
+            "model": ctx.actor.model,
+            "provider": ctx.actor.provider,
+        },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -90,23 +92,26 @@ pub(crate) struct McpSetContextResponse {
     pub(crate) mutated: bool,
 }
 
-impl From<&SessionContext> for McpSetContextResponse {
-    fn from(ctx: &SessionContext) -> Self {
-        Self {
-            project: ctx.project.as_ref().map(|p| McpSessionProject {
-                id: p.id.to_string(),
-                name: p.name.clone(),
-                git_remote: p.git_remote.to_string(),
-            }),
-            principal_key: ctx.principal_key.clone(),
-            actor: McpSessionActor {
-                client_name: ctx.actor.client_name.clone(),
-                client_version: ctx.actor.client_version.clone(),
-                model: ctx.actor.model.clone(),
-                provider: ctx.actor.provider.clone(),
-            },
-            mutated: false,
-        }
+/// Builds an [`McpSetContextResponse`] from session state and the
+/// authenticated principal key.
+pub(crate) fn set_context_response(
+    ctx: &SessionContext,
+    principal_key: &str,
+) -> McpSetContextResponse {
+    McpSetContextResponse {
+        project: ctx.project.as_ref().map(|p| McpSessionProject {
+            id: p.id.to_string(),
+            name: p.name.clone(),
+            git_remote: p.git_remote.to_string(),
+        }),
+        principal_key: principal_key.to_owned(),
+        actor: McpSessionActor {
+            client_name: ctx.actor.client_name.clone(),
+            client_version: ctx.actor.client_version.clone(),
+            model: ctx.actor.model.clone(),
+            provider: ctx.actor.provider.clone(),
+        },
+        mutated: false,
     }
 }
 
@@ -162,18 +167,15 @@ mod tests {
     #[test]
     fn test_session_json_with_project() {
         let id = ProjectId::new();
-        let ctx = SessionContext::new(
-            Some(SessionProject {
-                id,
-                name: "tribal".into(),
-                git_remote: "git@github.com:user/tribal.git"
-                    .parse()
-                    .expect("valid test git remote"),
-            }),
-            "user:sam".into(),
-        );
+        let ctx = SessionContext::new(Some(SessionProject {
+            id,
+            name: "tribal".into(),
+            git_remote: "git@github.com:user/tribal.git"
+                .parse()
+                .expect("valid test git remote"),
+        }));
 
-        let json: serde_json::Value = (&ctx).into();
+        let json = session_to_json(&ctx, "user:sam");
 
         let project = &json["project"];
         assert_eq!(project["id"], id.to_string());
@@ -184,8 +186,8 @@ mod tests {
 
     #[test]
     fn test_session_json_without_project() {
-        let ctx = SessionContext::new(None, "user:sam".into());
-        let json: serde_json::Value = (&ctx).into();
+        let ctx = SessionContext::new(None);
+        let json = session_to_json(&ctx, "user:sam");
 
         assert!(json["project"].is_null());
         assert_eq!(json["principal_key"], "user:sam");
@@ -193,7 +195,7 @@ mod tests {
 
     #[test]
     fn test_session_json_actor_fields() {
-        let mut ctx = SessionContext::new(None, "user:sam".into());
+        let mut ctx = SessionContext::new(None);
         ctx.actor = SessionActor {
             client_name: Some("claude-code".into()),
             client_version: None,
@@ -201,7 +203,7 @@ mod tests {
             provider: None,
         };
 
-        let json: serde_json::Value = (&ctx).into();
+        let json = session_to_json(&ctx, "user:sam");
         let actor = &json["actor"];
 
         assert_eq!(actor["client_name"], "claude-code");
@@ -224,19 +226,16 @@ mod tests {
     // -- McpSetContextResponse --------------------------------------------
 
     #[test]
-    fn test_set_context_response_from_session_with_project() {
+    fn test_set_context_response_with_project() {
         let id = ProjectId::new();
-        let ctx = SessionContext::new(
-            Some(SessionProject {
-                id,
-                name: "tribal".into(),
-                git_remote: "git@github.com:user/tribal.git"
-                    .parse()
-                    .expect("valid test git remote"),
-            }),
-            "user:sam".into(),
-        );
-        let resp = McpSetContextResponse::from(&ctx);
+        let ctx = SessionContext::new(Some(SessionProject {
+            id,
+            name: "tribal".into(),
+            git_remote: "git@github.com:user/tribal.git"
+                .parse()
+                .expect("valid test git remote"),
+        }));
+        let resp = set_context_response(&ctx, "user:sam");
         let json = serde_json::to_value(&resp).expect("serialises");
 
         assert_eq!(json["project"]["id"], id.to_string());
@@ -245,9 +244,9 @@ mod tests {
     }
 
     #[test]
-    fn test_set_context_response_from_session_without_project() {
-        let ctx = SessionContext::new(None, "user:sam".into());
-        let resp = McpSetContextResponse::from(&ctx);
+    fn test_set_context_response_without_project() {
+        let ctx = SessionContext::new(None);
+        let resp = set_context_response(&ctx, "user:sam");
         let json = serde_json::to_value(&resp).expect("serialises");
 
         // project is always present — null when absent
@@ -258,16 +257,13 @@ mod tests {
 
     #[test]
     fn test_set_context_response_into_call_tool_result() {
-        let mut ctx = SessionContext::new(
-            Some(SessionProject {
-                id: ProjectId::new(),
-                name: "tribal".into(),
-                git_remote: "git@github.com:user/tribal.git"
-                    .parse()
-                    .expect("valid test git remote"),
-            }),
-            "user:sam".into(),
-        );
+        let mut ctx = SessionContext::new(Some(SessionProject {
+            id: ProjectId::new(),
+            name: "tribal".into(),
+            git_remote: "git@github.com:user/tribal.git"
+                .parse()
+                .expect("valid test git remote"),
+        }));
         ctx.actor = SessionActor {
             client_name: None,
             client_version: None,
@@ -275,7 +271,7 @@ mod tests {
             provider: Some("anthropic".into()),
         };
 
-        let mut resp = McpSetContextResponse::from(&ctx);
+        let mut resp = set_context_response(&ctx, "user:sam");
         resp.mutated = true;
         let result = resp.into_call_tool_result();
         assert_eq!(result.is_error, Some(false));
@@ -293,8 +289,8 @@ mod tests {
 
     #[test]
     fn test_set_context_response_unchanged_text() {
-        let ctx = SessionContext::new(None, "user:sam".into());
-        let resp = McpSetContextResponse::from(&ctx);
+        let ctx = SessionContext::new(None);
+        let resp = set_context_response(&ctx, "user:sam");
         let result = resp.into_call_tool_result();
 
         assert!(

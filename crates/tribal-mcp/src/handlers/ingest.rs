@@ -10,7 +10,7 @@ use sqlx::PgConnection;
 use tokio::sync::watch;
 use tribal_common::JobWatchEntry;
 use tribal_db::{DbError, NewJob, NewTask};
-use tribal_domain::{JobId, JobState, McpErrorCode, ProjectId, TaskType};
+use tribal_domain::{JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType};
 
 use super::common::begin_transaction;
 use crate::{
@@ -33,7 +33,7 @@ const NO_PROJECT: &str =
 /// Domain-level parameters for the ingest service function.
 struct IngestParams {
     project_id: ProjectId,
-    principal_key: String,
+    principal_id: PrincipalId,
     source_context: serde_json::Value,
     content: String,
     active_prompts: ActivePromptVersions,
@@ -50,22 +50,12 @@ struct IngestResult {
 enum IngestError {
     #[error(transparent)]
     Db(#[from] DbError),
-
-    #[error("principal not found for key: {principal_key}")]
-    PrincipalNotFound { principal_key: String },
 }
 
 impl IntoMcpError for IngestError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
-            Self::PrincipalNotFound { principal_key } => McpToolError {
-                code: McpErrorCode::FailedPrecondition,
-                message: format!(
-                    "session principal_key \"{principal_key}\" does not resolve to a known principal"
-                ),
-                details: serde_json::json!({}),
-            },
         }
     }
 }
@@ -87,8 +77,8 @@ impl TribalServerHandler {
     /// Core logic for `tribal_ingest`, separated from the outer handler
     /// so it can be tested without a `Peer<RoleServer>`.
     ///
-    /// Parses the request, reads session state (project, principal key,
-    /// actor fields), resolves a project ID, builds source context, then
+    /// Parses the request, reads session state (project, actor fields),
+    /// resolves a project ID, builds source context, then
     /// opens a transaction and delegates to [`execute_ingest`] for all
     /// domain logic. Domain errors are returned as error `CallToolResult`
     /// values via `IntoMcpError` / `IntoCallToolResult`. Only
@@ -102,11 +92,10 @@ impl TribalServerHandler {
         let request: McpIngestRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
-        let (session_project_id, principal_key, actor_provider, actor_model) = {
+        let (session_project_id, actor_provider, actor_model) = {
             let guard = self.session.read().await;
             (
                 guard.project.as_ref().map(|p| p.id),
-                guard.principal_key.clone(),
                 guard.actor.provider.clone(),
                 guard.actor.model.clone(),
             )
@@ -130,6 +119,8 @@ impl TribalServerHandler {
             },
         };
 
+        let principal_id = self.auth.principal().principal_id();
+
         let source_context =
             build_source_context(actor_provider.as_deref(), actor_model.as_deref());
 
@@ -137,7 +128,7 @@ impl TribalServerHandler {
 
         let ingest_params = IngestParams {
             project_id,
-            principal_key,
+            principal_id,
             source_context,
             content: request.content,
             active_prompts,
@@ -198,8 +189,8 @@ fn build_source_context(provider: Option<&str>, model: Option<&str>) -> serde_js
 // Service function
 // ---------------------------------------------------------------------------
 
-/// Executes the ingest operation: verifies the project, resolves the
-/// principal, creates a job and its initial extraction task.
+/// Executes the ingest operation: verifies the project, creates a job
+/// and its initial extraction task.
 ///
 /// All inputs and outputs are domain types — no MCP types cross this
 /// boundary.
@@ -213,17 +204,9 @@ async fn execute_ingest(
         .find_by_id(conn, params.project_id)
         .await?;
 
-    let principal = repositories
-        .principal
-        .find_by_key(conn, &params.principal_key)
-        .await?
-        .ok_or_else(|| IngestError::PrincipalNotFound {
-            principal_key: params.principal_key.clone(),
-        })?;
-
     let new_job = NewJob::builder()
         .project_id(params.project_id)
-        .principal_id(principal.id())
+        .principal_id(params.principal_id)
         .source_context(params.source_context)
         .raw_input(params.content)
         .extraction_system_prompt_version_id(
@@ -259,8 +242,8 @@ mod tests {
     use rmcp::model::ErrorCode;
     use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId};
     use tribal_test_utils::{
-        MockJobRepository, MockPrincipalRepository, MockProjectRepository, MockTaskRepository,
-        a_job, a_principal, a_project, a_task, test_context,
+        MockJobRepository, MockProjectRepository, MockTaskRepository, a_job, a_project, a_task,
+        test_context,
     };
 
     use super::*;
@@ -296,33 +279,11 @@ mod tests {
     fn default_params() -> IngestParams {
         IngestParams {
             project_id: ProjectId::new(),
-            principal_key: "user:test".into(),
+            principal_id: PrincipalId::new(),
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "some knowledge".into(),
             active_prompts: test_active_prompt_versions(),
         }
-    }
-
-    fn repos_for_ingest(
-        project: tribal_domain::Project,
-        principal: tribal_domain::Principal,
-        job: tribal_domain::Job,
-        task: tribal_domain::Task,
-    ) -> ConnectionRepositories {
-        let mut repos = test_repositories();
-        repos.project = Arc::new(
-            MockProjectRepository::builder()
-                .on_find_by_id(project, None)
-                .build(),
-        );
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(Some(principal), None)
-                .build(),
-        );
-        repos.job = Arc::new(MockJobRepository::builder().on_insert(job, None).build());
-        repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
-        repos
     }
 
     // -- Adapter: validation -----------------------------------------------
@@ -401,16 +362,27 @@ mod tests {
         let proj_id = ProjectId::new();
         let prin_id = PrincipalId::new();
         let project = a_project().id(proj_id).build();
-        let principal = a_principal().id(prin_id).build();
         let job = a_job().project_id(proj_id).principal_id(prin_id).build();
         let task = a_task().job_id(job.id()).build();
         let expected_job_id = job.id();
 
-        let repos = repos_for_ingest(project, principal, job, task);
+        let mut repos = test_repositories();
+        repos.project = Arc::new(
+            MockProjectRepository::builder()
+                .on_find_by_id(project, None)
+                .build(),
+        );
+        repos.job = Arc::new(
+            MockJobRepository::builder()
+                .when_insert(move |new_job| new_job.principal_id == prin_id)
+                .respond_with(job.clone(), None)
+                .build(),
+        );
+        repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
 
         let params = IngestParams {
             project_id: proj_id,
-            principal_key: "user:test".into(),
+            principal_id: prin_id,
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "learned something".into(),
             active_prompts: test_active_prompt_versions(),
@@ -425,7 +397,6 @@ mod tests {
         let proj_id = ProjectId::new();
         let prin_id = PrincipalId::new();
         let project = a_project().id(proj_id).build();
-        let principal = a_principal().id(prin_id).build();
         let job = a_job().project_id(proj_id).principal_id(prin_id).build();
         let task = a_task().job_id(job.id()).build();
 
@@ -460,17 +431,12 @@ mod tests {
                 .on_find_by_id(project, None)
                 .build(),
         );
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(Some(principal), None)
-                .build(),
-        );
         repos.job = Arc::new(job_mock);
         repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
 
         let params = IngestParams {
             project_id: proj_id,
-            principal_key: "user:test".into(),
+            principal_id: prin_id,
             source_context: serde_json::json!({}),
             content: "test content".into(),
             active_prompts: prompts,
@@ -485,7 +451,6 @@ mod tests {
         let proj_id = ProjectId::new();
         let prin_id = PrincipalId::new();
         let project = a_project().id(proj_id).build();
-        let principal = a_principal().id(prin_id).build();
         let job = a_job().project_id(proj_id).principal_id(prin_id).build();
         let task = a_task().job_id(job.id()).build();
 
@@ -507,17 +472,12 @@ mod tests {
                 .on_find_by_id(project, None)
                 .build(),
         );
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(Some(principal), None)
-                .build(),
-        );
         repos.job = Arc::new(job_mock);
         repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
 
         let params = IngestParams {
             project_id: proj_id,
-            principal_key: "user:test".into(),
+            principal_id: prin_id,
             source_context: source_ctx,
             content: "test content".into(),
             active_prompts: test_active_prompt_versions(),
@@ -549,36 +509,6 @@ mod tests {
 
         assert!(
             matches!(err, IngestError::Db(DbError::NotFound { entity, .. }) if entity == "project")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_execute_ingest_principal_not_found() {
-        let proj_id = ProjectId::new();
-        let project = a_project().id(proj_id).build();
-
-        let mut repos = test_repositories();
-        repos.project = Arc::new(
-            MockProjectRepository::builder()
-                .on_find_by_id(project, None)
-                .build(),
-        );
-        repos.principal = Arc::new(
-            MockPrincipalRepository::builder()
-                .on_find_by_key(None, None)
-                .build(),
-        );
-
-        let params = IngestParams {
-            project_id: proj_id,
-            principal_key: "user:unknown".into(),
-            ..default_params()
-        };
-
-        let err = call_execute(&repos, params).await.expect_err("should fail");
-
-        assert!(
-            matches!(err, IngestError::PrincipalNotFound { principal_key } if principal_key == "user:unknown")
         );
     }
 

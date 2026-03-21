@@ -6,18 +6,19 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
-use tribal_domain::{ProjectId, PromptVersionId};
+use tribal_domain::{PrincipalId, ProjectId, PromptVersionId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
     MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
     MockRelationRepository, MockRetrievalFeedbackRepository, MockStandingRepository,
-    MockTaskRepository, MockTriageResultRepository, lazy_pool,
+    MockTaskRepository, MockTriageResultRepository, TEST_PRINCIPAL_KEY, lazy_pool,
 };
 use typed_builder::TypedBuilder;
 
 use crate::{
     app_state::AppState,
+    auth::{AuthContext, AuthenticatedPrincipal},
     config::HandlerConfig,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
     session::{SessionContext, SessionProject},
@@ -68,6 +69,9 @@ pub(crate) struct TestHandler {
     #[builder(default = lazy_pool())]
     pool: PgPool,
 
+    #[builder(default = default_auth_context())]
+    auth: AuthContext,
+
     #[builder(default = test_repositories())]
     repositories: ConnectionRepositories,
 
@@ -77,7 +81,7 @@ pub(crate) struct TestHandler {
     #[builder(default = default_prompt_versions())]
     active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
 
-    #[builder(default = SessionContext::new(None, "user:test".into()))]
+    #[builder(default = SessionContext::new(None))]
     session: SessionContext,
 
     #[builder(default)]
@@ -116,7 +120,7 @@ impl From<TestHandler> for TribalServerHandler {
                 .job_state_txs(th.job_state_txs)
                 .build(),
         );
-        Self::new(state, th.repositories, th.session, th.config)
+        Self::new(state, th.auth, th.repositories, th.session, th.config)
     }
 }
 
@@ -132,7 +136,14 @@ pub(crate) fn session_with_project() -> SessionContext {
             .parse()
             .expect("valid test git remote"),
     };
-    SessionContext::new(Some(project), "user:test".into())
+    SessionContext::new(Some(project))
+}
+
+fn default_auth_context() -> AuthContext {
+    AuthContext::new(AuthenticatedPrincipal::for_test(
+        PrincipalId::new(),
+        TEST_PRINCIPAL_KEY,
+    ))
 }
 
 fn default_embedding_provider() -> Arc<dyn EmbeddingProvider> {

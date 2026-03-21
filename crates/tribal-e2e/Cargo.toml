@@ -22,6 +22,6 @@ tribal-config.workspace = true
 tribal-db.workspace = true
 tribal-domain.workspace = true
 tribal-inference = { workspace = true, features = ["test-helpers"] }
-tribal-mcp.workspace = true
+tribal-mcp = { workspace = true, features = ["test-helpers"] }
 tribal-server.workspace = true
 tribal-test-utils.workspace = true
