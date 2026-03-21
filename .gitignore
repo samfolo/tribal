@@ -4,12 +4,9 @@
 # Environment
 .env
 
-# Private design documents
-docs/archive/
-docs/draft/
-docs/internal/
-docs/notes/
-docs/reviews/
+# Private context (symlinked from tribal-context)
+.claude
+docs
 
 # OS-specific
 .DS_Store
