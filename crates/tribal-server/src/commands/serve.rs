@@ -76,13 +76,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         let signal_fired = tokio::select! {
             result = &mut transport_handle => {
                 cancellation_token.cancel();
-                return match result {
-                    Ok(Err(error)) => {
-                        tracing::error!(%error, "transport failed");
-                        Some(error)
-                    }
-                    _ => None,
-                };
+                return resolve_transport_result(result, "transport failed");
             }
             trigger = await_shutdown_trigger(&cancellation_token) => trigger,
         };
@@ -90,13 +84,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         handle_shutdown_trigger(signal_fired, &cancellation_token);
 
         // Let the transport drain active connections.
-        match transport_handle.await {
-            Ok(Err(error)) => {
-                tracing::error!(%error, "transport failed during shutdown");
-                Some(error)
-            }
-            _ => None,
-        }
+        resolve_transport_result(transport_handle.await, "transport failed during shutdown")
     });
 
     // Prefer the transport error over the shutdown result — a bind
@@ -158,6 +146,36 @@ fn handle_shutdown_trigger(
                 "shutdown trigger failed; cancelling",
             );
             cancellation_token.cancel();
+        }
+    }
+}
+
+/// Converts a transport task's `JoinHandle` result into an optional
+/// `AppError`.
+///
+/// If the task panicked, the panic is propagated via
+/// [`std::panic::resume_unwind`] — a transport panic is fatal and must
+/// not be silently swallowed.
+///
+/// # Panics
+///
+/// Re-panics if the transport task panicked.
+fn resolve_transport_result(
+    result: Result<Result<(), AppError>, tokio::task::JoinError>,
+    context: &str,
+) -> Option<AppError> {
+    match result {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => {
+            tracing::error!(%error, "{context}");
+            Some(error)
+        }
+        Err(join_error) => {
+            if join_error.is_panic() {
+                std::panic::resume_unwind(join_error.into_panic());
+            }
+            tracing::error!(%join_error, "{context}: task aborted");
+            None
         }
     }
 }

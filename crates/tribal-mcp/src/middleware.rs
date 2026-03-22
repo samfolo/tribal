@@ -131,10 +131,12 @@ fn extract_bearer_token(request: &axum::extract::Request) -> Option<&str> {
         .to_str()
         .ok()?;
 
-    if value.len() > BEARER_PREFIX.len()
-        && value[..BEARER_PREFIX.len()].eq_ignore_ascii_case(BEARER_PREFIX)
-    {
-        Some(&value[BEARER_PREFIX.len()..])
+    let prefix_len = BEARER_PREFIX.len();
+    let prefix = value.get(..prefix_len)?;
+    let token = value.get(prefix_len..)?;
+
+    if !token.is_empty() && prefix.eq_ignore_ascii_case(BEARER_PREFIX) {
+        Some(token)
     } else {
         None
     }
