@@ -68,14 +68,19 @@ impl TribalServerHandler {
     pub(crate) async fn handle_feedback(
         &self,
         params: serde_json::Value,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.apply_feedback(params).await
+        let principal = self.resolve_principal(&context)?;
+        self.apply_feedback(params, principal.principal_id()).await
     }
 
     /// Core logic for `tribal_feedback`, separated from the outer handler
     /// so it can be tested without a `Peer<RoleServer>`.
-    async fn apply_feedback(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
+    async fn apply_feedback(
+        &self,
+        params: serde_json::Value,
+        principal_id: PrincipalId,
+    ) -> Result<CallToolResult, McpError> {
         let request: McpFeedbackRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
@@ -153,10 +158,6 @@ impl TribalServerHandler {
             }
             .into_call_tool_result());
         };
-
-        // -- Identity ---------------------------------------------------------
-
-        let principal_id = self.auth.principal().principal_id();
 
         // -- Embedding model --------------------------------------------------
 

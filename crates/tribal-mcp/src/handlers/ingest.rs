@@ -92,7 +92,7 @@ impl TribalServerHandler {
     async fn apply_ingest(
         &self,
         params: serde_json::Value,
-        principal_id: tribal_domain::PrincipalId,
+        principal_id: PrincipalId,
     ) -> Result<CallToolResult, McpError> {
         let request: McpIngestRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
