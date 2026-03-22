@@ -69,9 +69,10 @@ impl TribalServerHandler {
     pub(crate) async fn handle_ingest(
         &self,
         params: serde_json::Value,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.apply_ingest(params).await
+        let principal = self.resolve_principal(&context)?;
+        self.apply_ingest(params, principal.principal_id()).await
     }
 
     /// Core logic for `tribal_ingest`, separated from the outer handler
@@ -88,7 +89,11 @@ impl TribalServerHandler {
     /// watch channel entry is inserted. If the process crashes between
     /// the two, subsequent `wait_seconds` requests find no entry and
     /// fall through to DB polling.
-    async fn apply_ingest(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
+    async fn apply_ingest(
+        &self,
+        params: serde_json::Value,
+        principal_id: tribal_domain::PrincipalId,
+    ) -> Result<CallToolResult, McpError> {
         let request: McpIngestRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
@@ -118,8 +123,6 @@ impl TribalServerHandler {
                 }
             },
         };
-
-        let principal_id = self.auth.principal().principal_id();
 
         let source_context =
             build_source_context(actor_provider.as_deref(), actor_model.as_deref());
