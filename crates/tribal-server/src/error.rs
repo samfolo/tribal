@@ -210,7 +210,6 @@ pub enum AppError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-
     /// Setup I/O operation failed (directory creation, config file write).
     #[error("setup I/O failed: {context}")]
     SetupIo {

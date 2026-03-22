@@ -72,7 +72,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         let signal_fired = tokio::select! {
             result = &mut transport_handle => {
                 cancellation_token.cancel();
-                return resolve_transport_result(result, "transport failed");
+                return resolve_transport_result(result, transport, "transport failed");
             }
             trigger = await_shutdown_trigger(&cancellation_token) => trigger,
         };
@@ -80,7 +80,11 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         handle_shutdown_trigger(signal_fired, &cancellation_token);
 
         // Let the transport drain active connections.
-        resolve_transport_result(transport_handle.await, "transport failed during shutdown")
+        resolve_transport_result(
+            transport_handle.await,
+            transport,
+            "transport failed during shutdown",
+        )
     });
 
     // Prefer the transport error over the shutdown result — a bind
@@ -116,7 +120,16 @@ async fn run_transport(
         TransportKind::Stdio => {
             transport::run_stdio_transport(&state, handler_config, cancellation_token).await
         }
-        TransportKind::Sse => Err(AppError::TransportUnsupported { transport }),
+        TransportKind::Sse => {
+            transport::run_sse_transport(
+                &state,
+                &server_config,
+                handler_config,
+                cancellation_token,
+                None,
+            )
+            .await
+        }
     }
 }
 
@@ -158,6 +171,7 @@ fn handle_shutdown_trigger(
 /// Re-panics if the transport task panicked.
 fn resolve_transport_result(
     result: Result<Result<(), AppError>, tokio::task::JoinError>,
+    transport: TransportKind,
     context: &str,
 ) -> Option<AppError> {
     match result {
@@ -172,6 +186,7 @@ fn resolve_transport_result(
             }
             tracing::error!(%join_error, "{context}: task aborted");
             Some(AppError::TransportServe {
+                transport,
                 source: io::Error::other(join_error.to_string()),
             })
         }
@@ -264,15 +279,16 @@ mod tests {
 
     #[test]
     fn test_resolve_transport_result_ok_ok_returns_none() {
-        assert!(resolve_transport_result(Ok(Ok(())), "test").is_none());
+        assert!(resolve_transport_result(Ok(Ok(())), TransportKind::Http, "test").is_none());
     }
 
     #[test]
     fn test_resolve_transport_result_ok_err_returns_error() {
         let app_error = AppError::TransportServe {
+            transport: TransportKind::Http,
             source: io::Error::other("test"),
         };
-        let result = resolve_transport_result(Ok(Err(app_error)), "test");
+        let result = resolve_transport_result(Ok(Err(app_error)), TransportKind::Http, "test");
         assert!(result.is_some());
     }
 
@@ -282,7 +298,7 @@ mod tests {
         handle.abort();
         let join_result = handle.await;
 
-        let result = resolve_transport_result(join_result, "test");
+        let result = resolve_transport_result(join_result, TransportKind::Http, "test");
         assert!(result.is_some());
     }
 
@@ -294,6 +310,6 @@ mod tests {
         });
         let join_result = handle.await;
 
-        resolve_transport_result(join_result, "test");
+        resolve_transport_result(join_result, TransportKind::Http, "test");
     }
 }
