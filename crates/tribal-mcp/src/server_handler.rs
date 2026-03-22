@@ -193,7 +193,7 @@ impl TribalServerHandler {
     ///
     /// Adding a new transport requires no changes here — it either
     /// injects into request extensions or passes
-    /// [`TransportAuthStrategy::Resolved`] at construction time.
+    /// [`TransportAuthStrategy::AtCreation`] at construction time.
     pub(crate) fn resolve_principal<'a>(
         &'a self,
         context: &'a RequestContext<RoleServer>,

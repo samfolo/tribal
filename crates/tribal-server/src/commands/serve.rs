@@ -5,6 +5,8 @@
 //! bootstrap and worker startup, then blocks on OS signal handling until
 //! shutdown.
 
+use std::sync::Arc;
+
 #[cfg(not(unix))]
 use tokio::signal;
 #[cfg(unix)]
@@ -54,45 +56,73 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     tracing::info!(%transport, "startup sequence complete");
 
     // -- Transport + signal handling -----------------------------------------
-    // Races the transport future against OS signals. Whichever completes
-    // first triggers the cancellation token, causing the other to shut
-    // down.
-    handle.main_runtime().block_on(async {
-        tokio::select! {
-            result = run_transport(
-                transport,
-                &handle,
-                handler_config,
-                cancellation_token.clone(),
-                &config.server,
-            ) => {
-                if let Err(ref error) = result {
-                    tracing::error!(%error, "transport failed");
-                }
+    // The transport runs in a spawned task so that OS signal handling
+    // can cancel the token without dropping the transport future.  This
+    // lets axum's graceful shutdown drain active connections before the
+    // server exits.
+    let transport_error: Option<AppError> = handle.main_runtime().block_on(async {
+        let mut transport_handle = tokio::spawn(run_transport(
+            transport,
+            Arc::clone(handle.state()),
+            handler_config,
+            cancellation_token.clone(),
+            config.server.clone(),
+        ));
+
+        // Wait for the transport to exit or an OS signal to arrive.
+        // When the signal branch wins, the transport task continues
+        // running — it observes the cancellation token and shuts down
+        // gracefully rather than being dropped mid-flight.
+        let signal_fired = tokio::select! {
+            result = &mut transport_handle => {
                 cancellation_token.cancel();
+                return match result {
+                    Ok(Err(error)) => {
+                        tracing::error!(%error, "transport failed");
+                        Some(error)
+                    }
+                    _ => None,
+                };
             }
-            trigger = await_shutdown_trigger(&cancellation_token) => {
-                handle_shutdown_trigger(trigger, &cancellation_token);
+            trigger = await_shutdown_trigger(&cancellation_token) => trigger,
+        };
+
+        handle_shutdown_trigger(signal_fired, &cancellation_token);
+
+        // Let the transport drain active connections.
+        match transport_handle.await {
+            Ok(Err(error)) => {
+                tracing::error!(%error, "transport failed during shutdown");
+                Some(error)
             }
+            _ => None,
         }
     });
 
-    handle.shutdown()
+    // Prefer the transport error over the shutdown result — a bind
+    // failure is more informative than a clean worker shutdown.
+    let shutdown_result = handle.shutdown();
+    match transport_error {
+        Some(err) => Err(err),
+        None => shutdown_result,
+    }
 }
 
 /// Dispatches to the appropriate transport runner.
+///
+/// Takes owned values because the future is spawned as a task.
 async fn run_transport(
     transport: TransportKind,
-    handle: &orchestration::ServerHandle,
+    state: Arc<tribal_mcp::AppState>,
     handler_config: HandlerConfig,
     cancellation_token: CancellationToken,
-    server_config: &tribal_config::ServerConfig,
+    server_config: tribal_config::ServerConfig,
 ) -> Result<(), AppError> {
     match transport {
         TransportKind::Http => {
             transport::run_http_transport(
-                handle.state(),
-                server_config,
+                &state,
+                &server_config,
                 handler_config,
                 cancellation_token,
                 None,
@@ -100,7 +130,7 @@ async fn run_transport(
             .await
         }
         TransportKind::Stdio => {
-            transport::run_stdio_transport(handle.state(), handler_config, cancellation_token).await
+            transport::run_stdio_transport(&state, handler_config, cancellation_token).await
         }
         TransportKind::Sse => Err(AppError::TransportUnsupported { transport }),
     }

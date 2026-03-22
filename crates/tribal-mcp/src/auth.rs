@@ -211,7 +211,7 @@ impl AuthContext {
 ///
 /// New transports pick the variant that matches their auth model without
 /// requiring changes to handler code.  Per-connection transports (e.g.
-/// stdio) supply [`Resolved`](Self::Resolved); per-request transports
+/// stdio) supply [`AtCreation`](Self::AtCreation); per-request transports
 /// (e.g. Streamable HTTP) supply [`PerRequest`](Self::PerRequest) and
 /// inject the principal into request context extensions via middleware.
 pub enum TransportAuthStrategy {
