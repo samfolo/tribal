@@ -314,6 +314,7 @@ impl From<ProviderRegistryError> for AppError {
 #[cfg(test)]
 mod tests {
     use clap::error::ErrorKind;
+    use tribal_config::DEFAULT_BIND_ADDRESS;
 
     use super::*;
 
@@ -469,5 +470,70 @@ mod tests {
     fn test_exit_code_default() {
         let err = AppError::FirstRunRequired;
         assert_eq!(err.exit_code(), 1);
+    }
+
+    // -- transport variants -------------------------------------------------
+
+    #[test]
+    fn test_display_transport_bind() {
+        let addr = DEFAULT_BIND_ADDRESS.parse().unwrap();
+        let err = AppError::TransportBind {
+            address: addr,
+            source: io::Error::other("test"),
+        };
+        assert!(
+            err.to_string().contains("127.0.0.1:8725"),
+            "unexpected display: {err}",
+        );
+    }
+
+    #[test]
+    fn test_display_transport_serve() {
+        let err = AppError::TransportServe {
+            source: io::Error::other("test"),
+        };
+        assert_eq!(err.to_string(), "HTTP transport serving error");
+    }
+
+    #[test]
+    fn test_display_transport_stdio() {
+        let err = AppError::TransportStdio {
+            source: Box::new(io::Error::other("test")),
+        };
+        assert_eq!(err.to_string(), "stdio transport failed");
+    }
+
+    #[test]
+    fn test_display_transport_unsupported() {
+        let err = AppError::TransportUnsupported {
+            transport: TransportKind::Sse,
+        };
+        assert!(
+            err.to_string().contains("not yet implemented"),
+            "unexpected display: {err}",
+        );
+    }
+
+    #[test]
+    fn test_exit_code_transport_defaults_to_1() {
+        let addr = DEFAULT_BIND_ADDRESS.parse().unwrap();
+        let variants: Vec<AppError> = vec![
+            AppError::TransportBind {
+                address: addr,
+                source: io::Error::other("test"),
+            },
+            AppError::TransportServe {
+                source: io::Error::other("test"),
+            },
+            AppError::TransportStdio {
+                source: Box::new(io::Error::other("test")),
+            },
+            AppError::TransportUnsupported {
+                transport: TransportKind::Sse,
+            },
+        ];
+        for err in &variants {
+            assert_eq!(err.exit_code(), 1, "unexpected exit code for: {err}");
+        }
     }
 }

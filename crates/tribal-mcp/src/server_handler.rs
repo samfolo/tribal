@@ -396,14 +396,16 @@ impl ServerHandler for TribalServerHandler {
 mod tests {
     use rmcp::{
         handler::server::ServerHandler,
-        model::{ErrorCode, ResourceContents},
+        model::{ErrorCode, Extensions as RmcpExtensions, RequestId, ResourceContents},
+        service::{RequestContext, RoleServer, serve_directly_with_ct},
     };
+    use tokio_util::sync::CancellationToken;
     use tribal_domain::PrincipalId;
     use tribal_test_utils::TEST_PRINCIPAL_KEY;
 
     use super::*;
     use crate::{
-        auth::AuthenticatedPrincipal,
+        auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy},
         session::SESSION_RESOURCE_URI,
         test_utils::{TestHandler, session_with_project},
     };
@@ -586,5 +588,85 @@ mod tests {
             .expect_err("unknown URI must return error");
 
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    // -- resolve_principal --------------------------------------------------
+
+    /// Builds a [`RequestContext`] suitable for unit tests.
+    ///
+    /// Uses a disposable in-memory transport to obtain a valid
+    /// [`Peer<RoleServer>`], which cannot be constructed directly
+    /// because `Peer::new` is `pub(crate)` in `rmcp`.
+    fn test_request_context(extensions: RmcpExtensions) -> RequestContext<RoleServer> {
+        let dummy = TestHandler::builder().build();
+        let (_, server) = tokio::io::duplex(1);
+        let (read, write) = tokio::io::split(server);
+        let ct = CancellationToken::new();
+        let running = serve_directly_with_ct(dummy, (read, write), None, ct.clone());
+        let peer = running.peer().clone();
+        ct.cancel();
+
+        RequestContext {
+            ct: CancellationToken::new(),
+            id: RequestId::Number(1),
+            meta: Default::default(),
+            extensions,
+            peer,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_principal_from_auth_context() {
+        let handler = TestHandler::builder().build();
+        let context = test_request_context(RmcpExtensions::new());
+
+        let principal = handler
+            .resolve_principal(&context)
+            .expect("resolve_principal must succeed with AtCreation strategy");
+
+        assert_eq!(principal.principal_key(), TEST_PRINCIPAL_KEY);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_principal_from_http_extensions() {
+        let mut handler = TestHandler::builder().build();
+        handler.auth_strategy = TransportAuthStrategy::PerRequest;
+
+        let principal = AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            "user:http-test",
+            tribal_domain::full_access_scopes(),
+        );
+        let (mut parts, _) = http::Request::builder().body(()).unwrap().into_parts();
+        parts.extensions.insert(principal);
+
+        let mut extensions = RmcpExtensions::new();
+        extensions.insert(parts);
+
+        let context = test_request_context(extensions);
+
+        let resolved = handler
+            .resolve_principal(&context)
+            .expect("resolve_principal must succeed with HTTP extensions");
+
+        assert_eq!(resolved.principal_key(), "user:http-test");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_principal_missing_both_returns_internal_error() {
+        let mut handler = TestHandler::builder().build();
+        handler.auth_strategy = TransportAuthStrategy::PerRequest;
+
+        let context = test_request_context(RmcpExtensions::new());
+
+        let err = handler
+            .resolve_principal(&context)
+            .expect_err("resolve_principal must fail when neither source provides a principal");
+
+        assert!(matches!(err.code, ErrorCode::INTERNAL_ERROR));
+        assert!(
+            err.message.contains(MISSING_PRINCIPAL_CONTEXT),
+            "error message must contain the expected constant",
+        );
     }
 }
