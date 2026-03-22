@@ -12,7 +12,7 @@ use reqwest::StatusCode;
 use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
 use tribal_common::sha256_hex;
-use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
+use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ProviderKind, ServerConfig, WorkerConfig};
 use tribal_db::{
     AuthTokenRepository, NewAuthToken, NewPrincipal, PgAuthTokenRepository, PgPrincipalRepository,
     PrincipalRepository,
@@ -52,17 +52,17 @@ const RAW_TOKEN: &str = "http-integration-test-token";
 /// providers.  Only the pool and server config are exercised — the
 /// providers exist solely to satisfy the builder.
 fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState> {
-    let provider_kind = "ollama";
+    let provider_kind = ProviderKind::default().to_string();
 
     let embedding_key = tribal_inference::ProviderKey::new(
-        provider_kind,
+        &provider_kind,
         DEFAULT_OLLAMA_BASE_URL,
         RequestClass::Embedding,
     )
     .expect("test embedding key");
 
     let inference_key = tribal_inference::ProviderKey::new(
-        provider_kind,
+        &provider_kind,
         DEFAULT_OLLAMA_BASE_URL,
         RequestClass::Inference,
     )

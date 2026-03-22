@@ -208,7 +208,7 @@ impl TribalServerHandler {
         }
 
         // Per-connection path: principal resolved at handler creation.
-        if let TransportAuthStrategy::AtCreation(ref auth) = self.auth_strategy {
+        if let TransportAuthStrategy::AtCreation(auth) = &self.auth_strategy {
             return Ok(auth.principal());
         }
 
@@ -311,8 +311,8 @@ impl ServerHandler for TribalServerHandler {
         // be checked here.  For per-connection transports, filter by
         // scopes; for per-request transports, return the tool
         // unconditionally — call_tool performs the authoritative check.
-        match self.auth_strategy {
-            TransportAuthStrategy::AtCreation(ref auth) => {
+        match &self.auth_strategy {
+            TransportAuthStrategy::AtCreation(auth) => {
                 let scopes = auth.principal().scopes();
                 PARSED_TOOLS
                     .iter()

@@ -286,21 +286,49 @@ mod tests {
         assert_eq!(json["message"], DISPLAY_MISSING_TOKEN);
     }
 
-    #[tokio::test]
-    async fn test_lowercase_bearer_scheme_accepted() {
-        let app = test_app(default_state());
+    #[test]
+    fn test_extract_bearer_token_case_insensitive() {
         let request = Request::builder()
-            .uri("/test")
-            .header(header::AUTHORIZATION, "bearer some-token")
+            .header(header::AUTHORIZATION, "bearer my-token")
             .body(Body::empty())
             .unwrap();
+        assert_eq!(extract_bearer_token(&request), Some("my-token"));
 
-        let response = app.oneshot(request).await.unwrap();
+        let request = Request::builder()
+            .header(header::AUTHORIZATION, "BEARER my-token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_bearer_token(&request), Some("my-token"));
 
-        // If the scheme is recognised, the middleware proceeds to pool
-        // acquire (which fails with lazy_pool → 503).  A 401 with
-        // "missing bearer token" would mean the scheme was rejected.
-        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+        let request = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer my-token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_bearer_token(&request), Some("my-token"));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_rejects_non_bearer() {
+        let request = Request::builder()
+            .header(header::AUTHORIZATION, "Basic abc123")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_bearer_token(&request), None);
+    }
+
+    #[test]
+    fn test_extract_bearer_token_rejects_missing_header() {
+        let request = Request::builder().body(Body::empty()).unwrap();
+        assert_eq!(extract_bearer_token(&request), None);
+    }
+
+    #[test]
+    fn test_extract_bearer_token_rejects_bare_scheme() {
+        let request = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_bearer_token(&request), None);
     }
 
     #[tokio::test]
