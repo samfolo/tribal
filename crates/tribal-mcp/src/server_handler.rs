@@ -307,10 +307,13 @@ impl ServerHandler for TribalServerHandler {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        // get_tool receives no RequestContext, so per-request auth cannot
-        // be checked here.  For per-connection transports, filter by
-        // scopes; for per-request transports, return the tool
-        // unconditionally — call_tool performs the authoritative check.
+        // get_tool receives no RequestContext (rmcp trait limitation), so
+        // per-request scope filtering is impossible here.  For
+        // per-connection transports, filter by scopes; for per-request
+        // transports, return the tool unconditionally.  This exposes tool
+        // metadata but not tool execution — call_tool is the authoritative
+        // enforcement point with full scope checking.  Returning None
+        // would break tool discovery for HTTP clients.
         match &self.auth_strategy {
             TransportAuthStrategy::AtCreation(auth) => {
                 let scopes = auth.principal().scopes();

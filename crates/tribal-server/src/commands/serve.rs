@@ -5,7 +5,7 @@
 //! bootstrap and worker startup, then blocks on OS signal handling until
 //! shutdown.
 
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
 #[cfg(not(unix))]
 use tokio::signal;
@@ -175,7 +175,9 @@ fn resolve_transport_result(
                 std::panic::resume_unwind(join_error.into_panic());
             }
             tracing::error!(%join_error, "{context}: task aborted");
-            None
+            Some(AppError::TransportServe {
+                source: io::Error::other(join_error.to_string()),
+            })
         }
     }
 }
@@ -260,5 +262,42 @@ mod tests {
 
         let result = await_shutdown_trigger(&token).await;
         assert!(matches!(result, Ok(None)));
+    }
+
+    // -- resolve_transport_result -------------------------------------------
+
+    #[test]
+    fn test_resolve_transport_result_ok_ok_returns_none() {
+        assert!(resolve_transport_result(Ok(Ok(())), "test").is_none());
+    }
+
+    #[test]
+    fn test_resolve_transport_result_ok_err_returns_error() {
+        let app_error = AppError::TransportServe {
+            source: io::Error::other("test"),
+        };
+        let result = resolve_transport_result(Ok(Err(app_error)), "test");
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transport_result_aborted_task_returns_error() {
+        let handle = tokio::spawn(async { std::future::pending::<Result<(), AppError>>().await });
+        handle.abort();
+        let join_result = handle.await;
+
+        let result = resolve_transport_result(join_result, "test");
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "task panicked")]
+    async fn test_resolve_transport_result_panicked_task_repanics() {
+        let handle: tokio::task::JoinHandle<Result<(), AppError>> = tokio::spawn(async {
+            panic!("task panicked");
+        });
+        let join_result = handle.await;
+
+        resolve_transport_result(join_result, "test");
     }
 }
