@@ -144,7 +144,11 @@ fn extract_bearer_token(request: &axum::extract::Request) -> Option<&str> {
 fn auth_error_response(error: &AuthError) -> Response {
     match error {
         AuthError::DatabaseUnavailable { .. } => {
-            warn!(%error, "auth rejected: database unavailable");
+            warn!(
+                auth_failure_reason = AUTH_FAILURE_REASON_UNAVAILABLE,
+                %error,
+                "auth rejected: database unavailable",
+            );
             service_unavailable_response(DATABASE_UNAVAILABLE_MESSAGE)
         }
 

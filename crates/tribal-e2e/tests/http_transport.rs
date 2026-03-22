@@ -9,7 +9,10 @@ use std::{net::SocketAddr, sync::Arc};
 use chrono::{Duration, Utc};
 use dashmap::DashMap;
 use reqwest::StatusCode;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::RwLock,
+};
 use tokio_util::sync::CancellationToken;
 use tribal_common::sha256_hex;
 use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ProviderKind, ServerConfig, WorkerConfig};
@@ -171,10 +174,14 @@ async fn spawn_transport(state: &Arc<AppState>, ct: CancellationToken) -> Transp
         .await;
     });
 
-    // Allow the server to start accepting connections.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    TransportHandle { addr, ct, join }
+    // Wait until the server is accepting connections.
+    for _ in 0..50 {
+        if TcpStream::connect(addr).await.is_ok() {
+            return TransportHandle { addr, ct, join };
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("transport did not become ready within 500ms");
 }
 
 // ---------------------------------------------------------------------------
