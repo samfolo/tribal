@@ -27,7 +27,7 @@ use tribal_domain::{JobOutcome, PrincipalId, Project};
 use tribal_inference::RequestClass;
 use tribal_mcp::{
     AppState, AuthContext, AuthenticatedPrincipal, ConnectionRepositories, HandlerConfig,
-    SessionContext, SessionProject, TribalServerHandler,
+    SessionContext, SessionProject, TransportAuthStrategy, TribalServerHandler,
 };
 use tribal_server::{ServerHandle, start_server};
 use tribal_test_utils::{
@@ -720,7 +720,7 @@ impl TestHarness {
         let handler_config = HandlerConfig::default();
         let handler = TribalServerHandler::new(
             Arc::clone(&self.state),
-            auth,
+            TransportAuthStrategy::AtCreation(auth),
             repositories,
             session,
             handler_config,
@@ -814,7 +814,7 @@ async fn start_and_connect(
     let handler_config = HandlerConfig::default();
     let handler = TribalServerHandler::new(
         Arc::clone(&state),
-        auth,
+        TransportAuthStrategy::AtCreation(auth),
         repositories,
         session,
         handler_config,
