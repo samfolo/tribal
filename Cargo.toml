@@ -27,7 +27,10 @@ tokio = { version = "1", features = ["full"] }
 
 # HTTP framework
 axum = "0.8"
+bytes = "1"
 http = "1"
+http-body = "1"
+pin-project-lite = "0.2"
 tower = { version = "0.5", features = ["util"] }
 
 # Database
