@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use rmcp::{
+    model::{Extensions as RmcpExtensions, Meta, RequestId},
+    service::{RequestContext, RoleServer, serve_directly_with_ct},
+};
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -144,6 +148,44 @@ pub(crate) fn session_with_project() -> SessionContext {
     };
     SessionContext::new(Some(project))
 }
+
+// ---------------------------------------------------------------------------
+// test_request_context
+// ---------------------------------------------------------------------------
+
+/// Builds a [`RequestContext<RoleServer>`] with the given extensions.
+///
+/// `Peer::new` is `pub(crate)` in rmcp, so external crates cannot
+/// construct a `RequestContext` directly.  This helper works around that
+/// by spinning up a disposable handler over an in-memory duplex transport
+/// via [`serve_directly_with_ct`], cloning the `Peer` it produces, and
+/// immediately cancelling the service.
+///
+/// # Panics
+///
+/// Panics if the in-memory transport setup fails (should not happen in
+/// practice).
+pub(crate) fn test_request_context(extensions: RmcpExtensions) -> RequestContext<RoleServer> {
+    let dummy = TestHandler::builder().build();
+    let (_, server) = tokio::io::duplex(1);
+    let (read, write) = tokio::io::split(server);
+    let ct = CancellationToken::new();
+    let running = serve_directly_with_ct(dummy, (read, write), None, ct.clone());
+    let peer = running.peer().clone();
+    ct.cancel();
+
+    RequestContext {
+        ct: CancellationToken::new(),
+        id: RequestId::Number(1),
+        meta: Meta::default(),
+        extensions,
+        peer,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn default_auth_context() -> AuthContext {
     AuthContext::new(AuthenticatedPrincipal::for_test(

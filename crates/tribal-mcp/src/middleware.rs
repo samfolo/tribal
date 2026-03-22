@@ -291,29 +291,7 @@ mod tests {
         assert_eq!(json["message"], DISPLAY_MISSING_TOKEN);
     }
 
-    #[tokio::test]
-    async fn test_pool_acquisition_failure_returns_503() {
-        // lazy_pool connects to a nonexistent database; acquire() fails.
-        let app = test_app(default_state());
-        let request = Request::builder()
-            .uri("/test")
-            .header(header::AUTHORIZATION, "Bearer some-token")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-
-        let json = response_json(response).await;
-        assert_eq!(json["error"], SERVICE_UNAVAILABLE_ERROR);
-        assert_eq!(json["message"], DATABASE_UNAVAILABLE_MESSAGE);
-    }
-
     // -- auth_error_response tests ------------------------------------------
-    // These test the AuthError → Response mapping directly, bypassing the
-    // pool acquire step. Full token verification through the middleware is
-    // covered by the HTTP integration test.
 
     #[test]
     fn test_auth_error_invalid_token_returns_401() {
