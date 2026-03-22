@@ -232,22 +232,19 @@ async fn test_valid_bearer_token_passes_auth() {
         .post(format!("http://{}/mcp", transport.addr))
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {RAW_TOKEN}"))
+        .header("Accept", "text/event-stream, application/json")
         .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#)
         .send()
         .await
         .expect("HTTP request must succeed");
 
-    // A valid token passes the auth middleware.  The response must not
-    // be an auth rejection (401) or a database error (503).
-    assert_ne!(
-        response.status(),
-        StatusCode::UNAUTHORIZED,
-        "valid token must not be rejected by auth middleware",
-    );
-    assert_ne!(
-        response.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "database must be reachable",
+    // A valid token passes auth and reaches the MCP handler.  The
+    // StreamableHttpService returns 200 with an SSE stream containing
+    // the initialize response and assigns a session ID.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().contains_key("mcp-session-id"),
+        "initialize response must include a session ID",
     );
 
     transport.shutdown().await;
