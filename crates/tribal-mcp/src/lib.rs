@@ -10,6 +10,7 @@ mod error;
 mod format;
 mod handlers;
 mod mapping;
+mod middleware;
 mod polling;
 mod server_handler;
 mod session;
@@ -25,5 +26,6 @@ pub use auth::{
 };
 pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
+pub use middleware::{AuthMiddlewareState, require_bearer_auth};
 pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
 pub use session::{SessionActor, SessionContext, SessionProject};
