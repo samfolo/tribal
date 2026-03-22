@@ -150,7 +150,7 @@ impl TransportHandle {
     /// all pool connections are released before the next test.
     async fn shutdown(self) {
         self.ct.cancel();
-        let _ = self.join.await;
+        self.join.await.expect("transport task must not panic");
     }
 }
 
@@ -164,14 +164,15 @@ async fn spawn_transport(state: &Arc<AppState>, ct: CancellationToken) -> Transp
     let state = Arc::clone(state);
     let task_ct = ct.clone();
     let join = tokio::spawn(async move {
-        let _ = run_http_transport(
+        run_http_transport(
             &state,
             &ServerConfig::default(),
             HandlerConfig::default(),
             task_ct,
             Some(listener),
         )
-        .await;
+        .await
+        .expect("HTTP transport must not fail");
     });
 
     // Wait until the server is accepting connections.
