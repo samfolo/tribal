@@ -21,7 +21,7 @@ mod tools;
 pub use app_state::{AppState, ResolvedProject};
 pub use auth::{
     AuthContext, AuthError, AuthenticatedPrincipal, Authenticator, DISPLAY_INVALID_TOKEN,
-    DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED,
+    DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED, TransportAuthStrategy,
 };
 pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
