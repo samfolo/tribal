@@ -7,7 +7,7 @@
 use std::io;
 
 use thiserror::Error;
-use tribal_config::ConfigError;
+use tribal_config::{ConfigError, TransportKind};
 use tribal_db::DbError;
 use tribal_inference::ProviderRegistryError;
 use tribal_telemetry::TelemetryError;
@@ -178,6 +178,39 @@ pub enum AppError {
     ShutdownDeadlineExceeded {
         /// The configured deadline in milliseconds.
         deadline_ms: u128,
+    },
+
+    /// HTTP transport failed to bind the TCP listener.
+    #[error("failed to bind HTTP transport to {address}")]
+    TransportBind {
+        /// The socket address that could not be bound.
+        address: std::net::SocketAddr,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// HTTP transport encountered a fatal serving error.
+    #[error("HTTP transport serving error")]
+    TransportServe {
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// Stdio transport failed during operation.
+    #[error("stdio transport failed")]
+    TransportStdio {
+        /// The underlying error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// The requested transport is not yet implemented.
+    #[error("{transport} transport is not yet implemented")]
+    TransportUnsupported {
+        /// The unsupported transport kind.
+        transport: TransportKind,
     },
 
     /// Setup I/O operation failed (directory creation, config file write).
