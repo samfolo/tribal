@@ -286,7 +286,7 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let err = handler
-            .apply_feedback(serde_json::json!({"trace_id": 123}))
+            .apply_feedback(serde_json::json!({"trace_id": 123}), PrincipalId::new())
             .await
             .expect_err("should return Err(McpError) for malformed params");
 
@@ -299,12 +299,15 @@ mod tests {
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
-            .apply_feedback(serde_json::json!({
-                "trace_id": "",
-                "query_text": "auth patterns",
-                "returned_item_ids": [ki_id],
-                "rating": "positive",
-            }))
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "",
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [ki_id],
+                    "rating": "positive",
+                }),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -319,12 +322,15 @@ mod tests {
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
-            .apply_feedback(serde_json::json!({
-                "trace_id": "x".repeat(MAX_TRACE_ID_LEN + 1),
-                "query_text": "auth patterns",
-                "returned_item_ids": [ki_id],
-                "rating": "positive",
-            }))
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "x".repeat(MAX_TRACE_ID_LEN + 1),
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [ki_id],
+                    "rating": "positive",
+                }),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -339,12 +345,15 @@ mod tests {
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
-            .apply_feedback(serde_json::json!({
-                "trace_id": "00000000000000000000000000000001",
-                "query_text": "",
-                "returned_item_ids": [ki_id],
-                "rating": "positive",
-            }))
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "00000000000000000000000000000001",
+                    "query_text": "",
+                    "returned_item_ids": [ki_id],
+                    "rating": "positive",
+                }),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -358,12 +367,15 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let result = handler
-            .apply_feedback(serde_json::json!({
-                "trace_id": "00000000000000000000000000000001",
-                "query_text": "auth patterns",
-                "returned_item_ids": [],
-                "rating": "positive",
-            }))
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "00000000000000000000000000000001",
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [],
+                    "rating": "positive",
+                }),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -378,12 +390,15 @@ mod tests {
 
         let wrong_prefix_id = ProjectId::new().to_string();
         let result = handler
-            .apply_feedback(serde_json::json!({
-                "trace_id": "00000000000000000000000000000001",
-                "query_text": "auth patterns",
-                "returned_item_ids": [wrong_prefix_id],
-                "rating": "positive",
-            }))
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "00000000000000000000000000000001",
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [wrong_prefix_id],
+                    "rating": "positive",
+                }),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -399,13 +414,16 @@ mod tests {
         let ki_id = KnowledgeItemId::new().to_string();
         let wrong_prefix_id = ProjectId::new().to_string();
         let result = handler
-            .apply_feedback(serde_json::json!({
-                "trace_id": "00000000000000000000000000000001",
-                "query_text": "auth patterns",
-                "returned_item_ids": [ki_id],
-                "explored_anchor_ids": [wrong_prefix_id],
-                "rating": "positive",
-            }))
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "00000000000000000000000000000001",
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [ki_id],
+                    "explored_anchor_ids": [wrong_prefix_id],
+                    "rating": "positive",
+                }),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -420,12 +438,15 @@ mod tests {
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
-            .apply_feedback(serde_json::json!({
-                "trace_id": "00000000000000000000000000000001",
-                "query_text": "auth patterns",
-                "returned_item_ids": [ki_id],
-                "rating": "neutral",
-            }))
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "00000000000000000000000000000001",
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [ki_id],
+                    "rating": "neutral",
+                }),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -444,12 +465,15 @@ mod tests {
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
-            .apply_feedback(serde_json::json!({
-                "trace_id": "00000000000000000000000000000001",
-                "query_text": "auth patterns",
-                "returned_item_ids": [ki_id],
-                "rating": "positive",
-            }))
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "00000000000000000000000000000001",
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [ki_id],
+                    "rating": "positive",
+                }),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -476,12 +500,15 @@ mod tests {
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
-            .apply_feedback(serde_json::json!({
-                "trace_id": "00000000000000000000000000000001",
-                "query_text": "auth patterns",
-                "returned_item_ids": [ki_id],
-                "rating": "positive",
-            }))
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "00000000000000000000000000000001",
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [ki_id],
+                    "rating": "positive",
+                }),
+                prin_id,
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 

@@ -398,12 +398,23 @@ mod tests {
         handler::server::ServerHandler,
         model::{ErrorCode, ResourceContents},
     };
+    use tribal_domain::PrincipalId;
+    use tribal_test_utils::TEST_PRINCIPAL_KEY;
 
     use super::*;
     use crate::{
+        auth::AuthenticatedPrincipal,
         session::SESSION_RESOURCE_URI,
         test_utils::{TestHandler, session_with_project},
     };
+
+    fn test_principal() -> AuthenticatedPrincipal {
+        AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            TEST_PRINCIPAL_KEY,
+            tribal_domain::full_access_scopes(),
+        )
+    }
 
     // -- get_info -----------------------------------------------------------
 
@@ -488,8 +499,9 @@ mod tests {
         let handler = TestHandler::builder()
             .session(session_with_project())
             .build();
+        let principal = test_principal();
         let result = handler
-            .read_resource_inner(SESSION_RESOURCE_URI)
+            .read_resource_inner(SESSION_RESOURCE_URI, &principal)
             .await
             .expect("read_resource must succeed for known URI");
 
@@ -515,8 +527,9 @@ mod tests {
     #[tokio::test]
     async fn test_read_resource_unknown_uri() {
         let handler = TestHandler::builder().build();
+        let principal = test_principal();
         let err = handler
-            .read_resource_inner("tribal://unknown")
+            .read_resource_inner("tribal://unknown", &principal)
             .await
             .expect_err("unknown URI must return error");
 

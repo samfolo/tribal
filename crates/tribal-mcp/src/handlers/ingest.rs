@@ -296,7 +296,7 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let err = handler
-            .apply_ingest(serde_json::json!({"content": 123}))
+            .apply_ingest(serde_json::json!({"content": 123}), PrincipalId::new())
             .await
             .expect_err("should return Err(McpError) for malformed params");
 
@@ -308,7 +308,10 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let result = handler
-            .apply_ingest(serde_json::json!({"content": "some knowledge"}))
+            .apply_ingest(
+                serde_json::json!({"content": "some knowledge"}),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -325,6 +328,7 @@ mod tests {
         let result = handler
             .apply_ingest(
                 serde_json::json!({"content": "some knowledge", "project_id": wrong_prefix_id}),
+                PrincipalId::new(),
             )
             .await
             .expect(NO_PROTOCOL_ERROR);
@@ -346,7 +350,10 @@ mod tests {
             .build();
 
         let result = handler
-            .apply_ingest(serde_json::json!({"content": "some knowledge"}))
+            .apply_ingest(
+                serde_json::json!({"content": "some knowledge"}),
+                PrincipalId::new(),
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
