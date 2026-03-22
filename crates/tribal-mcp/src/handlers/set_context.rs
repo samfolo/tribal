@@ -27,7 +27,9 @@ impl TribalServerHandler {
         params: serde_json::Value,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let (result, mutated) = self.apply_set_context(params).await?;
+        let principal = self.resolve_principal(&context)?;
+        let principal_key = principal.principal_key().to_owned();
+        let (result, mutated) = self.apply_set_context(params, &principal_key).await?;
 
         if mutated {
             notify_session_updated(&self.session, &context.peer).await;
@@ -50,12 +52,12 @@ impl TribalServerHandler {
     async fn apply_set_context(
         &self,
         params: serde_json::Value,
+        principal_key: &str,
     ) -> Result<(CallToolResult, bool), McpError> {
         let request: McpSetContextRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
         if request == McpSetContextRequest::default() {
-            let principal_key = self.auth.principal().principal_key();
             let response = set_context_response(&*self.session.read().await, principal_key);
             return Ok((response.into_call_tool_result(), false));
         }
@@ -105,7 +107,7 @@ impl TribalServerHandler {
             changed = true;
         }
 
-        let mut response = set_context_response(&ctx, self.auth.principal().principal_key());
+        let mut response = set_context_response(&ctx, principal_key);
         response.mutated = changed;
         Ok((response.into_call_tool_result(), changed))
     }
