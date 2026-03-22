@@ -23,6 +23,7 @@ pub(crate) const AUTH_FAILURE_REASON_MISSING: &str = "missing";
 pub(crate) const AUTH_FAILURE_REASON_INVALID: &str = "invalid";
 pub(crate) const AUTH_FAILURE_REASON_REVOKED: &str = "revoked";
 pub(crate) const AUTH_FAILURE_REASON_EXPIRED: &str = "expired";
+pub(crate) const AUTH_FAILURE_REASON_UNAVAILABLE: &str = "unavailable";
 
 /// Display string for requests with no bearer token.
 pub const DISPLAY_MISSING_TOKEN: &str = "missing bearer token";

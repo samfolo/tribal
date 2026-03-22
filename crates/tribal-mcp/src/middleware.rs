@@ -18,8 +18,8 @@ use tracing::warn;
 
 use crate::auth::{
     AUTH_FAILURE_REASON_EXPIRED, AUTH_FAILURE_REASON_INVALID, AUTH_FAILURE_REASON_MISSING,
-    AUTH_FAILURE_REASON_REVOKED, AuthError, Authenticator, DISPLAY_INVALID_TOKEN,
-    DISPLAY_MISSING_TOKEN,
+    AUTH_FAILURE_REASON_REVOKED, AUTH_FAILURE_REASON_UNAVAILABLE, AuthError, Authenticator,
+    DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED,
 };
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,11 @@ pub async fn require_bearer_auth(
     let mut conn = match state.pool.acquire().await {
         Ok(c) => c,
         Err(error) => {
-            warn!(%error, "auth rejected: pool acquisition failed");
+            warn!(
+                auth_failure_reason = AUTH_FAILURE_REASON_UNAVAILABLE,
+                %error,
+                "auth rejected: pool acquisition failed",
+            );
             return service_unavailable_response(DATABASE_UNAVAILABLE_MESSAGE);
         }
     };
@@ -157,7 +161,7 @@ fn auth_error_response(error: &AuthError) -> Response {
                 auth_failure_reason = AUTH_FAILURE_REASON_REVOKED,
                 "auth rejected: {error}",
             );
-            unauthorised_response(&error.to_string())
+            unauthorised_response(DISPLAY_TOKEN_REVOKED)
         }
 
         AuthError::TokenExpired { .. } => {
@@ -165,7 +169,7 @@ fn auth_error_response(error: &AuthError) -> Response {
                 auth_failure_reason = AUTH_FAILURE_REASON_EXPIRED,
                 "auth rejected: {error}",
             );
-            unauthorised_response(&error.to_string())
+            unauthorised_response(DISPLAY_TOKEN_EXPIRED)
         }
 
         // Defensive: verify_token cannot return these, but handle them
