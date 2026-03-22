@@ -118,13 +118,22 @@ pub async fn require_bearer_auth(
 // ---------------------------------------------------------------------------
 
 /// Extracts the raw bearer token from the `Authorization` header.
+///
+/// The auth-scheme comparison is case-insensitive per RFC 7235 §2.1.
 fn extract_bearer_token(request: &axum::extract::Request) -> Option<&str> {
-    request
+    let value = request
         .headers()
         .get(http::header::AUTHORIZATION)?
         .to_str()
-        .ok()?
-        .strip_prefix(BEARER_PREFIX)
+        .ok()?;
+
+    if value.len() > BEARER_PREFIX.len()
+        && value[..BEARER_PREFIX.len()].eq_ignore_ascii_case(BEARER_PREFIX)
+    {
+        Some(&value[BEARER_PREFIX.len()..])
+    } else {
+        None
+    }
 }
 
 /// Maps an [`AuthError`] to the appropriate HTTP response.
@@ -271,6 +280,23 @@ mod tests {
         let json = response_json(response).await;
         assert_eq!(json["error"], UNAUTHORIZED_ERROR);
         assert_eq!(json["message"], DISPLAY_MISSING_TOKEN);
+    }
+
+    #[tokio::test]
+    async fn test_lowercase_bearer_scheme_accepted() {
+        let app = test_app(default_state());
+        let request = Request::builder()
+            .uri("/test")
+            .header(header::AUTHORIZATION, "bearer some-token")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // If the scheme is recognised, the middleware proceeds to pool
+        // acquire (which fails with lazy_pool → 503).  A 401 with
+        // "missing bearer token" would mean the scheme was rejected.
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
