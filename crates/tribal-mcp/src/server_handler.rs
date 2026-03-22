@@ -396,7 +396,7 @@ impl ServerHandler for TribalServerHandler {
 mod tests {
     use rmcp::{
         handler::server::ServerHandler,
-        model::{ErrorCode, Extensions as RmcpExtensions, RequestId, ResourceContents},
+        model::{ErrorCode, Extensions as RmcpExtensions, Meta, RequestId, ResourceContents},
         service::{RequestContext, RoleServer, serve_directly_with_ct},
     };
     use tokio_util::sync::CancellationToken;
@@ -405,7 +405,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy},
+        auth::{AuthenticatedPrincipal, TransportAuthStrategy},
         session::SESSION_RESOURCE_URI,
         test_utils::{TestHandler, session_with_project},
     };
@@ -609,7 +609,7 @@ mod tests {
         RequestContext {
             ct: CancellationToken::new(),
             id: RequestId::Number(1),
-            meta: Default::default(),
+            meta: Meta::default(),
             extensions,
             peer,
         }
@@ -637,7 +637,7 @@ mod tests {
             "user:http-test",
             tribal_domain::full_access_scopes(),
         );
-        let (mut parts, _) = http::Request::builder().body(()).unwrap().into_parts();
+        let (mut parts, ()) = http::Request::builder().body(()).unwrap().into_parts();
         parts.extensions.insert(principal);
 
         let mut extensions = RmcpExtensions::new();
