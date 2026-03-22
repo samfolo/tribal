@@ -17,9 +17,9 @@ use sqlx::PgPool;
 use tracing::warn;
 
 use crate::auth::{
-    AUTH_FAILURE_REASON_EXPIRED, AUTH_FAILURE_REASON_INVALID, AUTH_FAILURE_REASON_MISSING,
-    AUTH_FAILURE_REASON_REVOKED, AUTH_FAILURE_REASON_UNAVAILABLE, AuthError, Authenticator,
-    DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED,
+    AUTH_FAILURE_REASON_INVALID, AUTH_FAILURE_REASON_MISSING, AUTH_FAILURE_REASON_UNAVAILABLE,
+    AuthError, Authenticator, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED,
+    DISPLAY_TOKEN_REVOKED,
 };
 
 // ---------------------------------------------------------------------------
@@ -154,29 +154,10 @@ fn auth_error_response(error: &AuthError) -> Response {
             service_unavailable_response(DATABASE_UNAVAILABLE_MESSAGE)
         }
 
-        AuthError::InvalidToken { .. } => {
-            warn!(
-                auth_failure_reason = AUTH_FAILURE_REASON_INVALID,
-                "auth rejected: {error}",
-            );
-            unauthorised_response(DISPLAY_INVALID_TOKEN)
-        }
-
-        AuthError::TokenRevoked { .. } => {
-            warn!(
-                auth_failure_reason = AUTH_FAILURE_REASON_REVOKED,
-                "auth rejected: {error}",
-            );
-            unauthorised_response(DISPLAY_TOKEN_REVOKED)
-        }
-
-        AuthError::TokenExpired { .. } => {
-            warn!(
-                auth_failure_reason = AUTH_FAILURE_REASON_EXPIRED,
-                "auth rejected: {error}",
-            );
-            unauthorised_response(DISPLAY_TOKEN_EXPIRED)
-        }
+        // Logged by Authenticator::verify_token; middleware maps to response.
+        AuthError::InvalidToken { .. } => unauthorised_response(DISPLAY_INVALID_TOKEN),
+        AuthError::TokenRevoked { .. } => unauthorised_response(DISPLAY_TOKEN_REVOKED),
+        AuthError::TokenExpired { .. } => unauthorised_response(DISPLAY_TOKEN_EXPIRED),
 
         // Defensive: verify_token cannot return these, but handle them
         // to avoid leaking internal state if the code path changes.
