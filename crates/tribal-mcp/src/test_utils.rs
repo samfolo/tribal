@@ -18,7 +18,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     app_state::AppState,
-    auth::{AuthContext, AuthenticatedPrincipal},
+    auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy},
     config::HandlerConfig,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
     session::{SessionContext, SessionProject},
@@ -120,7 +120,13 @@ impl From<TestHandler> for TribalServerHandler {
                 .job_state_txs(th.job_state_txs)
                 .build(),
         );
-        Self::new(state, th.auth, th.repositories, th.session, th.config)
+        Self::new(
+            state,
+            TransportAuthStrategy::AtCreation(th.auth),
+            th.repositories,
+            th.session,
+            th.config,
+        )
     }
 }
 

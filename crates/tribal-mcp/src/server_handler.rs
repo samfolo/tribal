@@ -194,17 +194,17 @@ impl TribalServerHandler {
     /// Adding a new transport requires no changes here — it either
     /// injects into request extensions or passes
     /// [`TransportAuthStrategy::Resolved`] at construction time.
-    fn resolve_principal<'a>(
+    pub(crate) fn resolve_principal<'a>(
         &'a self,
         context: &'a RequestContext<RoleServer>,
     ) -> Result<&'a AuthenticatedPrincipal, McpError> {
         // Per-request path: principal injected into http::request::Parts
         // extensions by the transport middleware, then propagated into
         // rmcp Extensions by StreamableHttpService.
-        if let Some(parts) = context.extensions.get::<http::request::Parts>() {
-            if let Some(principal) = parts.extensions.get::<AuthenticatedPrincipal>() {
-                return Ok(principal);
-            }
+        if let Some(parts) = context.extensions.get::<http::request::Parts>()
+            && let Some(principal) = parts.extensions.get::<AuthenticatedPrincipal>()
+        {
+            return Ok(principal);
         }
 
         // Per-connection path: principal resolved at handler creation.
