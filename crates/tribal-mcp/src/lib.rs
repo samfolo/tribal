@@ -19,7 +19,10 @@ mod test_utils;
 mod tools;
 
 pub use app_state::{AppState, ResolvedProject};
-pub use auth::{AuthContext, AuthError, AuthenticatedPrincipal, Authenticator};
+pub use auth::{
+    AuthContext, AuthError, AuthenticatedPrincipal, Authenticator, DISPLAY_INVALID_TOKEN,
+    DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED,
+};
 pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
 pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
