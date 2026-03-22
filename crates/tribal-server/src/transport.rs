@@ -9,5 +9,4 @@
 mod http;
 mod stdio;
 
-pub(crate) use self::http::run_http_transport;
-pub(crate) use self::stdio::run_stdio_transport;
+pub(crate) use self::{http::run_http_transport, stdio::run_stdio_transport};

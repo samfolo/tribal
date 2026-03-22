@@ -58,23 +58,22 @@ pub(crate) async fn run_http_transport(
 ) -> Result<(), AppError> {
     // -- Listener ------------------------------------------------------------
 
-    let listener = match listener {
-        Some(l) => l,
-        None => {
-            let bind_addr: SocketAddr = server_config
-                .bind_address
-                .as_deref()
-                .unwrap_or(DEFAULT_BIND_ADDRESS)
-                .parse()
-                .expect("bind address validated during config validation");
+    let listener = if let Some(l) = listener {
+        l
+    } else {
+        let bind_addr: SocketAddr = server_config
+            .bind_address
+            .as_deref()
+            .unwrap_or(DEFAULT_BIND_ADDRESS)
+            .parse()
+            .expect("bind address validated during config validation");
 
-            TcpListener::bind(bind_addr)
-                .await
-                .map_err(|source| AppError::TransportBind {
-                    address: bind_addr,
-                    source,
-                })?
-        }
+        TcpListener::bind(bind_addr)
+            .await
+            .map_err(|source| AppError::TransportBind {
+                address: bind_addr,
+                source,
+            })?
     };
 
     let local_addr = listener
@@ -123,12 +122,9 @@ pub(crate) async fn run_http_transport(
 
     // -- Axum router ---------------------------------------------------------
 
-    let app = axum::Router::new()
-        .nest_service("/mcp", mcp_service)
-        .layer(axum::middleware::from_fn_with_state(
-            auth_state,
-            require_bearer_auth,
-        ));
+    let app = axum::Router::new().nest_service("/mcp", mcp_service).layer(
+        axum::middleware::from_fn_with_state(auth_state, require_bearer_auth),
+    );
 
     // -- Serve ---------------------------------------------------------------
 

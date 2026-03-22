@@ -10,9 +10,10 @@ use tokio::signal;
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
-use tribal_config::{load_config, validate};
+use tribal_config::{TransportKind, load_config, validate};
+use tribal_mcp::HandlerConfig;
 
-use crate::{cli::ServeArgs, error::AppError, orchestration};
+use crate::{cli::ServeArgs, error::AppError, orchestration, startup::POOL_NAME_MCP, transport};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -40,45 +41,95 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     let cancellation_token = CancellationToken::new();
 
+    let transport = config.server.transport;
+
+    if transport == TransportKind::Sse {
+        return Err(AppError::TransportUnsupported { transport });
+    }
+
     let handle = orchestration::start_server(&config, cli_project, cancellation_token.clone())?;
 
-    tracing::info!("startup sequence complete");
+    let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 
-    // -- Signal handling -----------------------------------------------------
-    // Races OS signals against the cancellation token (which fires on
-    // programmatic cancellation, e.g. WorkerDeathGuard).
+    tracing::info!(%transport, "startup sequence complete");
+
+    // -- Transport + signal handling -----------------------------------------
+    // Races the transport future against OS signals. Whichever completes
+    // first triggers the cancellation token, causing the other to shut
+    // down.
     handle.main_runtime().block_on(async {
-        match await_shutdown_trigger(&cancellation_token).await {
-            Ok(Some(name)) => {
-                tracing::info!(trigger = name, "received OS signal, initiating shutdown");
+        tokio::select! {
+            result = run_transport(
+                transport,
+                &handle,
+                handler_config,
+                cancellation_token.clone(),
+                &config.server,
+            ) => {
+                if let Err(ref error) = result {
+                    tracing::error!(%error, "transport failed");
+                }
                 cancellation_token.cancel();
             }
-            Ok(None) => {
-                tracing::info!(
-                    trigger = "programmatic",
-                    "shutdown triggered programmatically",
-                );
-            }
-            Err(AppError::SignalHandler { source }) => {
-                tracing::warn!(
-                    error = %source,
-                    "signal handler registration failed; \
-                     falling back to programmatic cancellation",
-                );
-                cancellation_token.cancelled().await;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "shutdown trigger failed; \
-                     falling back to programmatic cancellation",
-                );
-                cancellation_token.cancelled().await;
+            trigger = await_shutdown_trigger(&cancellation_token) => {
+                handle_shutdown_trigger(trigger, &cancellation_token);
             }
         }
     });
 
     handle.shutdown()
+}
+
+/// Dispatches to the appropriate transport runner.
+async fn run_transport(
+    transport: TransportKind,
+    handle: &orchestration::ServerHandle,
+    handler_config: HandlerConfig,
+    cancellation_token: CancellationToken,
+    server_config: &tribal_config::ServerConfig,
+) -> Result<(), AppError> {
+    match transport {
+        TransportKind::Http => {
+            transport::run_http_transport(
+                handle.state(),
+                server_config,
+                handler_config,
+                cancellation_token,
+                None,
+            )
+            .await
+        }
+        TransportKind::Stdio => {
+            transport::run_stdio_transport(handle.state(), handler_config, cancellation_token).await
+        }
+        TransportKind::Sse => Err(AppError::TransportUnsupported { transport }),
+    }
+}
+
+/// Processes the result of `await_shutdown_trigger`.
+fn handle_shutdown_trigger(
+    trigger: Result<Option<&'static str>, AppError>,
+    cancellation_token: &CancellationToken,
+) {
+    match trigger {
+        Ok(Some(name)) => {
+            tracing::info!(trigger = name, "received OS signal, initiating shutdown");
+            cancellation_token.cancel();
+        }
+        Ok(None) => {
+            tracing::info!(
+                trigger = "programmatic",
+                "shutdown triggered programmatically",
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "shutdown trigger failed; cancelling",
+            );
+            cancellation_token.cancel();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

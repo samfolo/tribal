@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use rmcp::ServiceExt;
 use tokio_util::sync::CancellationToken;
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{
@@ -42,11 +43,13 @@ pub(crate) async fn run_stdio_transport(
         Arc::new(PgPrincipalRepository),
     );
 
-    let mut conn = state.mcp_pool().acquire().await.map_err(|e| {
-        AppError::TransportStdio {
+    let mut conn = state
+        .mcp_pool()
+        .acquire()
+        .await
+        .map_err(|e| AppError::TransportStdio {
             source: Box::new(e),
-        }
-    })?;
+        })?;
 
     let principal = authenticator
         .resolve_stdio_principal(&mut conn)
@@ -79,7 +82,6 @@ pub(crate) async fn run_stdio_transport(
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
 
-    // rmcp::ServiceExt::serve_with_ct — serves with a cancellation token.
     let service = handler
         .serve_with_ct((stdin, stdout), cancellation_token)
         .await
@@ -87,7 +89,7 @@ pub(crate) async fn run_stdio_transport(
             source: Box::new(e),
         })?;
 
-    service.waiting().await;
+    let _ = service.waiting().await;
 
     Ok(())
 }
