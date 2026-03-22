@@ -45,10 +45,6 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     let transport = config.server.transport;
 
-    if transport == TransportKind::Sse {
-        return Err(AppError::TransportUnsupported { transport });
-    }
-
     let handle = orchestration::start_server(&config, cli_project, cancellation_token.clone())?;
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);

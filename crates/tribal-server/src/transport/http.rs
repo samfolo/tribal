@@ -12,7 +12,7 @@ use rmcp::transport::streamable_http_server::{
 };
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig};
+use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig, TransportKind};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{
     AppState, AuthMiddlewareState, Authenticator, ConnectionRepositories, HandlerConfig,
@@ -72,6 +72,7 @@ pub async fn run_http_transport(
         TcpListener::bind(bind_addr)
             .await
             .map_err(|source| AppError::TransportBind {
+                transport: TransportKind::Http,
                 address: bind_addr,
                 source,
             })?
@@ -79,7 +80,10 @@ pub async fn run_http_transport(
 
     let local_addr = listener
         .local_addr()
-        .map_err(|source| AppError::TransportServe { source })?;
+        .map_err(|source| AppError::TransportServe {
+            transport: TransportKind::Http,
+            source,
+        })?;
 
     // -- Auth middleware ------------------------------------------------------
 
@@ -135,5 +139,8 @@ pub async fn run_http_transport(
     axum::serve(listener, app)
         .with_graceful_shutdown(cancellation_token.cancelled_owned())
         .await
-        .map_err(|source| AppError::TransportServe { source })
+        .map_err(|source| AppError::TransportServe {
+            transport: TransportKind::Http,
+            source,
+        })
 }
