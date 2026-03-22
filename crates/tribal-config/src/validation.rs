@@ -268,7 +268,7 @@ fn validate_exploration(config: &TribalConfig, errors: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ProviderKind, sections::server::DEFAULT_BIND_ADDRESS};
+    use crate::{DEFAULT_BIND_ADDRESS, ProviderKind};
 
     fn valid_config() -> TribalConfig {
         let mut config = TribalConfig::default();
