@@ -7,7 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dev-dependencies]
+chrono.workspace = true
+dashmap.workspace = true
 pretty_assertions.workspace = true
+reqwest.workspace = true
 rmcp.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
@@ -23,5 +26,5 @@ tribal-db.workspace = true
 tribal-domain.workspace = true
 tribal-inference = { workspace = true, features = ["test-helpers"] }
 tribal-mcp = { workspace = true, features = ["test-helpers"] }
-tribal-server.workspace = true
+tribal-server = { workspace = true, features = ["test-helpers"] }
 tribal-test-utils.workspace = true

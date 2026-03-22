@@ -49,7 +49,7 @@ use crate::error::AppError;
 /// Returns [`AppError::TransportBind`] if the TCP listener cannot bind,
 /// or [`AppError::TransportServe`] if the server encounters a fatal
 /// I/O error.
-pub(crate) async fn run_http_transport(
+pub async fn run_http_transport(
     state: &Arc<AppState>,
     server_config: &ServerConfig,
     handler_config: HandlerConfig,
