@@ -268,7 +268,7 @@ fn validate_exploration(config: &TribalConfig, errors: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProviderKind;
+    use crate::{ProviderKind, sections::server::DEFAULT_BIND_ADDRESS};
 
     fn valid_config() -> TribalConfig {
         let mut config = TribalConfig::default();
@@ -293,7 +293,7 @@ mod tests {
     fn test_validate_rejects_bind_with_stdio() {
         let mut config = valid_config();
         config.server.transport = TransportKind::Stdio;
-        config.server.bind_address = Some("127.0.0.1:7077".into());
+        config.server.bind_address = Some(DEFAULT_BIND_ADDRESS.into());
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("bind_address cannot be set when server.transport is stdio"));

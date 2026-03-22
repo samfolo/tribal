@@ -8,6 +8,9 @@ use super::transport_kind::TransportKind;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// Default bind address for HTTP and SSE transports.
+pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:8725";
+
 /// Default graceful shutdown deadline in milliseconds.
 pub const DEFAULT_SHUTDOWN_DEADLINE_MS: u64 = 30_000;
 
@@ -68,7 +71,8 @@ pub struct ServerConfig {
     /// Socket address to bind the HTTP/SSE listener to.
     ///
     /// `None` when using stdio transport.  When transport is HTTP or SSE
-    /// and this is `None`, the startup sequence supplies a fallback.
+    /// and this is `None`, the startup sequence supplies
+    /// [`DEFAULT_BIND_ADDRESS`] (`127.0.0.1:8725`) as a fallback.
     #[serde(default)]
     pub bind_address: Option<String>,
 
