@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rmcp::{
     handler::server::ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, ErrorData as McpError, Implementation,
+        CallToolRequestParams, CallToolResult, ErrorCode, ErrorData as McpError, Implementation,
         ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
         ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
         SubscribeRequestParams, Tool, UnsubscribeRequestParams,
@@ -23,7 +23,7 @@ use tribal_domain::{PromptVersionId, is_authorised};
 
 use crate::{
     app_state::AppState,
-    auth::AuthContext,
+    auth::{AuthenticatedPrincipal, TransportAuthStrategy},
     config::HandlerConfig,
     error::method_not_found,
     mapping::session_to_json,
@@ -37,6 +37,7 @@ use crate::{
 
 const SERVER_NAME: &str = "tribal";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const MISSING_PRINCIPAL_CONTEXT: &str = "missing principal context";
 
 /// Tool names with explicit `call_tool` match arms.
 #[cfg(test)]
@@ -155,7 +156,7 @@ impl ActivePromptVersions {
 /// fields (`repositories`, `session`, `config`).
 pub struct TribalServerHandler {
     pub(crate) state: Arc<AppState>,
-    pub(crate) auth: AuthContext,
+    pub(crate) auth_strategy: TransportAuthStrategy,
     pub(crate) repositories: ConnectionRepositories,
     pub(crate) session: Arc<RwLock<SessionContext>>,
     pub(crate) config: HandlerConfig,
@@ -169,18 +170,54 @@ impl TribalServerHandler {
     #[must_use]
     pub fn new(
         state: Arc<AppState>,
-        auth: AuthContext,
+        auth_strategy: TransportAuthStrategy,
         repositories: ConnectionRepositories,
         session: SessionContext,
         config: HandlerConfig,
     ) -> Self {
         Self {
             state,
-            auth,
+            auth_strategy,
             repositories,
             session: Arc::new(RwLock::new(session)),
             config,
         }
+    }
+
+    /// Resolves the authenticated principal for the current request.
+    ///
+    /// Checks request context extensions first (per-request transports
+    /// such as HTTP inject the principal via middleware), then falls back
+    /// to handler-level auth (per-connection transports such as stdio
+    /// resolve the principal once at handler creation).
+    ///
+    /// Adding a new transport requires no changes here — it either
+    /// injects into request extensions or passes
+    /// [`TransportAuthStrategy::AtCreation`] at construction time.
+    pub(crate) fn resolve_principal<'a>(
+        &'a self,
+        context: &'a RequestContext<RoleServer>,
+    ) -> Result<&'a AuthenticatedPrincipal, McpError> {
+        // Per-request path: principal injected into http::request::Parts
+        // extensions by the transport middleware, then propagated into
+        // rmcp Extensions by StreamableHttpService.
+        if let Some(parts) = context.extensions.get::<http::request::Parts>()
+            && let Some(principal) = parts.extensions.get::<AuthenticatedPrincipal>()
+        {
+            return Ok(principal);
+        }
+
+        // Per-connection path: principal resolved at handler creation.
+        if let TransportAuthStrategy::AtCreation(auth) = &self.auth_strategy {
+            return Ok(auth.principal());
+        }
+
+        // Defence-in-depth: no principal from either source.
+        Err(McpError::new(
+            ErrorCode::INTERNAL_ERROR,
+            MISSING_PRINCIPAL_CONTEXT,
+            None,
+        ))
     }
 
     fn list_resources_inner() -> ListResourcesResult {
@@ -190,14 +227,18 @@ impl TribalServerHandler {
         }
     }
 
-    async fn read_resource_inner(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
+    async fn read_resource_inner(
+        &self,
+        uri: &str,
+        principal: &AuthenticatedPrincipal,
+    ) -> Result<ReadResourceResult, McpError> {
         if uri != SESSION_RESOURCE_URI {
             return Err(McpError::invalid_params("unknown resource URI", None));
         }
 
         let json = {
             let session = self.session.read().await;
-            session_to_json(&session, self.auth.principal().principal_key())
+            session_to_json(&session, principal.principal_key())
         };
 
         let text =
@@ -246,25 +287,45 @@ impl ServerHandler for TribalServerHandler {
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
-        let scopes = self.auth.principal().scopes();
-        std::future::ready(Ok(ListToolsResult {
-            tools: PARSED_TOOLS
-                .iter()
-                .filter(|t| is_authorised(scopes, &t.required_scope))
-                .map(to_tool)
-                .collect(),
-            ..Default::default()
-        }))
+        let principal = self.resolve_principal(&context);
+        std::future::ready(match principal {
+            Ok(p) => {
+                let scopes = p.scopes();
+                Ok(ListToolsResult {
+                    tools: PARSED_TOOLS
+                        .iter()
+                        .filter(|t| is_authorised(scopes, &t.required_scope))
+                        .map(to_tool)
+                        .collect(),
+                    ..Default::default()
+                })
+            }
+            Err(e) => Err(e),
+        })
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        let scopes = self.auth.principal().scopes();
-        PARSED_TOOLS
-            .iter()
-            .find(|t| t.name == name && is_authorised(scopes, &t.required_scope))
-            .map(to_tool)
+        // get_tool receives no RequestContext (rmcp trait limitation), so
+        // per-request scope filtering is impossible here.  For
+        // per-connection transports, filter by scopes; for per-request
+        // transports, return the tool unconditionally.  This exposes tool
+        // metadata but not tool execution — call_tool is the authoritative
+        // enforcement point with full scope checking.  Returning None
+        // would break tool discovery for HTTP clients.
+        match &self.auth_strategy {
+            TransportAuthStrategy::AtCreation(auth) => {
+                let scopes = auth.principal().scopes();
+                PARSED_TOOLS
+                    .iter()
+                    .find(|t| t.name == name && is_authorised(scopes, &t.required_scope))
+                    .map(to_tool)
+            }
+            TransportAuthStrategy::PerRequest => {
+                PARSED_TOOLS.iter().find(|t| t.name == name).map(to_tool)
+            }
+        }
     }
 
     fn list_resources(
@@ -278,9 +339,10 @@ impl ServerHandler for TribalServerHandler {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
-        self.read_resource_inner(&request.uri).await
+        let principal = self.resolve_principal(&context)?;
+        self.read_resource_inner(&request.uri, principal).await
     }
 
     async fn subscribe(
@@ -304,7 +366,8 @@ impl ServerHandler for TribalServerHandler {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let scopes = self.auth.principal().scopes();
+        let principal = self.resolve_principal(&context)?;
+        let scopes = principal.scopes();
         let entry = PARSED_TOOLS
             .iter()
             .find(|t| t.name == request.name.as_ref() && is_authorised(scopes, &t.required_scope))
@@ -336,14 +399,25 @@ impl ServerHandler for TribalServerHandler {
 mod tests {
     use rmcp::{
         handler::server::ServerHandler,
-        model::{ErrorCode, ResourceContents},
+        model::{ErrorCode, Extensions as RmcpExtensions, ResourceContents},
     };
+    use tribal_domain::PrincipalId;
+    use tribal_test_utils::TEST_PRINCIPAL_KEY;
 
     use super::*;
     use crate::{
+        auth::{AuthenticatedPrincipal, TransportAuthStrategy},
         session::SESSION_RESOURCE_URI,
-        test_utils::{TestHandler, session_with_project},
+        test_utils::{TestHandler, session_with_project, test_request_context},
     };
+
+    fn test_principal() -> AuthenticatedPrincipal {
+        AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            TEST_PRINCIPAL_KEY,
+            tribal_domain::full_access_scopes(),
+        )
+    }
 
     // -- get_info -----------------------------------------------------------
 
@@ -428,8 +502,9 @@ mod tests {
         let handler = TestHandler::builder()
             .session(session_with_project())
             .build();
+        let principal = test_principal();
         let result = handler
-            .read_resource_inner(SESSION_RESOURCE_URI)
+            .read_resource_inner(SESSION_RESOURCE_URI, &principal)
             .await
             .expect("read_resource must succeed for known URI");
 
@@ -455,8 +530,9 @@ mod tests {
     #[tokio::test]
     async fn test_read_resource_unknown_uri() {
         let handler = TestHandler::builder().build();
+        let principal = test_principal();
         let err = handler
-            .read_resource_inner("tribal://unknown")
+            .read_resource_inner("tribal://unknown", &principal)
             .await
             .expect_err("unknown URI must return error");
 
@@ -513,5 +589,62 @@ mod tests {
             .expect_err("unknown URI must return error");
 
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    // -- resolve_principal --------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_principal_from_auth_context() {
+        let handler = TestHandler::builder().build();
+        let context = test_request_context(RmcpExtensions::new());
+
+        let principal = handler
+            .resolve_principal(&context)
+            .expect("resolve_principal must succeed with AtCreation strategy");
+
+        assert_eq!(principal.principal_key(), TEST_PRINCIPAL_KEY);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_principal_from_http_extensions() {
+        let mut handler = TestHandler::builder().build();
+        handler.auth_strategy = TransportAuthStrategy::PerRequest;
+
+        let principal = AuthenticatedPrincipal::for_test(
+            PrincipalId::new(),
+            "user:http-test",
+            tribal_domain::full_access_scopes(),
+        );
+        let (mut parts, ()) = http::Request::builder().body(()).unwrap().into_parts();
+        parts.extensions.insert(principal);
+
+        let mut extensions = RmcpExtensions::new();
+        extensions.insert(parts);
+
+        let context = test_request_context(extensions);
+
+        let resolved = handler
+            .resolve_principal(&context)
+            .expect("resolve_principal must succeed with HTTP extensions");
+
+        assert_eq!(resolved.principal_key(), "user:http-test");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_principal_missing_both_returns_internal_error() {
+        let mut handler = TestHandler::builder().build();
+        handler.auth_strategy = TransportAuthStrategy::PerRequest;
+
+        let context = test_request_context(RmcpExtensions::new());
+
+        let err = handler
+            .resolve_principal(&context)
+            .expect_err("resolve_principal must fail when neither source provides a principal");
+
+        assert!(matches!(err.code, ErrorCode::INTERNAL_ERROR));
+        assert!(
+            err.message.contains(MISSING_PRINCIPAL_CONTEXT),
+            "error message must contain the expected constant",
+        );
     }
 }

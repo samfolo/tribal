@@ -25,6 +25,11 @@ publish = false
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
+# HTTP framework
+axum = "0.8"
+http = "1"
+tower = { version = "0.5", features = ["util"] }
+
 # Database
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
