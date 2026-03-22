@@ -16,7 +16,8 @@ use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{
     AppState, AuthMiddlewareState, Authenticator, ConnectionRepositories, HandlerConfig,
-    SessionContext, TransportAuthStrategy, TribalServerHandler, require_bearer_auth,
+    SessionContext, SessionProject, TransportAuthStrategy, TribalServerHandler,
+    require_bearer_auth,
 };
 
 use crate::error::AppError;
@@ -106,7 +107,8 @@ pub async fn run_http_transport(
 
     let mcp_service = StreamableHttpService::new(
         move || {
-            let session = SessionContext::new(None);
+            let session_project = factory_state.resolved_project().map(SessionProject::from);
+            let session = SessionContext::new(session_project);
             let repositories = ConnectionRepositories::new();
             Ok(TribalServerHandler::new(
                 Arc::clone(&factory_state),
