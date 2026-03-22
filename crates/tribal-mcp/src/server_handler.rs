@@ -396,10 +396,8 @@ impl ServerHandler for TribalServerHandler {
 mod tests {
     use rmcp::{
         handler::server::ServerHandler,
-        model::{ErrorCode, Extensions as RmcpExtensions, Meta, RequestId, ResourceContents},
-        service::{RequestContext, RoleServer, serve_directly_with_ct},
+        model::{ErrorCode, Extensions as RmcpExtensions, ResourceContents},
     };
-    use tokio_util::sync::CancellationToken;
     use tribal_domain::PrincipalId;
     use tribal_test_utils::TEST_PRINCIPAL_KEY;
 
@@ -407,7 +405,7 @@ mod tests {
     use crate::{
         auth::{AuthenticatedPrincipal, TransportAuthStrategy},
         session::SESSION_RESOURCE_URI,
-        test_utils::{TestHandler, session_with_project},
+        test_utils::{TestHandler, session_with_project, test_request_context},
     };
 
     fn test_principal() -> AuthenticatedPrincipal {
@@ -591,29 +589,6 @@ mod tests {
     }
 
     // -- resolve_principal --------------------------------------------------
-
-    /// Builds a [`RequestContext`] suitable for unit tests.
-    ///
-    /// Uses a disposable in-memory transport to obtain a valid
-    /// [`Peer<RoleServer>`], which cannot be constructed directly
-    /// because `Peer::new` is `pub(crate)` in `rmcp`.
-    fn test_request_context(extensions: RmcpExtensions) -> RequestContext<RoleServer> {
-        let dummy = TestHandler::builder().build();
-        let (_, server) = tokio::io::duplex(1);
-        let (read, write) = tokio::io::split(server);
-        let ct = CancellationToken::new();
-        let running = serve_directly_with_ct(dummy, (read, write), None, ct.clone());
-        let peer = running.peer().clone();
-        ct.cancel();
-
-        RequestContext {
-            ct: CancellationToken::new(),
-            id: RequestId::Number(1),
-            meta: Meta::default(),
-            extensions,
-            peer,
-        }
-    }
 
     #[tokio::test]
     async fn test_resolve_principal_from_auth_context() {
