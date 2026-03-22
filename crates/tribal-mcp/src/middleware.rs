@@ -18,8 +18,8 @@ use tracing::warn;
 
 use crate::auth::{
     AUTH_FAILURE_REASON_EXPIRED, AUTH_FAILURE_REASON_INVALID, AUTH_FAILURE_REASON_MISSING,
-    AUTH_FAILURE_REASON_REVOKED, AuthError, AuthenticatedPrincipal, Authenticator,
-    DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN,
+    AUTH_FAILURE_REASON_REVOKED, AuthError, Authenticator, DISPLAY_INVALID_TOKEN,
+    DISPLAY_MISSING_TOKEN,
 };
 
 // ---------------------------------------------------------------------------
@@ -109,7 +109,7 @@ pub async fn require_bearer_auth(
             request.extensions_mut().insert(principal);
             next.run(request).await
         }
-        Err(error) => auth_error_response(error),
+        Err(ref error) => auth_error_response(error),
     }
 }
 
@@ -128,7 +128,7 @@ fn extract_bearer_token(request: &axum::extract::Request) -> Option<&str> {
 }
 
 /// Maps an [`AuthError`] to the appropriate HTTP response.
-fn auth_error_response(error: AuthError) -> Response {
+fn auth_error_response(error: &AuthError) -> Response {
     match error {
         AuthError::DatabaseUnavailable { .. } => {
             warn!(%error, "auth rejected: database unavailable");

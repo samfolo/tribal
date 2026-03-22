@@ -144,7 +144,8 @@ mod tests {
     use tribal_db::DbError;
     use tribal_domain::{KnowledgeItemId, ProjectId};
     use tribal_test_utils::{
-        ExhaustBehaviour, MockProjectRepository, a_not_found, a_project, test_context,
+        ExhaustBehaviour, MockProjectRepository, TEST_PRINCIPAL_KEY, a_not_found, a_project,
+        test_context,
     };
 
     use super::resolve_project;
@@ -216,7 +217,7 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
-            .apply_set_context(serde_json::json!({}))
+            .apply_set_context(serde_json::json!({}), TEST_PRINCIPAL_KEY)
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -235,7 +236,10 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
-            .apply_set_context(serde_json::json!({ "model": "claude-opus-4-6" }))
+            .apply_set_context(
+                serde_json::json!({ "model": "claude-opus-4-6" }),
+                TEST_PRINCIPAL_KEY,
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -255,7 +259,10 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
-            .apply_set_context(serde_json::json!({ "provider": "anthropic" }))
+            .apply_set_context(
+                serde_json::json!({ "provider": "anthropic" }),
+                TEST_PRINCIPAL_KEY,
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -274,10 +281,13 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
-            .apply_set_context(serde_json::json!({
-                "model": "claude-opus-4-6",
-                "provider": "anthropic",
-            }))
+            .apply_set_context(
+                serde_json::json!({
+                    "model": "claude-opus-4-6",
+                    "provider": "anthropic",
+                }),
+                TEST_PRINCIPAL_KEY,
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -307,7 +317,10 @@ mod tests {
             .build();
 
         let (result, mutated) = handler
-            .apply_set_context(serde_json::json!({ "project_id": project.id().to_string() }))
+            .apply_set_context(
+                serde_json::json!({ "project_id": project.id().to_string() }),
+                TEST_PRINCIPAL_KEY,
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -334,12 +347,18 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         handler
-            .apply_set_context(serde_json::json!({ "model": "claude-opus-4-6" }))
+            .apply_set_context(
+                serde_json::json!({ "model": "claude-opus-4-6" }),
+                TEST_PRINCIPAL_KEY,
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
         let (result, _) = handler
-            .apply_set_context(serde_json::json!({ "provider": "anthropic" }))
+            .apply_set_context(
+                serde_json::json!({ "provider": "anthropic" }),
+                TEST_PRINCIPAL_KEY,
+            )
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -354,12 +373,12 @@ mod tests {
         let params = serde_json::json!({ "model": "claude-opus-4-6" });
 
         let (result1, first_mutated) = handler
-            .apply_set_context(params.clone())
+            .apply_set_context(params.clone(), TEST_PRINCIPAL_KEY)
             .await
             .expect(NO_PROTOCOL_ERROR);
 
         let (result2, second_mutated) = handler
-            .apply_set_context(params)
+            .apply_set_context(params, TEST_PRINCIPAL_KEY)
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -379,7 +398,10 @@ mod tests {
         let wrong_type_id = KnowledgeItemId::new().to_string();
 
         let (result, mutated) = handler
-            .apply_set_context(serde_json::json!({ "project_id": wrong_type_id }))
+            .apply_set_context(
+                serde_json::json!({ "project_id": wrong_type_id }),
+                TEST_PRINCIPAL_KEY,
+            )
             .await
             .expect("should return Ok with error result, not Err");
 
@@ -395,7 +417,10 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let (result, mutated) = handler
-            .apply_set_context(serde_json::json!({ "project_id": "proj_not-a-uuid" }))
+            .apply_set_context(
+                serde_json::json!({ "project_id": "proj_not-a-uuid" }),
+                TEST_PRINCIPAL_KEY,
+            )
             .await
             .expect("should return Ok with error result, not Err");
 
@@ -411,7 +436,7 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let err = handler
-            .apply_set_context(serde_json::json!({ "project_id": 123 }))
+            .apply_set_context(serde_json::json!({ "project_id": 123 }), TEST_PRINCIPAL_KEY)
             .await
             .expect_err("should return Err(McpError) for malformed params");
 
@@ -425,7 +450,7 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let (result, _) = handler
-            .apply_set_context(serde_json::json!({}))
+            .apply_set_context(serde_json::json!({}), TEST_PRINCIPAL_KEY)
             .await
             .expect(NO_PROTOCOL_ERROR);
 
@@ -443,7 +468,7 @@ mod tests {
         let handler = TestHandler::builder().build();
 
         let (result, _) = handler
-            .apply_set_context(serde_json::json!({}))
+            .apply_set_context(serde_json::json!({}), TEST_PRINCIPAL_KEY)
             .await
             .expect(NO_PROTOCOL_ERROR);
 
