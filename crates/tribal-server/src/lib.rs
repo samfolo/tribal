@@ -9,6 +9,7 @@ mod error;
 mod git;
 mod orchestration;
 mod startup;
+mod transport;
 
 pub use app::App;
 pub use error::AppError;
