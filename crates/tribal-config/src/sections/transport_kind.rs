@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Transport protocol for the MCP server.
 ///
 /// Determines how the server communicates with clients.  The HTTP/SSE
-/// startup path supplies `127.0.0.1:7077` as a fallback when
+/// startup path supplies `127.0.0.1:8725` as a fallback when
 /// `bind_address` is `None` and transport is not `Stdio`.
 ///
 /// Implements [`FromStr`] so that clap can parse the type natively

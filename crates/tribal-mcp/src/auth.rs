@@ -19,13 +19,23 @@ use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, Scope, full_access_scopes,
 // Constants
 // ---------------------------------------------------------------------------
 
-const AUTH_FAILURE_REASON_INVALID: &str = "invalid";
-const AUTH_FAILURE_REASON_REVOKED: &str = "revoked";
-const AUTH_FAILURE_REASON_EXPIRED: &str = "expired";
+pub(crate) const AUTH_FAILURE_REASON_MISSING: &str = "missing";
+pub(crate) const AUTH_FAILURE_REASON_INVALID: &str = "invalid";
+pub(crate) const AUTH_FAILURE_REASON_REVOKED: &str = "revoked";
+pub(crate) const AUTH_FAILURE_REASON_EXPIRED: &str = "expired";
+pub(crate) const AUTH_FAILURE_REASON_UNAVAILABLE: &str = "unavailable";
 
-const DISPLAY_INVALID_TOKEN: &str = "invalid token";
-const DISPLAY_TOKEN_REVOKED: &str = "token revoked";
-const DISPLAY_TOKEN_EXPIRED: &str = "token expired";
+/// Display string for requests with no bearer token.
+pub const DISPLAY_MISSING_TOKEN: &str = "missing bearer token";
+
+/// Display string for invalid or unrecognised tokens.
+pub const DISPLAY_INVALID_TOKEN: &str = "invalid token";
+
+/// Display string for revoked tokens.
+pub const DISPLAY_TOKEN_REVOKED: &str = "token revoked";
+
+/// Display string for expired tokens.
+pub const DISPLAY_TOKEN_EXPIRED: &str = "token expired";
 
 // ---------------------------------------------------------------------------
 // AuthenticatedPrincipal
@@ -36,7 +46,7 @@ const DISPLAY_TOKEN_EXPIRED: &str = "token expired";
 /// Carries the resolved [`PrincipalId`] and human-readable principal key.
 /// Its existence guarantees the holder passed either token verification
 /// or the stdio bypass path.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AuthenticatedPrincipal {
     principal_id: PrincipalId,
     principal_key: String,
@@ -192,6 +202,26 @@ impl AuthContext {
             })
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// TransportAuth
+// ---------------------------------------------------------------------------
+
+/// How the transport layer provides authentication to the handler.
+///
+/// New transports pick the variant that matches their auth model without
+/// requiring changes to handler code.  Per-connection transports (e.g.
+/// stdio) supply [`AtCreation`](Self::AtCreation); per-request transports
+/// (e.g. Streamable HTTP) supply [`PerRequest`](Self::PerRequest) and
+/// inject the principal into request context extensions via middleware.
+pub enum TransportAuthStrategy {
+    /// Principal resolved once at handler creation (e.g. stdio).
+    AtCreation(AuthContext),
+
+    /// Principal injected per-request into request context extensions
+    /// by the transport middleware (e.g. Streamable HTTP).
+    PerRequest,
 }
 
 // ---------------------------------------------------------------------------

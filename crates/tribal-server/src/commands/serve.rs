@@ -5,14 +5,17 @@
 //! bootstrap and worker startup, then blocks on OS signal handling until
 //! shutdown.
 
+use std::{io, sync::Arc};
+
 #[cfg(not(unix))]
 use tokio::signal;
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
-use tribal_config::{load_config, validate};
+use tribal_config::{TransportKind, load_config, validate};
+use tribal_mcp::HandlerConfig;
 
-use crate::{cli::ServeArgs, error::AppError, orchestration};
+use crate::{cli::ServeArgs, error::AppError, orchestration, startup::POOL_NAME_MCP, transport};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -40,45 +43,143 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     let cancellation_token = CancellationToken::new();
 
+    let transport = config.server.transport;
+
+    if transport == TransportKind::Sse {
+        return Err(AppError::TransportUnsupported { transport });
+    }
+
     let handle = orchestration::start_server(&config, cli_project, cancellation_token.clone())?;
 
-    tracing::info!("startup sequence complete");
+    let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 
-    // -- Signal handling -----------------------------------------------------
-    // Races OS signals against the cancellation token (which fires on
-    // programmatic cancellation, e.g. WorkerDeathGuard).
-    handle.main_runtime().block_on(async {
-        match await_shutdown_trigger(&cancellation_token).await {
-            Ok(Some(name)) => {
-                tracing::info!(trigger = name, "received OS signal, initiating shutdown");
+    tracing::info!(%transport, "startup sequence complete");
+
+    // -- Transport + signal handling -----------------------------------------
+    // The transport runs in a spawned task so that OS signal handling
+    // can cancel the token without dropping the transport future.  This
+    // lets axum's graceful shutdown drain active connections before the
+    // server exits.
+    let transport_error: Option<AppError> = handle.main_runtime().block_on(async {
+        let mut transport_handle = tokio::spawn(run_transport(
+            transport,
+            Arc::clone(handle.state()),
+            handler_config,
+            cancellation_token.clone(),
+            config.server.clone(),
+        ));
+
+        // Wait for the transport to exit or an OS signal to arrive.
+        // When the signal branch wins, the transport task continues
+        // running — it observes the cancellation token and shuts down
+        // gracefully rather than being dropped mid-flight.
+        let signal_fired = tokio::select! {
+            result = &mut transport_handle => {
                 cancellation_token.cancel();
+                return resolve_transport_result(result, "transport failed");
             }
-            Ok(None) => {
-                tracing::info!(
-                    trigger = "programmatic",
-                    "shutdown triggered programmatically",
-                );
-            }
-            Err(AppError::SignalHandler { source }) => {
-                tracing::warn!(
-                    error = %source,
-                    "signal handler registration failed; \
-                     falling back to programmatic cancellation",
-                );
-                cancellation_token.cancelled().await;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "shutdown trigger failed; \
-                     falling back to programmatic cancellation",
-                );
-                cancellation_token.cancelled().await;
-            }
-        }
+            trigger = await_shutdown_trigger(&cancellation_token) => trigger,
+        };
+
+        handle_shutdown_trigger(signal_fired, &cancellation_token);
+
+        // Let the transport drain active connections.
+        resolve_transport_result(transport_handle.await, "transport failed during shutdown")
     });
 
-    handle.shutdown()
+    // Prefer the transport error over the shutdown result — a bind
+    // failure is more informative than a clean worker shutdown.
+    let shutdown_result = handle.shutdown();
+    match transport_error {
+        Some(err) => Err(err),
+        None => shutdown_result,
+    }
+}
+
+/// Dispatches to the appropriate transport runner.
+///
+/// Takes owned values because the future is spawned as a task.
+async fn run_transport(
+    transport: TransportKind,
+    state: Arc<tribal_mcp::AppState>,
+    handler_config: HandlerConfig,
+    cancellation_token: CancellationToken,
+    server_config: tribal_config::ServerConfig,
+) -> Result<(), AppError> {
+    match transport {
+        TransportKind::Http => {
+            transport::run_http_transport(
+                &state,
+                &server_config,
+                handler_config,
+                cancellation_token,
+                None,
+            )
+            .await
+        }
+        TransportKind::Stdio => {
+            transport::run_stdio_transport(&state, handler_config, cancellation_token).await
+        }
+        TransportKind::Sse => Err(AppError::TransportUnsupported { transport }),
+    }
+}
+
+/// Processes the result of `await_shutdown_trigger`.
+fn handle_shutdown_trigger(
+    trigger: Result<Option<&'static str>, AppError>,
+    cancellation_token: &CancellationToken,
+) {
+    match trigger {
+        Ok(Some(name)) => {
+            tracing::info!(trigger = name, "received OS signal, initiating shutdown");
+            cancellation_token.cancel();
+        }
+        Ok(None) => {
+            tracing::info!(
+                trigger = "programmatic",
+                "shutdown triggered programmatically",
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "shutdown trigger failed; cancelling",
+            );
+            cancellation_token.cancel();
+        }
+    }
+}
+
+/// Converts a transport task's `JoinHandle` result into an optional
+/// `AppError`.
+///
+/// If the task panicked, the panic is propagated via
+/// [`std::panic::resume_unwind`] — a transport panic is fatal and must
+/// not be silently swallowed.
+///
+/// # Panics
+///
+/// Re-panics if the transport task panicked.
+fn resolve_transport_result(
+    result: Result<Result<(), AppError>, tokio::task::JoinError>,
+    context: &str,
+) -> Option<AppError> {
+    match result {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => {
+            tracing::error!(%error, "{context}");
+            Some(error)
+        }
+        Err(join_error) => {
+            if join_error.is_panic() {
+                std::panic::resume_unwind(join_error.into_panic());
+            }
+            tracing::error!(%join_error, "{context}: task aborted");
+            Some(AppError::TransportServe {
+                source: io::Error::other(join_error.to_string()),
+            })
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,5 +262,42 @@ mod tests {
 
         let result = await_shutdown_trigger(&token).await;
         assert!(matches!(result, Ok(None)));
+    }
+
+    // -- resolve_transport_result -------------------------------------------
+
+    #[test]
+    fn test_resolve_transport_result_ok_ok_returns_none() {
+        assert!(resolve_transport_result(Ok(Ok(())), "test").is_none());
+    }
+
+    #[test]
+    fn test_resolve_transport_result_ok_err_returns_error() {
+        let app_error = AppError::TransportServe {
+            source: io::Error::other("test"),
+        };
+        let result = resolve_transport_result(Ok(Err(app_error)), "test");
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transport_result_aborted_task_returns_error() {
+        let handle = tokio::spawn(async { std::future::pending::<Result<(), AppError>>().await });
+        handle.abort();
+        let join_result = handle.await;
+
+        let result = resolve_transport_result(join_result, "test");
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "task panicked")]
+    async fn test_resolve_transport_result_panicked_task_repanics() {
+        let handle: tokio::task::JoinHandle<Result<(), AppError>> = tokio::spawn(async {
+            panic!("task panicked");
+        });
+        let join_result = handle.await;
+
+        resolve_transport_result(join_result, "test");
     }
 }

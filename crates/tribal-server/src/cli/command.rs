@@ -334,11 +334,9 @@ pub struct TokenRevokeAllArgs {}
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use tribal_config::{ENV_CONFIG_PATH, ENV_PROJECT_ID, TransportKind};
+    use tribal_config::{DEFAULT_BIND_ADDRESS, ENV_CONFIG_PATH, ENV_PROJECT_ID, TransportKind};
 
     use super::*;
-
-    const TEST_BIND_ADDR: &str = "127.0.0.1:7077";
 
     // -- Structural validation -----------------------------------------------
 
@@ -404,11 +402,11 @@ mod tests {
 
     #[test]
     fn test_serve_bind_parsed_as_string() {
-        let cli = Cli::try_parse_from(["tribal", "serve", "--bind", TEST_BIND_ADDR]).unwrap();
+        let cli = Cli::try_parse_from(["tribal", "serve", "--bind", DEFAULT_BIND_ADDRESS]).unwrap();
         let Some(Command::Serve { args }) = cli.command else {
             unreachable!();
         };
-        assert_eq!(args.bind.as_deref(), Some(TEST_BIND_ADDR));
+        assert_eq!(args.bind.as_deref(), Some(DEFAULT_BIND_ADDRESS));
     }
 
     // -- into_cli_overrides -------------------------------------------------
@@ -443,26 +441,26 @@ mod tests {
     fn test_into_cli_overrides_bind_only() {
         let args = ServeArgs {
             transport: None,
-            bind: Some(TEST_BIND_ADDR.into()),
+            bind: Some(DEFAULT_BIND_ADDRESS.into()),
             project: None,
         };
         let (overrides, _) = args.into_cli_overrides();
         let server = overrides.server.unwrap();
         assert!(server.transport.is_none());
-        assert_eq!(server.bind_address.as_deref(), Some(TEST_BIND_ADDR));
+        assert_eq!(server.bind_address.as_deref(), Some(DEFAULT_BIND_ADDRESS));
     }
 
     #[test]
     fn test_into_cli_overrides_both_flags() {
         let args = ServeArgs {
             transport: Some(TransportKind::Http),
-            bind: Some(TEST_BIND_ADDR.into()),
+            bind: Some(DEFAULT_BIND_ADDRESS.into()),
             project: None,
         };
         let (overrides, _) = args.into_cli_overrides();
         let server = overrides.server.unwrap();
         assert_eq!(server.transport, Some(TransportKind::Http));
-        assert_eq!(server.bind_address.as_deref(), Some(TEST_BIND_ADDR));
+        assert_eq!(server.bind_address.as_deref(), Some(DEFAULT_BIND_ADDRESS));
     }
 
     // -- Invalid input ------------------------------------------------------
