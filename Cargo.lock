@@ -4653,7 +4653,10 @@ dependencies = [
 name = "tribal-e2e"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "dashmap",
  "pretty_assertions",
+ "reqwest",
  "rmcp",
  "serde_json",
  "sqlx",
