@@ -197,3 +197,188 @@ fn service_unavailable_response(message: &str) -> Response {
 
     (StatusCode::SERVICE_UNAVAILABLE, axum::Json(body)).into_response()
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{body::Body, middleware, routing::get};
+    use http::{Request, StatusCode, header};
+    use tower::ServiceExt;
+    use tribal_domain::PrincipalId;
+    use tribal_test_utils::{MockAuthTokenRepository, MockPrincipalRepository, lazy_pool};
+
+    use super::*;
+    use crate::auth::{
+        AuthError, Authenticator, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN,
+        DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED,
+    };
+
+    // -- Helpers ------------------------------------------------------------
+
+    fn test_state(
+        auth_token_mock: MockAuthTokenRepository,
+        principal_mock: MockPrincipalRepository,
+    ) -> AuthMiddlewareState {
+        let authenticator = Arc::new(Authenticator::new(
+            Arc::new(auth_token_mock),
+            Arc::new(principal_mock),
+        ));
+        AuthMiddlewareState::new(lazy_pool(), authenticator)
+    }
+
+    fn test_app(state: AuthMiddlewareState) -> axum::Router {
+        axum::Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(state, require_bearer_auth))
+    }
+
+    async fn response_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn default_state() -> AuthMiddlewareState {
+        test_state(
+            MockAuthTokenRepository::builder().build(),
+            MockPrincipalRepository::builder().build(),
+        )
+    }
+
+    // -- Full middleware tests (via oneshot) ---------------------------------
+    // These exercise the axum layer end-to-end for paths that resolve
+    // before the pool acquire step.
+
+    #[tokio::test]
+    async fn test_missing_authorisation_header_returns_401() {
+        let app = test_app(default_state());
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            WWW_AUTHENTICATE_VALUE,
+        );
+
+        let json = response_json(response).await;
+        assert_eq!(json["error"], UNAUTHORIZED_ERROR);
+        assert_eq!(json["message"], DISPLAY_MISSING_TOKEN);
+    }
+
+    #[tokio::test]
+    async fn test_non_bearer_scheme_returns_401() {
+        let app = test_app(default_state());
+        let request = Request::builder()
+            .uri("/test")
+            .header(header::AUTHORIZATION, "Basic abc123")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let json = response_json(response).await;
+        assert_eq!(json["error"], UNAUTHORIZED_ERROR);
+        assert_eq!(json["message"], DISPLAY_MISSING_TOKEN);
+    }
+
+    #[tokio::test]
+    async fn test_pool_acquisition_failure_returns_503() {
+        // lazy_pool connects to a nonexistent database; acquire() fails.
+        let app = test_app(default_state());
+        let request = Request::builder()
+            .uri("/test")
+            .header(header::AUTHORIZATION, "Bearer some-token")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let json = response_json(response).await;
+        assert_eq!(json["error"], SERVICE_UNAVAILABLE_ERROR);
+        assert_eq!(json["message"], DATABASE_UNAVAILABLE_MESSAGE);
+    }
+
+    // -- auth_error_response tests ------------------------------------------
+    // These test the AuthError → Response mapping directly, bypassing the
+    // pool acquire step. Full token verification through the middleware is
+    // covered by the HTTP integration test.
+
+    #[test]
+    fn test_auth_error_invalid_token_returns_401() {
+        let error = AuthError::InvalidToken {
+            token_hash: "abc".into(),
+        };
+        let response = auth_error_response(&error);
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_error_expired_token_returns_401_with_display() {
+        let error = AuthError::TokenExpired {
+            token_hash: "abc".into(),
+        };
+        let response = auth_error_response(&error);
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let json = response_json(response).await;
+        assert_eq!(json["error"], UNAUTHORIZED_ERROR);
+        assert_eq!(json["message"], DISPLAY_TOKEN_EXPIRED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_error_revoked_token_returns_401_with_display() {
+        let error = AuthError::TokenRevoked {
+            token_hash: "abc".into(),
+        };
+        let response = auth_error_response(&error);
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let json = response_json(response).await;
+        assert_eq!(json["error"], UNAUTHORIZED_ERROR);
+        assert_eq!(json["message"], DISPLAY_TOKEN_REVOKED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_error_principal_not_found_returns_401_with_invalid_message() {
+        let error = AuthError::PrincipalNotFound {
+            principal_id: PrincipalId::new(),
+        };
+        let response = auth_error_response(&error);
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let json = response_json(response).await;
+        assert_eq!(json["error"], UNAUTHORIZED_ERROR);
+        assert_eq!(json["message"], DISPLAY_INVALID_TOKEN);
+    }
+
+    #[tokio::test]
+    async fn test_auth_error_database_unavailable_returns_503() {
+        let error = AuthError::DatabaseUnavailable {
+            context: "test query".into(),
+            source: Box::new(std::io::Error::other("boom")),
+        };
+        let response = auth_error_response(&error);
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let json = response_json(response).await;
+        assert_eq!(json["error"], SERVICE_UNAVAILABLE_ERROR);
+        assert_eq!(json["message"], DATABASE_UNAVAILABLE_MESSAGE);
+    }
+}
