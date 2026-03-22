@@ -89,7 +89,12 @@ pub(crate) async fn run_stdio_transport(
             source: Box::new(e),
         })?;
 
-    let _ = service.waiting().await;
+    service
+        .waiting()
+        .await
+        .map_err(|e| AppError::TransportStdio {
+            source: Box::new(e),
+        })?;
 
     Ok(())
 }
