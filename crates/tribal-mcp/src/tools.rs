@@ -303,7 +303,7 @@ pub(crate) fn to_tool(entry: &ParsedToolEntry) -> Tool {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, env, fs, path::Path};
+    use std::{collections::BTreeSet, fs, path::Path};
 
     use super::*;
 
@@ -425,27 +425,24 @@ mod tests {
             })
             .collect();
 
-        let snapshot = serde_json::to_string_pretty(&tools).expect("snapshot serialisation");
+        tribal_test_utils::assert_json_snapshot!(&tools, "src/schemas/golden_snapshot.json");
+    }
 
-        let snapshot_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src")
-            .join("schemas")
-            .join("golden_snapshot.json");
+    #[test]
+    fn test_scope_visibility_snapshot() {
+        let visibility: Vec<Value> = PARSED_TOOLS
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "required_scope": t.required_scope,
+                })
+            })
+            .collect();
 
-        if env::var("UPDATE_SNAPSHOTS").is_ok() {
-            fs::write(&snapshot_path, &snapshot).expect("write golden snapshot");
-            return;
-        }
-
-        assert!(
-            snapshot_path.exists(),
-            "Golden snapshot missing. Run with UPDATE_SNAPSHOTS=1 to create it."
-        );
-
-        let existing = fs::read_to_string(&snapshot_path).expect("read golden snapshot");
-        assert_eq!(
-            existing, snapshot,
-            "Golden snapshot mismatch. Run with UPDATE_SNAPSHOTS=1 to update."
+        tribal_test_utils::assert_json_snapshot!(
+            &visibility,
+            "src/schemas/scope_visibility_snapshot.json"
         );
     }
 }
