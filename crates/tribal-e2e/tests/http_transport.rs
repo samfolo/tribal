@@ -10,8 +10,8 @@ use chrono::Duration;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use transport_harness::{
-    McpTestClient, assert_tool_visibility, fresh_pool, seed_auth, seed_scoped_auth,
-    spawn_transport, test_app_state, test_client,
+    INITIALIZE_BODY, MINIMAL_INITIALIZE_BODY, McpTestClient, assert_tool_visibility, fresh_pool,
+    seed_auth, seed_scoped_auth, spawn_transport, test_app_state, test_client,
 };
 use tribal_config::ServerConfig;
 use tribal_domain::Scope;
@@ -56,7 +56,7 @@ async fn test_missing_bearer_token_returns_401() {
     let response = test_client()
         .post(format!("http://{}/mcp", transport.addr))
         .header("Content-Type", "application/json")
-        .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{}}"#)
+        .body(MINIMAL_INITIALIZE_BODY)
         .send()
         .await
         .expect("HTTP request must succeed");
@@ -101,7 +101,7 @@ async fn test_valid_bearer_token_passes_auth() {
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {RAW_TOKEN}"))
         .header("Accept", "text/event-stream, application/json")
-        .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#)
+        .body(INITIALIZE_BODY)
         .send()
         .await
         .expect("HTTP request must succeed");
@@ -155,7 +155,7 @@ async fn test_expired_token_returns_401() {
         .post(format!("http://{}/mcp", transport.addr))
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {expired_raw}"))
-        .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{}}"#)
+        .body(MINIMAL_INITIALIZE_BODY)
         .send()
         .await
         .expect("HTTP request must succeed");

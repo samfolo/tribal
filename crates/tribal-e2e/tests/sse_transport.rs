@@ -11,8 +11,9 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use transport_harness::{
-    LIFECYCLE_FAR_FUTURE_MS, McpTestClient, TransportHandle, assert_tool_visibility, fresh_pool,
-    seed_auth, seed_scoped_auth, spawn_transport, test_app_state, test_client,
+    INITIALIZE_BODY, LIFECYCLE_FAR_FUTURE_MS, MINIMAL_INITIALIZE_BODY, McpTestClient,
+    TransportHandle, assert_tool_visibility, fresh_pool, seed_auth, seed_scoped_auth,
+    spawn_transport, test_app_state, test_client,
 };
 use tribal_config::{ServerConfig, SseConfig};
 use tribal_domain::Scope;
@@ -28,8 +29,14 @@ use tribal_test_utils::serial_lock;
 // has a unique constraint — reusing the same value across tests causes
 // `UniqueViolation` on the second insert.
 const RAW_TOKEN_VALID: &str = "sse-valid-token";
+const RAW_TOKEN_EXPIRED: &str = "sse-expired-token";
 const RAW_TOKEN_MAX_AGE: &str = "sse-max-age-token";
 const RAW_TOKEN_IDLE: &str = "sse-idle-timeout-token";
+const RAW_TOKEN_SPY: &str = "sse-spy-undercover-token";
+const RAW_TOKEN_GET_STREAM: &str = "sse-get-stream-token";
+const RAW_TOKEN_GET_NO_SESSION: &str = "sse-get-no-session-token";
+const RAW_TOKEN_GET_UNKNOWN: &str = "sse-get-unknown-session-token";
+const RAW_TOKEN_GET_RESUME: &str = "sse-get-resume-token";
 
 /// Short max connection age for lifecycle tests.
 ///
@@ -104,7 +111,7 @@ async fn test_missing_bearer_token_returns_401() {
     let response = test_client()
         .post(format!("http://{}/mcp", transport.addr))
         .header("Content-Type", "application/json")
-        .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{}}"#)
+        .body(MINIMAL_INITIALIZE_BODY)
         .send()
         .await
         .expect("HTTP request must succeed");
@@ -140,7 +147,7 @@ async fn test_valid_bearer_token_passes_auth() {
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {RAW_TOKEN_VALID}"))
         .header("Accept", "text/event-stream, application/json")
-        .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#)
+        .body(INITIALIZE_BODY)
         .send()
         .await
         .expect("HTTP request must succeed");
@@ -161,11 +168,10 @@ async fn test_expired_token_returns_401() {
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
-    let expired_raw = "expired-token-value";
     seed_auth(
         &pool,
         "user:expired-token",
-        expired_raw,
+        RAW_TOKEN_EXPIRED,
         -chrono::Duration::hours(1),
     )
     .await;
@@ -175,8 +181,8 @@ async fn test_expired_token_returns_401() {
     let response = test_client()
         .post(format!("http://{}/mcp", transport.addr))
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {expired_raw}"))
-        .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{}}"#)
+        .header("Authorization", format!("Bearer {RAW_TOKEN_EXPIRED}"))
+        .body(MINIMAL_INITIALIZE_BODY)
         .send()
         .await
         .expect("HTTP request must succeed");
@@ -221,7 +227,7 @@ async fn test_max_connection_age_closes_stream() {
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {RAW_TOKEN_MAX_AGE}"))
         .header("Accept", "text/event-stream, application/json")
-        .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#)
+        .body(INITIALIZE_BODY)
         .send()
         .await
         .expect("HTTP request must succeed");
@@ -272,7 +278,7 @@ async fn test_idle_timeout_closes_stream() {
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {RAW_TOKEN_IDLE}"))
         .header("Accept", "text/event-stream, application/json")
-        .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#)
+        .body(INITIALIZE_BODY)
         .send()
         .await
         .expect("HTTP request must succeed");
@@ -310,13 +316,12 @@ async fn test_underprovisioned_principal_sees_minimal_tools() {
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
-    let spy_token = "spy-undercover-monitor-token";
     let granted_scopes = vec![Scope::parse("tribal.jobs:read").expect("valid scope")];
 
     seed_scoped_auth(
         &pool,
         "spy:undercover-monitor",
-        spy_token,
+        RAW_TOKEN_SPY,
         chrono::Duration::hours(1),
         granted_scopes.clone(),
     )
@@ -324,7 +329,7 @@ async fn test_underprovisioned_principal_sees_minimal_tools() {
 
     let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
 
-    let mut mcp = McpTestClient::new(transport.addr, spy_token);
+    let mut mcp = McpTestClient::new(transport.addr, RAW_TOKEN_SPY);
     mcp.initialise().await;
     assert_tool_visibility(&mut mcp, &granted_scopes).await;
 
@@ -345,12 +350,17 @@ async fn test_get_to_existing_session_returns_sse_stream() {
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
-    let token = "sse-get-stream-token";
-    seed_auth(&pool, "user:get-stream", token, chrono::Duration::hours(1)).await;
+    seed_auth(
+        &pool,
+        "user:get-stream",
+        RAW_TOKEN_GET_STREAM,
+        chrono::Duration::hours(1),
+    )
+    .await;
 
     let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
 
-    let mut mcp = McpTestClient::new(transport.addr, token);
+    let mut mcp = McpTestClient::new(transport.addr, RAW_TOKEN_GET_STREAM);
     mcp.initialise().await;
 
     let response = mcp.get().await;
@@ -380,11 +390,10 @@ async fn test_get_without_session_id_returns_400() {
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
-    let token = "sse-get-no-session-token";
     seed_auth(
         &pool,
         "user:get-no-session",
-        token,
+        RAW_TOKEN_GET_NO_SESSION,
         chrono::Duration::hours(1),
     )
     .await;
@@ -392,7 +401,7 @@ async fn test_get_without_session_id_returns_400() {
     let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
 
     // Create a client but do NOT initialise — no session ID.
-    let mcp = McpTestClient::new(transport.addr, token);
+    let mcp = McpTestClient::new(transport.addr, RAW_TOKEN_GET_NO_SESSION);
     let response = mcp.get().await;
 
     assert_eq!(
@@ -412,11 +421,10 @@ async fn test_get_with_unknown_session_id_returns_404() {
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
-    let token = "sse-get-unknown-session-token";
     seed_auth(
         &pool,
         "user:get-unknown-session",
-        token,
+        RAW_TOKEN_GET_UNKNOWN,
         chrono::Duration::hours(1),
     )
     .await;
@@ -424,14 +432,14 @@ async fn test_get_with_unknown_session_id_returns_404() {
     let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
 
     // Fabricate a client with a bogus session ID.
-    let mut mcp = McpTestClient::new(transport.addr, token);
+    let mut mcp = McpTestClient::new(transport.addr, RAW_TOKEN_GET_UNKNOWN);
     mcp.initialise().await;
 
     // Replace the real session ID with a nonexistent one.
     let fake_client = test_client();
     let response = fake_client
         .get(format!("http://{}/mcp", transport.addr))
-        .header("Authorization", format!("Bearer {token}"))
+        .header("Authorization", format!("Bearer {RAW_TOKEN_GET_UNKNOWN}"))
         .header("Accept", "text/event-stream")
         .header("Mcp-Session-Id", "nonexistent-session-id")
         .send()
@@ -457,12 +465,17 @@ async fn test_get_with_last_event_id_returns_sse_stream() {
     let ct = CancellationToken::new();
     let state = test_app_state(pool.clone(), ct.clone());
 
-    let token = "sse-get-resume-token";
-    seed_auth(&pool, "user:get-resume", token, chrono::Duration::hours(1)).await;
+    seed_auth(
+        &pool,
+        "user:get-resume",
+        RAW_TOKEN_GET_RESUME,
+        chrono::Duration::hours(1),
+    )
+    .await;
 
     let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
 
-    let mut mcp = McpTestClient::new(transport.addr, token);
+    let mut mcp = McpTestClient::new(transport.addr, RAW_TOKEN_GET_RESUME);
     mcp.initialise().await;
 
     // Resume from event ID "0" (the priming event ID assigned during
