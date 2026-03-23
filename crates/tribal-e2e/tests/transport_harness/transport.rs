@@ -2,7 +2,7 @@
 
 use std::{future::Future, net::SocketAddr, time::Duration};
 
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tribal_config::ServerConfig;
 
@@ -55,23 +55,27 @@ where
         runner(task_ct, server_config, listener).await;
     });
 
-    // Wait until the server is accepting connections.  Uses a
-    // 3-second deadline with increasing backoff to tolerate slow CI.
+    // Wait until the server is serving HTTP requests.  A bare TCP
+    // connect can succeed before the axum stack is ready, so we probe
+    // with an actual HTTP request — any response (even 401/400) proves
+    // the stack is up.  Uses a 3-second deadline with increasing
+    // backoff to tolerate slow CI.
+    let probe_client = test_client();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     let mut interval = Duration::from_millis(10);
     let mut last_error = None;
 
     while tokio::time::Instant::now() < deadline {
-        match TcpStream::connect(addr).await {
-            Ok(_) => return TransportHandle { addr, ct, join },
-            Err(err) => last_error = Some(err),
-        }
+        let Err(err) = probe_client.get(format!("http://{addr}/mcp")).send().await else {
+            return TransportHandle { addr, ct, join };
+        };
+        last_error = Some(err.to_string());
         tokio::time::sleep(interval).await;
         interval = (interval * 2).min(Duration::from_millis(200));
     }
     panic!(
         "transport did not become ready within 3s; last error: {}",
-        last_error.map_or_else(|| "none".to_owned(), |e| e.to_string()),
+        last_error.unwrap_or_else(|| "none".to_owned()),
     );
 }
 

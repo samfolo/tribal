@@ -221,23 +221,23 @@ where
                 .map(String::from)
         });
 
-        // Only register the tracker for successful responses.  Error
-        // responses (e.g. 404 for an unknown session) should not create
-        // registry entries — those bodies are non-SSE and would never
-        // be dropped via PinnedDrop cleanup, leading to orphaned entries.
-        if response.status().is_success()
+        let is_sse = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.starts_with(SSE_CONTENT_TYPE_PREFIX));
+
+        // Only register the tracker for successful SSE responses.
+        // Non-SSE and error responses have no PinnedDrop cleanup, so
+        // inserting for them would leak orphaned registry entries.
+        if is_sse
+            && response.status().is_success()
             && let Some(id) = &session_id
         {
             this.sessions
                 .entry(id.clone())
                 .or_insert_with(|| this.tracker.clone());
         }
-
-        let is_sse = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|ct| ct.starts_with(SSE_CONTENT_TYPE_PREFIX));
 
         let response = if is_sse {
             response.map(|body| MaybeSseLifecycleBody::Sse {
@@ -306,6 +306,11 @@ pin_project! {
     /// frame content) and inbound client requests (detected via the shared
     /// [`ActivityTracker`]).
     ///
+    /// **Polling caveat**: deadlines are only checked when `poll_frame`
+    /// is called.  If the consumer stops polling (e.g. TCP backpressure),
+    /// the connection can outlive the configured limits until polling
+    /// resumes.  In practice, rmcp's keepalive ensures regular polling.
+    ///
     /// Removes its entry from the session registry on drop, guaranteeing
     /// cleanup regardless of how the body closes (deadline expiry, inner
     /// stream end, error, or abrupt disconnect).
@@ -347,8 +352,11 @@ impl<B> SseLifecycleBody<B> {
         let last_seen_activity = activity_tracker.count();
         Self {
             inner,
-            max_age_deadline: tokio::time::sleep_until(now + max_connection_age),
-            idle_deadline: tokio::time::sleep_until(now + idle_timeout),
+            max_age_deadline: tokio::time::sleep_until(saturating_deadline(
+                now,
+                max_connection_age,
+            )),
+            idle_deadline: tokio::time::sleep_until(saturating_deadline(now, idle_timeout)),
             idle_timeout,
             activity_tracker,
             last_seen_activity,
@@ -392,7 +400,7 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
             *this.last_seen_activity = current_activity;
             this.idle_deadline
                 .as_mut()
-                .reset(Instant::now() + *this.idle_timeout);
+                .reset(saturating_deadline(Instant::now(), *this.idle_timeout));
         }
 
         // Check idle timeout deadline.
@@ -413,7 +421,7 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
                 {
                     this.idle_deadline
                         .as_mut()
-                        .reset(Instant::now() + *this.idle_timeout);
+                        .reset(saturating_deadline(Instant::now(), *this.idle_timeout));
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
@@ -429,6 +437,11 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Computes `base + duration`, falling back to `base` on overflow.
+fn saturating_deadline(base: Instant, duration: Duration) -> Instant {
+    base.checked_add(duration).unwrap_or(base)
+}
 
 /// Returns `true` if the frame bytes represent a real SSE event (not just a
 /// keepalive comment).
