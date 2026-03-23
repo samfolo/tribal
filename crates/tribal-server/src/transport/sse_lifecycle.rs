@@ -6,6 +6,10 @@
 use std::{
     future::Future,
     pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll, ready},
     time::Duration,
 };
@@ -42,14 +46,46 @@ const CLOSURE_REASON_MAX_AGE: &str = "max_connection_age";
 const CLOSURE_REASON_IDLE: &str = "idle_timeout";
 
 // ---------------------------------------------------------------------------
+// Activity tracker
+// ---------------------------------------------------------------------------
+
+/// Shared counter that tracks inbound request activity.
+///
+/// The SSE lifecycle service increments this on every inbound request.
+/// The SSE lifecycle body checks it in `poll_frame` and resets the
+/// idle deadline when new activity is detected.  This ensures inbound
+/// client requests (not just outbound SSE events) prevent the idle
+/// timeout from firing.
+#[derive(Clone)]
+pub(super) struct ActivityTracker(Arc<AtomicU64>);
+
+impl ActivityTracker {
+    pub(super) fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(0)))
+    }
+
+    /// Records inbound activity.  Called by the service on every
+    /// inbound request.
+    fn record(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Returns the current activity count.
+    fn count(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Layer
 // ---------------------------------------------------------------------------
 
 /// Tower layer that wraps SSE responses with lifecycle policies.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct SseLifecycleLayer {
     max_connection_age: Duration,
     idle_timeout: Duration,
+    activity_tracker: ActivityTracker,
 }
 
 impl SseLifecycleLayer {
@@ -57,6 +93,7 @@ impl SseLifecycleLayer {
         Self {
             max_connection_age,
             idle_timeout,
+            activity_tracker: ActivityTracker::new(),
         }
     }
 }
@@ -69,6 +106,7 @@ impl<S> Layer<S> for SseLifecycleLayer {
             inner,
             max_connection_age: self.max_connection_age,
             idle_timeout: self.idle_timeout,
+            activity_tracker: self.activity_tracker.clone(),
         }
     }
 }
@@ -78,11 +116,12 @@ impl<S> Layer<S> for SseLifecycleLayer {
 // ---------------------------------------------------------------------------
 
 /// Tower service that wraps SSE response bodies with lifecycle enforcement.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct SseLifecycleService<S> {
     inner: S,
     max_connection_age: Duration,
     idle_timeout: Duration,
+    activity_tracker: ActivityTracker,
 }
 
 impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for SseLifecycleService<S>
@@ -100,10 +139,13 @@ where
     }
 
     fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
+        self.activity_tracker.record();
+
         SseLifecycleFuture {
             inner: self.inner.call(req),
             max_connection_age: self.max_connection_age,
             idle_timeout: self.idle_timeout,
+            activity_tracker: self.activity_tracker.clone(),
         }
     }
 }
@@ -120,6 +162,7 @@ pin_project! {
         inner: F,
         max_connection_age: Duration,
         idle_timeout: Duration,
+        activity_tracker: ActivityTracker,
     }
 }
 
@@ -142,7 +185,12 @@ where
 
         let response = if is_sse {
             response.map(|body| MaybeSseLifecycleBody::Sse {
-                inner: SseLifecycleBody::new(body, *this.max_connection_age, *this.idle_timeout),
+                inner: SseLifecycleBody::new(
+                    body,
+                    *this.max_connection_age,
+                    *this.idle_timeout,
+                    this.activity_tracker.clone(),
+                ),
             })
         } else {
             response.map(|inner| MaybeSseLifecycleBody::Passthrough { inner })
@@ -195,6 +243,10 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for MaybeSseLifecycleBody
 pin_project! {
     /// Body wrapper that enforces max connection age and idle timeout on an
     /// SSE stream.
+    ///
+    /// The idle deadline resets on both outbound real events (detected via
+    /// frame content) and inbound client requests (detected via the shared
+    /// [`ActivityTracker`]).
     pub(super) struct SseLifecycleBody<B> {
         #[pin]
         inner: B,
@@ -203,18 +255,28 @@ pin_project! {
         #[pin]
         idle_deadline: Sleep,
         idle_timeout: Duration,
+        activity_tracker: ActivityTracker,
+        last_seen_activity: u64,
         closed: bool,
     }
 }
 
 impl<B> SseLifecycleBody<B> {
-    fn new(inner: B, max_connection_age: Duration, idle_timeout: Duration) -> Self {
+    fn new(
+        inner: B,
+        max_connection_age: Duration,
+        idle_timeout: Duration,
+        activity_tracker: ActivityTracker,
+    ) -> Self {
         let now = Instant::now();
+        let last_seen_activity = activity_tracker.count();
         Self {
             inner,
             max_age_deadline: tokio::time::sleep_until(now + max_connection_age),
             idle_deadline: tokio::time::sleep_until(now + idle_timeout),
             idle_timeout,
+            activity_tracker,
+            last_seen_activity,
             closed: false,
         }
     }
@@ -242,6 +304,18 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
             );
             *this.closed = true;
             return Poll::Ready(None);
+        }
+
+        // Reset idle deadline if inbound requests arrived since the
+        // last check.  This ensures client-to-server activity (POST
+        // requests routed through the session) prevents the idle
+        // timeout from firing — not just server-to-client events.
+        let current_activity = this.activity_tracker.count();
+        if current_activity != *this.last_seen_activity {
+            *this.last_seen_activity = current_activity;
+            this.idle_deadline
+                .as_mut()
+                .reset(Instant::now() + *this.idle_timeout);
         }
 
         // Check idle timeout deadline.
@@ -401,7 +475,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_body_closes_on_max_age() {
         let body = MockBody::from_frames(vec![]);
-        let mut body = Box::pin(SseLifecycleBody::new(body, TEST_DEADLINE, FAR_FUTURE));
+        let mut body = Box::pin(SseLifecycleBody::new(
+            body,
+            TEST_DEADLINE,
+            FAR_FUTURE,
+            ActivityTracker::new(),
+        ));
 
         tokio::time::advance(JUST_AFTER_DEADLINE).await;
 
@@ -412,7 +491,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_body_closes_on_idle_timeout() {
         let body = MockBody::from_frames(vec![]);
-        let mut body = Box::pin(SseLifecycleBody::new(body, FAR_FUTURE, TEST_DEADLINE));
+        let mut body = Box::pin(SseLifecycleBody::new(
+            body,
+            FAR_FUTURE,
+            TEST_DEADLINE,
+            ActivityTracker::new(),
+        ));
 
         tokio::time::advance(JUST_AFTER_DEADLINE).await;
 
@@ -427,7 +511,12 @@ mod tests {
     async fn test_body_resets_idle_on_data_event() {
         let frames = vec![Frame::data(Bytes::from_static(b"data: hello\n\n"))];
         let body = MockBody::from_frames(frames);
-        let mut body = Box::pin(SseLifecycleBody::new(body, FAR_FUTURE, TEST_DEADLINE));
+        let mut body = Box::pin(SseLifecycleBody::new(
+            body,
+            FAR_FUTURE,
+            TEST_DEADLINE,
+            ActivityTracker::new(),
+        ));
 
         // Advance to just before the idle deadline, then receive a data
         // frame — this resets the idle timer.
@@ -451,7 +540,12 @@ mod tests {
     async fn test_body_does_not_reset_idle_on_comment() {
         let frames = vec![Frame::data(Bytes::from_static(b":keepalive\n\n"))];
         let body = MockBody::from_frames(frames);
-        let mut body = Box::pin(SseLifecycleBody::new(body, FAR_FUTURE, TEST_DEADLINE));
+        let mut body = Box::pin(SseLifecycleBody::new(
+            body,
+            FAR_FUTURE,
+            TEST_DEADLINE,
+            ActivityTracker::new(),
+        ));
 
         // Advance to just before the idle deadline, receive a comment
         // frame — this should NOT reset the idle timer.
@@ -468,6 +562,38 @@ mod tests {
             "stream should be closed after idle timeout"
         );
         assert!(body.closed, "body should be closed by idle timeout");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_body_resets_idle_on_inbound_activity() {
+        let body = MockBody::from_frames(vec![]);
+        let tracker = ActivityTracker::new();
+        let mut body = Box::pin(SseLifecycleBody::new(
+            body,
+            FAR_FUTURE,
+            TEST_DEADLINE,
+            tracker.clone(),
+        ));
+
+        // Advance to just before the idle deadline, then simulate an
+        // inbound request by recording activity on the tracker.
+        tokio::time::advance(JUST_BEFORE_DEADLINE).await;
+        tracker.record();
+
+        // Poll to let the body observe the tracker update and reset
+        // the idle deadline.
+        let frame = std::future::poll_fn(|cx| Pin::as_mut(&mut body).poll_frame(cx)).await;
+        assert!(frame.is_none(), "inner body exhausted");
+
+        // Advance past the original deadline.  The tracker reset
+        // should keep the stream alive.
+        tokio::time::advance(PAST_ORIGINAL_BUT_WITHIN_RESET).await;
+        let frame = std::future::poll_fn(|cx| Pin::as_mut(&mut body).poll_frame(cx)).await;
+        assert!(frame.is_none(), "inner body still exhausted");
+        assert!(
+            !body.closed,
+            "lifecycle layer should not have closed the stream",
+        );
     }
 
     // -- MaybeSseLifecycleBody dispatch -------------------------------------
