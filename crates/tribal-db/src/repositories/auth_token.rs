@@ -113,6 +113,45 @@ pub trait AuthTokenRepository {
         id: AuthTokenId,
         revoked_at: DateTime<Utc>,
     ) -> Result<AuthToken, DbError>;
+
+    /// Returns all auth tokens, ordered by `created_at DESC`.
+    ///
+    /// Returns an empty vec when no tokens exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<AuthToken>, DbError>;
+
+    /// Finds tokens whose hash starts with the given prefix.
+    ///
+    /// Returns a vec because a short prefix may match multiple tokens.
+    /// The caller is responsible for deciding how to handle zero, one,
+    /// or ambiguous matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_hash_prefix(
+        &self,
+        conn: &mut PgConnection,
+        prefix: &str,
+    ) -> Result<Vec<AuthToken>, DbError>;
+
+    /// Batch-revokes all active tokens, optionally filtered by principal.
+    ///
+    /// Only tokens with `revoked_at IS NULL` are affected. Returns the
+    /// count of newly-revoked tokens.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn revoke_all(
+        &self,
+        conn: &mut PgConnection,
+        principal_id: Option<PrincipalId>,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64, DbError>;
 }
 
 // ---------------------------------------------------------------------------
