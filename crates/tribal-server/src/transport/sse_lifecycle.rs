@@ -221,12 +221,16 @@ where
                 .map(String::from)
         });
 
-        if let Some(id) = &session_id {
-            // Insert is idempotent — existing sessions get the same
-            // tracker back; new sessions (initialize) are registered.
-            this.sessions
-                .entry(id.clone())
-                .or_insert_with(|| this.tracker.clone());
+        // Only register the tracker for successful responses.  Error
+        // responses (e.g. 404 for an unknown session) should not create
+        // registry entries — those bodies are non-SSE and would never
+        // be dropped via PinnedDrop cleanup, leading to orphaned entries.
+        if response.status().is_success() {
+            if let Some(id) = &session_id {
+                this.sessions
+                    .entry(id.clone())
+                    .or_insert_with(|| this.tracker.clone());
+            }
         }
 
         let is_sse = response
@@ -323,7 +327,7 @@ pin_project! {
     impl<B> PinnedDrop for SseLifecycleBody<B> {
         fn drop(this: Pin<&mut Self>) {
             let this = this.project();
-            if let Some(id) = this.session_id {
+            if let Some(id) = this.session_id.take() {
                 this.sessions.remove(id.as_str());
             }
         }
