@@ -39,7 +39,7 @@ pub use provider_kind::{
     DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL, ProviderKind,
 };
 pub use root::{TribalConfig, VERSION};
-pub use server::{DEFAULT_BIND_ADDRESS, ServerConfig, SseConfig};
+pub use server::{DEFAULT_BIND_ADDRESS, MAX_LIFECYCLE_DURATION_MS, ServerConfig, SseConfig};
 pub use telemetry::{FileRotation, TelemetryConfig};
 pub use transport_kind::TransportKind;
 pub use worker::WorkerConfig;
