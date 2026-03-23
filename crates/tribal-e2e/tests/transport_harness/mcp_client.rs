@@ -286,6 +286,13 @@ async fn read_sse_jsonrpc_result(response: &mut reqwest::Response) -> serde_json
                     if value.get("result").is_some() {
                         return value;
                     }
+                    if value.get("error").is_some() {
+                        panic!(
+                            "server returned JSON-RPC error: {}",
+                            serde_json::to_string_pretty(&value)
+                                .unwrap_or_else(|_| value.to_string()),
+                        );
+                    }
                 }
             }
             Ok(Ok(None)) => {
