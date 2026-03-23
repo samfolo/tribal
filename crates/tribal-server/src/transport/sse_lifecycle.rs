@@ -261,13 +261,13 @@ where
             .and_then(|v| v.to_str().ok())
             .is_some_and(|ct| ct.starts_with(SSE_CONTENT_TYPE_PREFIX));
 
-        // Only register and acquire for successful SSE responses.
-        // Non-SSE and error responses have no PinnedDrop cleanup, so
-        // inserting for them would leak orphaned registry entries.
-        if is_sse
-            && response.status().is_success()
-            && let Some(id) = &session_id
-        {
+        // Register and acquire for all SSE responses with a session ID.
+        // Non-SSE responses are not wrapped in SseLifecycleBody and
+        // have no PinnedDrop cleanup; inserting for them would leak
+        // orphaned registry entries.  The acquire must be symmetric
+        // with the release in PinnedDrop — gating on is_success()
+        // would cause underflow if a non-success SSE body drops.
+        if is_sse && let Some(id) = &session_id {
             let entry = this
                 .sessions
                 .entry(id.clone())
