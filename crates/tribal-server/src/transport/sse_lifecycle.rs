@@ -368,15 +368,16 @@ pin_project! {
     impl<B> PinnedDrop for SseLifecycleBody<B> {
         fn drop(this: Pin<&mut Self>) {
             let this = this.project();
-            // Only remove the registry entry when the last active
-            // SSE body for this session drops.  Other bodies (e.g.
-            // a long-lived GET stream) may still depend on it.
+            // Decrement the active-body count and, if this was the
+            // last body, remove the entry atomically while holding
+            // the DashMap shard lock.  This prevents a concurrent
+            // acquire from racing between release and remove.
             if let Some(id) = this.session_id.take()
-                && let Some(entry) = this.sessions.get(&id)
-                && entry.release()
+                && let dashmap::mapref::entry::Entry::Occupied(entry) =
+                    this.sessions.entry(id)
+                && entry.get().release()
             {
-                drop(entry);
-                this.sessions.remove(id.as_str());
+                entry.remove_entry();
             }
         }
     }
