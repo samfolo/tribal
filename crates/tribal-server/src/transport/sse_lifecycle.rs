@@ -302,9 +302,9 @@ pin_project! {
     /// frame content) and inbound client requests (detected via the shared
     /// [`ActivityTracker`]).
     ///
-    /// When the body closes (deadline expiry or inner stream end), it
-    /// removes its entry from the session registry to prevent unbounded
-    /// memory growth.
+    /// Removes its entry from the session registry on drop, guaranteeing
+    /// cleanup regardless of how the body closes (deadline expiry, inner
+    /// stream end, error, or abrupt disconnect).
     pub(super) struct SseLifecycleBody<B> {
         #[pin]
         inner: B,
@@ -318,6 +318,15 @@ pin_project! {
         session_id: Option<String>,
         sessions: SessionRegistry,
         closed: bool,
+    }
+
+    impl<B> PinnedDrop for SseLifecycleBody<B> {
+        fn drop(this: Pin<&mut Self>) {
+            let this = this.project();
+            if let Some(id) = this.session_id {
+                this.sessions.remove(id.as_str());
+            }
+        }
     }
 }
 
@@ -344,13 +353,6 @@ impl<B> SseLifecycleBody<B> {
             closed: false,
         }
     }
-
-    /// Removes this session's entry from the registry.
-    fn evict_session(session_id: Option<&str>, sessions: &SessionRegistry) {
-        if let Some(id) = session_id {
-            sessions.remove(id);
-        }
-    }
 }
 
 impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
@@ -374,7 +376,6 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
                 "SSE connection closed",
             );
             *this.closed = true;
-            Self::evict_session(this.session_id.as_deref(), this.sessions);
             return Poll::Ready(None);
         }
 
@@ -397,7 +398,6 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
                 "SSE connection closed",
             );
             *this.closed = true;
-            Self::evict_session(this.session_id.as_deref(), this.sessions);
             return Poll::Ready(None);
         }
 
@@ -413,12 +413,7 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
-            other => {
-                if other.is_none() {
-                    Self::evict_session(this.session_id.as_deref(), this.sessions);
-                }
-                Poll::Ready(other)
-            }
+            other => Poll::Ready(other),
         }
     }
 
