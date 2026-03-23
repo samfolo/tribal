@@ -330,3 +330,159 @@ async fn test_underprovisioned_principal_sees_minimal_tools() {
 
     transport.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// GET stream tests
+// ---------------------------------------------------------------------------
+
+/// GET to an existing session returns an SSE stream (the reconnect
+/// path).  This is the most SSE-specific codepath — it opens a
+/// standalone event stream for an already-initialised session.
+#[tokio::test]
+async fn test_get_to_existing_session_returns_sse_stream() {
+    let _lock = serial_lock().await;
+    let pool = fresh_pool().await;
+    let ct = CancellationToken::new();
+    let state = test_app_state(pool.clone(), ct.clone());
+
+    let token = "sse-get-stream-token";
+    seed_auth(&pool, "user:get-stream", token, chrono::Duration::hours(1)).await;
+
+    let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
+
+    let mut mcp = McpTestClient::new(transport.addr, token);
+    mcp.initialise().await;
+
+    let response = mcp.get().await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "GET to existing session must return 200",
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        "text/event-stream",
+        "GET response must be an SSE stream",
+    );
+
+    transport.shutdown().await;
+}
+
+/// GET without a session ID is rejected with 400.
+#[tokio::test]
+async fn test_get_without_session_id_returns_400() {
+    let _lock = serial_lock().await;
+    let pool = fresh_pool().await;
+    let ct = CancellationToken::new();
+    let state = test_app_state(pool.clone(), ct.clone());
+
+    let token = "sse-get-no-session-token";
+    seed_auth(
+        &pool,
+        "user:get-no-session",
+        token,
+        chrono::Duration::hours(1),
+    )
+    .await;
+
+    let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
+
+    // Create a client but do NOT initialise — no session ID.
+    let mcp = McpTestClient::new(transport.addr, token);
+    let response = mcp.get().await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "GET without session ID must return 400",
+    );
+
+    transport.shutdown().await;
+}
+
+/// GET with a session ID that does not exist returns 404.
+#[tokio::test]
+async fn test_get_with_unknown_session_id_returns_404() {
+    let _lock = serial_lock().await;
+    let pool = fresh_pool().await;
+    let ct = CancellationToken::new();
+    let state = test_app_state(pool.clone(), ct.clone());
+
+    let token = "sse-get-unknown-session-token";
+    seed_auth(
+        &pool,
+        "user:get-unknown-session",
+        token,
+        chrono::Duration::hours(1),
+    )
+    .await;
+
+    let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
+
+    // Fabricate a client with a bogus session ID.
+    let mut mcp = McpTestClient::new(transport.addr, token);
+    mcp.initialise().await;
+
+    // Replace the real session ID with a nonexistent one.
+    let fake_client = test_client();
+    let response = fake_client
+        .get(format!("http://{}/mcp", transport.addr))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "text/event-stream")
+        .header("Mcp-Session-Id", "nonexistent-session-id")
+        .send()
+        .await
+        .expect("GET request must succeed");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "GET with unknown session ID must return 404",
+    );
+
+    transport.shutdown().await;
+}
+
+/// GET with `Last-Event-Id` to an existing session returns an SSE
+/// stream (the resume path).  Verifies the server accepts the header
+/// and responds with a valid SSE stream rather than an error.
+#[tokio::test]
+async fn test_get_with_last_event_id_returns_sse_stream() {
+    let _lock = serial_lock().await;
+    let pool = fresh_pool().await;
+    let ct = CancellationToken::new();
+    let state = test_app_state(pool.clone(), ct.clone());
+
+    let token = "sse-get-resume-token";
+    seed_auth(&pool, "user:get-resume", token, chrono::Duration::hours(1)).await;
+
+    let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
+
+    let mut mcp = McpTestClient::new(transport.addr, token);
+    mcp.initialise().await;
+
+    // Resume from event ID "0" (the priming event ID assigned during
+    // initialize).  The server should accept this and return an SSE
+    // stream with any cached events after that ID.
+    let response = mcp.get_with_last_event_id("0").await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "GET with Last-Event-Id must return 200",
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        "text/event-stream",
+        "resume response must be an SSE stream",
+    );
+
+    transport.shutdown().await;
+}
