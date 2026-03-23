@@ -78,14 +78,44 @@ impl ActivityTracker {
     }
 }
 
+/// Per-session state: activity tracker and active-body reference count.
+///
+/// Multiple SSE bodies can exist for the same session (e.g. a
+/// long-lived GET event stream alongside short-lived POST responses).
+/// The registry entry is only removed when the last body drops.
+#[derive(Clone)]
+struct SessionEntry {
+    tracker: ActivityTracker,
+    active_bodies: Arc<AtomicU64>,
+}
+
+impl SessionEntry {
+    fn new(tracker: ActivityTracker) -> Self {
+        Self {
+            tracker,
+            active_bodies: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Increments the active body count.
+    fn acquire(&self) {
+        self.active_bodies.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrements the active body count.  Returns `true` if this was
+    /// the last active body (count reached zero).
+    fn release(&self) -> bool {
+        self.active_bodies.fetch_sub(1, Ordering::Relaxed) == 1
+    }
+}
+
 /// Per-session activity tracker registry.
 ///
-/// Maps MCP session IDs to their activity trackers.  Entries are
+/// Maps MCP session IDs to their session entries.  Entries are
 /// created when a session is established (initialize response) and
 /// looked up on subsequent requests carrying `Mcp-Session-Id`.
-/// Entries are removed when the SSE lifecycle body closes (deadline
-/// expiry or graceful shutdown).
-type SessionRegistry = Arc<DashMap<String, ActivityTracker>>;
+/// Entries are removed when the last SSE body for that session drops.
+type SessionRegistry = Arc<DashMap<String, SessionEntry>>;
 
 /// MCP session ID header name.
 const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
@@ -165,7 +195,11 @@ where
 
         let tracker = session_id
             .as_ref()
-            .and_then(|id| self.sessions.get(id).map(|entry| entry.value().clone()))
+            .and_then(|id| {
+                self.sessions
+                    .get(id)
+                    .map(|entry| entry.value().tracker.clone())
+            })
             .unwrap_or_else(ActivityTracker::new);
 
         tracker.record();
@@ -227,16 +261,18 @@ where
             .and_then(|v| v.to_str().ok())
             .is_some_and(|ct| ct.starts_with(SSE_CONTENT_TYPE_PREFIX));
 
-        // Only register the tracker for successful SSE responses.
+        // Only register and acquire for successful SSE responses.
         // Non-SSE and error responses have no PinnedDrop cleanup, so
         // inserting for them would leak orphaned registry entries.
         if is_sse
             && response.status().is_success()
             && let Some(id) = &session_id
         {
-            this.sessions
+            let entry = this
+                .sessions
                 .entry(id.clone())
-                .or_insert_with(|| this.tracker.clone());
+                .or_insert_with(|| SessionEntry::new(this.tracker.clone()));
+            entry.acquire();
         }
 
         let response = if is_sse {
@@ -332,7 +368,14 @@ pin_project! {
     impl<B> PinnedDrop for SseLifecycleBody<B> {
         fn drop(this: Pin<&mut Self>) {
             let this = this.project();
-            if let Some(id) = this.session_id.take() {
+            // Only remove the registry entry when the last active
+            // SSE body for this session drops.  Other bodies (e.g.
+            // a long-lived GET stream) may still depend on it.
+            if let Some(id) = this.session_id.take()
+                && let Some(entry) = this.sessions.get(&id)
+                && entry.release()
+            {
+                drop(entry);
                 this.sessions.remove(id.as_str());
             }
         }
