@@ -83,7 +83,7 @@ impl App {
                 TokenCommand::Create { .. } => {
                     println!("tribal token create: not yet implemented");
                 }
-                TokenCommand::List => {
+                TokenCommand::List { .. } => {
                     println!("tribal token list: not yet implemented");
                 }
                 TokenCommand::Revoke { .. } => {
