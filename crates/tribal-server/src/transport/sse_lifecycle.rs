@@ -15,6 +15,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use dashmap::DashMap;
 use http::header::CONTENT_TYPE;
 use http_body::Frame;
 use pin_project_lite::pin_project;
@@ -49,11 +50,12 @@ const CLOSURE_REASON_IDLE: &str = "idle_timeout";
 // Activity tracker
 // ---------------------------------------------------------------------------
 
-/// Shared counter that tracks inbound request activity.
+/// Per-session counter that tracks inbound request activity.
 ///
-/// The SSE lifecycle service increments this on every inbound request.
-/// The SSE lifecycle body checks it in `poll_frame` and resets the
-/// idle deadline when new activity is detected.  This ensures inbound
+/// The SSE lifecycle service increments this on every inbound request
+/// that carries the session's `Mcp-Session-Id` header.  The SSE
+/// lifecycle body checks it in `poll_frame` and resets the idle
+/// deadline when new activity is detected.  This ensures inbound
 /// client requests (not just outbound SSE events) prevent the idle
 /// timeout from firing.
 #[derive(Clone)]
@@ -65,7 +67,7 @@ impl ActivityTracker {
     }
 
     /// Records inbound activity.  Called by the service on every
-    /// inbound request.
+    /// inbound request to this session.
     fn record(&self) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
@@ -76,6 +78,20 @@ impl ActivityTracker {
     }
 }
 
+/// Per-session activity tracker registry.
+///
+/// Maps MCP session IDs to their activity trackers.  Entries are
+/// created when a session is established (initialize response) and
+/// looked up on subsequent requests carrying `Mcp-Session-Id`.
+///
+/// Entries are not explicitly cleaned up — at personal scale the
+/// number of sessions is small and each entry is a single `Arc`.  A
+/// production deployment would add eviction on session close.
+type SessionRegistry = Arc<DashMap<String, ActivityTracker>>;
+
+/// MCP session ID header name.
+const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+
 // ---------------------------------------------------------------------------
 // Layer
 // ---------------------------------------------------------------------------
@@ -85,7 +101,7 @@ impl ActivityTracker {
 pub(super) struct SseLifecycleLayer {
     max_connection_age: Duration,
     idle_timeout: Duration,
-    activity_tracker: ActivityTracker,
+    sessions: SessionRegistry,
 }
 
 impl SseLifecycleLayer {
@@ -93,7 +109,7 @@ impl SseLifecycleLayer {
         Self {
             max_connection_age,
             idle_timeout,
-            activity_tracker: ActivityTracker::new(),
+            sessions: Arc::new(DashMap::new()),
         }
     }
 }
@@ -106,7 +122,7 @@ impl<S> Layer<S> for SseLifecycleLayer {
             inner,
             max_connection_age: self.max_connection_age,
             idle_timeout: self.idle_timeout,
-            activity_tracker: self.activity_tracker.clone(),
+            sessions: Arc::clone(&self.sessions),
         }
     }
 }
@@ -121,7 +137,7 @@ pub(super) struct SseLifecycleService<S> {
     inner: S,
     max_connection_age: Duration,
     idle_timeout: Duration,
-    activity_tracker: ActivityTracker,
+    sessions: SessionRegistry,
 }
 
 impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for SseLifecycleService<S>
@@ -139,13 +155,30 @@ where
     }
 
     fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
-        self.activity_tracker.record();
+        // Look up the session's tracker if this request carries a
+        // session ID (all requests after initialize).  For the initial
+        // request, create a fresh tracker — the future will register
+        // it once the response reveals the new session ID.
+        let session_id = req
+            .headers()
+            .get(MCP_SESSION_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        let tracker = session_id
+            .as_ref()
+            .and_then(|id| self.sessions.get(id).map(|entry| entry.value().clone()))
+            .unwrap_or_else(ActivityTracker::new);
+
+        tracker.record();
 
         SseLifecycleFuture {
             inner: self.inner.call(req),
             max_connection_age: self.max_connection_age,
             idle_timeout: self.idle_timeout,
-            activity_tracker: self.activity_tracker.clone(),
+            tracker,
+            request_session_id: session_id,
+            sessions: Arc::clone(&self.sessions),
         }
     }
 }
@@ -162,7 +195,9 @@ pin_project! {
         inner: F,
         max_connection_age: Duration,
         idle_timeout: Duration,
-        activity_tracker: ActivityTracker,
+        tracker: ActivityTracker,
+        request_session_id: Option<String>,
+        sessions: SessionRegistry,
     }
 }
 
@@ -177,6 +212,18 @@ where
         let this = self.project();
         let response = ready!(this.inner.poll(cx))?;
 
+        // If the inbound request had no session ID (initialize), the
+        // response carries the newly-assigned session ID.  Register
+        // the tracker so subsequent requests to this session find it.
+        if this.request_session_id.is_none()
+            && let Some(id) = response
+                .headers()
+                .get(MCP_SESSION_ID_HEADER)
+                .and_then(|v| v.to_str().ok())
+        {
+            this.sessions.insert(id.to_owned(), this.tracker.clone());
+        }
+
         let is_sse = response
             .headers()
             .get(CONTENT_TYPE)
@@ -189,7 +236,7 @@ where
                     body,
                     *this.max_connection_age,
                     *this.idle_timeout,
-                    this.activity_tracker.clone(),
+                    this.tracker.clone(),
                 ),
             })
         } else {
@@ -362,6 +409,15 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
 /// the correct approach — no case folding is needed.
 ///
 /// Comment lines (starting with `:`) and empty lines are not real events.
+///
+/// **Frame-boundary caveat**: this inspects each HTTP body frame
+/// independently.  If an SSE event is split across frames such that the
+/// `data:` prefix spans the boundary, the match fails and the idle
+/// timer is not reset for that event.  In practice rmcp writes complete
+/// events as single frames, so splitting only occurs if an intermediary
+/// re-chunks the stream.  The next complete frame would still reset
+/// the timer, so the worst case is a single missed reset — not a
+/// spurious close.
 fn is_real_event(data: &Bytes) -> bool {
     data.split(|&b| b == b'\n')
         .any(|line| line.starts_with(SSE_DATA_PREFIX) || line.starts_with(SSE_EVENT_PREFIX))
