@@ -23,14 +23,16 @@ pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
 /// Default SSE keepalive interval in milliseconds.
 pub const DEFAULT_KEEPALIVE_INTERVAL_MS: u64 = 30_000;
 
+/// Default terminal watch-entry TTL in seconds.
+pub const DEFAULT_JOB_STATE_TTL_SECONDS: u64 = 300;
+
+// Validation bounds
+
 /// Maximum allowed value for SSE lifecycle durations in milliseconds.
 ///
 /// One week.  Prevents overflow when converting to `std::time::Duration`
 /// and adding to `tokio::time::Instant`.
 pub const MAX_LIFECYCLE_DURATION_MS: u64 = 7 * 24 * 3600 * 1_000;
-
-/// Default terminal watch-entry TTL in seconds.
-pub const DEFAULT_JOB_STATE_TTL_SECONDS: u64 = 300;
 
 /// Default hard watch-entry TTL in seconds.
 pub const DEFAULT_JOB_STATE_HARD_TTL_SECONDS: u64 = 3_600;
