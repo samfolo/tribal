@@ -2,20 +2,19 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, TimeDelta, Utc};
-use sqlx::{Postgres, pool::PoolConnection};
+use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
-use tribal_config::{ConfigError, ERR_TTL_ZERO, TribalConfig, load_config};
-use tribal_db::{
-    AuthTokenRepository, DbError, NewAuthToken, NewPrincipal, PgAuthTokenRepository,
-    PgPrincipalRepository, PrincipalRepository,
-};
-use tribal_domain::{LOCAL_PRINCIPAL_KEY, Principal, full_access_scopes};
+use tribal_config::{TribalConfig, load_config};
+use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, full_access_scopes};
 
-use super::{config_file, output, token};
+use super::{config_file, output};
 use crate::{
     cli::SetupArgs,
-    commands::common::{COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS},
+    commands::common::{
+        COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS, find_or_create_principal,
+        generate_raw_token, ttl_to_delta,
+    },
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
 };
@@ -32,9 +31,6 @@ const POOL_NAME_SETUP: &str = "setup";
 /// Longer than the shared `COMMAND_STATEMENT_TIMEOUT_MS` because setup
 /// runs migrations in addition to inserts.
 const SETUP_STATEMENT_TIMEOUT_MS: u64 = 60_000;
-
-/// Error message for a token TTL that exceeds the representable range.
-const TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -109,10 +105,10 @@ async fn run_async(
         AppError::pool_acquire(POOL_NAME_SETUP, "acquiring setup connection", err)
     })?;
 
-    let principal = find_or_create_principal(&mut conn).await?;
+    let principal = find_or_create_principal(&mut conn, LOCAL_PRINCIPAL_KEY).await?;
     output::principal(principal.principal_key());
 
-    let raw_token = token::generate_raw_token();
+    let raw_token = generate_raw_token();
     let token_hash = sha256_hex(&raw_token);
 
     let new_token = NewAuthToken::builder()
@@ -136,107 +132,4 @@ async fn run_async(
     output::instructions(&raw_token);
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Finds the `principal:local` principal or creates it if absent.
-///
-/// Handles the TOCTOU race from concurrent setup processes by catching
-/// `UniqueViolation` on insert and falling back to a second lookup.
-async fn find_or_create_principal(
-    conn: &mut PoolConnection<Postgres>,
-) -> Result<Principal, AppError> {
-    if let Some(existing) = PgPrincipalRepository
-        .find_by_key(conn, LOCAL_PRINCIPAL_KEY)
-        .await
-        .map_err(|source| AppError::Database { source })?
-    {
-        return Ok(existing);
-    }
-
-    let new = NewPrincipal::builder()
-        .principal_key(LOCAL_PRINCIPAL_KEY.to_owned())
-        .build();
-
-    match PgPrincipalRepository.insert(conn, &new).await {
-        Ok(principal) => Ok(principal),
-        Err(DbError::UniqueViolation { .. }) => PgPrincipalRepository
-            .find_by_key(conn, LOCAL_PRINCIPAL_KEY)
-            .await
-            .map_err(|source| AppError::Database { source })?
-            .ok_or_else(|| AppError::Database {
-                source: DbError::NotFound {
-                    entity: "principal",
-                    id: LOCAL_PRINCIPAL_KEY.into(),
-                },
-            }),
-        Err(source) => Err(AppError::Database { source }),
-    }
-}
-
-/// Converts a token TTL in hours to a [`TimeDelta`], validating that the
-/// value is non-zero and within the representable range.
-///
-/// # Errors
-///
-/// Returns [`AppError::Config`] if the TTL is zero or exceeds the
-/// representable range for `TimeDelta`.
-fn ttl_to_delta(ttl_hours: u64) -> Result<TimeDelta, AppError> {
-    if ttl_hours == 0 {
-        return Err(AppError::Config {
-            source: ConfigError::ValidationFailed {
-                errors: vec![ERR_TTL_ZERO.into()],
-            },
-        });
-    }
-
-    let hours = i64::try_from(ttl_hours).map_err(|_| AppError::Config {
-        source: ConfigError::ValidationFailed {
-            errors: vec![TTL_OUT_OF_RANGE.into()],
-        },
-    })?;
-
-    TimeDelta::try_hours(hours).ok_or_else(|| AppError::Config {
-        source: ConfigError::ValidationFailed {
-            errors: vec![TTL_OUT_OF_RANGE.into()],
-        },
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // -- TTL conversion -----------------------------------------------------
-
-    #[test]
-    fn test_ttl_to_delta_accepts_default() {
-        let delta = ttl_to_delta(8760).unwrap();
-        assert_eq!(delta, TimeDelta::try_hours(8760).unwrap());
-    }
-
-    #[test]
-    fn test_ttl_to_delta_rejects_zero() {
-        let err = ttl_to_delta(0).unwrap_err();
-        assert!(
-            err.to_string().contains(ERR_TTL_ZERO),
-            "unexpected error: {err}",
-        );
-    }
-
-    #[test]
-    fn test_ttl_to_delta_rejects_overflow() {
-        let err = ttl_to_delta(u64::MAX).unwrap_err();
-        assert!(
-            err.to_string().contains(TTL_OUT_OF_RANGE),
-            "unexpected error: {err}",
-        );
-    }
 }
