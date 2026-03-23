@@ -300,3 +300,287 @@ async fn test_revoke_not_found() {
         "expected NotFound, got: {result:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// find_all
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_find_all_returns_tokens_ordered() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "find-all").await;
+
+    let first = repo
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("first insert");
+
+    shift_timestamp_by_id(
+        &mut txn,
+        "auth_tokens",
+        "created_at",
+        *first.id().inner(),
+        chrono::Duration::hours(-1),
+    )
+    .await;
+
+    let second = repo
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("second insert");
+
+    let results = repo.find_all(&mut txn).await.expect("find_all");
+
+    assert_eq!(results.len(), 2);
+    // Ordered by created_at DESC — the newer token (second) comes first.
+    assert_eq!(results[0].id(), second.id());
+    assert_eq!(results[1].id(), first.id());
+}
+
+#[tokio::test]
+async fn test_find_all_returns_empty_when_no_tokens() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let results = repo.find_all(&mut txn).await.expect("find_all");
+
+    assert!(results.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// find_by_hash_prefix
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_find_by_hash_prefix_returns_matching_token() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "prefix-match").await;
+    let hash = make_token_hash();
+    let prefix = hash.get(..8).expect("hash is 64 chars");
+
+    let token = repo
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(hash.clone())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert");
+
+    let results = repo
+        .find_by_hash_prefix(&mut txn, prefix)
+        .await
+        .expect("find_by_hash_prefix");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id(), token.id());
+}
+
+#[tokio::test]
+async fn test_find_by_hash_prefix_returns_empty_for_unknown() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let results = repo
+        .find_by_hash_prefix(&mut txn, "00000000")
+        .await
+        .expect("find_by_hash_prefix");
+
+    assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn test_find_by_hash_prefix_returns_multiple_on_shared_prefix() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "prefix-multi").await;
+    let shared_prefix = "abcdef00";
+
+    // Insert two tokens whose hashes share the same 8-char prefix.
+    let hash_a = format!("{shared_prefix}{}", &make_token_hash()[8..]);
+    let hash_b = format!("{shared_prefix}{}", &make_token_hash()[8..]);
+
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(hash_a)
+            .principal_id(principal_id)
+            .build(),
+    )
+    .await
+    .expect("insert a");
+
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(hash_b)
+            .principal_id(principal_id)
+            .build(),
+    )
+    .await
+    .expect("insert b");
+
+    let results = repo
+        .find_by_hash_prefix(&mut txn, shared_prefix)
+        .await
+        .expect("find_by_hash_prefix");
+
+    assert_eq!(results.len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// revoke_all
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_revoke_all_revokes_active_tokens() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "revoke-all").await;
+
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(make_token_hash())
+            .principal_id(principal_id)
+            .build(),
+    )
+    .await
+    .expect("insert first");
+
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(make_token_hash())
+            .principal_id(principal_id)
+            .build(),
+    )
+    .await
+    .expect("insert second");
+
+    let count = repo
+        .revoke_all(&mut txn, None, Utc::now().trunc_subsecs(6))
+        .await
+        .expect("revoke_all");
+
+    assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn test_revoke_all_with_principal_filter() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_a = setup_principal(&mut txn, "revoke-all-a").await;
+    let principal_b = setup_principal(&mut txn, "revoke-all-b").await;
+
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(make_token_hash())
+            .principal_id(principal_a)
+            .build(),
+    )
+    .await
+    .expect("insert for a");
+
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(make_token_hash())
+            .principal_id(principal_b)
+            .build(),
+    )
+    .await
+    .expect("insert for b");
+
+    let count = repo
+        .revoke_all(&mut txn, Some(principal_a), Utc::now().trunc_subsecs(6))
+        .await
+        .expect("revoke_all");
+
+    assert_eq!(count, 1, "only principal_a's token should be revoked");
+
+    // Principal b's token should still be active.
+    let b_tokens = repo
+        .find_by_principal_id(&mut txn, principal_b)
+        .await
+        .expect("find");
+    assert!(
+        b_tokens[0].revoked_at().is_none(),
+        "principal_b's token should remain active",
+    );
+}
+
+#[tokio::test]
+async fn test_revoke_all_skips_already_revoked() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "revoke-all-skip").await;
+
+    let token = repo
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .build(),
+        )
+        .await
+        .expect("insert");
+
+    // Pre-revoke this token.
+    repo.revoke(&mut txn, token.id(), Utc::now().trunc_subsecs(6))
+        .await
+        .expect("revoke");
+
+    let count = repo
+        .revoke_all(&mut txn, None, Utc::now().trunc_subsecs(6))
+        .await
+        .expect("revoke_all");
+
+    assert_eq!(count, 0, "already-revoked token should not be counted");
+}
+
+#[tokio::test]
+async fn test_revoke_all_returns_zero_when_no_active_tokens() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let count = repo
+        .revoke_all(&mut txn, None, Utc::now().trunc_subsecs(6))
+        .await
+        .expect("revoke_all");
+
+    assert_eq!(count, 0);
+}
