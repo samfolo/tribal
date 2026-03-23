@@ -20,7 +20,7 @@ use tribal_db::{
     AuthTokenRepository, NewAuthToken, NewPrincipal, PgAuthTokenRepository, PgPrincipalRepository,
     PrincipalRepository,
 };
-use tribal_domain::{PromptVersionId, full_access_scopes};
+use tribal_domain::{PromptVersionId, Scope, full_access_scopes};
 use tribal_inference::{ProviderRegistry, RequestClass};
 use tribal_mcp::{ActivePromptVersions, AppState};
 use tribal_test_utils::{MockEmbeddingProvider, MockInferenceProvider, test_context};
@@ -114,13 +114,23 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
 // Auth seeding
 // ---------------------------------------------------------------------------
 
-/// Seeds a principal and auth token with the given raw token value and
-/// expiry offset from now.
+/// Seeds a principal and auth token with full access scopes.
 pub async fn seed_auth(
     pool: &sqlx::PgPool,
     principal_key: &str,
     raw_token: &str,
     expires_in: chrono::Duration,
+) {
+    seed_scoped_auth(pool, principal_key, raw_token, expires_in, full_access_scopes()).await;
+}
+
+/// Seeds a principal and auth token with the given scopes.
+pub async fn seed_scoped_auth(
+    pool: &sqlx::PgPool,
+    principal_key: &str,
+    raw_token: &str,
+    expires_in: chrono::Duration,
+    scopes: Vec<Scope>,
 ) {
     let mut conn = pool.acquire().await.expect("acquire connection");
 
@@ -140,7 +150,7 @@ pub async fn seed_auth(
             &NewAuthToken::builder()
                 .token_hash(sha256_hex(raw_token))
                 .principal_id(principal.id())
-                .scopes(full_access_scopes())
+                .scopes(scopes)
                 .expires_at(Utc::now() + expires_in)
                 .build(),
         )
@@ -217,4 +227,171 @@ pub fn test_client() -> reqwest::Client {
         .pool_max_idle_per_host(0)
         .build()
         .expect("build reqwest client")
+}
+
+// ---------------------------------------------------------------------------
+// MCP test client
+// ---------------------------------------------------------------------------
+
+/// Timeout for reading an MCP response body.
+///
+/// Well above any realistic handler latency so a passing test never
+/// hits this, but low enough that a broken test fails fast.
+const MCP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Lightweight MCP-over-HTTP client for transport integration tests.
+///
+/// Manages the bearer token, session ID, and JSON-RPC message IDs
+/// internally so test code focuses on assertions rather than protocol
+/// plumbing.
+pub struct McpTestClient {
+    client: reqwest::Client,
+    addr: SocketAddr,
+    token: String,
+    session_id: Option<String>,
+    next_id: u64,
+}
+
+impl McpTestClient {
+    pub fn new(addr: SocketAddr, token: &str) -> Self {
+        Self {
+            client: test_client(),
+            addr,
+            token: token.to_owned(),
+            session_id: None,
+            next_id: 1,
+        }
+    }
+
+    /// Sends an MCP `initialize` request and stores the session ID.
+    ///
+    /// The response body is read (with timeout) to ensure the server
+    /// has fully processed the request before subsequent calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the server does not return 200 or omits the
+    /// `mcp-session-id` header.
+    pub async fn initialise(&mut self) {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "id": self.next_id(),
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0.1" },
+            },
+        });
+
+        let response = self.post(&body).await;
+
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::OK,
+            "initialize must return 200",
+        );
+
+        let session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .expect("initialize response must include mcp-session-id")
+            .to_str()
+            .expect("session ID must be valid UTF-8")
+            .to_owned();
+
+        // Read the body to ensure the server has processed initialize
+        // before we send follow-up requests.
+        let _body = tokio::time::timeout(MCP_RESPONSE_TIMEOUT, response.text())
+            .await
+            .expect("initialize body should arrive within timeout")
+            .expect("initialize body read should succeed");
+
+        self.session_id = Some(session_id);
+    }
+
+    /// Sends an MCP `tools/list` request and returns the tool names
+    /// visible to the authenticated principal.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the session has not been initialised, the server does
+    /// not return 200, or the response body does not contain a valid
+    /// `tools/list` result.
+    pub async fn list_tool_names(&mut self) -> Vec<String> {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "id": self.next_id(),
+            "params": {},
+        });
+
+        let response = self.post(&body).await;
+
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::OK,
+            "tools/list must return 200",
+        );
+
+        let body = tokio::time::timeout(MCP_RESPONSE_TIMEOUT, response.text())
+            .await
+            .expect("tools/list body should arrive within timeout")
+            .expect("tools/list body read should succeed");
+
+        extract_tool_names(&body)
+    }
+
+    async fn post(&self, body: &serde_json::Value) -> reqwest::Response {
+        let mut request = self
+            .client
+            .post(format!("http://{}/mcp", self.addr))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Accept", "text/event-stream, application/json");
+
+        if let Some(session_id) = &self.session_id {
+            request = request.header("Mcp-Session-Id", session_id);
+        }
+
+        request
+            .body(body.to_string())
+            .send()
+            .await
+            .expect("MCP request must succeed")
+    }
+
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+}
+
+/// Extracts tool names from an SSE response body containing a
+/// JSON-RPC `tools/list` result.
+///
+/// Scans for `data:` lines, parses the JSON, and collects tool names
+/// from the `result.tools` array.
+///
+/// # Panics
+///
+/// Panics if the body contains no `data:` line with a valid
+/// `tools/list` result.
+fn extract_tool_names(sse_body: &str) -> Vec<String> {
+    for line in sse_body.lines() {
+        let Some(json_str) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str.trim()) else {
+            continue;
+        };
+        if let Some(tools) = value.pointer("/result/tools").and_then(|t| t.as_array()) {
+            return tools
+                .iter()
+                .filter_map(|t| t["name"].as_str().map(String::from))
+                .collect();
+        }
+    }
+    panic!("no tools/list result found in SSE body:\n{sse_body}");
 }
