@@ -21,9 +21,8 @@ use tribal_db::{
     PrincipalRepository,
 };
 use tribal_domain::{PromptVersionId, Scope, full_access_scopes, is_authorised};
-use tribal_mcp::tool_scope_registry;
 use tribal_inference::{ProviderRegistry, RequestClass};
-use tribal_mcp::{ActivePromptVersions, AppState};
+use tribal_mcp::{ActivePromptVersions, AppState, tool_scope_registry};
 use tribal_test_utils::{MockEmbeddingProvider, MockInferenceProvider, test_context};
 
 // ---------------------------------------------------------------------------
@@ -122,7 +121,14 @@ pub async fn seed_auth(
     raw_token: &str,
     expires_in: chrono::Duration,
 ) {
-    seed_scoped_auth(pool, principal_key, raw_token, expires_in, full_access_scopes()).await;
+    seed_scoped_auth(
+        pool,
+        principal_key,
+        raw_token,
+        expires_in,
+        full_access_scopes(),
+    )
+    .await;
 }
 
 /// Seeds a principal and auth token with the given scopes.
@@ -266,13 +272,15 @@ impl McpTestClient {
 
     /// Sends an MCP `initialize` request and stores the session ID.
     ///
-    /// The response body is read (with timeout) to ensure the server
-    /// has fully processed the request before subsequent calls.
+    /// Reads chunks from the SSE response until the JSON-RPC result
+    /// arrives, confirming the server has processed the request before
+    /// subsequent calls.
     ///
     /// # Panics
     ///
-    /// Panics if the server does not return 200 or omits the
-    /// `mcp-session-id` header.
+    /// Panics if the server does not return 200, omits the
+    /// `mcp-session-id` header, or does not produce an initialize
+    /// result within the timeout.
     pub async fn initialise(&mut self) {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -285,7 +293,7 @@ impl McpTestClient {
             },
         });
 
-        let response = self.post(&body).await;
+        let mut response = self.post(&body).await;
 
         assert_eq!(
             response.status(),
@@ -301,14 +309,24 @@ impl McpTestClient {
             .expect("session ID must be valid UTF-8")
             .to_owned();
 
-        // Read the body to ensure the server has processed initialize
-        // before we send follow-up requests.
-        let _body = tokio::time::timeout(MCP_RESPONSE_TIMEOUT, response.text())
-            .await
-            .expect("initialize body should arrive within timeout")
-            .expect("initialize body read should succeed");
+        // Read until we get the initialize result, confirming the
+        // server has processed the request.
+        let _result = read_sse_jsonrpc_result(&mut response).await;
 
         self.session_id = Some(session_id);
+
+        // The MCP protocol requires an `initialized` notification
+        // before the server will accept non-lifecycle requests.
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        });
+        let notify_response = self.post(&notification).await;
+        assert!(
+            notify_response.status().is_success(),
+            "initialized notification must succeed (got {})",
+            notify_response.status(),
+        );
     }
 
     /// Sends an MCP `tools/list` request and returns the tool names
@@ -317,8 +335,8 @@ impl McpTestClient {
     /// # Panics
     ///
     /// Panics if the session has not been initialised, the server does
-    /// not return 200, or the response body does not contain a valid
-    /// `tools/list` result.
+    /// not return 200, or the response does not contain a valid
+    /// `tools/list` result within the timeout.
     pub async fn list_tool_names(&mut self) -> Vec<String> {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -327,7 +345,7 @@ impl McpTestClient {
             "params": {},
         });
 
-        let response = self.post(&body).await;
+        let mut response = self.post(&body).await;
 
         assert_eq!(
             response.status(),
@@ -335,12 +353,15 @@ impl McpTestClient {
             "tools/list must return 200",
         );
 
-        let body = tokio::time::timeout(MCP_RESPONSE_TIMEOUT, response.text())
-            .await
-            .expect("tools/list body should arrive within timeout")
-            .expect("tools/list body read should succeed");
+        let result = read_sse_jsonrpc_result(&mut response).await;
 
-        extract_tool_names(&body)
+        result
+            .pointer("/result/tools")
+            .and_then(|t| t.as_array())
+            .expect("tools/list result must contain a tools array")
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(String::from))
+            .collect()
     }
 
     async fn post(&self, body: &serde_json::Value) -> reqwest::Response {
@@ -372,12 +393,9 @@ impl McpTestClient {
 /// Asserts that the tools visible to a principal match exactly those
 /// whose required scope is satisfied by the granted scopes.
 ///
-/// Initialises an MCP session, calls `tools/list`, computes the
-/// expected set from the tool registry, and asserts equality.
-pub async fn assert_tool_visibility(
-    mcp: &mut McpTestClient,
-    granted_scopes: &[Scope],
-) {
+/// Calls `tools/list`, computes the expected set from the tool
+/// registry, and asserts equality.
+pub async fn assert_tool_visibility(mcp: &mut McpTestClient, granted_scopes: &[Scope]) {
     let mut actual = mcp.list_tool_names().await;
     actual.sort();
 
@@ -398,30 +416,56 @@ pub async fn assert_tool_visibility(
 // SSE response parsing
 // ---------------------------------------------------------------------------
 
-/// Extracts tool names from an SSE response body containing a
-/// JSON-RPC `tools/list` result.
+/// Reads chunks from an SSE response until a `data:` line contains a
+/// JSON-RPC object with a `result` field.
 ///
-/// Scans for `data:` lines, parses the JSON, and collects tool names
-/// from the `result.tools` array.
+/// SSE streams in stateful mode stay open after sending the result
+/// (for potential server notifications), so `response.text()` would
+/// block forever.  This function reads incrementally and returns as
+/// soon as the result event arrives.
 ///
 /// # Panics
 ///
-/// Panics if the body contains no `data:` line with a valid
-/// `tools/list` result.
-fn extract_tool_names(sse_body: &str) -> Vec<String> {
-    for line in sse_body.lines() {
-        let Some(json_str) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str.trim()) else {
-            continue;
-        };
-        if let Some(tools) = value.pointer("/result/tools").and_then(|t| t.as_array()) {
-            return tools
-                .iter()
-                .filter_map(|t| t["name"].as_str().map(String::from))
-                .collect();
+/// Panics if the stream ends or the timeout elapses before a
+/// JSON-RPC result is found.
+async fn read_sse_jsonrpc_result(response: &mut reqwest::Response) -> serde_json::Value {
+    let mut buf = String::new();
+    let deadline = tokio::time::Instant::now() + MCP_RESPONSE_TIMEOUT;
+
+    loop {
+        let remaining = deadline.duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            panic!("timeout waiting for JSON-RPC result, body so far:\n{buf}");
+        }
+
+        let chunk = tokio::time::timeout(remaining, response.chunk()).await;
+
+        match chunk {
+            Ok(Ok(Some(bytes))) => {
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+
+                for line in buf.lines() {
+                    let Some(json_str) = line.strip_prefix("data:") else {
+                        continue;
+                    };
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str.trim())
+                    else {
+                        continue;
+                    };
+                    if value.get("result").is_some() {
+                        return value;
+                    }
+                }
+            }
+            Ok(Ok(None)) => {
+                panic!("SSE stream ended without JSON-RPC result, body:\n{buf}");
+            }
+            Ok(Err(err)) => {
+                panic!("SSE stream read error: {err}");
+            }
+            Err(_) => {
+                panic!("timeout waiting for JSON-RPC result, body so far:\n{buf}");
+            }
         }
     }
-    panic!("no tools/list result found in SSE body:\n{sse_body}");
 }
