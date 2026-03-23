@@ -29,3 +29,5 @@ pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
 pub use middleware::{AuthMiddlewareState, require_bearer_auth};
 pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
 pub use session::{SessionActor, SessionContext, SessionProject};
+#[cfg(feature = "test-helpers")]
+pub use tools::tool_scope_registry;

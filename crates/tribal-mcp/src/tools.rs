@@ -262,6 +262,23 @@ pub(crate) static PARSED_TOOLS: LazyLock<Vec<ParsedToolEntry>> = LazyLock::new(|
 });
 
 // ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+/// Returns `(tool_name, required_scope)` pairs for every registered tool.
+///
+/// Tests use this to compute expected tool visibility from a set of
+/// granted scopes, keeping assertions self-maintaining as tools are
+/// added or removed.
+#[cfg(feature = "test-helpers")]
+pub fn tool_scope_registry() -> Vec<(&'static str, Scope)> {
+    PARSED_TOOLS
+        .iter()
+        .map(|t| (t.name, t.required_scope.clone()))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
