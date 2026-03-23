@@ -22,7 +22,12 @@ use tribal_test_utils::serial_lock;
 // Constants
 // ---------------------------------------------------------------------------
 
-const RAW_TOKEN: &str = "sse-integration-test-token";
+// Each test needs a distinct raw token because `auth_tokens.token_hash`
+// has a unique constraint — reusing the same value across tests causes
+// `UniqueViolation` on the second insert.
+const RAW_TOKEN_VALID: &str = "sse-valid-token";
+const RAW_TOKEN_MAX_AGE: &str = "sse-max-age-token";
+const RAW_TOKEN_IDLE: &str = "sse-idle-timeout-token";
 
 /// Short max connection age for lifecycle tests.
 ///
@@ -123,7 +128,7 @@ async fn test_valid_bearer_token_passes_auth() {
     seed_auth(
         &pool,
         "user:valid-token",
-        RAW_TOKEN,
+        RAW_TOKEN_VALID,
         chrono::Duration::hours(1),
     )
     .await;
@@ -133,7 +138,7 @@ async fn test_valid_bearer_token_passes_auth() {
     let response = test_client()
         .post(format!("http://{}/mcp", transport.addr))
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {RAW_TOKEN}"))
+        .header("Authorization", format!("Bearer {RAW_TOKEN_VALID}"))
         .header("Accept", "text/event-stream, application/json")
         .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#)
         .send()
@@ -199,7 +204,7 @@ async fn test_max_connection_age_closes_stream() {
     seed_auth(
         &pool,
         "user:max-age-test",
-        RAW_TOKEN,
+        RAW_TOKEN_MAX_AGE,
         chrono::Duration::hours(1),
     )
     .await;
@@ -214,7 +219,7 @@ async fn test_max_connection_age_closes_stream() {
     let response = test_client()
         .post(format!("http://{}/mcp", transport.addr))
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {RAW_TOKEN}"))
+        .header("Authorization", format!("Bearer {RAW_TOKEN_MAX_AGE}"))
         .header("Accept", "text/event-stream, application/json")
         .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#)
         .send()
@@ -250,7 +255,7 @@ async fn test_idle_timeout_closes_stream() {
     seed_auth(
         &pool,
         "user:idle-timeout-test",
-        RAW_TOKEN,
+        RAW_TOKEN_IDLE,
         chrono::Duration::hours(1),
     )
     .await;
@@ -265,7 +270,7 @@ async fn test_idle_timeout_closes_stream() {
     let response = test_client()
         .post(format!("http://{}/mcp", transport.addr))
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {RAW_TOKEN}"))
+        .header("Authorization", format!("Bearer {RAW_TOKEN_IDLE}"))
         .header("Accept", "text/event-stream, application/json")
         .body(r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#)
         .send()
