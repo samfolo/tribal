@@ -26,7 +26,7 @@ const SSE_CONTENT_TYPE_PREFIX: &str = "text/event-stream";
 
 /// SSE data field prefix.  Lines starting with this carry event payload.
 ///
-/// SSE field names are case-sensitive per the W3C EventSource
+/// SSE field names are case-sensitive per the W3C `EventSource`
 /// specification (§9.2 "Interpreting an event stream").  No
 /// case-insensitive comparison is needed.
 const SSE_DATA_PREFIX: &[u8] = b"data:";
@@ -257,12 +257,12 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
         // Poll the inner body for the next frame.
         match ready!(this.inner.poll_frame(cx)) {
             Some(Ok(frame)) => {
-                if let Some(data) = frame.data_ref() {
-                    if is_real_event(data) {
-                        this.idle_deadline
-                            .as_mut()
-                            .reset(Instant::now() + *this.idle_timeout);
-                    }
+                if let Some(data) = frame.data_ref()
+                    && is_real_event(data)
+                {
+                    this.idle_deadline
+                        .as_mut()
+                        .reset(Instant::now() + *this.idle_timeout);
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
@@ -284,7 +284,7 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
 ///
 /// Splits the frame into lines and checks whether any line starts with
 /// `data:` or `event:`.  SSE field names are case-sensitive per the W3C
-/// EventSource specification (§9.2), so byte-level prefix matching is
+/// `EventSource` specification (§9.2), so byte-level prefix matching is
 /// the correct approach — no case folding is needed.
 ///
 /// Comment lines (starting with `:`) and empty lines are not real events.
@@ -300,6 +300,8 @@ fn is_real_event(data: &Bytes) -> bool {
 #[cfg(test)]
 mod tests {
     use std::{collections::VecDeque, convert::Infallible};
+
+    use http_body::Body;
 
     use super::*;
 
