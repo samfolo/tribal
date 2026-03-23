@@ -14,6 +14,10 @@ mod mock;
 pub mod polling;
 mod seeding;
 mod setup;
+// `snapshot` must be `pub mod` (not `mod` + `pub use`) because the
+// `assert_json_snapshot!` macro references `$crate::snapshot::assert_json_snapshot_impl`
+// in its expansion, which requires the module path to be public.
+pub mod snapshot;
 pub mod text;
 
 pub use db::{TestContext, TestTransaction, lazy_pool, serial_lock, test_context};
