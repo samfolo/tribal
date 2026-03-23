@@ -9,11 +9,16 @@ mod transport_harness;
 use chrono::Duration;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
-use transport_harness::{fresh_pool, seed_auth, spawn_transport, test_app_state, test_client};
 use tribal_config::ServerConfig;
-use tribal_mcp::HandlerConfig;
+use tribal_domain::{Scope, is_authorised};
+use tribal_mcp::{HandlerConfig, tool_scope_registry};
 use tribal_server::run_http_transport;
 use tribal_test_utils::serial_lock;
+
+use transport_harness::{
+    McpTestClient, fresh_pool, seed_auth, seed_scoped_auth, spawn_transport, test_app_state,
+    test_client,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -161,6 +166,74 @@ async fn test_expired_token_returns_401() {
     let body: serde_json::Value = response.json().await.expect("response must be JSON");
     assert_eq!(body["error"], "unauthorized");
     assert_eq!(body["message"], "token expired");
+
+    transport.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Principal propagation
+// ---------------------------------------------------------------------------
+
+/// A Canopy intern has read-only access to the knowledge base and can
+/// check job status, but cannot ingest, provide feedback, or set
+/// session context.  Verifies that scopes flow from the bearer token
+/// through to `tools/list` filtering.
+#[tokio::test]
+async fn test_read_only_principal_sees_only_read_tools() {
+    let _lock = serial_lock().await;
+    let pool = fresh_pool().await;
+    let ct = CancellationToken::new();
+    let state = test_app_state(pool.clone(), ct.clone());
+
+    let intern_token = "canopy-intern-token";
+    let granted_scopes = vec![
+        Scope::parse("tribal.knowledge:read").expect("valid scope"),
+        Scope::parse("tribal.jobs:read").expect("valid scope"),
+    ];
+
+    seed_scoped_auth(
+        &pool,
+        "intern:canopy-reader",
+        intern_token,
+        Duration::hours(1),
+        granted_scopes.clone(),
+    )
+    .await;
+
+    let transport = spawn_transport(
+        ct,
+        ServerConfig::default(),
+        move |task_ct, config, listener| async move {
+            run_http_transport(
+                &state,
+                &config,
+                HandlerConfig::default(),
+                task_ct,
+                Some(listener),
+            )
+            .await
+            .expect("HTTP transport must not fail");
+        },
+    )
+    .await;
+
+    let mut mcp = McpTestClient::new(transport.addr, intern_token);
+    mcp.initialise().await;
+
+    let mut actual = mcp.list_tool_names().await;
+    actual.sort();
+
+    let mut expected: Vec<String> = tool_scope_registry()
+        .iter()
+        .filter(|(_, required)| is_authorised(&granted_scopes, required))
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        actual, expected,
+        "tools/list should reflect the principal's scopes",
+    );
 
     transport.shutdown().await;
 }
