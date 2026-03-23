@@ -281,6 +281,74 @@ impl AuthTokenRepository for PgAuthTokenRepository {
 
         Ok(map_auth_token_row(&row))
     }
+
+    async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<AuthToken>, DbError> {
+        let sql = format!("SELECT {COLUMNS} FROM auth_tokens ORDER BY created_at DESC");
+
+        let rows =
+            sqlx::query(&sql)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: "listing all auth tokens".to_owned(),
+                    source: e,
+                })?;
+
+        Ok(rows.iter().map(map_auth_token_row).collect())
+    }
+
+    async fn find_by_hash_prefix(
+        &self,
+        conn: &mut PgConnection,
+        prefix: &str,
+    ) -> Result<Vec<AuthToken>, DbError> {
+        let sql = format!("SELECT {COLUMNS} FROM auth_tokens WHERE token_hash LIKE $1");
+        let pattern = format!("{prefix}%");
+
+        let rows = sqlx::query(&sql)
+            .bind(&pattern)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding auth tokens by hash prefix '{prefix}'"),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_auth_token_row).collect())
+    }
+
+    async fn revoke_all(
+        &self,
+        conn: &mut PgConnection,
+        principal_id: Option<PrincipalId>,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64, DbError> {
+        let result = if let Some(pid) = principal_id {
+            sqlx::query(
+                "UPDATE auth_tokens SET revoked_at = $1 \
+                 WHERE revoked_at IS NULL AND principal_id = $2",
+            )
+            .bind(revoked_at)
+            .bind(pid.inner())
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("revoking all auth tokens for principal {pid}"),
+                source: e,
+            })?
+        } else {
+            sqlx::query("UPDATE auth_tokens SET revoked_at = $1 WHERE revoked_at IS NULL")
+                .bind(revoked_at)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: "revoking all auth tokens".to_owned(),
+                    source: e,
+                })?
+        };
+
+        Ok(result.rows_affected())
+    }
 }
 
 // ---------------------------------------------------------------------------
