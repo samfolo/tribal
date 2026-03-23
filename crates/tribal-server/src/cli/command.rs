@@ -297,10 +297,14 @@ pub enum TokenCommand {
         args: TokenCreateArgs,
     },
 
-    /// List active tokens.
-    List,
+    /// List all tokens.
+    List {
+        /// Arguments for token listing.
+        #[command(flatten)]
+        args: TokenListArgs,
+    },
 
-    /// Revoke a specific token by prefix.
+    /// Revoke a specific token by hash prefix.
     Revoke {
         /// Arguments for token revocation.
         #[command(flatten)]
@@ -317,15 +321,89 @@ pub enum TokenCommand {
 
 /// Arguments for `token create`.
 #[derive(Debug, Args)]
-pub struct TokenCreateArgs {}
+pub struct TokenCreateArgs {
+    /// Principal key to associate with the token (e.g. `user:sam`).
+    /// Defaults to `principal:local` if omitted.
+    #[arg(long, help_heading = "Token")]
+    pub principal: Option<String>,
+
+    /// Token lifetime in hours. Overrides the config default for this
+    /// token only.
+    #[arg(long, help_heading = "Token")]
+    pub ttl: Option<u64>,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+}
+
+impl TokenCreateArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// Delegates to [`DatabaseArgs::into_cli_overrides`].
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        self.database.into_cli_overrides()
+    }
+}
+
+/// Arguments for `token list`.
+#[derive(Debug, Args)]
+pub struct TokenListArgs {
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+}
+
+impl TokenListArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// Delegates to [`DatabaseArgs::into_cli_overrides`].
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        self.database.into_cli_overrides()
+    }
+}
 
 /// Arguments for `token revoke`.
 #[derive(Debug, Args)]
-pub struct TokenRevokeArgs {}
+pub struct TokenRevokeArgs {
+    /// Hash prefix identifying the token to revoke.
+    #[arg(value_name = "PREFIX")]
+    pub prefix: String,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+}
+
+impl TokenRevokeArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// Delegates to [`DatabaseArgs::into_cli_overrides`].
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        self.database.into_cli_overrides()
+    }
+}
 
 /// Arguments for `token revoke-all`.
 #[derive(Debug, Args)]
-pub struct TokenRevokeAllArgs {}
+pub struct TokenRevokeAllArgs {
+    /// Revoke only tokens belonging to this principal.
+    #[arg(long, help_heading = "Token")]
+    pub principal: Option<String>,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+}
+
+impl TokenRevokeAllArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// Delegates to [`DatabaseArgs::into_cli_overrides`].
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        self.database.into_cli_overrides()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests
