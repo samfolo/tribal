@@ -481,9 +481,12 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Computes `base + duration`, falling back to `base` on overflow.
+/// Computes `base + duration`, clamping to a far-future instant on
+/// overflow so the deadline effectively never fires rather than
+/// firing immediately.
 fn saturating_deadline(base: Instant, duration: Duration) -> Instant {
-    base.checked_add(duration).unwrap_or(base)
+    base.checked_add(duration)
+        .unwrap_or_else(|| base + Duration::MAX / 2)
 }
 
 /// Returns `true` if the frame bytes represent a real SSE event (not just a
