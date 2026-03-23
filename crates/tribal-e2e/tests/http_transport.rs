@@ -10,14 +10,14 @@ use chrono::Duration;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tribal_config::ServerConfig;
-use tribal_domain::{Scope, is_authorised};
-use tribal_mcp::{HandlerConfig, tool_scope_registry};
+use tribal_domain::Scope;
+use tribal_mcp::HandlerConfig;
 use tribal_server::run_http_transport;
 use tribal_test_utils::serial_lock;
 
 use transport_harness::{
-    McpTestClient, fresh_pool, seed_auth, seed_scoped_auth, spawn_transport, test_app_state,
-    test_client,
+    McpTestClient, assert_tool_visibility, fresh_pool, seed_auth, seed_scoped_auth,
+    spawn_transport, test_app_state, test_client,
 };
 
 // ---------------------------------------------------------------------------
@@ -219,21 +219,7 @@ async fn test_read_only_principal_sees_only_read_tools() {
 
     let mut mcp = McpTestClient::new(transport.addr, intern_token);
     mcp.initialise().await;
-
-    let mut actual = mcp.list_tool_names().await;
-    actual.sort();
-
-    let mut expected: Vec<String> = tool_scope_registry()
-        .iter()
-        .filter(|(_, required)| is_authorised(&granted_scopes, required))
-        .map(|(name, _)| (*name).to_owned())
-        .collect();
-    expected.sort();
-
-    assert_eq!(
-        actual, expected,
-        "tools/list should reflect the principal's scopes",
-    );
+    assert_tool_visibility(&mut mcp, &granted_scopes).await;
 
     transport.shutdown().await;
 }

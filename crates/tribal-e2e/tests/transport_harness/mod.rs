@@ -20,7 +20,8 @@ use tribal_db::{
     AuthTokenRepository, NewAuthToken, NewPrincipal, PgAuthTokenRepository, PgPrincipalRepository,
     PrincipalRepository,
 };
-use tribal_domain::{PromptVersionId, Scope, full_access_scopes};
+use tribal_domain::{PromptVersionId, Scope, full_access_scopes, is_authorised};
+use tribal_mcp::tool_scope_registry;
 use tribal_inference::{ProviderRegistry, RequestClass};
 use tribal_mcp::{ActivePromptVersions, AppState};
 use tribal_test_utils::{MockEmbeddingProvider, MockInferenceProvider, test_context};
@@ -367,6 +368,35 @@ impl McpTestClient {
         id
     }
 }
+
+/// Asserts that the tools visible to a principal match exactly those
+/// whose required scope is satisfied by the granted scopes.
+///
+/// Initialises an MCP session, calls `tools/list`, computes the
+/// expected set from the tool registry, and asserts equality.
+pub async fn assert_tool_visibility(
+    mcp: &mut McpTestClient,
+    granted_scopes: &[Scope],
+) {
+    let mut actual = mcp.list_tool_names().await;
+    actual.sort();
+
+    let mut expected: Vec<String> = tool_scope_registry()
+        .iter()
+        .filter(|(_, required)| is_authorised(granted_scopes, required))
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        actual, expected,
+        "tools/list should reflect the principal's scopes",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SSE response parsing
+// ---------------------------------------------------------------------------
 
 /// Extracts tool names from an SSE response body containing a
 /// JSON-RPC `tools/list` result.

@@ -10,13 +10,16 @@ use std::time::Duration;
 
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
-use transport_harness::{
-    LIFECYCLE_FAR_FUTURE_MS, fresh_pool, seed_auth, spawn_transport, test_app_state, test_client,
-};
 use tribal_config::{ServerConfig, SseConfig};
+use tribal_domain::Scope;
 use tribal_mcp::HandlerConfig;
 use tribal_server::run_sse_transport;
 use tribal_test_utils::serial_lock;
+
+use transport_harness::{
+    LIFECYCLE_FAR_FUTURE_MS, McpTestClient, assert_tool_visibility, fresh_pool, seed_auth,
+    seed_scoped_auth, spawn_transport, test_app_state, test_client,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -291,6 +294,42 @@ async fn test_idle_timeout_closes_stream() {
         !body.is_empty(),
         "response should contain SSE data before closure",
     );
+
+    transport.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Principal propagation
+// ---------------------------------------------------------------------------
+
+/// A spy with an underprovisioned token can only monitor job status.
+/// They cannot read the knowledge base, ingest content, or adjust
+/// session context.  Verifies that a minimal scope set propagates
+/// through the SSE transport to `tools/list` filtering.
+#[tokio::test]
+async fn test_underprovisioned_principal_sees_minimal_tools() {
+    let _lock = serial_lock().await;
+    let pool = fresh_pool().await;
+    let ct = CancellationToken::new();
+    let state = test_app_state(pool.clone(), ct.clone());
+
+    let spy_token = "spy-undercover-monitor-token";
+    let granted_scopes = vec![Scope::parse("tribal.jobs:read").expect("valid scope")];
+
+    seed_scoped_auth(
+        &pool,
+        "spy:undercover-monitor",
+        spy_token,
+        chrono::Duration::hours(1),
+        granted_scopes.clone(),
+    )
+    .await;
+
+    let transport = spawn_sse(&state, ct, ServerConfig::default()).await;
+
+    let mut mcp = McpTestClient::new(transport.addr, spy_token);
+    mcp.initialise().await;
+    assert_tool_visibility(&mut mcp, &granted_scopes).await;
 
     transport.shutdown().await;
 }
