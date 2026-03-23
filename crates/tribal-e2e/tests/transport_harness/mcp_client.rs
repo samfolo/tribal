@@ -140,6 +140,57 @@ impl McpTestClient {
             .collect()
     }
 
+    /// Returns the session ID, if the client has been initialised.
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    /// Sends a GET request to the MCP endpoint.
+    ///
+    /// Used to open a standalone SSE event stream for an existing
+    /// session (the SSE reconnect path).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the HTTP request fails at the transport level.
+    pub async fn get(&self) -> reqwest::Response {
+        let mut request = self
+            .client
+            .get(format!("http://{}/mcp", self.addr))
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Accept", "text/event-stream");
+
+        if let Some(session_id) = &self.session_id {
+            request = request.header("Mcp-Session-Id", session_id);
+        }
+
+        request.send().await.expect("MCP GET request must succeed")
+    }
+
+    /// Sends a GET request with a `Last-Event-Id` header for SSE
+    /// stream resumption.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the session has not been initialised or the HTTP
+    /// request fails.
+    pub async fn get_with_last_event_id(&self, last_event_id: &str) -> reqwest::Response {
+        let session_id = self
+            .session_id
+            .as_deref()
+            .expect("session must be initialised before GET with Last-Event-Id");
+
+        self.client
+            .get(format!("http://{}/mcp", self.addr))
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Accept", "text/event-stream")
+            .header("Mcp-Session-Id", session_id)
+            .header("Last-Event-Id", last_event_id)
+            .send()
+            .await
+            .expect("MCP GET request must succeed")
+    }
+
     async fn post(&self, body: &serde_json::Value) -> reqwest::Response {
         let mut request = self
             .client
