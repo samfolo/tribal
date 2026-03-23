@@ -225,12 +225,12 @@ where
         // responses (e.g. 404 for an unknown session) should not create
         // registry entries — those bodies are non-SSE and would never
         // be dropped via PinnedDrop cleanup, leading to orphaned entries.
-        if response.status().is_success() {
-            if let Some(id) = &session_id {
-                this.sessions
-                    .entry(id.clone())
-                    .or_insert_with(|| this.tracker.clone());
-            }
+        if response.status().is_success()
+            && let Some(id) = &session_id
+        {
+            this.sessions
+                .entry(id.clone())
+                .or_insert_with(|| this.tracker.clone());
         }
 
         let is_sse = response
