@@ -15,7 +15,13 @@ mock_repository! {
         find_by_principal_id(PrincipalId => Vec<AuthToken>)
             (principal_id: PrincipalId) { principal_id };
         revoke((AuthTokenId, DateTime<Utc>) => AuthToken)
-            (id: AuthTokenId, revoked_at: DateTime<Utc>) { (id, revoked_at) }
+            (id: AuthTokenId, revoked_at: DateTime<Utc>) { (id, revoked_at) };
+        find_all(() => Vec<AuthToken>)
+            () { () };
+        find_by_hash_prefix(String => Vec<AuthToken>)
+            (prefix: &str) { prefix.to_owned() };
+        revoke_all((Option<PrincipalId>, DateTime<Utc>) => u64)
+            (principal_id: Option<PrincipalId>, revoked_at: DateTime<Utc>) { (principal_id, revoked_at) }
     }
 }
 
