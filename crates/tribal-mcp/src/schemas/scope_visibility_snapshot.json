@@ -1,0 +1,30 @@
+[
+  {
+    "name": "tribal_set_context",
+    "required_scope": "tribal:write"
+  },
+  {
+    "name": "tribal_ingest",
+    "required_scope": "tribal.knowledge:write"
+  },
+  {
+    "name": "tribal_discover",
+    "required_scope": "tribal.knowledge:read"
+  },
+  {
+    "name": "tribal_explore",
+    "required_scope": "tribal.knowledge:read"
+  },
+  {
+    "name": "tribal_get_item",
+    "required_scope": "tribal.knowledge:read"
+  },
+  {
+    "name": "tribal_feedback",
+    "required_scope": "tribal.knowledge:write"
+  },
+  {
+    "name": "tribal_job_status",
+    "required_scope": "tribal.jobs:read"
+  }
+]

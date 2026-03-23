@@ -180,9 +180,11 @@ pub enum AppError {
         deadline_ms: u128,
     },
 
-    /// HTTP transport failed to bind the TCP listener.
-    #[error("failed to bind HTTP transport to {address}")]
+    /// Transport failed to bind the TCP listener.
+    #[error("failed to bind {transport} transport to {address}")]
     TransportBind {
+        /// The transport that failed to bind.
+        transport: TransportKind,
         /// The socket address that could not be bound.
         address: std::net::SocketAddr,
         /// The underlying I/O error.
@@ -190,9 +192,11 @@ pub enum AppError {
         source: io::Error,
     },
 
-    /// HTTP transport encountered a fatal serving error.
-    #[error("HTTP transport serving error")]
+    /// Transport encountered a fatal serving error.
+    #[error("{transport} transport serving error")]
     TransportServe {
+        /// The transport that failed.
+        transport: TransportKind,
         /// The underlying I/O error.
         #[source]
         source: io::Error,
@@ -204,13 +208,6 @@ pub enum AppError {
         /// The underlying error.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
-    },
-
-    /// The requested transport is not yet implemented.
-    #[error("{transport} transport is not yet implemented")]
-    TransportUnsupported {
-        /// The unsupported transport kind.
-        transport: TransportKind,
     },
 
     /// Setup I/O operation failed (directory creation, config file write).
@@ -478,21 +475,23 @@ mod tests {
     fn test_display_transport_bind() {
         let addr = DEFAULT_BIND_ADDRESS.parse().unwrap();
         let err = AppError::TransportBind {
+            transport: TransportKind::Http,
             address: addr,
             source: io::Error::other("test"),
         };
-        assert!(
-            err.to_string().contains("127.0.0.1:8725"),
-            "unexpected display: {err}",
+        assert_eq!(
+            err.to_string(),
+            "failed to bind http transport to 127.0.0.1:8725",
         );
     }
 
     #[test]
     fn test_display_transport_serve() {
         let err = AppError::TransportServe {
+            transport: TransportKind::Http,
             source: io::Error::other("test"),
         };
-        assert_eq!(err.to_string(), "HTTP transport serving error");
+        assert_eq!(err.to_string(), "http transport serving error");
     }
 
     #[test]
@@ -504,32 +503,20 @@ mod tests {
     }
 
     #[test]
-    fn test_display_transport_unsupported() {
-        let err = AppError::TransportUnsupported {
-            transport: TransportKind::Sse,
-        };
-        assert!(
-            err.to_string().contains("not yet implemented"),
-            "unexpected display: {err}",
-        );
-    }
-
-    #[test]
     fn test_exit_code_transport_defaults_to_1() {
         let addr = DEFAULT_BIND_ADDRESS.parse().unwrap();
         let variants: Vec<AppError> = vec![
             AppError::TransportBind {
+                transport: TransportKind::Http,
                 address: addr,
                 source: io::Error::other("test"),
             },
             AppError::TransportServe {
+                transport: TransportKind::Http,
                 source: io::Error::other("test"),
             },
             AppError::TransportStdio {
                 source: Box::new(io::Error::other("test")),
-            },
-            AppError::TransportUnsupported {
-                transport: TransportKind::Sse,
             },
         ];
         for err in &variants {

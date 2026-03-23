@@ -1,28 +1,37 @@
-//! Streamable HTTP transport for the Tribal MCP server.
+//! SSE transport for the Tribal MCP server.
 //!
-//! Binds a TCP listener, configures the axum router with bearer token
-//! authentication middleware, and serves MCP requests via
-//! [`StreamableHttpService`] until the cancellation token is triggered.
+//! Structurally identical to the HTTP transport but applies SSE-specific
+//! lifecycle policies: max connection age (bounds the revocation window
+//! for tokens), idle timeout (evicts dead connections), and keepalive
+//! (prevents proxy timeouts).
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tribal_config::{ServerConfig, TransportKind};
 use tribal_mcp::{AppState, HandlerConfig, require_bearer_auth};
 
-use super::common;
+use super::{common, sse_lifecycle::SseLifecycleLayer};
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Runs the HTTP transport with the Streamable HTTP protocol.
+/// Runs the SSE transport with lifecycle enforcement.
 ///
 /// Binds a TCP listener, configures the axum router with bearer token
-/// authentication middleware, and serves requests until the cancellation
-/// token is triggered.
+/// authentication middleware and the SSE lifecycle layer, and serves
+/// requests until the cancellation token is triggered.
+///
+/// The lifecycle layer enforces:
+/// - **Max connection age** — force-closes connections after the
+///   configured duration, bounding the revocation window.
+/// - **Idle timeout** — closes connections with no real events for the
+///   configured duration.
+/// - **Keepalive** — SSE comment sent at regular intervals to prevent
+///   proxy timeouts (handled natively by rmcp).
 ///
 /// # Parameters
 ///
@@ -43,14 +52,14 @@ use crate::error::AppError;
 /// Returns [`AppError::TransportBind`] if the TCP listener cannot bind,
 /// or [`AppError::TransportServe`] if the server encounters a fatal
 /// I/O error.
-pub async fn run_http_transport(
+pub async fn run_sse_transport(
     state: &Arc<AppState>,
     server_config: &ServerConfig,
     handler_config: HandlerConfig,
     cancellation_token: CancellationToken,
     listener: Option<TcpListener>,
 ) -> Result<(), AppError> {
-    let transport = TransportKind::Http;
+    let transport = TransportKind::Sse;
 
     let (listener, local_addr) = common::bind_listener(server_config, transport, listener).await?;
     let auth_state = common::auth_middleware_state(state);
@@ -61,11 +70,24 @@ pub async fn run_http_transport(
         cancellation_token.clone(),
     );
 
-    let app = axum::Router::new().nest_service("/mcp", mcp_service).layer(
-        axum::middleware::from_fn_with_state(auth_state, require_bearer_auth),
+    let lifecycle_layer = SseLifecycleLayer::new(
+        Duration::from_millis(server_config.sse.max_connection_age_ms),
+        Duration::from_millis(server_config.sse.idle_timeout_ms),
     );
 
-    tracing::info!(%local_addr, "HTTP transport listening");
+    // Layer ordering (outermost runs first):
+    //   1. Bearer auth middleware — rejects unauthenticated requests
+    //   2. SSE lifecycle layer — wraps authenticated SSE response bodies
+    //   3. MCP service — handles the request
+    let app = axum::Router::new()
+        .nest_service("/mcp", mcp_service)
+        .layer(lifecycle_layer)
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            require_bearer_auth,
+        ));
+
+    tracing::info!(%local_addr, "SSE transport listening");
 
     common::serve(listener, app, cancellation_token, transport).await
 }
