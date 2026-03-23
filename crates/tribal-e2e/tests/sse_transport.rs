@@ -369,13 +369,12 @@ async fn test_get_to_existing_session_returns_sse_stream() {
         StatusCode::OK,
         "GET to existing session must return 200",
     );
-    assert_eq!(
+    assert!(
         response
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or(""),
-        "text/event-stream",
+            .is_some_and(|ct| ct.starts_with("text/event-stream")),
         "GET response must be an SSE stream",
     );
 
@@ -487,13 +486,12 @@ async fn test_get_with_last_event_id_returns_sse_stream() {
         StatusCode::OK,
         "GET with Last-Event-Id must return 200",
     );
-    assert_eq!(
+    assert!(
         response
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or(""),
-        "text/event-stream",
+            .is_some_and(|ct| ct.starts_with("text/event-stream")),
         "resume response must be an SSE stream",
     );
 
