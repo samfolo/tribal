@@ -6,8 +6,11 @@
 //! shutdown.  Adding a new transport is additive — no changes to
 //! handler code are required.
 
+mod common;
 mod http;
+mod sse;
+mod sse_lifecycle;
 mod stdio;
 
-pub use self::http::run_http_transport;
 pub(crate) use self::stdio::run_stdio_transport;
+pub use self::{http::run_http_transport, sse::run_sse_transport};
