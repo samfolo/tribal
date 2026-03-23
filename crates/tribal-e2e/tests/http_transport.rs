@@ -9,16 +9,15 @@ mod transport_harness;
 use chrono::Duration;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
+use transport_harness::{
+    McpTestClient, assert_tool_visibility, fresh_pool, seed_auth, seed_scoped_auth,
+    spawn_transport, test_app_state, test_client,
+};
 use tribal_config::ServerConfig;
 use tribal_domain::Scope;
 use tribal_mcp::HandlerConfig;
 use tribal_server::run_http_transport;
 use tribal_test_utils::serial_lock;
-
-use transport_harness::{
-    McpTestClient, assert_tool_visibility, fresh_pool, seed_auth, seed_scoped_auth,
-    spawn_transport, test_app_state, test_client,
-};
 
 // ---------------------------------------------------------------------------
 // Constants
