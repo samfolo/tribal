@@ -55,14 +55,24 @@ where
         runner(task_ct, server_config, listener).await;
     });
 
-    // Wait until the server is accepting connections.
-    for _ in 0..50 {
-        if TcpStream::connect(addr).await.is_ok() {
-            return TransportHandle { addr, ct, join };
+    // Wait until the server is accepting connections.  Uses a
+    // 3-second deadline with increasing backoff to tolerate slow CI.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut interval = Duration::from_millis(10);
+    let mut last_error = None;
+
+    while tokio::time::Instant::now() < deadline {
+        match TcpStream::connect(addr).await {
+            Ok(_) => return TransportHandle { addr, ct, join },
+            Err(err) => last_error = Some(err),
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(interval).await;
+        interval = (interval * 2).min(Duration::from_millis(200));
     }
-    panic!("transport did not become ready within 500ms");
+    panic!(
+        "transport did not become ready within 3s; last error: {}",
+        last_error.map_or_else(|| "none".to_owned(), |e| e.to_string()),
+    );
 }
 
 // ---------------------------------------------------------------------------
