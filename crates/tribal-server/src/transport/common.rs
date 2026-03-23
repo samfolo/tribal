@@ -93,17 +93,8 @@ pub(super) fn auth_middleware_state(state: &Arc<AppState>) -> AuthMiddlewareStat
 // MCP service
 // ---------------------------------------------------------------------------
 
-/// Boxed error type used by the rmcp session factory.
-type FactoryError = Box<dyn std::error::Error + Send + Sync>;
-
-/// Session factory closure that produces a [`TribalServerHandler`] per
-/// connection.
-type SessionFactory = Box<dyn FnMut() -> Result<TribalServerHandler, FactoryError>>;
-
 /// Type alias for the `StreamableHttpService` produced by [`mcp_service`].
-///
-/// Avoids repeating the unnameable closure type at every call site.
-pub(super) type McpService = StreamableHttpService<SessionFactory, LocalSessionManager>;
+pub(super) type McpService = StreamableHttpService<TribalServerHandler, LocalSessionManager>;
 
 /// Creates a [`StreamableHttpService`] with the per-session handler
 /// factory used by both HTTP and SSE transports.
@@ -125,20 +116,22 @@ pub(super) fn mcp_service(
     let session_manager = Arc::new(LocalSessionManager::default());
     let factory_state = Arc::clone(state);
 
-    let factory: SessionFactory = Box::new(move || {
-        let session_project = factory_state.resolved_project().map(SessionProject::from);
-        let session = SessionContext::new(session_project);
-        let repositories = ConnectionRepositories::new();
-        Ok(TribalServerHandler::new(
-            Arc::clone(&factory_state),
-            TransportAuthStrategy::PerRequest,
-            repositories,
-            session,
-            handler_config.clone(),
-        ))
-    });
-
-    StreamableHttpService::new(factory, session_manager, streamable_config)
+    StreamableHttpService::new(
+        move || {
+            let session_project = factory_state.resolved_project().map(SessionProject::from);
+            let session = SessionContext::new(session_project);
+            let repositories = ConnectionRepositories::new();
+            Ok(TribalServerHandler::new(
+                Arc::clone(&factory_state),
+                TransportAuthStrategy::PerRequest,
+                repositories,
+                session,
+                handler_config.clone(),
+            ))
+        },
+        session_manager,
+        streamable_config,
+    )
 }
 
 // ---------------------------------------------------------------------------

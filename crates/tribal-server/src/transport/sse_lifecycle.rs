@@ -141,15 +141,11 @@ where
             .is_some_and(|ct| ct.starts_with(SSE_CONTENT_TYPE_PREFIX));
 
         let response = if is_sse {
-            response.map(|body| {
-                MaybeSseLifecycleBody::Sse(SseLifecycleBody::new(
-                    body,
-                    *this.max_connection_age,
-                    *this.idle_timeout,
-                ))
+            response.map(|body| MaybeSseLifecycleBody::Sse {
+                inner: SseLifecycleBody::new(body, *this.max_connection_age, *this.idle_timeout),
             })
         } else {
-            response.map(MaybeSseLifecycleBody::Passthrough)
+            response.map(|inner| MaybeSseLifecycleBody::Passthrough { inner })
         };
 
         Poll::Ready(Ok(response))
@@ -232,14 +228,14 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let this = self.project();
+        let mut this = self.project();
 
         if *this.closed {
             return Poll::Ready(None);
         }
 
         // Check max connection age deadline.
-        if this.max_age_deadline.poll(cx).is_ready() {
+        if this.max_age_deadline.as_mut().poll(cx).is_ready() {
             tracing::info!(
                 closure_reason = CLOSURE_REASON_MAX_AGE,
                 "SSE connection closed",
@@ -249,7 +245,7 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
         }
 
         // Check idle timeout deadline.
-        if this.idle_deadline.poll(cx).is_ready() {
+        if this.idle_deadline.as_mut().poll(cx).is_ready() {
             tracing::info!(
                 closure_reason = CLOSURE_REASON_IDLE,
                 "SSE connection closed",
@@ -264,6 +260,7 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
                 if let Some(data) = frame.data_ref() {
                     if is_real_event(data) {
                         this.idle_deadline
+                            .as_mut()
                             .reset(Instant::now() + *this.idle_timeout);
                     }
                 }
