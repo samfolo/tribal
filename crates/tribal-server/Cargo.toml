@@ -48,6 +48,7 @@ tribal-worker.workspace = true
 test-helpers = []
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 
 tribal-test-utils.workspace = true
