@@ -6,19 +6,20 @@
 
 mod transport_harness;
 
-use std::time::Duration;
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
-use transport_harness::{
-    LIFECYCLE_FAR_FUTURE_MS, McpTestClient, assert_tool_visibility, fresh_pool, seed_auth,
-    seed_scoped_auth, spawn_transport, test_app_state, test_client,
-};
 use tribal_config::{ServerConfig, SseConfig};
 use tribal_domain::Scope;
-use tribal_mcp::HandlerConfig;
+use tribal_mcp::{AppState, HandlerConfig};
 use tribal_server::run_sse_transport;
 use tribal_test_utils::serial_lock;
+
+use transport_harness::{
+    LIFECYCLE_FAR_FUTURE_MS, McpTestClient, TransportHandle, assert_tool_visibility, fresh_pool,
+    seed_auth, seed_scoped_auth, spawn_transport, test_app_state, test_client,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -60,12 +61,10 @@ const STREAM_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 // ---------------------------------------------------------------------------
 
 fn spawn_sse(
-    state: &std::sync::Arc<tribal_mcp::AppState>,
+    state: &Arc<AppState>,
     ct: CancellationToken,
     config: ServerConfig,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = transport_harness::TransportHandle> + Send + '_>,
-> {
+) -> Pin<Box<dyn Future<Output = TransportHandle> + Send + '_>> {
     let state = state.clone();
     Box::pin(spawn_transport(
         ct,
