@@ -46,6 +46,11 @@ const CLOSURE_REASON_MAX_AGE: &str = "max_connection_age";
 /// Closure reason logged when idle timeout is exceeded.
 const CLOSURE_REASON_IDLE: &str = "idle_timeout";
 
+/// Fallback duration used when a configured lifecycle timeout overflows
+/// `Instant`.  One year is far beyond any realistic timeout and safely
+/// within `Instant`'s representable range on all platforms.
+const OVERFLOW_FALLBACK: Duration = Duration::from_secs(365 * 24 * 3600);
+
 // ---------------------------------------------------------------------------
 // Activity tracker
 // ---------------------------------------------------------------------------
@@ -484,10 +489,14 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
 
 /// Computes `base + duration`, clamping to a far-future instant on
 /// overflow so the deadline effectively never fires rather than
-/// firing immediately.
+/// firing immediately or panicking.
+///
+/// Config validation caps SSE durations at `MAX_LIFECYCLE_DURATION_MS`,
+/// so overflow should never occur in practice.  The `checked_add`
+/// fallback exists as a defence-in-depth safety net.
 fn saturating_deadline(base: Instant, duration: Duration) -> Instant {
     base.checked_add(duration)
-        .unwrap_or_else(|| base + Duration::MAX / 2)
+        .unwrap_or_else(|| base + OVERFLOW_FALLBACK)
 }
 
 /// Returns `true` if the frame bytes represent a real SSE event (not just a

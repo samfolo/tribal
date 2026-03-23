@@ -6,6 +6,7 @@
 use std::net::SocketAddr;
 
 use crate::{
+    MAX_LIFECYCLE_DURATION_MS,
     error::ConfigError,
     sections::{ProviderKind, TransportKind, TribalConfig},
 };
@@ -109,14 +110,29 @@ fn validate_server(config: &TribalConfig, errors: &mut Vec<String>) {
 
     if sse.max_connection_age_ms == 0 {
         errors.push("server.sse.max_connection_age_ms must be greater than zero".into());
+    } else if sse.max_connection_age_ms > MAX_LIFECYCLE_DURATION_MS {
+        errors.push(format!(
+            "server.sse.max_connection_age_ms ({}) must not exceed {MAX_LIFECYCLE_DURATION_MS}",
+            sse.max_connection_age_ms
+        ));
     }
 
     if sse.idle_timeout_ms == 0 {
         errors.push("server.sse.idle_timeout_ms must be greater than zero".into());
+    } else if sse.idle_timeout_ms > MAX_LIFECYCLE_DURATION_MS {
+        errors.push(format!(
+            "server.sse.idle_timeout_ms ({}) must not exceed {MAX_LIFECYCLE_DURATION_MS}",
+            sse.idle_timeout_ms
+        ));
     }
 
     if sse.keepalive_interval_ms == 0 {
         errors.push("server.sse.keepalive_interval_ms must be greater than zero".into());
+    } else if sse.keepalive_interval_ms > MAX_LIFECYCLE_DURATION_MS {
+        errors.push(format!(
+            "server.sse.keepalive_interval_ms ({}) must not exceed {MAX_LIFECYCLE_DURATION_MS}",
+            sse.keepalive_interval_ms
+        ));
     } else if sse.idle_timeout_ms > 0 && sse.keepalive_interval_ms >= sse.idle_timeout_ms {
         errors.push(format!(
             "server.sse.keepalive_interval_ms ({}) must be less than \
@@ -522,6 +538,36 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("keepalive_interval_ms"));
         assert!(msg.contains("must be less than"));
+    }
+
+    #[test]
+    fn test_validate_rejects_excessive_max_connection_age() {
+        let mut config = valid_config();
+        config.server.sse.max_connection_age_ms = MAX_LIFECYCLE_DURATION_MS + 1;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("max_connection_age_ms"));
+        assert!(msg.contains("must not exceed"));
+    }
+
+    #[test]
+    fn test_validate_rejects_excessive_idle_timeout() {
+        let mut config = valid_config();
+        config.server.sse.idle_timeout_ms = MAX_LIFECYCLE_DURATION_MS + 1;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("idle_timeout_ms"));
+        assert!(msg.contains("must not exceed"));
+    }
+
+    #[test]
+    fn test_validate_rejects_excessive_keepalive_interval() {
+        let mut config = valid_config();
+        config.server.sse.keepalive_interval_ms = MAX_LIFECYCLE_DURATION_MS + 1;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("keepalive_interval_ms"));
+        assert!(msg.contains("must not exceed"));
     }
 
     #[test]

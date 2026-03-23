@@ -29,9 +29,9 @@ pub use sections::{
     DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH,
     DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL,
     DatabaseConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation,
-    InferenceConfig, LimitsConfig, LogFormat, LogOutput, LoggingConfig, PromptsConfig,
-    ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig,
-    TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
+    InferenceConfig, LimitsConfig, LogFormat, LogOutput, LoggingConfig, MAX_LIFECYCLE_DURATION_MS,
+    PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
+    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
 };
 pub use validation::{ERR_TTL_ZERO, validate};
 
