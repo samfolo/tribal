@@ -83,10 +83,8 @@ impl ActivityTracker {
 /// Maps MCP session IDs to their activity trackers.  Entries are
 /// created when a session is established (initialize response) and
 /// looked up on subsequent requests carrying `Mcp-Session-Id`.
-///
-/// Entries are not explicitly cleaned up — at personal scale the
-/// number of sessions is small and each entry is a single `Arc`.  A
-/// production deployment would add eviction on session close.
+/// Entries are removed when the SSE lifecycle body closes (deadline
+/// expiry or graceful shutdown).
 type SessionRegistry = Arc<DashMap<String, ActivityTracker>>;
 
 /// MCP session ID header name.
@@ -212,16 +210,23 @@ where
         let this = self.project();
         let response = ready!(this.inner.poll(cx))?;
 
-        // If the inbound request had no session ID (initialize), the
-        // response carries the newly-assigned session ID.  Register
-        // the tracker so subsequent requests to this session find it.
-        if this.request_session_id.is_none()
-            && let Some(id) = response
+        // Resolve the session ID: either from the inbound request or,
+        // for initialize, from the response header.  Register the
+        // tracker so subsequent requests to this session find it.
+        let session_id = this.request_session_id.take().or_else(|| {
+            response
                 .headers()
                 .get(MCP_SESSION_ID_HEADER)
                 .and_then(|v| v.to_str().ok())
-        {
-            this.sessions.insert(id.to_owned(), this.tracker.clone());
+                .map(String::from)
+        });
+
+        if let Some(id) = &session_id {
+            // Insert is idempotent — existing sessions get the same
+            // tracker back; new sessions (initialize) are registered.
+            this.sessions
+                .entry(id.clone())
+                .or_insert_with(|| this.tracker.clone());
         }
 
         let is_sse = response
@@ -237,6 +242,8 @@ where
                     *this.max_connection_age,
                     *this.idle_timeout,
                     this.tracker.clone(),
+                    session_id,
+                    Arc::clone(this.sessions),
                 ),
             })
         } else {
@@ -294,6 +301,10 @@ pin_project! {
     /// The idle deadline resets on both outbound real events (detected via
     /// frame content) and inbound client requests (detected via the shared
     /// [`ActivityTracker`]).
+    ///
+    /// When the body closes (deadline expiry or inner stream end), it
+    /// removes its entry from the session registry to prevent unbounded
+    /// memory growth.
     pub(super) struct SseLifecycleBody<B> {
         #[pin]
         inner: B,
@@ -304,6 +315,8 @@ pin_project! {
         idle_timeout: Duration,
         activity_tracker: ActivityTracker,
         last_seen_activity: u64,
+        session_id: Option<String>,
+        sessions: SessionRegistry,
         closed: bool,
     }
 }
@@ -314,6 +327,8 @@ impl<B> SseLifecycleBody<B> {
         max_connection_age: Duration,
         idle_timeout: Duration,
         activity_tracker: ActivityTracker,
+        session_id: Option<String>,
+        sessions: SessionRegistry,
     ) -> Self {
         let now = Instant::now();
         let last_seen_activity = activity_tracker.count();
@@ -324,7 +339,16 @@ impl<B> SseLifecycleBody<B> {
             idle_timeout,
             activity_tracker,
             last_seen_activity,
+            session_id,
+            sessions,
             closed: false,
+        }
+    }
+
+    /// Removes this session's entry from the registry.
+    fn evict_session(session_id: Option<&str>, sessions: &SessionRegistry) {
+        if let Some(id) = session_id {
+            sessions.remove(id);
         }
     }
 }
@@ -350,6 +374,7 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
                 "SSE connection closed",
             );
             *this.closed = true;
+            Self::evict_session(this.session_id.as_deref(), this.sessions);
             return Poll::Ready(None);
         }
 
@@ -372,6 +397,7 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
                 "SSE connection closed",
             );
             *this.closed = true;
+            Self::evict_session(this.session_id.as_deref(), this.sessions);
             return Poll::Ready(None);
         }
 
@@ -387,7 +413,12 @@ impl<B: http_body::Body<Data = Bytes>> http_body::Body for SseLifecycleBody<B> {
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
-            other => Poll::Ready(other),
+            other => {
+                if other.is_none() {
+                    Self::evict_session(this.session_id.as_deref(), this.sessions);
+                }
+                Poll::Ready(other)
+            }
         }
     }
 
@@ -526,12 +557,34 @@ mod tests {
         assert!(!is_real_event(&Bytes::from_static(b"\n\n")));
     }
 
+    // -- Helpers ------------------------------------------------------------
+
+    /// Creates a lifecycle body with an empty session registry.
+    ///
+    /// Body-level tests exercise deadline and event-detection logic
+    /// in isolation — session eviction is not under test here.
+    fn test_body(
+        inner: MockBody,
+        max_connection_age: Duration,
+        idle_timeout: Duration,
+        tracker: ActivityTracker,
+    ) -> SseLifecycleBody<MockBody> {
+        SseLifecycleBody::new(
+            inner,
+            max_connection_age,
+            idle_timeout,
+            tracker,
+            None,
+            Arc::new(DashMap::new()),
+        )
+    }
+
     // -- SseLifecycleBody deadlines -----------------------------------------
 
     #[tokio::test(start_paused = true)]
     async fn test_body_closes_on_max_age() {
         let body = MockBody::from_frames(vec![]);
-        let mut body = Box::pin(SseLifecycleBody::new(
+        let mut body = Box::pin(test_body(
             body,
             TEST_DEADLINE,
             FAR_FUTURE,
@@ -547,7 +600,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_body_closes_on_idle_timeout() {
         let body = MockBody::from_frames(vec![]);
-        let mut body = Box::pin(SseLifecycleBody::new(
+        let mut body = Box::pin(test_body(
             body,
             FAR_FUTURE,
             TEST_DEADLINE,
@@ -567,7 +620,7 @@ mod tests {
     async fn test_body_resets_idle_on_data_event() {
         let frames = vec![Frame::data(Bytes::from_static(b"data: hello\n\n"))];
         let body = MockBody::from_frames(frames);
-        let mut body = Box::pin(SseLifecycleBody::new(
+        let mut body = Box::pin(test_body(
             body,
             FAR_FUTURE,
             TEST_DEADLINE,
@@ -596,7 +649,7 @@ mod tests {
     async fn test_body_does_not_reset_idle_on_comment() {
         let frames = vec![Frame::data(Bytes::from_static(b":keepalive\n\n"))];
         let body = MockBody::from_frames(frames);
-        let mut body = Box::pin(SseLifecycleBody::new(
+        let mut body = Box::pin(test_body(
             body,
             FAR_FUTURE,
             TEST_DEADLINE,
@@ -624,12 +677,7 @@ mod tests {
     async fn test_body_resets_idle_on_inbound_activity() {
         let body = MockBody::from_frames(vec![]);
         let tracker = ActivityTracker::new();
-        let mut body = Box::pin(SseLifecycleBody::new(
-            body,
-            FAR_FUTURE,
-            TEST_DEADLINE,
-            tracker.clone(),
-        ));
+        let mut body = Box::pin(test_body(body, FAR_FUTURE, TEST_DEADLINE, tracker.clone()));
 
         // Advance to just before the idle deadline, then simulate an
         // inbound request by recording activity on the tracker.

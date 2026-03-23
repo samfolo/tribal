@@ -264,7 +264,7 @@ async fn read_sse_jsonrpc_result(response: &mut reqwest::Response) -> serde_json
     let deadline = tokio::time::Instant::now() + MCP_RESPONSE_TIMEOUT;
 
     loop {
-        let remaining = deadline.duration_since(tokio::time::Instant::now());
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             panic!("timeout waiting for JSON-RPC result, body so far:\n{buf}");
         }
