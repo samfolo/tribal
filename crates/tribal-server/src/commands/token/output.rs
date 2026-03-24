@@ -46,6 +46,9 @@ pub(super) const INVALID_PREFIX: &str = "prefix must be lowercase hexadecimal";
 /// Error when `--ttl` is zero.
 pub(super) const TTL_MUST_BE_POSITIVE: &str = "--ttl must be greater than zero";
 
+/// Error when `--ttl` exceeds the representable range.
+pub(super) const TTL_OUT_OF_RANGE: &str = "--ttl value is too large";
+
 /// Error when a principal key does not exist.
 pub(super) const PRINCIPAL_NOT_FOUND: &str = "principal not found";
 
