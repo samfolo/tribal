@@ -148,6 +148,7 @@ pub(super) fn no_tokens() {
 pub(super) fn token_table(tokens: &[AuthToken], principals: &HashMap<PrincipalId, Principal>) {
     let hashes: Vec<&str> = tokens.iter().map(AuthToken::token_hash).collect();
     let prefixes = unique_prefixes(&hashes);
+    let now = Utc::now();
 
     let rows: Vec<_> = tokens
         .iter()
@@ -156,7 +157,7 @@ pub(super) fn token_table(tokens: &[AuthToken], principals: &HashMap<PrincipalId
             let principal_key = principals[&t.principal_id()].principal_key();
             let created = format_timestamp(t.created_at());
             let expires = format_timestamp(t.expires_at());
-            let status = token_status(t);
+            let status = token_status(t, now);
             (prefix, principal_key.to_owned(), created, expires, status)
         })
         .collect();
@@ -232,11 +233,12 @@ fn unique_prefixes(hashes: &[&str]) -> Vec<String> {
     hashes.iter().map(|h| h[..len].to_owned()).collect()
 }
 
-/// Returns the display status for a token.
-fn token_status(token: &AuthToken) -> &'static str {
+/// Returns the display status for a token evaluated against a fixed point
+/// in time, ensuring consistent results across an entire table render.
+fn token_status(token: &AuthToken, now: DateTime<Utc>) -> &'static str {
     if token.revoked_at().is_some() {
         STATUS_REVOKED
-    } else if token.expires_at() < Utc::now() {
+    } else if token.expires_at() < now {
         STATUS_EXPIRED
     } else {
         STATUS_ACTIVE
@@ -261,38 +263,42 @@ mod tests {
 
     #[test]
     fn test_token_status_active() {
+        let now = Utc::now();
         let token = an_auth_token()
-            .expires_at(Utc::now() + TimeDelta::try_hours(1).unwrap())
+            .expires_at(now + TimeDelta::try_hours(1).unwrap())
             .revoked_at(None)
             .build();
-        assert_eq!(token_status(&token), STATUS_ACTIVE);
+        assert_eq!(token_status(&token, now), STATUS_ACTIVE);
     }
 
     #[test]
     fn test_token_status_revoked() {
+        let now = Utc::now();
         let token = an_auth_token()
-            .expires_at(Utc::now() + TimeDelta::try_hours(1).unwrap())
-            .revoked_at(Some(Utc::now()))
+            .expires_at(now + TimeDelta::try_hours(1).unwrap())
+            .revoked_at(Some(now))
             .build();
-        assert_eq!(token_status(&token), STATUS_REVOKED);
+        assert_eq!(token_status(&token, now), STATUS_REVOKED);
     }
 
     #[test]
     fn test_token_status_expired() {
+        let now = Utc::now();
         let token = an_auth_token()
-            .expires_at(Utc::now() - TimeDelta::try_hours(1).unwrap())
+            .expires_at(now - TimeDelta::try_hours(1).unwrap())
             .revoked_at(None)
             .build();
-        assert_eq!(token_status(&token), STATUS_EXPIRED);
+        assert_eq!(token_status(&token, now), STATUS_EXPIRED);
     }
 
     #[test]
     fn test_token_status_revoked_takes_precedence_over_expired() {
+        let now = Utc::now();
         let token = an_auth_token()
-            .expires_at(Utc::now() - TimeDelta::try_hours(1).unwrap())
-            .revoked_at(Some(Utc::now() - TimeDelta::try_hours(2).unwrap()))
+            .expires_at(now - TimeDelta::try_hours(1).unwrap())
+            .revoked_at(Some(now - TimeDelta::try_hours(2).unwrap()))
             .build();
-        assert_eq!(token_status(&token), STATUS_REVOKED);
+        assert_eq!(token_status(&token, now), STATUS_REVOKED);
     }
 
     // -- unique_prefixes ----------------------------------------------------
