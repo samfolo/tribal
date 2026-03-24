@@ -140,8 +140,8 @@ pub trait AuthTokenRepository {
 
     /// Batch-revokes all active tokens, optionally filtered by principal.
     ///
-    /// Only tokens with `revoked_at IS NULL` are affected. Returns the
-    /// count of newly-revoked tokens.
+    /// Only tokens that are neither revoked nor expired are affected.
+    /// Returns the count of newly-revoked tokens.
     ///
     /// # Errors
     ///
@@ -326,25 +326,28 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         let result = if let Some(pid) = principal_id {
             sqlx::query(
                 "UPDATE auth_tokens SET revoked_at = $1 \
-                 WHERE revoked_at IS NULL AND principal_id = $2",
+                 WHERE revoked_at IS NULL AND expires_at > $1 AND principal_id = $2",
             )
             .bind(revoked_at)
             .bind(pid.inner())
             .execute(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
-                context: format!("revoking all auth tokens for principal {pid}"),
+                context: format!("revoking all active auth tokens for principal {pid}"),
                 source: e,
             })?
         } else {
-            sqlx::query("UPDATE auth_tokens SET revoked_at = $1 WHERE revoked_at IS NULL")
-                .bind(revoked_at)
-                .execute(&mut *conn)
-                .await
-                .map_err(|e| DbError::QueryFailed {
-                    context: "revoking all auth tokens".to_owned(),
-                    source: e,
-                })?
+            sqlx::query(
+                "UPDATE auth_tokens SET revoked_at = $1 \
+                 WHERE revoked_at IS NULL AND expires_at > $1",
+            )
+            .bind(revoked_at)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "revoking all active auth tokens".to_owned(),
+                source: e,
+            })?
         };
 
         Ok(result.rows_affected())

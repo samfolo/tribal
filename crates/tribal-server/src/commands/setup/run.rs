@@ -12,8 +12,8 @@ use super::{config_file, output};
 use crate::{
     cli::SetupArgs,
     commands::common::{
-        COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS, find_or_create_principal,
-        generate_raw_token, ttl_to_delta,
+        COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS, TIMESTAMP_FORMAT,
+        find_or_create_principal, generate_raw_token, ttl_to_delta,
     },
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
@@ -122,7 +122,7 @@ async fn run_async(
         .insert(&mut conn, &new_token)
         .await
         .map_err(|source| AppError::Database { source })?;
-    output::token_created(&expires_at.format("%Y-%m-%d %H:%M:%S UTC").to_string());
+    output::token_created(&expires_at.format(TIMESTAMP_FORMAT).to_string());
 
     drop(conn);
 

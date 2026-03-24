@@ -11,7 +11,7 @@ use crate::{
     cli::TokenCreateArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
-        find_or_create_principal, generate_raw_token, ttl_to_delta,
+        TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, ttl_to_delta,
     },
     error::AppError,
 };
@@ -98,7 +98,7 @@ async fn run_async(
         .map_err(|source| AppError::Database { source })?;
 
     output::raw_token(&raw_token);
-    output::token_created(&expires_at.format(output::TIMESTAMP_FORMAT).to_string());
+    output::token_created(&expires_at.format(TIMESTAMP_FORMAT).to_string());
 
     Ok(())
 }

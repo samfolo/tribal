@@ -1,6 +1,7 @@
 //! Core revoke flow: entry point and async orchestration.
 
 use chrono::Utc;
+use tribal_common::SHA256_HEX_LENGTH;
 use tribal_config::{DatabaseConfig, load_config};
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository};
 
@@ -51,9 +52,11 @@ pub(crate) fn run(config_path: &str, mut args: TokenRevokeArgs) -> Result<(), Ap
 // Async flow
 // ---------------------------------------------------------------------------
 
-/// Validates that a hash prefix is non-empty lowercase hexadecimal.
+/// Validates that a hash prefix is non-empty lowercase hexadecimal
+/// and no longer than a full SHA-256 hex hash (64 chars).
 fn validate_hex_prefix(prefix: &str) -> Result<(), AppError> {
     if prefix.is_empty()
+        || prefix.len() > SHA256_HEX_LENGTH
         || !prefix
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())

@@ -4,10 +4,12 @@
 //! Status messages go to stderr; structured data (raw tokens, tables) to
 //! stdout.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use tribal_domain::{AuthToken, Principal, PrincipalId};
+
+use crate::commands::common::TIMESTAMP_FORMAT;
 
 // ---------------------------------------------------------------------------
 // Constants — status messages
@@ -67,9 +69,6 @@ const STATUS_EXPIRED: &str = "expired";
 /// Number of leading hex characters of the token hash shown as a display
 /// prefix. Used consistently in the list table and in revoke confirmations.
 pub(super) const HASH_PREFIX_LENGTH: usize = 8;
-
-/// Timestamp format for created/expires columns.
-pub(super) const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S UTC";
 
 /// Minimum width for the Prefix column.
 const MIN_COL_WIDTH_PREFIX: usize = 6;
@@ -140,23 +139,22 @@ pub(super) fn no_tokens() {
 
 /// Prints a table of tokens to stdout with dynamic column widths.
 ///
-/// Columns: Prefix, Principal, Created, Expires, Status.
+/// Columns: Prefix, Principal, Created, Expires, Status. When two tokens
+/// share the same default prefix, the displayed prefix is extended until
+/// each row is uniquely identifiable from the CLI.
 pub(super) fn token_table(tokens: &[AuthToken], principals: &HashMap<PrincipalId, Principal>) {
+    let hashes: Vec<&str> = tokens.iter().map(AuthToken::token_hash).collect();
+    let prefixes = unique_prefixes(&hashes);
+
     let rows: Vec<_> = tokens
         .iter()
-        .map(|t| {
-            let prefix = &t.token_hash()[..HASH_PREFIX_LENGTH];
+        .zip(prefixes)
+        .map(|(t, prefix)| {
             let principal_key = principals[&t.principal_id()].principal_key();
             let created = format_timestamp(t.created_at());
             let expires = format_timestamp(t.expires_at());
             let status = token_status(t);
-            (
-                prefix.to_owned(),
-                principal_key.to_owned(),
-                created,
-                expires,
-                status,
-            )
+            (prefix, principal_key.to_owned(), created, expires, status)
         })
         .collect();
 
@@ -211,6 +209,25 @@ pub(super) fn token_table(tokens: &[AuthToken], principals: &HashMap<PrincipalId
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Computes the shortest unique prefix length for a set of hashes,
+/// starting from [`HASH_PREFIX_LENGTH`] and extending until every hash
+/// is distinguishable. Returns the truncated prefix for each hash.
+fn unique_prefixes(hashes: &[&str]) -> Vec<String> {
+    // Pass 1: find the global prefix length where all hashes are unique.
+    let mut len = HASH_PREFIX_LENGTH;
+    let max_len = hashes.iter().map(|h| h.len()).min().unwrap_or(len);
+    while len < max_len {
+        let mut seen = HashSet::with_capacity(hashes.len());
+        if hashes.iter().all(|h| seen.insert(&h[..len])) {
+            break;
+        }
+        len += 1;
+    }
+
+    // Pass 2: truncate each hash to the resolved length.
+    hashes.iter().map(|h| h[..len].to_owned()).collect()
+}
 
 /// Returns the display status for a token.
 fn token_status(token: &AuthToken) -> &'static str {

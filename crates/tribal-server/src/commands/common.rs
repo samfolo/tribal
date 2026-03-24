@@ -50,6 +50,13 @@ pub(crate) const COMMAND_STATEMENT_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const PROJECT_SCHEMA_VERSION: u32 = 1;
 
 // ---------------------------------------------------------------------------
+// Timestamp formatting
+// ---------------------------------------------------------------------------
+
+/// Display format for timestamps in CLI output.
+pub(crate) const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S UTC";
+
+// ---------------------------------------------------------------------------
 // Token generation
 // ---------------------------------------------------------------------------
 

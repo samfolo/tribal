@@ -584,3 +584,31 @@ async fn test_revoke_all_returns_zero_when_no_active_tokens() {
 
     assert_eq!(count, 0);
 }
+
+#[tokio::test]
+async fn test_revoke_all_skips_expired_tokens() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "revoke-all-expired").await;
+
+    // Insert a token that is already expired but not revoked.
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(make_token_hash())
+            .principal_id(principal_id)
+            .expires_at((Utc::now() - chrono::Duration::hours(1)).trunc_subsecs(6))
+            .build(),
+    )
+    .await
+    .expect("insert expired");
+
+    let count = repo
+        .revoke_all(&mut txn, None, Utc::now().trunc_subsecs(6))
+        .await
+        .expect("revoke_all");
+
+    assert_eq!(count, 0, "expired tokens should not be revoked");
+}
