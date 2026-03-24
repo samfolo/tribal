@@ -419,6 +419,17 @@ mod tests {
     }
 
     #[test]
+    fn test_display_token_operation() {
+        let err = AppError::TokenOperation {
+            reason: "no token matches prefix: 'abc12345'".into(),
+        };
+        assert!(
+            err.to_string().contains("no token matches prefix"),
+            "unexpected display: {err}",
+        );
+    }
+
+    #[test]
     fn test_display_setup_io() {
         let err = AppError::SetupIo {
             context: "create config directory /tmp/tribal".into(),
