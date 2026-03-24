@@ -63,7 +63,7 @@ const STATUS_EXPIRED: &str = "expired";
 pub(super) const HASH_PREFIX_LENGTH: usize = 8;
 
 /// Timestamp format for created/expires columns.
-const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S UTC";
+pub(super) const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S UTC";
 
 /// Minimum width for the Prefix column.
 const MIN_COL_WIDTH_PREFIX: usize = 6;
