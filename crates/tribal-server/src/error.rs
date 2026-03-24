@@ -227,6 +227,13 @@ pub enum AppError {
         reason: String,
     },
 
+    /// A token management operation failed.
+    #[error("token operation failed: {reason}")]
+    TokenOperation {
+        /// Description of why the operation failed.
+        reason: String,
+    },
+
     /// General database query error.
     #[error("{source}")]
     Database {
