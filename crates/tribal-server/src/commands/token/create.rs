@@ -43,6 +43,11 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
         Some(&DATABASE_COMMAND_DEFAULTS),
     )?;
 
+    if ttl == Some(0) {
+        return Err(AppError::TokenOperation {
+            reason: output::TTL_MUST_BE_POSITIVE.into(),
+        });
+    }
     let resolved_ttl = ttl.unwrap_or(config.auth.token_ttl_hours);
     let expires_at = Utc::now() + ttl_to_delta(resolved_ttl)?;
     let principal_key = principal.unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
