@@ -420,9 +420,12 @@ async fn test_find_by_hash_prefix_returns_multiple_on_shared_prefix() {
     let principal_id = setup_principal(&mut txn, "prefix-multi").await;
     let shared_prefix = "abcdef00";
 
-    // Insert two tokens whose hashes share the same 8-char prefix.
+    // Insert three tokens whose hashes share the same 8-char prefix.
+    // The query uses LIMIT 2, so at most two are returned — enough for
+    // callers to distinguish "ambiguous" from "unique".
     let hash_a = format!("{shared_prefix}{}", &make_token_hash()[8..]);
     let hash_b = format!("{shared_prefix}{}", &make_token_hash()[8..]);
+    let hash_c = format!("{shared_prefix}{}", &make_token_hash()[8..]);
 
     repo.insert(
         &mut txn,
@@ -444,12 +447,26 @@ async fn test_find_by_hash_prefix_returns_multiple_on_shared_prefix() {
     .await
     .expect("insert b");
 
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(hash_c)
+            .principal_id(principal_id)
+            .build(),
+    )
+    .await
+    .expect("insert c");
+
     let results = repo
         .find_by_hash_prefix(&mut txn, shared_prefix)
         .await
         .expect("find_by_hash_prefix");
 
-    assert_eq!(results.len(), 2);
+    assert_eq!(
+        results.len(),
+        2,
+        "LIMIT 2 caps results even with 3 matching tokens"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -611,4 +628,37 @@ async fn test_revoke_all_skips_expired_tokens() {
         .expect("revoke_all");
 
     assert_eq!(count, 0, "expired tokens should not be revoked");
+}
+
+#[tokio::test]
+async fn test_revoke_all_includes_token_expiring_at_revocation_time() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "revoke-all-boundary").await;
+    let now = Utc::now().trunc_subsecs(6);
+
+    // A token expiring exactly at the revocation time is still active
+    // (token_status treats expires_at < now as expired, so == now is active).
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(make_token_hash())
+            .principal_id(principal_id)
+            .expires_at(now)
+            .build(),
+    )
+    .await
+    .expect("insert boundary");
+
+    let count = repo
+        .revoke_all(&mut txn, None, now)
+        .await
+        .expect("revoke_all");
+
+    assert_eq!(
+        count, 1,
+        "token expiring exactly at revocation time is still active"
+    );
 }
