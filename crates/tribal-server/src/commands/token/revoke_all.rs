@@ -1,6 +1,6 @@
 //! Core revoke-all flow: entry point and async orchestration.
 
-use chrono::Utc;
+use chrono::{SubsecRound, Utc};
 use tribal_config::{DatabaseConfig, load_config};
 use tribal_db::{
     AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
@@ -86,7 +86,7 @@ async fn run_async(
     };
 
     let count = PgAuthTokenRepository
-        .revoke_all(&mut conn, principal_id, Utc::now())
+        .revoke_all(&mut conn, principal_id, Utc::now().trunc_subsecs(6))
         .await
         .map_err(|source| AppError::Database { source })?;
 
