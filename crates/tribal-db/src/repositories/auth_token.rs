@@ -100,8 +100,8 @@ pub trait AuthTokenRepository {
 
     /// Revokes a token by setting `revoked_at`.
     ///
-    /// Idempotent: revoking an already-revoked token returns it with
-    /// the original `revoked_at` unchanged.
+    /// Returns `(token, true)` when this call performed the revocation, or
+    /// `(token, false)` when the token was already revoked (idempotent).
     ///
     /// # Errors
     ///
@@ -112,7 +112,45 @@ pub trait AuthTokenRepository {
         conn: &mut PgConnection,
         id: AuthTokenId,
         revoked_at: DateTime<Utc>,
-    ) -> Result<AuthToken, DbError>;
+    ) -> Result<(AuthToken, bool), DbError>;
+
+    /// Returns all auth tokens, ordered by `created_at DESC`.
+    ///
+    /// Returns an empty vec when no tokens exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<AuthToken>, DbError>;
+
+    /// Finds tokens whose hash starts with the given prefix.
+    ///
+    /// Returns at most two results — enough for callers to distinguish
+    /// zero, one, or ambiguous matches without scanning the full table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_hash_prefix(
+        &self,
+        conn: &mut PgConnection,
+        prefix: &str,
+    ) -> Result<Vec<AuthToken>, DbError>;
+
+    /// Batch-revokes all active tokens, optionally filtered by principal.
+    ///
+    /// Only tokens that are neither revoked nor expired are affected.
+    /// Returns the count of newly-revoked tokens.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn revoke_all(
+        &self,
+        conn: &mut PgConnection,
+        principal_id: Option<PrincipalId>,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +227,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         let sql = format!(
             "SELECT {COLUMNS} FROM auth_tokens \
              WHERE principal_id = $1 \
-             ORDER BY created_at DESC",
+             ORDER BY created_at DESC, id",
         );
 
         let rows = sqlx::query(&sql)
@@ -209,9 +247,9 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         conn: &mut PgConnection,
         id: AuthTokenId,
         revoked_at: DateTime<Utc>,
-    ) -> Result<AuthToken, DbError> {
+    ) -> Result<(AuthToken, bool), DbError> {
         // Conditional update — only sets revoked_at when not already revoked.
-        sqlx::query(
+        let affected = sqlx::query(
             "UPDATE auth_tokens SET revoked_at = $2 \
              WHERE id = $1 AND revoked_at IS NULL",
         )
@@ -222,7 +260,8 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         .map_err(|e| DbError::QueryFailed {
             context: format!("revoking auth token {id}"),
             source: e,
-        })?;
+        })?
+        .rows_affected();
 
         // Fetch current state regardless of whether the update affected rows.
         let sql = format!("SELECT {COLUMNS} FROM auth_tokens WHERE id = $1");
@@ -240,7 +279,85 @@ impl AuthTokenRepository for PgAuthTokenRepository {
                 id: id.to_string(),
             })?;
 
-        Ok(map_auth_token_row(&row))
+        Ok((map_auth_token_row(&row), affected > 0))
+    }
+
+    async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<AuthToken>, DbError> {
+        let sql = format!("SELECT {COLUMNS} FROM auth_tokens ORDER BY created_at DESC, id");
+
+        let rows =
+            sqlx::query(&sql)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: "listing all auth tokens".to_owned(),
+                    source: e,
+                })?;
+
+        Ok(rows.iter().map(map_auth_token_row).collect())
+    }
+
+    async fn find_by_hash_prefix(
+        &self,
+        conn: &mut PgConnection,
+        prefix: &str,
+    ) -> Result<Vec<AuthToken>, DbError> {
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let sql = format!(
+            "SELECT {COLUMNS} FROM auth_tokens \
+             WHERE LEFT(token_hash, length($1)) = $1 \
+             LIMIT 2",
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(prefix)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding auth tokens by hash prefix '{prefix}'"),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_auth_token_row).collect())
+    }
+
+    async fn revoke_all(
+        &self,
+        conn: &mut PgConnection,
+        principal_id: Option<PrincipalId>,
+        revoked_at: DateTime<Utc>,
+    ) -> Result<u64, DbError> {
+        let result = if let Some(pid) = principal_id {
+            sqlx::query(
+                "UPDATE auth_tokens SET revoked_at = $1 \
+                 WHERE revoked_at IS NULL AND expires_at >= $1 AND principal_id = $2",
+            )
+            .bind(revoked_at)
+            .bind(pid.inner())
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("revoking all active auth tokens for principal {pid}"),
+                source: e,
+            })?
+        } else {
+            sqlx::query(
+                "UPDATE auth_tokens SET revoked_at = $1 \
+                 WHERE revoked_at IS NULL AND expires_at >= $1",
+            )
+            .bind(revoked_at)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "revoking all active auth tokens".to_owned(),
+                source: e,
+            })?
+        };
+
+        Ok(result.rows_affected())
     }
 }
 

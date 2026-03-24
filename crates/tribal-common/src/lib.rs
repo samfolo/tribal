@@ -35,6 +35,9 @@ pub fn clamp_to_i32(value: impl TryInto<i32>) -> i32 {
 // Hashing
 // ---------------------------------------------------------------------------
 
+/// Length of a SHA-256 hex digest (64 lowercase hex characters).
+pub const SHA256_HEX_LENGTH: usize = 64;
+
 /// Computes the lowercase hex-encoded SHA-256 digest of the given content.
 #[must_use]
 pub fn sha256_hex(content: &str) -> String {
@@ -124,7 +127,7 @@ mod tests {
     #[test]
     fn test_sha256_hex_length() {
         let hash = sha256_hex("arbitrary content");
-        assert_eq!(hash.len(), 64, "SHA-256 hex digest should be 64 characters");
+        assert_eq!(hash.len(), SHA256_HEX_LENGTH);
     }
 
     // -- jitter ------------------------------------------------------------

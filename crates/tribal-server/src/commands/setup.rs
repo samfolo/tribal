@@ -8,6 +8,5 @@
 mod config_file;
 mod output;
 mod run;
-mod token;
 
 pub(crate) use run::run;

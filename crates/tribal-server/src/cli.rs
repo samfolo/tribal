@@ -9,5 +9,5 @@ mod styles;
 
 pub use command::{
     Cli, Command, ProjectCommand, ProjectListArgs, ProjectRegisterArgs, ServeArgs, SetupArgs,
-    TokenCommand,
+    TokenCommand, TokenCreateArgs, TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
 };
