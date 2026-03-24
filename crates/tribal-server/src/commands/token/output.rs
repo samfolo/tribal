@@ -135,10 +135,7 @@ pub(super) fn no_tokens() {
 /// Prints a table of tokens to stdout with dynamic column widths.
 ///
 /// Columns: Prefix, Principal, Created, Expires, Status.
-pub(super) fn token_table(
-    tokens: &[AuthToken],
-    principals: &HashMap<PrincipalId, Principal>,
-) {
+pub(super) fn token_table(tokens: &[AuthToken], principals: &HashMap<PrincipalId, Principal>) {
     let rows: Vec<_> = tokens
         .iter()
         .map(|t| {
@@ -149,7 +146,13 @@ pub(super) fn token_table(
             let created = format_timestamp(t.created_at());
             let expires = format_timestamp(t.expires_at());
             let status = token_status(t);
-            (prefix.to_owned(), principal_key.to_owned(), created, expires, status)
+            (
+                prefix.to_owned(),
+                principal_key.to_owned(),
+                created,
+                expires,
+                status,
+            )
         })
         .collect();
 
@@ -191,14 +194,12 @@ pub(super) fn token_table(
         "Prefix", "Principal", "Created", "Expires", "Status",
     );
 
-    let total_width =
-        prefix_w + principal_w + created_w + expires_w + status_w + (sep.len() * 4);
+    let total_width = prefix_w + principal_w + created_w + expires_w + status_w + (sep.len() * 4);
     println!("{}", "-".repeat(total_width));
 
     for (prefix, principal_key, created, expires, status) in &rows {
         println!(
-            "{:<prefix_w$}{sep}{:<principal_w$}{sep}{:<created_w$}{sep}{:<expires_w$}{sep}{:<status_w$}",
-            prefix, principal_key, created, expires, status,
+            "{prefix:<prefix_w$}{sep}{principal_key:<principal_w$}{sep}{created:<created_w$}{sep}{expires:<expires_w$}{sep}{status:<status_w$}",
         );
     }
 }
