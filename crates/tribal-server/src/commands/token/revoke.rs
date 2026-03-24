@@ -176,4 +176,20 @@ mod tests {
             "unexpected error: {err}",
         );
     }
+
+    #[test]
+    fn test_validate_hex_prefix_accepts_full_length() {
+        let full = "a".repeat(SHA256_HEX_LENGTH);
+        assert!(validate_hex_prefix(&full).is_ok());
+    }
+
+    #[test]
+    fn test_validate_hex_prefix_rejects_overlong() {
+        let overlong = "a".repeat(SHA256_HEX_LENGTH + 1);
+        let err = validate_hex_prefix(&overlong).unwrap_err();
+        assert!(
+            err.to_string().contains(output::INVALID_PREFIX),
+            "unexpected error: {err}",
+        );
+    }
 }

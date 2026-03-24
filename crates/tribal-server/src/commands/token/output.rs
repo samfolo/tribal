@@ -291,4 +291,37 @@ mod tests {
             .build();
         assert_eq!(token_status(&token), STATUS_REVOKED);
     }
+
+    // -- unique_prefixes ----------------------------------------------------
+
+    #[test]
+    fn test_unique_prefixes_no_collisions() {
+        let hashes = vec![
+            "aaaa0000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "bbbb0000cccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        ];
+        let prefixes = unique_prefixes(&hashes);
+        assert_eq!(prefixes[0].len(), HASH_PREFIX_LENGTH);
+        assert_eq!(prefixes[1].len(), HASH_PREFIX_LENGTH);
+    }
+
+    #[test]
+    fn test_unique_prefixes_extends_on_collision() {
+        let hashes = vec![
+            "abcdef00aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff00000000",
+            "abcdef00bbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111",
+        ];
+        let prefixes = unique_prefixes(&hashes);
+        // First 8 chars are identical; position 9 diverges ('a' vs 'b').
+        assert_eq!(prefixes[0].len(), 9);
+        assert_eq!(prefixes[1].len(), 9);
+        assert_ne!(prefixes[0], prefixes[1]);
+    }
+
+    #[test]
+    fn test_unique_prefixes_single_hash() {
+        let hashes = vec!["deadbeefcafebabe0123456789abcdef0123456789abcdef0123456789abcdef"];
+        let prefixes = unique_prefixes(&hashes);
+        assert_eq!(prefixes[0].len(), HASH_PREFIX_LENGTH);
+    }
 }
