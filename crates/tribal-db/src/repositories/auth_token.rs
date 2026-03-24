@@ -301,6 +301,10 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         conn: &mut PgConnection,
         prefix: &str,
     ) -> Result<Vec<AuthToken>, DbError> {
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let sql = format!(
             "SELECT {COLUMNS} FROM auth_tokens \
              WHERE LEFT(token_hash, length($1)) = $1 \

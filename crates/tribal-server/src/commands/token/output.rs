@@ -43,6 +43,9 @@ pub(super) const AMBIGUOUS_PREFIX: &str = "multiple tokens match prefix";
 /// Error when the prefix contains non-hex characters.
 pub(super) const INVALID_PREFIX: &str = "prefix must be lowercase hexadecimal";
 
+/// Error when `--ttl` is zero.
+pub(super) const TTL_MUST_BE_POSITIVE: &str = "--ttl must be greater than zero";
+
 /// Error when a principal key does not exist.
 pub(super) const PRINCIPAL_NOT_FOUND: &str = "principal not found";
 
