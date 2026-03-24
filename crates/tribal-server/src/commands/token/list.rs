@@ -1,6 +1,6 @@
 //! Core list flow: entry point and async orchestration.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tribal_config::{DatabaseConfig, load_config};
 use tribal_db::{
@@ -94,7 +94,7 @@ async fn resolve_principals(
     let ids: Vec<PrincipalId> = tokens
         .iter()
         .map(AuthToken::principal_id)
-        .collect::<std::collections::HashSet<_>>()
+        .collect::<HashSet<_>>()
         .into_iter()
         .collect();
 

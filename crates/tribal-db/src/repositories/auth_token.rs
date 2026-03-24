@@ -228,7 +228,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         let sql = format!(
             "SELECT {COLUMNS} FROM auth_tokens \
              WHERE principal_id = $1 \
-             ORDER BY created_at DESC",
+             ORDER BY created_at DESC, id",
         );
 
         let rows = sqlx::query(&sql)
@@ -283,7 +283,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
     }
 
     async fn find_all(&self, conn: &mut PgConnection) -> Result<Vec<AuthToken>, DbError> {
-        let sql = format!("SELECT {COLUMNS} FROM auth_tokens ORDER BY created_at DESC");
+        let sql = format!("SELECT {COLUMNS} FROM auth_tokens ORDER BY created_at DESC, id");
 
         let rows =
             sqlx::query(&sql)
@@ -302,11 +302,11 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         conn: &mut PgConnection,
         prefix: &str,
     ) -> Result<Vec<AuthToken>, DbError> {
-        let sql = format!("SELECT {COLUMNS} FROM auth_tokens WHERE token_hash LIKE $1");
-        let pattern = format!("{prefix}%");
+        let sql =
+            format!("SELECT {COLUMNS} FROM auth_tokens WHERE LEFT(token_hash, length($1)) = $1",);
 
         let rows = sqlx::query(&sql)
-            .bind(&pattern)
+            .bind(prefix)
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
