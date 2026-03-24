@@ -125,9 +125,8 @@ pub trait AuthTokenRepository {
 
     /// Finds tokens whose hash starts with the given prefix.
     ///
-    /// Returns a vec because a short prefix may match multiple tokens.
-    /// The caller is responsible for deciding how to handle zero, one,
-    /// or ambiguous matches.
+    /// Returns at most two results — enough for callers to distinguish
+    /// zero, one, or ambiguous matches without scanning the full table.
     ///
     /// # Errors
     ///
@@ -302,8 +301,11 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         conn: &mut PgConnection,
         prefix: &str,
     ) -> Result<Vec<AuthToken>, DbError> {
-        let sql =
-            format!("SELECT {COLUMNS} FROM auth_tokens WHERE LEFT(token_hash, length($1)) = $1",);
+        let sql = format!(
+            "SELECT {COLUMNS} FROM auth_tokens \
+             WHERE LEFT(token_hash, length($1)) = $1 \
+             LIMIT 2",
+        );
 
         let rows = sqlx::query(&sql)
             .bind(prefix)
@@ -326,7 +328,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         let result = if let Some(pid) = principal_id {
             sqlx::query(
                 "UPDATE auth_tokens SET revoked_at = $1 \
-                 WHERE revoked_at IS NULL AND expires_at > $1 AND principal_id = $2",
+                 WHERE revoked_at IS NULL AND expires_at >= $1 AND principal_id = $2",
             )
             .bind(revoked_at)
             .bind(pid.inner())
@@ -339,7 +341,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         } else {
             sqlx::query(
                 "UPDATE auth_tokens SET revoked_at = $1 \
-                 WHERE revoked_at IS NULL AND expires_at > $1",
+                 WHERE revoked_at IS NULL AND expires_at >= $1",
             )
             .bind(revoked_at)
             .execute(&mut *conn)
