@@ -33,14 +33,10 @@ const POOL_NAME: &str = "token-create";
 ///
 /// Returns an [`AppError`] if config loading, database connection, principal
 /// resolution, or token insertion fails.
-pub(crate) fn run(config_path: &str, args: TokenCreateArgs) -> Result<(), AppError> {
-    let TokenCreateArgs {
-        principal,
-        ttl,
-        database,
-    } = args;
-
-    let cli_overrides = database.into_cli_overrides();
+pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), AppError> {
+    let principal = args.principal.take();
+    let ttl = args.ttl;
+    let cli_overrides = args.into_cli_overrides();
     let config = load_config(
         config_path,
         Some(cli_overrides),

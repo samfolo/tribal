@@ -11,4 +11,3 @@ mod setup;
 pub(crate) mod token;
 
 pub(crate) use self::{serve::run as serve, setup::run as setup};
-

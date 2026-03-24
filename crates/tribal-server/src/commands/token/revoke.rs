@@ -30,10 +30,9 @@ const POOL_NAME: &str = "token-revoke";
 ///
 /// Returns an [`AppError`] if config loading, database connection,
 /// prefix resolution, or revocation fails.
-pub(crate) fn run(config_path: &str, args: TokenRevokeArgs) -> Result<(), AppError> {
-    let TokenRevokeArgs { prefix, database } = args;
-
-    let cli_overrides = database.into_cli_overrides();
+pub(crate) fn run(config_path: &str, mut args: TokenRevokeArgs) -> Result<(), AppError> {
+    let prefix = std::mem::take(&mut args.prefix);
+    let cli_overrides = args.into_cli_overrides();
     let config = load_config(
         config_path,
         Some(cli_overrides),

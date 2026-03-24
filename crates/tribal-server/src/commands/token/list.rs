@@ -93,7 +93,7 @@ async fn resolve_principals(
 ) -> Result<HashMap<PrincipalId, Principal>, AppError> {
     let ids: Vec<PrincipalId> = tokens
         .iter()
-        .map(|t| t.principal_id())
+        .map(AuthToken::principal_id)
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
@@ -103,8 +103,5 @@ async fn resolve_principals(
         .await
         .map_err(|source| AppError::Database { source })?;
 
-    Ok(principals
-        .into_iter()
-        .map(|p| (p.id(), p))
-        .collect())
+    Ok(principals.into_iter().map(|p| (p.id(), p)).collect())
 }
