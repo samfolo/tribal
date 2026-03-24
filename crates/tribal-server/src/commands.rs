@@ -8,5 +8,7 @@ pub(crate) mod common;
 pub(crate) mod project;
 mod serve;
 mod setup;
+pub(crate) mod token;
 
 pub(crate) use self::{serve::run as serve, setup::run as setup};
+
