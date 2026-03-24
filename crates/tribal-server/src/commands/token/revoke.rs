@@ -1,6 +1,6 @@
 //! Core revoke flow: entry point and async orchestration.
 
-use chrono::Utc;
+use chrono::{SubsecRound, Utc};
 use tribal_common::SHA256_HEX_LENGTH;
 use tribal_config::{DatabaseConfig, load_config};
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository};
@@ -105,17 +105,16 @@ async fn run_async(db_config: &DatabaseConfig, prefix: &str) -> Result<(), AppEr
         }
     };
 
-    if token.revoked_at().is_some() {
-        output::token_already_revoked(prefix);
-        return Ok(());
-    }
-
-    PgAuthTokenRepository
-        .revoke(&mut conn, token.id(), Utc::now())
+    let revoked_at = Utc::now().trunc_subsecs(6);
+    let result = PgAuthTokenRepository
+        .revoke(&mut conn, token.id(), revoked_at)
         .await
         .map_err(|source| AppError::Database { source })?;
 
-    output::token_revoked(prefix);
+    // The repo method is idempotent: if we set revoked_at, it matches our
+    // timestamp; if another process won the race, it retains the original.
+    let already_revoked = result.revoked_at() != Some(revoked_at);
+    output::token_revoked(prefix, already_revoked);
 
     Ok(())
 }

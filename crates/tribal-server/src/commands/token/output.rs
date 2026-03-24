@@ -113,14 +113,17 @@ pub(super) fn token_created(expires: &str) {
 // Revoke output
 // ---------------------------------------------------------------------------
 
-/// Confirms a successful single-token revocation to stderr.
-pub(super) fn token_revoked(prefix: &str) {
-    eprintln!("  {TOKEN_REVOKED}: {prefix}");
-}
-
-/// Reports that the target token was already revoked.
-pub(super) fn token_already_revoked(prefix: &str) {
-    eprintln!("  {TOKEN_ALREADY_REVOKED}: {prefix}");
+/// Confirms a token revocation to stderr.
+///
+/// When `already_revoked` is true, reports that another process revoked
+/// the token before this one did.
+pub(super) fn token_revoked(prefix: &str, already_revoked: bool) {
+    let msg = if already_revoked {
+        TOKEN_ALREADY_REVOKED
+    } else {
+        TOKEN_REVOKED
+    };
+    eprintln!("  {msg}: {prefix}");
 }
 
 /// Reports the number of tokens revoked in a bulk operation.
