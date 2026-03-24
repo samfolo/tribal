@@ -472,19 +472,21 @@ mod tests {
     #[test]
     fn test_serve_transport_parsed() {
         let cli = Cli::try_parse_from(["tribal", "serve", "--transport", "http"]).unwrap();
-        let Some(Command::Serve { args }) = cli.command else {
-            unreachable!();
-        };
-        assert_eq!(args.transport, Some(TransportKind::Http));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Serve { ref args })
+            if args.transport == Some(TransportKind::Http)
+        ));
     }
 
     #[test]
     fn test_serve_bind_parsed_as_string() {
         let cli = Cli::try_parse_from(["tribal", "serve", "--bind", DEFAULT_BIND_ADDRESS]).unwrap();
-        let Some(Command::Serve { args }) = cli.command else {
-            unreachable!();
-        };
-        assert_eq!(args.bind.as_deref(), Some(DEFAULT_BIND_ADDRESS));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Serve { ref args })
+            if args.bind.as_deref() == Some(DEFAULT_BIND_ADDRESS)
+        ));
     }
 
     // -- into_cli_overrides -------------------------------------------------
@@ -583,25 +585,21 @@ mod tests {
     fn test_setup_parses_database_url_long() {
         let cli =
             Cli::try_parse_from(["tribal", "setup", "--database-url", "postgres://h/db"]).unwrap();
-        let Some(Command::Setup { args }) = cli.command else {
-            unreachable!();
-        };
-        assert_eq!(
-            args.database.database_url.as_deref(),
-            Some("postgres://h/db")
-        );
+        assert!(matches!(
+            cli.command,
+            Some(Command::Setup { ref args })
+            if args.database.database_url.as_deref() == Some("postgres://h/db")
+        ));
     }
 
     #[test]
     fn test_setup_parses_database_url_short() {
         let cli = Cli::try_parse_from(["tribal", "setup", "-d", "postgres://h/db"]).unwrap();
-        let Some(Command::Setup { args }) = cli.command else {
-            unreachable!();
-        };
-        assert_eq!(
-            args.database.database_url.as_deref(),
-            Some("postgres://h/db")
-        );
+        assert!(matches!(
+            cli.command,
+            Some(Command::Setup { ref args })
+            if args.database.database_url.as_deref() == Some("postgres://h/db")
+        ));
     }
 
     // -- setup into_cli_overrides -------------------------------------------
@@ -649,16 +647,14 @@ mod tests {
             "postgres://h/db",
         ])
         .unwrap();
-        let Some(Command::Project(ProjectCommand::Register { args })) = cli.command else {
-            unreachable!();
-        };
-        assert_eq!(args.remote.as_deref(), Some("git@github.com:user/repo.git"),);
-        assert_eq!(args.name.as_deref(), Some("my-project"));
-        assert_eq!(args.branch.as_deref(), Some("develop"));
-        assert_eq!(
-            args.database.database_url.as_deref(),
-            Some("postgres://h/db")
-        );
+        assert!(matches!(
+            cli.command,
+            Some(Command::Project(ProjectCommand::Register { ref args }))
+            if args.remote.as_deref() == Some("git@github.com:user/repo.git")
+                && args.name.as_deref() == Some("my-project")
+                && args.branch.as_deref() == Some("develop")
+                && args.database.database_url.as_deref() == Some("postgres://h/db")
+        ));
     }
 
     // -- Project list -------------------------------------------------------
@@ -677,13 +673,11 @@ mod tests {
     fn test_project_list_parses_database_url() {
         let cli =
             Cli::try_parse_from(["tribal", "project", "list", "-d", "postgres://h/db"]).unwrap();
-        let Some(Command::Project(ProjectCommand::List { args })) = cli.command else {
-            unreachable!();
-        };
-        assert_eq!(
-            args.database.database_url.as_deref(),
-            Some("postgres://h/db")
-        );
+        assert!(matches!(
+            cli.command,
+            Some(Command::Project(ProjectCommand::List { ref args }))
+            if args.database.database_url.as_deref() == Some("postgres://h/db")
+        ));
     }
 
     // -- project list into_cli_overrides ------------------------------------
@@ -691,6 +685,171 @@ mod tests {
     #[test]
     fn test_project_list_into_cli_overrides_delegates_to_database_args() {
         let args = ProjectListArgs {
+            database: DatabaseArgs {
+                database_url: Some("postgres://h/db".into()),
+            },
+        };
+        let overrides = args.into_cli_overrides();
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
+    }
+
+    // -- Token create -------------------------------------------------------
+
+    #[test]
+    fn test_token_create_parses_without_flags() {
+        let cli = Cli::try_parse_from(["tribal", "token", "create"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Token(TokenCommand::Create { ref args }))
+            if args.principal.is_none()
+                && args.ttl.is_none()
+                && args.database.database_url.is_none()
+        ));
+    }
+
+    #[test]
+    fn test_token_create_parses_all_flags() {
+        let cli = Cli::try_parse_from([
+            "tribal",
+            "token",
+            "create",
+            "--principal",
+            "user:sam",
+            "--ttl",
+            "720",
+            "-d",
+            "postgres://h/db",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Token(TokenCommand::Create { ref args }))
+            if args.principal.as_deref() == Some("user:sam")
+                && args.ttl == Some(720)
+                && args.database.database_url.as_deref() == Some("postgres://h/db")
+        ));
+    }
+
+    #[test]
+    fn test_token_create_into_cli_overrides_maps_database_url() {
+        let args = TokenCreateArgs {
+            principal: Some("user:sam".into()),
+            ttl: Some(24),
+            database: DatabaseArgs {
+                database_url: Some("postgres://h/db".into()),
+            },
+        };
+        let overrides = args.into_cli_overrides();
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
+    }
+
+    #[test]
+    fn test_token_create_into_cli_overrides_omits_absent_fields() {
+        let args = TokenCreateArgs {
+            principal: None,
+            ttl: None,
+            database: DatabaseArgs { database_url: None },
+        };
+        let overrides = args.into_cli_overrides();
+        assert!(overrides.database.is_none());
+    }
+
+    // -- Token list ---------------------------------------------------------
+
+    #[test]
+    fn test_token_list_parses_without_flags() {
+        let cli = Cli::try_parse_from(["tribal", "token", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Token(TokenCommand::List { ref args }))
+            if args.database.database_url.is_none()
+        ));
+    }
+
+    #[test]
+    fn test_token_list_parses_database_url() {
+        let cli =
+            Cli::try_parse_from(["tribal", "token", "list", "-d", "postgres://h/db"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Token(TokenCommand::List { ref args }))
+            if args.database.database_url.as_deref() == Some("postgres://h/db")
+        ));
+    }
+
+    #[test]
+    fn test_token_list_into_cli_overrides_maps_database_url() {
+        let args = TokenListArgs {
+            database: DatabaseArgs {
+                database_url: Some("postgres://h/db".into()),
+            },
+        };
+        let overrides = args.into_cli_overrides();
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
+    }
+
+    // -- Token revoke -------------------------------------------------------
+
+    #[test]
+    fn test_token_revoke_parses_positional_prefix() {
+        let cli = Cli::try_parse_from(["tribal", "token", "revoke", "abc12345"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Token(TokenCommand::Revoke { ref args }))
+            if args.prefix == "abc12345"
+        ));
+    }
+
+    #[test]
+    fn test_token_revoke_requires_prefix() {
+        let result = Cli::try_parse_from(["tribal", "token", "revoke"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_token_revoke_into_cli_overrides_maps_database_url() {
+        let args = TokenRevokeArgs {
+            prefix: "abc12345".into(),
+            database: DatabaseArgs {
+                database_url: Some("postgres://h/db".into()),
+            },
+        };
+        let overrides = args.into_cli_overrides();
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
+    }
+
+    // -- Token revoke-all ---------------------------------------------------
+
+    #[test]
+    fn test_token_revoke_all_parses_without_flags() {
+        let cli = Cli::try_parse_from(["tribal", "token", "revoke-all"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Token(TokenCommand::RevokeAll { ref args }))
+            if args.principal.is_none()
+                && args.database.database_url.is_none()
+        ));
+    }
+
+    #[test]
+    fn test_token_revoke_all_parses_principal_flag() {
+        let cli = Cli::try_parse_from(["tribal", "token", "revoke-all", "--principal", "user:sam"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Token(TokenCommand::RevokeAll { ref args }))
+            if args.principal.as_deref() == Some("user:sam")
+        ));
+    }
+
+    #[test]
+    fn test_token_revoke_all_into_cli_overrides_maps_database_url() {
+        let args = TokenRevokeAllArgs {
+            principal: Some("user:sam".into()),
             database: DatabaseArgs {
                 database_url: Some("postgres://h/db".into()),
             },
