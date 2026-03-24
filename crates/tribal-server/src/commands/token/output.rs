@@ -38,8 +38,14 @@ pub(super) const NO_MATCHING_TOKEN: &str = "no token matches prefix";
 /// Error when a prefix matches more than one token.
 pub(super) const AMBIGUOUS_PREFIX: &str = "multiple tokens match prefix";
 
+/// Error when the prefix contains non-hex characters.
+pub(super) const INVALID_PREFIX: &str = "prefix must be lowercase hexadecimal";
+
 /// Error when a principal key does not exist.
 pub(super) const PRINCIPAL_NOT_FOUND: &str = "principal not found";
+
+/// Error when a token references a principal that no longer exists.
+pub(super) const ORPHANED_TOKEN: &str = "token references unknown principal";
 
 // ---------------------------------------------------------------------------
 // Constants — status labels
@@ -140,9 +146,7 @@ pub(super) fn token_table(tokens: &[AuthToken], principals: &HashMap<PrincipalId
         .iter()
         .map(|t| {
             let prefix = &t.token_hash()[..HASH_PREFIX_LENGTH];
-            let principal_key = principals
-                .get(&t.principal_id())
-                .map_or("unknown", |p| p.principal_key());
+            let principal_key = principals[&t.principal_id()].principal_key();
             let created = format_timestamp(t.created_at());
             let expires = format_timestamp(t.expires_at());
             let status = token_status(t);
