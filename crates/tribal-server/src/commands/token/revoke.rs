@@ -105,15 +105,8 @@ async fn run_async(db_config: &DatabaseConfig, prefix: &str) -> Result<(), AppEr
         }
     };
 
-    // The user's input prefix may be shorter or longer than the canonical
-    // display length. Use the stored hash to produce a consistent prefix.
-    let display_prefix = token
-        .token_hash()
-        .get(..output::HASH_PREFIX_LENGTH)
-        .expect("token hash is always 64 hex chars");
-
     if token.revoked_at().is_some() {
-        output::token_already_revoked(display_prefix);
+        output::token_already_revoked(prefix);
         return Ok(());
     }
 
@@ -122,7 +115,7 @@ async fn run_async(db_config: &DatabaseConfig, prefix: &str) -> Result<(), AppEr
         .await
         .map_err(|source| AppError::Database { source })?;
 
-    output::token_revoked(display_prefix);
+    output::token_revoked(prefix);
 
     Ok(())
 }
