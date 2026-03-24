@@ -242,11 +242,12 @@ async fn test_revoke_sets_revoked_at() {
         .expect("insert");
 
     let revoked_at = Utc::now().trunc_subsecs(6);
-    let revoked = repo
+    let (revoked, changed) = repo
         .revoke(&mut txn, token.id(), revoked_at)
         .await
         .expect("revoke");
 
+    assert!(changed, "first revoke should report changed");
     assert_eq!(revoked.revoked_at(), Some(revoked_at));
     assert_eq!(revoked.id(), token.id());
 }
@@ -271,17 +272,19 @@ async fn test_revoke_is_idempotent() {
         .expect("insert");
 
     let first_revoke_at = Utc::now().trunc_subsecs(6);
-    let first = repo
+    let (first, first_changed) = repo
         .revoke(&mut txn, token.id(), first_revoke_at)
         .await
         .expect("first revoke");
 
     let second_revoke_at = Utc::now().trunc_subsecs(6);
-    let second = repo
+    let (second, second_changed) = repo
         .revoke(&mut txn, token.id(), second_revoke_at)
         .await
         .expect("second revoke");
 
+    assert!(first_changed, "first revoke should report changed");
+    assert!(!second_changed, "second revoke should report not changed");
     // Original revocation timestamp preserved.
     assert_eq!(first.revoked_at(), second.revoked_at());
     assert_eq!(second.revoked_at(), Some(first_revoke_at));

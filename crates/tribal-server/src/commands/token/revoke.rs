@@ -105,16 +105,12 @@ async fn run_async(db_config: &DatabaseConfig, prefix: &str) -> Result<(), AppEr
         }
     };
 
-    let revoked_at = Utc::now().trunc_subsecs(6);
-    let result = PgAuthTokenRepository
-        .revoke(&mut conn, token.id(), revoked_at)
+    let (_, changed) = PgAuthTokenRepository
+        .revoke(&mut conn, token.id(), Utc::now().trunc_subsecs(6))
         .await
         .map_err(|source| AppError::Database { source })?;
 
-    // The repo method is idempotent: if we set revoked_at, it matches our
-    // timestamp; if another process won the race, it retains the original.
-    let already_revoked = result.revoked_at() != Some(revoked_at);
-    output::token_revoked(prefix, already_revoked);
+    output::token_revoked(prefix, !changed);
 
     Ok(())
 }
