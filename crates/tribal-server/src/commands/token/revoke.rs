@@ -51,8 +51,24 @@ pub(crate) fn run(config_path: &str, mut args: TokenRevokeArgs) -> Result<(), Ap
 // Async flow
 // ---------------------------------------------------------------------------
 
+/// Validates that a hash prefix is non-empty lowercase hexadecimal.
+fn validate_hex_prefix(prefix: &str) -> Result<(), AppError> {
+    if prefix.is_empty()
+        || !prefix
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(AppError::TokenOperation {
+            reason: format!("{}: '{prefix}'", output::INVALID_PREFIX),
+        });
+    }
+    Ok(())
+}
+
 /// Resolves the prefix to a unique token and revokes it.
 async fn run_async(db_config: &DatabaseConfig, prefix: &str) -> Result<(), AppError> {
+    validate_hex_prefix(prefix)?;
+
     let pool = tribal_db::create_pool(
         db_config,
         POOL_NAME,
@@ -106,4 +122,62 @@ async fn run_async(db_config: &DatabaseConfig, prefix: &str) -> Result<(), AppEr
     output::token_revoked(display_prefix);
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_hex_prefix_accepts_valid() {
+        assert!(validate_hex_prefix("abc12345").is_ok());
+        assert!(validate_hex_prefix("0").is_ok());
+        assert!(validate_hex_prefix("deadbeef").is_ok());
+    }
+
+    #[test]
+    fn test_validate_hex_prefix_rejects_empty() {
+        let err = validate_hex_prefix("").unwrap_err();
+        assert!(
+            err.to_string().contains(output::INVALID_PREFIX),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_validate_hex_prefix_rejects_uppercase() {
+        let err = validate_hex_prefix("ABC12345").unwrap_err();
+        assert!(
+            err.to_string().contains(output::INVALID_PREFIX),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_validate_hex_prefix_rejects_like_wildcards() {
+        let err = validate_hex_prefix("abc%").unwrap_err();
+        assert!(
+            err.to_string().contains(output::INVALID_PREFIX),
+            "unexpected error: {err}",
+        );
+
+        let err = validate_hex_prefix("abc_def").unwrap_err();
+        assert!(
+            err.to_string().contains(output::INVALID_PREFIX),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_validate_hex_prefix_rejects_non_hex() {
+        let err = validate_hex_prefix("xyz123").unwrap_err();
+        assert!(
+            err.to_string().contains(output::INVALID_PREFIX),
+            "unexpected error: {err}",
+        );
+    }
 }

@@ -103,5 +103,19 @@ async fn resolve_principals(
         .await
         .map_err(|source| AppError::Database { source })?;
 
-    Ok(principals.into_iter().map(|p| (p.id(), p)).collect())
+    let map: HashMap<PrincipalId, Principal> =
+        principals.into_iter().map(|p| (p.id(), p)).collect();
+
+    // Every token's principal must be resolvable — the FK constraint makes
+    // orphans impossible under normal operation. A missing principal indicates
+    // data corruption and should be surfaced, not masked.
+    for id in &ids {
+        if !map.contains_key(id) {
+            return Err(AppError::TokenOperation {
+                reason: format!("{}: {id}", output::ORPHANED_TOKEN),
+            });
+        }
+    }
+
+    Ok(map)
 }
