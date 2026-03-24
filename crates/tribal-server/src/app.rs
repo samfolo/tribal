@@ -80,17 +80,17 @@ impl App {
                 }
             },
             Command::Token(command) => match command {
-                TokenCommand::Create { .. } => {
-                    println!("tribal token create: not yet implemented");
+                TokenCommand::Create { args } => {
+                    commands::token::create(&self.cli.global.config, args)?;
                 }
-                TokenCommand::List { .. } => {
-                    println!("tribal token list: not yet implemented");
+                TokenCommand::List { args } => {
+                    commands::token::list(&self.cli.global.config, args)?;
                 }
-                TokenCommand::Revoke { .. } => {
-                    println!("tribal token revoke: not yet implemented");
+                TokenCommand::Revoke { args } => {
+                    commands::token::revoke(&self.cli.global.config, args)?;
                 }
-                TokenCommand::RevokeAll { .. } => {
-                    println!("tribal token revoke-all: not yet implemented");
+                TokenCommand::RevokeAll { args } => {
+                    commands::token::revoke_all(&self.cli.global.config, args)?;
                 }
             },
         }
