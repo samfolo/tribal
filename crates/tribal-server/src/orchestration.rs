@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::TribalConfig;
 use tribal_mcp::AppState;
+use tribal_telemetry::Metrics;
 use tribal_worker::{Worker, WorkerError};
 
 use crate::{
@@ -162,6 +163,7 @@ pub fn start_server(
     config: &TribalConfig,
     cli_project: Option<String>,
     cancellation_token: CancellationToken,
+    metrics: Metrics,
 ) -> Result<ServerHandle, AppError> {
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
@@ -178,6 +180,7 @@ pub fn start_server(
         cli_project,
         cancellation_token.clone(),
         Arc::clone(&job_state_txs),
+        metrics.clone(),
     ))?;
 
     // -- Worker runtime ------------------------------------------------------
@@ -231,6 +234,24 @@ pub fn start_server(
         cancellation_token.clone(),
     )));
 
+    // -- Queue health gauges -------------------------------------------------
+    // The gauge task is a monitoring optimisation, not a correctness
+    // mechanism.  If it panics, gauges stop updating but the worker
+    // continues normally.  Re-panic to surface the bug in logs.
+
+    let gauge_handle = worker_rt.spawn(tribal_worker::run_queue_health_gauges(
+        state.worker_pool().clone(),
+        metrics,
+        cancellation_token.clone(),
+    ));
+    worker_rt.spawn(async move {
+        if let Err(e) = gauge_handle.await {
+            if e.is_panic() {
+                std::panic::resume_unwind(e.into_panic());
+            }
+        }
+    });
+
     Ok(ServerHandle {
         state,
         main_rt,
@@ -253,6 +274,7 @@ async fn bootstrap(
     cli_project: Option<String>,
     cancellation_token: CancellationToken,
     job_state_txs: JobStateTxs,
+    metrics: Metrics,
 ) -> Result<(Arc<AppState>, Arc<Worker>), AppError> {
     // -- Database pools ------------------------------------------------------
 
