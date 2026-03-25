@@ -35,6 +35,25 @@ pub const TASK_DURATION_MS: &str = "tribal.task.duration_ms";
 pub const PROVIDER_CALL_MS: &str = "tribal.provider.call_ms";
 
 // ---------------------------------------------------------------------------
+// Label key constants
+// ---------------------------------------------------------------------------
+
+/// Label key for task type.
+pub const LABEL_TASK_TYPE: &str = "task_type";
+/// Label key for job outcome.
+pub const LABEL_OUTCOME: &str = "outcome";
+/// Label key for connection pool name.
+pub const LABEL_POOL: &str = "pool";
+/// Label key for provider rate-limit semaphore identifier.
+pub const LABEL_PROVIDER_KEY: &str = "provider_key";
+/// Label key for inference/embedding provider name.
+pub const LABEL_PROVIDER: &str = "provider";
+/// Label key for model identifier.
+pub const LABEL_MODEL: &str = "model";
+/// Label key for pipeline stage name.
+pub const LABEL_STAGE: &str = "stage";
+
+// ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------
 

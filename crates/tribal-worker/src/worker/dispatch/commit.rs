@@ -1,6 +1,7 @@
 //! Domain-effect commit handlers for each pipeline stage.
 
 use chrono::Utc;
+use opentelemetry::KeyValue;
 use tracing::Instrument;
 use tribal_common::clamp_to_u32;
 use tribal_db::{
@@ -15,13 +16,13 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    JobId, JobOutcome, JobState, JobStatus, ReferenceKind, RelationBatchId, Task, TriageOutcome,
-    span_attrs,
+    Job, JobId, JobOutcome, JobState, JobStatus, ReferenceKind, RelationBatchId, Task,
+    TriageOutcome, span_attrs,
 };
 
 use super::Worker;
 use crate::{
-    common::EXPECT_BATCH_INDEX,
+    common::{EXPECT_BATCH_INDEX, EXPECT_CLAIMED_AT},
     error::{STAGE_EXTRACTION, STAGE_RELATION, STAGE_TRIAGE, StageError},
     stages::{RelationCommitDecision, StageCommit, TriageCommitDecision},
     tag_resolution::NewTagWithEmbedding,
@@ -36,6 +37,7 @@ impl Worker {
     pub(crate) async fn commit_domain_effects(
         &self,
         task: &Task,
+        job: &Job,
         commit: StageCommit,
     ) -> Result<(), StageError> {
         match commit {
@@ -47,6 +49,7 @@ impl Worker {
             } => {
                 self.commit_extraction(
                     task,
+                    job,
                     extraction_result,
                     triage_tasks,
                     batch_size,
@@ -62,7 +65,9 @@ impl Worker {
                 self.commit_triage(task, project_id, decision, similar_item_decisions)
                     .await
             }
-            StageCommit::Relation { decision } => self.commit_relation(task, decision).await,
+            StageCommit::Relation { decision } => {
+                self.commit_relation(task, job, decision).await
+            }
         }
     }
 
@@ -77,6 +82,7 @@ impl Worker {
     async fn commit_extraction(
         &self,
         task: &Task,
+        job: &Job,
         extraction_result: NewExtractionResult,
         triage_tasks: Vec<NewTask>,
         batch_size: u32,
@@ -159,6 +165,20 @@ impl Worker {
             txn.commit()
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_EXTRACTION, "committing transaction", e))?;
+
+            let task_type_attr = KeyValue::new("task_type", task.task_type().as_str());
+            self.metrics().tasks_completed.add(1, &[task_type_attr.clone()]);
+            let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
+                .num_milliseconds() as f64;
+            self.metrics().task_duration_ms.record(duration_ms, &[task_type_attr]);
+
+            if is_empty {
+                let outcome_attr = KeyValue::new("outcome", JobOutcome::Empty.as_str());
+                self.metrics().jobs_completed.add(1, &[outcome_attr.clone()]);
+                let job_duration_ms = (Utc::now() - job.created_at())
+                    .num_milliseconds() as f64;
+                self.metrics().job_duration_ms.record(job_duration_ms, &[outcome_attr]);
+            }
 
             // Notify watch subscribers of the post-extraction job state.
             let state = if is_empty {
