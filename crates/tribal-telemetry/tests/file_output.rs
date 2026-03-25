@@ -3,7 +3,7 @@
 //! This test lives in `tests/` (separate binary) because it installs a
 //! global subscriber.
 
-use tribal_config::{LogFormat, LogOutput, LoggingConfig};
+use tribal_config::{LogFormat, LogOutput, LoggingConfig, TelemetryConfig};
 
 #[test]
 fn test_file_output_writes_to_specified_directory() {
@@ -17,7 +17,9 @@ fn test_file_output_writes_to_specified_directory() {
         ..LoggingConfig::default()
     };
 
-    let guard = tribal_telemetry::init_subscriber(&config).expect("init should succeed");
+    let (guard, _metrics) =
+        tribal_telemetry::init_subscriber(&config, &TelemetryConfig::default())
+            .expect("init should succeed");
 
     tracing::info!(target: "file_output_test", "hello from file output test");
 
