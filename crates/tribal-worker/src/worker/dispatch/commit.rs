@@ -3,6 +3,7 @@
 use chrono::Utc;
 use opentelemetry::KeyValue;
 use tracing::Instrument;
+use tribal_telemetry::{LABEL_OUTCOME, LABEL_TASK_TYPE};
 use tribal_common::clamp_to_u32;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
@@ -166,15 +167,17 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_EXTRACTION, "committing transaction", e))?;
 
-            let task_type_attr = KeyValue::new("task_type", task.task_type().as_str());
+            let task_type_attr = KeyValue::new(LABEL_TASK_TYPE, task.task_type().as_str());
             self.metrics().tasks_completed.add(1, &[task_type_attr.clone()]);
+            #[allow(clippy::cast_precision_loss)]
             let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
                 .num_milliseconds() as f64;
             self.metrics().task_duration_ms.record(duration_ms, &[task_type_attr]);
 
             if is_empty {
-                let outcome_attr = KeyValue::new("outcome", JobOutcome::Empty.as_str());
+                let outcome_attr = KeyValue::new(LABEL_OUTCOME, JobOutcome::Empty.as_str());
                 self.metrics().jobs_completed.add(1, &[outcome_attr.clone()]);
+                #[allow(clippy::cast_precision_loss)]
                 let job_duration_ms = (Utc::now() - job.created_at())
                     .num_milliseconds() as f64;
                 self.metrics().job_duration_ms.record(job_duration_ms, &[outcome_attr]);
@@ -297,6 +300,13 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
 
+            let task_type_attr = KeyValue::new(LABEL_TASK_TYPE, task.task_type().as_str());
+            self.metrics().tasks_completed.add(1, &[task_type_attr.clone()]);
+            #[allow(clippy::cast_precision_loss)]
+            let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
+                .num_milliseconds() as f64;
+            self.metrics().task_duration_ms.record(duration_ms, &[task_type_attr]);
+
             if fan_in_fired {
                 self.notify_job_state(job_id, JobState::Relating);
             }
@@ -327,6 +337,7 @@ impl Worker {
     async fn commit_relation(
         &self,
         task: &Task,
+        job: &Job,
         decision: RelationCommitDecision,
     ) -> Result<(), StageError> {
         let job_id = task.job_id();
@@ -353,7 +364,7 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "beginning transaction", e))?;
 
-            let is_terminal = match decision {
+            let (is_terminal, relation_outcome) = match decision {
                 RelationCommitDecision::Relate {
                     relations,
                     batch_id,
@@ -371,7 +382,7 @@ impl Worker {
                         claim_token,
                     )
                     .await?;
-                    true
+                    (true, Some(outcome))
                 }
                 RelationCommitDecision::NoOp => {
                     let rows = PgTaskRepository
@@ -384,13 +395,31 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
-                    false
+                    // NoOp does not record job metrics — the job was
+                    // already completed by a prior commit attempt.
+                    (false, None)
                 }
             };
 
             txn.commit()
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "committing transaction", e))?;
+
+            let task_type_attr = KeyValue::new(LABEL_TASK_TYPE, task.task_type().as_str());
+            self.metrics().tasks_completed.add(1, &[task_type_attr.clone()]);
+            #[allow(clippy::cast_precision_loss)]
+            let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
+                .num_milliseconds() as f64;
+            self.metrics().task_duration_ms.record(duration_ms, &[task_type_attr]);
+
+            if let Some(outcome) = relation_outcome {
+                let outcome_attr = KeyValue::new(LABEL_OUTCOME, outcome.as_str());
+                self.metrics().jobs_completed.add(1, &[outcome_attr.clone()]);
+                #[allow(clippy::cast_precision_loss)]
+                let job_duration_ms = (Utc::now() - job.created_at())
+                    .num_milliseconds() as f64;
+                self.metrics().job_duration_ms.record(job_duration_ms, &[outcome_attr]);
+            }
 
             if is_terminal {
                 self.notify_job_state(job_id, JobState::Completed);
