@@ -6,14 +6,16 @@
 //! results so the commit path can store them without a redundant embedding
 //! call.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 
+use opentelemetry::KeyValue;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{PgTagEmbeddingRepository, TagEmbeddingRepository};
 use tribal_domain::{EmbeddingPurpose, TagRegistryEntry, span_attrs};
 use tribal_inference::{EmbeddingProvider, EmbeddingRequest, Usage};
+use tribal_telemetry::{LABEL_MODEL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE, Metrics};
 
 use crate::error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError};
 
@@ -87,6 +89,7 @@ pub(crate) async fn resolve_tags(
     provider_key: &str,
     threshold: f64,
     deadline: tokio::time::Instant,
+    metrics: &Metrics,
 ) -> Result<(ResolvedTags, Vec<Usage>), StageError> {
     let span = tracing::info_span!(
         "tribal.tag_resolution",
@@ -128,7 +131,8 @@ pub(crate) async fn resolve_tags(
 
         for tag in &unmatched {
             let embedding_response =
-                embed_tag(tag, embedding_provider, semaphore, deadline, provider_key).await?;
+                embed_tag(tag, embedding_provider, semaphore, deadline, provider_key, metrics)
+                    .await?;
 
             usages.push(Usage::Embedding {
                 usage: embedding_response.usage,
@@ -201,27 +205,44 @@ async fn embed_tag(
     semaphore: &Arc<Semaphore>,
     deadline: tokio::time::Instant,
     provider_key: &str,
+    metrics: &Metrics,
 ) -> Result<tribal_inference::EmbeddingResponse, StageError> {
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let semaphore_start = Instant::now();
     let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
         .await
         .map_err(|_| StageError::SemaphoreTimeout {
             provider_key: provider_key.to_owned(),
         })?
         .expect(SEMAPHORE_CLOSED);
+    metrics.semaphore_acquire_wait_ms.record(
+        semaphore_start.elapsed().as_secs_f64() * 1000.0,
+        &[KeyValue::new(LABEL_PROVIDER_KEY, "tag_embedding")],
+    );
 
     let request = EmbeddingRequest {
         input: tag.to_owned(),
         purpose: EmbeddingPurpose::Tag,
     };
 
-    embedding_provider
+    let provider_start = Instant::now();
+    let response = embedding_provider
         .embed(request)
         .await
         .map_err(|e| StageError::Provider {
             context: format!("tag embedding call for {tag:?}"),
             source: e,
-        })
+        })?;
+    let identity = embedding_provider.identity();
+    metrics.provider_call_ms.record(
+        provider_start.elapsed().as_secs_f64() * 1000.0,
+        &[
+            KeyValue::new(LABEL_PROVIDER, identity.name.clone()),
+            KeyValue::new(LABEL_MODEL, identity.model.clone()),
+            KeyValue::new(LABEL_STAGE, "tag_embedding"),
+        ],
+    );
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------
