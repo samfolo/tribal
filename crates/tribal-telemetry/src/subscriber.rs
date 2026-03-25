@@ -8,7 +8,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use opentelemetry::trace::TracerProvider;
+use opentelemetry::{metrics::MeterProvider, trace::TracerProvider};
 use tracing::subscriber::set_global_default;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};

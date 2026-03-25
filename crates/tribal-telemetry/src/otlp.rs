@@ -4,7 +4,7 @@
 //! [`TelemetryConfig`], supporting both gRPC and HTTP protocols.
 
 use opentelemetry::KeyValue;
-use opentelemetry_otlp::{MetricExporter, SpanExporter};
+use opentelemetry_otlp::{MetricExporter, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{
     Resource,
     metrics::{PeriodicReader, SdkMeterProvider},
@@ -134,7 +134,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(TelemetryError::UnrecognisedOtlpProtocol { protocol }) if protocol == "quic"
+                Err(TelemetryError::UnrecognisedOtlpProtocol { ref protocol }) if protocol == "quic"
             ),
             "expected UnrecognisedOtlpProtocol, got {result:?}",
         );
