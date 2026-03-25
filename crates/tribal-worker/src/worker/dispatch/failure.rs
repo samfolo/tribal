@@ -177,12 +177,7 @@ impl Worker {
     }
 
     /// Records metric counters and histograms for a task failure.
-    fn record_failure_metrics(
-        &self,
-        task: &Task,
-        job: Option<&Job>,
-        outcome: &FailureOutcome<'_>,
-    ) {
+    fn record_failure_metrics(&self, task: &Task, job: Option<&Job>, outcome: &FailureOutcome<'_>) {
         let task_type_attr = KeyValue::new(LABEL_TASK_TYPE, task.task_type().as_str());
 
         if outcome.is_dead_lettered {
@@ -193,12 +188,13 @@ impl Worker {
 
         if outcome.job_failed {
             let outcome_attr = KeyValue::new(LABEL_OUTCOME, JobOutcome::Failure.as_str());
-            self.metrics().jobs_completed.add(1, std::slice::from_ref(&outcome_attr));
+            self.metrics()
+                .jobs_completed
+                .add(1, std::slice::from_ref(&outcome_attr));
 
             if let Some(job) = job {
                 #[allow(clippy::cast_precision_loss)]
-                let job_duration_ms =
-                    (Utc::now() - job.created_at()).num_milliseconds() as f64;
+                let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
                 self.metrics()
                     .job_duration_ms
                     .record(job_duration_ms, &[outcome_attr]);

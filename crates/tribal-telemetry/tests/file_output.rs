@@ -17,9 +17,8 @@ fn test_file_output_writes_to_specified_directory() {
         ..LoggingConfig::default()
     };
 
-    let (guard, _metrics) =
-        tribal_telemetry::init_subscriber(&config, &TelemetryConfig::default())
-            .expect("init should succeed");
+    let (guard, _metrics) = tribal_telemetry::init_subscriber(&config, &TelemetryConfig::default())
+        .expect("init should succeed");
 
     tracing::info!(target: "file_output_test", "hello from file output test");
 

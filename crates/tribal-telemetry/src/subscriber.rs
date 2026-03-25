@@ -14,12 +14,7 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig, TelemetryConfig};
 
-use crate::{
-    error::TelemetryError,
-    guard::TelemetryGuard,
-    metrics::Metrics,
-    otlp,
-};
+use crate::{error::TelemetryError, guard::TelemetryGuard, metrics::Metrics, otlp};
 
 /// Whether [`init_subscriber`] has already been called.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
@@ -159,17 +154,14 @@ fn try_init_subscriber(
     // The optional OTLP layer is added via `.with(Option<Layer>)`.
     match logging.format {
         LogFormat::Json => {
-            let subscriber = Registry::default()
-                .with(env_filter)
-                .with(otel_layer)
-                .with(
-                    fmt::layer()
-                        .json()
-                        .with_writer(writer)
-                        .with_target(true)
-                        .with_current_span(true)
-                        .with_span_list(true),
-                );
+            let subscriber = Registry::default().with(env_filter).with(otel_layer).with(
+                fmt::layer()
+                    .json()
+                    .with_writer(writer)
+                    .with_target(true)
+                    .with_current_span(true)
+                    .with_span_list(true),
+            );
             set_global_default(subscriber)
                 .map_err(|source| TelemetryError::SetGlobalDefault { source })?;
         }

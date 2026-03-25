@@ -130,9 +130,15 @@ pub(crate) async fn resolve_tags(
         let mut best_similarity: Option<f64> = None;
 
         for tag in &unmatched {
-            let embedding_response =
-                embed_tag(tag, embedding_provider, semaphore, deadline, provider_key, metrics)
-                    .await?;
+            let embedding_response = embed_tag(
+                tag,
+                embedding_provider,
+                semaphore,
+                deadline,
+                provider_key,
+                metrics,
+            )
+            .await?;
 
             usages.push(Usage::Embedding {
                 usage: embedding_response.usage,

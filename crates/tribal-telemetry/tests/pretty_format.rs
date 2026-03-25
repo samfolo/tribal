@@ -17,9 +17,8 @@ fn test_pretty_format_produces_non_json_output() {
         ..LoggingConfig::default()
     };
 
-    let (guard, _metrics) =
-        tribal_telemetry::init_subscriber(&config, &TelemetryConfig::default())
-            .expect("init should succeed");
+    let (guard, _metrics) = tribal_telemetry::init_subscriber(&config, &TelemetryConfig::default())
+        .expect("init should succeed");
 
     tracing::info!(target: "pretty_test", "human readable event");
 

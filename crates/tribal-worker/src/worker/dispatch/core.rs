@@ -1,11 +1,14 @@
 //! Worker struct, construction, and the poll-claim-dispatch loop.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Instant,
 };
-use std::time::Instant;
 
+use opentelemetry::KeyValue;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -18,7 +21,6 @@ use tribal_db::{
 use tribal_domain::{
     Job, JobId, JobState, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage,
 };
-use opentelemetry::KeyValue;
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };

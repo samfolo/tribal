@@ -4,7 +4,6 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use opentelemetry::KeyValue;
 use tokio::sync::Semaphore;
-use tribal_telemetry::{LABEL_MODEL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE};
 use tracing::Instrument;
 use tribal_db::{
     ExtractionResultRepository, KnowledgeItemRepository, NewItemObservation, NewKnowledgeItem,
@@ -18,6 +17,7 @@ use tribal_domain::{
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
 };
+use tribal_telemetry::{LABEL_MODEL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE};
 
 use super::{StageCommit, StageOutput, TriageCommitDecision, record_prompt_version_ids};
 use crate::{
@@ -355,7 +355,8 @@ impl Worker {
         };
 
         let provider_start = Instant::now();
-        let response = self.embedding_provider()
+        let response = self
+            .embedding_provider()
             .embed(request)
             .await
             .map_err(|e| StageError::Provider {
