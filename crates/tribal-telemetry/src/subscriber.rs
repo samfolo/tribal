@@ -1,32 +1,47 @@
 //! Tracing subscriber initialisation.
 //!
 //! [`init_subscriber`] builds a layered subscriber from a
-//! [`LoggingConfig`](tribal_config::LoggingConfig) and sets it as the global
-//! default.  It should be called exactly once, early in program startup.
+//! [`LoggingConfig`](tribal_config::LoggingConfig) and optionally layers
+//! an OTLP trace exporter when [`TelemetryConfig`](tribal_config::TelemetryConfig)
+//! specifies an endpoint.  It should be called exactly once, early in
+//! program startup.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use opentelemetry::trace::TracerProvider;
 use tracing::subscriber::set_global_default;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
-use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig};
+use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig, TelemetryConfig};
 
-use crate::{error::TelemetryError, guard::TelemetryGuard};
+use crate::{
+    error::TelemetryError,
+    guard::TelemetryGuard,
+    metrics::Metrics,
+    otlp,
+};
 
 /// Whether [`init_subscriber`] has already been called.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
 
-/// Initialises the global tracing subscriber.
+/// Initialises the global tracing subscriber and optional OTLP pipeline.
 ///
 /// Builds a layered subscriber stack based on the given configuration:
 ///
-/// 1. **Filter layer** — `EnvFilter` parsed from `config.level`.
-/// 2. **Format layer** — JSON or pretty, depending on `config.format`.
-/// 3. **Output layer** — stderr or rolling file, depending on `config.output`.
+/// 1. **Filter layer** — `EnvFilter` parsed from `logging.level`.
+/// 2. **Format layer** — JSON or pretty, depending on `logging.format`.
+/// 3. **Output layer** — stderr or rolling file, depending on `logging.output`.
+/// 4. **OTLP layer** (optional) — when `telemetry.enabled` is true and
+///    `telemetry.otlp_endpoint` is set, spans are exported via OTLP.
 ///
 /// Both stderr and file output use non-blocking writers for consistent
 /// behaviour.  The returned [`TelemetryGuard`] must be held for the
-/// program lifetime to ensure pending writes are flushed on shutdown.
+/// program lifetime to ensure pending writes and OTLP data are flushed
+/// on shutdown.
+///
+/// [`Metrics`] provides the 11 OpenTelemetry metric instruments.  When
+/// telemetry is disabled or no endpoint is configured, instruments
+/// silently discard recordings.
 ///
 /// # Errors
 ///
@@ -38,11 +53,19 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 ///   cannot be initialised (e.g. the directory cannot be created).
 /// - [`TelemetryError::SetGlobalDefault`] if another library already
 ///   registered a global subscriber.
+/// - [`TelemetryError::UnrecognisedOtlpProtocol`] if `otlp_protocol`
+///   is not `"grpc"` or `"http"`.
+/// - [`TelemetryError::OtlpTracePipelineInit`] or
+///   [`TelemetryError::MetricsPipelineInit`] if the OTLP pipeline
+///   fails to initialise.
 ///
 /// # Panics
 ///
 /// Does not panic.  All failure modes return `Err`.
-pub fn init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
+pub fn init_subscriber(
+    logging: &LoggingConfig,
+    telemetry: &TelemetryConfig,
+) -> Result<(TelemetryGuard, Metrics), TelemetryError> {
     if INITIALISED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -50,8 +73,8 @@ pub fn init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, Telemet
         return Err(TelemetryError::SubscriberAlreadyInitialised);
     }
 
-    match try_init_subscriber(config) {
-        Ok(guard) => Ok(guard),
+    match try_init_subscriber(logging, telemetry) {
+        Ok(result) => Ok(result),
         Err(err) => {
             INITIALISED.store(false, Ordering::SeqCst);
             Err(err)
@@ -63,28 +86,31 @@ pub fn init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, Telemet
 ///
 /// Separated from [`init_subscriber`] so that the `INITIALISED` flag can
 /// be reset cleanly on failure without duplicating the guard logic.
-fn try_init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, TelemetryError> {
-    let env_filter = EnvFilter::try_new(&config.level).map_err(|source| {
+fn try_init_subscriber(
+    logging: &LoggingConfig,
+    telemetry: &TelemetryConfig,
+) -> Result<(TelemetryGuard, Metrics), TelemetryError> {
+    let env_filter = EnvFilter::try_new(&logging.level).map_err(|source| {
         TelemetryError::InvalidFilterDirective {
-            directive: config.level.clone(),
+            directive: logging.level.clone(),
             source,
         }
     })?;
 
     // Build writer and guard based on output destination.
-    let (writer, guard) = match config.output {
+    let (writer, guard) = match logging.output {
         LogOutput::Stderr => {
             let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
             (non_blocking, guard)
         }
         LogOutput::File => {
-            let rotation = match config.file_rotation {
+            let rotation = match logging.file_rotation {
                 FileRotation::Daily => Rotation::DAILY,
                 FileRotation::Hourly => Rotation::HOURLY,
                 FileRotation::Never => Rotation::NEVER,
             };
 
-            let suffix = match config.format {
+            let suffix = match logging.format {
                 LogFormat::Json => "jsonl",
                 LogFormat::Pretty => "log",
             };
@@ -93,9 +119,9 @@ fn try_init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, Telemet
                 .rotation(rotation)
                 .filename_prefix("tribal")
                 .filename_suffix(suffix)
-                .build(&config.file_directory)
+                .build(&logging.file_directory)
                 .map_err(|source| TelemetryError::FileAppenderInit {
-                    path: config.file_directory.clone(),
+                    path: logging.file_directory.clone(),
                     source,
                 })?;
 
@@ -104,40 +130,70 @@ fn try_init_subscriber(config: &LoggingConfig) -> Result<TelemetryGuard, Telemet
         }
     };
 
-    // Build subscriber with the appropriate format layer.
+    // -- OTLP pipeline (optional) ----------------------------------------
+
+    let otlp_enabled = telemetry.enabled && telemetry.otlp_endpoint.is_some();
+
+    let (tracer_provider, otel_layer) = if otlp_enabled {
+        let provider = otlp::build_tracer_provider(telemetry)?;
+        let tracer = provider.tracer("tribal");
+        let layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        (Some(provider), Some(layer))
+    } else {
+        (None, None)
+    };
+
+    let (meter_provider, metrics) = if otlp_enabled {
+        let provider = otlp::build_meter_provider(telemetry)?;
+        let meter = provider.meter("tribal");
+        let metrics = Metrics::new(&meter);
+        (Some(provider), metrics)
+    } else {
+        (None, Metrics::noop())
+    };
+
+    // -- Subscriber assembly ---------------------------------------------
     //
     // JSON and Pretty produce different concrete types, so the
     // `set_global_default` call is duplicated in each branch.
-    match config.format {
+    // The optional OTLP layer is added via `.with(Option<Layer>)`.
+    match logging.format {
         LogFormat::Json => {
-            let subscriber = Registry::default().with(env_filter).with(
-                fmt::layer()
-                    .json()
-                    .with_writer(writer)
-                    .with_target(true)
-                    .with_current_span(true)
-                    .with_span_list(true),
-            );
+            let subscriber = Registry::default()
+                .with(env_filter)
+                .with(otel_layer)
+                .with(
+                    fmt::layer()
+                        .json()
+                        .with_writer(writer)
+                        .with_target(true)
+                        .with_current_span(true)
+                        .with_span_list(true),
+                );
             set_global_default(subscriber)
                 .map_err(|source| TelemetryError::SetGlobalDefault { source })?;
         }
         LogFormat::Pretty => {
             let subscriber = Registry::default()
                 .with(env_filter)
+                .with(otel_layer)
                 .with(fmt::layer().pretty().with_writer(writer).with_target(true));
             set_global_default(subscriber)
                 .map_err(|source| TelemetryError::SetGlobalDefault { source })?;
         }
     }
 
-    if config.output == LogOutput::File && config.used_temp_dir_fallback {
+    if logging.output == LogOutput::File && logging.used_temp_dir_fallback {
         tracing::warn!(
-            directory = %config.file_directory,
+            directory = %logging.file_directory,
             "no standard state/data directory found; using temporary directory for log files",
         );
     }
 
-    Ok(TelemetryGuard::new(guard))
+    Ok((
+        TelemetryGuard::new(guard, tracer_provider, meter_provider),
+        metrics,
+    ))
 }
 
 #[cfg(test)]
@@ -165,7 +221,7 @@ mod tests {
             level: "not valid [[".to_owned(),
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(&config);
+        let result = init_subscriber(&config, &TelemetryConfig::default());
 
         assert!(
             matches!(result, Err(TelemetryError::InvalidFilterDirective { .. })),
@@ -191,7 +247,7 @@ mod tests {
             file_directory: tmp.path().display().to_string(),
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(&config);
+        let result = init_subscriber(&config, &TelemetryConfig::default());
 
         assert!(
             matches!(result, Err(TelemetryError::FileAppenderInit { .. })),
@@ -213,13 +269,13 @@ mod tests {
             level: "not valid [[".to_owned(),
             ..LoggingConfig::default()
         };
-        let result = init_subscriber(&bad_config);
+        let result = init_subscriber(&bad_config, &TelemetryConfig::default());
         assert!(result.is_err());
 
         // Flag was reset — a subsequent call with valid config is not
         // rejected as `SubscriberAlreadyInitialised`.
         let good_config = LoggingConfig::default();
-        let result = init_subscriber(&good_config);
+        let result = init_subscriber(&good_config, &TelemetryConfig::default());
 
         // We expect `SetGlobalDefault` (the unit test process may already
         // have a subscriber) rather than `SubscriberAlreadyInitialised`.
