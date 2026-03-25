@@ -112,9 +112,7 @@ pub(crate) fn build_meter_provider(
 
     let reader = PeriodicReader::builder(exporter).build();
 
-    let provider = SdkMeterProvider::builder()
-        .with_reader(reader)
-        .build();
+    let provider = SdkMeterProvider::builder().with_reader(reader).build();
 
     Ok(provider)
 }

@@ -8,7 +8,6 @@ use std::{
 
 use opentelemetry::KeyValue;
 use tokio::sync::Semaphore;
-use tribal_telemetry::{LABEL_MODEL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE};
 use tracing::Instrument;
 use tribal_common::clamp_to_u32;
 use tribal_db::{
@@ -22,6 +21,7 @@ use tribal_domain::{
     RelationKind, Task, TriageOutcome, TriageResult, TriageSimilarItemDecision, span_attrs,
 };
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
+use tribal_telemetry::{LABEL_MODEL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE};
 
 use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{

@@ -694,8 +694,12 @@ impl TaskRepository for PgTaskRepository {
         Ok(rows
             .into_iter()
             .map(|(task_type, status, count)| TaskStatusCount {
-                task_type: task_type.parse::<TaskType>().expect(UNKNOWN_TASK_TYPE_IN_DB),
-                status: status.parse::<TaskStatus>().expect(UNKNOWN_TASK_STATUS_IN_DB),
+                task_type: task_type
+                    .parse::<TaskType>()
+                    .expect(UNKNOWN_TASK_TYPE_IN_DB),
+                status: status
+                    .parse::<TaskStatus>()
+                    .expect(UNKNOWN_TASK_STATUS_IN_DB),
                 count,
             })
             .collect())

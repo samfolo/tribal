@@ -55,9 +55,13 @@ pub(crate) async fn update_queue_gauges(pool: &PgPool, metrics: &Metrics) {
         return;
     };
 
-    let Ok(counts) = PgTaskRepository.count_by_status(&mut conn).await.inspect_err(|e| {
-        tracing::warn!(error = %e, "gauge task: count_by_status query failed");
-    }) else {
+    let Ok(counts) = PgTaskRepository
+        .count_by_status(&mut conn)
+        .await
+        .inspect_err(|e| {
+            tracing::warn!(error = %e, "gauge task: count_by_status query failed");
+        })
+    else {
         return;
     };
 

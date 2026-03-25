@@ -178,7 +178,12 @@ impl TribalServerHandler {
         &self,
         params: &JobStatusParams,
     ) -> Result<JobStatusResult, CallToolResult> {
-        let mut conn = acquire_connection(&self.state.pool_mcp, self.config.pool_name, &self.state.metrics).await?;
+        let mut conn = acquire_connection(
+            &self.state.pool_mcp,
+            self.config.pool_name,
+            &self.state.metrics,
+        )
+        .await?;
         execute_job_status(&mut conn, &self.repositories, params)
             .await
             .map_err(|e| e.into_mcp_error().into_call_tool_result())

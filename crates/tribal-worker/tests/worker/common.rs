@@ -24,6 +24,7 @@ pub(super) use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry,
     RequestClass,
 };
+pub(super) use tribal_telemetry::Metrics;
 pub(super) use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
     TestContext, a_candidate, a_completion_response, a_new_extraction_result, a_new_job,
@@ -39,7 +40,6 @@ pub(super) use tribal_test_utils::{
     seed_extraction_job, seed_multiple_triage_tasks, seed_relation_job, seed_triage_job,
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
 };
-pub(super) use tribal_telemetry::Metrics;
 pub(super) use tribal_worker::Worker;
 
 // ---------------------------------------------------------------------------
