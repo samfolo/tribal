@@ -7,10 +7,14 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
+tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 
 tribal-config.workspace = true
