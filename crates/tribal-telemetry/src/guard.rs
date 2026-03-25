@@ -57,15 +57,15 @@ impl Drop for TelemetryGuard {
         // Flush OTLP pipelines before the log writer drains.
         // Use eprintln for errors — the tracing subscriber may be
         // shutting down and unable to process log events.
-        if let Some(tracer) = self.tracer_provider.take() {
-            if let Err(e) = tracer.shutdown() {
-                eprintln!("tracer provider shutdown error: {e}");
-            }
+        if let Some(tracer) = self.tracer_provider.take()
+            && let Err(e) = tracer.shutdown()
+        {
+            eprintln!("tracer provider shutdown error: {e}");
         }
-        if let Some(meter) = self.meter_provider.take() {
-            if let Err(e) = meter.shutdown() {
-                eprintln!("meter provider shutdown error: {e}");
-            }
+        if let Some(meter) = self.meter_provider.take()
+            && let Err(e) = meter.shutdown()
+        {
+            eprintln!("meter provider shutdown error: {e}");
         }
         // _worker_guard drops automatically after this, flushing logs.
     }

@@ -64,7 +64,7 @@ pub struct ReclaimOutcome {
 ///
 /// Returned by [`TaskRepository::count_by_status`] for periodic
 /// queue health gauge reporting.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TaskStatusCount {
     /// The task type.
     pub task_type: TaskType,
