@@ -7,9 +7,10 @@ use opentelemetry::KeyValue;
 use opentelemetry_otlp::{MetricExporter, SpanExporter};
 use opentelemetry_sdk::{
     Resource,
-    metrics::{SdkMeterProvider, PeriodicReader},
+    metrics::{PeriodicReader, SdkMeterProvider},
     trace::SdkTracerProvider,
 };
+use opentelemetry_semantic_conventions::attribute::SERVICE_NAME;
 use tribal_config::TelemetryConfig;
 
 use crate::error::TelemetryError;
@@ -58,7 +59,7 @@ pub(crate) fn build_tracer_provider(
     };
 
     let resource = Resource::builder()
-        .with_attribute(KeyValue::new("service.name", config.service_name.clone()))
+        .with_attribute(KeyValue::new(SERVICE_NAME, config.service_name.clone()))
         .build();
 
     let provider = SdkTracerProvider::builder()
