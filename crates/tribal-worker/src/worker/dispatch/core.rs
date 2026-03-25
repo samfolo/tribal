@@ -22,7 +22,7 @@ use opentelemetry::KeyValue;
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
-use tribal_telemetry::Metrics;
+use tribal_telemetry::{LABEL_POOL, Metrics};
 
 use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
@@ -278,7 +278,7 @@ impl Worker {
                 Ok(c) => {
                     self.metrics.pool_acquire_wait_ms.record(
                         acquire_start.elapsed().as_secs_f64() * 1000.0,
-                        &[KeyValue::new("pool", "worker")],
+                        &[KeyValue::new(LABEL_POOL, "worker")],
                     );
                     c
                 }
@@ -363,7 +363,7 @@ impl Worker {
                 Ok(c) => {
                     self.metrics.pool_acquire_wait_ms.record(
                         acquire_start.elapsed().as_secs_f64() * 1000.0,
-                        &[KeyValue::new("pool", "worker")],
+                        &[KeyValue::new(LABEL_POOL, "worker")],
                     );
                     c
                 }

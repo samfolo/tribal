@@ -4937,10 +4937,12 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dashmap",
+ "opentelemetry",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "sqlx",
+ "strum",
  "tera",
  "thiserror 2.0.18",
  "tokio",
@@ -4951,6 +4953,7 @@ dependencies = [
  "tribal-db",
  "tribal-domain",
  "tribal-inference",
+ "tribal-telemetry",
  "tribal-test-utils",
  "uuid",
 ]

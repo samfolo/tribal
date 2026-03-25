@@ -2,10 +2,12 @@
 //! lifecycle event emission.
 
 use chrono::Utc;
+use opentelemetry::KeyValue;
 use tribal_db::{
     JobRepository, JobStatusTransition, PgJobRepository, PgTaskRepository, TaskRepository,
 };
-use tribal_domain::{JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskType};
+use tribal_domain::{Job, JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskType};
+use tribal_telemetry::{LABEL_OUTCOME, LABEL_TASK_TYPE};
 
 use super::Worker;
 use crate::{error::StageError, worker::backoff::backoff_duration};
@@ -36,7 +38,12 @@ impl Worker {
     ///
     /// All mutations (task fail + optional job transition) are composed
     /// in a single transaction so they commit or roll back atomically.
-    pub(crate) async fn handle_stage_failure(&self, task: &Task, error: &StageError) {
+    pub(crate) async fn handle_stage_failure(
+        &self,
+        task: &Task,
+        job: Option<&Job>,
+        error: &StageError,
+    ) {
         tracing::error!(
             task_id = %task.id(),
             task_type = %task.task_type(),
@@ -77,6 +84,8 @@ impl Worker {
                 "failed to persist failure",
             );
         }
+
+        self.record_failure_metrics(task, job, &outcome);
     }
 
     /// Persists the failure state for a task within a single
@@ -165,6 +174,36 @@ impl Worker {
 
         self.log_failure_outcome(task, outcome);
         Ok(())
+    }
+
+    /// Records metric counters and histograms for a task failure.
+    fn record_failure_metrics(
+        &self,
+        task: &Task,
+        job: Option<&Job>,
+        outcome: &FailureOutcome<'_>,
+    ) {
+        let task_type_attr = KeyValue::new(LABEL_TASK_TYPE, task.task_type().as_str());
+
+        if outcome.is_dead_lettered {
+            self.metrics().tasks_dead_letter.add(1, &[task_type_attr]);
+        } else {
+            self.metrics().tasks_retried.add(1, &[task_type_attr]);
+        }
+
+        if outcome.job_failed {
+            let outcome_attr = KeyValue::new(LABEL_OUTCOME, JobOutcome::Failure.as_str());
+            self.metrics().jobs_completed.add(1, &[outcome_attr.clone()]);
+
+            if let Some(job) = job {
+                #[allow(clippy::cast_precision_loss)]
+                let job_duration_ms =
+                    (Utc::now() - job.created_at()).num_milliseconds() as f64;
+                self.metrics()
+                    .job_duration_ms
+                    .record(job_duration_ms, &[outcome_attr]);
+            }
+        }
     }
 
     /// Emits lifecycle events after a failure transaction commits and
