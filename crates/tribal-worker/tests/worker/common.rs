@@ -39,6 +39,7 @@ pub(super) use tribal_test_utils::{
     seed_extraction_job, seed_multiple_triage_tasks, seed_relation_job, seed_triage_job,
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
 };
+pub(super) use tribal_telemetry::Metrics;
 pub(super) use tribal_worker::Worker;
 
 // ---------------------------------------------------------------------------
@@ -171,6 +172,7 @@ pub(super) fn build_test_worker(
         false,
         WORKER_INSTANCE.to_owned(),
         job_state_txs,
+        Metrics::noop(),
     ))
 }
 

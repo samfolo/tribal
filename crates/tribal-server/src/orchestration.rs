@@ -245,10 +245,10 @@ pub fn start_server(
         cancellation_token.clone(),
     ));
     worker_rt.spawn(async move {
-        if let Err(e) = gauge_handle.await {
-            if e.is_panic() {
-                std::panic::resume_unwind(e.into_panic());
-            }
+        if let Err(e) = gauge_handle.await
+            && e.is_panic()
+        {
+            std::panic::resume_unwind(e.into_panic());
         }
     });
 

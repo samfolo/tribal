@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
+use tribal_telemetry::Metrics;
 use tribal_domain::{PrincipalId, ProjectId, PromptVersionId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
 use tribal_test_utils::{
@@ -122,6 +123,7 @@ impl From<TestHandler> for TribalServerHandler {
                 .server_config(Arc::new(ServerConfig::default()))
                 .cancellation_token(th.cancellation_token)
                 .job_state_txs(th.job_state_txs)
+                .metrics(Metrics::noop())
                 .build(),
         );
         Self::new(
