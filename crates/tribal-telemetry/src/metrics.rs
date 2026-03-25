@@ -90,6 +90,7 @@ pub struct Metrics {
 
 impl Metrics {
     /// Creates instruments from the given meter.
+    #[must_use]
     pub fn new(meter: &Meter) -> Self {
         Self {
             tasks_queued: meter.i64_gauge(TASKS_QUEUED).build(),
@@ -111,6 +112,7 @@ impl Metrics {
     /// Uses a default [`SdkMeterProvider`] with no readers, so all
     /// recordings are silently discarded.  Used when telemetry is
     /// disabled or no OTLP endpoint is configured.
+    #[must_use]
     pub fn noop() -> Self {
         let provider = SdkMeterProvider::default();
         let meter = provider.meter("noop");

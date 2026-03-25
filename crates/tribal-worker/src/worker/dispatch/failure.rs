@@ -193,7 +193,7 @@ impl Worker {
 
         if outcome.job_failed {
             let outcome_attr = KeyValue::new(LABEL_OUTCOME, JobOutcome::Failure.as_str());
-            self.metrics().jobs_completed.add(1, &[outcome_attr.clone()]);
+            self.metrics().jobs_completed.add(1, std::slice::from_ref(&outcome_attr));
 
             if let Some(job) = job {
                 #[allow(clippy::cast_precision_loss)]
