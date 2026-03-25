@@ -70,17 +70,17 @@ pub enum TelemetryError {
     /// Failed to initialise the OTLP trace export pipeline.
     #[error("failed to initialise OTLP trace pipeline")]
     OtlpTracePipelineInit {
-        /// The underlying OpenTelemetry trace error.
+        /// The underlying exporter build error.
         #[source]
-        source: opentelemetry_sdk::trace::TraceError,
+        source: opentelemetry_otlp::ExporterBuildError,
     },
 
     /// Failed to initialise the OpenTelemetry metrics pipeline.
     #[error("failed to initialise metrics pipeline")]
     MetricsPipelineInit {
-        /// The underlying OpenTelemetry metrics error.
+        /// The underlying exporter build error.
         #[source]
-        source: opentelemetry_sdk::metrics::MetricError,
+        source: opentelemetry_otlp::ExporterBuildError,
     },
 }
 
@@ -118,9 +118,7 @@ mod tests {
     #[test]
     fn test_display_otlp_trace_pipeline_init() {
         let err = TelemetryError::OtlpTracePipelineInit {
-            source: opentelemetry_sdk::trace::TraceError::Other(
-                "test error".into(),
-            ),
+            source: opentelemetry_otlp::ExporterBuildError::NoHttpClient,
         };
         assert_eq!(err.to_string(), "failed to initialise OTLP trace pipeline");
     }
@@ -128,9 +126,7 @@ mod tests {
     #[test]
     fn test_display_metrics_pipeline_init() {
         let err = TelemetryError::MetricsPipelineInit {
-            source: opentelemetry_sdk::metrics::MetricError::Other(
-                "test error".into(),
-            ),
+            source: opentelemetry_otlp::ExporterBuildError::NoHttpClient,
         };
         assert_eq!(err.to_string(), "failed to initialise metrics pipeline");
     }

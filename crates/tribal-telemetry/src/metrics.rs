@@ -5,6 +5,7 @@
 //! and call recording methods at the appropriate sites.
 
 use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, MeterProvider};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 // ---------------------------------------------------------------------------
 // Metric name constants
@@ -42,7 +43,7 @@ pub const PROVIDER_CALL_MS: &str = "tribal.provider.call_ms";
 /// Cloning is cheap — instrument handles are internally `Arc`-based.
 /// When constructed via [`Metrics::noop`], all recordings are silently
 /// discarded.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Metrics {
     /// Number of queued tasks, labelled by `task_type`.
     pub tasks_queued: Gauge<i64>,
@@ -88,9 +89,11 @@ impl Metrics {
 
     /// Creates no-op instruments that silently discard all recordings.
     ///
-    /// Used when telemetry is disabled or no OTLP endpoint is configured.
+    /// Uses a default [`SdkMeterProvider`] with no readers, so all
+    /// recordings are silently discarded.  Used when telemetry is
+    /// disabled or no OTLP endpoint is configured.
     pub fn noop() -> Self {
-        let provider = opentelemetry::metrics::noop::NoopMeterProvider::new();
+        let provider = SdkMeterProvider::default();
         let meter = provider.meter("noop");
         Self::new(&meter)
     }

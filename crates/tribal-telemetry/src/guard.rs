@@ -23,6 +23,7 @@ use opentelemetry_sdk::{metrics::SdkMeterProvider, trace::SdkTracerProvider};
 /// // … run program …
 /// // guard dropped here, flushing OTLP and logs
 /// ```
+#[derive(Debug)]
 pub struct TelemetryGuard {
     /// Tracer provider shutdown handle.  Flushed before the log writer.
     tracer_provider: Option<SdkTracerProvider>,
