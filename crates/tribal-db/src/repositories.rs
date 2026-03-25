@@ -57,7 +57,7 @@ pub use retrieval_feedback::{
 pub use standing::{PgStandingRepository, StandingRepository};
 pub use tag_embedding::{NewTagEmbedding, PgTagEmbeddingRepository, TagEmbeddingRepository};
 pub use tag_registry::{PgTagRegistryRepository, TagRegistryRepository};
-pub use task::{NewTask, PgTaskRepository, ReclaimOutcome, TaskRepository};
+pub use task::{NewTask, PgTaskRepository, ReclaimOutcome, TaskRepository, TaskStatusCount};
 pub use token_usage::{NewTokenUsage, PgTokenUsageRepository, TokenUsageRepository};
 pub use triage_result::{NewTriageResult, PgTriageResultRepository, TriageResultRepository};
 pub use triage_similar_item_decision::{
