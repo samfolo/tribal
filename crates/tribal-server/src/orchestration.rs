@@ -353,6 +353,7 @@ async fn bootstrap(
         config.logging.include_llm_content,
         instance_id.to_string(),
         Arc::clone(&job_state_txs),
+        metrics.clone(),
     ));
 
     // -- AppState assembly ---------------------------------------------------
@@ -374,7 +375,8 @@ async fn bootstrap(
         .worker_config(config.worker.clone())
         .server_config(Arc::new(config.server.clone()))
         .cancellation_token(cancellation_token)
-        .job_state_txs(job_state_txs);
+        .job_state_txs(job_state_txs)
+        .metrics(metrics);
 
     let state = Arc::new(match resolved_project {
         Some(project) => base.resolved_project(project).build(),
