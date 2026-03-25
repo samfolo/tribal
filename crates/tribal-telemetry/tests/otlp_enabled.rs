@@ -3,11 +3,14 @@
 //! Verifies that `init_subscriber` succeeds when `otlp_endpoint` is set
 //! to a non-listening address.  The pipeline initialises, but export
 //! silently fails — confirming no hard dependency on a running collector.
+//!
+//! Requires a tokio runtime because the gRPC (tonic) exporter sets up
+//! a channel at init time.
 
 use tribal_config::{LogFormat, LoggingConfig, TelemetryConfig};
 
-#[test]
-fn test_otlp_enabled_with_unreachable_endpoint() {
+#[tokio::test]
+async fn test_otlp_enabled_with_unreachable_endpoint() {
     let logging = LoggingConfig {
         format: LogFormat::Pretty,
         ..LoggingConfig::default()
