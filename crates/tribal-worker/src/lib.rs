@@ -5,6 +5,7 @@
 
 mod common;
 mod error;
+mod gauge_task;
 mod parsing;
 mod prompt;
 mod stages;
@@ -12,4 +13,5 @@ mod tag_resolution;
 mod worker;
 
 pub use error::WorkerError;
+pub use gauge_task::run_queue_health_gauges;
 pub use worker::Worker;

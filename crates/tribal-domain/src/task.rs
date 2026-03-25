@@ -12,7 +12,7 @@ use typed_builder::TypedBuilder;
 use crate::{JobId, TaskId};
 
 /// The type of a task in the ingest pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::EnumIter)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskType {
     /// Extract candidate knowledge items from raw input.
