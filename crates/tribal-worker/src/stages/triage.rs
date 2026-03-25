@@ -214,6 +214,7 @@ impl Worker {
                         &format!("{:?}", self.triage_embedding_key()),
                         self.config().tag_similarity_threshold,
                         deadline,
+                        self.metrics(),
                     )
                     .await?;
                     (Some(resolved), usages)
