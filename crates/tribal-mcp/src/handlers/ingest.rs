@@ -137,7 +137,7 @@ impl TribalServerHandler {
             active_prompts,
         };
 
-        let mut tx = match begin_transaction(&self.state.pool_mcp, self.config.pool_name).await {
+        let mut tx = match begin_transaction(&self.state.pool_mcp, self.config.pool_name, &self.state.metrics).await {
             Ok(tx) => tx,
             Err(call_result) => return Ok(call_result),
         };
