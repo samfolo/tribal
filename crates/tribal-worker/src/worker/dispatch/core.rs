@@ -463,12 +463,12 @@ impl Worker {
                     return;
                 }
 
-                if let Err(e) = self.commit_domain_effects(&task, output.commit).await {
-                    self.handle_stage_failure(&task, &e).await;
+                if let Err(e) = self.commit_domain_effects(&task, &job, output.commit).await {
+                    self.handle_stage_failure(&task, Some(&job), &e).await;
                 }
             }
             Err(e) => {
-                self.handle_stage_failure(&task, &e).await;
+                self.handle_stage_failure(&task, Some(&job), &e).await;
             }
         }
 
