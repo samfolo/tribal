@@ -4,7 +4,7 @@
 //! [`GAUGE_POLL_INTERVAL`] and sets the `tasks_queued` and
 //! `tasks_claimed` gauges on the provided [`MetricsRecorder`].
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use sqlx::PgPool;
 use strum::IntoEnumIterator;
@@ -67,8 +67,6 @@ pub(crate) async fn update_queue_gauges(pool: &PgPool, metrics: &dyn MetricsReco
     // Build complete counts with zero defaults, then set each gauge
     // once — avoids a transient zero window that a concurrent metric
     // export could observe.
-    use std::collections::HashMap;
-
     let mut queued: HashMap<&str, i64> = TaskType::iter().map(|t| (t.as_str(), 0)).collect();
     let mut claimed: HashMap<&str, i64> = TaskType::iter().map(|t| (t.as_str(), 0)).collect();
 
