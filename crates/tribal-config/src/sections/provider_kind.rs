@@ -16,7 +16,7 @@ pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 
 /// Default base URL for the `OpenAI` cloud API.
-pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
 
 // ---------------------------------------------------------------------------
 // ProviderKind

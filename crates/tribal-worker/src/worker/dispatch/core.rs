@@ -11,7 +11,7 @@ use std::{
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
-use tribal_common::{JobStateTxs, clamp_to_i32, clamp_to_u32};
+use tribal_common::{JobStateTxs, POOL_NAME_WORKER, clamp_to_i32, clamp_to_u32};
 use tribal_config::WorkerConfig;
 use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository, PgTaskRepository,
@@ -278,7 +278,7 @@ impl Worker {
             let mut conn = match self.pool.acquire().await {
                 Ok(c) => {
                     self.metrics
-                        .record_pool_acquire("worker", acquire_start.elapsed());
+                        .record_pool_acquire(POOL_NAME_WORKER, acquire_start.elapsed());
                     c
                 }
                 Err(e) => {
@@ -361,7 +361,7 @@ impl Worker {
             let mut conn = match self.pool.acquire().await {
                 Ok(c) => {
                     self.metrics
-                        .record_pool_acquire("worker", acquire_start.elapsed());
+                        .record_pool_acquire(POOL_NAME_WORKER, acquire_start.elapsed());
                     c
                 }
                 Err(e) => {

@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::TribalConfig;
 use tribal_mcp::AppState;
-use tribal_telemetry::MetricsRecorder;
+use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
 use tribal_worker::{Worker, WorkerError};
 
 use crate::{
@@ -55,6 +55,10 @@ pub struct ServerHandle {
     cancellation_token: CancellationToken,
     /// Shutdown deadline from configuration.
     shutdown_deadline: Duration,
+    /// Telemetry guard — holds OTLP provider shutdown handles and the
+    /// log writer flush guard.  Dropped during [`shutdown`](Self::shutdown),
+    /// after the worker has stopped.
+    telemetry_guard: TelemetryGuard,
 }
 
 impl ServerHandle {
@@ -96,12 +100,11 @@ impl ServerHandle {
     pub fn shutdown(mut self) -> Result<(), AppError> {
         self.cancellation_token.cancel();
 
+        let deadline = self.shutdown_deadline;
+        let worker_handle = self.worker_handle;
         let deadline_exceeded = self
             .worker_rt
-            .block_on(tokio::time::timeout(
-                self.shutdown_deadline,
-                self.worker_handle,
-            ))
+            .block_on(async { tokio::time::timeout(deadline, worker_handle).await })
             .is_err();
 
         if deadline_exceeded {
@@ -118,6 +121,21 @@ impl ServerHandle {
         let worker_died = matches!(self.death_rx.try_recv(), Ok(()));
 
         drop(self.worker_rt);
+
+        // Flush OTLP providers on the main runtime — the tonic gRPC
+        // channel needs the reactor to send final batches.
+        self.main_rt.block_on(async {
+            drop(self.telemetry_guard);
+        });
+
+        // Explicitly shut down main_rt with a bounded deadline rather
+        // than relying on the implicit `Drop`.  `Runtime::drop` blocks
+        // until all spawned blocking threads finish, which hangs
+        // indefinitely when a transport uses a blocking stdin reader
+        // (the `read()` syscall never returns once the client
+        // disconnects).  For HTTP/SSE transports this completes
+        // instantly since no blocking threads outlive the transport.
+        self.main_rt.shutdown_timeout(self.shutdown_deadline);
 
         tracing::info!(worker_died, deadline_exceeded, "shutdown complete");
 
@@ -142,8 +160,9 @@ impl ServerHandle {
 /// Starts the Tribal server with full bootstrap, worker startup, and sweep.
 ///
 /// Accepts a pre-loaded and validated [`TribalConfig`] and a
-/// [`CancellationToken`] for external shutdown control.  Does not initialise
-/// telemetry — callers are responsible for tracing subscriber setup.
+/// [`CancellationToken`] for external shutdown control.  Initialises
+/// telemetry on the main runtime (the OTLP gRPC exporter requires a
+/// reactor context) and returns the guard in [`ServerHandle`].
 ///
 /// Returns a [`ServerHandle`] providing access to the running server's state
 /// and shutdown mechanism.
@@ -156,14 +175,13 @@ impl ServerHandle {
 ///
 /// # Errors
 ///
-/// Returns [`AppError`] if runtime creation, database connection, migration,
-/// provider setup, prompt loading, project resolution, or worker startup
-/// fails.
+/// Returns [`AppError`] if runtime creation, telemetry initialisation,
+/// database connection, migration, provider setup, prompt loading,
+/// project resolution, or worker startup fails.
 pub fn start_server(
     config: &TribalConfig,
     cli_project: Option<String>,
     cancellation_token: CancellationToken,
-    metrics: Arc<dyn MetricsRecorder>,
 ) -> Result<ServerHandle, AppError> {
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
@@ -174,6 +192,16 @@ pub fn start_server(
         .enable_all()
         .build()
         .map_err(|source| AppError::Runtime { source })?;
+
+    // -- Telemetry -----------------------------------------------------------
+    // Initialised on the main runtime because the OTLP gRPC exporter
+    // (tonic) requires a reactor context at init time.  The guard is
+    // held in ServerHandle so it outlives block_on and flushes on
+    // shutdown.
+
+    let (telemetry_guard, metrics) = main_rt.block_on(async {
+        tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)
+    })?;
 
     let (state, worker) = main_rt.block_on(bootstrap(
         config,
@@ -252,6 +280,7 @@ pub fn start_server(
         death_rx,
         cancellation_token,
         shutdown_deadline: Duration::from_millis(config.server.shutdown_deadline_ms),
+        telemetry_guard,
     })
 }
 

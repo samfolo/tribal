@@ -18,7 +18,7 @@ use crate::error::AppError;
 ///
 /// Injected as a command-defaults-layer value so that the figment cascade
 /// still respects YAML, env vars, and CLI overrides.
-pub(crate) const DEFAULT_DATABASE_URL: &str = "postgresql://tribal@localhost:5432/tribal";
+pub(crate) const DEFAULT_DATABASE_URL: &str = "postgresql://tribal:tribal@localhost:5432/tribal";
 
 /// Figment command-defaults layer for the database URL.
 ///

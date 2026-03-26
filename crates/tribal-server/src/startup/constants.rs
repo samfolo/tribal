@@ -2,15 +2,8 @@
 
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-// Pool names
-// ---------------------------------------------------------------------------
-
-/// Pool name for MCP read-path connections.
-pub(crate) const POOL_NAME_MCP: &str = "mcp";
-
-/// Pool name for worker write-path connections.
-pub(crate) const POOL_NAME_WORKER: &str = "worker";
+// Pool names re-exported from tribal-common.
+pub(crate) use tribal_common::{POOL_NAME_MCP, POOL_NAME_WORKER};
 
 // ---------------------------------------------------------------------------
 // Connection retry

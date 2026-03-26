@@ -17,12 +17,22 @@ fmt:
 
 # Start local Postgres (pgvector) via Docker
 db-up:
-    docker run -d --name tribal-postgres \
-        -e POSTGRES_USER=tribal \
-        -e POSTGRES_PASSWORD=tribal \
-        -e POSTGRES_DB=tribal_dev \
-        -p 5432:5432 \
-        ankane/pgvector:latest
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if docker ps -q --filter "name=^tribal-postgres$" | grep -q .; then
+        echo "tribal-postgres is already running"
+    elif docker ps -aq --filter "name=^tribal-postgres$" | grep -q .; then
+        docker start tribal-postgres
+        echo "tribal-postgres started"
+    else
+        docker run -d --name tribal-postgres \
+            -e POSTGRES_USER=tribal \
+            -e POSTGRES_PASSWORD=tribal \
+            -e POSTGRES_DB=tribal \
+            -p 5432:5432 \
+            ankane/pgvector:latest
+        echo "tribal-postgres created and started"
+    fi
 
 # Stop and remove local Postgres
 db-down:
