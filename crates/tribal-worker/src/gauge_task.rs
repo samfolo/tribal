@@ -75,3 +75,29 @@ pub(crate) async fn update_queue_gauges(pool: &PgPool, metrics: &dyn MetricsReco
         metrics.set_queue_gauge(row.task_type.as_str(), row.status.as_str(), row.count);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tribal_telemetry::noop_recorder;
+    use tribal_test_utils::lazy_pool;
+
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn test_run_queue_health_gauges_exits_on_cancellation() {
+        let token = CancellationToken::new();
+        let recorder = noop_recorder();
+        let pool = lazy_pool();
+
+        let cancel_token = token.clone();
+        let handle = tokio::spawn(run_queue_health_gauges(pool, recorder, token));
+
+        // With paused time the first interval tick completes
+        // immediately, then the task blocks on select!.  Cancelling
+        // before advancing time guarantees the cancellation branch
+        // wins without wall-clock waits.
+        cancel_token.cancel();
+
+        handle.await.expect("gauge task should exit cleanly");
+    }
+}
