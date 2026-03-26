@@ -160,10 +160,11 @@ impl ServerHandle {
 
 /// Starts the Tribal server with full bootstrap, worker startup, and sweep.
 ///
-/// Accepts a pre-loaded and validated [`TribalConfig`] and a
-/// [`CancellationToken`] for external shutdown control.  Initialises
-/// telemetry on the main runtime (the OTLP gRPC exporter requires a
-/// reactor context) and returns the guard in [`ServerHandle`].
+/// Accepts a pre-loaded and validated [`TribalConfig`], a
+/// [`CancellationToken`] for external shutdown control, and a
+/// pre-initialised telemetry guard and metrics recorder.
+/// [`ServerHandle`] holds the guard so it outlives the runtimes
+/// and flushes OTLP data on shutdown.
 ///
 /// Returns a [`ServerHandle`] providing access to the running server's state
 /// and shutdown mechanism.

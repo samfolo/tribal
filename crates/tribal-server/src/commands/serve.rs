@@ -37,19 +37,17 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
 
-    // Telemetry init needs a reactor context for the OTLP gRPC exporter.
-    // A short-lived runtime satisfies tonic's requirement without
-    // entangling the guard's lifetime with the main runtime.  The guard
-    // is passed to start_server and held in ServerHandle for shutdown.
-    let (telemetry_guard, metrics) = {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|source| AppError::Runtime { source })?;
-        rt.block_on(async {
-            tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)
-        })?
-    };
+    // The OTLP gRPC exporter needs a reactor for init and for
+    // background batch export.  This runtime lives for the duration
+    // of the serve command so export tasks have a live executor.
+    let telemetry_rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|source| AppError::Runtime { source })?;
+
+    let (telemetry_guard, metrics) = telemetry_rt.block_on(async {
+        tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)
+    })?;
 
     let cancellation_token = CancellationToken::new();
 
