@@ -28,6 +28,7 @@ tribal-config.workspace = true
 tribal-db.workspace = true
 tribal-domain.workspace = true
 tribal-inference.workspace = true
+tribal-telemetry.workspace = true
 
 [features]
 test-helpers = []

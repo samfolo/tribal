@@ -1,0 +1,32 @@
+//! Integration test: OTLP pipeline initialises without panicking.
+//!
+//! Verifies that `init_subscriber` succeeds when `otlp_endpoint` is set
+//! to a non-listening address.  The pipeline initialises, but export
+//! silently fails — confirming no hard dependency on a running collector.
+//!
+//! Requires a tokio runtime because the gRPC (tonic) exporter sets up
+//! a channel at init time.
+
+use tribal_config::{LogFormat, LoggingConfig, TelemetryConfig};
+
+#[tokio::test]
+async fn test_otlp_enabled_with_unreachable_endpoint() {
+    let logging = LoggingConfig {
+        format: LogFormat::Pretty,
+        ..LoggingConfig::default()
+    };
+    let telemetry = TelemetryConfig {
+        enabled: true,
+        otlp_endpoint: Some("http://localhost:19999".to_owned()),
+        ..TelemetryConfig::default()
+    };
+
+    let (_guard, metrics) =
+        tribal_telemetry::init_subscriber(&logging, &telemetry).expect("init should succeed");
+
+    // Recorder methods accept recordings without panic even when the
+    // endpoint is unreachable — export failures are handled internally.
+    metrics.record_task_completed("test", 0.0);
+    metrics.record_pool_acquire("test", std::time::Duration::from_millis(42));
+    metrics.set_queue_gauge("test", "queued", 5);
+}

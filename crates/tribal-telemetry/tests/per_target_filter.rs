@@ -3,7 +3,7 @@
 //! This test lives in `tests/` (separate binary) because it installs a
 //! global subscriber.
 
-use tribal_config::{LogFormat, LogOutput, LoggingConfig};
+use tribal_config::{LogFormat, LogOutput, LoggingConfig, TelemetryConfig};
 
 #[test]
 fn test_per_target_filter_directive() {
@@ -18,7 +18,8 @@ fn test_per_target_filter_directive() {
         ..LoggingConfig::default()
     };
 
-    let guard = tribal_telemetry::init_subscriber(&config).expect("init should succeed");
+    let (guard, _metrics) = tribal_telemetry::init_subscriber(&config, &TelemetryConfig::default())
+        .expect("init should succeed");
 
     // This debug event targets `allowed_target` — should appear.
     tracing::debug!(target: "allowed_target", "allowed debug message");

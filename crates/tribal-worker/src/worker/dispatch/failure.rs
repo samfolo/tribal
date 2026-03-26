@@ -5,7 +5,7 @@ use chrono::Utc;
 use tribal_db::{
     JobRepository, JobStatusTransition, PgJobRepository, PgTaskRepository, TaskRepository,
 };
-use tribal_domain::{JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskType};
+use tribal_domain::{Job, JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskType};
 
 use super::Worker;
 use crate::{error::StageError, worker::backoff::backoff_duration};
@@ -36,7 +36,12 @@ impl Worker {
     ///
     /// All mutations (task fail + optional job transition) are composed
     /// in a single transaction so they commit or roll back atomically.
-    pub(crate) async fn handle_stage_failure(&self, task: &Task, error: &StageError) {
+    pub(crate) async fn handle_stage_failure(
+        &self,
+        task: &Task,
+        job: Option<&Job>,
+        error: &StageError,
+    ) {
         tracing::error!(
             task_id = %task.id(),
             task_type = %task.task_type(),
@@ -68,29 +73,36 @@ impl Worker {
             job_failed,
         };
 
-        if let Err(e) = self.persist_failure(task, &outcome, &error_message).await {
-            tracing::error!(
-                error = %e,
-                task_id = %task.id(),
-                task_type = %task.task_type(),
-                job_id = %task.job_id(),
-                "failed to persist failure",
-            );
+        match self.persist_failure(task, &outcome, &error_message).await {
+            Ok(true) => self.record_failure_metrics(task, job, &outcome),
+            Ok(false) => {} // ownership lost — no metrics
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    task_id = %task.id(),
+                    task_type = %task.task_type(),
+                    job_id = %task.job_id(),
+                    "failed to persist failure",
+                );
+            }
         }
     }
 
     /// Persists the failure state for a task within a single
     /// transaction: fails the task, optionally transitions the parent
     /// job to `Failed`, commits, and emits lifecycle events.
+    ///
+    /// Returns `true` if the failure was committed, `false` if
+    /// ownership was lost (another worker claimed the task).
     async fn persist_failure(
         &self,
         task: &Task,
         outcome: &FailureOutcome<'_>,
         error_message: &str,
-    ) -> Result<(), tribal_db::DbError> {
+    ) -> Result<bool, tribal_db::DbError> {
         let Some(claim_token) = task.claim_token() else {
             tracing::error!(task_id = %task.id(), "task has no claim token");
-            return Ok(());
+            return Ok(false);
         };
 
         let mut conn =
@@ -122,7 +134,7 @@ impl Worker {
 
         if rows_affected == 0 {
             tracing::warn!(task_id = %task.id(), "ownership lost during failure handling");
-            return Ok(());
+            return Ok(false);
         }
 
         // When a task exhausts its retry budget, dead-lettering is
@@ -164,7 +176,26 @@ impl Worker {
         }
 
         self.log_failure_outcome(task, outcome);
-        Ok(())
+        Ok(true)
+    }
+
+    /// Records metric counters and histograms for a task failure.
+    fn record_failure_metrics(&self, task: &Task, job: Option<&Job>, outcome: &FailureOutcome<'_>) {
+        if outcome.is_dead_lettered {
+            self.metrics()
+                .record_task_dead_lettered(task.task_type().as_str());
+        } else {
+            self.metrics()
+                .record_task_retried(task.task_type().as_str());
+        }
+
+        if outcome.job_failed {
+            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+            #[allow(clippy::cast_precision_loss)]
+            let duration_ms = job.map(|j| (Utc::now() - j.created_at()).num_milliseconds() as f64);
+            self.metrics()
+                .record_job_completed(JobOutcome::Failure.as_str(), duration_ms);
+        }
     }
 
     /// Emits lifecycle events after a failure transaction commits and

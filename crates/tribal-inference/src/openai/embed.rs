@@ -37,6 +37,7 @@ struct OpenAiEmbedRequest<'a> {
     model: &'a str,
     input: &'a str,
     encoding_format: &'a str,
+    dimensions: u32,
 }
 
 #[derive(serde::Deserialize)]
@@ -172,6 +173,7 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
                 model: &self.identity.model,
                 input: &request.input,
                 encoding_format: "float",
+                dimensions: self.expected_dimensions,
             };
 
             let http_response = self
@@ -357,6 +359,7 @@ mod tests {
                 "model": "text-embedding-3-small",
                 "input": "hello world",
                 "encoding_format": "float",
+                "dimensions": 3,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)))
             .expect(1)

@@ -4,5 +4,8 @@
 # Environment
 .env
 
+# Local MCP config (contains tokens)
+.mcp.json
+
 # OS-specific
 .DS_Store

@@ -57,11 +57,49 @@ pub enum TelemetryError {
         #[source]
         source: tracing::subscriber::SetGlobalDefaultError,
     },
+
+    /// The OTLP endpoint is not configured.
+    ///
+    /// Returned when the OTLP pipeline builders are called without
+    /// an endpoint, indicating a logic error in the caller.
+    #[error("OTLP endpoint not configured")]
+    OtlpEndpointMissing,
+
+    /// The `otlp_protocol` configuration value is not recognised.
+    ///
+    /// Only `"grpc"` and `"http"` are supported.
+    #[error("unrecognised OTLP protocol: {protocol}")]
+    UnrecognisedOtlpProtocol {
+        /// The unrecognised protocol string.
+        protocol: String,
+    },
+
+    /// Failed to initialise the OTLP trace export pipeline.
+    #[error("failed to initialise OTLP trace pipeline")]
+    OtlpTracePipelineInit {
+        /// The underlying exporter build error.
+        #[source]
+        source: opentelemetry_otlp::ExporterBuildError,
+    },
+
+    /// Failed to initialise the OpenTelemetry metrics pipeline.
+    #[error("failed to initialise metrics pipeline")]
+    MetricsPipelineInit {
+        /// The underlying exporter build error.
+        #[source]
+        source: opentelemetry_otlp::ExporterBuildError,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_display_otlp_endpoint_missing() {
+        let err = TelemetryError::OtlpEndpointMissing;
+        assert_eq!(err.to_string(), "OTLP endpoint not configured");
+    }
 
     #[test]
     fn test_display_subscriber_already_initialised() {
@@ -80,6 +118,30 @@ mod tests {
             err.to_string().starts_with("invalid filter directive: "),
             "unexpected display: {err}",
         );
+    }
+
+    #[test]
+    fn test_display_unrecognised_otlp_protocol() {
+        let err = TelemetryError::UnrecognisedOtlpProtocol {
+            protocol: "quic".to_owned(),
+        };
+        assert_eq!(err.to_string(), "unrecognised OTLP protocol: quic");
+    }
+
+    #[test]
+    fn test_display_otlp_trace_pipeline_init() {
+        let err = TelemetryError::OtlpTracePipelineInit {
+            source: opentelemetry_otlp::ExporterBuildError::NoHttpClient,
+        };
+        assert_eq!(err.to_string(), "failed to initialise OTLP trace pipeline");
+    }
+
+    #[test]
+    fn test_display_metrics_pipeline_init() {
+        let err = TelemetryError::MetricsPipelineInit {
+            source: opentelemetry_otlp::ExporterBuildError::NoHttpClient,
+        };
+        assert_eq!(err.to_string(), "failed to initialise metrics pipeline");
     }
 
     #[test]

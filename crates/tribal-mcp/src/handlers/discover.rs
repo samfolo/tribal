@@ -1,6 +1,6 @@
 //! Handler for `tribal_discover` — semantic search across the knowledge base.
 
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
 
 use chrono::{DateTime, Utc};
 use rmcp::{
@@ -135,6 +135,28 @@ impl TribalServerHandler {
                 Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
             };
 
+        let semaphore = self
+            .state
+            .provider_registry
+            .semaphore(&self.state.embedding_key)
+            .cloned();
+
+        let _permit = if let Some(ref sem) = semaphore {
+            let sem_start = Instant::now();
+            let permit = Arc::clone(sem)
+                .acquire_owned()
+                .await
+                .expect("embedding semaphore closed");
+            self.state.metrics.record_semaphore_acquire(
+                &self.state.embedding_key.to_string(),
+                sem_start.elapsed(),
+            );
+            Some(permit)
+        } else {
+            None
+        };
+
+        let provider_start = Instant::now();
         let embedding_response = match self
             .state
             .embedding_provider
@@ -147,10 +169,23 @@ impl TribalServerHandler {
             Ok(r) => r,
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
+        let identity = self.state.embedding_provider.identity();
+        self.state.metrics.record_provider_call(
+            &identity.name,
+            &identity.model,
+            "discover",
+            provider_start.elapsed(),
+        );
 
         let embedding_model = embedding_response.usage.model.clone();
 
-        let mut conn = match acquire_connection(&self.state.pool_mcp, self.config.pool_name).await {
+        let mut conn = match acquire_connection(
+            &self.state.pool_mcp,
+            self.config.pool_name,
+            &self.state.metrics,
+        )
+        .await
+        {
             Ok(c) => c,
             Err(call_result) => return Ok(call_result),
         };

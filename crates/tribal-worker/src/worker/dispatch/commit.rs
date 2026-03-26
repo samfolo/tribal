@@ -15,13 +15,13 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    JobId, JobOutcome, JobState, JobStatus, ReferenceKind, RelationBatchId, Task, TriageOutcome,
-    span_attrs,
+    Job, JobId, JobOutcome, JobState, JobStatus, ReferenceKind, RelationBatchId, Task,
+    TriageOutcome, span_attrs,
 };
 
 use super::Worker;
 use crate::{
-    common::EXPECT_BATCH_INDEX,
+    common::{EXPECT_BATCH_INDEX, EXPECT_CLAIMED_AT},
     error::{STAGE_EXTRACTION, STAGE_RELATION, STAGE_TRIAGE, StageError},
     stages::{RelationCommitDecision, StageCommit, TriageCommitDecision},
     tag_resolution::NewTagWithEmbedding,
@@ -36,6 +36,7 @@ impl Worker {
     pub(crate) async fn commit_domain_effects(
         &self,
         task: &Task,
+        job: &Job,
         commit: StageCommit,
     ) -> Result<(), StageError> {
         match commit {
@@ -47,6 +48,7 @@ impl Worker {
             } => {
                 self.commit_extraction(
                     task,
+                    job,
                     extraction_result,
                     triage_tasks,
                     batch_size,
@@ -62,7 +64,7 @@ impl Worker {
                 self.commit_triage(task, project_id, decision, similar_item_decisions)
                     .await
             }
-            StageCommit::Relation { decision } => self.commit_relation(task, decision).await,
+            StageCommit::Relation { decision } => self.commit_relation(task, job, decision).await,
         }
     }
 
@@ -77,6 +79,7 @@ impl Worker {
     async fn commit_extraction(
         &self,
         task: &Task,
+        job: &Job,
         extraction_result: NewExtractionResult,
         triage_tasks: Vec<NewTask>,
         batch_size: u32,
@@ -159,6 +162,21 @@ impl Worker {
             txn.commit()
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_EXTRACTION, "committing transaction", e))?;
+
+            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+            #[allow(clippy::cast_precision_loss)]
+            let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
+                .num_milliseconds() as f64;
+            self.metrics()
+                .record_task_completed(task.task_type().as_str(), duration_ms);
+
+            if is_empty {
+                // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+                #[allow(clippy::cast_precision_loss)]
+                let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
+                self.metrics()
+                    .record_job_completed(JobOutcome::Empty.as_str(), Some(job_duration_ms));
+            }
 
             // Notify watch subscribers of the post-extraction job state.
             let state = if is_empty {
@@ -277,6 +295,13 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
 
+            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+            #[allow(clippy::cast_precision_loss)]
+            let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
+                .num_milliseconds() as f64;
+            self.metrics()
+                .record_task_completed(task.task_type().as_str(), duration_ms);
+
             if fan_in_fired {
                 self.notify_job_state(job_id, JobState::Relating);
             }
@@ -307,6 +332,7 @@ impl Worker {
     async fn commit_relation(
         &self,
         task: &Task,
+        job: &Job,
         decision: RelationCommitDecision,
     ) -> Result<(), StageError> {
         let job_id = task.job_id();
@@ -333,25 +359,32 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "beginning transaction", e))?;
 
-            let is_terminal = match decision {
+            let (is_terminal, relation_outcome) = match decision {
                 RelationCommitDecision::Relate {
                     relations,
                     batch_id,
                     outcome,
                     skipped,
                 } => {
-                    self.commit_relation_relate(
-                        &mut txn,
-                        task,
-                        job_id,
-                        relations,
-                        batch_id,
-                        outcome,
-                        skipped,
-                        claim_token,
-                    )
-                    .await?;
-                    true
+                    let won_commit = self
+                        .commit_relation_relate(
+                            &mut txn,
+                            task,
+                            job_id,
+                            relations,
+                            batch_id,
+                            outcome,
+                            skipped,
+                            claim_token,
+                        )
+                        .await?;
+                    if won_commit {
+                        (true, Some(outcome))
+                    } else {
+                        // Idempotency hit — task completed but this
+                        // attempt did not seal the batch.
+                        (false, None)
+                    }
                 }
                 RelationCommitDecision::NoOp => {
                     let rows = PgTaskRepository
@@ -364,13 +397,30 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
-                    false
+                    // NoOp does not record job metrics — the job was
+                    // already completed by a prior commit attempt.
+                    (false, None)
                 }
             };
 
             txn.commit()
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "committing transaction", e))?;
+
+            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+            #[allow(clippy::cast_precision_loss)]
+            let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
+                .num_milliseconds() as f64;
+            self.metrics()
+                .record_task_completed(task.task_type().as_str(), duration_ms);
+
+            if let Some(outcome) = relation_outcome {
+                // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+                #[allow(clippy::cast_precision_loss)]
+                let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
+                self.metrics()
+                    .record_job_completed(outcome.as_str(), Some(job_duration_ms));
+            }
 
             if is_terminal {
                 self.notify_job_state(job_id, JobState::Completed);
@@ -396,6 +446,9 @@ impl Worker {
     /// already wrote a batch, the conditional update returns zero rows
     /// and this method short-circuits to a task-only completion,
     /// preventing relation overwrites.
+    /// Returns `true` if this attempt was the winning commit, `false`
+    /// if the batch was already sealed by a prior attempt (idempotency
+    /// hit — task completed but no job metrics should be recorded).
     #[allow(clippy::too_many_arguments)]
     async fn commit_relation_relate(
         &self,
@@ -407,7 +460,7 @@ impl Worker {
         outcome: JobOutcome,
         skipped: usize,
         claim_token: uuid::Uuid,
-    ) -> Result<(), StageError> {
+    ) -> Result<bool, StageError> {
         // Attempt to claim the batch slot. If another commit already
         // wrote a batch_id, skip relation inserts and job transition.
         if PgJobRepository
@@ -427,7 +480,7 @@ impl Worker {
                 return Err(StageError::OwnershipLost);
             }
 
-            return Ok(());
+            return Ok(false);
         }
 
         let relations_count = relations.len();
@@ -467,7 +520,7 @@ impl Worker {
         tracing::Span::current().record(span_attrs::RELATIONS_COMMITTED, relations_count);
         tracing::Span::current().record(span_attrs::RELATIONS_SKIPPED, skipped);
 
-        Ok(())
+        Ok(true)
     }
 }
 

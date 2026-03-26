@@ -1,14 +1,17 @@
 //! Worker struct, construction, and the poll-claim-dispatch loop.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Instant,
 };
 
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
-use tribal_common::{JobStateTxs, clamp_to_i32, clamp_to_u32};
+use tribal_common::{JobStateTxs, POOL_NAME_WORKER, clamp_to_i32, clamp_to_u32};
 use tribal_config::WorkerConfig;
 use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository, PgTaskRepository,
@@ -20,6 +23,7 @@ use tribal_domain::{
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
+use tribal_telemetry::MetricsRecorder;
 
 use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
@@ -56,6 +60,7 @@ pub struct Worker {
     include_llm_content: bool,
     instance_id: String,
     job_state_txs: JobStateTxs,
+    metrics: Arc<dyn MetricsRecorder>,
     /// Current number of in-flight tasks.
     active_tasks: Arc<AtomicUsize>,
     /// High-water mark of simultaneously in-flight tasks.
@@ -84,6 +89,7 @@ impl Worker {
         include_llm_content: bool,
         instance_id: String,
         job_state_txs: JobStateTxs,
+        metrics: Arc<dyn MetricsRecorder>,
     ) -> Self {
         Self {
             pool,
@@ -101,6 +107,7 @@ impl Worker {
             include_llm_content,
             instance_id,
             job_state_txs,
+            metrics,
             active_tasks: Arc::new(AtomicUsize::new(0)),
             peak_concurrent: Arc::new(AtomicUsize::new(0)),
         }
@@ -125,6 +132,11 @@ impl Worker {
     /// Returns a reference to the provider registry.
     pub(crate) fn provider_registry(&self) -> &Arc<ProviderRegistry> {
         &self.provider_registry
+    }
+
+    /// Returns a reference to the telemetry metric instruments.
+    pub(crate) fn metrics(&self) -> &dyn MetricsRecorder {
+        &self.metrics
     }
 
     /// Returns the high-water mark of simultaneously in-flight tasks
@@ -262,8 +274,13 @@ impl Worker {
 
             let limit = clamp_to_u32(available);
 
+            let acquire_start = Instant::now();
             let mut conn = match self.pool.acquire().await {
-                Ok(c) => c,
+                Ok(c) => {
+                    self.metrics
+                        .record_pool_acquire(POOL_NAME_WORKER, acquire_start.elapsed());
+                    c
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "pool acquire failed, backing off");
                     poll_interval = next_claim_backoff(poll_interval);
@@ -340,8 +357,13 @@ impl Worker {
         let job_id = task.job_id();
 
         let job: Job = {
+            let acquire_start = Instant::now();
             let mut conn = match self.pool.acquire().await {
-                Ok(c) => c,
+                Ok(c) => {
+                    self.metrics
+                        .record_pool_acquire(POOL_NAME_WORKER, acquire_start.elapsed());
+                    c
+                }
                 Err(e) => {
                     let stage_err = StageError::Database {
                         stage: STAGE_PRE_DISPATCH.into(),
@@ -351,7 +373,7 @@ impl Worker {
                             source: e,
                         },
                     };
-                    self.handle_stage_failure(&task, &stage_err).await;
+                    self.handle_stage_failure(&task, None, &stage_err).await;
                     return;
                 }
             };
@@ -363,7 +385,7 @@ impl Worker {
                         context: format!("loading job {job_id}"),
                         source: e,
                     };
-                    self.handle_stage_failure(&task, &stage_err).await;
+                    self.handle_stage_failure(&task, None, &stage_err).await;
                     return;
                 }
             }
@@ -438,12 +460,12 @@ impl Worker {
                     return;
                 }
 
-                if let Err(e) = self.commit_domain_effects(&task, output.commit).await {
-                    self.handle_stage_failure(&task, &e).await;
+                if let Err(e) = self.commit_domain_effects(&task, &job, output.commit).await {
+                    self.handle_stage_failure(&task, Some(&job), &e).await;
                 }
             }
             Err(e) => {
-                self.handle_stage_failure(&task, &e).await;
+                self.handle_stage_failure(&task, Some(&job), &e).await;
             }
         }
 
