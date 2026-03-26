@@ -56,6 +56,42 @@ pub trait MetricsRecorder: Send + Sync {
     fn set_queue_gauge(&self, task_type: &str, status: &str, count: i64);
 }
 
+/// Delegates through `Arc` so that `Arc<dyn MetricsRecorder>` satisfies
+/// the trait without manual dereferencing at call sites.
+impl<T: MetricsRecorder + ?Sized> MetricsRecorder for Arc<T> {
+    fn record_pool_acquire(&self, pool: &str, elapsed: Duration) {
+        (**self).record_pool_acquire(pool, elapsed);
+    }
+
+    fn record_semaphore_acquire(&self, provider_key: &str, elapsed: Duration) {
+        (**self).record_semaphore_acquire(provider_key, elapsed);
+    }
+
+    fn record_provider_call(&self, provider: &str, model: &str, stage: &str, elapsed: Duration) {
+        (**self).record_provider_call(provider, model, stage, elapsed);
+    }
+
+    fn record_task_completed(&self, task_type: &str, duration_ms: f64) {
+        (**self).record_task_completed(task_type, duration_ms);
+    }
+
+    fn record_task_retried(&self, task_type: &str) {
+        (**self).record_task_retried(task_type);
+    }
+
+    fn record_task_dead_lettered(&self, task_type: &str) {
+        (**self).record_task_dead_lettered(task_type);
+    }
+
+    fn record_job_completed(&self, outcome: &str, duration_ms: Option<f64>) {
+        (**self).record_job_completed(outcome, duration_ms);
+    }
+
+    fn set_queue_gauge(&self, task_type: &str, status: &str, count: i64) {
+        (**self).set_queue_gauge(task_type, status, count);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // OTel implementation
 // ---------------------------------------------------------------------------

@@ -30,7 +30,7 @@ use tribal_mcp::{
     SessionContext, SessionProject, TransportAuthStrategy, TribalServerHandler,
 };
 use tribal_server::{ServerHandle, start_server};
-use tribal_telemetry::Metrics;
+use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
     Seed, a_new_principal, a_new_project, serial_lock, test_context, truncate_all_tables,
 };
@@ -801,7 +801,7 @@ async fn start_and_connect(
     let spawn_token = token.clone();
 
     let handle = tokio::task::spawn_blocking(move || {
-        start_server(&spawn_config, cli_project, spawn_token, Metrics::noop())
+        start_server(&spawn_config, cli_project, spawn_token, noop_recorder())
             .expect("server startup failed")
     })
     .await

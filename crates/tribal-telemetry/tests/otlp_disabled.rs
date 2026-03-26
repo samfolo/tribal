@@ -20,8 +20,8 @@ fn test_otlp_disabled_returns_noop_metrics() {
     let (_guard, metrics) =
         tribal_telemetry::init_subscriber(&logging, &telemetry).expect("init should succeed");
 
-    // No-op instruments accept recordings without panic.
-    metrics.tasks_completed.add(1, &[]);
-    metrics.pool_acquire_wait_ms.record(42.0, &[]);
-    metrics.tasks_queued.record(5, &[]);
+    // No-op recorder methods accept recordings without panic.
+    metrics.record_task_completed("test", 0.0);
+    metrics.record_pool_acquire("test", std::time::Duration::from_millis(42));
+    metrics.set_queue_gauge("test", "queued", 5);
 }

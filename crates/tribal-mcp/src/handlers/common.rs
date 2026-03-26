@@ -2,11 +2,10 @@
 
 use std::time::Instant;
 
-use opentelemetry::KeyValue;
 use rmcp::model::CallToolResult;
 use sqlx::PgPool;
 use tribal_db::DbError;
-use tribal_telemetry::{LABEL_POOL, Metrics};
+use tribal_telemetry::MetricsRecorder;
 
 use crate::error::{IntoCallToolResult, IntoMcpError};
 
@@ -21,14 +20,11 @@ use crate::error::{IntoCallToolResult, IntoMcpError};
 pub(crate) async fn acquire_connection(
     pool: &PgPool,
     pool_name: &'static str,
-    metrics: &Metrics,
+    metrics: &dyn MetricsRecorder,
 ) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, CallToolResult> {
     let start = Instant::now();
     let result = pool.acquire().await;
-    metrics.pool_acquire_wait_ms.record(
-        start.elapsed().as_secs_f64() * 1000.0,
-        &[KeyValue::new(LABEL_POOL, pool_name)],
-    );
+    metrics.record_pool_acquire(pool_name, start.elapsed());
     result.map_err(|e| map_pool_error(e, pool_name, "acquiring connection from pool"))
 }
 
@@ -38,14 +34,11 @@ pub(crate) async fn acquire_connection(
 pub(crate) async fn begin_transaction(
     pool: &PgPool,
     pool_name: &'static str,
-    metrics: &Metrics,
+    metrics: &dyn MetricsRecorder,
 ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, CallToolResult> {
     let start = Instant::now();
     let result = pool.begin().await;
-    metrics.pool_acquire_wait_ms.record(
-        start.elapsed().as_secs_f64() * 1000.0,
-        &[KeyValue::new(LABEL_POOL, pool_name)],
-    );
+    metrics.record_pool_acquire(pool_name, start.elapsed());
     result.map_err(|e| map_pool_error(e, pool_name, "beginning transaction"))
 }
 

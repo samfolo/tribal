@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::TribalConfig;
 use tribal_mcp::AppState;
-use tribal_telemetry::Metrics;
+use tribal_telemetry::MetricsRecorder;
 use tribal_worker::{Worker, WorkerError};
 
 use crate::{
@@ -163,7 +163,7 @@ pub fn start_server(
     config: &TribalConfig,
     cli_project: Option<String>,
     cancellation_token: CancellationToken,
-    metrics: Metrics,
+    metrics: Arc<dyn MetricsRecorder>,
 ) -> Result<ServerHandle, AppError> {
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
@@ -274,7 +274,7 @@ async fn bootstrap(
     cli_project: Option<String>,
     cancellation_token: CancellationToken,
     job_state_txs: JobStateTxs,
-    metrics: Metrics,
+    metrics: Arc<dyn MetricsRecorder>,
 ) -> Result<(Arc<AppState>, Arc<Worker>), AppError> {
     // -- Database pools ------------------------------------------------------
 

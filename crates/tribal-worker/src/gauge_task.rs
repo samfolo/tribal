@@ -10,7 +10,7 @@ use sqlx::PgPool;
 use strum::IntoEnumIterator;
 use tokio_util::sync::CancellationToken;
 use tribal_db::{PgTaskRepository, TaskRepository};
-use tribal_domain::{TaskStatus, TaskType};
+use tribal_domain::TaskType;
 use tribal_telemetry::MetricsRecorder;
 
 /// Interval between queue health gauge updates.
