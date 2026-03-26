@@ -43,9 +43,9 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 /// program lifetime to ensure pending writes and OTLP data are flushed
 /// on shutdown.
 ///
-/// [`Metrics`] provides the 11 OpenTelemetry metric instruments.  When
-/// telemetry is disabled or no endpoint is configured, instruments
-/// silently discard recordings.
+/// The returned [`MetricsRecorder`] provides methods for recording
+/// all 11 operational metrics.  When telemetry is disabled or no
+/// endpoint is configured, recordings are silently discarded.
 ///
 /// # Errors
 ///

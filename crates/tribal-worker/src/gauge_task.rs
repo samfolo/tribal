@@ -64,15 +64,32 @@ pub(crate) async fn update_queue_gauges(pool: &PgPool, metrics: &dyn MetricsReco
         return;
     };
 
-    // Zero all gauges first to handle task types that have drained
-    // to zero — the SQL only returns rows with non-zero counts.
-    for task_type in TaskType::iter() {
-        metrics.set_queue_gauge(task_type.as_str(), "queued", 0);
-        metrics.set_queue_gauge(task_type.as_str(), "claimed", 0);
-    }
+    // Build complete counts with zero defaults, then set each gauge
+    // once — avoids a transient zero window that a concurrent metric
+    // export could observe.
+    use std::collections::HashMap;
+
+    let mut queued: HashMap<&str, i64> = TaskType::iter().map(|t| (t.as_str(), 0)).collect();
+    let mut claimed: HashMap<&str, i64> = TaskType::iter().map(|t| (t.as_str(), 0)).collect();
 
     for row in &counts {
-        metrics.set_queue_gauge(row.task_type.as_str(), row.status.as_str(), row.count);
+        let key = row.task_type.as_str();
+        match row.status.as_str() {
+            "queued" => {
+                queued.insert(key, row.count);
+            }
+            "claimed" => {
+                claimed.insert(key, row.count);
+            }
+            _ => {}
+        }
+    }
+
+    for (task_type, count) in &queued {
+        metrics.set_queue_gauge(task_type, "queued", *count);
+    }
+    for (task_type, count) in &claimed {
+        metrics.set_queue_gauge(task_type, "claimed", *count);
     }
 }
 
