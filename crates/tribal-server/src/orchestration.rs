@@ -235,22 +235,14 @@ pub fn start_server(
     )));
 
     // -- Queue health gauges -------------------------------------------------
-    // The gauge task is a monitoring optimisation, not a correctness
-    // mechanism.  If it panics, gauges stop updating but the worker
-    // continues normally.  Re-panic to surface the bug in logs.
-
-    let gauge_handle = worker_rt.spawn(tribal_worker::run_queue_health_gauges(
+    // JoinHandle discarded — the gauge task is a monitoring optimisation,
+    // not a correctness mechanism.  If it panics, gauges stop updating
+    // but the worker continues normally; the DB remains authoritative.
+    drop(worker_rt.spawn(tribal_worker::run_queue_health_gauges(
         state.worker_pool().clone(),
         metrics,
         cancellation_token.clone(),
-    ));
-    worker_rt.spawn(async move {
-        if let Err(e) = gauge_handle.await
-            && e.is_panic()
-        {
-            std::panic::resume_unwind(e.into_panic());
-        }
-    });
+    )));
 
     Ok(ServerHandle {
         state,
