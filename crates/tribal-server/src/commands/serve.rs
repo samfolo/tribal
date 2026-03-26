@@ -40,7 +40,8 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     // The OTLP gRPC exporter needs a reactor for init and for
     // background batch export.  This runtime lives for the duration
     // of the serve command so export tasks have a live executor.
-    let telemetry_rt = tokio::runtime::Builder::new_current_thread()
+    let telemetry_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_all()
         .build()
         .map_err(|source| AppError::Runtime { source })?;
