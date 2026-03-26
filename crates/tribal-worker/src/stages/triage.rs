@@ -334,18 +334,17 @@ impl Worker {
         deadline: tokio::time::Instant,
     ) -> Result<EmbeddingResponse, StageError> {
         let semaphore = self.triage_embedding_semaphore();
+        let provider_key = self.triage_embedding_key().to_string();
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let semaphore_start = Instant::now();
         let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
             .await
             .map_err(|_| StageError::SemaphoreTimeout {
-                provider_key: self.triage_embedding_key().to_string(),
+                provider_key: provider_key.clone(),
             })?
             .expect(SEMAPHORE_CLOSED);
-        self.metrics().record_semaphore_acquire(
-            &self.triage_embedding_key().to_string(),
-            semaphore_start.elapsed(),
-        );
+        self.metrics()
+            .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
 
         let request = EmbeddingRequest {
             input: content.to_owned(),
@@ -440,18 +439,17 @@ impl Worker {
         }
 
         let semaphore = self.triage_inference_semaphore();
+        let provider_key = self.triage_inference_key().to_string();
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let semaphore_start = Instant::now();
         let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
             .await
             .map_err(|_| StageError::SemaphoreTimeout {
-                provider_key: self.triage_inference_key().to_string(),
+                provider_key: provider_key.clone(),
             })?
             .expect(SEMAPHORE_CLOSED);
-        self.metrics().record_semaphore_acquire(
-            &self.triage_inference_key().to_string(),
-            semaphore_start.elapsed(),
-        );
+        self.metrics()
+            .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
 
         let provider_start = Instant::now();
         let response = self

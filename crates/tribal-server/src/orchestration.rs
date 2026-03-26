@@ -196,25 +196,40 @@ pub fn start_server(
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    let (state, worker) = main_rt.block_on(bootstrap(
+    let (state, worker) = match main_rt.block_on(bootstrap(
         config,
         cli_project,
         cancellation_token.clone(),
         Arc::clone(&job_state_txs),
         metrics.clone(),
-    ))?;
+    )) {
+        Ok(result) => result,
+        Err(e) => {
+            // Flush OTLP providers on the runtime before returning —
+            // dropping outside the runtime silently loses pending spans.
+            main_rt.block_on(async { drop(telemetry_guard) });
+            return Err(e);
+        }
+    };
 
     // -- Worker runtime ------------------------------------------------------
 
-    let worker_rt = Builder::new_multi_thread()
+    let worker_rt = match Builder::new_multi_thread()
         .thread_name("tribal-worker")
         .enable_all()
         .build()
-        .map_err(|source| AppError::WorkerRuntime { source })?;
+    {
+        Ok(rt) => rt,
+        Err(source) => {
+            main_rt.block_on(async { drop(telemetry_guard) });
+            return Err(AppError::WorkerRuntime { source });
+        }
+    };
 
-    worker_rt
-        .block_on(worker.startup())
-        .map_err(|source| AppError::WorkerStartup { source })?;
+    if let Err(source) = worker_rt.block_on(worker.startup()) {
+        main_rt.block_on(async { drop(telemetry_guard) });
+        return Err(AppError::WorkerStartup { source });
+    }
 
     let (death_tx, death_rx) = oneshot::channel::<()>();
 

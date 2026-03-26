@@ -227,18 +227,17 @@ impl Worker {
             );
 
             let semaphore = self.relation_semaphore();
+            let provider_key = self.relation_key().to_string();
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let semaphore_start = Instant::now();
             let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
                 .await
                 .map_err(|_| StageError::SemaphoreTimeout {
-                    provider_key: self.relation_key().to_string(),
+                    provider_key: provider_key.clone(),
                 })?
                 .expect(SEMAPHORE_CLOSED);
-            self.metrics().record_semaphore_acquire(
-                &self.relation_key().to_string(),
-                semaphore_start.elapsed(),
-            );
+            self.metrics()
+                .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
 
             let request =
                 assemble_relation_prompt(system_pv.content(), user_pv.content(), &prompt_context)?;
