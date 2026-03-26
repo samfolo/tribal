@@ -209,7 +209,7 @@ impl Worker {
                         &ctx.tag_registry,
                         self.embedding_provider(),
                         self.triage_embedding_semaphore(),
-                        &format!("{:?}", self.triage_embedding_key()),
+                        &self.triage_embedding_key().to_string(),
                         self.config().tag_similarity_threshold,
                         deadline,
                         self.metrics(),
@@ -339,11 +339,13 @@ impl Worker {
         let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
             .await
             .map_err(|_| StageError::SemaphoreTimeout {
-                provider_key: format!("{:?}", self.triage_embedding_key()),
+                provider_key: self.triage_embedding_key().to_string(),
             })?
             .expect(SEMAPHORE_CLOSED);
-        self.metrics()
-            .record_semaphore_acquire("triage_embedding", semaphore_start.elapsed());
+        self.metrics().record_semaphore_acquire(
+            &self.triage_embedding_key().to_string(),
+            semaphore_start.elapsed(),
+        );
 
         let request = EmbeddingRequest {
             input: content.to_owned(),
@@ -443,11 +445,13 @@ impl Worker {
         let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
             .await
             .map_err(|_| StageError::SemaphoreTimeout {
-                provider_key: format!("{:?}", self.triage_inference_key()),
+                provider_key: self.triage_inference_key().to_string(),
             })?
             .expect(SEMAPHORE_CLOSED);
-        self.metrics()
-            .record_semaphore_acquire("triage_inference", semaphore_start.elapsed());
+        self.metrics().record_semaphore_acquire(
+            &self.triage_inference_key().to_string(),
+            semaphore_start.elapsed(),
+        );
 
         let provider_start = Instant::now();
         let response = self

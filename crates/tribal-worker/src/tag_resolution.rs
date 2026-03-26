@@ -220,7 +220,7 @@ async fn embed_tag(
             provider_key: provider_key.to_owned(),
         })?
         .expect(SEMAPHORE_CLOSED);
-    metrics.record_semaphore_acquire("tag_embedding", semaphore_start.elapsed());
+    metrics.record_semaphore_acquire(provider_key, semaphore_start.elapsed());
 
     let request = EmbeddingRequest {
         input: tag.to_owned(),

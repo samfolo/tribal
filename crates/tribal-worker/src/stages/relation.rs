@@ -232,11 +232,13 @@ impl Worker {
             let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
                 .await
                 .map_err(|_| StageError::SemaphoreTimeout {
-                    provider_key: format!("{:?}", self.relation_key()),
+                    provider_key: self.relation_key().to_string(),
                 })?
                 .expect(SEMAPHORE_CLOSED);
-            self.metrics()
-                .record_semaphore_acquire("relation", semaphore_start.elapsed());
+            self.metrics().record_semaphore_acquire(
+                &self.relation_key().to_string(),
+                semaphore_start.elapsed(),
+            );
 
             let request =
                 assemble_relation_prompt(system_pv.content(), user_pv.content(), &prompt_context)?;
