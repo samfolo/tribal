@@ -21,6 +21,7 @@ fn test_init_subscriber_twice_returns_already_initialised() {
     let result = tribal_telemetry::init_subscriber(&config, &telemetry);
     assert!(
         matches!(result, Err(TelemetryError::SubscriberAlreadyInitialised)),
-        "second init should return SubscriberAlreadyInitialised, got {result:?}",
+        "second init should return SubscriberAlreadyInitialised, got {:?}",
+        result.err(),
     );
 }
