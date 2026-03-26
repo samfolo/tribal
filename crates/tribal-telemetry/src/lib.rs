@@ -7,12 +7,10 @@ mod error;
 mod guard;
 mod metrics;
 mod otlp;
+mod recorder;
 mod subscriber;
 
 pub use error::TelemetryError;
 pub use guard::TelemetryGuard;
-pub use metrics::{
-    LABEL_MODEL, LABEL_OUTCOME, LABEL_POOL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE,
-    LABEL_TASK_TYPE, Metrics,
-};
+pub use recorder::{MetricsRecorder, NoopMetricsRecorder, OtelMetricsRecorder, noop_recorder};
 pub use subscriber::init_subscriber;
