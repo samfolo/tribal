@@ -2,14 +2,12 @@
 
 use std::{sync::Arc, time::Instant};
 
-use opentelemetry::KeyValue;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_common::clamp_to_u32;
 use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
 use tribal_inference::{InferenceProvider, ProviderKey, Usage};
-use tribal_telemetry::{LABEL_MODEL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE};
 
 use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{
@@ -151,10 +149,8 @@ impl Worker {
                     provider_key: format!("{:?}", self.extraction_key()),
                 })?
                 .expect(SEMAPHORE_CLOSED);
-            self.metrics().semaphore_acquire_wait_ms.record(
-                semaphore_start.elapsed().as_secs_f64() * 1000.0,
-                &[KeyValue::new(LABEL_PROVIDER_KEY, "extraction")],
-            );
+            self.metrics()
+                .record_semaphore_acquire("extraction", semaphore_start.elapsed());
 
             let request = assemble_extraction_prompt(
                 system_pv.content(),
@@ -181,13 +177,11 @@ impl Worker {
                     source: e,
                 })?;
             let identity = self.extraction_provider().identity();
-            self.metrics().provider_call_ms.record(
-                provider_start.elapsed().as_secs_f64() * 1000.0,
-                &[
-                    KeyValue::new(LABEL_PROVIDER, identity.name.clone()),
-                    KeyValue::new(LABEL_MODEL, identity.model.clone()),
-                    KeyValue::new(LABEL_STAGE, "extraction"),
-                ],
+            self.metrics().record_provider_call(
+                &identity.name,
+                &identity.model,
+                "extraction",
+                provider_start.elapsed(),
             );
 
             if include_llm_content {

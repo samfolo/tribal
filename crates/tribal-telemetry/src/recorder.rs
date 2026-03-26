@@ -32,13 +32,7 @@ pub trait MetricsRecorder: Send + Sync {
     fn record_semaphore_acquire(&self, provider_key: &str, elapsed: Duration);
 
     /// Records provider (LLM/embedding) call latency.
-    fn record_provider_call(
-        &self,
-        provider: &str,
-        model: &str,
-        stage: &str,
-        elapsed: Duration,
-    );
+    fn record_provider_call(&self, provider: &str, model: &str, stage: &str, elapsed: Duration);
 
     /// Records a successfully committed task.
     fn record_task_completed(&self, task_type: &str, duration_ms: f64);
@@ -103,13 +97,7 @@ impl MetricsRecorder for OtelMetricsRecorder {
         );
     }
 
-    fn record_provider_call(
-        &self,
-        provider: &str,
-        model: &str,
-        stage: &str,
-        elapsed: Duration,
-    ) {
+    fn record_provider_call(&self, provider: &str, model: &str, stage: &str, elapsed: Duration) {
         self.metrics.provider_call_ms.record(
             duration_ms(elapsed),
             &[
@@ -223,7 +211,12 @@ mod tests {
         let recorder = OtelMetricsRecorder::new(metrics);
         recorder.record_pool_acquire("mcp", Duration::from_millis(3));
         recorder.record_semaphore_acquire("triage_inference", Duration::from_millis(1));
-        recorder.record_provider_call("anthropic", "claude", "triage_inference", Duration::from_secs(2));
+        recorder.record_provider_call(
+            "anthropic",
+            "claude",
+            "triage_inference",
+            Duration::from_secs(2),
+        );
         recorder.record_task_completed("triage", 200.0);
         recorder.record_task_retried("extraction");
         recorder.record_task_dead_lettered("extraction");

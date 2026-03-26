@@ -2,17 +2,16 @@
 //!
 //! Queries task counts grouped by `(task_type, status)` every
 //! [`GAUGE_POLL_INTERVAL`] and sets the `tasks_queued` and
-//! `tasks_claimed` gauges on the provided [`Metrics`].
+//! `tasks_claimed` gauges on the provided [`MetricsRecorder`].
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use opentelemetry::KeyValue;
 use sqlx::PgPool;
 use strum::IntoEnumIterator;
 use tokio_util::sync::CancellationToken;
 use tribal_db::{PgTaskRepository, TaskRepository};
 use tribal_domain::{TaskStatus, TaskType};
-use tribal_telemetry::Metrics;
+use tribal_telemetry::MetricsRecorder;
 
 /// Interval between queue health gauge updates.
 const GAUGE_POLL_INTERVAL: Duration = Duration::from_secs(10);
@@ -24,7 +23,7 @@ const GAUGE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// terminate the task.
 pub async fn run_queue_health_gauges(
     pool: PgPool,
-    metrics: Metrics,
+    metrics: Arc<dyn MetricsRecorder>,
     cancellation_token: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(GAUGE_POLL_INTERVAL);
@@ -48,7 +47,7 @@ pub async fn run_queue_health_gauges(
 ///
 /// Exported for testing: callers can invoke this directly without
 /// spawning the full periodic task.
-pub(crate) async fn update_queue_gauges(pool: &PgPool, metrics: &Metrics) {
+pub(crate) async fn update_queue_gauges(pool: &PgPool, metrics: &dyn MetricsRecorder) {
     let Ok(mut conn) = pool.acquire().await.inspect_err(|e| {
         tracing::warn!(error = %e, "gauge task: pool acquire failed");
     }) else {
@@ -68,19 +67,11 @@ pub(crate) async fn update_queue_gauges(pool: &PgPool, metrics: &Metrics) {
     // Zero all gauges first to handle task types that have drained
     // to zero — the SQL only returns rows with non-zero counts.
     for task_type in TaskType::iter() {
-        let attrs = &[KeyValue::new("task_type", task_type.as_str())];
-        metrics.tasks_queued.record(0, attrs);
-        metrics.tasks_claimed.record(0, attrs);
+        metrics.set_queue_gauge(task_type.as_str(), "queued", 0);
+        metrics.set_queue_gauge(task_type.as_str(), "claimed", 0);
     }
 
     for row in &counts {
-        let attrs = &[KeyValue::new("task_type", row.task_type.as_str())];
-        match row.status {
-            TaskStatus::Queued => metrics.tasks_queued.record(row.count, attrs),
-            TaskStatus::Claimed => metrics.tasks_claimed.record(row.count, attrs),
-            // Other statuses (completed, failed, dead_letter) are not
-            // tracked by gauges — they are covered by counters.
-            _ => {}
-        }
+        metrics.set_queue_gauge(row.task_type.as_str(), row.status.as_str(), row.count);
     }
 }
