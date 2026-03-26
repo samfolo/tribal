@@ -9,7 +9,6 @@ publish.workspace = true
 [dependencies]
 chrono.workspace = true
 dashmap.workspace = true
-opentelemetry.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

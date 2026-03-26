@@ -8,14 +8,13 @@
 
 use std::{collections::HashSet, sync::Arc, time::Instant};
 
-use opentelemetry::KeyValue;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{PgTagEmbeddingRepository, TagEmbeddingRepository};
 use tribal_domain::{EmbeddingPurpose, TagRegistryEntry, span_attrs};
 use tribal_inference::{EmbeddingProvider, EmbeddingRequest, Usage};
-use tribal_telemetry::{LABEL_MODEL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE, Metrics};
+use tribal_telemetry::MetricsRecorder;
 
 use crate::error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError};
 
@@ -89,7 +88,7 @@ pub(crate) async fn resolve_tags(
     provider_key: &str,
     threshold: f64,
     deadline: tokio::time::Instant,
-    metrics: &Metrics,
+    metrics: &dyn MetricsRecorder,
 ) -> Result<(ResolvedTags, Vec<Usage>), StageError> {
     let span = tracing::info_span!(
         "tribal.tag_resolution",
@@ -211,7 +210,7 @@ async fn embed_tag(
     semaphore: &Arc<Semaphore>,
     deadline: tokio::time::Instant,
     provider_key: &str,
-    metrics: &Metrics,
+    metrics: &dyn MetricsRecorder,
 ) -> Result<tribal_inference::EmbeddingResponse, StageError> {
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
     let semaphore_start = Instant::now();
@@ -221,10 +220,7 @@ async fn embed_tag(
             provider_key: provider_key.to_owned(),
         })?
         .expect(SEMAPHORE_CLOSED);
-    metrics.semaphore_acquire_wait_ms.record(
-        semaphore_start.elapsed().as_secs_f64() * 1000.0,
-        &[KeyValue::new(LABEL_PROVIDER_KEY, "tag_embedding")],
-    );
+    metrics.record_semaphore_acquire("tag_embedding", semaphore_start.elapsed());
 
     let request = EmbeddingRequest {
         input: tag.to_owned(),
@@ -240,13 +236,11 @@ async fn embed_tag(
             source: e,
         })?;
     let identity = embedding_provider.identity();
-    metrics.provider_call_ms.record(
-        provider_start.elapsed().as_secs_f64() * 1000.0,
-        &[
-            KeyValue::new(LABEL_PROVIDER, identity.name.clone()),
-            KeyValue::new(LABEL_MODEL, identity.model.clone()),
-            KeyValue::new(LABEL_STAGE, "tag_embedding"),
-        ],
+    metrics.record_provider_call(
+        &identity.name,
+        &identity.model,
+        "tag_embedding",
+        provider_start.elapsed(),
     );
     Ok(response)
 }

@@ -14,7 +14,7 @@ use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
 use tribal_domain::{GitRemote, ProjectId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
-use tribal_telemetry::Metrics;
+use tribal_telemetry::MetricsRecorder;
 use typed_builder::TypedBuilder;
 
 use crate::{server_handler::ActivePromptVersions, session::SessionProject};
@@ -131,7 +131,7 @@ pub struct AppState {
 
     // -- Observability -------------------------------------------------------
     /// Telemetry metric instruments.
-    pub(crate) metrics: Metrics,
+    pub(crate) metrics: Arc<dyn MetricsRecorder>,
 
     // -- Session -------------------------------------------------------------
     /// Resolved project context from the startup cascade, if any.
@@ -154,7 +154,7 @@ impl AppState {
 
     /// Returns a reference to the telemetry metric instruments.
     #[must_use]
-    pub fn metrics(&self) -> &Metrics {
+    pub fn metrics(&self) -> &dyn MetricsRecorder {
         &self.metrics
     }
 

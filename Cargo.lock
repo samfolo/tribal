@@ -4830,7 +4830,6 @@ dependencies = [
  "chrono",
  "dashmap",
  "http",
- "opentelemetry",
  "rmcp",
  "serde",
  "serde_json",
@@ -4940,7 +4939,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dashmap",
- "opentelemetry",
  "schemars 0.8.22",
  "serde",
  "serde_json",

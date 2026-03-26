@@ -2,12 +2,10 @@
 //! lifecycle event emission.
 
 use chrono::Utc;
-use opentelemetry::KeyValue;
 use tribal_db::{
     JobRepository, JobStatusTransition, PgJobRepository, PgTaskRepository, TaskRepository,
 };
 use tribal_domain::{Job, JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskType};
-use tribal_telemetry::{LABEL_OUTCOME, LABEL_TASK_TYPE};
 
 use super::Worker;
 use crate::{error::StageError, worker::backoff::backoff_duration};
@@ -178,27 +176,19 @@ impl Worker {
 
     /// Records metric counters and histograms for a task failure.
     fn record_failure_metrics(&self, task: &Task, job: Option<&Job>, outcome: &FailureOutcome<'_>) {
-        let task_type_attr = KeyValue::new(LABEL_TASK_TYPE, task.task_type().as_str());
-
         if outcome.is_dead_lettered {
-            self.metrics().tasks_dead_letter.add(1, &[task_type_attr]);
+            self.metrics()
+                .record_task_dead_lettered(task.task_type().as_str());
         } else {
-            self.metrics().tasks_retried.add(1, &[task_type_attr]);
+            self.metrics()
+                .record_task_retried(task.task_type().as_str());
         }
 
         if outcome.job_failed {
-            let outcome_attr = KeyValue::new(LABEL_OUTCOME, JobOutcome::Failure.as_str());
+            #[allow(clippy::cast_precision_loss)]
+            let duration_ms = job.map(|j| (Utc::now() - j.created_at()).num_milliseconds() as f64);
             self.metrics()
-                .jobs_completed
-                .add(1, std::slice::from_ref(&outcome_attr));
-
-            if let Some(job) = job {
-                #[allow(clippy::cast_precision_loss)]
-                let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
-                self.metrics()
-                    .job_duration_ms
-                    .record(job_duration_ms, &[outcome_attr]);
-            }
+                .record_job_completed(JobOutcome::Failure.as_str(), duration_ms);
         }
     }
 

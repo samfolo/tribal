@@ -8,7 +8,6 @@ use std::{
     time::Instant,
 };
 
-use opentelemetry::KeyValue;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -24,7 +23,7 @@ use tribal_domain::{
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
 };
-use tribal_telemetry::{LABEL_POOL, Metrics};
+use tribal_telemetry::MetricsRecorder;
 
 use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
@@ -61,7 +60,7 @@ pub struct Worker {
     include_llm_content: bool,
     instance_id: String,
     job_state_txs: JobStateTxs,
-    metrics: Metrics,
+    metrics: Arc<dyn MetricsRecorder>,
     /// Current number of in-flight tasks.
     active_tasks: Arc<AtomicUsize>,
     /// High-water mark of simultaneously in-flight tasks.
@@ -90,7 +89,7 @@ impl Worker {
         include_llm_content: bool,
         instance_id: String,
         job_state_txs: JobStateTxs,
-        metrics: Metrics,
+        metrics: Arc<dyn MetricsRecorder>,
     ) -> Self {
         Self {
             pool,
@@ -136,7 +135,7 @@ impl Worker {
     }
 
     /// Returns a reference to the telemetry metric instruments.
-    pub(crate) fn metrics(&self) -> &Metrics {
+    pub(crate) fn metrics(&self) -> &dyn MetricsRecorder {
         &self.metrics
     }
 
@@ -278,10 +277,8 @@ impl Worker {
             let acquire_start = Instant::now();
             let mut conn = match self.pool.acquire().await {
                 Ok(c) => {
-                    self.metrics.pool_acquire_wait_ms.record(
-                        acquire_start.elapsed().as_secs_f64() * 1000.0,
-                        &[KeyValue::new(LABEL_POOL, "worker")],
-                    );
+                    self.metrics
+                        .record_pool_acquire("worker", acquire_start.elapsed());
                     c
                 }
                 Err(e) => {
@@ -363,10 +360,8 @@ impl Worker {
             let acquire_start = Instant::now();
             let mut conn = match self.pool.acquire().await {
                 Ok(c) => {
-                    self.metrics.pool_acquire_wait_ms.record(
-                        acquire_start.elapsed().as_secs_f64() * 1000.0,
-                        &[KeyValue::new(LABEL_POOL, "worker")],
-                    );
+                    self.metrics
+                        .record_pool_acquire("worker", acquire_start.elapsed());
                     c
                 }
                 Err(e) => {

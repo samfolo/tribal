@@ -6,7 +6,10 @@
 //! specifies an endpoint.  It should be called exactly once, early in
 //! program startup.
 
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider};
 use tracing::subscriber::set_global_default;

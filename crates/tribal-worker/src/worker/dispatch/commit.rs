@@ -1,7 +1,6 @@
 //! Domain-effect commit handlers for each pipeline stage.
 
 use chrono::Utc;
-use opentelemetry::KeyValue;
 use tracing::Instrument;
 use tribal_common::clamp_to_u32;
 use tribal_db::{
@@ -19,7 +18,6 @@ use tribal_domain::{
     Job, JobId, JobOutcome, JobState, JobStatus, ReferenceKind, RelationBatchId, Task,
     TriageOutcome, span_attrs,
 };
-use tribal_telemetry::{LABEL_OUTCOME, LABEL_TASK_TYPE};
 
 use super::Worker;
 use crate::{
@@ -165,27 +163,17 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_EXTRACTION, "committing transaction", e))?;
 
-            let task_type_attr = KeyValue::new(LABEL_TASK_TYPE, task.task_type().as_str());
-            self.metrics()
-                .tasks_completed
-                .add(1, std::slice::from_ref(&task_type_attr));
             #[allow(clippy::cast_precision_loss)]
             let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
                 .num_milliseconds() as f64;
             self.metrics()
-                .task_duration_ms
-                .record(duration_ms, &[task_type_attr]);
+                .record_task_completed(task.task_type().as_str(), duration_ms);
 
             if is_empty {
-                let outcome_attr = KeyValue::new(LABEL_OUTCOME, JobOutcome::Empty.as_str());
-                self.metrics()
-                    .jobs_completed
-                    .add(1, std::slice::from_ref(&outcome_attr));
                 #[allow(clippy::cast_precision_loss)]
                 let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
                 self.metrics()
-                    .job_duration_ms
-                    .record(job_duration_ms, &[outcome_attr]);
+                    .record_job_completed(JobOutcome::Empty.as_str(), Some(job_duration_ms));
             }
 
             // Notify watch subscribers of the post-extraction job state.
@@ -305,16 +293,11 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
 
-            let task_type_attr = KeyValue::new(LABEL_TASK_TYPE, task.task_type().as_str());
-            self.metrics()
-                .tasks_completed
-                .add(1, std::slice::from_ref(&task_type_attr));
             #[allow(clippy::cast_precision_loss)]
             let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
                 .num_milliseconds() as f64;
             self.metrics()
-                .task_duration_ms
-                .record(duration_ms, &[task_type_attr]);
+                .record_task_completed(task.task_type().as_str(), duration_ms);
 
             if fan_in_fired {
                 self.notify_job_state(job_id, JobState::Relating);
@@ -414,27 +397,17 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "committing transaction", e))?;
 
-            let task_type_attr = KeyValue::new(LABEL_TASK_TYPE, task.task_type().as_str());
-            self.metrics()
-                .tasks_completed
-                .add(1, std::slice::from_ref(&task_type_attr));
             #[allow(clippy::cast_precision_loss)]
             let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
                 .num_milliseconds() as f64;
             self.metrics()
-                .task_duration_ms
-                .record(duration_ms, &[task_type_attr]);
+                .record_task_completed(task.task_type().as_str(), duration_ms);
 
             if let Some(outcome) = relation_outcome {
-                let outcome_attr = KeyValue::new(LABEL_OUTCOME, outcome.as_str());
-                self.metrics()
-                    .jobs_completed
-                    .add(1, std::slice::from_ref(&outcome_attr));
                 #[allow(clippy::cast_precision_loss)]
                 let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
                 self.metrics()
-                    .job_duration_ms
-                    .record(job_duration_ms, &[outcome_attr]);
+                    .record_job_completed(outcome.as_str(), Some(job_duration_ms));
             }
 
             if is_terminal {

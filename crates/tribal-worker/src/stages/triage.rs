@@ -2,7 +2,6 @@
 
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
-use opentelemetry::KeyValue;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{
@@ -17,7 +16,6 @@ use tribal_domain::{
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
 };
-use tribal_telemetry::{LABEL_MODEL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE};
 
 use super::{StageCommit, StageOutput, TriageCommitDecision, record_prompt_version_ids};
 use crate::{
@@ -344,10 +342,8 @@ impl Worker {
                 provider_key: format!("{:?}", self.triage_embedding_key()),
             })?
             .expect(SEMAPHORE_CLOSED);
-        self.metrics().semaphore_acquire_wait_ms.record(
-            semaphore_start.elapsed().as_secs_f64() * 1000.0,
-            &[KeyValue::new(LABEL_PROVIDER_KEY, "triage_embedding")],
-        );
+        self.metrics()
+            .record_semaphore_acquire("triage_embedding", semaphore_start.elapsed());
 
         let request = EmbeddingRequest {
             input: content.to_owned(),
@@ -364,13 +360,11 @@ impl Worker {
                 source: e,
             })?;
         let identity = self.embedding_provider().identity();
-        self.metrics().provider_call_ms.record(
-            provider_start.elapsed().as_secs_f64() * 1000.0,
-            &[
-                KeyValue::new(LABEL_PROVIDER, identity.name.clone()),
-                KeyValue::new(LABEL_MODEL, identity.model.clone()),
-                KeyValue::new(LABEL_STAGE, "triage_embedding"),
-            ],
+        self.metrics().record_provider_call(
+            &identity.name,
+            &identity.model,
+            "triage_embedding",
+            provider_start.elapsed(),
         );
         Ok(response)
     }
@@ -452,10 +446,8 @@ impl Worker {
                 provider_key: format!("{:?}", self.triage_inference_key()),
             })?
             .expect(SEMAPHORE_CLOSED);
-        self.metrics().semaphore_acquire_wait_ms.record(
-            semaphore_start.elapsed().as_secs_f64() * 1000.0,
-            &[KeyValue::new(LABEL_PROVIDER_KEY, "triage_inference")],
-        );
+        self.metrics()
+            .record_semaphore_acquire("triage_inference", semaphore_start.elapsed());
 
         let provider_start = Instant::now();
         let response = self
@@ -467,13 +459,11 @@ impl Worker {
                 source: e,
             })?;
         let identity = self.triage_provider().identity();
-        self.metrics().provider_call_ms.record(
-            provider_start.elapsed().as_secs_f64() * 1000.0,
-            &[
-                KeyValue::new(LABEL_PROVIDER, identity.name.clone()),
-                KeyValue::new(LABEL_MODEL, identity.model.clone()),
-                KeyValue::new(LABEL_STAGE, "triage_inference"),
-            ],
+        self.metrics().record_provider_call(
+            &identity.name,
+            &identity.model,
+            "triage_inference",
+            provider_start.elapsed(),
         );
 
         if include_llm_content {
