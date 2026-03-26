@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn test_display_provider_key_omits_default_port() {
+    fn test_display_provider_key_with_no_port_specified() {
         let key = ProviderKey::new(
             "anthropic",
             "https://api.anthropic.com",
