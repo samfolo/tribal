@@ -146,11 +146,13 @@ impl Worker {
             let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
                 .await
                 .map_err(|_| StageError::SemaphoreTimeout {
-                    provider_key: format!("{:?}", self.extraction_key()),
+                    provider_key: self.extraction_key().to_string(),
                 })?
                 .expect(SEMAPHORE_CLOSED);
-            self.metrics()
-                .record_semaphore_acquire("extraction", semaphore_start.elapsed());
+            self.metrics().record_semaphore_acquire(
+                &self.extraction_key().to_string(),
+                semaphore_start.elapsed(),
+            );
 
             let request = assemble_extraction_prompt(
                 system_pv.content(),

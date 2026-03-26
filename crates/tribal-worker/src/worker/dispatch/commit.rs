@@ -366,18 +366,25 @@ impl Worker {
                     outcome,
                     skipped,
                 } => {
-                    self.commit_relation_relate(
-                        &mut txn,
-                        task,
-                        job_id,
-                        relations,
-                        batch_id,
-                        outcome,
-                        skipped,
-                        claim_token,
-                    )
-                    .await?;
-                    (true, Some(outcome))
+                    let won_commit = self
+                        .commit_relation_relate(
+                            &mut txn,
+                            task,
+                            job_id,
+                            relations,
+                            batch_id,
+                            outcome,
+                            skipped,
+                            claim_token,
+                        )
+                        .await?;
+                    if won_commit {
+                        (true, Some(outcome))
+                    } else {
+                        // Idempotency hit — task completed but this
+                        // attempt did not seal the batch.
+                        (false, None)
+                    }
                 }
                 RelationCommitDecision::NoOp => {
                     let rows = PgTaskRepository
@@ -439,6 +446,9 @@ impl Worker {
     /// already wrote a batch, the conditional update returns zero rows
     /// and this method short-circuits to a task-only completion,
     /// preventing relation overwrites.
+    /// Returns `true` if this attempt was the winning commit, `false`
+    /// if the batch was already sealed by a prior attempt (idempotency
+    /// hit — task completed but no job metrics should be recorded).
     #[allow(clippy::too_many_arguments)]
     async fn commit_relation_relate(
         &self,
@@ -450,7 +460,7 @@ impl Worker {
         outcome: JobOutcome,
         skipped: usize,
         claim_token: uuid::Uuid,
-    ) -> Result<(), StageError> {
+    ) -> Result<bool, StageError> {
         // Attempt to claim the batch slot. If another commit already
         // wrote a batch_id, skip relation inserts and job transition.
         if PgJobRepository
@@ -470,7 +480,7 @@ impl Worker {
                 return Err(StageError::OwnershipLost);
             }
 
-            return Ok(());
+            return Ok(false);
         }
 
         let relations_count = relations.len();
@@ -510,7 +520,7 @@ impl Worker {
         tracing::Span::current().record(span_attrs::RELATIONS_COMMITTED, relations_count);
         tracing::Span::current().record(span_attrs::RELATIONS_SKIPPED, skipped);
 
-        Ok(())
+        Ok(true)
     }
 }
 

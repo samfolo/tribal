@@ -102,6 +102,22 @@ impl ProviderKey {
     }
 }
 
+impl fmt::Display for ProviderKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let authority = Url::parse(&self.normalised_base_url).ok().map(|u| {
+            let host = u.host_str().unwrap_or("unknown");
+            match u.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host.to_owned(),
+            }
+        });
+        match authority {
+            Some(a) => write!(f, "{}/{a}/{}", self.provider_kind, self.request_class),
+            None => write!(f, "{}/{}", self.provider_kind, self.request_class),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ProviderLimits
 // ---------------------------------------------------------------------------
@@ -326,6 +342,26 @@ mod tests {
     #[test]
     fn test_display_request_class_inference() {
         assert_eq!(RequestClass::Inference.to_string(), "inference");
+    }
+
+    // -- ProviderKey Display --------------------------------------------------
+
+    #[test]
+    fn test_display_provider_key_includes_host_and_port() {
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
+        assert_eq!(key.to_string(), "ollama/localhost:11434/embedding");
+    }
+
+    #[test]
+    fn test_display_provider_key_omits_default_port() {
+        let key = ProviderKey::new(
+            "anthropic",
+            "https://api.anthropic.com",
+            RequestClass::Inference,
+        )
+        .unwrap();
+        assert_eq!(key.to_string(), "anthropic/api.anthropic.com/inference");
     }
 
     // -- URL normalisation ---------------------------------------------------

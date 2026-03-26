@@ -38,7 +38,7 @@ pub(crate) fn build_tracer_provider(
     let endpoint = config
         .otlp_endpoint
         .as_deref()
-        .expect("otlp_endpoint must be Some when building tracer provider");
+        .ok_or(TelemetryError::OtlpEndpointMissing)?;
 
     let exporter = match config.otlp_protocol.as_str() {
         "grpc" => SpanExporter::builder()
@@ -93,7 +93,7 @@ pub(crate) fn build_meter_provider(
     let endpoint = config
         .otlp_endpoint
         .as_deref()
-        .expect("otlp_endpoint must be Some when building meter provider");
+        .ok_or(TelemetryError::OtlpEndpointMissing)?;
 
     let exporter = match config.otlp_protocol.as_str() {
         "grpc" => MetricExporter::builder()

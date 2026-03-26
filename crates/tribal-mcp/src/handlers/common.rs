@@ -34,12 +34,10 @@ pub(crate) async fn acquire_connection(
 pub(crate) async fn begin_transaction(
     pool: &PgPool,
     pool_name: &'static str,
-    metrics: &dyn MetricsRecorder,
 ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, CallToolResult> {
-    let start = Instant::now();
-    let result = pool.begin().await;
-    metrics.record_pool_acquire(pool_name, start.elapsed());
-    result.map_err(|e| map_pool_error(e, pool_name, "beginning transaction"))
+    pool.begin()
+        .await
+        .map_err(|e| map_pool_error(e, pool_name, "beginning transaction"))
 }
 
 /// Maps a pool acquisition or transaction-begin error to a `CallToolResult`.

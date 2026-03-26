@@ -285,10 +285,10 @@ pub trait TaskRepository {
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn upsert(&self, conn: &mut PgConnection, new_task: &NewTask) -> Result<u64, DbError>;
 
-    /// Counts tasks grouped by `(task_type, status)`.
+    /// Counts queued and claimed tasks grouped by `(task_type, status)`.
     ///
-    /// Returns all combinations present in the database.  Used by
-    /// the periodic queue health gauge task to set gauge values.
+    /// Only returns rows for `queued` and `claimed` statuses.  Used
+    /// by the periodic queue health gauge task to set gauge values.
     ///
     /// # Errors
     ///

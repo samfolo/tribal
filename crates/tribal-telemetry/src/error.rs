@@ -58,6 +58,13 @@ pub enum TelemetryError {
         source: tracing::subscriber::SetGlobalDefaultError,
     },
 
+    /// The OTLP endpoint is not configured.
+    ///
+    /// Returned when the OTLP pipeline builders are called without
+    /// an endpoint, indicating a logic error in the caller.
+    #[error("OTLP endpoint not configured")]
+    OtlpEndpointMissing,
+
     /// The `otlp_protocol` configuration value is not recognised.
     ///
     /// Only `"grpc"` and `"http"` are supported.
@@ -87,6 +94,12 @@ pub enum TelemetryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_display_otlp_endpoint_missing() {
+        let err = TelemetryError::OtlpEndpointMissing;
+        assert_eq!(err.to_string(), "OTLP endpoint not configured");
+    }
 
     #[test]
     fn test_display_subscriber_already_initialised() {
