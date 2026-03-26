@@ -6,8 +6,8 @@ use tribal_db::{
 use tribal_domain::{GitRemote, JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use tribal_test_utils::{
     a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_task,
-    backdate_task_heartbeat, insert_prompt_version, set_retry_count, shift_timestamp_by_id,
-    test_context,
+    backdate_task_heartbeat, count_tasks_by_status, insert_prompt_version, set_retry_count,
+    shift_timestamp_by_id, test_context,
 };
 
 // ---------------------------------------------------------------------------
@@ -955,7 +955,7 @@ async fn test_count_by_status_groups_by_type_and_status() {
         &a_new_task()
             .job_id(job_id)
             .task_type(TaskType::Triage)
-            .batch_index(0)
+            .batch_index(Some(0))
             .build(),
     )
     .await
@@ -965,7 +965,7 @@ async fn test_count_by_status_groups_by_type_and_status() {
         &a_new_task()
             .job_id(job_id)
             .task_type(TaskType::Triage)
-            .batch_index(1)
+            .batch_index(Some(1))
             .build(),
     )
     .await
