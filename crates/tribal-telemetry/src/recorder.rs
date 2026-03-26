@@ -90,15 +90,16 @@ fn duration_ms(d: Duration) -> f64 {
 
 impl MetricsRecorder for OtelMetricsRecorder {
     fn record_pool_acquire(&self, pool: &str, elapsed: Duration) {
-        self.metrics
-            .pool_acquire_wait_ms
-            .record(duration_ms(elapsed), &[KeyValue::new(LABEL_POOL, pool)]);
+        self.metrics.pool_acquire_wait_ms.record(
+            duration_ms(elapsed),
+            &[KeyValue::new(LABEL_POOL, pool.to_owned())],
+        );
     }
 
     fn record_semaphore_acquire(&self, provider_key: &str, elapsed: Duration) {
         self.metrics.semaphore_acquire_wait_ms.record(
             duration_ms(elapsed),
-            &[KeyValue::new(LABEL_PROVIDER_KEY, provider_key)],
+            &[KeyValue::new(LABEL_PROVIDER_KEY, provider_key.to_owned())],
         );
     }
 
@@ -112,45 +113,47 @@ impl MetricsRecorder for OtelMetricsRecorder {
         self.metrics.provider_call_ms.record(
             duration_ms(elapsed),
             &[
-                KeyValue::new(LABEL_PROVIDER, provider),
-                KeyValue::new(LABEL_MODEL, model),
-                KeyValue::new(LABEL_STAGE, stage),
+                KeyValue::new(LABEL_PROVIDER, provider.to_owned()),
+                KeyValue::new(LABEL_MODEL, model.to_owned()),
+                KeyValue::new(LABEL_STAGE, stage.to_owned()),
             ],
         );
     }
 
-    fn record_task_completed(&self, task_type: &str, duration_ms: f64) {
-        let attr = KeyValue::new(LABEL_TASK_TYPE, task_type);
+    fn record_task_completed(&self, task_type: &str, task_duration_ms: f64) {
+        let attr = KeyValue::new(LABEL_TASK_TYPE, task_type.to_owned());
         self.metrics
             .tasks_completed
             .add(1, std::slice::from_ref(&attr));
-        self.metrics.task_duration_ms.record(duration_ms, &[attr]);
+        self.metrics
+            .task_duration_ms
+            .record(task_duration_ms, &[attr]);
     }
 
     fn record_task_retried(&self, task_type: &str) {
         self.metrics
             .tasks_retried
-            .add(1, &[KeyValue::new(LABEL_TASK_TYPE, task_type)]);
+            .add(1, &[KeyValue::new(LABEL_TASK_TYPE, task_type.to_owned())]);
     }
 
     fn record_task_dead_lettered(&self, task_type: &str) {
         self.metrics
             .tasks_dead_letter
-            .add(1, &[KeyValue::new(LABEL_TASK_TYPE, task_type)]);
+            .add(1, &[KeyValue::new(LABEL_TASK_TYPE, task_type.to_owned())]);
     }
 
-    fn record_job_completed(&self, outcome: &str, duration_ms: Option<f64>) {
-        let attr = KeyValue::new(LABEL_OUTCOME, outcome);
+    fn record_job_completed(&self, outcome: &str, job_duration_ms: Option<f64>) {
+        let attr = KeyValue::new(LABEL_OUTCOME, outcome.to_owned());
         self.metrics
             .jobs_completed
             .add(1, std::slice::from_ref(&attr));
-        if let Some(ms) = duration_ms {
+        if let Some(ms) = job_duration_ms {
             self.metrics.job_duration_ms.record(ms, &[attr]);
         }
     }
 
     fn set_queue_gauge(&self, task_type: &str, status: &str, count: i64) {
-        let attrs = &[KeyValue::new(LABEL_TASK_TYPE, task_type)];
+        let attrs = &[KeyValue::new(LABEL_TASK_TYPE, task_type.to_owned())];
         match status {
             "queued" => self.metrics.tasks_queued.record(count, attrs),
             "claimed" => self.metrics.tasks_claimed.record(count, attrs),
