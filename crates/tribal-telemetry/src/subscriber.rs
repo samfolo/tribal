@@ -6,7 +6,7 @@
 //! specifies an endpoint.  It should be called exactly once, early in
 //! program startup.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider};
 use tracing::subscriber::set_global_default;
@@ -14,7 +14,13 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig, TelemetryConfig};
 
-use crate::{error::TelemetryError, guard::TelemetryGuard, metrics::Metrics, otlp};
+use crate::{
+    error::TelemetryError,
+    guard::TelemetryGuard,
+    metrics::Metrics,
+    otlp,
+    recorder::{MetricsRecorder, OtelMetricsRecorder, noop_recorder},
+};
 
 /// Whether [`init_subscriber`] has already been called.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
@@ -60,7 +66,7 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 pub fn init_subscriber(
     logging: &LoggingConfig,
     telemetry: &TelemetryConfig,
-) -> Result<(TelemetryGuard, Metrics), TelemetryError> {
+) -> Result<(TelemetryGuard, Arc<dyn MetricsRecorder>), TelemetryError> {
     if INITIALISED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -84,7 +90,7 @@ pub fn init_subscriber(
 fn try_init_subscriber(
     logging: &LoggingConfig,
     telemetry: &TelemetryConfig,
-) -> Result<(TelemetryGuard, Metrics), TelemetryError> {
+) -> Result<(TelemetryGuard, Arc<dyn MetricsRecorder>), TelemetryError> {
     let env_filter = EnvFilter::try_new(&logging.level).map_err(|source| {
         TelemetryError::InvalidFilterDirective {
             directive: logging.level.clone(),
@@ -138,13 +144,13 @@ fn try_init_subscriber(
         (None, None)
     };
 
-    let (meter_provider, metrics) = if otlp_enabled {
+    let (meter_provider, recorder): (Option<_>, Arc<dyn MetricsRecorder>) = if otlp_enabled {
         let provider = otlp::build_meter_provider(telemetry)?;
         let meter = provider.meter("tribal");
         let metrics = Metrics::new(&meter);
-        (Some(provider), metrics)
+        (Some(provider), Arc::new(OtelMetricsRecorder::new(metrics)))
     } else {
-        (None, Metrics::noop())
+        (None, noop_recorder())
     };
 
     // -- Subscriber assembly ---------------------------------------------
@@ -184,7 +190,7 @@ fn try_init_subscriber(
 
     Ok((
         TelemetryGuard::new(guard, tracer_provider, meter_provider),
-        metrics,
+        recorder,
     ))
 }
 
@@ -217,7 +223,8 @@ mod tests {
 
         assert!(
             matches!(result, Err(TelemetryError::InvalidFilterDirective { .. })),
-            "expected InvalidFilterDirective, got {result:?}",
+            "expected InvalidFilterDirective, got {:?}",
+            result.err(),
         );
         assert!(
             !INITIALISED.load(Ordering::SeqCst),
@@ -243,7 +250,8 @@ mod tests {
 
         assert!(
             matches!(result, Err(TelemetryError::FileAppenderInit { .. })),
-            "expected FileAppenderInit, got {result:?}",
+            "expected FileAppenderInit, got {:?}",
+            result.err(),
         );
         assert!(
             !INITIALISED.load(Ordering::SeqCst),
@@ -274,7 +282,8 @@ mod tests {
         // The key assertion is that the flag did not block retry.
         assert!(
             !matches!(result, Err(TelemetryError::SubscriberAlreadyInitialised)),
-            "flag should have been reset after failed init, got {result:?}",
+            "flag should have been reset after failed init, got {:?}",
+            result.err(),
         );
 
         // Clean up: the second call may have succeeded, leaving the flag true.
