@@ -37,17 +37,11 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
 
-    // Telemetry must be initialised before the async runtime so the guard
-    // outlives `block_on` and flushes pending writes on shutdown.
-    let (_telemetry_guard, metrics) =
-        tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)?;
-
     let cancellation_token = CancellationToken::new();
 
     let transport = config.server.transport;
 
-    let handle =
-        orchestration::start_server(&config, cli_project, cancellation_token.clone(), metrics)?;
+    let handle = orchestration::start_server(&config, cli_project, cancellation_token.clone())?;
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 
