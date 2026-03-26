@@ -60,6 +60,20 @@ pub struct ReclaimOutcome {
     pub dead_lettered: u64,
 }
 
+/// A count of tasks for a given `(task_type, status)` combination.
+///
+/// Returned by [`TaskRepository::count_by_status`] for periodic
+/// queue health gauge reporting.
+#[derive(Debug, Clone)]
+pub struct TaskStatusCount {
+    /// The task type.
+    pub task_type: TaskType,
+    /// The task status.
+    pub status: TaskStatus,
+    /// The number of tasks matching this combination.
+    pub count: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
@@ -270,6 +284,19 @@ pub trait TaskRepository {
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn upsert(&self, conn: &mut PgConnection, new_task: &NewTask) -> Result<u64, DbError>;
+
+    /// Counts queued and claimed tasks grouped by `(task_type, status)`.
+    ///
+    /// Only returns rows for `queued` and `claimed` statuses.  Used
+    /// by the periodic queue health gauge task to set gauge values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn count_by_status(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<TaskStatusCount>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +673,37 @@ impl TaskRepository for PgTaskRepository {
         })?;
 
         Ok(result.rows_affected())
+    }
+
+    async fn count_by_status(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<TaskStatusCount>, DbError> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT task_type, status, COUNT(*) \
+             FROM tasks \
+             WHERE status IN ('queued', 'claimed') \
+             GROUP BY task_type, status",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "counting tasks by status".to_owned(),
+            source: e,
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(task_type, status, count)| TaskStatusCount {
+                task_type: task_type
+                    .parse::<TaskType>()
+                    .expect(UNKNOWN_TASK_TYPE_IN_DB),
+                status: status
+                    .parse::<TaskStatus>()
+                    .expect(UNKNOWN_TASK_STATUS_IN_DB),
+                count,
+            })
+            .collect())
     }
 }
 

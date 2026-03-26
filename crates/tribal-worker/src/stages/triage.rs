@@ -1,6 +1,6 @@
 //! Triage stage: similarity search and LLM-based relevance scoring.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use tokio::sync::Semaphore;
 use tracing::Instrument;
@@ -209,9 +209,10 @@ impl Worker {
                         &ctx.tag_registry,
                         self.embedding_provider(),
                         self.triage_embedding_semaphore(),
-                        &format!("{:?}", self.triage_embedding_key()),
+                        &self.triage_embedding_key().to_string(),
                         self.config().tag_similarity_threshold,
                         deadline,
+                        self.metrics(),
                     )
                     .await?;
                     (Some(resolved), usages)
@@ -333,26 +334,40 @@ impl Worker {
         deadline: tokio::time::Instant,
     ) -> Result<EmbeddingResponse, StageError> {
         let semaphore = self.triage_embedding_semaphore();
+        let provider_key = self.triage_embedding_key().to_string();
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let semaphore_start = Instant::now();
         let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
             .await
             .map_err(|_| StageError::SemaphoreTimeout {
-                provider_key: format!("{:?}", self.triage_embedding_key()),
+                provider_key: provider_key.clone(),
             })?
             .expect(SEMAPHORE_CLOSED);
+        self.metrics()
+            .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
 
         let request = EmbeddingRequest {
             input: content.to_owned(),
             purpose: EmbeddingPurpose::Candidate,
         };
 
-        self.embedding_provider()
+        let provider_start = Instant::now();
+        let response = self
+            .embedding_provider()
             .embed(request)
             .await
             .map_err(|e| StageError::Provider {
                 context: "triage embedding call".into(),
                 source: e,
-            })
+            })?;
+        let identity = self.embedding_provider().identity();
+        self.metrics().record_provider_call(
+            &identity.name,
+            &identity.model,
+            "triage_embedding",
+            provider_start.elapsed(),
+        );
+        Ok(response)
     }
 
     /// Runs semantic search against existing knowledge items using the
@@ -424,14 +439,19 @@ impl Worker {
         }
 
         let semaphore = self.triage_inference_semaphore();
+        let provider_key = self.triage_inference_key().to_string();
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let semaphore_start = Instant::now();
         let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
             .await
             .map_err(|_| StageError::SemaphoreTimeout {
-                provider_key: format!("{:?}", self.triage_inference_key()),
+                provider_key: provider_key.clone(),
             })?
             .expect(SEMAPHORE_CLOSED);
+        self.metrics()
+            .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
 
+        let provider_start = Instant::now();
         let response = self
             .triage_provider()
             .complete(request)
@@ -440,6 +460,13 @@ impl Worker {
                 context: "triage LLM call".into(),
                 source: e,
             })?;
+        let identity = self.triage_provider().identity();
+        self.metrics().record_provider_call(
+            &identity.name,
+            &identity.model,
+            "triage_inference",
+            provider_start.elapsed(),
+        );
 
         if include_llm_content {
             tracing::debug!(

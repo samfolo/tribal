@@ -12,6 +12,7 @@ use tribal_common::JobStateTxs;
 use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
 use tribal_domain::{PrincipalId, ProjectId, PromptVersionId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
+use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
     MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
@@ -122,6 +123,7 @@ impl From<TestHandler> for TribalServerHandler {
                 .server_config(Arc::new(ServerConfig::default()))
                 .cancellation_token(th.cancellation_token)
                 .job_state_txs(th.job_state_txs)
+                .metrics(noop_recorder())
                 .build(),
         );
         Self::new(

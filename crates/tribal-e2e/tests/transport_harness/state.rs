@@ -15,6 +15,7 @@ use tribal_db::{
 use tribal_domain::{PromptVersionId, Scope, full_access_scopes};
 use tribal_inference::{ProviderRegistry, RequestClass};
 use tribal_mcp::{ActivePromptVersions, AppState};
+use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{MockEmbeddingProvider, MockInferenceProvider, test_context};
 
 // ---------------------------------------------------------------------------
@@ -94,6 +95,7 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
             .server_config(Arc::new(ServerConfig::default()))
             .cancellation_token(ct)
             .job_state_txs(Arc::new(DashMap::new()))
+            .metrics(noop_recorder())
             .build(),
     )
 }

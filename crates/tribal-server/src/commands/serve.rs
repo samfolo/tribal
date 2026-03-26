@@ -37,15 +37,30 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
 
-    // Telemetry must be initialised before the async runtime so the guard
-    // outlives `block_on` and flushes pending writes on shutdown.
-    let _telemetry_guard = tribal_telemetry::init_subscriber(&config.logging)?;
+    // The OTLP gRPC exporter needs a reactor for init and for
+    // background batch export.  This runtime lives for the duration
+    // of the serve command so export tasks have a live executor.
+    let telemetry_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .map_err(|source| AppError::Runtime { source })?;
+
+    let (telemetry_guard, metrics) = telemetry_rt.block_on(async {
+        tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)
+    })?;
 
     let cancellation_token = CancellationToken::new();
 
     let transport = config.server.transport;
 
-    let handle = orchestration::start_server(&config, cli_project, cancellation_token.clone())?;
+    let handle = orchestration::start_server(
+        &config,
+        cli_project,
+        cancellation_token.clone(),
+        Some(telemetry_guard),
+        metrics,
+    )?;
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 

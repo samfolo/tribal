@@ -24,6 +24,7 @@ pub(super) use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry,
     RequestClass,
 };
+pub(super) use tribal_telemetry::noop_recorder;
 pub(super) use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
     TestContext, a_candidate, a_completion_response, a_new_extraction_result, a_new_job,
@@ -171,6 +172,7 @@ pub(super) fn build_test_worker(
         false,
         WORKER_INSTANCE.to_owned(),
         job_state_txs,
+        noop_recorder(),
     ))
 }
 

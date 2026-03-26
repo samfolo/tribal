@@ -1,8 +1,11 @@
 //! Shared utilities for MCP tool handlers.
 
+use std::time::Instant;
+
 use rmcp::model::CallToolResult;
 use sqlx::PgPool;
 use tribal_db::DbError;
+use tribal_telemetry::MetricsRecorder;
 
 use crate::error::{IntoCallToolResult, IntoMcpError};
 
@@ -17,10 +20,12 @@ use crate::error::{IntoCallToolResult, IntoMcpError};
 pub(crate) async fn acquire_connection(
     pool: &PgPool,
     pool_name: &'static str,
+    metrics: &dyn MetricsRecorder,
 ) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, CallToolResult> {
-    pool.acquire()
-        .await
-        .map_err(|e| map_pool_error(e, pool_name, "acquiring connection from pool"))
+    let start = Instant::now();
+    let result = pool.acquire().await;
+    metrics.record_pool_acquire(pool_name, start.elapsed());
+    result.map_err(|e| map_pool_error(e, pool_name, "acquiring connection from pool"))
 }
 
 /// Begins a transaction from the pool, mapping errors to `CallToolResult`.

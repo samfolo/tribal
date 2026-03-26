@@ -903,3 +903,109 @@ async fn test_reclaim_stale_respects_limit() {
     assert_eq!(result.requeued, 2, "remaining 2 tasks should be reclaimed");
     assert_eq!(result.dead_lettered, 0);
 }
+
+// ---------------------------------------------------------------------------
+// count_by_status
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_count_by_status_empty_table() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTaskRepository;
+
+    let counts = repo
+        .count_by_status(&mut txn)
+        .await
+        .expect("count_by_status");
+    assert!(counts.is_empty(), "empty table should return empty vec");
+}
+
+#[tokio::test]
+async fn test_count_by_status_groups_by_type_and_status() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTaskRepository;
+
+    let job_id = setup_task_prerequisites(&mut txn, "count-by-status").await;
+
+    // Insert 2 extraction tasks (both start as queued).
+    repo.insert(
+        &mut txn,
+        &a_new_task()
+            .job_id(job_id)
+            .task_type(TaskType::Extraction)
+            .build(),
+    )
+    .await
+    .expect("insert extraction 1");
+    repo.insert(
+        &mut txn,
+        &a_new_task()
+            .job_id(job_id)
+            .task_type(TaskType::Relation)
+            .build(),
+    )
+    .await
+    .expect("insert relation");
+
+    // Insert 2 triage tasks.
+    repo.insert(
+        &mut txn,
+        &a_new_task()
+            .job_id(job_id)
+            .task_type(TaskType::Triage)
+            .batch_index(Some(0))
+            .build(),
+    )
+    .await
+    .expect("insert triage 0");
+    repo.insert(
+        &mut txn,
+        &a_new_task()
+            .job_id(job_id)
+            .task_type(TaskType::Triage)
+            .batch_index(Some(1))
+            .build(),
+    )
+    .await
+    .expect("insert triage 1");
+
+    // Claim 1 triage task to make it Claimed.
+    let claimed = repo
+        .claim(&mut txn, 1, "count-worker")
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1);
+
+    let counts = repo
+        .count_by_status(&mut txn)
+        .await
+        .expect("count_by_status");
+
+    assert!(
+        !counts.is_empty(),
+        "should have at least one row after seeding",
+    );
+
+    // Build a lookup for easy assertion.
+    let find = |task_type: TaskType, status: TaskStatus| -> i64 {
+        counts
+            .iter()
+            .find(|c| c.task_type == task_type && c.status == status)
+            .map_or(0, |c| c.count)
+    };
+
+    // The claim picked the earliest available task. We seeded
+    // extraction, relation, and 2 triage tasks — all start queued.
+    // After claiming 1, we have 3 queued and 1 claimed.
+    let total_queued = find(TaskType::Extraction, TaskStatus::Queued)
+        + find(TaskType::Relation, TaskStatus::Queued)
+        + find(TaskType::Triage, TaskStatus::Queued);
+    let total_claimed = find(TaskType::Extraction, TaskStatus::Claimed)
+        + find(TaskType::Relation, TaskStatus::Claimed)
+        + find(TaskType::Triage, TaskStatus::Claimed);
+
+    assert_eq!(total_queued, 3, "3 tasks should remain queued");
+    assert_eq!(total_claimed, 1, "1 task should be claimed");
+}

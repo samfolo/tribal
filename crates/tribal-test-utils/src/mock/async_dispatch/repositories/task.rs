@@ -1,7 +1,7 @@
 //! Mock implementation of [`TaskRepository`].
 
 use chrono::{DateTime, Utc};
-use tribal_db::{NewTask, ReclaimOutcome, TaskRepository};
+use tribal_db::{NewTask, ReclaimOutcome, TaskRepository, TaskStatusCount};
 use tribal_domain::{JobId, Task, TaskErrorKind, TaskId, TaskStatus, TaskType};
 
 use super::mock_repository;
@@ -27,7 +27,9 @@ mock_repository! {
         count_siblings_by_status((JobId, TaskType, Vec<TaskStatus>, TaskId) => i64)
             (job_id: JobId, task_type: TaskType, statuses: &[TaskStatus], exclude_task_id: TaskId) { (job_id, task_type, statuses.to_vec(), exclude_task_id) };
         upsert(NewTask => u64)
-            (new_task: &NewTask) { new_task.clone() }
+            (new_task: &NewTask) { new_task.clone() };
+        count_by_status(() => Vec<TaskStatusCount>)
+            () { () }
     }
 }
 

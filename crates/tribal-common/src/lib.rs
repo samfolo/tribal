@@ -15,6 +15,16 @@ use rand::RngExt;
 use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
+// Pool names
+// ---------------------------------------------------------------------------
+
+/// Pool name for MCP read-path connections.
+pub const POOL_NAME_MCP: &str = "mcp";
+
+/// Pool name for worker write-path connections.
+pub const POOL_NAME_WORKER: &str = "worker";
+
+// ---------------------------------------------------------------------------
 // Numeric clamping
 // ---------------------------------------------------------------------------
 

@@ -4,7 +4,7 @@
 //! `set_global_default` is process-global and cannot be reset between
 //! inline unit tests.
 
-use tribal_config::{LogFormat, LoggingConfig};
+use tribal_config::{LogFormat, LoggingConfig, TelemetryConfig};
 use tribal_telemetry::TelemetryError;
 
 #[test]
@@ -13,12 +13,15 @@ fn test_init_subscriber_twice_returns_already_initialised() {
         format: LogFormat::Pretty,
         ..LoggingConfig::default()
     };
+    let telemetry = TelemetryConfig::default();
 
-    let _guard = tribal_telemetry::init_subscriber(&config).expect("first init should succeed");
+    let (_guard, _metrics) =
+        tribal_telemetry::init_subscriber(&config, &telemetry).expect("first init should succeed");
 
-    let result = tribal_telemetry::init_subscriber(&config);
+    let result = tribal_telemetry::init_subscriber(&config, &telemetry);
     assert!(
         matches!(result, Err(TelemetryError::SubscriberAlreadyInitialised)),
-        "second init should return SubscriberAlreadyInitialised, got {result:?}",
+        "second init should return SubscriberAlreadyInitialised, got {:?}",
+        result.err(),
     );
 }

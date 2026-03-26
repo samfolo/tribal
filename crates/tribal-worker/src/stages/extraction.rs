@@ -1,6 +1,6 @@
 //! Extraction stage: LLM-based candidate extraction from raw input.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use tokio::sync::Semaphore;
 use tracing::Instrument;
@@ -141,13 +141,17 @@ impl Worker {
             );
 
             let semaphore = self.extraction_semaphore();
+            let provider_key = self.extraction_key().to_string();
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let semaphore_start = Instant::now();
             let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
                 .await
                 .map_err(|_| StageError::SemaphoreTimeout {
-                    provider_key: format!("{:?}", self.extraction_key()),
+                    provider_key: provider_key.clone(),
                 })?
                 .expect(SEMAPHORE_CLOSED);
+            self.metrics()
+                .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
 
             let request = assemble_extraction_prompt(
                 system_pv.content(),
@@ -164,6 +168,7 @@ impl Worker {
                 );
             }
 
+            let provider_start = Instant::now();
             let response = self
                 .extraction_provider()
                 .complete(request)
@@ -172,6 +177,13 @@ impl Worker {
                     context: "extraction LLM call".into(),
                     source: e,
                 })?;
+            let identity = self.extraction_provider().identity();
+            self.metrics().record_provider_call(
+                &identity.name,
+                &identity.model,
+                "extraction",
+                provider_start.elapsed(),
+            );
 
             if include_llm_content {
                 tracing::debug!(

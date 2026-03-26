@@ -14,6 +14,7 @@ use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
 use tribal_domain::{GitRemote, ProjectId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
+use tribal_telemetry::MetricsRecorder;
 use typed_builder::TypedBuilder;
 
 use crate::{server_handler::ActivePromptVersions, session::SessionProject};
@@ -128,6 +129,10 @@ pub struct AppState {
     /// task evicts stale entries based on TTL thresholds.
     pub(crate) job_state_txs: JobStateTxs,
 
+    // -- Observability -------------------------------------------------------
+    /// Telemetry metric instruments.
+    pub(crate) metrics: Arc<dyn MetricsRecorder>,
+
     // -- Session -------------------------------------------------------------
     /// Resolved project context from the startup cascade, if any.
     #[builder(default, setter(strip_option))]
@@ -139,6 +144,18 @@ impl AppState {
     #[must_use]
     pub fn mcp_pool(&self) -> &PgPool {
         &self.pool_mcp
+    }
+
+    /// Returns a reference to the worker write-path connection pool.
+    #[must_use]
+    pub fn worker_pool(&self) -> &PgPool {
+        &self.pool_worker
+    }
+
+    /// Returns a reference to the telemetry metric instruments.
+    #[must_use]
+    pub fn metrics(&self) -> &dyn MetricsRecorder {
+        &self.metrics
     }
 
     /// Returns the project resolved during startup, if any.

@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::TribalConfig;
 use tribal_mcp::AppState;
+use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
 use tribal_worker::{Worker, WorkerError};
 
 use crate::{
@@ -54,6 +55,11 @@ pub struct ServerHandle {
     cancellation_token: CancellationToken,
     /// Shutdown deadline from configuration.
     shutdown_deadline: Duration,
+    /// Telemetry guard — holds OTLP provider shutdown handles and the
+    /// log writer flush guard.  Dropped during [`shutdown`](Self::shutdown),
+    /// after the worker has stopped.  `None` when telemetry is
+    /// initialised externally.
+    telemetry_guard: Option<TelemetryGuard>,
 }
 
 impl ServerHandle {
@@ -95,12 +101,11 @@ impl ServerHandle {
     pub fn shutdown(mut self) -> Result<(), AppError> {
         self.cancellation_token.cancel();
 
+        let deadline = self.shutdown_deadline;
+        let worker_handle = self.worker_handle;
         let deadline_exceeded = self
             .worker_rt
-            .block_on(tokio::time::timeout(
-                self.shutdown_deadline,
-                self.worker_handle,
-            ))
+            .block_on(async { tokio::time::timeout(deadline, worker_handle).await })
             .is_err();
 
         if deadline_exceeded {
@@ -117,6 +122,21 @@ impl ServerHandle {
         let worker_died = matches!(self.death_rx.try_recv(), Ok(()));
 
         drop(self.worker_rt);
+
+        // Flush OTLP providers on the main runtime — the tonic gRPC
+        // channel needs the reactor to send final batches.
+        self.main_rt.block_on(async {
+            drop(self.telemetry_guard);
+        });
+
+        // Explicitly shut down main_rt with a bounded deadline rather
+        // than relying on the implicit `Drop`.  `Runtime::drop` blocks
+        // until all spawned blocking threads finish, which hangs
+        // indefinitely when a transport uses a blocking stdin reader
+        // (the `read()` syscall never returns once the client
+        // disconnects).  For HTTP/SSE transports this completes
+        // instantly since no blocking threads outlive the transport.
+        self.main_rt.shutdown_timeout(self.shutdown_deadline);
 
         tracing::info!(worker_died, deadline_exceeded, "shutdown complete");
 
@@ -140,9 +160,11 @@ impl ServerHandle {
 
 /// Starts the Tribal server with full bootstrap, worker startup, and sweep.
 ///
-/// Accepts a pre-loaded and validated [`TribalConfig`] and a
-/// [`CancellationToken`] for external shutdown control.  Does not initialise
-/// telemetry — callers are responsible for tracing subscriber setup.
+/// Accepts a pre-loaded and validated [`TribalConfig`], a
+/// [`CancellationToken`] for external shutdown control, and a
+/// pre-initialised telemetry guard and metrics recorder.
+/// [`ServerHandle`] holds the guard so it outlives the runtimes
+/// and flushes OTLP data on shutdown.
 ///
 /// Returns a [`ServerHandle`] providing access to the running server's state
 /// and shutdown mechanism.
@@ -155,13 +177,15 @@ impl ServerHandle {
 ///
 /// # Errors
 ///
-/// Returns [`AppError`] if runtime creation, database connection, migration,
-/// provider setup, prompt loading, project resolution, or worker startup
-/// fails.
+/// Returns [`AppError`] if runtime creation, telemetry initialisation,
+/// database connection, migration, provider setup, prompt loading,
+/// project resolution, or worker startup fails.
 pub fn start_server(
     config: &TribalConfig,
     cli_project: Option<String>,
     cancellation_token: CancellationToken,
+    telemetry_guard: Option<TelemetryGuard>,
+    metrics: Arc<dyn MetricsRecorder>,
 ) -> Result<ServerHandle, AppError> {
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
@@ -173,24 +197,40 @@ pub fn start_server(
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    let (state, worker) = main_rt.block_on(bootstrap(
+    let (state, worker) = match main_rt.block_on(bootstrap(
         config,
         cli_project,
         cancellation_token.clone(),
         Arc::clone(&job_state_txs),
-    ))?;
+        metrics.clone(),
+    )) {
+        Ok(result) => result,
+        Err(e) => {
+            // Flush OTLP providers on the runtime before returning —
+            // dropping outside the runtime silently loses pending spans.
+            main_rt.block_on(async { drop(telemetry_guard) });
+            return Err(e);
+        }
+    };
 
     // -- Worker runtime ------------------------------------------------------
 
-    let worker_rt = Builder::new_multi_thread()
+    let worker_rt = match Builder::new_multi_thread()
         .thread_name("tribal-worker")
         .enable_all()
         .build()
-        .map_err(|source| AppError::WorkerRuntime { source })?;
+    {
+        Ok(rt) => rt,
+        Err(source) => {
+            main_rt.block_on(async { drop(telemetry_guard) });
+            return Err(AppError::WorkerRuntime { source });
+        }
+    };
 
-    worker_rt
-        .block_on(worker.startup())
-        .map_err(|source| AppError::WorkerStartup { source })?;
+    if let Err(source) = worker_rt.block_on(worker.startup()) {
+        main_rt.block_on(async { drop(telemetry_guard) });
+        return Err(AppError::WorkerStartup { source });
+    }
 
     let (death_tx, death_rx) = oneshot::channel::<()>();
 
@@ -231,6 +271,16 @@ pub fn start_server(
         cancellation_token.clone(),
     )));
 
+    // -- Queue health gauges -------------------------------------------------
+    // JoinHandle discarded — the gauge task is a monitoring optimisation,
+    // not a correctness mechanism.  If it panics, gauges stop updating
+    // but the worker continues normally; the DB remains authoritative.
+    drop(worker_rt.spawn(tribal_worker::run_queue_health_gauges(
+        state.worker_pool().clone(),
+        metrics,
+        cancellation_token.clone(),
+    )));
+
     Ok(ServerHandle {
         state,
         main_rt,
@@ -239,6 +289,7 @@ pub fn start_server(
         death_rx,
         cancellation_token,
         shutdown_deadline: Duration::from_millis(config.server.shutdown_deadline_ms),
+        telemetry_guard,
     })
 }
 
@@ -253,6 +304,7 @@ async fn bootstrap(
     cli_project: Option<String>,
     cancellation_token: CancellationToken,
     job_state_txs: JobStateTxs,
+    metrics: Arc<dyn MetricsRecorder>,
 ) -> Result<(Arc<AppState>, Arc<Worker>), AppError> {
     // -- Database pools ------------------------------------------------------
 
@@ -331,6 +383,7 @@ async fn bootstrap(
         config.logging.include_llm_content,
         instance_id.to_string(),
         Arc::clone(&job_state_txs),
+        metrics.clone(),
     ));
 
     // -- AppState assembly ---------------------------------------------------
@@ -352,7 +405,8 @@ async fn bootstrap(
         .worker_config(config.worker.clone())
         .server_config(Arc::new(config.server.clone()))
         .cancellation_token(cancellation_token)
-        .job_state_txs(job_state_txs);
+        .job_state_txs(job_state_txs)
+        .metrics(metrics);
 
     let state = Arc::new(match resolved_project {
         Some(project) => base.resolved_project(project).build(),

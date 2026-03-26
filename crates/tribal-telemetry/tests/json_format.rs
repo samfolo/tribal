@@ -4,7 +4,7 @@
 //! This test lives in `tests/` (separate binary) because it installs a
 //! global subscriber.
 
-use tribal_config::{LogFormat, LogOutput, LoggingConfig};
+use tribal_config::{LogFormat, LogOutput, LoggingConfig, TelemetryConfig};
 
 #[test]
 fn test_json_format_produces_structured_output() {
@@ -18,7 +18,8 @@ fn test_json_format_produces_structured_output() {
         ..LoggingConfig::default()
     };
 
-    let guard = tribal_telemetry::init_subscriber(&config).expect("init should succeed");
+    let (guard, _metrics) = tribal_telemetry::init_subscriber(&config, &TelemetryConfig::default())
+        .expect("init should succeed");
 
     // Emit an event inside a span so we can verify span context is included.
     let span = tracing::info_span!("test_span");
