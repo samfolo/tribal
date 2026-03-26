@@ -163,6 +163,7 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_EXTRACTION, "committing transaction", e))?;
 
+            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
             #[allow(clippy::cast_precision_loss)]
             let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
                 .num_milliseconds() as f64;
@@ -170,6 +171,7 @@ impl Worker {
                 .record_task_completed(task.task_type().as_str(), duration_ms);
 
             if is_empty {
+                // chrono i64 milliseconds to f64 — precision loss negligible at this scale
                 #[allow(clippy::cast_precision_loss)]
                 let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
                 self.metrics()
@@ -293,6 +295,7 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
 
+            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
             #[allow(clippy::cast_precision_loss)]
             let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
                 .num_milliseconds() as f64;
@@ -397,6 +400,7 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "committing transaction", e))?;
 
+            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
             #[allow(clippy::cast_precision_loss)]
             let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
                 .num_milliseconds() as f64;
@@ -404,6 +408,7 @@ impl Worker {
                 .record_task_completed(task.task_type().as_str(), duration_ms);
 
             if let Some(outcome) = relation_outcome {
+                // chrono i64 milliseconds to f64 — precision loss negligible at this scale
                 #[allow(clippy::cast_precision_loss)]
                 let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
                 self.metrics()

@@ -682,6 +682,7 @@ impl TaskRepository for PgTaskRepository {
         let rows: Vec<(String, String, i64)> = sqlx::query_as(
             "SELECT task_type, status, COUNT(*) \
              FROM tasks \
+             WHERE status IN ('queued', 'claimed') \
              GROUP BY task_type, status",
         )
         .fetch_all(&mut *conn)

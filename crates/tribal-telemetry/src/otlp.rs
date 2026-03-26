@@ -58,16 +58,19 @@ pub(crate) fn build_tracer_provider(
         }
     };
 
-    let resource = Resource::builder()
-        .with_attribute(KeyValue::new(SERVICE_NAME, config.service_name.clone()))
-        .build();
-
     let provider = SdkTracerProvider::builder()
-        .with_resource(resource)
+        .with_resource(build_resource(config))
         .with_batch_exporter(exporter)
         .build();
 
     Ok(provider)
+}
+
+/// Builds the shared OTLP resource with `service.name`.
+fn build_resource(config: &TelemetryConfig) -> Resource {
+    Resource::builder()
+        .with_attribute(KeyValue::new(SERVICE_NAME, config.service_name.clone()))
+        .build()
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +115,10 @@ pub(crate) fn build_meter_provider(
 
     let reader = PeriodicReader::builder(exporter).build();
 
-    let provider = SdkMeterProvider::builder().with_reader(reader).build();
+    let provider = SdkMeterProvider::builder()
+        .with_resource(build_resource(config))
+        .with_reader(reader)
+        .build();
 
     Ok(provider)
 }
