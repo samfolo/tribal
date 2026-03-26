@@ -37,11 +37,31 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let config = load_config(config_path, Some(cli_overrides), None)?;
     validate(&config)?;
 
+    // Telemetry init needs a reactor context for the OTLP gRPC exporter.
+    // A short-lived runtime satisfies tonic's requirement without
+    // entangling the guard's lifetime with the main runtime.  The guard
+    // is passed to start_server and held in ServerHandle for shutdown.
+    let (telemetry_guard, metrics) = {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|source| AppError::Runtime { source })?;
+        rt.block_on(async {
+            tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)
+        })?
+    };
+
     let cancellation_token = CancellationToken::new();
 
     let transport = config.server.transport;
 
-    let handle = orchestration::start_server(&config, cli_project, cancellation_token.clone())?;
+    let handle = orchestration::start_server(
+        &config,
+        cli_project,
+        cancellation_token.clone(),
+        Some(telemetry_guard),
+        metrics,
+    )?;
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 

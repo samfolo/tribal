@@ -57,8 +57,9 @@ pub struct ServerHandle {
     shutdown_deadline: Duration,
     /// Telemetry guard — holds OTLP provider shutdown handles and the
     /// log writer flush guard.  Dropped during [`shutdown`](Self::shutdown),
-    /// after the worker has stopped.
-    telemetry_guard: TelemetryGuard,
+    /// after the worker has stopped.  `None` when telemetry is
+    /// initialised externally.
+    telemetry_guard: Option<TelemetryGuard>,
 }
 
 impl ServerHandle {
@@ -182,6 +183,8 @@ pub fn start_server(
     config: &TribalConfig,
     cli_project: Option<String>,
     cancellation_token: CancellationToken,
+    telemetry_guard: Option<TelemetryGuard>,
+    metrics: Arc<dyn MetricsRecorder>,
 ) -> Result<ServerHandle, AppError> {
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
@@ -192,16 +195,6 @@ pub fn start_server(
         .enable_all()
         .build()
         .map_err(|source| AppError::Runtime { source })?;
-
-    // -- Telemetry -----------------------------------------------------------
-    // Initialised on the main runtime because the OTLP gRPC exporter
-    // (tonic) requires a reactor context at init time.  The guard is
-    // held in ServerHandle so it outlives block_on and flushes on
-    // shutdown.
-
-    let (telemetry_guard, metrics) = main_rt.block_on(async {
-        tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)
-    })?;
 
     let (state, worker) = main_rt.block_on(bootstrap(
         config,
