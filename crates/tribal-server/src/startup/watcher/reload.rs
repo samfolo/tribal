@@ -34,10 +34,11 @@ pub(crate) const VALIDATION_MISSING_REFERENCE: &str =
 ///
 /// Three checks:
 /// 1. Non-empty content.
-/// 2. Every variable provided by the production context builder appears
-///    in the template source (prevents silently dropping required inputs).
-/// 3. Successful Tera render (catches syntax errors, unknown variables,
-///    and type mismatches in nested access paths).
+/// 2. Successful Tera render against the full synthetic context (catches
+///    syntax errors, unknown variables, and type mismatches).
+/// 3. For each top-level context variable, render with that variable
+///    removed — if the render still succeeds, the template does not
+///    actually reference it (prevents silently dropping required inputs).
 ///
 /// The required variable set is derived from the synthetic context's
 /// keys — the same builders production uses — so it is self-maintaining.
@@ -52,13 +53,15 @@ pub(crate) fn validate_prompt_template(
 
     let tera_ctx = synthetic_validation_context(stage, role);
 
-    for key in context_keys(&tera_ctx) {
-        if !content.contains(&key) {
-            return Err(format!("{VALIDATION_MISSING_REFERENCE}: {key}"));
-        }
-    }
-
     let Err(error) = tera::Tera::one_off(content, &tera_ctx, false) else {
+        // Full render succeeded. Now verify every required variable is
+        // actually referenced by rendering with each key removed in turn.
+        for key in context_keys(&tera_ctx) {
+            let reduced = context_without_key(&tera_ctx, &key);
+            if tera::Tera::one_off(content, &reduced, false).is_ok() {
+                return Err(format!("{VALIDATION_MISSING_REFERENCE}: {key}"));
+            }
+        }
         return Ok(());
     };
 
@@ -72,6 +75,15 @@ fn context_keys(ctx: &tera::Context) -> Vec<String> {
         serde_json::Value::Object(map) => map.keys().cloned().collect(),
         _ => vec![],
     }
+}
+
+/// Returns a copy of the context with one top-level key removed.
+fn context_without_key(ctx: &tera::Context, key: &str) -> tera::Context {
+    let mut json = ctx.clone().into_json();
+    if let serde_json::Value::Object(ref mut map) = json {
+        map.remove(key);
+    }
+    tera::Context::from_value(json).expect("reduced context is valid JSON")
 }
 
 // ---------------------------------------------------------------------------
@@ -224,33 +236,79 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_syntax_error() {
+        // Includes the required variable so the reference check passes;
+        // the Tera parser rejects the unclosed block.
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::System,
-            "{% if true %}unclosed",
+            "{{ schema }} {% if true %}unclosed",
         );
-        assert!(result.is_err());
-        assert_ne!(result.unwrap_err(), VALIDATION_EMPTY_CONTENT);
+        let err = result.unwrap_err();
+        assert_ne!(err, VALIDATION_EMPTY_CONTENT);
+        assert!(
+            !err.starts_with(VALIDATION_MISSING_REFERENCE),
+            "should be a Tera parse error, not a reference error: {err}",
+        );
     }
 
     #[test]
     fn test_validate_prompt_template_rejects_unknown_variable() {
+        // Includes the required variable so the reference check passes;
+        // Tera rejects the unknown variable during render.
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::System,
-            "{{ nonexistent }}",
+            "{{ schema }} {{ nonexistent }}",
         );
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            !err.starts_with(VALIDATION_MISSING_REFERENCE),
+            "should be a Tera render error, not a reference error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_validate_prompt_template_rejects_comment_only_reference() {
+        let result = validate_prompt_template(
+            PromptStage::Extraction,
+            PromptRole::User,
+            "{# raw_input #}\n{{ tags }}",
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("raw_input"),
+            "should reject comment-only reference: {err}",
+        );
+    }
+
+    #[test]
+    fn test_validate_prompt_template_rejects_prose_only_reference() {
+        let result = validate_prompt_template(
+            PromptStage::Triage,
+            PromptRole::User,
+            "Consider the candidate carefully.\n{{ similar_items }} {{ tags }}",
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("candidate"),
+            "should reject prose-only reference: {err}",
+        );
     }
 
     #[test]
     fn test_validate_prompt_template_rejects_misspelled_nested_path() {
+        // Includes all required top-level variables so the reference
+        // check passes; Tera rejects the invalid nested path.
         let result = validate_prompt_template(
             PromptStage::Triage,
             PromptRole::User,
-            "{{ candidate.nmae }}",
+            "{{ candidate.nmae }} {{ similar_items }} {{ tags }}",
         );
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            !err.starts_with(VALIDATION_MISSING_REFERENCE),
+            "should be a Tera render error, not a reference error: {err}",
+        );
     }
 
     // -- reload_single_prompt -----------------------------------------------
@@ -375,7 +433,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reload_only_affects_targeted_prompt() {
+    async fn test_reload_updates_and_is_idempotent() {
         let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
 
         let target = PromptTemplateLocation::from((PromptStage::Relation, PromptRole::User));
