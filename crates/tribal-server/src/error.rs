@@ -113,6 +113,16 @@ pub enum AppError {
         source: io::Error,
     },
 
+    /// Prompt file watcher initialisation failed.
+    #[error("prompt watcher failed: {context}")]
+    PromptWatcher {
+        /// Description of the failed operation.
+        context: String,
+        /// The underlying notify error.
+        #[source]
+        source: notify::Error,
+    },
+
     /// Prompt loading or upsert failed.
     #[error("prompt loading failed: {context}")]
     PromptLoading {

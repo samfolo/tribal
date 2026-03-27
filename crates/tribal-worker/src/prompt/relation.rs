@@ -68,14 +68,26 @@ pub(crate) struct SimilarItemDecisionContext {
 }
 
 // ---------------------------------------------------------------------------
+// Context builders
+// ---------------------------------------------------------------------------
+
+/// Builds the user prompt context for the relation stage.
+///
+/// Both the production assembly and the hot-reload validator call this,
+/// so adding a variable here is automatically reflected in both paths.
+pub(crate) fn relation_user_context(context: &RelationPromptContext<'_>) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    ctx.insert(VAR_CANDIDATES, &context.candidates);
+    ctx.insert(VAR_RELATION_HINTS, context.relation_hints);
+    ctx.insert(VAR_SIMILAR_ITEM_DECISIONS, context.similar_item_decisions);
+    ctx
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Assembles a [`CompletionRequest`] for the relation stage.
-///
-/// Renders the system template with [`VAR_SCHEMA`] only, and the user
-/// template with [`VAR_CANDIDATES`], [`VAR_RELATION_HINTS`], and
-/// [`VAR_SIMILAR_ITEM_DECISIONS`].
 ///
 /// # Errors
 ///
@@ -92,9 +104,7 @@ pub(crate) fn assemble_relation_prompt(
     let schema_pretty =
         serde_json::to_string_pretty(&schema).expect("schema_for! produces serialisable output");
 
-    // System context: schema only.
-    let mut system_ctx = tera::Context::new();
-    system_ctx.insert(VAR_SCHEMA, &schema_pretty);
+    let system_ctx = super::variables::system_context(&schema_pretty);
 
     let rendered_system =
         tera::Tera::one_off(system_template, &system_ctx, false).map_err(|e| {
@@ -104,11 +114,7 @@ pub(crate) fn assemble_relation_prompt(
             }
         })?;
 
-    // User context: candidates, relation hints, similar item decisions.
-    let mut user_ctx = tera::Context::new();
-    user_ctx.insert(VAR_CANDIDATES, &context.candidates);
-    user_ctx.insert(VAR_RELATION_HINTS, &context.relation_hints);
-    user_ctx.insert(VAR_SIMILAR_ITEM_DECISIONS, &context.similar_item_decisions);
+    let user_ctx = relation_user_context(context);
 
     let rendered_user = tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
         StageError::TemplateRender {

@@ -163,4 +163,10 @@ impl AppState {
     pub fn resolved_project(&self) -> Option<&ResolvedProject> {
         self.resolved_project.as_ref()
     }
+
+    /// Returns a reference to the shared active prompt versions lock.
+    #[must_use]
+    pub fn active_prompt_versions(&self) -> &Arc<RwLock<ActivePromptVersions>> {
+        &self.active_prompt_versions
+    }
 }

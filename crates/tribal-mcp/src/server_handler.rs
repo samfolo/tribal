@@ -140,6 +140,33 @@ impl ActivePromptVersions {
             relation_user_prompt_version_id: relation_user,
         }
     }
+
+    /// Updates the active version ID for a single (stage, role) pair.
+    ///
+    /// Exclusive access is enforced by the `&mut self` receiver — in
+    /// practice this means the caller holds the `RwLock` write guard.
+    pub fn set_version(&mut self, stage: PromptStage, role: PromptRole, id: PromptVersionId) {
+        match (stage, role) {
+            (PromptStage::Extraction, PromptRole::System) => {
+                self.extraction_system_prompt_version_id = id;
+            }
+            (PromptStage::Extraction, PromptRole::User) => {
+                self.extraction_user_prompt_version_id = id;
+            }
+            (PromptStage::Triage, PromptRole::System) => {
+                self.triage_system_prompt_version_id = id;
+            }
+            (PromptStage::Triage, PromptRole::User) => {
+                self.triage_user_prompt_version_id = id;
+            }
+            (PromptStage::Relation, PromptRole::System) => {
+                self.relation_system_prompt_version_id = id;
+            }
+            (PromptStage::Relation, PromptRole::User) => {
+                self.relation_user_prompt_version_id = id;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
