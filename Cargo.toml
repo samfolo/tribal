@@ -108,6 +108,10 @@ futures = "0.3"
 # Macro utilities
 pastey = "0.2"
 
+# File watching
+notify = "8"
+notify-debouncer-mini = "0.7"
+
 # Configuration
 figment = { version = "0.10", features = ["yaml", "env"] }
 shellexpand = "3"
