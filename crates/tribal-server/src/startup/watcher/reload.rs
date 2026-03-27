@@ -58,7 +58,7 @@ pub(crate) fn validate_prompt_template(
 /// Reads, validates, hashes, upserts, and swaps a single prompt version.
 ///
 /// All errors are logged and swallowed — the watcher never crashes.
-pub(super) async fn reload_single_prompt(
+pub(crate) async fn reload_single_prompt(
     location: PromptTemplateLocation,
     file_path: &Path,
     pool: &PgPool,

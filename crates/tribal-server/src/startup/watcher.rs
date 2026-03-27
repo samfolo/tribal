@@ -9,6 +9,7 @@ mod init;
 mod reload;
 
 pub(crate) use init::init_prompt_watcher;
+pub(crate) use reload::reload_single_prompt;
 
 // ---------------------------------------------------------------------------
 // Constants (shared across submodules)
