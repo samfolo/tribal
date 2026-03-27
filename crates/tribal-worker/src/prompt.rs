@@ -3,10 +3,13 @@
 mod extraction;
 mod relation;
 mod triage;
+mod validation;
 pub(crate) mod variables;
 
-pub(crate) use extraction::assemble_extraction_prompt;
+pub(crate) use extraction::{assemble_extraction_prompt, extraction_user_context};
 pub(crate) use relation::{
     CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext, assemble_relation_prompt,
+    relation_user_context,
 };
-pub(crate) use triage::{SimilarItemContext, assemble_triage_prompt};
+pub(crate) use triage::{SimilarItemContext, assemble_triage_prompt, triage_user_context};
+pub use validation::synthetic_validation_context;

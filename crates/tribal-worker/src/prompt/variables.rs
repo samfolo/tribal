@@ -1,4 +1,4 @@
-//! Tera context variable names used across prompt templates.
+//! Tera context variable names and shared context builders.
 
 /// Tera context variable: the candidate object.
 pub(crate) const VAR_CANDIDATE: &str = "candidate";
@@ -23,3 +23,18 @@ pub(crate) const VAR_RELATION_HINTS: &str = "relation_hints";
 
 /// Tera context variable: similar item decisions from triage.
 pub(crate) const VAR_SIMILAR_ITEM_DECISIONS: &str = "similar_item_decisions";
+
+// ---------------------------------------------------------------------------
+// Shared context builder
+// ---------------------------------------------------------------------------
+
+/// Builds the system prompt context (shared by all stages).
+///
+/// Both the production `assemble_*_prompt` functions and the hot-reload
+/// validator call this, so adding a variable here is automatically
+/// reflected in both paths.
+pub(crate) fn system_context(schema: &str) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    ctx.insert(VAR_SCHEMA, schema);
+    ctx
+}
