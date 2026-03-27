@@ -73,7 +73,7 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
             let outcome = CandidateOutcome {
                 batch_index: 0,
                 candidate: &candidate,
-                outcome: "novel".to_owned(),
+                outcome: "created".to_owned(),
                 item_id: Some(KnowledgeItemId::new()),
             };
 

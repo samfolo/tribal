@@ -22,17 +22,25 @@ use crate::startup::PromptTemplateLocation;
 // ---------------------------------------------------------------------------
 
 pub(crate) const VALIDATION_EMPTY_CONTENT: &str = "prompt content must not be empty";
+pub(crate) const VALIDATION_MISSING_REFERENCE: &str =
+    "prompt content does not reference required variable";
 
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 
 /// Validates that a prompt template can render against the production
-/// context shape.
+/// context shape and references all required variables.
 ///
-/// Delegates to the same context builders that the production
-/// `assemble_*_prompt` functions use, via
-/// [`tribal_worker::synthetic_validation_context`].
+/// Three checks:
+/// 1. Non-empty content.
+/// 2. Every variable provided by the production context builder appears
+///    in the template source (prevents silently dropping required inputs).
+/// 3. Successful Tera render (catches syntax errors, unknown variables,
+///    and type mismatches in nested access paths).
+///
+/// The required variable set is derived from the synthetic context's
+/// keys — the same builders production uses — so it is self-maintaining.
 pub(crate) fn validate_prompt_template(
     stage: PromptStage,
     role: PromptRole,
@@ -44,11 +52,26 @@ pub(crate) fn validate_prompt_template(
 
     let tera_ctx = synthetic_validation_context(stage, role);
 
+    for key in context_keys(&tera_ctx) {
+        if !content.contains(&key) {
+            return Err(format!("{VALIDATION_MISSING_REFERENCE}: {key}"));
+        }
+    }
+
     let Err(error) = tera::Tera::one_off(content, &tera_ctx, false) else {
         return Ok(());
     };
 
     Err(error.to_string())
+}
+
+/// Extracts the top-level variable names from a Tera context.
+fn context_keys(ctx: &tera::Context) -> Vec<String> {
+    let json = ctx.clone().into_json();
+    match json {
+        serde_json::Value::Object(map) => map.keys().cloned().collect(),
+        _ => vec![],
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +189,37 @@ mod tests {
         let result =
             validate_prompt_template(PromptStage::Extraction, PromptRole::System, "   \n\t  ");
         assert_eq!(result.unwrap_err(), VALIDATION_EMPTY_CONTENT);
+    }
+
+    #[test]
+    fn test_validate_prompt_template_rejects_dropped_required_variable() {
+        let result = validate_prompt_template(
+            PromptStage::Extraction,
+            PromptRole::User,
+            "Static text with no variable references",
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.starts_with(VALIDATION_MISSING_REFERENCE),
+            "expected missing reference error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn test_validate_prompt_template_rejects_partial_variable_drop() {
+        // Uses schema but drops raw_input — should fail for extraction/user.
+        let result = validate_prompt_template(
+            PromptStage::Extraction,
+            PromptRole::User,
+            "{{ tags }} but no raw input reference",
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("raw_input"),
+            "error should name the missing variable, got: {err}",
+        );
     }
 
     #[test]
