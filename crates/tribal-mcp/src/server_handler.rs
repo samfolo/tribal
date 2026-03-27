@@ -674,4 +674,24 @@ mod tests {
             "error message must contain the expected constant",
         );
     }
+
+    // -- set_version --------------------------------------------------------
+
+    #[test]
+    fn test_set_version_updates_correct_field() {
+        let original = PromptVersionId::new();
+        let mut versions = ActivePromptVersions::new(
+            original, original, original, original, original, original,
+        );
+
+        let new_id = PromptVersionId::new();
+        versions.set_version(PromptStage::Triage, PromptRole::User, new_id);
+
+        assert_eq!(versions.extraction_system_prompt_version_id, original);
+        assert_eq!(versions.extraction_user_prompt_version_id, original);
+        assert_eq!(versions.triage_system_prompt_version_id, original);
+        assert_eq!(versions.triage_user_prompt_version_id, new_id);
+        assert_eq!(versions.relation_system_prompt_version_id, original);
+        assert_eq!(versions.relation_user_prompt_version_id, original);
+    }
 }
