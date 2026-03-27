@@ -11,6 +11,7 @@ mod migration;
 mod project;
 mod prompts;
 mod providers;
+mod watcher;
 
 pub(crate) use constants::{POOL_NAME_MCP, POOL_NAME_WORKER};
 pub(crate) use database::create_pool_with_retry;
@@ -21,3 +22,4 @@ pub(crate) use prompts::{PromptTemplateLocation, ensure_prompt_files, load_promp
 pub(crate) use providers::{
     build_embedding_provider, build_inference_provider, build_provider_registry,
 };
+pub(crate) use watcher::init_prompt_watcher;

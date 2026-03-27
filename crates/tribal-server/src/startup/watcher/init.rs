@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use notify::Watcher;
 use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 use sqlx::PgPool;
 use tokio::sync::RwLock;

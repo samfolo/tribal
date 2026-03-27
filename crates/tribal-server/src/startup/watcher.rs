@@ -9,7 +9,6 @@ mod init;
 mod reload;
 
 pub(crate) use init::init_prompt_watcher;
-pub(crate) use reload::{VALIDATION_EMPTY_CONTENT, validate_prompt_template};
 
 // ---------------------------------------------------------------------------
 // Constants (shared across submodules)

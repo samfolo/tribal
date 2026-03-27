@@ -26,7 +26,7 @@ use crate::{
     startup::{
         POOL_NAME_MCP, POOL_NAME_WORKER, build_embedding_provider, build_inference_provider,
         build_provider_registry, check_first_run, create_pool_with_retry, ensure_prompt_files,
-        generate_instance_id, load_prompts, resolve_project, run_migrations,
+        generate_instance_id, init_prompt_watcher, load_prompts, resolve_project, run_migrations,
     },
 };
 
@@ -280,6 +280,21 @@ pub fn start_server(
         metrics,
         cancellation_token.clone(),
     )));
+
+    // -- Prompt hot-reload watcher -------------------------------------------
+    // JoinHandle discarded — the watcher is a convenience feature, not
+    // a correctness mechanism.  If it panics, prompts remain at the last
+    // loaded version until the process restarts.
+    if config.prompts.hot_reload {
+        let prompts_dir = expand_prompts_dir(&config.prompts.directory);
+        let watcher_future = init_prompt_watcher(
+            prompts_dir,
+            state.mcp_pool().clone(),
+            state.active_prompt_versions().clone(),
+            cancellation_token.clone(),
+        )?;
+        drop(main_rt.spawn(watcher_future));
+    }
 
     Ok(ServerHandle {
         state,
