@@ -9,7 +9,7 @@ use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 use crate::{
     error::StageError,
     parsing::TriageClassification,
-    prompt::variables::{VAR_CANDIDATE, VAR_SCHEMA, VAR_SIMILAR_ITEMS, VAR_TAGS},
+    prompt::variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS},
 };
 
 // ---------------------------------------------------------------------------

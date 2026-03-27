@@ -7,7 +7,7 @@ use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 use crate::{
     error::StageError,
     parsing::ExtractionOutput,
-    prompt::variables::{VAR_RAW_INPUT, VAR_SCHEMA, VAR_TAGS},
+    prompt::variables::{VAR_RAW_INPUT, VAR_TAGS},
 };
 
 // ---------------------------------------------------------------------------

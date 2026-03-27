@@ -19,7 +19,7 @@ use tribal_db::{
     RelationRepository, RetrievalFeedbackRepository, StandingRepository, TaskRepository,
     TriageResultRepository,
 };
-use tribal_domain::{PromptVersionId, is_authorised};
+use tribal_domain::{PromptRole, PromptStage, PromptVersionId, is_authorised};
 
 use crate::{
     app_state::AppState,
