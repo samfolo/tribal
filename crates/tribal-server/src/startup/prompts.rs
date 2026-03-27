@@ -4,7 +4,9 @@
 //! On first run, prompt files are written to disk from embedded defaults.
 //! On every startup, files are read, hashed, and upserted into the database.
 
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use sqlx::PgPool;
 use tribal_common::sha256_hex;
@@ -26,9 +28,9 @@ const TRIAGE_USER: &str = include_str!("../../../../prompts/triage/user.tera");
 const RELATION_SYSTEM: &str = include_str!("../../../../prompts/relation/system.tera");
 const RELATION_USER: &str = include_str!("../../../../prompts/relation/user.tera");
 
-/// Returns the embedded default content for a given stage and role.
-fn embedded_default(stage: PromptStage, role: PromptRole) -> &'static str {
-    match (stage, role) {
+/// Returns the embedded default content for a given location.
+fn embedded_default(location: PromptTemplateLocation) -> &'static str {
+    match (location.stage, location.role) {
         (PromptStage::Extraction, PromptRole::System) => EXTRACTION_SYSTEM,
         (PromptStage::Extraction, PromptRole::User) => EXTRACTION_USER,
         (PromptStage::Triage, PromptRole::System) => TRIAGE_SYSTEM,
@@ -39,24 +41,83 @@ fn embedded_default(stage: PromptStage, role: PromptRole) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Stage/role iteration
+// PromptTemplateLocation
 // ---------------------------------------------------------------------------
 
-/// All (stage, role) pairs in canonical order.
-const PROMPT_PAIRS: [(PromptStage, PromptRole); 6] = [
-    (PromptStage::Extraction, PromptRole::System),
-    (PromptStage::Extraction, PromptRole::User),
-    (PromptStage::Triage, PromptRole::System),
-    (PromptStage::Triage, PromptRole::User),
-    (PromptStage::Relation, PromptRole::System),
-    (PromptStage::Relation, PromptRole::User),
-];
-
-// ---------------------------------------------------------------------------
-// Expect messages
-// ---------------------------------------------------------------------------
+/// File extension used for prompt template files.
+const PROMPT_FILE_EXTENSION: &str = "tera";
 
 const EXPECT_VERSION: &str = "all prompt pairs must be loaded";
+
+/// A prompt template identified by its pipeline stage and role.
+///
+/// Encapsulates the mapping from (stage, role) to filesystem path,
+/// providing a single source of truth for the directory layout and
+/// file extension convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PromptTemplateLocation {
+    stage: PromptStage,
+    role: PromptRole,
+}
+
+impl PromptTemplateLocation {
+    /// All (stage, role) pairs in canonical order.
+    pub(crate) const ALL: [Self; 6] = [
+        Self { stage: PromptStage::Extraction, role: PromptRole::System },
+        Self { stage: PromptStage::Extraction, role: PromptRole::User },
+        Self { stage: PromptStage::Triage, role: PromptRole::System },
+        Self { stage: PromptStage::Triage, role: PromptRole::User },
+        Self { stage: PromptStage::Relation, role: PromptRole::System },
+        Self { stage: PromptStage::Relation, role: PromptRole::User },
+    ];
+
+    pub(crate) fn stage(self) -> PromptStage {
+        self.stage
+    }
+
+    pub(crate) fn role(self) -> PromptRole {
+        self.role
+    }
+
+    /// Resolves the full file path under the given prompts directory.
+    pub(crate) fn resolve(self, prompts_dir: &Path) -> PathBuf {
+        prompts_dir
+            .join(self.stage.as_str())
+            .join(format!("{}.{PROMPT_FILE_EXTENSION}", self.role.as_str()))
+    }
+
+    /// Attempts to parse a file path back into a location.
+    ///
+    /// Returns `None` for paths that do not match the expected layout
+    /// (including editor swap files and unrecognised stage/role names).
+    pub(crate) fn from_path(prompts_dir: &Path, path: &Path) -> Option<Self> {
+        let relative = path.strip_prefix(prompts_dir).ok()?;
+
+        if relative.extension()?.to_str()? != PROMPT_FILE_EXTENSION {
+            return None;
+        }
+
+        let role_str = relative.file_stem()?.to_str()?;
+        let stage_dir = relative.parent()?;
+        let stage_str = stage_dir.file_name()?.to_str()?;
+
+        // Reject nested paths: stage_dir must be a single component.
+        if stage_dir.parent()? != Path::new("") {
+            return None;
+        }
+
+        let stage = PromptStage::from_str(stage_str).ok()?;
+        let role = PromptRole::from_str(role_str).ok()?;
+
+        Some(Self { stage, role })
+    }
+}
+
+impl From<(PromptStage, PromptRole)> for PromptTemplateLocation {
+    fn from((stage, role): (PromptStage, PromptRole)) -> Self {
+        Self { stage, role }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -67,16 +128,17 @@ const EXPECT_VERSION: &str = "all prompt pairs must be loaded";
 /// Creates the stage subdirectories under `prompts_dir` if they do not
 /// exist.  Existing files are left untouched.
 pub(crate) async fn ensure_prompt_files(prompts_dir: &Path) -> Result<(), AppError> {
-    for (stage, role) in &PROMPT_PAIRS {
-        let stage_dir = prompts_dir.join(stage.as_str());
-        tokio::fs::create_dir_all(&stage_dir)
+    for location in &PromptTemplateLocation::ALL {
+        let file_path = location.resolve(prompts_dir);
+        let stage_dir = file_path.parent().expect("resolve always produces a parent");
+
+        tokio::fs::create_dir_all(stage_dir)
             .await
             .map_err(|source| AppError::PromptIo {
                 context: format!("create directory {}", stage_dir.display()),
                 source,
             })?;
 
-        let file_path = stage_dir.join(format!("{}.tera", role.as_str()));
         let exists =
             tokio::fs::try_exists(&file_path)
                 .await
@@ -85,7 +147,7 @@ pub(crate) async fn ensure_prompt_files(prompts_dir: &Path) -> Result<(), AppErr
                     source,
                 })?;
         if !exists {
-            let content = embedded_default(*stage, *role);
+            let content = embedded_default(*location);
             tokio::fs::write(&file_path, content)
                 .await
                 .map_err(|source| AppError::PromptIo {
@@ -115,12 +177,10 @@ pub(crate) async fn load_prompts(
         .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "prompt loading", e))?;
 
     let mut versions: HashMap<(PromptStage, PromptRole), PromptVersionId> =
-        HashMap::with_capacity(PROMPT_PAIRS.len());
+        HashMap::with_capacity(PromptTemplateLocation::ALL.len());
 
-    for (stage, role) in &PROMPT_PAIRS {
-        let file_path = prompts_dir
-            .join(stage.as_str())
-            .join(format!("{}.tera", role.as_str()));
+    for location in &PromptTemplateLocation::ALL {
+        let file_path = location.resolve(prompts_dir);
 
         let content = tokio::fs::read_to_string(&file_path)
             .await
@@ -130,10 +190,12 @@ pub(crate) async fn load_prompts(
             })?;
 
         let content_hash = sha256_hex(&content);
+        let stage = location.stage();
+        let role = location.role();
 
         let new = NewPromptVersion::builder()
-            .stage(*stage)
-            .role(*role)
+            .stage(stage)
+            .role(role)
             .content_hash(content_hash)
             .content(content)
             .build();
@@ -153,7 +215,7 @@ pub(crate) async fn load_prompts(
             "loaded prompt version",
         );
 
-        versions.insert((*stage, *role), version.id());
+        versions.insert((stage, role), version.id());
     }
 
     Ok(ActivePromptVersions::new(
@@ -190,23 +252,19 @@ mod tests {
 
     #[test]
     fn test_embedded_defaults_are_non_empty() {
-        for (stage, role) in &PROMPT_PAIRS {
-            let content = embedded_default(*stage, *role);
+        for location in &PromptTemplateLocation::ALL {
+            let content = embedded_default(*location);
             assert!(
                 !content.is_empty(),
-                "embedded default for {stage}/{role} is empty",
+                "embedded default for {}/{} is empty",
+                location.stage(),
+                location.role(),
             );
         }
     }
 
-    /// Verifies that `PROMPT_PAIRS` covers every combination of
-    /// `PromptStage` and `PromptRole`.
-    ///
-    /// The exhaustiveness of individual enums is enforced by the
-    /// `embedded_default` match, but this test ensures the array itself
-    /// contains no duplicates and has the expected cardinality (3 × 2 = 6).
     #[test]
-    fn test_prompt_pairs_exhaustiveness() {
+    fn test_all_covers_every_stage_role_combination() {
         let all_stages = [
             PromptStage::Extraction,
             PromptStage::Triage,
@@ -219,17 +277,83 @@ mod tests {
             .flat_map(|s| all_roles.iter().map(move |r| (*s, *r)))
             .collect();
 
-        let actual: HashSet<(PromptStage, PromptRole)> = PROMPT_PAIRS.iter().copied().collect();
+        let actual: HashSet<(PromptStage, PromptRole)> = PromptTemplateLocation::ALL
+            .iter()
+            .map(|l| (l.stage(), l.role()))
+            .collect();
 
         assert_eq!(
             actual, expected,
-            "PROMPT_PAIRS must cover all stage×role combinations"
+            "ALL must cover all stage×role combinations"
         );
         assert_eq!(
-            PROMPT_PAIRS.len(),
+            PromptTemplateLocation::ALL.len(),
             6,
-            "PROMPT_PAIRS must contain exactly 6 entries"
+            "ALL must contain exactly 6 entries"
         );
+    }
+
+    #[test]
+    fn test_from_path_is_inverse_of_resolve() {
+        let dir = Path::new("/prompts");
+        for location in &PromptTemplateLocation::ALL {
+            let path = location.resolve(dir);
+            let parsed = PromptTemplateLocation::from_path(dir, &path);
+            assert_eq!(
+                parsed,
+                Some(*location),
+                "from_path should invert resolve for {}/{}",
+                location.stage(),
+                location.role(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_path_ignores_swap_files() {
+        let dir = Path::new("/prompts");
+        let cases = [
+            "extraction/system.tera.swp",
+            "extraction/.system.tera.swp",
+            "extraction/system.tera~",
+            "extraction/system.tmp",
+            "extraction/#system.tera#",
+        ];
+        for case in &cases {
+            let path = dir.join(case);
+            assert!(
+                PromptTemplateLocation::from_path(dir, &path).is_none(),
+                "should ignore {case}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_path_ignores_invalid_stage() {
+        let dir = Path::new("/prompts");
+        let path = dir.join("unknown/system.tera");
+        assert!(PromptTemplateLocation::from_path(dir, &path).is_none());
+    }
+
+    #[test]
+    fn test_from_path_ignores_invalid_role() {
+        let dir = Path::new("/prompts");
+        let path = dir.join("extraction/unknown.tera");
+        assert!(PromptTemplateLocation::from_path(dir, &path).is_none());
+    }
+
+    #[test]
+    fn test_from_path_ignores_shallow_path() {
+        let dir = Path::new("/prompts");
+        let path = dir.join("system.tera");
+        assert!(PromptTemplateLocation::from_path(dir, &path).is_none());
+    }
+
+    #[test]
+    fn test_from_path_ignores_deep_path() {
+        let dir = Path::new("/prompts");
+        let path = dir.join("extraction/nested/system.tera");
+        assert!(PromptTemplateLocation::from_path(dir, &path).is_none());
     }
 
     #[tokio::test]
@@ -241,16 +365,23 @@ mod tests {
             .await
             .expect("should write defaults");
 
-        for (stage, role) in &PROMPT_PAIRS {
-            let file_path = prompts_dir
-                .join(stage.as_str())
-                .join(format!("{}.tera", role.as_str()));
-
-            assert!(file_path.exists(), "expected {stage}/{role}.tera to exist");
+        for location in &PromptTemplateLocation::ALL {
+            let file_path = location.resolve(prompts_dir);
+            assert!(
+                file_path.exists(),
+                "expected {}/{}.tera to exist",
+                location.stage(),
+                location.role(),
+            );
 
             let content = std::fs::read_to_string(&file_path).expect("should read file");
-            let expected = embedded_default(*stage, *role);
-            assert_eq!(content, expected, "content mismatch for {stage}/{role}");
+            let expected = embedded_default(*location);
+            assert_eq!(
+                content, expected,
+                "content mismatch for {}/{}",
+                location.stage(),
+                location.role(),
+            );
         }
     }
 
@@ -259,17 +390,15 @@ mod tests {
         let tmp = tempfile::tempdir().expect("should create tempdir");
         let prompts_dir = tmp.path();
 
-        // Write defaults first.
         ensure_prompt_files(prompts_dir)
             .await
             .expect("initial write");
 
-        // Overwrite one file with custom content.
         let custom = "custom content";
-        let custom_path = prompts_dir.join("extraction").join("system.tera");
+        let target = PromptTemplateLocation::from((PromptStage::Extraction, PromptRole::System));
+        let custom_path = target.resolve(prompts_dir);
         std::fs::write(&custom_path, custom).expect("should overwrite");
 
-        // Run again — should not clobber the custom file.
         ensure_prompt_files(prompts_dir).await.expect("second run");
 
         let content = std::fs::read_to_string(&custom_path).expect("should read");
