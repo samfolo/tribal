@@ -91,10 +91,12 @@ impl PromptTemplateLocation {
         },
     ];
 
+    /// Returns the pipeline stage.
     pub(crate) fn stage(self) -> PromptStage {
         self.stage
     }
 
+    /// Returns the prompt role.
     pub(crate) fn role(self) -> PromptRole {
         self.role
     }
