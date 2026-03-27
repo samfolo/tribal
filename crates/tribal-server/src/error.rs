@@ -445,10 +445,7 @@ mod tests {
             context: "watch /tmp/prompts".into(),
             source: notify::Error::generic("test"),
         };
-        assert_eq!(
-            err.to_string(),
-            "prompt watcher failed: watch /tmp/prompts",
-        );
+        assert_eq!(err.to_string(), "prompt watcher failed: watch /tmp/prompts",);
     }
 
     #[test]

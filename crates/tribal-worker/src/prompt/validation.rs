@@ -6,15 +6,15 @@
 //! a compile error at the call site below.
 
 use serde_json::json;
-use tribal_domain::{Candidate, KnowledgeItemId, KnowledgeKind, RelationHint, RelationSuggestion};
+use tribal_domain::{
+    Candidate, KnowledgeItemId, KnowledgeKind, PromptRole, PromptStage, RelationHint,
+    RelationSuggestion,
+};
 
 use super::{
     CandidateOutcome, RelationPromptContext, SimilarItemContext, SimilarItemDecisionContext,
-    extraction_user_context, relation_user_context, triage_user_context,
-    variables::system_context,
+    extraction_user_context, relation_user_context, triage_user_context, variables::system_context,
 };
-
-use tribal_domain::{PromptRole, PromptStage};
 
 /// Builds a [`tera::Context`] matching the production context shape for
 /// the given (stage, role) pair.
@@ -23,6 +23,12 @@ use tribal_domain::{PromptRole, PromptStage};
 /// `assemble_*_prompt` functions use. The builder parameter lists are
 /// the compile-time contract: if production adds a new parameter, this
 /// call site must be updated.
+///
+/// # Panics
+///
+/// Panics if the hardcoded synthetic JSON cannot be deserialised into
+/// the corresponding domain type. This is a programming error — the
+/// JSON literals are compile-time constants.
 #[must_use]
 pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> tera::Context {
     match (stage, role) {

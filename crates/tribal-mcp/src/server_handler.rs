@@ -680,9 +680,8 @@ mod tests {
     #[test]
     fn test_set_version_updates_correct_field() {
         let original = PromptVersionId::new();
-        let mut versions = ActivePromptVersions::new(
-            original, original, original, original, original, original,
-        );
+        let mut versions =
+            ActivePromptVersions::new(original, original, original, original, original, original);
 
         let new_id = PromptVersionId::new();
         versions.set_version(PromptStage::Triage, PromptRole::User, new_id);
