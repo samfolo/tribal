@@ -1,7 +1,6 @@
 //! Template validation and single-prompt reload.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use sqlx::PgPool;
 use tokio::sync::RwLock;
@@ -43,9 +42,9 @@ pub(crate) fn validate_prompt_template(
         return Err(VALIDATION_EMPTY_CONTENT.to_owned());
     }
 
-    let context = synthetic_validation_context(stage, role);
+    let tera_ctx = synthetic_validation_context(stage, role);
 
-    let Err(error) = tera::Tera::one_off(content, &context, false) else {
+    let Err(error) = tera::Tera::one_off(content, &tera_ctx, false) else {
         return Ok(());
     };
 
@@ -151,21 +150,14 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_empty() {
-        let result = validate_prompt_template(
-            PromptStage::Extraction,
-            PromptRole::System,
-            "",
-        );
+        let result = validate_prompt_template(PromptStage::Extraction, PromptRole::System, "");
         assert_eq!(result.unwrap_err(), VALIDATION_EMPTY_CONTENT);
     }
 
     #[test]
     fn test_validate_prompt_template_rejects_whitespace_only() {
-        let result = validate_prompt_template(
-            PromptStage::Extraction,
-            PromptRole::System,
-            "   \n\t  ",
-        );
+        let result =
+            validate_prompt_template(PromptStage::Extraction, PromptRole::System, "   \n\t  ");
         assert_eq!(result.unwrap_err(), VALIDATION_EMPTY_CONTENT);
     }
 
@@ -203,12 +195,36 @@ mod tests {
     #[test]
     fn test_validate_prompt_template_accepts_embedded_defaults() {
         let pairs: [(PromptStage, PromptRole, &str); 6] = [
-            (PromptStage::Extraction, PromptRole::System, include_str!("../../../../../prompts/extraction/system.tera")),
-            (PromptStage::Extraction, PromptRole::User, include_str!("../../../../../prompts/extraction/user.tera")),
-            (PromptStage::Triage, PromptRole::System, include_str!("../../../../../prompts/triage/system.tera")),
-            (PromptStage::Triage, PromptRole::User, include_str!("../../../../../prompts/triage/user.tera")),
-            (PromptStage::Relation, PromptRole::System, include_str!("../../../../../prompts/relation/system.tera")),
-            (PromptStage::Relation, PromptRole::User, include_str!("../../../../../prompts/relation/user.tera")),
+            (
+                PromptStage::Extraction,
+                PromptRole::System,
+                include_str!("../../../../../prompts/extraction/system.tera"),
+            ),
+            (
+                PromptStage::Extraction,
+                PromptRole::User,
+                include_str!("../../../../../prompts/extraction/user.tera"),
+            ),
+            (
+                PromptStage::Triage,
+                PromptRole::System,
+                include_str!("../../../../../prompts/triage/system.tera"),
+            ),
+            (
+                PromptStage::Triage,
+                PromptRole::User,
+                include_str!("../../../../../prompts/triage/user.tera"),
+            ),
+            (
+                PromptStage::Relation,
+                PromptRole::System,
+                include_str!("../../../../../prompts/relation/system.tera"),
+            ),
+            (
+                PromptStage::Relation,
+                PromptRole::User,
+                include_str!("../../../../../prompts/relation/user.tera"),
+            ),
         ];
         for (stage, role, content) in &pairs {
             let result = validate_prompt_template(*stage, *role, content);

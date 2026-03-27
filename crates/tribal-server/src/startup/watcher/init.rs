@@ -1,9 +1,6 @@
 //! Watcher initialisation and event loop.
 
-use std::future::Future;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{future::Future, path::PathBuf, sync::Arc, time::Duration};
 
 use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 use sqlx::PgPool;
@@ -12,8 +9,7 @@ use tracing::warn;
 use tribal_mcp::ActivePromptVersions;
 
 use super::{LOG_WATCHER_CHANNEL_CLOSED, LOG_WATCHER_ERROR, reload::reload_single_prompt};
-use crate::error::AppError;
-use crate::startup::PromptTemplateLocation;
+use crate::{error::AppError, startup::PromptTemplateLocation};
 
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
 
@@ -35,14 +31,13 @@ pub(crate) fn init_prompt_watcher(
 ) -> Result<impl Future<Output = ()>, AppError> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DebounceEventResult>();
 
-    let mut debouncer =
-        new_debouncer(DEBOUNCE_DURATION, move |event: DebounceEventResult| {
-            let _ = tx.send(event);
-        })
-        .map_err(|source| AppError::PromptWatcher {
-            context: "create debouncer".into(),
-            source,
-        })?;
+    let mut debouncer = new_debouncer(DEBOUNCE_DURATION, move |event: DebounceEventResult| {
+        let _ = tx.send(event);
+    })
+    .map_err(|source| AppError::PromptWatcher {
+        context: "create debouncer".into(),
+        source,
+    })?;
 
     debouncer
         .watcher()

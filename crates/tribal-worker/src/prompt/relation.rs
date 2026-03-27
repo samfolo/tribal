@@ -8,9 +8,7 @@ use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 use crate::{
     error::StageError,
     parsing::RelationOutput,
-    prompt::variables::{
-        VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS,
-    },
+    prompt::variables::{VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS},
 };
 
 // ---------------------------------------------------------------------------

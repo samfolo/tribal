@@ -4,9 +4,11 @@
 //! On first run, prompt files are written to disk from embedded defaults.
 //! On every startup, files are read, hashed, and upserted into the database.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use sqlx::PgPool;
 use tribal_common::sha256_hex;
@@ -63,12 +65,30 @@ pub(crate) struct PromptTemplateLocation {
 impl PromptTemplateLocation {
     /// All (stage, role) pairs in canonical order.
     pub(crate) const ALL: [Self; 6] = [
-        Self { stage: PromptStage::Extraction, role: PromptRole::System },
-        Self { stage: PromptStage::Extraction, role: PromptRole::User },
-        Self { stage: PromptStage::Triage, role: PromptRole::System },
-        Self { stage: PromptStage::Triage, role: PromptRole::User },
-        Self { stage: PromptStage::Relation, role: PromptRole::System },
-        Self { stage: PromptStage::Relation, role: PromptRole::User },
+        Self {
+            stage: PromptStage::Extraction,
+            role: PromptRole::System,
+        },
+        Self {
+            stage: PromptStage::Extraction,
+            role: PromptRole::User,
+        },
+        Self {
+            stage: PromptStage::Triage,
+            role: PromptRole::System,
+        },
+        Self {
+            stage: PromptStage::Triage,
+            role: PromptRole::User,
+        },
+        Self {
+            stage: PromptStage::Relation,
+            role: PromptRole::System,
+        },
+        Self {
+            stage: PromptStage::Relation,
+            role: PromptRole::User,
+        },
     ];
 
     pub(crate) fn stage(self) -> PromptStage {
@@ -130,7 +150,9 @@ impl From<(PromptStage, PromptRole)> for PromptTemplateLocation {
 pub(crate) async fn ensure_prompt_files(prompts_dir: &Path) -> Result<(), AppError> {
     for location in &PromptTemplateLocation::ALL {
         let file_path = location.resolve(prompts_dir);
-        let stage_dir = file_path.parent().expect("resolve always produces a parent");
+        let stage_dir = file_path
+            .parent()
+            .expect("resolve always produces a parent");
 
         tokio::fs::create_dir_all(stage_dir)
             .await
@@ -377,7 +399,8 @@ mod tests {
             let content = std::fs::read_to_string(&file_path).expect("should read file");
             let expected = embedded_default(*location);
             assert_eq!(
-                content, expected,
+                content,
+                expected,
                 "content mismatch for {}/{}",
                 location.stage(),
                 location.role(),
