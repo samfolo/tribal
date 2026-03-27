@@ -9,7 +9,7 @@ use crate::{
     error::StageError,
     parsing::RelationOutput,
     prompt::variables::{
-        VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SCHEMA, VAR_SIMILAR_ITEM_DECISIONS,
+        VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS,
     },
 };
 
