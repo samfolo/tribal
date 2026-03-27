@@ -440,6 +440,18 @@ mod tests {
     }
 
     #[test]
+    fn test_display_prompt_watcher() {
+        let err = AppError::PromptWatcher {
+            context: "watch /tmp/prompts".into(),
+            source: notify::Error::generic("test"),
+        };
+        assert_eq!(
+            err.to_string(),
+            "prompt watcher failed: watch /tmp/prompts",
+        );
+    }
+
+    #[test]
     fn test_display_setup_io() {
         let err = AppError::SetupIo {
             context: "create config directory /tmp/tribal".into(),
