@@ -146,3 +146,8 @@ tribal-telemetry = { path = "crates/tribal-telemetry" }
 tribal-config = { path = "crates/tribal-config" }
 tribal-server = { path = "crates/tribal-server" }
 tribal-test-utils = { path = "crates/tribal-test-utils" }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
