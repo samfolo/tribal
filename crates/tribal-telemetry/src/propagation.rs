@@ -142,6 +142,9 @@ pub enum TraceLink {
     Linked,
     /// Traceparent was absent, empty, or malformed; span remains a root.
     Invalid,
+    /// The traceparent was valid but the OpenTelemetry layer is not
+    /// installed, so the parent could not be set.
+    LayerUnavailable,
 }
 
 impl TraceLink {
@@ -170,9 +173,8 @@ pub fn parent_span_from_traceparent(span: &tracing::Span, traceparent: Option<&s
 
     let parent = Context::new().with_remote_span_context(sc);
 
-    // set_parent may fail if the OTel layer is absent; treat as invalid.
     if span.set_parent(parent).is_err() {
-        return TraceLink::Invalid;
+        return TraceLink::LayerUnavailable;
     }
 
     TraceLink::Linked
@@ -206,7 +208,7 @@ pub fn parent_span_from_trace_id(span: &tracing::Span, trace_id: &str) -> TraceL
     let parent = Context::new().with_remote_span_context(sc);
 
     if span.set_parent(parent).is_err() {
-        return TraceLink::Invalid;
+        return TraceLink::LayerUnavailable;
     }
 
     TraceLink::Linked
