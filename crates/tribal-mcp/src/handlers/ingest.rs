@@ -625,7 +625,9 @@ mod tests {
         async {
             let ctx = test_context().await;
             let mut tx = ctx.begin_test().await.expect("begin");
-            let _ = execute_ingest(&mut tx, &repos, params).await;
+            execute_ingest(&mut tx, &repos, params)
+                .await
+                .expect("execute_ingest should succeed in trace context test");
         }
         .instrument(span)
         .await;
