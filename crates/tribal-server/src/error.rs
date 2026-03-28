@@ -113,6 +113,16 @@ pub enum AppError {
         source: io::Error,
     },
 
+    /// Prompt file watcher initialisation failed.
+    #[error("prompt watcher failed: {context}")]
+    PromptWatcher {
+        /// Description of the failed operation.
+        context: String,
+        /// The underlying notify error.
+        #[source]
+        source: notify::Error,
+    },
+
     /// Prompt loading or upsert failed.
     #[error("prompt loading failed: {context}")]
     PromptLoading {
@@ -427,6 +437,15 @@ mod tests {
             err.to_string().contains("no token matches prefix"),
             "unexpected display: {err}",
         );
+    }
+
+    #[test]
+    fn test_display_prompt_watcher() {
+        let err = AppError::PromptWatcher {
+            context: "watch /tmp/prompts".into(),
+            source: notify::Error::generic("test"),
+        };
+        assert_eq!(err.to_string(), "prompt watcher failed: watch /tmp/prompts",);
     }
 
     #[test]

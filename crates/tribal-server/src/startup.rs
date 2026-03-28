@@ -11,13 +11,15 @@ mod migration;
 mod project;
 mod prompts;
 mod providers;
+mod watcher;
 
 pub(crate) use constants::{POOL_NAME_MCP, POOL_NAME_WORKER};
 pub(crate) use database::create_pool_with_retry;
 pub(crate) use instance_id::generate_instance_id;
 pub(crate) use migration::{check_first_run, run_migrations};
 pub(crate) use project::resolve_project;
-pub(crate) use prompts::{ensure_prompt_files, load_prompts};
+pub(crate) use prompts::{PromptTemplateLocation, ensure_prompt_files, load_prompts};
 pub(crate) use providers::{
     build_embedding_provider, build_inference_provider, build_provider_registry,
 };
+pub(crate) use watcher::init_prompt_watcher;

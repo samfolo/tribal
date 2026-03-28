@@ -7,18 +7,29 @@ use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 use crate::{
     error::StageError,
     parsing::ExtractionOutput,
-    prompt::variables::{VAR_RAW_INPUT, VAR_SCHEMA, VAR_TAGS},
+    prompt::variables::{VAR_RAW_INPUT, VAR_TAGS, system_context},
 };
+
+// ---------------------------------------------------------------------------
+// Context builders
+// ---------------------------------------------------------------------------
+
+/// Builds the user prompt context for the extraction stage.
+///
+/// Both the production assembly and the hot-reload validator call this,
+/// so adding a variable here is automatically reflected in both paths.
+pub(crate) fn extraction_user_context(raw_input: &str, tags: &[&str]) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    ctx.insert(VAR_TAGS, tags);
+    ctx.insert(VAR_RAW_INPUT, raw_input);
+    ctx
+}
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Assembles a [`CompletionRequest`] for the extraction stage.
-///
-/// Renders the system template with [`VAR_SCHEMA`] only, and the user
-/// template with [`VAR_TAGS`] (from the tag registry) and
-/// [`VAR_RAW_INPUT`] (the verbatim ingest text).
 ///
 /// # Errors
 ///
@@ -36,9 +47,7 @@ pub(crate) fn assemble_extraction_prompt(
     let schema_pretty =
         serde_json::to_string_pretty(&schema).expect("schema_for! produces serialisable output");
 
-    // System context: schema only.
-    let mut system_ctx = tera::Context::new();
-    system_ctx.insert(VAR_SCHEMA, &schema_pretty);
+    let system_ctx = system_context(&schema_pretty);
 
     let rendered_system =
         tera::Tera::one_off(system_template, &system_ctx, false).map_err(|e| {
@@ -48,12 +57,8 @@ pub(crate) fn assemble_extraction_prompt(
             }
         })?;
 
-    // User context: tags + raw input.
     let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
-
-    let mut user_ctx = tera::Context::new();
-    user_ctx.insert(VAR_TAGS, &tags);
-    user_ctx.insert(VAR_RAW_INPUT, raw_input);
+    let user_ctx = extraction_user_context(raw_input, &tags);
 
     let rendered_user = tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
         StageError::TemplateRender {

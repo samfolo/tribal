@@ -9,7 +9,7 @@ use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 use crate::{
     error::StageError,
     parsing::TriageClassification,
-    prompt::variables::{VAR_CANDIDATE, VAR_SCHEMA, VAR_SIMILAR_ITEMS, VAR_TAGS},
+    prompt::variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS, system_context},
 };
 
 // ---------------------------------------------------------------------------
@@ -47,14 +47,30 @@ impl From<&SemanticSearchResult> for SimilarItemContext {
 }
 
 // ---------------------------------------------------------------------------
+// Context builders
+// ---------------------------------------------------------------------------
+
+/// Builds the user prompt context for the triage stage.
+///
+/// Both the production assembly and the hot-reload validator call this,
+/// so adding a variable here is automatically reflected in both paths.
+pub(crate) fn triage_user_context(
+    candidate: &Candidate,
+    similar_items: &[SimilarItemContext],
+    tags: &[&str],
+) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    ctx.insert(VAR_CANDIDATE, candidate);
+    ctx.insert(VAR_SIMILAR_ITEMS, similar_items);
+    ctx.insert(VAR_TAGS, tags);
+    ctx
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Assembles a [`CompletionRequest`] for the triage stage.
-///
-/// Renders the system template with [`VAR_SCHEMA`] only, and the user
-/// template with [`VAR_CANDIDATE`], [`VAR_SIMILAR_ITEMS`], and
-/// [`VAR_TAGS`].
 ///
 /// # Errors
 ///
@@ -73,9 +89,7 @@ pub(crate) fn assemble_triage_prompt(
     let schema_pretty =
         serde_json::to_string_pretty(&schema).expect("schema_for! produces serialisable output");
 
-    // System context: schema only.
-    let mut system_ctx = tera::Context::new();
-    system_ctx.insert(VAR_SCHEMA, &schema_pretty);
+    let system_ctx = system_context(&schema_pretty);
 
     let rendered_system =
         tera::Tera::one_off(system_template, &system_ctx, false).map_err(|e| {
@@ -85,13 +99,8 @@ pub(crate) fn assemble_triage_prompt(
             }
         })?;
 
-    // User context: candidate, similar items, tags.
     let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
-
-    let mut user_ctx = tera::Context::new();
-    user_ctx.insert(VAR_CANDIDATE, candidate);
-    user_ctx.insert(VAR_SIMILAR_ITEMS, similar_items);
-    user_ctx.insert(VAR_TAGS, &tags);
+    let user_ctx = triage_user_context(candidate, similar_items, &tags);
 
     let rendered_user = tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
         StageError::TemplateRender {
