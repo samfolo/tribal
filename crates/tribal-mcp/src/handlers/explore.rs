@@ -32,6 +32,12 @@ use crate::{
 
 const DEFAULT_DIRECTION: Direction = Direction::Inbound;
 
+/// JSON field name for the session trace ID on the explore request.
+///
+/// Duplicated from the serde field name on [`McpExploreRequest`] because
+/// `handle_explore` peeks at the raw JSON before parsing.
+const SESSION_TRACE_ID_FIELD: &str = "session_trace_id";
+
 // ---------------------------------------------------------------------------
 // Service types
 // ---------------------------------------------------------------------------
@@ -98,11 +104,22 @@ impl TribalServerHandler {
     ) -> Result<CallToolResult, McpError> {
         let principal = self.resolve_principal(&context)?;
         let span = tracing::info_span!(
+            parent: None,
             "tribal.explore",
             { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
             { span_attrs::TRANSPORT } = self.transport_name.as_str(),
             { span_attrs::PROJECT_ID } = tracing::field::Empty,
         );
+
+        // If the caller supplied a session_trace_id, attach this span to
+        // that trace so the explore call appears alongside the originating
+        // discover call in the tracing backend.  Validation of the value
+        // still happens inside apply_explore; an invalid ID here simply
+        // leaves the span as a root.
+        if let Some(trace_id) = params.get(SESSION_TRACE_ID_FIELD).and_then(|v| v.as_str()) {
+            let _ = tribal_telemetry::parent_span_from_trace_id(&span, trace_id);
+        }
+
         self.apply_explore(params).instrument(span).await
     }
 

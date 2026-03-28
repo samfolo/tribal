@@ -31,6 +31,7 @@ impl TribalServerHandler {
         let principal = self.resolve_principal(&context)?;
         let principal_key = principal.principal_key().to_owned();
         let span = tracing::info_span!(
+            parent: None,
             "tribal.set_context",
             { span_attrs::PRINCIPAL_KEY } = principal_key.as_str(),
             { span_attrs::TRANSPORT } = self.transport_name.as_str(),

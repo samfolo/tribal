@@ -87,6 +87,7 @@ impl TribalServerHandler {
     ) -> Result<CallToolResult, McpError> {
         let principal = self.resolve_principal(&context)?;
         let span = tracing::info_span!(
+            parent: None,
             "tribal.get_item",
             { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
             { span_attrs::TRANSPORT } = self.transport_name.as_str(),
