@@ -104,6 +104,9 @@ impl TribalServerHandler {
         if let Some(project) = &resolved_project {
             tracing::Span::current()
                 .record(span_attrs::PROJECT_ID, tracing::field::display(&project.id));
+        } else if let Some(project) = &self.session.read().await.project {
+            tracing::Span::current()
+                .record(span_attrs::PROJECT_ID, tracing::field::display(&project.id));
         }
 
         let mut ctx = self.session.write().await;

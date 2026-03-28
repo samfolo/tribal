@@ -49,7 +49,9 @@ fn extract_span_context(traceparent: &str) -> Option<SpanContext> {
     if sc.is_valid() { Some(sc) } else { None }
 }
 
-/// Zero-allocation carrier that borrows a `traceparent` value.
+/// Carrier that borrows a `traceparent` value, avoiding the `String`
+/// and `HashMap` allocations of the default `HashMap<String, String>`
+/// carrier.
 struct TraceparentCarrier<'a>(&'a str);
 
 impl Extractor for TraceparentCarrier<'_> {
