@@ -6,9 +6,31 @@
 
 use std::collections::HashMap;
 
-use opentelemetry::{propagation::TextMapPropagator, trace::TraceContextExt};
+use opentelemetry::{
+    propagation::TextMapPropagator,
+    trace::{SpanContext, TraceContextExt, TraceId},
+};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Extracts the `SpanContext` from the current tracing span's OpenTelemetry
+/// context, returning `None` when no valid context is attached.
+fn current_span_context() -> Option<SpanContext> {
+    let span = tracing::Span::current();
+    let otel_context = span.context();
+    let span_ref = otel_context.span();
+    let sc = span_ref.span_context().clone();
+
+    if sc.is_valid() { Some(sc) } else { None }
+}
+
+// ---------------------------------------------------------------------------
+// Serialisation
+// ---------------------------------------------------------------------------
 
 /// Extracts the current span's trace context as a W3C `traceparent` string.
 ///
@@ -18,21 +40,35 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 /// Format: `00-{32 hex trace ID}-{16 hex span ID}-{2 hex flags}`
 #[must_use]
 pub fn current_trace_context() -> Option<String> {
-    let span = tracing::Span::current();
-    let otel_context = span.context();
-    let span_ref = otel_context.span();
-    let span_context = span_ref.span_context();
-
-    if !span_context.is_valid() {
-        return None;
-    }
-
+    let sc = current_span_context()?;
     Some(format!(
         "00-{}-{}-{:02x}",
-        span_context.trace_id(),
-        span_context.span_id(),
-        span_context.trace_flags(),
+        sc.trace_id(),
+        sc.span_id(),
+        sc.trace_flags(),
     ))
+}
+
+/// Extracts the current span's trace ID as a 32-character lowercase hex
+/// string.
+///
+/// Returns `None` when no valid OpenTelemetry context is attached to the
+/// current span (e.g. OTLP export is disabled or there is no active span).
+#[must_use]
+pub fn current_trace_id() -> Option<String> {
+    current_span_context().map(|sc| sc.trace_id().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when `s` is a syntactically valid OpenTelemetry trace ID.
+///
+/// Delegates to [`TraceId::from_hex`] and rejects the all-zero invalid ID.
+#[must_use]
+pub fn is_valid_trace_id(s: &str) -> bool {
+    TraceId::from_hex(s).is_ok_and(|id| id != TraceId::INVALID)
 }
 
 /// Outcome of attempting to link a span to a serialised trace context.
@@ -178,8 +214,60 @@ mod tests {
             let span = tracing::info_span!("test_no_otel");
             let _guard = span.enter();
 
-            let result = current_trace_context();
-            assert!(result.is_none(), "should return None without an OTel layer",);
+            assert!(
+                current_trace_context().is_none(),
+                "should return None without an OTel layer",
+            );
+            assert!(
+                current_trace_id().is_none(),
+                "should return None without an OTel layer",
+            );
         });
+    }
+
+    // -- current_trace_id ---------------------------------------------------
+
+    #[test]
+    fn test_current_trace_id_matches_traceparent() {
+        let (subscriber, _provider) = otel_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("test_trace_id");
+            let _guard = span.enter();
+
+            let traceparent = current_trace_context().expect("OTel layer present");
+            let trace_id = current_trace_id().expect("OTel layer present");
+
+            let traceparent_trace_id = traceparent.split('-').nth(1).unwrap();
+            assert_eq!(trace_id, traceparent_trace_id);
+            assert!(is_valid_trace_id(&trace_id));
+        });
+    }
+
+    // -- is_valid_trace_id --------------------------------------------------
+
+    #[test]
+    fn test_valid_trace_id() {
+        assert!(is_valid_trace_id("4bf92f3577b34da6a3ce929d0e0e4736"));
+    }
+
+    #[test]
+    fn test_all_zero_trace_id_is_invalid() {
+        assert!(!is_valid_trace_id("00000000000000000000000000000000"));
+    }
+
+    #[test]
+    fn test_short_hex_is_invalid() {
+        assert!(!is_valid_trace_id("4bf92f35"));
+    }
+
+    #[test]
+    fn test_non_hex_is_invalid() {
+        assert!(!is_valid_trace_id("my-trace-42-not-a-valid-trace-id"));
+    }
+
+    #[test]
+    fn test_uppercase_hex_is_valid() {
+        // TraceId::from_hex accepts uppercase; we delegate to OTel.
+        assert!(is_valid_trace_id("4BF92F3577B34DA6A3CE929D0E0E4736"));
     }
 }
