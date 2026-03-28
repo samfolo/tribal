@@ -7,8 +7,9 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use sqlx::PgConnection;
+use tracing::Instrument;
 use tribal_db::DbError;
-use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode, PrincipalId};
+use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode, PrincipalId, span_attrs};
 
 use super::common::acquire_connection;
 use crate::{
@@ -71,7 +72,15 @@ impl TribalServerHandler {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let principal = self.resolve_principal(&context)?;
-        self.apply_feedback(params, principal.principal_id()).await
+        let span = tracing::info_span!(
+            "tribal.feedback",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name.as_str(),
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
+        self.apply_feedback(params, principal.principal_id())
+            .instrument(span)
+            .await
     }
 
     /// Core logic for `tribal_feedback`, separated from the outer handler

@@ -10,9 +10,10 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use sqlx::PgConnection;
+use tracing::Instrument;
 use tribal_db::DbError;
 use tribal_domain::{
-    KnowledgeItem, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, Standing,
+    KnowledgeItem, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, Standing, span_attrs,
 };
 
 use super::common::acquire_connection;
