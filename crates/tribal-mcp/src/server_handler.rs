@@ -203,7 +203,7 @@ pub struct TribalServerHandler {
     pub(crate) session: Arc<RwLock<SessionContext>>,
     pub(crate) config: HandlerConfig,
     /// Transport name for span attributes (e.g. `"stdio"`, `"http"`, `"sse"`).
-    pub(crate) transport_name: String,
+    pub(crate) transport_name: &'static str,
 }
 
 impl TribalServerHandler {
@@ -218,7 +218,7 @@ impl TribalServerHandler {
         repositories: ConnectionRepositories,
         session: SessionContext,
         config: HandlerConfig,
-        transport_name: String,
+        transport_name: &'static str,
     ) -> Self {
         Self {
             state,

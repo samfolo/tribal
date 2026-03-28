@@ -99,7 +99,7 @@ impl TribalServerHandler {
             parent: None,
             "tribal.discover",
             { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
-            { span_attrs::TRANSPORT } = self.transport_name.as_str(),
+            { span_attrs::TRANSPORT } = self.transport_name,
             { span_attrs::PROJECT_ID } = tracing::field::Empty,
         );
         self.apply_discover(params).instrument(span).await
