@@ -11,14 +11,16 @@ use std::{
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use tribal_common::{JobStateTxs, POOL_NAME_WORKER, clamp_to_i32, clamp_to_u32};
 use tribal_config::WorkerConfig;
 use tribal_db::{
-    JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository, PgTaskRepository,
-    PgTokenUsageRepository, TaskRepository, TokenUsageRepository,
+    JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository,
+    PgPrincipalRepository, PgTaskRepository, PgTokenUsageRepository, PrincipalRepository,
+    TaskRepository, TokenUsageRepository,
 };
 use tribal_domain::{
-    Job, JobId, JobState, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage,
+    Job, JobId, JobState, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage, span_attrs,
 };
 use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
@@ -356,7 +358,7 @@ impl Worker {
     async fn run_task_inner(&self, task: Task) {
         let job_id = task.job_id();
 
-        let job: Job = {
+        let (job, principal_key): (Job, String) = {
             let acquire_start = Instant::now();
             let mut conn = match self.pool.acquire().await {
                 Ok(c) => {
@@ -377,7 +379,7 @@ impl Worker {
                     return;
                 }
             };
-            match PgJobRepository.find_by_id(&mut conn, job_id).await {
+            let job = match PgJobRepository.find_by_id(&mut conn, job_id).await {
                 Ok(j) => j,
                 Err(e) => {
                     let stage_err = StageError::Database {
@@ -388,88 +390,130 @@ impl Worker {
                     self.handle_stage_failure(&task, None, &stage_err).await;
                     return;
                 }
-            }
+            };
+            let principal_key = match PgPrincipalRepository
+                .find_by_id(&mut conn, job.principal_id())
+                .await
+            {
+                Ok(p) => p.principal_key().to_owned(),
+                Err(e) => {
+                    tracing::warn!(
+                        job_id = %job_id,
+                        principal_id = %job.principal_id(),
+                        error = %e,
+                        "failed to resolve principal for span; falling back to principal_id",
+                    );
+                    job.principal_id().to_string()
+                }
+            };
+            (job, principal_key)
         };
 
-        // Best-effort job status transition: moves the job to the
-        // in-progress state corresponding to this task type (e.g.
-        // Extraction → Extracting).  Non-transactional and fire-and-
-        // forget — a failure here does not block task execution.
-        let target_status = JobStatus::from(task.task_type());
-        if job.status() != target_status
-            && let Ok(mut conn) = self.pool.acquire().await
-        {
-            let transition = tribal_db::JobStatusTransition::builder()
-                .status(target_status)
-                .build();
-            let _ = PgJobRepository
-                .update_status(&mut conn, job_id, &transition)
-                .await;
-        }
+        // -- Trace propagation: tribal.job span --------------------------------
 
-        // Notify job-state watch subscribers so they can observe the
-        // claim-time status change.
-        self.notify_job_state(job_id, JobState::from(target_status));
-
-        let Some(claim_token) = task.claim_token() else {
-            tracing::error!(task_id = %task.id(), "task has no claim token after claiming");
-            return;
-        };
-
-        let mut heartbeat = spawn_heartbeat(
-            self.pool.clone(),
-            task.id(),
-            claim_token,
-            self.config.heartbeat_interval(),
-            self.cancellation_token.clone(),
+        let job_span = tracing::info_span!(
+            parent: None,
+            "tribal.job",
+            { span_attrs::JOB_ID } = %job.id(),
+            { span_attrs::PROJECT_ID } = %job.project_id(),
+            { span_attrs::PRINCIPAL_KEY } = principal_key.as_str(),
+            { span_attrs::EPISODE_ID } = tracing::field::Empty,
+            { span_attrs::TRACE_CONTEXT_INVALID } = tracing::field::Empty,
         );
 
-        let deadline = tokio::time::Instant::now() + self.config.task_timeout();
+        if let Some(episode_id) = job.correlation_id() {
+            job_span.record(span_attrs::EPISODE_ID, tracing::field::display(episode_id));
+        }
 
-        let stage_result = tokio::select! {
-            () = self.cancellation_token.cancelled() => {
-                heartbeat.abort();
-                tracing::info!(task_id = %task.id(), "task cancelled mid-execution");
+        if tribal_telemetry::parent_span_from_traceparent(&job_span, job.trace_context())
+            .is_invalid()
+        {
+            job_span.record(span_attrs::TRACE_CONTEXT_INVALID, true);
+        }
+
+        async {
+            // Best-effort job status transition: moves the job to the
+            // in-progress state corresponding to this task type (e.g.
+            // Extraction → Extracting).  Non-transactional and fire-and-
+            // forget — a failure here does not block task execution.
+            let target_status = JobStatus::from(task.task_type());
+            if job.status() != target_status
+                && let Ok(mut conn) = self.pool.acquire().await
+            {
+                let transition = tribal_db::JobStatusTransition::builder()
+                    .status(target_status)
+                    .build();
+                let _ = PgJobRepository
+                    .update_status(&mut conn, job_id, &transition)
+                    .await;
+            }
+
+            // Notify job-state watch subscribers so they can observe the
+            // claim-time status change.
+            self.notify_job_state(job_id, JobState::from(target_status));
+
+            let Some(claim_token) = task.claim_token() else {
+                tracing::error!(task_id = %task.id(), "task has no claim token after claiming");
                 return;
-            }
-            () = tokio::time::sleep(self.config.task_timeout()) => {
-                Err(StageError::Timeout {
-                    timeout_millis: self.config.task_timeout_ms,
-                })
-            }
-            Ok(()) = &mut heartbeat.ownership_lost_rx => {
-                Err(StageError::OwnershipLost)
-            }
-            result = self.dispatch_stage(&job, &task, deadline) => {
-                result
-            }
-        };
+            };
 
-        match stage_result {
-            Ok(output) => {
-                for usage in &output.usages {
-                    self.record_token_usage(&job, &task, usage).await;
-                }
+            let mut heartbeat = spawn_heartbeat(
+                self.pool.clone(),
+                task.id(),
+                claim_token,
+                self.config.heartbeat_interval(),
+                self.cancellation_token.clone(),
+            );
 
-                if self.cancellation_token.is_cancelled() {
+            let deadline = tokio::time::Instant::now() + self.config.task_timeout();
+
+            let stage_result = tokio::select! {
+                () = self.cancellation_token.cancelled() => {
                     heartbeat.abort();
-                    tracing::info!(
-                        task_id = %task.id(),
-                        "cancellation detected after stage; skipping commit",
-                    );
+                    tracing::info!(task_id = %task.id(), "task cancelled mid-execution");
                     return;
                 }
+                () = tokio::time::sleep(self.config.task_timeout()) => {
+                    Err(StageError::Timeout {
+                        timeout_millis: self.config.task_timeout_ms,
+                    })
+                }
+                Ok(()) = &mut heartbeat.ownership_lost_rx => {
+                    Err(StageError::OwnershipLost)
+                }
+                result = self.dispatch_stage(&job, &task, deadline) => {
+                    result
+                }
+            };
 
-                if let Err(e) = self.commit_domain_effects(&task, &job, output.commit).await {
+            match stage_result {
+                Ok(output) => {
+                    for usage in &output.usages {
+                        self.record_token_usage(&job, &task, usage).await;
+                    }
+
+                    if self.cancellation_token.is_cancelled() {
+                        heartbeat.abort();
+                        tracing::info!(
+                            task_id = %task.id(),
+                            "cancellation detected after stage; skipping commit",
+                        );
+                        return;
+                    }
+
+                    if let Err(e) = self.commit_domain_effects(&task, &job, output.commit).await {
+                        self.handle_stage_failure(&task, Some(&job), &e).await;
+                    }
+                }
+                Err(e) => {
                     self.handle_stage_failure(&task, Some(&job), &e).await;
                 }
             }
-            Err(e) => {
-                self.handle_stage_failure(&task, Some(&job), &e).await;
-            }
-        }
 
-        heartbeat.abort();
+            heartbeat.abort();
+        }
+        .instrument(job_span)
+        .await;
     }
 
     /// Routes to the correct stage based on task type.
@@ -505,7 +549,10 @@ impl Worker {
         };
 
         let attempt = clamp_to_i32(task.retry_count());
-        let trace_id = job.trace_context().map(str::to_owned);
+        let trace_id = job
+            .trace_context()
+            .and_then(tribal_telemetry::trace_id_from_traceparent)
+            .or_else(tribal_telemetry::current_trace_id);
 
         let new = match usage {
             Usage::Completion { usage: cu } => {

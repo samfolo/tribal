@@ -8,10 +8,11 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use sqlx::PgConnection;
+use tracing::Instrument;
 use tribal_db::{DbError, SemanticSearchParams};
 use tribal_domain::{
     EmbeddingPurpose, KnowledgeItemId, KnowledgeKind, McpErrorCode, PrincipalId, ProjectId,
-    Reference, Standing,
+    Reference, Standing, span_attrs,
 };
 use tribal_inference::EmbeddingRequest;
 
@@ -91,9 +92,17 @@ impl TribalServerHandler {
     pub(crate) async fn handle_discover(
         &self,
         params: serde_json::Value,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.apply_discover(params).await
+        let principal = self.resolve_principal(&context)?;
+        let span = tracing::info_span!(
+            parent: None,
+            "tribal.discover",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name,
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
+        self.apply_discover(params).instrument(span).await
     }
 
     /// Core logic for `tribal_discover`, separated from the outer handler
@@ -134,6 +143,10 @@ impl TribalServerHandler {
                 Ok(scope) => scope.into_parts(),
                 Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
             };
+
+        if let Some(pid) = &project_id {
+            tracing::Span::current().record(span_attrs::PROJECT_ID, tracing::field::display(pid));
+        }
 
         let semaphore = self
             .state
@@ -211,7 +224,8 @@ impl TribalServerHandler {
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
 
-        let trace_id = uuid::Uuid::new_v4().simple().to_string();
+        let trace_id = tribal_telemetry::current_trace_id()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
 
         let items: Vec<McpDiscoveryResult> = result
             .items

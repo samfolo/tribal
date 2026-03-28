@@ -7,8 +7,11 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use tokio::sync::watch;
+use tracing::Instrument;
 use tribal_db::DbError;
-use tribal_domain::{Job, JobId, JobState, McpErrorCode, TaskStatus, TaskType, TriageOutcome};
+use tribal_domain::{
+    Job, JobId, JobState, McpErrorCode, TaskStatus, TaskType, TriageOutcome, span_attrs,
+};
 
 use super::common::acquire_connection;
 use crate::{
@@ -68,12 +71,22 @@ impl TribalServerHandler {
     pub(crate) async fn handle_job_status(
         &self,
         params: serde_json::Value,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        let principal = self.resolve_principal(&context)?;
+        let span = tracing::info_span!(
+            parent: None,
+            "tribal.job_status",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name,
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
         let scheduler = TimedPollScheduler {
             interval: POLL_INTERVAL,
         };
-        self.apply_job_status(params, &scheduler).await
+        self.apply_job_status(params, &scheduler)
+            .instrument(span)
+            .await
     }
 
     /// Core logic for `tribal_job_status`, separated from the outer handler
@@ -123,6 +136,11 @@ impl TribalServerHandler {
             Ok(r) => r,
             Err(call_result) => return Ok(call_result),
         };
+
+        tracing::Span::current().record(
+            span_attrs::PROJECT_ID,
+            tracing::field::display(result.job.project_id()),
+        );
 
         // -- 3. Wait (if requested and not already terminal) -----------------
 

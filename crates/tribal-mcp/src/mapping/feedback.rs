@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn test_feedback_request_deserialises() {
         let json = serde_json::json!({
-            "trace_id": "t1",
+            "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
             "query_text": "auth patterns",
             "returned_item_ids": ["ki_abc"],
             "rating": "positive",

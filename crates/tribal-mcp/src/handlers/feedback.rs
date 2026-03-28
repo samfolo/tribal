@@ -7,8 +7,9 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use sqlx::PgConnection;
+use tracing::Instrument;
 use tribal_db::DbError;
-use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode, PrincipalId};
+use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode, PrincipalId, span_attrs};
 
 use super::common::acquire_connection;
 use crate::{
@@ -21,9 +22,6 @@ use crate::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_TRACE_ID_LEN: usize = 64;
-
-const EMPTY_TRACE_ID: &str = "trace_id must not be empty";
 const EMPTY_QUERY_TEXT: &str = "query_text must not be empty";
 const EMPTY_RETURNED_ITEMS: &str = "returned_item_ids must contain at least one item";
 const INVALID_RATING: &str = "rating must be \"positive\" or \"negative\"";
@@ -71,7 +69,24 @@ impl TribalServerHandler {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let principal = self.resolve_principal(&context)?;
-        self.apply_feedback(params, principal.principal_id()).await
+        let span = tracing::info_span!(
+            parent: None,
+            "tribal.feedback",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name,
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
+
+        // Attach this span to the retrieval session trace so the
+        // feedback action appears alongside the discover/explore calls
+        // it rates.
+        if let Some(trace_id) = params.get("trace_id").and_then(|v| v.as_str()) {
+            let _ = tribal_telemetry::parent_span_from_trace_id(&span, trace_id);
+        }
+
+        self.apply_feedback(params, principal.principal_id())
+            .instrument(span)
+            .await
     }
 
     /// Core logic for `tribal_feedback`, separated from the outer handler
@@ -81,23 +96,20 @@ impl TribalServerHandler {
         params: serde_json::Value,
         principal_id: PrincipalId,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(project) = &self.session.read().await.project {
+            tracing::Span::current()
+                .record(span_attrs::PROJECT_ID, tracing::field::display(&project.id));
+        }
+
         let request: McpFeedbackRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
         // -- Validate trace_id ------------------------------------------------
 
-        if request.trace_id.is_empty() {
+        if !tribal_telemetry::is_valid_trace_id(&request.trace_id) {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: EMPTY_TRACE_ID.into(),
-                details: serde_json::json!({}),
-            }
-            .into_call_tool_result());
-        }
-        if request.trace_id.len() > MAX_TRACE_ID_LEN {
-            return Ok(McpToolError {
-                code: McpErrorCode::InvalidArgument,
-                message: format!("trace_id must be at most {MAX_TRACE_ID_LEN} bytes"),
+                message: tribal_telemetry::INVALID_TRACE_ID.into(),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
@@ -212,7 +224,7 @@ async fn execute_feedback(
     params: FeedbackParams,
 ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
     let new_feedback = tribal_db::NewRetrievalFeedback::builder()
-        .trace_id(params.trace_id)
+        .trace_id(params.trace_id.to_ascii_lowercase())
         .query_text(params.query_text)
         .embedding_model(params.embedding_model)
         .returned_item_ids(params.returned_item_ids)
@@ -322,15 +334,37 @@ mod tests {
         assert_eq!(structured["code"], "invalid_argument");
     }
 
+    /// Verifies that an uppercase `trace_id` is normalised to lowercase
+    /// before reaching the storage path. The `when_insert` predicate
+    /// asserts the mock receives the lowercased form.
     #[tokio::test]
-    async fn test_apply_feedback_trace_id_too_long_returns_application_error() {
+    async fn test_execute_feedback_stores_lowercase_trace_id() {
+        let feedback = a_retrieval_feedback().build();
+
+        let mut repos = test_repositories();
+        repos.retrieval_feedback = Arc::new(
+            MockRetrievalFeedbackRepository::builder()
+                .when_insert(|new_fb| new_fb.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736")
+                .respond_with(feedback, None)
+                .build(),
+        );
+
+        let params = FeedbackParams {
+            trace_id: "4BF92F3577B34DA6A3CE929D0E0E4736".into(),
+            ..default_params()
+        };
+        call_execute(&repos, params).await.expect("should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_apply_feedback_non_hex_trace_id_returns_application_error() {
         let handler = TestHandler::builder().build();
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
             .apply_feedback(
                 serde_json::json!({
-                    "trace_id": "x".repeat(MAX_TRACE_ID_LEN + 1),
+                    "trace_id": "my-trace-42",
                     "query_text": "auth patterns",
                     "returned_item_ids": [ki_id],
                     "rating": "positive",

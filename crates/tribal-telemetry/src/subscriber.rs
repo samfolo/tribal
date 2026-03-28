@@ -1,10 +1,12 @@
 //! Tracing subscriber initialisation.
 //!
 //! [`init_subscriber`] builds a layered subscriber from a
-//! [`LoggingConfig`](tribal_config::LoggingConfig) and optionally layers
-//! an OTLP trace exporter when [`TelemetryConfig`](tribal_config::TelemetryConfig)
-//! specifies an endpoint.  It should be called exactly once, early in
-//! program startup.
+//! [`LoggingConfig`](tribal_config::LoggingConfig).  When
+//! [`TelemetryConfig::enabled`](tribal_config::TelemetryConfig) is `true`,
+//! an OpenTelemetry tracing layer is installed so spans carry valid trace
+//! context (trace IDs, span IDs).  If an OTLP endpoint is also configured,
+//! spans are exported; otherwise they are created but not shipped.  It
+//! should be called exactly once, early in program startup.
 
 use std::sync::{
     Arc,
@@ -12,6 +14,7 @@ use std::sync::{
 };
 
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider};
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing::subscriber::set_global_default;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
@@ -35,8 +38,10 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 /// 1. **Filter layer** — `EnvFilter` parsed from `logging.level`.
 /// 2. **Format layer** — JSON or pretty, depending on `logging.format`.
 /// 3. **Output layer** — stderr or rolling file, depending on `logging.output`.
-/// 4. **OTLP layer** (optional) — when `telemetry.enabled` is true and
-///    `telemetry.otlp_endpoint` is set, spans are exported via OTLP.
+/// 4. **OpenTelemetry layer** — when `telemetry.enabled` is true, spans
+///    carry valid trace context (trace IDs, span IDs).  If an OTLP
+///    endpoint is also configured, spans are exported; otherwise they
+///    are created but not shipped.
 ///
 /// Both stderr and file output use non-blocking writers for consistent
 /// behaviour.  The returned [`TelemetryGuard`] must be held for the
@@ -138,13 +143,22 @@ fn try_init_subscriber(
 
     let otlp_enabled = telemetry.enabled && telemetry.otlp_endpoint.is_some();
 
-    let (tracer_provider, otel_layer) = if otlp_enabled {
-        let provider = otlp::build_tracer_provider(telemetry)?;
-        let tracer = provider.tracer("tribal");
-        let layer = tracing_opentelemetry::layer().with_tracer(tracer);
-        (Some(provider), Some(layer))
-    } else {
-        (None, None)
+    // Install the OTel tracing layer when telemetry is enabled so spans
+    // carry valid trace context (trace IDs, span IDs).  When an OTLP
+    // endpoint is configured the provider exports; otherwise spans are
+    // created with valid context but not shipped.
+    let (tracer_provider, otel_layer) = match (telemetry.enabled, otlp_enabled) {
+        (_, true) => {
+            let provider = otlp::build_tracer_provider(telemetry)?;
+            let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
+            (Some(provider), Some(layer))
+        }
+        (true, false) => {
+            let provider = SdkTracerProvider::builder().build();
+            let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
+            (Some(provider), Some(layer))
+        }
+        (false, false) => (None, None),
     };
 
     let (meter_provider, recorder): (Option<_>, Arc<dyn MetricsRecorder>) = if otlp_enabled {
@@ -160,7 +174,6 @@ fn try_init_subscriber(
     //
     // JSON and Pretty produce different concrete types, so the
     // `set_global_default` call is duplicated in each branch.
-    // The optional OTLP layer is added via `.with(Option<Layer>)`.
     match logging.format {
         LogFormat::Json => {
             let subscriber = Registry::default().with(env_filter).with(otel_layer).with(

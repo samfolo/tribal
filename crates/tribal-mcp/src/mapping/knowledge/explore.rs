@@ -194,7 +194,7 @@ mod tests {
     fn test_explore_request_deserialises_full() {
         let json = serde_json::json!({
             "item_id": "ki_abc",
-            "session_trace_id": "trace1",
+            "session_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
             "direction": "both",
             "relation_types": ["supports", "contradicts"],
             "depth": 2,
@@ -213,7 +213,7 @@ mod tests {
             anchor: sample_item("ki_anchor"),
             anchor_standing: sample_standing(),
             related_items: vec![],
-            trace_id: "t1".into(),
+            trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(),
             exact: true,
         };
         let json = serde_json::to_value(&resp).expect("serialises");
@@ -235,7 +235,7 @@ mod tests {
                 standing: None,
                 references: None,
             }],
-            trace_id: "t1".into(),
+            trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(),
             exact: true,
         };
         let result = resp.into_call_tool_result();
@@ -265,7 +265,7 @@ mod tests {
                 standing: None,
                 references: None,
             }],
-            trace_id: "t1".into(),
+            trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(),
             exact: true,
         };
         let result = resp.into_call_tool_result();

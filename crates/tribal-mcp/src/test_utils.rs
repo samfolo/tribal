@@ -132,6 +132,7 @@ impl From<TestHandler> for TribalServerHandler {
             th.repositories,
             th.session,
             th.config,
+            "stdio",
         )
     }
 }
