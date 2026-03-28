@@ -137,6 +137,11 @@ impl TribalServerHandler {
             Err(call_result) => return Ok(call_result),
         };
 
+        tracing::Span::current().record(
+            span_attrs::PROJECT_ID,
+            tracing::field::display(result.job.project_id()),
+        );
+
         // -- 3. Wait (if requested and not already terminal) -----------------
 
         if let Some(wait) = request

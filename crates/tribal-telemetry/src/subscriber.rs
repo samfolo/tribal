@@ -12,6 +12,7 @@ use std::sync::{
 };
 
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider};
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing::subscriber::set_global_default;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
@@ -138,14 +139,16 @@ fn try_init_subscriber(
 
     let otlp_enabled = telemetry.enabled && telemetry.otlp_endpoint.is_some();
 
-    let (tracer_provider, otel_layer) = if otlp_enabled {
-        let provider = otlp::build_tracer_provider(telemetry)?;
-        let tracer = provider.tracer("tribal");
-        let layer = tracing_opentelemetry::layer().with_tracer(tracer);
-        (Some(provider), Some(layer))
+    // Always install the OTel tracing layer so spans carry valid trace
+    // context (trace IDs, span IDs) regardless of whether an exporter
+    // is configured.  When OTLP export is disabled the provider has no
+    // exporter — spans are created but not shipped.
+    let tracer_provider = if otlp_enabled {
+        otlp::build_tracer_provider(telemetry)?
     } else {
-        (None, None)
+        SdkTracerProvider::builder().build()
     };
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer("tribal"));
 
     let (meter_provider, recorder): (Option<_>, Arc<dyn MetricsRecorder>) = if otlp_enabled {
         let provider = otlp::build_meter_provider(telemetry)?;
@@ -160,7 +163,6 @@ fn try_init_subscriber(
     //
     // JSON and Pretty produce different concrete types, so the
     // `set_global_default` call is duplicated in each branch.
-    // The optional OTLP layer is added via `.with(Option<Layer>)`.
     match logging.format {
         LogFormat::Json => {
             let subscriber = Registry::default().with(env_filter).with(otel_layer).with(
@@ -192,7 +194,7 @@ fn try_init_subscriber(
     }
 
     Ok((
-        TelemetryGuard::new(guard, tracer_provider, meter_provider),
+        TelemetryGuard::new(guard, Some(tracer_provider), meter_provider),
         recorder,
     ))
 }
