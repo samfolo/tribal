@@ -725,7 +725,7 @@ impl TestHarness {
             repositories,
             session,
             handler_config,
-            "stdio".to_owned(),
+            "stdio",
         );
 
         let (server_transport, client_transport) = tokio::io::duplex(DUPLEX_BUFFER_SIZE);
@@ -827,7 +827,7 @@ async fn start_and_connect(
         repositories,
         session,
         handler_config,
-        "stdio".to_owned(),
+        "stdio",
     );
 
     let (server_transport, client_transport) = tokio::io::duplex(DUPLEX_BUFFER_SIZE);

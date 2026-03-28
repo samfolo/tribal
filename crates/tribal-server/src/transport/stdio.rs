@@ -74,7 +74,7 @@ pub(crate) async fn run_stdio_transport(
         repositories,
         session,
         handler_config,
-        "stdio".to_owned(),
+        "stdio",
     );
 
     // -- Serve ---------------------------------------------------------------

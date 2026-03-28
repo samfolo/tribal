@@ -34,7 +34,7 @@ impl TribalServerHandler {
             parent: None,
             "tribal.set_context",
             { span_attrs::PRINCIPAL_KEY } = principal_key.as_str(),
-            { span_attrs::TRANSPORT } = self.transport_name.as_str(),
+            { span_attrs::TRANSPORT } = self.transport_name,
             { span_attrs::PROJECT_ID } = tracing::field::Empty,
         );
         async {
