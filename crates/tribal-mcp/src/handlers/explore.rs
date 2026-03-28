@@ -254,12 +254,18 @@ impl TribalServerHandler {
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
 
+        tracing::Span::current().record(
+            span_attrs::PROJECT_ID,
+            tracing::field::display(result.anchor.project_id()),
+        );
+
         // -- Build response --------------------------------------------------
 
-        let trace_id = request.session_trace_id.unwrap_or_else(|| {
-            tribal_telemetry::current_trace_id()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string())
-        });
+        let trace_id = match request.session_trace_id {
+            Some(id) => id.to_ascii_lowercase(),
+            None => tribal_telemetry::current_trace_id()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
+        };
 
         let related_items: Vec<McpExplorationResult> = result
             .related_items
