@@ -63,12 +63,14 @@ pub fn current_trace_id() -> Option<String> {
 // Validation
 // ---------------------------------------------------------------------------
 
-/// Returns `true` when `s` is a syntactically valid OpenTelemetry trace ID.
+/// Returns `true` when `s` is a syntactically valid OpenTelemetry trace ID:
+/// exactly 32 hex characters, not all zeros.
 ///
-/// Delegates to [`TraceId::from_hex`] and rejects the all-zero invalid ID.
+/// Delegates to [`TraceId::from_hex`] for hex parsing and rejects the
+/// all-zero invalid ID.
 #[must_use]
 pub fn is_valid_trace_id(s: &str) -> bool {
-    TraceId::from_hex(s).is_ok_and(|id| id != TraceId::INVALID)
+    s.len() == 32 && TraceId::from_hex(s).is_ok_and(|id| id != TraceId::INVALID)
 }
 
 /// Outcome of attempting to link a span to a serialised trace context.
