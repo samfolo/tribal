@@ -113,18 +113,15 @@ async fn test_extraction_records_token_usage() {
     teardown(ctx).await;
 }
 
-/// Verifies that the extraction stage completes and records token usage
-/// even when `trace_context` is null on the job row. The `trace_id` on
-/// the token usage record is `None` in test environments (no OTel layer);
-/// in production the worker's own span provides a fallback.
-#[tokio::test]
-async fn test_extraction_records_token_usage_with_null_trace_context() {
+/// Runs an extraction job with the given `trace_context` and asserts that
+/// the worker completes the stage and records exactly one token usage entry.
+async fn assert_extraction_with_trace_context(trace_context: Option<String>, label: &str) {
     let _guard = serial_lock().await;
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.expect("create pool");
 
     let (principal_id, project_id, system_pv_id, user_pv_id) =
-        setup_prerequisites(ctx, "null-trace-ctx").await;
+        setup_prerequisites(ctx, label).await;
 
     let candidates = vec![a_candidate().build()];
     let response_json = extraction_response_json(&candidates, &[]);
@@ -143,6 +140,7 @@ async fn test_extraction_records_token_usage_with_null_trace_context() {
                     .triage_user_prompt_version_id(user_pv_id)
                     .relation_system_prompt_version_id(system_pv_id)
                     .relation_user_prompt_version_id(user_pv_id)
+                    .trace_context(trace_context)
                     .build(),
             )
             .await
@@ -190,17 +188,37 @@ async fn test_extraction_records_token_usage_with_null_trace_context() {
         .await
         .expect("find token usage");
 
-    assert_eq!(
-        records.len(),
-        1,
-        "extraction should produce 1 token usage record even with null trace_context",
-    );
+    assert_eq!(records.len(), 1, "{label}: expected 1 token usage record");
 
     let r = &records[0];
     assert_eq!(r.stage(), PipelineStage::Extraction);
     assert_eq!(r.job_id(), Some(job_id));
+    // Without an OTel layer the fallback to current_trace_id() also
+    // returns None, so token_usage.trace_id is None in test environments.
+    assert!(
+        r.trace_id().is_none(),
+        "{label}: trace_id should be None without an OTel layer",
+    );
 
     teardown(ctx).await;
+}
+
+/// The worker completes extraction and records token usage when
+/// `trace_context` is null on the job row.
+#[tokio::test]
+async fn test_extraction_records_token_usage_with_null_trace_context() {
+    assert_extraction_with_trace_context(None, "null trace_context").await;
+}
+
+/// The worker completes extraction and records token usage when
+/// `trace_context` contains a malformed (non-W3C) string.
+#[tokio::test]
+async fn test_extraction_records_token_usage_with_malformed_trace_context() {
+    assert_extraction_with_trace_context(
+        Some("not-a-valid-traceparent".to_owned()),
+        "malformed trace_context",
+    )
+    .await;
 }
 
 /// Verifies that the triage novel path records exactly 4 token usage

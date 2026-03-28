@@ -594,8 +594,9 @@ mod tests {
 
         let job_mock = MockJobRepository::builder()
             .when_insert(move |new_job| {
-                if new_job.trace_context.is_some() {
-                    saw_clone.store(true, Ordering::SeqCst);
+                if let Some(tc) = &new_job.trace_context {
+                    let valid = tribal_telemetry::trace_id_from_traceparent(tc).is_some();
+                    saw_clone.store(valid, Ordering::SeqCst);
                 }
                 true
             })
@@ -634,7 +635,7 @@ mod tests {
 
         assert!(
             saw_trace_context.load(Ordering::SeqCst),
-            "NewJob should have a non-None trace_context with an OTel subscriber",
+            "NewJob should have a valid W3C traceparent with an OTel subscriber",
         );
     }
 }
