@@ -144,8 +144,7 @@ impl TribalServerHandler {
             };
 
         if let Some(pid) = &project_id {
-            tracing::Span::current()
-                .record(span_attrs::PROJECT_ID, tracing::field::display(pid));
+            tracing::Span::current().record(span_attrs::PROJECT_ID, tracing::field::display(pid));
         }
 
         let semaphore = self

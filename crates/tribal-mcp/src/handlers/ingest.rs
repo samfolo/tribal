@@ -219,6 +219,8 @@ async fn execute_ingest(
         .find_by_id(conn, params.project_id)
         .await?;
 
+    let trace_context = tribal_telemetry::current_trace_context();
+
     let new_job = NewJob::builder()
         .project_id(params.project_id)
         .principal_id(params.principal_id)
@@ -232,6 +234,7 @@ async fn execute_ingest(
         .triage_user_prompt_version_id(params.active_prompts.triage_user_prompt_version_id)
         .relation_system_prompt_version_id(params.active_prompts.relation_system_prompt_version_id)
         .relation_user_prompt_version_id(params.active_prompts.relation_user_prompt_version_id)
+        .trace_context(trace_context)
         .build();
 
     let job = repositories.job.insert(conn, &new_job).await?;
@@ -252,9 +255,16 @@ async fn execute_ingest(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
+    use opentelemetry::trace::TracerProvider;
+    use opentelemetry_sdk::trace::SdkTracerProvider;
     use rmcp::model::ErrorCode;
+    use tracing::Instrument;
+    use tracing_subscriber::layer::SubscriberExt;
     use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId};
     use tribal_test_utils::{
         MockJobRepository, MockProjectRepository, MockTaskRepository, a_job, a_project, a_task,
@@ -560,5 +570,69 @@ mod tests {
 
         assert_eq!(ctx["type"], "ManualCapture");
         assert_eq!(ctx["capture_method"], "mcp");
+    }
+
+    // -- Trace context --------------------------------------------------------
+
+    /// Verifies that `execute_ingest` populates `trace_context` on the
+    /// `NewJob` when a valid OpenTelemetry context is active.
+    #[tokio::test]
+    async fn test_execute_ingest_captures_trace_context() {
+        let provider = SdkTracerProvider::builder().build();
+        let otel_layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("test"));
+        let subscriber = tracing_subscriber::registry().with(otel_layer);
+
+        let saw_trace_context = Arc::new(AtomicBool::new(false));
+        let saw_clone = Arc::clone(&saw_trace_context);
+
+        let proj_id = ProjectId::new();
+        let prin_id = PrincipalId::new();
+        let project = a_project().id(proj_id).build();
+        let job = a_job().project_id(proj_id).principal_id(prin_id).build();
+        let task = a_task().job_id(job.id()).build();
+
+        let job_mock = MockJobRepository::builder()
+            .when_insert(move |new_job| {
+                if new_job.trace_context.is_some() {
+                    saw_clone.store(true, Ordering::SeqCst);
+                }
+                true
+            })
+            .respond_with(job.clone(), None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.project = Arc::new(
+            MockProjectRepository::builder()
+                .on_find_by_id(project, None)
+                .build(),
+        );
+        repos.job = Arc::new(job_mock);
+        repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
+
+        let params = IngestParams {
+            project_id: proj_id,
+            principal_id: prin_id,
+            source_context: serde_json::json!({}),
+            content: "trace test".into(),
+            active_prompts: test_active_prompt_versions(),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("test_trace_capture");
+            tokio::runtime::Handle::current().block_on(
+                async {
+                    let ctx = test_context().await;
+                    let mut tx = ctx.begin_test().await.expect("begin");
+                    let _ = execute_ingest(&mut tx, &repos, params).await;
+                }
+                .instrument(span),
+            );
+        });
+
+        assert!(
+            saw_trace_context.load(Ordering::SeqCst),
+            "NewJob should have a non-None trace_context with an OTel subscriber",
+        );
     }
 }
