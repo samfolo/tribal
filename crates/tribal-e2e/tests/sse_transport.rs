@@ -18,7 +18,7 @@ use transport_harness::{
 use tribal_config::{ServerConfig, SseConfig};
 use tribal_domain::Scope;
 use tribal_mcp::{AppState, HandlerConfig};
-use tribal_server::run_sse_transport;
+use tribal::run_sse_transport;
 use tribal_test_utils::serial_lock;
 
 // ---------------------------------------------------------------------------

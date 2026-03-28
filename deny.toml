@@ -60,7 +60,7 @@ expression = "LicenseRef-Elastic-2.0"
 license-files = [{ path = "../../LICENSE", hash = 0 }]
 
 [[licenses.clarify]]
-name = "tribal-server"
+name = "tribal"
 expression = "LicenseRef-Elastic-2.0"
 license-files = [{ path = "../../LICENSE", hash = 0 }]
 

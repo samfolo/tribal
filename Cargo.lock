@@ -4819,6 +4819,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "tribal"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "clap",
+ "dashmap",
+ "gethostname",
+ "gix",
+ "http",
+ "http-body",
+ "notify",
+ "notify-debouncer-mini",
+ "pin-project-lite",
+ "rand 0.10.0",
+ "reqwest 0.13.2",
+ "rmcp",
+ "serde_json",
+ "shellexpand",
+ "sqlx",
+ "tempfile",
+ "tera",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tribal-common",
+ "tribal-config",
+ "tribal-db",
+ "tribal-domain",
+ "tribal-inference",
+ "tribal-mcp",
+ "tribal-telemetry",
+ "tribal-test-utils",
+ "tribal-worker",
+ "uuid",
+]
+
+[[package]]
 name = "tribal-common"
 version = "0.1.0"
 dependencies = [
@@ -4891,13 +4933,13 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tribal",
  "tribal-common",
  "tribal-config",
  "tribal-db",
  "tribal-domain",
  "tribal-inference",
  "tribal-mcp",
- "tribal-server",
  "tribal-telemetry",
  "tribal-test-utils",
  "wiremock",
@@ -4949,48 +4991,6 @@ dependencies = [
  "tribal-telemetry",
  "tribal-test-utils",
  "typed-builder",
- "uuid",
-]
-
-[[package]]
-name = "tribal-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "bytes",
- "chrono",
- "clap",
- "dashmap",
- "gethostname",
- "gix",
- "http",
- "http-body",
- "notify",
- "notify-debouncer-mini",
- "pin-project-lite",
- "rand 0.10.0",
- "reqwest 0.13.2",
- "rmcp",
- "serde_json",
- "shellexpand",
- "sqlx",
- "tempfile",
- "tera",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tower",
- "tracing",
- "tribal-common",
- "tribal-config",
- "tribal-db",
- "tribal-domain",
- "tribal-inference",
- "tribal-mcp",
- "tribal-telemetry",
- "tribal-test-utils",
- "tribal-worker",
  "uuid",
 ]
 

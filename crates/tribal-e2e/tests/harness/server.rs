@@ -29,7 +29,7 @@ use tribal_mcp::{
     AppState, AuthContext, AuthenticatedPrincipal, ConnectionRepositories, HandlerConfig,
     SessionContext, SessionProject, TransportAuthStrategy, TribalServerHandler,
 };
-use tribal_server::{ServerHandle, start_server};
+use tribal::{ServerHandle, start_server};
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
     Seed, a_new_principal, a_new_project, serial_lock, test_context, truncate_all_tables,
