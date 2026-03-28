@@ -173,7 +173,7 @@ impl TribalServerHandler {
         // -- Build params and execute -----------------------------------------
 
         let feedback_params = FeedbackParams {
-            trace_id: request.trace_id,
+            trace_id: request.trace_id.to_ascii_lowercase(),
             query_text: request.query_text,
             embedding_model,
             returned_item_ids,
