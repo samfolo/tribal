@@ -113,6 +113,96 @@ async fn test_extraction_records_token_usage() {
     teardown(ctx).await;
 }
 
+/// Verifies that the extraction stage completes and records token usage
+/// even when `trace_context` is null on the job row. The `trace_id` on
+/// the token usage record is `None` in test environments (no OTel layer);
+/// in production the worker's own span provides a fallback.
+#[tokio::test]
+async fn test_extraction_records_token_usage_with_null_trace_context() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "null-trace-ctx").await;
+
+    let candidates = vec![a_candidate().build()];
+    let response_json = extraction_response_json(&candidates, &[]);
+
+    let (job_id, _task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        let job = PgJobRepository
+            .insert(
+                &mut conn,
+                &a_new_job()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .extraction_system_prompt_version_id(system_pv_id)
+                    .extraction_user_prompt_version_id(user_pv_id)
+                    .triage_system_prompt_version_id(system_pv_id)
+                    .triage_user_prompt_version_id(user_pv_id)
+                    .relation_system_prompt_version_id(system_pv_id)
+                    .relation_user_prompt_version_id(user_pv_id)
+                    .build(),
+            )
+            .await
+            .expect("setup: insert job");
+        let task = PgTaskRepository
+            .insert(
+                &mut conn,
+                &a_new_task()
+                    .job_id(job.id())
+                    .task_type(TaskType::Extraction)
+                    .build(),
+            )
+            .await
+            .expect("setup: insert task");
+        (job.id(), task.id())
+    };
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(&response_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    poll_job_status(&pool, job_id, JobStatus::Triaging, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+    let records = PgTokenUsageRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("find token usage");
+
+    assert_eq!(
+        records.len(),
+        1,
+        "extraction should produce 1 token usage record even with null trace_context",
+    );
+
+    let r = &records[0];
+    assert_eq!(r.stage(), PipelineStage::Extraction);
+    assert_eq!(r.job_id(), Some(job_id));
+
+    teardown(ctx).await;
+}
+
 /// Verifies that the triage novel path records exactly 4 token usage
 /// entries: 1 candidate embedding, 1 triage completion, and 2 tag
 /// embeddings (one per unregistered tag).

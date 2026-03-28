@@ -197,7 +197,7 @@ pub fn parent_span_from_trace_id(span: &tracing::Span, trace_id: &str) -> TraceL
     let sc = SpanContext::new(
         tid,
         SpanId::from(1u64),
-        TraceFlags::default(),
+        TraceFlags::SAMPLED,
         true,
         TraceState::default(),
     );
