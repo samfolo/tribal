@@ -9,9 +9,11 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use strum::IntoEnumIterator;
+use tracing::Instrument;
 use tribal_db::{DbError, TraversalDirection};
 use tribal_domain::{
     Direction, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, RelationKind, Standing,
+    span_attrs,
 };
 
 use super::common::acquire_connection;
@@ -93,9 +95,16 @@ impl TribalServerHandler {
     pub(crate) async fn handle_explore(
         &self,
         params: serde_json::Value,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.apply_explore(params).await
+        let principal = self.resolve_principal(&context)?;
+        let span = tracing::info_span!(
+            "tribal.explore",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name.as_str(),
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
+        self.apply_explore(params).instrument(span).await
     }
 
     /// Core logic for `tribal_explore`, separated from the outer handler
