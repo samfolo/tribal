@@ -13,10 +13,10 @@ use transport_harness::{
     INITIALIZE_BODY, MINIMAL_INITIALIZE_BODY, McpTestClient, assert_tool_visibility, fresh_pool,
     seed_auth, seed_scoped_auth, spawn_transport, test_app_state, test_client,
 };
+use tribal::run_http_transport;
 use tribal_config::ServerConfig;
 use tribal_domain::Scope;
 use tribal_mcp::HandlerConfig;
-use tribal::run_http_transport;
 use tribal_test_utils::serial_lock;
 
 // ---------------------------------------------------------------------------
