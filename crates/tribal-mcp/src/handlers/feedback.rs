@@ -173,7 +173,7 @@ impl TribalServerHandler {
         // -- Build params and execute -----------------------------------------
 
         let feedback_params = FeedbackParams {
-            trace_id: request.trace_id.to_ascii_lowercase(),
+            trace_id: request.trace_id,
             query_text: request.query_text,
             embedding_model,
             returned_item_ids,
@@ -219,7 +219,7 @@ async fn execute_feedback(
     params: FeedbackParams,
 ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
     let new_feedback = tribal_db::NewRetrievalFeedback::builder()
-        .trace_id(params.trace_id)
+        .trace_id(params.trace_id.to_ascii_lowercase())
         .query_text(params.query_text)
         .embedding_model(params.embedding_model)
         .returned_item_ids(params.returned_item_ids)
@@ -329,35 +329,26 @@ mod tests {
         assert_eq!(structured["code"], "invalid_argument");
     }
 
-    /// Uppercase hex is a valid trace ID per `is_valid_trace_id` and
-    /// should pass validation (the handler normalises to lowercase
-    /// before storage). The call proceeds past validation and fails at
-    /// the pool phase — asserting the error is NOT `invalid_argument`
-    /// confirms the `trace_id` was accepted.
+    /// Verifies that an uppercase `trace_id` is normalised to lowercase
+    /// before reaching the storage path. The `when_insert` predicate
+    /// asserts the mock receives the lowercased form.
     #[tokio::test]
-    async fn test_apply_feedback_uppercase_trace_id_accepted() {
-        let handler = TestHandler::builder().build();
+    async fn test_execute_feedback_stores_lowercase_trace_id() {
+        let feedback = a_retrieval_feedback().build();
 
-        let ki_id = KnowledgeItemId::new().to_string();
-        let result = handler
-            .apply_feedback(
-                serde_json::json!({
-                    "trace_id": "4BF92F3577B34DA6A3CE929D0E0E4736",
-                    "query_text": "auth patterns",
-                    "returned_item_ids": [ki_id],
-                    "rating": "positive",
-                }),
-                PrincipalId::new(),
-            )
-            .await
-            .expect(NO_PROTOCOL_ERROR);
-
-        assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_ne!(
-            structured["code"], "invalid_argument",
-            "uppercase trace_id should pass validation",
+        let mut repos = test_repositories();
+        repos.retrieval_feedback = Arc::new(
+            MockRetrievalFeedbackRepository::builder()
+                .when_insert(|new_fb| new_fb.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736")
+                .respond_with(feedback, None)
+                .build(),
         );
+
+        let params = FeedbackParams {
+            trace_id: "4BF92F3577B34DA6A3CE929D0E0E4736".into(),
+            ..default_params()
+        };
+        call_execute(&repos, params).await.expect("should succeed");
     }
 
     #[tokio::test]
