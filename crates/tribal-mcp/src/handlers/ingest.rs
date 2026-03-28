@@ -618,17 +618,16 @@ mod tests {
             active_prompts: test_active_prompt_versions(),
         };
 
-        tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::info_span!("test_trace_capture");
-            tokio::runtime::Handle::current().block_on(
-                async {
-                    let ctx = test_context().await;
-                    let mut tx = ctx.begin_test().await.expect("begin");
-                    let _ = execute_ingest(&mut tx, &repos, params).await;
-                }
-                .instrument(span),
-            );
-        });
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let span = tracing::info_span!("test_trace_capture");
+
+        async {
+            let ctx = test_context().await;
+            let mut tx = ctx.begin_test().await.expect("begin");
+            let _ = execute_ingest(&mut tx, &repos, params).await;
+        }
+        .instrument(span)
+        .await;
 
         assert!(
             saw_trace_context.load(Ordering::SeqCst),

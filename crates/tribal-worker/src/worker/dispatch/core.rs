@@ -11,9 +11,9 @@ use std::{
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use tribal_common::{JobStateTxs, POOL_NAME_WORKER, clamp_to_i32, clamp_to_u32};
 use tribal_config::WorkerConfig;
-use tracing::Instrument;
 use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository,
     PgPrincipalRepository, PgTaskRepository, PgTokenUsageRepository, PrincipalRepository,
