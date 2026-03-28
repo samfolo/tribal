@@ -1,8 +1,8 @@
 //! W3C traceparent serialisation and deserialisation utilities.
 //!
 //! Encapsulates the OpenTelemetry propagation API so that consumer
-//! crates never import `opentelemetry` or `tracing-opentelemetry`
-//! types directly.
+//! crates' production code never imports `opentelemetry` or
+//! `tracing-opentelemetry` types directly.
 
 use std::sync::OnceLock;
 
