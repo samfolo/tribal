@@ -9,7 +9,7 @@ use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 use crate::{
     error::StageError,
     parsing::TriageClassification,
-    prompt::variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS},
+    prompt::variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS, system_context},
 };
 
 // ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ pub(crate) fn assemble_triage_prompt(
     let schema_pretty =
         serde_json::to_string_pretty(&schema).expect("schema_for! produces serialisable output");
 
-    let system_ctx = super::variables::system_context(&schema_pretty);
+    let system_ctx = system_context(&schema_pretty);
 
     let rendered_system =
         tera::Tera::one_off(system_template, &system_ctx, false).map_err(|e| {

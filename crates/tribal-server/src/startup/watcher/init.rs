@@ -8,7 +8,10 @@ use tokio::sync::RwLock;
 use tracing::warn;
 use tribal_mcp::ActivePromptVersions;
 
-use super::{LOG_WATCHER_CHANNEL_CLOSED, LOG_WATCHER_ERROR, reload::reload_single_prompt};
+use super::{
+    constants::{LOG_WATCHER_CHANNEL_CLOSED, LOG_WATCHER_ERROR},
+    reload::reload_single_prompt,
+};
 use crate::{error::AppError, startup::PromptTemplateLocation};
 
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
