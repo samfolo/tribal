@@ -6,8 +6,7 @@
 
 use std::collections::HashMap;
 
-use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry::trace::TraceContextExt;
+use opentelemetry::{propagation::TextMapPropagator, trace::TraceContextExt};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -179,10 +178,7 @@ mod tests {
             let _guard = span.enter();
 
             let result = current_trace_context();
-            assert!(
-                result.is_none(),
-                "should return None without an OTel layer",
-            );
+            assert!(result.is_none(), "should return None without an OTel layer",);
         });
     }
 }
