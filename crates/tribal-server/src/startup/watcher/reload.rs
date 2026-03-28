@@ -11,7 +11,7 @@ use tribal_domain::{PromptRole, PromptStage};
 use tribal_mcp::ActivePromptVersions;
 use tribal_worker::synthetic_validation_context;
 
-use super::{
+use super::constants::{
     LOG_PROMPT_READ_FAILED, LOG_PROMPT_RELOADED, LOG_PROMPT_UPSERT_FAILED,
     LOG_PROMPT_VALIDATION_FAILED,
 };
@@ -24,6 +24,8 @@ use crate::startup::PromptTemplateLocation;
 pub(crate) const VALIDATION_EMPTY_CONTENT: &str = "prompt content must not be empty";
 pub(crate) const VALIDATION_MISSING_REFERENCE: &str =
     "prompt content does not reference required variable";
+pub(crate) const VALIDATION_CONTEXT_PANIC: &str =
+    "synthetic validation context construction panicked";
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -51,7 +53,13 @@ pub(crate) fn validate_prompt_template(
         return Err(VALIDATION_EMPTY_CONTENT.to_owned());
     }
 
-    let tera_ctx = synthetic_validation_context(stage, role);
+    let tera_ctx = match std::panic::catch_unwind(|| synthetic_validation_context(stage, role)) {
+        Ok(ctx) => ctx,
+        // synthetic_validation_context panics only if the hardcoded JSON
+        // cannot deserialise into domain types — a programming error.
+        // Catching the unwind preserves the "watcher never crashes" contract.
+        Err(_) => return Err(VALIDATION_CONTEXT_PANIC.to_owned()),
+    };
 
     let Err(error) = tera::Tera::one_off(content, &tera_ctx, false) else {
         // Full render succeeded. Now verify every required variable is
@@ -79,18 +87,15 @@ fn context_keys(ctx: &tera::Context) -> Vec<String> {
 
 /// Returns a copy of the context with one top-level key removed.
 fn context_without_key(ctx: &tera::Context, key: &str) -> tera::Context {
-    let mut json = ctx.clone().into_json();
-    if let serde_json::Value::Object(ref mut map) = json {
-        map.remove(key);
-    }
-    tera::Context::from_value(json).expect("reduced context is valid JSON")
+    let serde_json::Value::Object(mut map) = ctx.clone().into_json() else {
+        return ctx.clone();
+    };
+    map.remove(key);
+    tera::Context::from_value(serde_json::Value::Object(map))
+        .expect("reduced context is valid JSON")
 }
 
-// ---------------------------------------------------------------------------
-// Single-prompt reload
-// ---------------------------------------------------------------------------
-
-/// Reads, validates, hashes, upserts, and swaps a single prompt version.
+/// Reloads a single prompt version.
 ///
 /// All errors are logged and swallowed — the watcher never crashes.
 pub(crate) async fn reload_single_prompt(
@@ -101,6 +106,8 @@ pub(crate) async fn reload_single_prompt(
 ) {
     let stage = location.stage();
     let role = location.role();
+
+    // -- Read ----------------------------------------------------------------
 
     let content = match tokio::fs::read_to_string(file_path).await {
         Ok(c) => c,
@@ -116,6 +123,8 @@ pub(crate) async fn reload_single_prompt(
         }
     };
 
+    // -- Validate ------------------------------------------------------------
+
     if let Err(reason) = validate_prompt_template(stage, role, &content) {
         warn!(
             %reason,
@@ -126,6 +135,8 @@ pub(crate) async fn reload_single_prompt(
         );
         return;
     }
+
+    // -- Upsert --------------------------------------------------------------
 
     let content_hash = sha256_hex(&content);
 
@@ -161,6 +172,8 @@ pub(crate) async fn reload_single_prompt(
             return;
         }
     };
+
+    // -- Swap ----------------------------------------------------------------
 
     active_prompt_versions
         .write()
@@ -346,8 +359,12 @@ mod tests {
     async fn test_reload_updates_active_prompt_version() {
         let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
 
-        let target = PromptTemplateLocation::from((PromptStage::Extraction, PromptRole::System));
+        let stage = PromptStage::Extraction;
+        let role = PromptRole::System;
+        let target = PromptTemplateLocation::from((stage, role));
         let file_path = target.resolve(prompts_dir.path());
+
+        let id_before = active.read().await.get_version(stage, role);
 
         let original = tokio::fs::read_to_string(&file_path)
             .await
@@ -357,34 +374,31 @@ mod tests {
             .await
             .expect("write modified prompt");
 
-        let snapshot_before = format!("{:?}", *active.read().await);
-
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let snapshot_after = format!("{:?}", *active.read().await);
+        let id_after = active.read().await.get_version(stage, role);
 
-        assert_ne!(
-            snapshot_before, snapshot_after,
-            "active prompt versions should change after reload",
-        );
+        assert_ne!(id_before, id_after, "version ID should change after reload");
     }
 
     #[tokio::test]
     async fn test_reload_same_content_is_idempotent() {
         let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
 
-        let target = PromptTemplateLocation::from((PromptStage::Extraction, PromptRole::System));
+        let stage = PromptStage::Extraction;
+        let role = PromptRole::System;
+        let target = PromptTemplateLocation::from((stage, role));
         let file_path = target.resolve(prompts_dir.path());
 
-        let snapshot_before = format!("{:?}", *active.read().await);
+        let id_before = active.read().await.get_version(stage, role);
 
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let snapshot_after = format!("{:?}", *active.read().await);
+        let id_after = active.read().await.get_version(stage, role);
 
         assert_eq!(
-            snapshot_before, snapshot_after,
-            "identical content should not change the active version",
+            id_before, id_after,
+            "identical content should not change the version ID",
         );
     }
 
@@ -392,21 +406,23 @@ mod tests {
     async fn test_reload_empty_content_keeps_current_version() {
         let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
 
-        let target = PromptTemplateLocation::from((PromptStage::Triage, PromptRole::User));
+        let stage = PromptStage::Triage;
+        let role = PromptRole::User;
+        let target = PromptTemplateLocation::from((stage, role));
         let file_path = target.resolve(prompts_dir.path());
         tokio::fs::write(&file_path, "")
             .await
             .expect("write empty content");
 
-        let snapshot_before = format!("{:?}", *active.read().await);
+        let id_before = active.read().await.get_version(stage, role);
 
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let snapshot_after = format!("{:?}", *active.read().await);
+        let id_after = active.read().await.get_version(stage, role);
 
         assert_eq!(
-            snapshot_before, snapshot_after,
-            "empty content should not change the active version",
+            id_before, id_after,
+            "empty content should not change the version ID",
         );
     }
 
@@ -414,21 +430,23 @@ mod tests {
     async fn test_reload_invalid_template_keeps_current_version() {
         let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
 
-        let target = PromptTemplateLocation::from((PromptStage::Extraction, PromptRole::System));
+        let stage = PromptStage::Extraction;
+        let role = PromptRole::System;
+        let target = PromptTemplateLocation::from((stage, role));
         let file_path = target.resolve(prompts_dir.path());
-        tokio::fs::write(&file_path, "{{ nonexistent_variable }}")
+        tokio::fs::write(&file_path, "{{ schema }} {{ nonexistent_variable }}")
             .await
             .expect("write invalid template");
 
-        let snapshot_before = format!("{:?}", *active.read().await);
+        let id_before = active.read().await.get_version(stage, role);
 
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let snapshot_after = format!("{:?}", *active.read().await);
+        let id_after = active.read().await.get_version(stage, role);
 
         assert_eq!(
-            snapshot_before, snapshot_after,
-            "invalid template should not change the active version",
+            id_before, id_after,
+            "invalid template should not change the version ID",
         );
     }
 
@@ -436,33 +454,32 @@ mod tests {
     async fn test_reload_updates_and_is_idempotent() {
         let (active, prompts_dir, pool, _guard) = reload_test_harness().await;
 
-        let target = PromptTemplateLocation::from((PromptStage::Relation, PromptRole::User));
+        let stage = PromptStage::Relation;
+        let role = PromptRole::User;
+        let target = PromptTemplateLocation::from((stage, role));
         let file_path = target.resolve(prompts_dir.path());
         let original = tokio::fs::read_to_string(&file_path)
             .await
             .expect("read original");
-        let modified = format!("{original}\n{{# isolation test #}}");
+        let modified = format!("{original}\n{{# idempotency test #}}");
         tokio::fs::write(&file_path, &modified)
             .await
             .expect("write modified prompt");
 
-        let snapshot_before = format!("{:?}", *active.read().await);
+        let id_before = active.read().await.get_version(stage, role);
 
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let snapshot_after = format!("{:?}", *active.read().await);
+        let id_after = active.read().await.get_version(stage, role);
 
-        assert_ne!(
-            snapshot_before, snapshot_after,
-            "relation/user should have changed",
-        );
+        assert_ne!(id_before, id_after, "version ID should change after reload");
 
         // Second reload of same content should be idempotent.
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let snapshot_third = format!("{:?}", *active.read().await);
+        let id_third = active.read().await.get_version(stage, role);
         assert_eq!(
-            snapshot_after, snapshot_third,
+            id_after, id_third,
             "second reload of same content should be idempotent",
         );
     }

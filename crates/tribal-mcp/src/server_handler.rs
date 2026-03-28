@@ -167,6 +167,21 @@ impl ActivePromptVersions {
             }
         }
     }
+
+    /// Returns the active version ID for a single (stage, role) pair.
+    #[must_use]
+    pub fn get_version(&self, stage: PromptStage, role: PromptRole) -> PromptVersionId {
+        match (stage, role) {
+            (PromptStage::Extraction, PromptRole::System) => {
+                self.extraction_system_prompt_version_id
+            }
+            (PromptStage::Extraction, PromptRole::User) => self.extraction_user_prompt_version_id,
+            (PromptStage::Triage, PromptRole::System) => self.triage_system_prompt_version_id,
+            (PromptStage::Triage, PromptRole::User) => self.triage_user_prompt_version_id,
+            (PromptStage::Relation, PromptRole::System) => self.relation_system_prompt_version_id,
+            (PromptStage::Relation, PromptRole::User) => self.relation_user_prompt_version_id,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
