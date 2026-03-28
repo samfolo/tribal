@@ -103,6 +103,7 @@ pub(super) fn mcp_service(
     handler_config: HandlerConfig,
     server_config: &ServerConfig,
     cancellation_token: CancellationToken,
+    transport_name: String,
 ) -> McpService {
     let streamable_config = StreamableHttpServerConfig {
         cancellation_token,
@@ -127,6 +128,7 @@ pub(super) fn mcp_service(
                 repositories,
                 session,
                 handler_config.clone(),
+                transport_name.clone(),
             ))
         },
         session_manager,
