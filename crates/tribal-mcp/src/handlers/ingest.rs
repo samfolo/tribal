@@ -8,9 +8,10 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tokio::sync::watch;
+use tracing::Instrument;
 use tribal_common::JobWatchEntry;
 use tribal_db::{DbError, NewJob, NewTask};
-use tribal_domain::{JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType};
+use tribal_domain::{JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType, span_attrs};
 
 use super::common::begin_transaction;
 use crate::{
@@ -72,7 +73,15 @@ impl TribalServerHandler {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let principal = self.resolve_principal(&context)?;
-        self.apply_ingest(params, principal.principal_id()).await
+        let span = tracing::info_span!(
+            "tribal.ingest",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name.as_str(),
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
+        self.apply_ingest(params, principal.principal_id())
+            .instrument(span)
+            .await
     }
 
     /// Core logic for `tribal_ingest`, separated from the outer handler
@@ -123,6 +132,9 @@ impl TribalServerHandler {
                 }
             },
         };
+
+        tracing::Span::current()
+            .record(span_attrs::PROJECT_ID, tracing::field::display(&project_id));
 
         let source_context =
             build_source_context(actor_provider.as_deref(), actor_model.as_deref());
