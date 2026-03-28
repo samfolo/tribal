@@ -1,10 +1,12 @@
 //! Tracing subscriber initialisation.
 //!
 //! [`init_subscriber`] builds a layered subscriber from a
-//! [`LoggingConfig`](tribal_config::LoggingConfig) and optionally layers
-//! an OTLP trace exporter when [`TelemetryConfig`](tribal_config::TelemetryConfig)
-//! specifies an endpoint.  It should be called exactly once, early in
-//! program startup.
+//! [`LoggingConfig`](tribal_config::LoggingConfig).  When
+//! [`TelemetryConfig::enabled`](tribal_config::TelemetryConfig) is `true`,
+//! an OpenTelemetry tracing layer is installed so spans carry valid trace
+//! context (trace IDs, span IDs).  If an OTLP endpoint is also configured,
+//! spans are exported; otherwise they are created but not shipped.  It
+//! should be called exactly once, early in program startup.
 
 use std::sync::{
     Arc,
@@ -36,8 +38,10 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 /// 1. **Filter layer** — `EnvFilter` parsed from `logging.level`.
 /// 2. **Format layer** — JSON or pretty, depending on `logging.format`.
 /// 3. **Output layer** — stderr or rolling file, depending on `logging.output`.
-/// 4. **OTLP layer** (optional) — when `telemetry.enabled` is true and
-///    `telemetry.otlp_endpoint` is set, spans are exported via OTLP.
+/// 4. **OpenTelemetry layer** — when `telemetry.enabled` is true, spans
+///    carry valid trace context (trace IDs, span IDs).  If an OTLP
+///    endpoint is also configured, spans are exported; otherwise they
+///    are created but not shipped.
 ///
 /// Both stderr and file output use non-blocking writers for consistent
 /// behaviour.  The returned [`TelemetryGuard`] must be held for the
