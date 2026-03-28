@@ -5,8 +5,9 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use sqlx::PgConnection;
+use tracing::Instrument;
 use tribal_db::DbError;
-use tribal_domain::ProjectId;
+use tribal_domain::{ProjectId, span_attrs};
 
 use super::common::acquire_connection;
 use crate::{
@@ -29,13 +30,23 @@ impl TribalServerHandler {
     ) -> Result<CallToolResult, McpError> {
         let principal = self.resolve_principal(&context)?;
         let principal_key = principal.principal_key().to_owned();
-        let (result, mutated) = self.apply_set_context(params, &principal_key).await?;
+        let span = tracing::info_span!(
+            "tribal.set_context",
+            { span_attrs::PRINCIPAL_KEY } = principal_key.as_str(),
+            { span_attrs::TRANSPORT } = self.transport_name.as_str(),
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
+        async {
+            let (result, mutated) = self.apply_set_context(params, &principal_key).await?;
 
-        if mutated {
-            notify_session_updated(&self.session, &context.peer).await;
+            if mutated {
+                notify_session_updated(&self.session, &context.peer).await;
+            }
+
+            Ok(result)
         }
-
-        Ok(result)
+        .instrument(span)
+        .await
     }
 
     /// Core logic for `tribal_set_context`, separated from the outer handler
@@ -88,6 +99,11 @@ impl TribalServerHandler {
         } else {
             None
         };
+
+        if let Some(project) = &resolved_project {
+            tracing::Span::current()
+                .record(span_attrs::PROJECT_ID, tracing::field::display(&project.id));
+        }
 
         let mut ctx = self.session.write().await;
         let mut changed = false;
