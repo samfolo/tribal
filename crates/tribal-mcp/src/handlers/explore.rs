@@ -9,9 +9,11 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use strum::IntoEnumIterator;
+use tracing::Instrument;
 use tribal_db::{DbError, TraversalDirection};
 use tribal_domain::{
     Direction, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, RelationKind, Standing,
+    span_attrs,
 };
 
 use super::common::acquire_connection;
@@ -29,7 +31,12 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const DEFAULT_DIRECTION: Direction = Direction::Inbound;
-const MAX_TRACE_ID_LEN: usize = 64;
+
+/// JSON field name for the session trace ID on the explore request.
+///
+/// Duplicated from the serde field name on [`McpExploreRequest`] because
+/// `handle_explore` peeks at the raw JSON before parsing.
+const SESSION_TRACE_ID_FIELD: &str = "session_trace_id";
 
 // ---------------------------------------------------------------------------
 // Service types
@@ -93,9 +100,27 @@ impl TribalServerHandler {
     pub(crate) async fn handle_explore(
         &self,
         params: serde_json::Value,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.apply_explore(params).await
+        let principal = self.resolve_principal(&context)?;
+        let span = tracing::info_span!(
+            parent: None,
+            "tribal.explore",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name,
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
+
+        // If the caller supplied a session_trace_id, attach this span to
+        // that trace so the explore call appears alongside the originating
+        // discover call in the tracing backend.  Validation of the value
+        // still happens inside apply_explore; an invalid ID here simply
+        // leaves the span as a root.
+        if let Some(trace_id) = params.get(SESSION_TRACE_ID_FIELD).and_then(|v| v.as_str()) {
+            let _ = tribal_telemetry::parent_span_from_trace_id(&span, trace_id);
+        }
+
+        self.apply_explore(params).instrument(span).await
     }
 
     /// Core logic for `tribal_explore`, separated from the outer handler
@@ -191,14 +216,11 @@ impl TribalServerHandler {
         // -- Validate session_trace_id ---------------------------------------
 
         if let Some(ref trace_id) = request.session_trace_id
-            && (trace_id.is_empty() || trace_id.len() > MAX_TRACE_ID_LEN)
+            && !tribal_telemetry::is_valid_trace_id(trace_id)
         {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: format!(
-                    "session_trace_id must be a non-empty string of at most \
-                     {MAX_TRACE_ID_LEN} bytes"
-                ),
+                message: tribal_telemetry::INVALID_SESSION_TRACE_ID.into(),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
@@ -234,9 +256,11 @@ impl TribalServerHandler {
 
         // -- Build response --------------------------------------------------
 
-        let trace_id = request
-            .session_trace_id
-            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        let trace_id = match request.session_trace_id {
+            Some(id) => id.to_ascii_lowercase(),
+            None => tribal_telemetry::current_trace_id()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
+        };
 
         let related_items: Vec<McpExplorationResult> = result
             .related_items
@@ -290,6 +314,11 @@ async fn execute_explore(
         .knowledge_item
         .find_by_id(conn, params.anchor_id)
         .await?;
+
+    tracing::Span::current().record(
+        span_attrs::PROJECT_ID,
+        tracing::field::display(anchor.project_id()),
+    );
 
     // -- Compute anchor standing (always required) ---------------------------
 
@@ -1417,13 +1446,53 @@ mod tests {
         let result = handler
             .apply_explore(serde_json::json!({
                 "item_id": anchor_id.to_string(),
-                "session_trace_id": "my-trace-42"
+                "session_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
             }))
             .await
             .expect(NO_PROTOCOL_ERROR);
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["trace_id"], "my-trace-42");
+        assert_eq!(structured["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736");
+    }
+
+    #[tokio::test]
+    async fn test_session_trace_id_uppercase_normalised_to_lowercase() {
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
+        let anchor_id = KnowledgeItemId::new();
+        let prin_id = PrincipalId::new();
+        let anchor = test_anchor(anchor_id, prin_id);
+        let standing = a_standing().build();
+        let traversal = TraversalResponse {
+            nodes: vec![],
+            exact: true,
+        };
+
+        let mut repos = repos_with_anchor_and_traversal(anchor, standing, traversal, vec![]);
+        repos.principal = Arc::new(
+            MockPrincipalRepository::builder()
+                .on_find_by_id(test_principal(prin_id, "user:test"), None)
+                .build(),
+        );
+
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
+
+        let result = handler
+            .apply_explore(serde_json::json!({
+                "item_id": anchor_id.to_string(),
+                "session_trace_id": "4BF92F3577B34DA6A3CE929D0E0E4736"
+            }))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(
+            structured["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736",
+            "uppercase session_trace_id should be normalised to lowercase",
+        );
     }
 
     #[tokio::test]
@@ -1477,13 +1546,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_trace_id_too_long_rejected() {
+    async fn test_session_trace_id_non_hex_rejected() {
         let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
-        let long_trace = "x".repeat(MAX_TRACE_ID_LEN + 1);
 
         let result = handler
-            .apply_explore(serde_json::json!({"item_id": ki_id, "session_trace_id": long_trace}))
+            .apply_explore(serde_json::json!({
+                "item_id": ki_id,
+                "session_trace_id": "my-trace-42"
+            }))
             .await
             .expect(NO_PROTOCOL_ERROR);
 

@@ -10,9 +10,10 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use sqlx::PgConnection;
+use tracing::Instrument;
 use tribal_db::DbError;
 use tribal_domain::{
-    KnowledgeItem, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, Standing,
+    KnowledgeItem, KnowledgeItemId, McpErrorCode, PrincipalId, Reference, Standing, span_attrs,
 };
 
 use super::common::acquire_connection;
@@ -82,9 +83,17 @@ impl TribalServerHandler {
     pub(crate) async fn handle_get_item(
         &self,
         params: serde_json::Value,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.apply_get_item(params).await
+        let principal = self.resolve_principal(&context)?;
+        let span = tracing::info_span!(
+            parent: None,
+            "tribal.get_item",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name,
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
+        self.apply_get_item(params).instrument(span).await
     }
 
     /// Core logic for `tribal_get_item`, separated from the outer handler
@@ -96,6 +105,11 @@ impl TribalServerHandler {
     /// `IntoCallToolResult`. Only protocol-level errors (malformed JSON)
     /// return `Err(McpError)`.
     async fn apply_get_item(&self, params: serde_json::Value) -> Result<CallToolResult, McpError> {
+        if let Some(project) = &self.session.read().await.project {
+            tracing::Span::current()
+                .record(span_attrs::PROJECT_ID, tracing::field::display(&project.id));
+        }
+
         let request: McpGetItemRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
