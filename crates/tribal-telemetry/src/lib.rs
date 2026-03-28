@@ -14,7 +14,7 @@ mod subscriber;
 pub use error::TelemetryError;
 pub use guard::TelemetryGuard;
 pub use propagation::{
-    TraceLink, current_trace_context, current_trace_id, is_valid_trace_id,
+    INVALID_TRACE_ID, TraceLink, current_trace_context, current_trace_id, is_valid_trace_id,
     parent_span_from_traceparent,
 };
 pub use recorder::{MetricsRecorder, NoopMetricsRecorder, OtelMetricsRecorder, noop_recorder};

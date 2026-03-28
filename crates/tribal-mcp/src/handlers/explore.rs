@@ -31,7 +31,6 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 const DEFAULT_DIRECTION: Direction = Direction::Inbound;
-const MAX_TRACE_ID_LEN: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Service types
@@ -200,14 +199,11 @@ impl TribalServerHandler {
         // -- Validate session_trace_id ---------------------------------------
 
         if let Some(ref trace_id) = request.session_trace_id
-            && (trace_id.is_empty() || trace_id.len() > MAX_TRACE_ID_LEN)
+            && !tribal_telemetry::is_valid_trace_id(trace_id)
         {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: format!(
-                    "session_trace_id must be a non-empty string of at most \
-                     {MAX_TRACE_ID_LEN} bytes"
-                ),
+                message: tribal_telemetry::INVALID_TRACE_ID.into(),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
@@ -243,9 +239,10 @@ impl TribalServerHandler {
 
         // -- Build response --------------------------------------------------
 
-        let trace_id = request
-            .session_trace_id
-            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        let trace_id = request.session_trace_id.unwrap_or_else(|| {
+            tribal_telemetry::current_trace_id()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string())
+        });
 
         let related_items: Vec<McpExplorationResult> = result
             .related_items
@@ -1426,13 +1423,13 @@ mod tests {
         let result = handler
             .apply_explore(serde_json::json!({
                 "item_id": anchor_id.to_string(),
-                "session_trace_id": "my-trace-42"
+                "session_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
             }))
             .await
             .expect(NO_PROTOCOL_ERROR);
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["trace_id"], "my-trace-42");
+        assert_eq!(structured["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736");
     }
 
     #[tokio::test]
@@ -1486,13 +1483,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_trace_id_too_long_rejected() {
+    async fn test_session_trace_id_non_hex_rejected() {
         let handler = TestHandler::builder().build();
         let ki_id = KnowledgeItemId::new().to_string();
-        let long_trace = "x".repeat(MAX_TRACE_ID_LEN + 1);
 
         let result = handler
-            .apply_explore(serde_json::json!({"item_id": ki_id, "session_trace_id": long_trace}))
+            .apply_explore(serde_json::json!({
+                "item_id": ki_id,
+                "session_trace_id": "my-trace-42"
+            }))
             .await
             .expect(NO_PROTOCOL_ERROR);
 
