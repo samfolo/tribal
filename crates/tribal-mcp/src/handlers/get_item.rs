@@ -83,9 +83,16 @@ impl TribalServerHandler {
     pub(crate) async fn handle_get_item(
         &self,
         params: serde_json::Value,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.apply_get_item(params).await
+        let principal = self.resolve_principal(&context)?;
+        let span = tracing::info_span!(
+            "tribal.get_item",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name.as_str(),
+            { span_attrs::PROJECT_ID } = tracing::field::Empty,
+        );
+        self.apply_get_item(params).instrument(span).await
     }
 
     /// Core logic for `tribal_get_item`, separated from the outer handler
