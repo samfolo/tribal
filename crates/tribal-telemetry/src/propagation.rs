@@ -58,6 +58,7 @@ impl TraceLink {
 /// parent was set successfully. Returns [`TraceLink::Invalid`] when the
 /// traceparent is `None`, empty, or malformed — the span remains a root
 /// span and the caller should record `tribal.trace_context.invalid = true`.
+#[must_use]
 pub fn parent_span_from_traceparent(span: &tracing::Span, traceparent: Option<&str>) -> TraceLink {
     let Some(value) = traceparent.filter(|s| !s.is_empty()) else {
         return TraceLink::Invalid;
@@ -90,7 +91,7 @@ mod tests {
 
     use super::*;
 
-    /// Builds a tracing subscriber with an OTel layer backed by an
+    /// Builds a tracing subscriber with an `OTel` layer backed by an
     /// in-memory tracer provider (no exporter).
     fn otel_subscriber() -> (impl tracing::Subscriber, SdkTracerProvider) {
         let provider = SdkTracerProvider::builder().build();
