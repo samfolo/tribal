@@ -139,16 +139,23 @@ fn try_init_subscriber(
 
     let otlp_enabled = telemetry.enabled && telemetry.otlp_endpoint.is_some();
 
-    // Always install the OTel tracing layer so spans carry valid trace
-    // context (trace IDs, span IDs) regardless of whether an exporter
-    // is configured.  When OTLP export is disabled the provider has no
-    // exporter — spans are created but not shipped.
-    let tracer_provider = if otlp_enabled {
-        otlp::build_tracer_provider(telemetry)?
-    } else {
-        SdkTracerProvider::builder().build()
+    // Install the OTel tracing layer when telemetry is enabled so spans
+    // carry valid trace context (trace IDs, span IDs).  When an OTLP
+    // endpoint is configured the provider exports; otherwise spans are
+    // created with valid context but not shipped.
+    let (tracer_provider, otel_layer) = match (telemetry.enabled, otlp_enabled) {
+        (_, true) => {
+            let provider = otlp::build_tracer_provider(telemetry)?;
+            let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
+            (Some(provider), Some(layer))
+        }
+        (true, false) => {
+            let provider = SdkTracerProvider::builder().build();
+            let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
+            (Some(provider), Some(layer))
+        }
+        (false, false) => (None, None),
     };
-    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer("tribal"));
 
     let (meter_provider, recorder): (Option<_>, Arc<dyn MetricsRecorder>) = if otlp_enabled {
         let provider = otlp::build_meter_provider(telemetry)?;
@@ -194,7 +201,7 @@ fn try_init_subscriber(
     }
 
     Ok((
-        TelemetryGuard::new(guard, Some(tracer_provider), meter_provider),
+        TelemetryGuard::new(guard, tracer_provider, meter_provider),
         recorder,
     ))
 }
