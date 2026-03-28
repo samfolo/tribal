@@ -22,9 +22,6 @@ use crate::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_TRACE_ID_LEN: usize = 64;
-
-const EMPTY_TRACE_ID: &str = "trace_id must not be empty";
 const EMPTY_QUERY_TEXT: &str = "query_text must not be empty";
 const EMPTY_RETURNED_ITEMS: &str = "returned_item_ids must contain at least one item";
 const INVALID_RATING: &str = "rating must be \"positive\" or \"negative\"";
@@ -95,18 +92,10 @@ impl TribalServerHandler {
 
         // -- Validate trace_id ------------------------------------------------
 
-        if request.trace_id.is_empty() {
+        if !tribal_telemetry::is_valid_trace_id(&request.trace_id) {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: EMPTY_TRACE_ID.into(),
-                details: serde_json::json!({}),
-            }
-            .into_call_tool_result());
-        }
-        if request.trace_id.len() > MAX_TRACE_ID_LEN {
-            return Ok(McpToolError {
-                code: McpErrorCode::InvalidArgument,
-                message: format!("trace_id must be at most {MAX_TRACE_ID_LEN} bytes"),
+                message: tribal_telemetry::INVALID_TRACE_ID.into(),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());
@@ -332,14 +321,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_feedback_trace_id_too_long_returns_application_error() {
+    async fn test_apply_feedback_non_hex_trace_id_returns_application_error() {
         let handler = TestHandler::builder().build();
 
         let ki_id = KnowledgeItemId::new().to_string();
         let result = handler
             .apply_feedback(
                 serde_json::json!({
-                    "trace_id": "x".repeat(MAX_TRACE_ID_LEN + 1),
+                    "trace_id": "my-trace-42",
                     "query_text": "auth patterns",
                     "returned_item_ids": [ki_id],
                     "rating": "positive",

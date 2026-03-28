@@ -63,6 +63,10 @@ pub fn current_trace_id() -> Option<String> {
 // Validation
 // ---------------------------------------------------------------------------
 
+/// Error message for an invalid OpenTelemetry trace ID.
+pub const INVALID_TRACE_ID: &str =
+    "trace_id must be a valid OpenTelemetry trace ID (32 hex characters)";
+
 /// Returns `true` when `s` is a syntactically valid OpenTelemetry trace ID:
 /// exactly 32 hex characters, not all zeros.
 ///

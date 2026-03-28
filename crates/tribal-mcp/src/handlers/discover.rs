@@ -223,7 +223,8 @@ impl TribalServerHandler {
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
 
-        let trace_id = uuid::Uuid::new_v4().simple().to_string();
+        let trace_id = tribal_telemetry::current_trace_id()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
 
         let items: Vec<McpDiscoveryResult> = result
             .items
