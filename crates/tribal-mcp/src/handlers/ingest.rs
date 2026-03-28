@@ -577,7 +577,7 @@ mod tests {
 
     /// Verifies that `execute_ingest` populates `trace_context` on the
     /// `NewJob` when a valid OpenTelemetry context is active.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_execute_ingest_captures_trace_context() {
         let provider = SdkTracerProvider::builder().build();
         let otel_layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("test"));
