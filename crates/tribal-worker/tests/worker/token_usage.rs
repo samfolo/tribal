@@ -207,7 +207,7 @@ async fn assert_extraction_with_trace_context(trace_context: Option<String>, lab
 /// `trace_context` is null on the job row.
 #[tokio::test]
 async fn test_extraction_records_token_usage_with_null_trace_context() {
-    assert_extraction_with_trace_context(None, "null trace_context").await;
+    assert_extraction_with_trace_context(None, "null-trace-ctx").await;
 }
 
 /// The worker completes extraction and records token usage when
@@ -216,7 +216,7 @@ async fn test_extraction_records_token_usage_with_null_trace_context() {
 async fn test_extraction_records_token_usage_with_malformed_trace_context() {
     assert_extraction_with_trace_context(
         Some("not-a-valid-traceparent".to_owned()),
-        "malformed trace_context",
+        "malformed-trace-ctx",
     )
     .await;
 }
