@@ -178,6 +178,11 @@ pub(crate) async fn reload_single_prompt(
 
     // -- Swap ----------------------------------------------------------------
 
+    let current_id = active_prompt_versions.read().await.get_version(stage, role);
+    if current_id == version.id() {
+        return;
+    }
+
     active_prompt_versions
         .write()
         .await
