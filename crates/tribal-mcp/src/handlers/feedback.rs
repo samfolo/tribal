@@ -329,6 +329,37 @@ mod tests {
         assert_eq!(structured["code"], "invalid_argument");
     }
 
+    /// Uppercase hex is a valid trace ID per `is_valid_trace_id` and
+    /// should pass validation (the handler normalises to lowercase
+    /// before storage). The call proceeds past validation and fails at
+    /// the pool phase — asserting the error is NOT `invalid_argument`
+    /// confirms the `trace_id` was accepted.
+    #[tokio::test]
+    async fn test_apply_feedback_uppercase_trace_id_accepted() {
+        let handler = TestHandler::builder().build();
+
+        let ki_id = KnowledgeItemId::new().to_string();
+        let result = handler
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "4BF92F3577B34DA6A3CE929D0E0E4736",
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [ki_id],
+                    "rating": "positive",
+                }),
+                PrincipalId::new(),
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_ne!(
+            structured["code"], "invalid_argument",
+            "uppercase trace_id should pass validation",
+        );
+    }
+
     #[tokio::test]
     async fn test_apply_feedback_non_hex_trace_id_returns_application_error() {
         let handler = TestHandler::builder().build();

@@ -254,11 +254,6 @@ impl TribalServerHandler {
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
 
-        tracing::Span::current().record(
-            span_attrs::PROJECT_ID,
-            tracing::field::display(result.anchor.project_id()),
-        );
-
         // -- Build response --------------------------------------------------
 
         let trace_id = match request.session_trace_id {
@@ -319,6 +314,11 @@ async fn execute_explore(
         .knowledge_item
         .find_by_id(conn, params.anchor_id)
         .await?;
+
+    tracing::Span::current().record(
+        span_attrs::PROJECT_ID,
+        tracing::field::display(anchor.project_id()),
+    );
 
     // -- Compute anchor standing (always required) ---------------------------
 
@@ -1453,6 +1453,46 @@ mod tests {
 
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736");
+    }
+
+    #[tokio::test]
+    async fn test_session_trace_id_uppercase_normalised_to_lowercase() {
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
+        let anchor_id = KnowledgeItemId::new();
+        let prin_id = PrincipalId::new();
+        let anchor = test_anchor(anchor_id, prin_id);
+        let standing = a_standing().build();
+        let traversal = TraversalResponse {
+            nodes: vec![],
+            exact: true,
+        };
+
+        let mut repos = repos_with_anchor_and_traversal(anchor, standing, traversal, vec![]);
+        repos.principal = Arc::new(
+            MockPrincipalRepository::builder()
+                .on_find_by_id(test_principal(prin_id, "user:test"), None)
+                .build(),
+        );
+
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
+
+        let result = handler
+            .apply_explore(serde_json::json!({
+                "item_id": anchor_id.to_string(),
+                "session_trace_id": "4BF92F3577B34DA6A3CE929D0E0E4736"
+            }))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(
+            structured["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736",
+            "uppercase session_trace_id should be normalised to lowercase",
+        );
     }
 
     #[tokio::test]
