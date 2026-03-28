@@ -37,7 +37,9 @@ async fn test_extraction_records_token_usage() {
                     .triage_user_prompt_version_id(user_pv_id)
                     .relation_system_prompt_version_id(system_pv_id)
                     .relation_user_prompt_version_id(user_pv_id)
-                    .trace_context(Some("test-trace-id".to_owned()))
+                    .trace_context(Some(
+                        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned(),
+                    ))
                     .build(),
             )
             .await
@@ -106,7 +108,7 @@ async fn test_extraction_records_token_usage() {
     assert_eq!(r.attempt(), 0);
     assert_eq!(r.system_prompt_version_id(), Some(system_pv_id));
     assert_eq!(r.user_prompt_version_id(), Some(user_pv_id));
-    assert_eq!(r.trace_id(), Some("test-trace-id"));
+    assert_eq!(r.trace_id(), Some("4bf92f3577b34da6a3ce929d0e0e4736"));
 
     teardown(ctx).await;
 }
