@@ -53,12 +53,12 @@ pub(crate) fn validate_prompt_template(
         return Err(VALIDATION_EMPTY_CONTENT.to_owned());
     }
 
-    let tera_ctx = match std::panic::catch_unwind(|| synthetic_validation_context(stage, role)) {
-        Ok(ctx) => ctx,
-        // synthetic_validation_context panics only if the hardcoded JSON
-        // cannot deserialise into domain types — a programming error.
-        // Catching the unwind preserves the "watcher never crashes" contract.
-        Err(_) => return Err(VALIDATION_CONTEXT_PANIC.to_owned()),
+    // synthetic_validation_context panics only if the hardcoded JSON
+    // cannot deserialise into domain types — a programming error.
+    // Catching the unwind preserves the "watcher never crashes" contract.
+    let Ok(tera_ctx) = std::panic::catch_unwind(|| synthetic_validation_context(stage, role))
+    else {
+        return Err(VALIDATION_CONTEXT_PANIC.to_owned());
     };
 
     let Err(error) = tera::Tera::one_off(content, &tera_ctx, false) else {
