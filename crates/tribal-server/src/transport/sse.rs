@@ -68,6 +68,7 @@ pub async fn run_sse_transport(
         handler_config,
         server_config,
         cancellation_token.clone(),
+        "sse".to_owned(),
     );
 
     let lifecycle_layer = SseLifecycleLayer::new(

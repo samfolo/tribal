@@ -59,6 +59,7 @@ pub async fn run_http_transport(
         handler_config,
         server_config,
         cancellation_token.clone(),
+        "http".to_owned(),
     );
 
     let app = axum::Router::new().nest_service("/mcp", mcp_service).layer(

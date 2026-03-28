@@ -85,6 +85,7 @@ pub fn parent_span_from_traceparent(span: &tracing::Span, traceparent: Option<&s
 
 #[cfg(test)]
 mod tests {
+    use opentelemetry::trace::TracerProvider;
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use tracing_subscriber::layer::SubscriberExt;
 
