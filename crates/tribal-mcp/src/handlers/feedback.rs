@@ -96,6 +96,11 @@ impl TribalServerHandler {
         params: serde_json::Value,
         principal_id: PrincipalId,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(project) = &self.session.read().await.project {
+            tracing::Span::current()
+                .record(span_attrs::PROJECT_ID, tracing::field::display(&project.id));
+        }
+
         let request: McpFeedbackRequest =
             serde_json::from_value(params).map_err(|e| invalid_argument(e.to_string()))?;
 
