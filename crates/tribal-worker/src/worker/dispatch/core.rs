@@ -550,7 +550,8 @@ impl Worker {
         let attempt = clamp_to_i32(task.retry_count());
         let trace_id = job
             .trace_context()
-            .and_then(tribal_telemetry::trace_id_from_traceparent);
+            .and_then(tribal_telemetry::trace_id_from_traceparent)
+            .or_else(tribal_telemetry::current_trace_id);
 
         let new = match usage {
             Usage::Completion { usage: cu } => {

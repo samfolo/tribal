@@ -220,7 +220,7 @@ impl TribalServerHandler {
         {
             return Ok(McpToolError {
                 code: McpErrorCode::InvalidArgument,
-                message: tribal_telemetry::INVALID_TRACE_ID.into(),
+                message: tribal_telemetry::INVALID_SESSION_TRACE_ID.into(),
                 details: serde_json::json!({}),
             }
             .into_call_tool_result());

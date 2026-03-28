@@ -76,6 +76,14 @@ impl TribalServerHandler {
             { span_attrs::TRANSPORT } = self.transport_name.as_str(),
             { span_attrs::PROJECT_ID } = tracing::field::Empty,
         );
+
+        // Attach this span to the retrieval session trace so the
+        // feedback action appears alongside the discover/explore calls
+        // it rates.
+        if let Some(trace_id) = params.get("trace_id").and_then(|v| v.as_str()) {
+            let _ = tribal_telemetry::parent_span_from_trace_id(&span, trace_id);
+        }
+
         self.apply_feedback(params, principal.principal_id())
             .instrument(span)
             .await
