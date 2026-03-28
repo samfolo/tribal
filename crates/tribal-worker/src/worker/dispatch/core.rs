@@ -412,6 +412,7 @@ impl Worker {
         // -- Trace propagation: tribal.job span --------------------------------
 
         let job_span = tracing::info_span!(
+            parent: None,
             "tribal.job",
             { span_attrs::JOB_ID } = %job.id(),
             { span_attrs::PROJECT_ID } = %job.project_id(),

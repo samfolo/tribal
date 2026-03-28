@@ -4,19 +4,26 @@
 //! crates never import `opentelemetry` or `tracing-opentelemetry`
 //! types directly.
 
-use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use opentelemetry::{
     Context,
-    propagation::TextMapPropagator,
+    propagation::{Extractor, TextMapPropagator},
     trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState},
 };
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 // ---------------------------------------------------------------------------
-// Current span context
+// Private helpers
 // ---------------------------------------------------------------------------
+
+/// Reused across calls — `TraceContextPropagator` is stateless.
+static PROPAGATOR: OnceLock<TraceContextPropagator> = OnceLock::new();
+
+fn propagator() -> &'static TraceContextPropagator {
+    PROPAGATOR.get_or_init(TraceContextPropagator::new)
+}
 
 /// Extracts the `SpanContext` from the current tracing span's OpenTelemetry
 /// context, returning `None` when no valid context is attached.
@@ -29,10 +36,40 @@ fn current_span_context() -> Option<SpanContext> {
     if sc.is_valid() { Some(sc) } else { None }
 }
 
+/// Runs the W3C `TraceContextPropagator` against a traceparent string,
+/// returning the extracted `SpanContext` only when fully valid.
+///
+/// Uses an empty base context so parse failures never fall back to the
+/// ambient span.
+fn extract_span_context(traceparent: &str) -> Option<SpanContext> {
+    let carrier = TraceparentCarrier(traceparent);
+    let extracted = propagator().extract_with_context(&Context::new(), &carrier);
+    let sc = extracted.span().span_context().clone();
+
+    if sc.is_valid() { Some(sc) } else { None }
+}
+
+/// Zero-allocation carrier that borrows a `traceparent` value.
+struct TraceparentCarrier<'a>(&'a str);
+
+impl Extractor for TraceparentCarrier<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        if key.eq_ignore_ascii_case("traceparent") {
+            Some(self.0)
+        } else {
+            None
+        }
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        vec!["traceparent"]
+    }
+}
+
 /// Extracts the current span's trace context as a W3C `traceparent` string.
 ///
-/// Returns `None` when no valid OpenTelemetry context is attached to the
-/// current span (e.g. OTLP export is disabled or there is no active span).
+/// Returns `None` when no OpenTelemetry layer is installed in the
+/// subscriber or no active span exists.
 ///
 /// Format: `00-{32 hex trace ID}-{16 hex span ID}-{2 hex flags}`
 #[must_use]
@@ -49,8 +86,8 @@ pub fn current_trace_context() -> Option<String> {
 /// Extracts the current span's trace ID as a 32-character lowercase hex
 /// string.
 ///
-/// Returns `None` when no valid OpenTelemetry context is attached to the
-/// current span (e.g. OTLP export is disabled or there is no active span).
+/// Returns `None` when no OpenTelemetry layer is installed in the
+/// subscriber or no active span exists.
 #[must_use]
 pub fn current_trace_id() -> Option<String> {
     current_span_context().map(|sc| sc.trace_id().to_string())
@@ -90,22 +127,6 @@ pub fn is_valid_trace_id(s: &str) -> bool {
 pub fn trace_id_from_traceparent(traceparent: &str) -> Option<String> {
     let sc = extract_span_context(traceparent)?;
     Some(sc.trace_id().to_string())
-}
-
-/// Runs the W3C `TraceContextPropagator` against a traceparent string,
-/// returning the extracted `SpanContext` only when fully valid.
-///
-/// Uses an empty base context so parse failures never fall back to the
-/// ambient span.
-fn extract_span_context(traceparent: &str) -> Option<SpanContext> {
-    let mut carrier = HashMap::with_capacity(1);
-    carrier.insert("traceparent".to_owned(), traceparent.to_owned());
-
-    let propagator = TraceContextPropagator::new();
-    let extracted = propagator.extract_with_context(&Context::new(), &carrier);
-    let sc = extracted.span().span_context().clone();
-
-    if sc.is_valid() { Some(sc) } else { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +197,7 @@ pub fn parent_span_from_trace_id(span: &tracing::Span, trace_id: &str) -> TraceL
     let sc = SpanContext::new(
         tid,
         SpanId::from(1u64),
-        TraceFlags::SAMPLED,
+        TraceFlags::default(),
         true,
         TraceState::default(),
     );
