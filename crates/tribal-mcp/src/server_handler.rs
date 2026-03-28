@@ -19,7 +19,7 @@ use tribal_db::{
     RelationRepository, RetrievalFeedbackRepository, StandingRepository, TaskRepository,
     TriageResultRepository,
 };
-use tribal_domain::{PromptVersionId, is_authorised};
+use tribal_domain::{PromptRole, PromptStage, PromptVersionId, is_authorised};
 
 use crate::{
     app_state::AppState,
@@ -138,6 +138,48 @@ impl ActivePromptVersions {
             triage_user_prompt_version_id: triage_user,
             relation_system_prompt_version_id: relation_system,
             relation_user_prompt_version_id: relation_user,
+        }
+    }
+
+    /// Updates the active version ID for a single (stage, role) pair.
+    ///
+    /// Exclusive access is enforced by the `&mut self` receiver — in
+    /// practice this means the caller holds the `RwLock` write guard.
+    pub fn set_version(&mut self, stage: PromptStage, role: PromptRole, id: PromptVersionId) {
+        match (stage, role) {
+            (PromptStage::Extraction, PromptRole::System) => {
+                self.extraction_system_prompt_version_id = id;
+            }
+            (PromptStage::Extraction, PromptRole::User) => {
+                self.extraction_user_prompt_version_id = id;
+            }
+            (PromptStage::Triage, PromptRole::System) => {
+                self.triage_system_prompt_version_id = id;
+            }
+            (PromptStage::Triage, PromptRole::User) => {
+                self.triage_user_prompt_version_id = id;
+            }
+            (PromptStage::Relation, PromptRole::System) => {
+                self.relation_system_prompt_version_id = id;
+            }
+            (PromptStage::Relation, PromptRole::User) => {
+                self.relation_user_prompt_version_id = id;
+            }
+        }
+    }
+
+    /// Returns the active version ID for a single (stage, role) pair.
+    #[must_use]
+    pub fn get_version(&self, stage: PromptStage, role: PromptRole) -> PromptVersionId {
+        match (stage, role) {
+            (PromptStage::Extraction, PromptRole::System) => {
+                self.extraction_system_prompt_version_id
+            }
+            (PromptStage::Extraction, PromptRole::User) => self.extraction_user_prompt_version_id,
+            (PromptStage::Triage, PromptRole::System) => self.triage_system_prompt_version_id,
+            (PromptStage::Triage, PromptRole::User) => self.triage_user_prompt_version_id,
+            (PromptStage::Relation, PromptRole::System) => self.relation_system_prompt_version_id,
+            (PromptStage::Relation, PromptRole::User) => self.relation_user_prompt_version_id,
         }
     }
 }
@@ -646,5 +688,24 @@ mod tests {
             err.message.contains(MISSING_PRINCIPAL_CONTEXT),
             "error message must contain the expected constant",
         );
+    }
+
+    // -- set_version --------------------------------------------------------
+
+    #[test]
+    fn test_set_version_updates_correct_field() {
+        let original = PromptVersionId::new();
+        let mut versions =
+            ActivePromptVersions::new(original, original, original, original, original, original);
+
+        let new_id = PromptVersionId::new();
+        versions.set_version(PromptStage::Triage, PromptRole::User, new_id);
+
+        assert_eq!(versions.extraction_system_prompt_version_id, original);
+        assert_eq!(versions.extraction_user_prompt_version_id, original);
+        assert_eq!(versions.triage_system_prompt_version_id, original);
+        assert_eq!(versions.triage_user_prompt_version_id, new_id);
+        assert_eq!(versions.relation_system_prompt_version_id, original);
+        assert_eq!(versions.relation_user_prompt_version_id, original);
     }
 }
