@@ -144,8 +144,10 @@ pub(crate) async fn reload_single_prompt(
         Ok(c) => c,
         Err(error) => {
             warn!(
-                context = "acquire connection for prompt reload",
                 %error,
+                stage = stage.as_str(),
+                role = role.as_str(),
+                path = %file_path.display(),
                 LOG_PROMPT_UPSERT_FAILED,
             );
             return;
@@ -167,6 +169,7 @@ pub(crate) async fn reload_single_prompt(
                 %error,
                 stage = stage.as_str(),
                 role = role.as_str(),
+                path = %file_path.display(),
                 LOG_PROMPT_UPSERT_FAILED,
             );
             return;
@@ -233,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_partial_variable_drop() {
-        // Uses schema but drops raw_input — should fail for extraction/user.
+        // Uses tags but drops raw_input — should fail for extraction/user.
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::User,
