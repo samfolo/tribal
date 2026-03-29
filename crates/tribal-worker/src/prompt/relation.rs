@@ -138,10 +138,10 @@ pub(crate) fn assemble_relation_prompt(
 
 #[cfg(test)]
 mod tests {
-    use crate::prompt::SimilarityBand;
     use tribal_domain::TaskErrorKind;
 
     use super::*;
+    use crate::prompt::SimilarityBand;
 
     fn test_candidate(content: &str) -> Candidate {
         serde_json::from_value(serde_json::json!({
