@@ -95,7 +95,7 @@ Tags must be lowercase with spaces separating words (e.g. "incident response", n
 
 ## References
 
-If the input mentions specific files, URLs, code symbols, or domain concepts, include them as references on the relevant candidate. Each reference has a type, a value, and an optional description.
+If the input explicitly mentions specific files, URLs, code symbols, or domain concepts, include them as references on the relevant candidate. Each reference has a type, a value, and an optional description. Only include references that appear verbatim in the input — do not invent, infer, or fabricate URLs, file paths, or symbols that are not explicitly present.
 
 Reference types and what they mean:
 
