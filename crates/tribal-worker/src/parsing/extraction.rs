@@ -15,11 +15,22 @@ use crate::error::StageError;
 /// Lenient serde — unknown fields are silently ignored so the LLM
 /// can return extra keys without breaking parsing.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[schemars(description = "Extracted knowledge items and optional intra-batch relationship hints.")]
 pub(crate) struct ExtractionOutput {
     /// Extracted knowledge item candidates.
+    #[schemars(
+        description = "Knowledge items extracted from the input. Each candidate should be \
+        atomic (one claim per item) and self-contained. Return an empty array if the \
+        input contains no extractable knowledge."
+    )]
     pub candidates: Vec<Candidate>,
     /// Intra-batch relation hints between candidates.
     #[serde(default)]
+    #[schemars(
+        description = "Derivation relationships between candidates in this batch. Only \
+        include when one candidate is genuinely derived from another. Optional — omit \
+        or return an empty array when no intra-batch relationships exist."
+    )]
     pub relation_hints: Vec<RelationHint>,
 }
 

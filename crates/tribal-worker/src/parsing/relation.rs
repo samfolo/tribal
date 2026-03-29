@@ -7,6 +7,50 @@ use tribal_inference::CompletionResponse;
 use crate::error::StageError;
 
 // ---------------------------------------------------------------------------
+// IngestionRelationKind
+// ---------------------------------------------------------------------------
+
+/// Relation types permitted during ingestion.
+///
+/// A subset of [`RelationKind`] that excludes `Supersedes`, which is
+/// a system-determined relationship and must not be produced by
+/// inference. By omitting the variant from the schema entirely, models
+/// cannot produce it — the constraint is enforced by the type system
+/// rather than by post-hoc filtering or prompt instructions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(description = "The type of relationship between two knowledge items. \
+    'supports' = source reinforces target. 'contradicts' = source conflicts \
+    with target. 'derived_from' = source was produced using target as input.")]
+pub(crate) enum IngestionRelationKind {
+    /// Source provides evidence for, reinforces, or adds supporting
+    /// context to target.
+    #[schemars(description = "Source reinforces or provides evidence for target. \
+        Both items point in the same direction.")]
+    Supports,
+    /// Source conflicts with, corrects, or undermines target.
+    #[schemars(
+        description = "Source conflicts with or corrects target. The two items \
+        cannot both be fully accurate simultaneously."
+    )]
+    Contradicts,
+    /// Source was logically derived from or builds upon target.
+    #[schemars(description = "Source was produced using target as input. Tracks \
+        intellectual provenance.")]
+    DerivedFrom,
+}
+
+impl From<IngestionRelationKind> for RelationKind {
+    fn from(kind: IngestionRelationKind) -> Self {
+        match kind {
+            IngestionRelationKind::Supports => Self::Supports,
+            IngestionRelationKind::Contradicts => Self::Contradicts,
+            IngestionRelationKind::DerivedFrom => Self::DerivedFrom,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RelationOutput
 // ---------------------------------------------------------------------------
 
@@ -15,22 +59,40 @@ use crate::error::StageError;
 /// Lenient serde — unknown fields are silently ignored so the LLM
 /// can return extra keys without breaking parsing.
 #[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
+#[schemars(
+    description = "Relationship edges between knowledge items. Return an empty \
+    relations array when no genuine semantic relationships exist — forced \
+    relations degrade graph quality."
+)]
 pub(crate) struct RelationOutput {
     /// The complete set of relations to create for this job.
+    #[schemars(
+        description = "Directed relationship edges. Each edge connects a source item \
+        to a target item with a typed relationship. Only include edges grounded in \
+        the actual content of both items."
+    )]
     pub relations: Vec<RelationEdge>,
 }
 
 /// A single directed relationship edge to create.
 #[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
+#[schemars(description = "A directed relationship between two knowledge items.")]
 pub(crate) struct RelationEdge {
     /// The source item (the item asserting the relationship).
+    #[schemars(description = "The item asserting the relationship.")]
     pub source: RelationTarget,
     /// The target item.
+    #[schemars(description = "The item the relationship is asserted about.")]
     pub target: RelationTarget,
     /// The relationship type.
-    pub relation_type: RelationKind,
+    pub relation_type: IngestionRelationKind,
     /// The agent's reasoning for this relationship.
     #[serde(default)]
+    #[schemars(
+        description = "Brief explanation referencing specific content from both items. \
+        Persists in the knowledge graph and informs future retrieval — write for \
+        someone encountering this relationship without the original context."
+    )]
     pub justification: Option<String>,
 }
 
@@ -46,15 +108,22 @@ pub(crate) struct RelationEdge {
 /// discrimination.
 #[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind")]
+#[schemars(description = "A reference to a knowledge item by batch index or item ID.")]
 pub(crate) enum RelationTarget {
     /// A candidate from the current episode, identified by its
     /// position in the extraction candidates array.
     /// Wire format: `{"kind": "batch_index", "batch_index": 2}`
     #[serde(rename = "batch_index")]
+    #[schemars(description = "A candidate from the current batch, referenced by its \
+        zero-based position in the candidates array.")]
     BatchIndex { batch_index: u32 },
     /// An existing knowledge item, identified by ID.
     /// Wire format: `{"kind": "item_id", "item_id": "ki_..."}`
     #[serde(rename = "item_id")]
+    #[schemars(
+        description = "An existing knowledge item in the database, referenced by \
+        its identifier (format: ki_ followed by a UUID)."
+    )]
     ItemId { item_id: KnowledgeItemId },
 }
 
@@ -86,7 +155,7 @@ pub(crate) fn parse_relation_response(
 mod tests {
     use std::time::Duration;
 
-    use tribal_domain::{KnowledgeItemId, RelationKind};
+    use tribal_domain::KnowledgeItemId;
     use tribal_inference::CompletionUsage;
 
     use super::*;
@@ -143,13 +212,13 @@ mod tests {
                 RelationEdge {
                     source: RelationTarget::BatchIndex { batch_index: 0 },
                     target: RelationTarget::BatchIndex { batch_index: 1 },
-                    relation_type: RelationKind::Supports,
+                    relation_type: IngestionRelationKind::Supports,
                     justification: Some("Both describe memory safety".into()),
                 },
                 RelationEdge {
                     source: RelationTarget::BatchIndex { batch_index: 0 },
                     target: RelationTarget::ItemId { item_id: ki_id },
-                    relation_type: RelationKind::Contradicts,
+                    relation_type: IngestionRelationKind::Contradicts,
                     justification: None,
                 },
             ]

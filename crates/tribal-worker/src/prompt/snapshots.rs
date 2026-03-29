@@ -14,9 +14,7 @@
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tribal_domain::{
-        Candidate, KnowledgeKind, RelationHint, RelationSuggestion,
-    };
+    use tribal_domain::{Candidate, KnowledgeKind, RelationHint, RelationSuggestion};
     use tribal_test_utils::assert_text_snapshot;
 
     use crate::prompt::{

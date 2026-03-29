@@ -583,11 +583,13 @@ struct ResolvedEdge {
 /// Normalises raw relation edges into resolved, deduplicated edges.
 ///
 /// Steps:
-/// 1. Drop `Supersedes` edges.
-/// 2. Resolve `BatchIndex` endpoints (sources and targets) to `KnowledgeItemId` via triage results.
-/// 3. Drop edges with any unresolvable endpoint.
-/// 4. Drop self-edges.
-/// 5. Deduplicate `(source_id, target_id, relation_type)` triples.
+/// 1. Resolve `BatchIndex` endpoints (sources and targets) to `KnowledgeItemId` via triage results.
+/// 2. Drop edges with any unresolvable endpoint.
+/// 3. Drop self-edges.
+/// 4. Deduplicate `(source_id, target_id, relation_type)` triples.
+///
+/// `Supersedes` edges cannot reach this function — the schema-level
+/// [`IngestionRelationKind`] type excludes the variant entirely.
 fn normalise_edges(
     edges: Vec<RelationEdge>,
     triage_results: &[TriageResult],
@@ -602,20 +604,12 @@ fn normalise_edges(
     let mut skipped: usize = 0;
 
     for edge in edges {
-        // Step 1: drop Supersedes.
-        if edge.relation_type == RelationKind::Supersedes {
-            tracing::debug!(
-                ?edge.source, ?edge.target,
-                "dropping supersedes edge",
-            );
-            skipped += 1;
-            continue;
-        }
+        let relation_type: RelationKind = edge.relation_type.into();
 
-        // Step 2+3: resolve targets.
+        // Step 1+2: resolve targets.
         let Some(source_id) = resolve_target(&edge.source, &triage_by_index) else {
             tracing::debug!(
-                ?edge.source, ?edge.target, relation_type = ?edge.relation_type,
+                ?edge.source, ?edge.target, ?relation_type,
                 "dropping edge — unresolvable source",
             );
             skipped += 1;
@@ -623,28 +617,28 @@ fn normalise_edges(
         };
         let Some(target_id) = resolve_target(&edge.target, &triage_by_index) else {
             tracing::debug!(
-                ?edge.source, ?edge.target, relation_type = ?edge.relation_type,
+                ?edge.source, ?edge.target, ?relation_type,
                 "dropping edge — unresolvable target",
             );
             skipped += 1;
             continue;
         };
 
-        // Step 4: drop self-edges.
+        // Step 3: drop self-edges.
         if source_id == target_id {
             tracing::debug!(
-                %source_id, relation_type = ?edge.relation_type,
+                %source_id, ?relation_type,
                 "dropping self-edge",
             );
             skipped += 1;
             continue;
         }
 
-        // Step 5: deduplicate.
-        let triple = (source_id, target_id, edge.relation_type);
+        // Step 4: deduplicate.
+        let triple = (source_id, target_id, relation_type);
         if !seen.insert(triple) {
             tracing::debug!(
-                %source_id, %target_id, relation_type = ?edge.relation_type,
+                %source_id, %target_id, ?relation_type,
                 "dropping duplicate edge",
             );
             skipped += 1;
@@ -654,7 +648,7 @@ fn normalise_edges(
         result.push(ResolvedEdge {
             source_id,
             target_id,
-            relation_type: edge.relation_type,
+            relation_type,
             justification: edge.justification,
         });
     }
@@ -731,11 +725,10 @@ fn relation_sqlx_error(context: &str, source: sqlx::Error) -> StageError {
 
 #[cfg(test)]
 mod tests {
-    use tribal_domain::{
-        KnowledgeItemId, RelationKind, TriageOutcome, TriageResult, TriageResultId,
-    };
+    use tribal_domain::{KnowledgeItemId, TriageOutcome, TriageResult, TriageResultId};
 
     use super::*;
+    use crate::parsing::IngestionRelationKind;
 
     fn ki(suffix: &str) -> KnowledgeItemId {
         format!("ki_{suffix}0000-0000-0000-0000-000000000000")
@@ -756,7 +749,7 @@ mod tests {
     fn edge(
         source: RelationTarget,
         target: RelationTarget,
-        relation_type: RelationKind,
+        relation_type: IngestionRelationKind,
     ) -> RelationEdge {
         RelationEdge {
             source,
@@ -783,22 +776,6 @@ mod tests {
     // -- normalise_edges tests --
 
     #[test]
-    fn test_normalise_drops_supersedes_edges() {
-        let ki_a = ki("aaaa");
-        let ki_b = ki("bbbb");
-        let results = vec![created(0, ki_a), created(1, ki_b)];
-        let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 1 },
-            RelationKind::Supersedes,
-        )];
-
-        let (normalised, skipped) = normalise_edges(edges, &results);
-        assert!(normalised.is_empty());
-        assert_eq!(skipped, 1);
-    }
-
-    #[test]
     fn test_normalise_resolves_created_to_item_id() {
         let ki_a = ki("aaaa");
         let ki_b = ki("bbbb");
@@ -806,7 +783,7 @@ mod tests {
         let edges = vec![edge(
             RelationTarget::BatchIndex { batch_index: 0 },
             RelationTarget::BatchIndex { batch_index: 1 },
-            RelationKind::Supports,
+            IngestionRelationKind::Supports,
         )];
 
         let (normalised, skipped) = normalise_edges(edges, &results);
@@ -829,7 +806,7 @@ mod tests {
         let edges = vec![edge(
             RelationTarget::BatchIndex { batch_index: 0 },
             RelationTarget::BatchIndex { batch_index: 1 },
-            RelationKind::Supports,
+            IngestionRelationKind::Supports,
         )];
 
         let (normalised, skipped) = normalise_edges(edges, &results);
@@ -846,7 +823,7 @@ mod tests {
         let edges = vec![edge(
             RelationTarget::BatchIndex { batch_index: 0 },
             RelationTarget::BatchIndex { batch_index: 5 },
-            RelationKind::Supports,
+            IngestionRelationKind::Supports,
         )];
 
         let (normalised, skipped) = normalise_edges(edges, &results);
@@ -870,7 +847,7 @@ mod tests {
         let edges = vec![edge(
             RelationTarget::BatchIndex { batch_index: 0 },
             RelationTarget::BatchIndex { batch_index: 1 },
-            RelationKind::Supports,
+            IngestionRelationKind::Supports,
         )];
 
         let (normalised, skipped) = normalise_edges(edges, &results);
@@ -885,7 +862,7 @@ mod tests {
         let edges = vec![edge(
             RelationTarget::BatchIndex { batch_index: 0 },
             RelationTarget::BatchIndex { batch_index: 0 },
-            RelationKind::Supports,
+            IngestionRelationKind::Supports,
         )];
 
         let (normalised, skipped) = normalise_edges(edges, &results);
@@ -902,12 +879,12 @@ mod tests {
             edge(
                 RelationTarget::BatchIndex { batch_index: 0 },
                 RelationTarget::BatchIndex { batch_index: 1 },
-                RelationKind::Supports,
+                IngestionRelationKind::Supports,
             ),
             edge(
                 RelationTarget::BatchIndex { batch_index: 0 },
                 RelationTarget::BatchIndex { batch_index: 1 },
-                RelationKind::Supports,
+                IngestionRelationKind::Supports,
             ),
         ];
 
@@ -925,12 +902,12 @@ mod tests {
             edge(
                 RelationTarget::BatchIndex { batch_index: 0 },
                 RelationTarget::BatchIndex { batch_index: 1 },
-                RelationKind::Supports,
+                IngestionRelationKind::Supports,
             ),
             edge(
                 RelationTarget::BatchIndex { batch_index: 1 },
                 RelationTarget::BatchIndex { batch_index: 0 },
-                RelationKind::Supports,
+                IngestionRelationKind::Supports,
             ),
         ];
 
