@@ -155,6 +155,8 @@ pub(crate) fn relation_suggestion_legend() -> String {
 mod tests {
     use super::*;
 
+    // Band bounds are compile-time constants, so exact float comparison is safe.
+    #[allow(clippy::float_cmp)]
     #[test]
     fn test_band_bounds_are_contiguous() {
         let bands = SimilarityBand::ALL;
@@ -169,6 +171,8 @@ mod tests {
         }
     }
 
+    // Band bounds are compile-time constants, so exact float comparison is safe.
+    #[allow(clippy::float_cmp)]
     #[test]
     fn test_band_range_covers_unit_interval() {
         assert_eq!(SimilarityBand::ALL[0].lower_bound(), 0.0);

@@ -13,7 +13,9 @@ use tribal_domain::{
 
 use super::{
     CandidateOutcome, RelationPromptContext, SimilarItemContext, SimilarItemDecisionContext,
-    extraction_user_context, legends::SimilarityBand, relation_user_context, triage_user_context,
+    extraction_user_context,
+    legends::SimilarityBand,
+    relation_user_context, triage_user_context,
     variables::{extraction_system_context, relation_system_context, triage_system_context},
 };
 
@@ -109,6 +111,8 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
 #[cfg(test)]
 mod tests {
     use tribal_domain::{PromptRole, PromptStage};
+
+    use crate::prompt::renderer::PromptRenderer;
 
     use super::*;
 
