@@ -29,7 +29,7 @@ Tags: <candidate-tags-{{ nonce }}>{% for tag in c.candidate.suggested_tags %}{{ 
 ## Similar Item Decisions from Triage
 
 {% for d in similar_item_decisions %}
-### Candidate {{ d.batch_index }} ↔ {{ d.matched_item_id }} (similarity: {{ d.similarity_score | round(precision=4) }} — {% if d.similarity_score >= 0.85 %}very high{% elif d.similarity_score >= 0.6 %}high{% elif d.similarity_score >= 0.3 %}moderate{% else %}low{% endif %})
+### Candidate {{ d.batch_index }} ↔ {{ d.matched_item_id }} (similarity: {{ d.similarity_score | round(precision=4) }} — {{ d.similarity_label }})
 Suggested relation: {{ d.suggested_relation }}
 Justification: {{ d.justification }}
 

@@ -19,7 +19,7 @@ Tags: <candidate-tags-{{ nonce }}>{% for tag in candidate.suggested_tags %}{{ ta
 ## Existing Items from Semantic Search
 
 {% for item in similar_items %}
-### {{ item.item_id }} ({{ item.kind }}, similarity: {{ item.similarity_score | round(precision=4) }} — {% if item.similarity_score >= 0.85 %}very high{% elif item.similarity_score >= 0.6 %}high{% elif item.similarity_score >= 0.3 %}moderate{% else %}low{% endif %})
+### {{ item.item_id }} ({{ item.kind }}, similarity: {{ item.similarity_score | round(precision=4) }} — {{ item.similarity_label }})
 Tags: <registry-tags-{{ nonce }}>{% for tag in item.tags %}{{ tag }}{% if not loop.last %}, {% endif %}{% endfor %}</registry-tags-{{ nonce }}>
 
 <content-{{ nonce }}>
