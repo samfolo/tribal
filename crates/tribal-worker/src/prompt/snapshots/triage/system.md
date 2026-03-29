@@ -41,7 +41,7 @@ When the overlap is heavy and the delta is trivial — a minor rephrasing, a sli
 
 Procedures are an exception: a candidate procedure that extends, deviates from, or improves upon an existing procedure should always be classified as novel as a complete item, because procedures must be self-contained to be useful. A procedure cannot reference another item for missing steps.
 
-Contradictions are always novel: if your per-item assessment for the closest matching item is "contradicts", the candidate cannot be a duplicate. A contradiction means the candidate asserts something incompatible with the existing item — the knowledge base needs both perspectives to track how understanding has evolved. Classifying a contradiction as a duplicate silently discards the newer perspective.
+Contradictions are always novel: if any of your per-item assessments has suggested_relation "contradicts", the candidate cannot be a duplicate. A contradiction means the candidate asserts something incompatible with an existing item — the knowledge base needs both perspectives to track how understanding has evolved. Classifying a contradiction as a duplicate silently discards the newer perspective.
 
 ## Interpreting Similarity Scores
 
