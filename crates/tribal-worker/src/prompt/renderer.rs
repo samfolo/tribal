@@ -1,15 +1,40 @@
 //! Prompt template renderer with scoped nonce generation.
 
+use strum::IntoEnumIterator;
 use uuid::Uuid;
 
 use super::variables::VAR_NONCE;
 use crate::error::StageError;
 
-/// Reserved template variable names injected by the renderer.
+// ---------------------------------------------------------------------------
+// ReservedVariable
+// ---------------------------------------------------------------------------
+
+/// Template variables managed exclusively by the renderer.
 ///
-/// Callers must not set these in externally-built contexts — doing so
-/// is a programming error and will panic.
-const RESERVED_KEYS: &[&str] = &[VAR_NONCE];
+/// Adding a new variant automatically propagates to the reserved-key
+/// panic check in `render()`, validation default injection, and the
+/// coverage test — all driven by `strum::IntoEnumIterator`.
+#[derive(Debug, Clone, Copy, strum::EnumIter)]
+enum ReservedVariable {
+    Nonce,
+}
+
+impl ReservedVariable {
+    /// The Tera context key for this variable.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Nonce => VAR_NONCE,
+        }
+    }
+
+    /// The fixed value used in validation and test contexts.
+    fn validation_default(self) -> &'static str {
+        match self {
+            Self::Nonce => "validation00",
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PromptRenderer
@@ -32,11 +57,22 @@ impl PromptRenderer {
         }
     }
 
-    /// Creates a renderer with a fixed nonce for template validation.
+    /// Creates a renderer with fixed values for template validation.
     #[cfg(test)]
     pub fn for_validation() -> Self {
         Self {
-            nonce: "validation00".to_owned(),
+            nonce: ReservedVariable::Nonce.validation_default().to_owned(),
+        }
+    }
+
+    /// Injects validation-safe values for all reserved variables.
+    ///
+    /// Used by `synthetic_validation_context` to ensure the server's
+    /// hot-reload validator sees the same variable set that production
+    /// rendering provides.
+    pub(crate) fn inject_validation_defaults(ctx: &mut tera::Context) {
+        for var in ReservedVariable::iter() {
+            ctx.insert(var.key(), var.validation_default());
         }
     }
 
@@ -56,10 +92,11 @@ impl PromptRenderer {
         mut context: tera::Context,
         description: &'static str,
     ) -> Result<String, StageError> {
-        for key in RESERVED_KEYS {
+        for var in ReservedVariable::iter() {
             assert!(
-                context.get(key).is_none(),
-                "reserved template variable '{key}' must not be set externally",
+                context.get(var.key()).is_none(),
+                "reserved template variable '{}' must not be set externally",
+                var.key(),
             );
         }
         context.insert(VAR_NONCE, &self.nonce);
@@ -82,6 +119,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_validation_defaults_cover_all_reserved_variables() {
+        let mut ctx = tera::Context::new();
+        PromptRenderer::inject_validation_defaults(&mut ctx);
+        for var in ReservedVariable::iter() {
+            assert!(
+                ctx.get(var.key()).is_some(),
+                "reserved variable '{var:?}' missing from validation defaults",
+            );
+        }
+    }
+
+    #[test]
     fn test_nonce_is_12_hex_chars() {
         let renderer = PromptRenderer::new();
         let result = renderer
@@ -100,7 +149,7 @@ mod tests {
         let result = renderer
             .render("{{ nonce }}", tera::Context::new(), "test")
             .unwrap();
-        assert_eq!(result, "validation00");
+        assert_eq!(result, ReservedVariable::Nonce.validation_default());
     }
 
     #[test]

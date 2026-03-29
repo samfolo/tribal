@@ -136,15 +136,11 @@ pub(crate) fn relation_suggestion_description(suggestion: RelationSuggestion) ->
 
 /// Renders the relation suggestion legend for injection into system prompts.
 pub(crate) fn relation_suggestion_legend() -> String {
-    [
-        RelationSuggestion::Supports,
-        RelationSuggestion::Contradicts,
-        RelationSuggestion::Unrelated,
-    ]
-    .into_iter()
-    .map(|s| format!("- **{}**: {}", s, relation_suggestion_description(s),))
-    .collect::<Vec<_>>()
-    .join("\n")
+    RelationSuggestion::ALL
+        .iter()
+        .map(|s| format!("- **{s}**: {}", relation_suggestion_description(*s)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------
