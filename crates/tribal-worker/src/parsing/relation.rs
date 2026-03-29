@@ -296,4 +296,43 @@ mod tests {
             Some("The conclusion follows from the premise")
         );
     }
+
+    #[test]
+    fn test_parse_skips_edges_with_unknown_relation_type() {
+        let json = r#"{
+            "relations": [
+                {
+                    "source": {"kind": "batch_index", "batch_index": 0},
+                    "target": {"kind": "batch_index", "batch_index": 1},
+                    "relation_type": "supports"
+                },
+                {
+                    "source": {"kind": "batch_index", "batch_index": 0},
+                    "target": {"kind": "batch_index", "batch_index": 2},
+                    "relation_type": "supersedes"
+                },
+                {
+                    "source": {"kind": "batch_index", "batch_index": 1},
+                    "target": {"kind": "batch_index", "batch_index": 2},
+                    "relation_type": "contradicts"
+                }
+            ]
+        }"#;
+        let response = mock_response(json);
+        let result = parse_relation_response(&response).unwrap();
+        assert_eq!(
+            result.relations.len(),
+            2,
+            "supersedes edge should be skipped, got: {:?}",
+            result.relations,
+        );
+        assert_eq!(
+            result.relations[0].relation_type,
+            IngestionRelationKind::Supports,
+        );
+        assert_eq!(
+            result.relations[1].relation_type,
+            IngestionRelationKind::Contradicts,
+        );
+    }
 }
