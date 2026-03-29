@@ -7,8 +7,10 @@ use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 use crate::{
     error::StageError,
     parsing::ExtractionOutput,
-    prompt::variables::{VAR_RAW_INPUT, VAR_TAGS, system_context},
+    prompt::variables::{VAR_RAW_INPUT, VAR_TAGS, extraction_system_context},
 };
+
+use super::renderer::PromptRenderer;
 
 // ---------------------------------------------------------------------------
 // Context builders
@@ -16,7 +18,7 @@ use crate::{
 
 /// Builds the user prompt context for the extraction stage.
 ///
-/// Both the production assembly and the hot-reload validator call this,
+/// Both the production assembly and the validation tests call this,
 /// so adding a variable here is automatically reflected in both paths.
 pub(crate) fn extraction_user_context(raw_input: &str, tags: &[&str]) -> tera::Context {
     let mut ctx = tera::Context::new();
@@ -44,28 +46,17 @@ pub(crate) fn assemble_extraction_prompt(
     let schema = schema_for!(ExtractionOutput);
     let schema_value =
         serde_json::to_value(&schema).expect("schema_for! produces serialisable output");
-    let schema_pretty =
-        serde_json::to_string_pretty(&schema).expect("schema_for! produces serialisable output");
 
-    let system_ctx = system_context(&schema_pretty);
+    let renderer = PromptRenderer::new();
 
+    let system_ctx = extraction_system_context();
     let rendered_system =
-        tera::Tera::one_off(system_template, &system_ctx, false).map_err(|e| {
-            StageError::TemplateRender {
-                context: "rendering extraction system prompt".into(),
-                source: e,
-            }
-        })?;
+        renderer.render(system_template, system_ctx, "rendering extraction system prompt")?;
 
     let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
     let user_ctx = extraction_user_context(raw_input, &tags);
-
-    let rendered_user = tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
-        StageError::TemplateRender {
-            context: "rendering extraction user prompt".into(),
-            source: e,
-        }
-    })?;
+    let rendered_user =
+        renderer.render(user_template, user_ctx, "rendering extraction user prompt")?;
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
@@ -141,19 +132,6 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_rendered_in_system_prompt() {
-        let result =
-            assemble_extraction_prompt("Schema: {{ schema }}", "{{ raw_input }}", "input", &[]);
-        assert!(result.is_ok());
-        let request = result.unwrap();
-        let system = request.system.unwrap();
-        assert!(
-            system.contains("ExtractionOutput"),
-            "schema should contain type name: {system}",
-        );
-    }
-
-    #[test]
     fn test_response_format_is_json_schema() {
         let result = assemble_extraction_prompt("system", "{{ raw_input }}", "input", &[]);
         assert!(result.is_ok());
@@ -175,5 +153,17 @@ mod tests {
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0].role, Role::User);
         assert!(request.messages[0].content.contains("the raw input"));
+    }
+
+    #[test]
+    fn test_nonce_available_in_user_prompt() {
+        let result = assemble_extraction_prompt("system", "fence:{{ nonce }}", "input", &[]);
+        let request = result.unwrap();
+        let content = &request.messages[0].content;
+        assert!(
+            content.starts_with("fence:"),
+            "nonce should render: {content}",
+        );
+        assert!(content.len() > "fence:".len(), "nonce should be non-empty");
     }
 }
