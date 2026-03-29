@@ -58,6 +58,61 @@ pub fn assert_json_snapshot_impl(value: &impl Serialize, snapshot_path: &Path) {
     );
 }
 
+/// Compares a plain text string against a snapshot file.
+///
+/// Called by the [`assert_text_snapshot`] macro — not intended for
+/// direct use (the macro injects `CARGO_MANIFEST_DIR`).
+///
+/// # Panics
+///
+/// Panics if the snapshot file is missing (when not updating), the
+/// file cannot be read or written, or the text does not match the
+/// existing snapshot.
+pub fn assert_text_snapshot_impl(text: &str, snapshot_path: &Path) {
+    if std::env::var(UPDATE_ENV_VAR).is_ok() {
+        if let Some(parent) = snapshot_path.parent() {
+            fs::create_dir_all(parent).expect("create snapshot parent directory");
+        }
+        fs::write(snapshot_path, text).expect("write snapshot file");
+        return;
+    }
+
+    assert!(
+        snapshot_path.exists(),
+        "Snapshot missing at {path}. Run with {UPDATE_ENV_VAR}=1 to create it.",
+        path = snapshot_path.display(),
+    );
+
+    let existing = fs::read_to_string(snapshot_path).expect("read snapshot file");
+    assert_eq!(
+        existing,
+        text,
+        "Snapshot mismatch at {path}. Run with {UPDATE_ENV_VAR}=1 to update.",
+        path = snapshot_path.display(),
+    );
+}
+
+/// Asserts that a plain text string matches a golden snapshot file.
+///
+/// The `relative_path` is resolved from the calling crate's
+/// `CARGO_MANIFEST_DIR`.  When the `UPDATE_SNAPSHOTS` environment
+/// variable is set, the file is overwritten instead of compared.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert_text_snapshot!(&rendered, "src/prompt/snapshots/extraction-system.txt");
+/// ```
+#[macro_export]
+macro_rules! assert_text_snapshot {
+    ($text:expr, $relative_path:expr) => {
+        $crate::snapshot::assert_text_snapshot_impl(
+            $text,
+            &::std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join($relative_path),
+        )
+    };
+}
+
 /// Asserts that a JSON-serialisable value matches a golden snapshot file.
 ///
 /// The `relative_path` is resolved from the calling crate's
