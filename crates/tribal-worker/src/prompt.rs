@@ -4,6 +4,7 @@ mod extraction;
 mod legends;
 mod relation;
 mod renderer;
+mod snapshots;
 mod triage;
 mod validation;
 pub(crate) mod variables;
