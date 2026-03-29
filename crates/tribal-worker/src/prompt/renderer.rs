@@ -33,6 +33,7 @@ impl PromptRenderer {
     }
 
     /// Creates a renderer with a fixed nonce for template validation.
+    #[cfg(test)]
     pub fn for_validation() -> Self {
         Self {
             nonce: "validation00".to_owned(),
@@ -57,7 +58,7 @@ impl PromptRenderer {
     ) -> Result<String, StageError> {
         for key in RESERVED_KEYS {
             assert!(
-                context.get(*key).is_none(),
+                context.get(key).is_none(),
                 "reserved template variable '{key}' must not be set externally",
             );
         }

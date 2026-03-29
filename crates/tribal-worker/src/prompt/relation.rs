@@ -138,6 +138,7 @@ pub(crate) fn assemble_relation_prompt(
 
 #[cfg(test)]
 mod tests {
+    use crate::prompt::SimilarityBand;
     use tribal_domain::TaskErrorKind;
 
     use super::*;

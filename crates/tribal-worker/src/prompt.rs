@@ -14,6 +14,5 @@ pub(crate) use relation::{
     CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext, assemble_relation_prompt,
     relation_user_context,
 };
-pub(crate) use renderer::PromptRenderer;
 pub(crate) use triage::{SimilarItemContext, assemble_triage_prompt, triage_user_context};
 pub use validation::synthetic_validation_context;
