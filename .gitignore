@@ -6,6 +6,7 @@
 
 # Local MCP config (contains tokens)
 .mcp.json
+.codex/config.toml
 
 # OS-specific
 .DS_Store
