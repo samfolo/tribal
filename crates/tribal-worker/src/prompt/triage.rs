@@ -6,13 +6,12 @@ use tribal_db::SemanticSearchResult;
 use tribal_domain::{Candidate, KnowledgeItemId, KnowledgeKind, TagRegistryEntry};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
+use super::{legends::SimilarityBand, renderer::PromptRenderer};
 use crate::{
     error::StageError,
     parsing::TriageClassification,
     prompt::variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS, triage_system_context},
 };
-
-use super::{legends::SimilarityBand, renderer::PromptRenderer};
 
 // ---------------------------------------------------------------------------
 // SimilarItemContext
@@ -45,7 +44,7 @@ impl From<&SemanticSearchResult> for SimilarItemContext {
             kind: result.item.kind(),
             content: result.item.content().to_owned(),
             similarity_score: result.similarity,
-            similarity_label: SimilarityBand::from_score(result.similarity).to_string(),
+            similarity_label: SimilarityBand::from(result.similarity).to_string(),
             tags: result.item.tags().to_vec(),
         }
     }
@@ -95,13 +94,15 @@ pub(crate) fn assemble_triage_prompt(
     let renderer = PromptRenderer::new();
 
     let system_ctx = triage_system_context();
-    let rendered_system =
-        renderer.render(system_template, system_ctx, "rendering triage system prompt")?;
+    let rendered_system = renderer.render(
+        system_template,
+        system_ctx,
+        "rendering triage system prompt",
+    )?;
 
     let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
     let user_ctx = triage_user_context(candidate, similar_items, &tags);
-    let rendered_user =
-        renderer.render(user_template, user_ctx, "rendering triage user prompt")?;
+    let rendered_user = renderer.render(user_template, user_ctx, "rendering triage user prompt")?;
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
@@ -235,7 +236,7 @@ mod tests {
             kind: KnowledgeKind::Fact,
             content: "existing item".to_owned(),
             similarity_score: 0.72,
-            similarity_label: SimilarityBand::from_score(0.72).to_string(),
+            similarity_label: SimilarityBand::from(0.72).to_string(),
             tags: vec![],
         };
         let result = assemble_triage_prompt(
@@ -264,7 +265,10 @@ mod tests {
         );
         let request = result.unwrap();
         let system = request.system.unwrap();
-        assert!(system.contains("low"), "legend should contain bands: {system}");
+        assert!(
+            system.contains("low"),
+            "legend should contain bands: {system}"
+        );
         assert!(
             system.contains("very high"),
             "legend should contain bands: {system}",

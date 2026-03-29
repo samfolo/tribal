@@ -5,6 +5,7 @@ use serde::Serialize;
 use tribal_domain::{Candidate, KnowledgeItemId, RelationHint, RelationSuggestion};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
+use super::{legends::SimilarityBand, renderer::PromptRenderer};
 use crate::{
     error::StageError,
     parsing::RelationOutput,
@@ -12,8 +13,6 @@ use crate::{
         VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS, relation_system_context,
     },
 };
-
-use super::{legends::SimilarityBand, renderer::PromptRenderer};
 
 // ---------------------------------------------------------------------------
 // Prompt context types
@@ -71,13 +70,6 @@ pub(crate) struct SimilarItemDecisionContext {
     pub justification: String,
 }
 
-impl SimilarItemDecisionContext {
-    /// Computes the similarity label from the score.
-    pub fn similarity_label_from_score(score: f32) -> String {
-        SimilarityBand::from_score(f64::from(score)).to_string()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Context builders
 // ---------------------------------------------------------------------------
@@ -116,8 +108,11 @@ pub(crate) fn assemble_relation_prompt(
     let renderer = PromptRenderer::new();
 
     let system_ctx = relation_system_context();
-    let rendered_system =
-        renderer.render(system_template, system_ctx, "rendering relation system prompt")?;
+    let rendered_system = renderer.render(
+        system_template,
+        system_ctx,
+        "rendering relation system prompt",
+    )?;
 
     let user_ctx = relation_user_context(context);
     let rendered_user =
@@ -189,7 +184,7 @@ mod tests {
                 matched_item_id: ki_b,
                 matched_content: "Existing item about memory safety".into(),
                 similarity_score: 0.87,
-                similarity_label: SimilarItemDecisionContext::similarity_label_from_score(0.87),
+                similarity_label: SimilarityBand::from(0.87).to_string(),
                 suggested_relation: RelationSuggestion::Supports,
                 justification: "Both discuss Rust memory guarantees".into(),
             }],

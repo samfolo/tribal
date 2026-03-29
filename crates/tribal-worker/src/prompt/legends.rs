@@ -53,30 +53,31 @@ impl SimilarityBand {
     /// Description of what scores in this range typically indicate.
     pub fn description(self) -> &'static str {
         match self {
-            Self::Low => {
-                "Unlikely to be meaningfully related. Included for completeness."
-            }
-            Self::Moderate => {
-                "Topically related but almost certainly distinct claims."
-            }
-            Self::High => {
-                "Closely related. Examine the specific claims carefully."
-            }
+            Self::Low => "Unlikely to be meaningfully related. Included for completeness.",
+            Self::Moderate => "Topically related but almost certainly distinct claims.",
+            Self::High => "Closely related. Examine the specific claims carefully.",
             Self::VeryHigh => {
                 "Near-identical. Likely the same claim, but check for \
                  meaningful deltas."
             }
         }
     }
+}
 
-    /// Classifies a cosine similarity score into a band.
-    pub fn from_score(score: f64) -> Self {
+impl From<f64> for SimilarityBand {
+    fn from(score: f64) -> Self {
         Self::ALL
             .iter()
             .rev()
             .copied()
             .find(|band| score >= band.lower_bound())
             .unwrap_or(Self::Low)
+    }
+}
+
+impl From<f32> for SimilarityBand {
+    fn from(score: f32) -> Self {
+        Self::from(f64::from(score))
     }
 }
 
@@ -116,9 +117,7 @@ pub(crate) fn similarity_score_legend() -> String {
 ///
 /// Exhaustive match ensures a compile error when a new variant is added
 /// to the domain type.
-pub(crate) fn relation_suggestion_description(
-    suggestion: RelationSuggestion,
-) -> &'static str {
+pub(crate) fn relation_suggestion_description(suggestion: RelationSuggestion) -> &'static str {
     match suggestion {
         RelationSuggestion::Supports => {
             "The candidate reinforces or provides additional evidence \
@@ -143,13 +142,7 @@ pub(crate) fn relation_suggestion_legend() -> String {
         RelationSuggestion::Unrelated,
     ]
     .into_iter()
-    .map(|s| {
-        format!(
-            "- **{}**: {}",
-            s,
-            relation_suggestion_description(s),
-        )
-    })
+    .map(|s| format!("- **{}**: {}", s, relation_suggestion_description(s),))
     .collect::<Vec<_>>()
     .join("\n")
 }
@@ -179,38 +172,35 @@ mod tests {
     #[test]
     fn test_band_range_covers_unit_interval() {
         assert_eq!(SimilarityBand::ALL[0].lower_bound(), 0.0);
-        assert_eq!(
-            SimilarityBand::ALL.last().unwrap().upper_bound(),
-            1.0,
-        );
+        assert_eq!(SimilarityBand::ALL.last().unwrap().upper_bound(), 1.0,);
     }
 
     #[test]
     fn test_from_score_low() {
-        assert_eq!(SimilarityBand::from_score(0.0), SimilarityBand::Low);
-        assert_eq!(SimilarityBand::from_score(0.15), SimilarityBand::Low);
-        assert_eq!(SimilarityBand::from_score(0.29), SimilarityBand::Low);
+        assert_eq!(SimilarityBand::from(0.0), SimilarityBand::Low);
+        assert_eq!(SimilarityBand::from(0.15), SimilarityBand::Low);
+        assert_eq!(SimilarityBand::from(0.29), SimilarityBand::Low);
     }
 
     #[test]
     fn test_from_score_moderate() {
-        assert_eq!(SimilarityBand::from_score(0.3), SimilarityBand::Moderate);
-        assert_eq!(SimilarityBand::from_score(0.45), SimilarityBand::Moderate);
-        assert_eq!(SimilarityBand::from_score(0.59), SimilarityBand::Moderate);
+        assert_eq!(SimilarityBand::from(0.3), SimilarityBand::Moderate);
+        assert_eq!(SimilarityBand::from(0.45), SimilarityBand::Moderate);
+        assert_eq!(SimilarityBand::from(0.59), SimilarityBand::Moderate);
     }
 
     #[test]
     fn test_from_score_high() {
-        assert_eq!(SimilarityBand::from_score(0.6), SimilarityBand::High);
-        assert_eq!(SimilarityBand::from_score(0.7), SimilarityBand::High);
-        assert_eq!(SimilarityBand::from_score(0.84), SimilarityBand::High);
+        assert_eq!(SimilarityBand::from(0.6), SimilarityBand::High);
+        assert_eq!(SimilarityBand::from(0.7), SimilarityBand::High);
+        assert_eq!(SimilarityBand::from(0.84), SimilarityBand::High);
     }
 
     #[test]
     fn test_from_score_very_high() {
-        assert_eq!(SimilarityBand::from_score(0.85), SimilarityBand::VeryHigh);
-        assert_eq!(SimilarityBand::from_score(0.95), SimilarityBand::VeryHigh);
-        assert_eq!(SimilarityBand::from_score(1.0), SimilarityBand::VeryHigh);
+        assert_eq!(SimilarityBand::from(0.85), SimilarityBand::VeryHigh);
+        assert_eq!(SimilarityBand::from(0.95), SimilarityBand::VeryHigh);
+        assert_eq!(SimilarityBand::from(1.0), SimilarityBand::VeryHigh);
     }
 
     #[test]

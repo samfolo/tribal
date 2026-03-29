@@ -4,13 +4,12 @@ use schemars::schema_for;
 use tribal_domain::TagRegistryEntry;
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
+use super::renderer::PromptRenderer;
 use crate::{
     error::StageError,
     parsing::ExtractionOutput,
     prompt::variables::{VAR_RAW_INPUT, VAR_TAGS, extraction_system_context},
 };
-
-use super::renderer::PromptRenderer;
 
 // ---------------------------------------------------------------------------
 // Context builders
@@ -50,8 +49,11 @@ pub(crate) fn assemble_extraction_prompt(
     let renderer = PromptRenderer::new();
 
     let system_ctx = extraction_system_context();
-    let rendered_system =
-        renderer.render(system_template, system_ctx, "rendering extraction system prompt")?;
+    let rendered_system = renderer.render(
+        system_template,
+        system_ctx,
+        "rendering extraction system prompt",
+    )?;
 
     let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
     let user_ctx = extraction_user_context(raw_input, &tags);

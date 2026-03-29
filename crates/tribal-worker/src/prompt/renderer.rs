@@ -2,9 +2,8 @@
 
 use uuid::Uuid;
 
-use crate::error::StageError;
-
 use super::variables::VAR_NONCE;
+use crate::error::StageError;
 
 /// Reserved template variable names injected by the renderer.
 ///
