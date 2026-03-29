@@ -136,13 +136,19 @@ testcontainers = "0.27"
 wiremock = "0.6"
 
 # Internal crates
+tribal = { path = "crates/tribal-server" }
+
 tribal-common = { path = "crates/tribal-common" }
-tribal-domain = { path = "crates/tribal-domain" }
+tribal-config = { path = "crates/tribal-config" }
 tribal-db = { path = "crates/tribal-db" }
+tribal-domain = { path = "crates/tribal-domain" }
 tribal-inference = { path = "crates/tribal-inference" }
-tribal-worker = { path = "crates/tribal-worker" }
 tribal-mcp = { path = "crates/tribal-mcp" }
 tribal-telemetry = { path = "crates/tribal-telemetry" }
-tribal-config = { path = "crates/tribal-config" }
-tribal-server = { path = "crates/tribal-server" }
 tribal-test-utils = { path = "crates/tribal-test-utils" }
+tribal-worker = { path = "crates/tribal-worker" }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

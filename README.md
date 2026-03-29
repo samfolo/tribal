@@ -5,7 +5,30 @@ learnings, debugging insights, heuristics, and decision rationale from
 development work, then makes that knowledge retrievable by coding agents via
 MCP (Model Context Protocol).
 
-## Prerequisites
+## Installation
+
+### Shell (macOS/Linux)
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/samfolo/tribal/releases/latest/download/tribal-installer.sh | sh
+```
+
+### Homebrew
+
+```sh
+brew tap samfolo/homebrew-tap
+brew install tribal
+```
+
+### From source
+
+```sh
+cargo install --git https://github.com/samfolo/tribal --bin tribal
+```
+
+## Development
+
+### Prerequisites
 
 - [Rust](https://rustup.rs/) (stable toolchain, 1.93+)
 - [Rust nightly](https://rustup.rs/) (for rustfmt — `rustup toolchain install nightly`)
@@ -14,7 +37,7 @@ MCP (Model Context Protocol).
 - [sqlx-cli](https://github.com/launchbadge/sqlx) — `cargo install sqlx-cli --no-default-features --features postgres`
 - [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) — `cargo install cargo-deny`
 
-## Setup
+### Setup
 
 ```bash
 git clone git@github.com:samfolo/tribal.git
@@ -25,7 +48,7 @@ just check
 just test
 ```
 
-## Running
+### Running
 
 ```bash
 # Run the MCP server (stdio transport)
@@ -35,7 +58,7 @@ just serve
 just serve-project <project_id>
 ```
 
-## Development
+### Commands
 
 ```bash
 # Format code (requires nightly rustfmt)

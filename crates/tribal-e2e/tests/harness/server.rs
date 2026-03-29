@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
+use tribal::{ServerHandle, start_server};
 use tribal_config::{
     DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL, ProviderKind, TribalConfig, validate,
 };
@@ -29,7 +30,6 @@ use tribal_mcp::{
     AppState, AuthContext, AuthenticatedPrincipal, ConnectionRepositories, HandlerConfig,
     SessionContext, SessionProject, TransportAuthStrategy, TribalServerHandler,
 };
-use tribal_server::{ServerHandle, start_server};
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
     Seed, a_new_principal, a_new_project, serial_lock, test_context, truncate_all_tables,

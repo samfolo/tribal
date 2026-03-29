@@ -15,10 +15,10 @@ use transport_harness::{
     TransportHandle, assert_tool_visibility, fresh_pool, seed_auth, seed_scoped_auth,
     spawn_transport, test_app_state, test_client,
 };
+use tribal::run_sse_transport;
 use tribal_config::{ServerConfig, SseConfig};
 use tribal_domain::Scope;
 use tribal_mcp::{AppState, HandlerConfig};
-use tribal_server::run_sse_transport;
 use tribal_test_utils::serial_lock;
 
 // ---------------------------------------------------------------------------
