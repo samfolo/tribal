@@ -27,7 +27,7 @@ use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_RELATION, StageError},
     parsing::{RelationEdge, RelationTarget, parse_relation_response},
     prompt::{
-        CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext,
+        CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext, SimilarityBand,
         assemble_relation_prompt,
     },
     worker::Worker,
@@ -432,6 +432,7 @@ async fn build_similar_item_decision_contexts(
                 matched_item_id: d.matched_item_id(),
                 matched_content: content.clone(),
                 similarity_score: d.similarity_score(),
+                similarity_label: SimilarityBand::from(d.similarity_score()).to_string(),
                 suggested_relation: d.suggested_relation(),
                 justification: d.justification_text().to_owned(),
             })

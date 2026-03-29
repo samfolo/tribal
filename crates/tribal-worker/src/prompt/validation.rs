@@ -12,8 +12,11 @@ use tribal_domain::{
 };
 
 use super::{
-    CandidateOutcome, RelationPromptContext, SimilarItemContext, SimilarItemDecisionContext,
-    extraction_user_context, relation_user_context, triage_user_context, variables::system_context,
+    CandidateOutcome, PromptRenderer, RelationPromptContext, SimilarItemContext,
+    SimilarItemDecisionContext, extraction_user_context,
+    legends::SimilarityBand,
+    relation_user_context, triage_user_context,
+    variables::{extraction_system_context, relation_system_context, triage_system_context},
 };
 
 /// Builds a [`tera::Context`] matching the production context shape for
@@ -32,7 +35,9 @@ use super::{
 #[must_use]
 pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> tera::Context {
     match (stage, role) {
-        (_, PromptRole::System) => system_context("{}"),
+        (PromptStage::Extraction, PromptRole::System) => extraction_system_context(),
+        (PromptStage::Triage, PromptRole::System) => triage_system_context(),
+        (PromptStage::Relation, PromptRole::System) => relation_system_context(),
 
         (PromptStage::Extraction, PromptRole::User) => extraction_user_context("x", &["x"]),
 
@@ -49,6 +54,7 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
                 kind: KnowledgeKind::Fact,
                 content: "x".to_owned(),
                 similarity_score: 0.5,
+                similarity_label: SimilarityBand::from_score(0.5).to_string(),
                 tags: vec!["x".to_owned()],
             };
 
@@ -82,6 +88,7 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
                 matched_item_id: KnowledgeItemId::new(),
                 matched_content: "x".to_owned(),
                 similarity_score: 0.5,
+                similarity_label: SimilarityBand::from(0.5).to_string(),
                 suggested_relation: RelationSuggestion::Supports,
                 justification: "x".to_owned(),
             };
@@ -108,11 +115,13 @@ mod tests {
     use super::*;
 
     /// Renders every embedded default template against its synthetic
-    /// context. If a production context builder adds a new variable, or
-    /// a template references one the context does not provide, this test
-    /// fails.
+    /// context, with nonce injection via the renderer. If a production
+    /// context builder adds a new variable, or a template references
+    /// one the context does not provide, this test fails.
     #[test]
     fn test_synthetic_context_renders_all_embedded_defaults() {
+        let renderer = PromptRenderer::for_validation();
+
         let pairs: [(PromptStage, PromptRole, &str); 6] = [
             (
                 PromptStage::Extraction,
@@ -147,7 +156,7 @@ mod tests {
         ];
         for (stage, role, content) in &pairs {
             let ctx = synthetic_validation_context(*stage, *role);
-            let result = tera::Tera::one_off(content, &ctx, false);
+            let result = renderer.render(content, ctx, "validation");
             assert!(
                 result.is_ok(),
                 "embedded default for {stage}/{role} failed to render against synthetic context: {}",
