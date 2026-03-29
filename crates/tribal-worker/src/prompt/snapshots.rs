@@ -79,24 +79,24 @@ mod tests {
         let tags = sample_tags();
 
         let system_ctx = extraction_system_context();
-        let rendered = renderer
+        let output = renderer
             .render(
                 include_str!("../../../../prompts/extraction/system.tera"),
                 system_ctx,
                 "extraction system",
             )
             .unwrap();
-        assert_text_snapshot!(&rendered, "src/prompt/snapshots/extraction/system.md");
+        assert_text_snapshot!(&output, "src/prompt/snapshots/extraction/system.md");
 
         let user_ctx = extraction_user_context(extraction_raw_input(), &tags);
-        let rendered = renderer
+        let output = renderer
             .render(
                 include_str!("../../../../prompts/extraction/user.tera"),
                 user_ctx,
                 "extraction user",
             )
             .unwrap();
-        assert_text_snapshot!(&rendered, "src/prompt/snapshots/extraction/user.md");
+        assert_text_snapshot!(&output, "src/prompt/snapshots/extraction/user.md");
     }
 
     // ---------------------------------------------------------------------
@@ -153,26 +153,26 @@ mod tests {
         let tags = sample_tags();
 
         let system_ctx = triage_system_context();
-        let rendered = renderer
+        let output = renderer
             .render(
                 include_str!("../../../../prompts/triage/system.tera"),
                 system_ctx,
                 "triage system",
             )
             .unwrap();
-        assert_text_snapshot!(&rendered, "src/prompt/snapshots/triage/system.md");
+        assert_text_snapshot!(&output, "src/prompt/snapshots/triage/system.md");
 
         let candidate = triage_candidate();
         let similar_items = triage_similar_items();
         let user_ctx = triage_user_context(&candidate, &similar_items, &tags);
-        let rendered = renderer
+        let output = renderer
             .render(
                 include_str!("../../../../prompts/triage/user.tera"),
                 user_ctx,
                 "triage user",
             )
             .unwrap();
-        assert_text_snapshot!(&rendered, "src/prompt/snapshots/triage/user.md");
+        assert_text_snapshot!(&output, "src/prompt/snapshots/triage/user.md");
     }
 
     // ---------------------------------------------------------------------
@@ -265,14 +265,14 @@ mod tests {
         let renderer = PromptRenderer::for_validation();
 
         let system_ctx = relation_system_context();
-        let rendered = renderer
+        let output = renderer
             .render(
                 include_str!("../../../../prompts/relation/system.tera"),
                 system_ctx,
                 "relation system",
             )
             .unwrap();
-        assert_text_snapshot!(&rendered, "src/prompt/snapshots/relation/system.md");
+        assert_text_snapshot!(&output, "src/prompt/snapshots/relation/system.md");
 
         let candidates_data = relation_candidates();
         let hints = relation_hints();
@@ -303,13 +303,13 @@ mod tests {
             similar_item_decisions: &decisions,
         };
         let user_ctx = relation_user_context(&prompt_ctx);
-        let rendered = renderer
+        let output = renderer
             .render(
                 include_str!("../../../../prompts/relation/user.tera"),
                 user_ctx,
                 "relation user",
             )
             .unwrap();
-        assert_text_snapshot!(&rendered, "src/prompt/snapshots/relation/user.md");
+        assert_text_snapshot!(&output, "src/prompt/snapshots/relation/user.md");
     }
 }
