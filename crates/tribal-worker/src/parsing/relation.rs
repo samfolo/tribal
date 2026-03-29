@@ -14,9 +14,10 @@ use crate::error::StageError;
 ///
 /// A subset of [`RelationKind`] that excludes `Supersedes`, which is
 /// a system-determined relationship and must not be produced by
-/// inference. By omitting the variant from the schema entirely, models
-/// cannot produce it — the constraint is enforced by the type system
-/// rather than by post-hoc filtering or prompt instructions.
+/// inference. By omitting the variant from the ingestion schema,
+/// any `supersedes` (or other unknown) relation types returned by the
+/// model will be rejected during deserialisation, rather than filtered
+/// out post-hoc or constrained only via prompt instructions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[schemars(description = "The type of relationship between two knowledge items. \
@@ -133,18 +134,46 @@ pub(crate) enum RelationTarget {
 
 /// Parses a completion response into a [`RelationOutput`].
 ///
+/// Individual edges that fail to deserialise (e.g. unknown
+/// `relation_type` values) are skipped with a warning rather than
+/// failing the entire response. The outer structure must be valid.
+///
 /// # Errors
 ///
-/// Returns [`StageError::Parse`] if the response text cannot be
-/// deserialised into [`RelationOutput`], with an operator-safe
-/// `context` and the full `raw_response` for debugging.
+/// Returns [`StageError::Parse`] if the outer response structure
+/// cannot be deserialised, with an operator-safe `context` and the
+/// full `raw_response` for debugging.
 pub(crate) fn parse_relation_response(
     response: &CompletionResponse,
 ) -> Result<RelationOutput, StageError> {
-    serde_json::from_str::<RelationOutput>(&response.text).map_err(|e| StageError::Parse {
-        context: format!("deserialising relation output: {e}"),
-        raw_response: Some(response.text.clone()),
-    })
+    let raw: RawRelationOutput =
+        serde_json::from_str(&response.text).map_err(|e| StageError::Parse {
+            context: format!("deserialising relation output: {e}"),
+            raw_response: Some(response.text.clone()),
+        })?;
+
+    let relations = raw
+        .relations
+        .into_iter()
+        .filter_map(
+            |edge_value| match serde_json::from_value::<RelationEdge>(edge_value) {
+                Ok(edge) => Some(edge),
+                Err(error) => {
+                    tracing::warn!(%error, "skipping relation edge with unrecognised structure");
+                    None
+                }
+            },
+        )
+        .collect();
+
+    Ok(RelationOutput { relations })
+}
+
+/// Intermediate type for lenient edge parsing. The outer structure
+/// must be valid JSON; individual edges are parsed independently.
+#[derive(Deserialize)]
+struct RawRelationOutput {
+    relations: Vec<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
