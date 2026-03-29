@@ -32,6 +32,35 @@ pub(crate) struct TriageClassification {
     pub similar_item_decisions: Vec<SimilarItemClassification>,
 }
 
+impl TriageClassification {
+    /// Reconciles the classification against system invariants,
+    /// correcting known classes of model error.
+    pub fn reconcile(&mut self) {
+        self.reconcile_contradiction_as_duplicate();
+    }
+
+    /// A candidate that contradicts any existing item cannot be a
+    /// duplicate — the knowledge base needs both perspectives.
+    fn reconcile_contradiction_as_duplicate(&mut self) {
+        if !matches!(self.outcome, TriageDecision::Duplicate { .. }) {
+            return;
+        }
+
+        let has_contradiction = self
+            .similar_item_decisions
+            .iter()
+            .any(|d| d.suggested_relation == RelationSuggestion::Contradicts);
+
+        if has_contradiction {
+            tracing::warn!(
+                "overriding duplicate to novel — \
+                 model classified as duplicate but a similar item was assessed as contradicts",
+            );
+            self.outcome = TriageDecision::Novel;
+        }
+    }
+}
+
 /// The triage decision for a candidate.
 ///
 /// Uses expressive Rust names (`Novel`/`Duplicate`) with serde renames
