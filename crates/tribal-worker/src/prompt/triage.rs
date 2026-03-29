@@ -9,8 +9,10 @@ use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 use crate::{
     error::StageError,
     parsing::TriageClassification,
-    prompt::variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS, system_context},
+    prompt::variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS, triage_system_context},
 };
+
+use super::{legends::SimilarityBand, renderer::PromptRenderer};
 
 // ---------------------------------------------------------------------------
 // SimilarItemContext
@@ -30,6 +32,8 @@ pub(crate) struct SimilarItemContext {
     pub content: String,
     /// Cosine similarity score.
     pub similarity_score: f64,
+    /// Human-readable label for the similarity score.
+    pub similarity_label: String,
     /// The existing item's tags.
     pub tags: Vec<String>,
 }
@@ -41,6 +45,7 @@ impl From<&SemanticSearchResult> for SimilarItemContext {
             kind: result.item.kind(),
             content: result.item.content().to_owned(),
             similarity_score: result.similarity,
+            similarity_label: SimilarityBand::from_score(result.similarity).to_string(),
             tags: result.item.tags().to_vec(),
         }
     }
@@ -52,7 +57,7 @@ impl From<&SemanticSearchResult> for SimilarItemContext {
 
 /// Builds the user prompt context for the triage stage.
 ///
-/// Both the production assembly and the hot-reload validator call this,
+/// Both the production assembly and the validation tests call this,
 /// so adding a variable here is automatically reflected in both paths.
 pub(crate) fn triage_user_context(
     candidate: &Candidate,
@@ -86,28 +91,17 @@ pub(crate) fn assemble_triage_prompt(
     let schema = schema_for!(TriageClassification);
     let schema_value =
         serde_json::to_value(&schema).expect("schema_for! produces serialisable output");
-    let schema_pretty =
-        serde_json::to_string_pretty(&schema).expect("schema_for! produces serialisable output");
 
-    let system_ctx = system_context(&schema_pretty);
+    let renderer = PromptRenderer::new();
 
+    let system_ctx = triage_system_context();
     let rendered_system =
-        tera::Tera::one_off(system_template, &system_ctx, false).map_err(|e| {
-            StageError::TemplateRender {
-                context: "rendering triage system prompt".into(),
-                source: e,
-            }
-        })?;
+        renderer.render(system_template, system_ctx, "rendering triage system prompt")?;
 
     let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
     let user_ctx = triage_user_context(candidate, similar_items, &tags);
-
-    let rendered_user = tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
-        StageError::TemplateRender {
-            context: "rendering triage user prompt".into(),
-            source: e,
-        }
-    })?;
+    let rendered_user =
+        renderer.render(user_template, user_ctx, "rendering triage user prompt")?;
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
@@ -235,20 +229,45 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_variable_rendered_in_system() {
+    fn test_similarity_label_rendered_for_similar_items() {
+        let similar = SimilarItemContext {
+            item_id: KnowledgeItemId::new(),
+            kind: KnowledgeKind::Fact,
+            content: "existing item".to_owned(),
+            similarity_score: 0.72,
+            similarity_label: SimilarityBand::from_score(0.72).to_string(),
+            tags: vec![],
+        };
         let result = assemble_triage_prompt(
-            "Schema: {{ schema }}",
+            "system",
+            "{% for item in similar_items %}{{ item.similarity_label }}{% endfor %}",
+            &test_candidate(),
+            &[similar],
+            &[],
+        );
+        let request = result.unwrap();
+        assert!(
+            request.messages[0].content.contains("high"),
+            "should contain label: {}",
+            request.messages[0].content,
+        );
+    }
+
+    #[test]
+    fn test_system_prompt_contains_similarity_legend() {
+        let result = assemble_triage_prompt(
+            "{{ similarity_score_legend }}",
             "{{ candidate.content }}",
             &test_candidate(),
             &[],
             &[],
         );
-        assert!(result.is_ok());
         let request = result.unwrap();
         let system = request.system.unwrap();
+        assert!(system.contains("low"), "legend should contain bands: {system}");
         assert!(
-            system.contains("TriageClassification"),
-            "schema should contain type name: {system}",
+            system.contains("very high"),
+            "legend should contain bands: {system}",
         );
     }
 }
