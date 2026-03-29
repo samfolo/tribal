@@ -40,7 +40,7 @@ impl SimilarityBand {
         }
     }
 
-    /// Exclusive upper bound of the score range.
+    /// Upper bound of the score range.
     pub fn upper_bound(self) -> f64 {
         match self {
             Self::Low => Self::Moderate.lower_bound(),
@@ -229,17 +229,16 @@ mod tests {
     #[test]
     fn test_relation_suggestion_legend_contains_all_variants() {
         let legend = relation_suggestion_legend();
-        assert!(
-            legend.contains("supports"),
-            "legend should contain 'supports': {legend}",
-        );
-        assert!(
-            legend.contains("contradicts"),
-            "legend should contain 'contradicts': {legend}",
-        );
-        assert!(
-            legend.contains("unrelated"),
-            "legend should contain 'unrelated': {legend}",
-        );
+        for suggestion in RelationSuggestion::ALL {
+            let label = suggestion.to_string();
+            assert!(
+                legend.contains(&label),
+                "legend should contain '{label}': {legend}",
+            );
+            assert!(
+                legend.contains(relation_suggestion_description(*suggestion)),
+                "legend should contain description for '{label}': {legend}",
+            );
+        }
     }
 }

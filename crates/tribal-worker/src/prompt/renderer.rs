@@ -99,7 +99,7 @@ impl PromptRenderer {
                 var.key(),
             );
         }
-        context.insert(VAR_NONCE, &self.nonce);
+        self.inject_reserved(&mut context);
 
         tera::Tera::one_off(template, &context, false).map_err(|source| {
             StageError::TemplateRender {
@@ -107,6 +107,17 @@ impl PromptRenderer {
                 source,
             }
         })
+    }
+
+    /// Injects production values for all reserved variables.
+    ///
+    /// Exhaustive match ensures a new variant forces a wiring update.
+    fn inject_reserved(&self, ctx: &mut tera::Context) {
+        for var in ReservedVariable::iter() {
+            match var {
+                ReservedVariable::Nonce => ctx.insert(var.key(), &self.nonce),
+            }
+        }
     }
 }
 

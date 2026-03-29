@@ -241,11 +241,11 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_partial_variable_drop() {
-        // Uses tags but drops raw_input — should fail for extraction/user.
+        // Uses tags and nonce but drops raw_input — should fail for extraction/user.
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::User,
-            "{{ tags }} but no raw input reference",
+            "{{ tags }} {{ nonce }} but no raw input reference",
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -293,7 +293,7 @@ mod tests {
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::User,
-            "{# raw_input #}\n{{ tags }}",
+            "{# raw_input #}\n{{ tags }} {{ nonce }}",
         );
         let err = result.unwrap_err();
         assert!(
