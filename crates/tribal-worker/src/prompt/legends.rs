@@ -102,7 +102,7 @@ pub(crate) fn similarity_score_legend() -> String {
         .iter()
         .map(|band| {
             format!(
-                "- **{:.1} \u{2013} {:.1}** ({}): {}",
+                "- **{:.2} \u{2013} {:.2}** ({}): {}",
                 band.lower_bound(),
                 band.upper_bound(),
                 band,

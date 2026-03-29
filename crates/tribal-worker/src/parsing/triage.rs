@@ -242,4 +242,76 @@ mod tests {
         let classification = result.unwrap();
         assert_eq!(classification.similar_item_decisions.len(), 1);
     }
+
+    // -- reconcile tests --
+
+    fn classification_with_decisions(
+        decision: &str,
+        matched_item_id: Option<&str>,
+        relations: &[&str],
+    ) -> TriageClassification {
+        let outcome_json = match (decision, matched_item_id) {
+            ("duplicate", Some(id)) => {
+                format!(r#"{{"decision": "duplicate", "matched_item_id": "{id}"}}"#)
+            }
+            _ => r#"{"decision": "created"}"#.to_owned(),
+        };
+
+        let decisions: Vec<SimilarItemClassification> = relations
+            .iter()
+            .enumerate()
+            .map(|(i, rel)| SimilarItemClassification {
+                item_id: format!("ki_{i:0>8}-0000-0000-0000-000000000000")
+                    .parse()
+                    .unwrap(),
+                suggested_relation: rel.parse().unwrap(),
+                justification: "test".to_owned(),
+            })
+            .collect();
+
+        TriageClassification {
+            outcome: serde_json::from_str(&outcome_json).unwrap(),
+            similar_item_decisions: decisions,
+        }
+    }
+
+    #[test]
+    fn test_reconcile_overrides_duplicate_with_contradiction() {
+        let mut c = classification_with_decisions(
+            "duplicate",
+            Some("ki_00000000-0000-0000-0000-000000000000"),
+            &["contradicts"],
+        );
+        c.reconcile();
+        assert!(matches!(c.outcome, TriageDecision::Novel));
+    }
+
+    #[test]
+    fn test_reconcile_overrides_when_any_decision_contradicts() {
+        let mut c = classification_with_decisions(
+            "duplicate",
+            Some("ki_00000000-0000-0000-0000-000000000000"),
+            &["supports", "unrelated", "contradicts"],
+        );
+        c.reconcile();
+        assert!(matches!(c.outcome, TriageDecision::Novel));
+    }
+
+    #[test]
+    fn test_reconcile_preserves_duplicate_without_contradiction() {
+        let mut c = classification_with_decisions(
+            "duplicate",
+            Some("ki_00000000-0000-0000-0000-000000000000"),
+            &["supports", "unrelated"],
+        );
+        c.reconcile();
+        assert!(matches!(c.outcome, TriageDecision::Duplicate { .. }));
+    }
+
+    #[test]
+    fn test_reconcile_preserves_novel_unchanged() {
+        let mut c = classification_with_decisions("created", None, &["contradicts"]);
+        c.reconcile();
+        assert!(matches!(c.outcome, TriageDecision::Novel));
+    }
 }
