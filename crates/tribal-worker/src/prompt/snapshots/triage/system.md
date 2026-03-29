@@ -47,10 +47,10 @@ Contradictions are always novel: if any of your per-item assessments has suggest
 
 Each existing item includes a cosine similarity score between 0.0 and 1.0. Use these as rough guidance, never as the sole basis for your decision.
 
-- **0.0 – 0.3** (low): Unlikely to be meaningfully related. Included for completeness.
-- **0.3 – 0.6** (moderate): Topically related but almost certainly distinct claims.
-- **0.6 – 0.8** (high): Closely related. Examine the specific claims carefully.
-- **0.8 – 1.0** (very high): Near-identical. Likely the same claim, but check for meaningful deltas.
+- **0.00 – 0.30** (low): Unlikely to be meaningfully related. Included for completeness.
+- **0.30 – 0.60** (moderate): Topically related but almost certainly distinct claims.
+- **0.60 – 0.85** (high): Closely related. Examine the specific claims carefully.
+- **0.85 – 1.00** (very high): Near-identical. Likely the same claim, but check for meaningful deltas.
 
 Even at very high similarity, if the candidate adds operational context, a specific incident, a caveat, or a correction, it is novel.
 
