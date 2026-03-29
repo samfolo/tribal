@@ -4,7 +4,7 @@
 
 use std::process;
 
-use tribal_server::App;
+use tribal::App;
 
 fn main() {
     if let Err(err) = App::parse().run() {
