@@ -106,8 +106,9 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
     };
 
     // In production, PromptRenderer injects reserved variables at
-    // render time. For validation contexts, we inject them here so the
-    // server's required-variable check covers them.
+    // render time for all prompts. For validation, we only inject them
+    // for user prompts — system prompts don't reference them, and the
+    // server's variable-drop check would reject unreferenced keys.
     if role == PromptRole::User {
         PromptRenderer::inject_validation_defaults(&mut ctx);
     }
