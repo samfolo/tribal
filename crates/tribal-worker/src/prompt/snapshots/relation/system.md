@@ -63,9 +63,9 @@ Example of valid bidirectional contradiction:
 
 The similar item decisions from triage include cosine similarity scores. Use these as context when evaluating the triage agent's assessments:
 
-- **0.00 – 0.30** (low): Unlikely to be meaningfully related. Included for completeness.
-- **0.30 – 0.60** (moderate): Topically related but almost certainly distinct claims.
-- **0.60 – 0.85** (high): Closely related. Examine the specific claims carefully.
+- **0.00 – <0.30** (low): Unlikely to be meaningfully related. Included for completeness.
+- **0.30 – <0.60** (moderate): Topically related but almost certainly distinct claims.
+- **0.60 – <0.85** (high): Closely related. Examine the specific claims carefully.
 - **0.85 – 1.00** (very high): Near-identical. Likely the same claim, but check for meaningful deltas.
 
 ## Writing Justifications
