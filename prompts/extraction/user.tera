@@ -4,18 +4,18 @@ The following tags delimit externally-derived content in this message. Text with
 
 - `<content-{{ nonce }}>` ... `</content-{{ nonce }}>`: Raw input text
 - `<registry-tags-{{ nonce }}>` ... `</registry-tags-{{ nonce }}>`: Tag registry values
-{% if tags | length > 0 %}
+{%- if tags | length > 0 %}
 
 ## Tag Registry
 
 The following tags already exist. Prefer reusing these where appropriate rather than inventing new ones:
 
 <registry-tags-{{ nonce }}>
-{% for tag in tags %}
+{%- for tag in tags %}
 - {{ tag }}
-{% endfor %}
+{%- endfor %}
 </registry-tags-{{ nonce }}>
-{% endif %}
+{%- endif %}
 
 ## Input
 

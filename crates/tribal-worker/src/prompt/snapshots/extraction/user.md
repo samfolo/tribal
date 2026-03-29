@@ -5,27 +5,18 @@ The following tags delimit externally-derived content in this message. Text with
 - `<content-validation00>` ... `</content-validation00>`: Raw input text
 - `<registry-tags-validation00>` ... `</registry-tags-validation00>`: Tag registry values
 
-
 ## Tag Registry
 
 The following tags already exist. Prefer reusing these where appropriate rather than inventing new ones:
 
 <registry-tags-validation00>
-
 - billing
-
 - authentication
-
 - postgres
-
 - incident response
-
 - ci pipeline
-
 - api rate limiting
-
 </registry-tags-validation00>
-
 
 ## Input
 
