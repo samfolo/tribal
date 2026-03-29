@@ -5,7 +5,7 @@ use serde::Serialize;
 use tribal_domain::{Candidate, KnowledgeItemId, RelationHint, RelationSuggestion};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
-use super::{legends::SimilarityBand, renderer::PromptRenderer};
+use super::renderer::PromptRenderer;
 use crate::{
     error::StageError,
     parsing::RelationOutput,

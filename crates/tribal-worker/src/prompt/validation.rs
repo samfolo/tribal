@@ -12,10 +12,8 @@ use tribal_domain::{
 };
 
 use super::{
-    CandidateOutcome, PromptRenderer, RelationPromptContext, SimilarItemContext,
-    SimilarItemDecisionContext, extraction_user_context,
-    legends::SimilarityBand,
-    relation_user_context, triage_user_context,
+    CandidateOutcome, RelationPromptContext, SimilarItemContext, SimilarItemDecisionContext,
+    extraction_user_context, legends::SimilarityBand, relation_user_context, triage_user_context,
     variables::{extraction_system_context, relation_system_context, triage_system_context},
 };
 
@@ -54,7 +52,7 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
                 kind: KnowledgeKind::Fact,
                 content: "x".to_owned(),
                 similarity_score: 0.5,
-                similarity_label: SimilarityBand::from_score(0.5).to_string(),
+                similarity_label: SimilarityBand::from(0.5).to_string(),
                 tags: vec!["x".to_owned()],
             };
 
