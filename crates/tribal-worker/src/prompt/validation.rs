@@ -112,9 +112,8 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
 mod tests {
     use tribal_domain::{PromptRole, PromptStage};
 
-    use crate::prompt::renderer::PromptRenderer;
-
     use super::*;
+    use crate::prompt::renderer::PromptRenderer;
 
     /// Renders every embedded default template against its synthetic
     /// context, with nonce injection via the renderer. If a production
