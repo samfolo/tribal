@@ -98,13 +98,20 @@ impl fmt::Display for SimilarityBand {
 
 /// Renders the similarity score legend for injection into system prompts.
 pub(crate) fn similarity_score_legend() -> String {
+    let last = SimilarityBand::ALL.len() - 1;
     SimilarityBand::ALL
         .iter()
-        .map(|band| {
+        .enumerate()
+        .map(|(i, band)| {
+            let upper = if i < last {
+                format!("<{:.2}", band.upper_bound())
+            } else {
+                format!("{:.2}", band.upper_bound())
+            };
             format!(
-                "- **{:.2} \u{2013} {:.2}** ({}): {}",
+                "- **{:.2} \u{2013} {}** ({}): {}",
                 band.lower_bound(),
-                band.upper_bound(),
+                upper,
                 band,
                 band.description(),
             )
