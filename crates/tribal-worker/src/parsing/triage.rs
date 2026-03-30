@@ -12,11 +12,53 @@ use crate::error::StageError;
 
 /// The triage agent's classification of a candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[schemars(
+    description = "The triage classification for a single candidate. Contains the \
+    novel/duplicate decision and independent per-item relationship assessments."
+)]
 pub(crate) struct TriageClassification {
     /// Whether the candidate is novel or a duplicate.
+    #[schemars(
+        description = "The classification decision. Default to 'created' (novel) unless \
+        the candidate makes the exact same specific claim as an existing item with no \
+        meaningful new information. When uncertain, choose 'created'."
+    )]
     pub outcome: TriageDecision,
     /// Per-similar-item decisions with justifications.
+    #[schemars(
+        description = "One entry per similar item provided. Each assessment is independent \
+        of the outcome decision and must include a justification referencing both items."
+    )]
     pub similar_item_decisions: Vec<SimilarItemClassification>,
+}
+
+impl TriageClassification {
+    /// Reconciles the classification against system invariants,
+    /// correcting known classes of model error.
+    pub fn reconcile(&mut self) {
+        self.reconcile_contradiction_as_duplicate();
+    }
+
+    /// A candidate that contradicts any existing item cannot be a
+    /// duplicate — the knowledge base needs both perspectives.
+    fn reconcile_contradiction_as_duplicate(&mut self) {
+        if !matches!(self.outcome, TriageDecision::Duplicate { .. }) {
+            return;
+        }
+
+        let has_contradiction = self
+            .similar_item_decisions
+            .iter()
+            .any(|d| d.suggested_relation == RelationSuggestion::Contradicts);
+
+        if has_contradiction {
+            tracing::warn!(
+                "overriding duplicate to novel — \
+                 model classified as duplicate but a similar item was assessed as contradicts",
+            );
+            self.outcome = TriageDecision::Novel;
+        }
+    }
 }
 
 /// The triage decision for a candidate.
@@ -25,26 +67,59 @@ pub(crate) struct TriageClassification {
 /// to match the wire format (`created`/`duplicate`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "decision")]
+#[schemars(
+    description = "The classification outcome. 'created' is the default — only use \
+    'duplicate' when the candidate makes the exact same claim as an existing item. \
+    A candidate assessed as contradicting any similar item MUST be 'created'."
+)]
 pub(crate) enum TriageDecision {
     /// The candidate is novel — a new knowledge item should be created.
     #[serde(rename = "created")]
+    #[schemars(
+        description = "The candidate contains information not already captured. \
+        This is the default — use when the candidate adds any new context, detail, \
+        correction, or perspective beyond what existing items capture."
+    )]
     Novel,
     /// The candidate duplicates an existing item.
     #[serde(rename = "duplicate")]
+    #[schemars(
+        description = "The candidate restates an existing item with no meaningful new \
+        information. Must not be used when any similar_item_decision has suggested_relation \
+        'contradicts' — a contradiction is always novel."
+    )]
     Duplicate {
         /// The existing item the candidate matches.
+        #[schemars(
+            description = "The identifier of the existing item this candidate duplicates. \
+            Must reference an item from the similar items provided."
+        )]
         matched_item_id: KnowledgeItemId,
     },
 }
 
 /// The triage agent's decision about a single similar item.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[schemars(
+    description = "An independent assessment of one existing item's relationship to \
+    the candidate."
+)]
 pub(crate) struct SimilarItemClassification {
     /// The existing item that was compared against.
+    #[schemars(description = "The identifier of the existing item being assessed.")]
     pub item_id: KnowledgeItemId,
     /// The agent's suggested relation classification.
+    #[schemars(
+        description = "The relationship between the existing item and the candidate. \
+        If 'contradicts', the outcome decision must be 'created' — contradictory \
+        information cannot be a duplicate."
+    )]
     pub suggested_relation: RelationSuggestion,
     /// The agent's reasoning for the classification.
+    #[schemars(
+        description = "Brief explanation referencing specific content from both items. \
+        Explains why this relationship classification was chosen."
+    )]
     pub justification: String,
 }
 
@@ -166,5 +241,77 @@ mod tests {
         assert!(result.is_ok());
         let classification = result.unwrap();
         assert_eq!(classification.similar_item_decisions.len(), 1);
+    }
+
+    // -- reconcile --------------------------------------------------------
+
+    fn classification_with_decisions(
+        decision: &str,
+        matched_item_id: Option<&str>,
+        relations: &[&str],
+    ) -> TriageClassification {
+        let outcome_json = match (decision, matched_item_id) {
+            ("duplicate", Some(id)) => {
+                format!(r#"{{"decision": "duplicate", "matched_item_id": "{id}"}}"#)
+            }
+            _ => r#"{"decision": "created"}"#.to_owned(),
+        };
+
+        let decisions: Vec<SimilarItemClassification> = relations
+            .iter()
+            .enumerate()
+            .map(|(i, rel)| SimilarItemClassification {
+                item_id: format!("ki_{i:0>8}-0000-0000-0000-000000000000")
+                    .parse()
+                    .unwrap(),
+                suggested_relation: rel.parse().unwrap(),
+                justification: "test".to_owned(),
+            })
+            .collect();
+
+        TriageClassification {
+            outcome: serde_json::from_str(&outcome_json).unwrap(),
+            similar_item_decisions: decisions,
+        }
+    }
+
+    #[test]
+    fn test_reconcile_overrides_duplicate_with_contradiction() {
+        let mut c = classification_with_decisions(
+            "duplicate",
+            Some("ki_00000000-0000-0000-0000-000000000000"),
+            &["contradicts"],
+        );
+        c.reconcile();
+        assert!(matches!(c.outcome, TriageDecision::Novel));
+    }
+
+    #[test]
+    fn test_reconcile_overrides_when_any_decision_contradicts() {
+        let mut c = classification_with_decisions(
+            "duplicate",
+            Some("ki_00000000-0000-0000-0000-000000000000"),
+            &["supports", "unrelated", "contradicts"],
+        );
+        c.reconcile();
+        assert!(matches!(c.outcome, TriageDecision::Novel));
+    }
+
+    #[test]
+    fn test_reconcile_preserves_duplicate_without_contradiction() {
+        let mut c = classification_with_decisions(
+            "duplicate",
+            Some("ki_00000000-0000-0000-0000-000000000000"),
+            &["supports", "unrelated"],
+        );
+        c.reconcile();
+        assert!(matches!(c.outcome, TriageDecision::Duplicate { .. }));
+    }
+
+    #[test]
+    fn test_reconcile_preserves_novel_unchanged() {
+        let mut c = classification_with_decisions("created", None, &["contradicts"]);
+        c.reconcile();
+        assert!(matches!(c.outcome, TriageDecision::Novel));
     }
 }

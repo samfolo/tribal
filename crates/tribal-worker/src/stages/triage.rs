@@ -188,7 +188,7 @@ impl Worker {
                 .map(SimilarItemContext::from)
                 .collect();
 
-            let (classification, completion_response) = self
+            let (mut classification, completion_response) = self
                 .classify_candidate(
                     &ctx,
                     system_pv.content(),
@@ -197,6 +197,8 @@ impl Worker {
                     deadline,
                 )
                 .await?;
+
+            classification.reconcile();
 
             let embedding_usage = embedding_response.usage;
             let embedding_vector = embedding_response.vector;

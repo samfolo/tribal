@@ -14,5 +14,5 @@ mod worker;
 
 pub use error::WorkerError;
 pub use gauge_task::run_queue_health_gauges;
-pub use prompt::synthetic_validation_context;
+pub use prompt::{reserved_keys, synthetic_validation_context};
 pub use worker::Worker;

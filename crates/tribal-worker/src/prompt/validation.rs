@@ -13,7 +13,13 @@ use tribal_domain::{
 
 use super::{
     CandidateOutcome, RelationPromptContext, SimilarItemContext, SimilarItemDecisionContext,
-    extraction_user_context, relation_user_context, triage_user_context, variables::system_context,
+    extraction_user_context,
+    legends::SimilarityBand,
+    relation_user_context, triage_user_context,
+    variables::{
+        extraction_system_context, inject_validation_defaults, relation_system_context,
+        triage_system_context,
+    },
 };
 
 /// Builds a [`tera::Context`] matching the production context shape for
@@ -31,8 +37,10 @@ use super::{
 /// JSON literals are compile-time constants.
 #[must_use]
 pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> tera::Context {
-    match (stage, role) {
-        (_, PromptRole::System) => system_context("{}"),
+    let mut ctx = match (stage, role) {
+        (PromptStage::Extraction, PromptRole::System) => extraction_system_context(),
+        (PromptStage::Triage, PromptRole::System) => triage_system_context(),
+        (PromptStage::Relation, PromptRole::System) => relation_system_context(),
 
         (PromptStage::Extraction, PromptRole::User) => extraction_user_context("x", &["x"]),
 
@@ -49,6 +57,7 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
                 kind: KnowledgeKind::Fact,
                 content: "x".to_owned(),
                 similarity_score: 0.5,
+                similarity_label: SimilarityBand::from(0.5).to_string(),
                 tags: vec!["x".to_owned()],
             };
 
@@ -82,6 +91,7 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
                 matched_item_id: KnowledgeItemId::new(),
                 matched_content: "x".to_owned(),
                 similarity_score: 0.5,
+                similarity_label: SimilarityBand::from(0.5).to_string(),
                 suggested_relation: RelationSuggestion::Supports,
                 justification: "x".to_owned(),
             };
@@ -94,7 +104,16 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
 
             relation_user_context(&prompt_context)
         }
-    }
+    };
+
+    // In production, the renderer injects reserved variables at
+    // render time for all prompts. Validation matches this so that
+    // the server's hot-reload validator sees the same variable set.
+    // The server excludes reserved keys from the "must reference"
+    // check via reserved_keys().
+    inject_validation_defaults(&mut ctx);
+
+    ctx
 }
 
 // ---------------------------------------------------------------------------
@@ -108,9 +127,7 @@ mod tests {
     use super::*;
 
     /// Renders every embedded default template against its synthetic
-    /// context. If a production context builder adds a new variable, or
-    /// a template references one the context does not provide, this test
-    /// fails.
+    /// context. Mirrors the server's hot-reload validation path.
     #[test]
     fn test_synthetic_context_renders_all_embedded_defaults() {
         let pairs: [(PromptStage, PromptRole, &str); 6] = [

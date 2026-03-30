@@ -40,7 +40,7 @@ db-down:
 
 # Run database migrations against local Postgres
 db-migrate:
-    cargo run -p tribal-server -- setup
+    cargo run -p tribal -- setup
 
 # Regenerate sqlx offline query metadata
 sqlx-prepare:
@@ -51,8 +51,8 @@ pre-push: fmt check sqlx-prepare test
 
 # Run the MCP server locally (stdio mode)
 serve:
-    cargo run -p tribal-server -- serve --transport stdio
+    cargo run -p tribal -- serve --transport stdio
 
 # Run the MCP server with a specific project
 serve-project project_id:
-    cargo run -p tribal-server -- serve --transport stdio --project {{project_id}}
+    cargo run -p tribal -- serve --transport stdio --project {{project_id}}

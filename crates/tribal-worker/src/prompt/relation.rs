@@ -5,11 +5,12 @@ use serde::Serialize;
 use tribal_domain::{Candidate, KnowledgeItemId, RelationHint, RelationSuggestion};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
+use super::renderer::PromptRenderer;
 use crate::{
     error::StageError,
     parsing::RelationOutput,
     prompt::variables::{
-        VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS, system_context,
+        VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS, relation_system_context,
     },
 };
 
@@ -61,6 +62,8 @@ pub(crate) struct SimilarItemDecisionContext {
     /// `TriageSimilarItemDecision` rows where precision was already
     /// reduced to `REAL` at the triage commit boundary.
     pub similarity_score: f32,
+    /// Human-readable label for the similarity score.
+    pub similarity_label: String,
     /// The triage agent's suggested relation classification.
     pub suggested_relation: RelationSuggestion,
     /// The triage agent's reasoning for the classification.
@@ -73,7 +76,7 @@ pub(crate) struct SimilarItemDecisionContext {
 
 /// Builds the user prompt context for the relation stage.
 ///
-/// Both the production assembly and the hot-reload validator call this,
+/// Both the production assembly and the validation tests call this,
 /// so adding a variable here is automatically reflected in both paths.
 pub(crate) fn relation_user_context(context: &RelationPromptContext<'_>) -> tera::Context {
     let mut ctx = tera::Context::new();
@@ -101,27 +104,19 @@ pub(crate) fn assemble_relation_prompt(
     let schema = schema_for!(RelationOutput);
     let schema_value =
         serde_json::to_value(&schema).expect("schema_for! produces serialisable output");
-    let schema_pretty =
-        serde_json::to_string_pretty(&schema).expect("schema_for! produces serialisable output");
 
-    let system_ctx = system_context(&schema_pretty);
+    let renderer = PromptRenderer::new();
 
-    let rendered_system =
-        tera::Tera::one_off(system_template, &system_ctx, false).map_err(|e| {
-            StageError::TemplateRender {
-                context: "rendering relation system prompt".into(),
-                source: e,
-            }
-        })?;
+    let system_ctx = relation_system_context();
+    let rendered_system = renderer.render(
+        system_template,
+        system_ctx,
+        "rendering relation system prompt",
+    )?;
 
     let user_ctx = relation_user_context(context);
-
-    let rendered_user = tera::Tera::one_off(user_template, &user_ctx, false).map_err(|e| {
-        StageError::TemplateRender {
-            context: "rendering relation user prompt".into(),
-            source: e,
-        }
-    })?;
+    let rendered_user =
+        renderer.render(user_template, user_ctx, "rendering relation user prompt")?;
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
@@ -146,6 +141,7 @@ mod tests {
     use tribal_domain::TaskErrorKind;
 
     use super::*;
+    use crate::prompt::SimilarityBand;
 
     fn test_candidate(content: &str) -> Candidate {
         serde_json::from_value(serde_json::json!({
@@ -189,6 +185,7 @@ mod tests {
                 matched_item_id: ki_b,
                 matched_content: "Existing item about memory safety".into(),
                 similarity_score: 0.87,
+                similarity_label: SimilarityBand::from(0.87).to_string(),
                 suggested_relation: RelationSuggestion::Supports,
                 justification: "Both discuss Rust memory guarantees".into(),
             }],
@@ -353,14 +350,19 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_variable_rendered_in_system() {
+    fn test_system_prompt_contains_similarity_legend() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let request = assemble_relation_prompt("Schema: {{ schema }}", "user", &ctx).unwrap();
+        let request =
+            assemble_relation_prompt("{{ similarity_score_legend }}", "user", &ctx).unwrap();
         let system = request.system.unwrap();
         assert!(
-            system.contains("RelationOutput"),
-            "schema should contain type name: {system}",
+            system.contains("low"),
+            "legend should contain bands: {system}",
+        );
+        assert!(
+            system.contains("very high"),
+            "legend should contain bands: {system}",
         );
     }
 
