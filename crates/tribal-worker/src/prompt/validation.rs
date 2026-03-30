@@ -16,7 +16,7 @@ use super::{
     extraction_user_context,
     legends::SimilarityBand,
     relation_user_context,
-    renderer::PromptRenderer,
+    renderer::inject_validation_defaults,
     triage_user_context,
     variables::{extraction_system_context, relation_system_context, triage_system_context},
 };
@@ -105,13 +105,12 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
         }
     };
 
-    // In production, PromptRenderer injects reserved variables at
-    // render time for all prompts. For validation, we only inject them
-    // for user prompts — system prompts don't reference them, and the
-    // server's variable-drop check would reject unreferenced keys.
-    if role == PromptRole::User {
-        PromptRenderer::inject_validation_defaults(&mut ctx);
-    }
+    // In production, the renderer injects reserved variables at
+    // render time for all prompts. Validation matches this so that
+    // the server's hot-reload validator sees the same variable set.
+    // The server excludes reserved keys from the "must reference"
+    // check via reserved_keys().
+    inject_validation_defaults(&mut ctx);
 
     ctx
 }

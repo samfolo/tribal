@@ -13,16 +13,14 @@ use crate::harness::{
 ///
 /// The relation mock returns a mix of valid and invalid edges:
 /// - A valid intra-batch edge (0 supports 1)
+/// - An edge with an unknown relation type (skipped during lenient parsing)
 /// - An edge with an out-of-range batch index (unresolvable, step 2)
 /// - A self-edge (dropped after resolution, step 3)
 /// - An exact duplicate of the valid edge (deduplicated, step 4)
 ///
-/// Supersedes edges are not tested here — `IngestionRelationKind`
-/// excludes the variant at the schema level, so the model cannot
-/// produce them.
-///
-/// The normalisation layer drops all three invalid edges and commits
-/// only the valid one. The job completes with `success` outcome.
+/// The lenient parser and normalisation layer handle all four invalid
+/// edges and commit only the valid one. The job completes with
+/// `success` outcome.
 ///
 /// Theme: Canopy's authentication subsystem — the LLM hallucinates
 /// some relation edges that don't correspond to real candidates.
@@ -87,6 +85,8 @@ async fn test_relation_normalisation_drops_invalid_edges() {
                 RelationFixture::builder()
                     // Valid: candidate 0 supports candidate 1.
                     .edge(intra_batch(0, "supports", 1))
+                    // Skipped during lenient parsing: unknown relation type.
+                    .edge(intra_batch(0, "unexpected", 2))
                     // Dropped (step 2): batch index 99 does not exist.
                     .edge(intra_batch(99, "contradicts", 0))
                     // Dropped (step 3): self-edge after resolution.

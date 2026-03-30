@@ -9,7 +9,7 @@ use tribal_common::sha256_hex;
 use tribal_db::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
 use tribal_domain::{PromptRole, PromptStage};
 use tribal_mcp::ActivePromptVersions;
-use tribal_worker::synthetic_validation_context;
+use tribal_worker::{reserved_keys, synthetic_validation_context};
 
 use super::constants::{
     LOG_PROMPT_READ_FAILED, LOG_PROMPT_RELOADED, LOG_PROMPT_UPSERT_FAILED,
@@ -61,10 +61,17 @@ pub(crate) fn validate_prompt_template(
         return Err(VALIDATION_CONTEXT_PANIC.to_owned());
     };
 
+    let reserved = reserved_keys();
+
     let Err(error) = tera::Tera::one_off(content, &tera_ctx, false) else {
         // Full render succeeded. Now verify every required variable is
         // actually referenced by rendering with each key removed in turn.
+        // Reserved variables are excluded — they are available in all
+        // prompts but only referenced by user templates.
         for key in context_keys(&tera_ctx) {
+            if reserved.contains(&key.as_str()) {
+                continue;
+            }
             let reduced = context_without_key(&tera_ctx, &key);
             if tera::Tera::one_off(content, &reduced, false).is_ok() {
                 return Err(format!("{VALIDATION_MISSING_REFERENCE}: {key}"));
@@ -241,11 +248,11 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_partial_variable_drop() {
-        // Uses tags and nonce but drops raw_input — should fail for extraction/user.
+        // Uses tags but drops raw_input — should fail for extraction/user.
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::User,
-            "{{ tags }} {{ nonce }} but no raw input reference",
+            "{{ tags }} but no raw input reference",
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -293,7 +300,7 @@ mod tests {
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::User,
-            "{# raw_input #}\n{{ tags }} {{ nonce }}",
+            "{# raw_input #}\n{{ tags }}",
         );
         let err = result.unwrap_err();
         assert!(
