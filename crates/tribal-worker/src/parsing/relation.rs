@@ -155,11 +155,12 @@ pub(crate) fn parse_relation_response(
     let relations = raw
         .relations
         .into_iter()
+        .enumerate()
         .filter_map(
-            |edge_value| match serde_json::from_value::<RelationEdge>(edge_value) {
+            |(index, edge_value)| match serde_json::from_value::<RelationEdge>(edge_value) {
                 Ok(edge) => Some(edge),
                 Err(error) => {
-                    tracing::warn!(%error, "skipping relation edge with unrecognised structure");
+                    tracing::warn!(%error, index, "skipping relation edge with unrecognised structure");
                     None
                 }
             },
