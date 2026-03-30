@@ -13,13 +13,14 @@ use crate::harness::{
 ///
 /// The relation mock returns a mix of valid and invalid edges:
 /// - A valid intra-batch edge (0 supports 1)
-/// - A supersedes edge (always dropped by normalisation step 1)
-/// - An edge with an out-of-range batch index (unresolvable, step 3)
-/// - A self-edge (dropped after resolution, step 4)
-/// - An exact duplicate of the valid edge (deduplicated, step 5)
+/// - An edge with an unknown relation type (skipped during lenient parsing)
+/// - An edge with an out-of-range batch index (unresolvable, step 2)
+/// - A self-edge (dropped after resolution, step 3)
+/// - An exact duplicate of the valid edge (deduplicated, step 4)
 ///
-/// The normalisation layer drops all four invalid edges and commits
-/// only the valid one. The job completes with `success` outcome.
+/// The lenient parser and normalisation layer handle all four invalid
+/// edges and commit only the valid one. The job completes with
+/// `success` outcome.
 ///
 /// Theme: Canopy's authentication subsystem — the LLM hallucinates
 /// some relation edges that don't correspond to real candidates.
@@ -84,15 +85,13 @@ async fn test_relation_normalisation_drops_invalid_edges() {
                 RelationFixture::builder()
                     // Valid: candidate 0 supports candidate 1.
                     .edge(intra_batch(0, "supports", 1))
-                    // Dropped (step 1): supersedes edges are always removed.
-                    // Uses a distinct source/target (0→2) so it can't be
-                    // masked by deduplication with the valid edge above.
-                    .edge(intra_batch(0, "supersedes", 2))
-                    // Dropped (step 3): batch index 99 does not exist.
+                    // Skipped during lenient parsing: unknown relation type.
+                    .edge(intra_batch(0, "unexpected", 2))
+                    // Dropped (step 2): batch index 99 does not exist.
                     .edge(intra_batch(99, "contradicts", 0))
-                    // Dropped (step 4): self-edge after resolution.
+                    // Dropped (step 3): self-edge after resolution.
                     .edge(intra_batch(0, "derived_from", 0))
-                    // Dropped (step 5): exact duplicate of the valid edge.
+                    // Dropped (step 4): exact duplicate of the valid edge.
                     .edge(intra_batch(0, "supports", 1))
                     .build(),
             );

@@ -47,7 +47,10 @@ Contradictions are always novel: if any of your per-item assessments has suggest
 
 Each existing item includes a cosine similarity score between 0.0 and 1.0. Use these as rough guidance, never as the sole basis for your decision.
 
-{{ similarity_score_legend }}
+- **0.00 – <0.30** (low): Unlikely to be meaningfully related. Included for completeness.
+- **0.30 – <0.60** (moderate): Topically related but almost certainly distinct claims.
+- **0.60 – <0.85** (high): Closely related. Examine the specific claims carefully.
+- **0.85 – 1.00** (very high): Near-identical. Likely the same claim, but check for meaningful deltas.
 
 Even at very high similarity, if the candidate adds operational context, a specific incident, a caveat, or a correction, it is novel.
 
@@ -113,7 +116,9 @@ The following candidates should be classified as duplicate:
 
 For each existing item you receive, independently assess its relationship to the candidate regardless of your novel/duplicate decision:
 
-{{ relation_suggestion_legend }}
+- **supports**: The candidate reinforces or provides additional evidence for the existing item's claim.
+- **contradicts**: The candidate conflicts with, corrects, or updates the existing item.
+- **unrelated**: Despite appearing in the search results, the items address different concerns.
 
 Justifications should reference the specific content of both items and explain why the relationship holds. Examples of effective justifications:
 - "Both items address checkout flow performance. The candidate identifies CartContext provider placement as the root cause of the re-rendering latency the existing item reports."

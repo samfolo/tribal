@@ -9,7 +9,7 @@ use tribal_common::sha256_hex;
 use tribal_db::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
 use tribal_domain::{PromptRole, PromptStage};
 use tribal_mcp::ActivePromptVersions;
-use tribal_worker::synthetic_validation_context;
+use tribal_worker::{reserved_keys, synthetic_validation_context};
 
 use super::constants::{
     LOG_PROMPT_READ_FAILED, LOG_PROMPT_RELOADED, LOG_PROMPT_UPSERT_FAILED,
@@ -61,10 +61,17 @@ pub(crate) fn validate_prompt_template(
         return Err(VALIDATION_CONTEXT_PANIC.to_owned());
     };
 
+    let reserved = reserved_keys();
+
     let Err(error) = tera::Tera::one_off(content, &tera_ctx, false) else {
         // Full render succeeded. Now verify every required variable is
         // actually referenced by rendering with each key removed in turn.
+        // Reserved variables are excluded — they are available in all
+        // prompts but only referenced by user templates.
         for key in context_keys(&tera_ctx) {
+            if reserved.contains(&key.as_str()) {
+                continue;
+            }
             let reduced = context_without_key(&tera_ctx, &key);
             if tera::Tera::one_off(content, &reduced, false).is_ok() {
                 return Err(format!("{VALIDATION_MISSING_REFERENCE}: {key}"));
@@ -257,12 +264,12 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_syntax_error() {
-        // Includes the required variable so the reference check passes;
-        // the Tera parser rejects the unclosed block.
+        // The unclosed block triggers a Tera parse error regardless of
+        // which variables are available.
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::System,
-            "{{ schema }} {% if true %}unclosed",
+            "{% if true %}unclosed",
         );
         let err = result.unwrap_err();
         assert_ne!(err, VALIDATION_EMPTY_CONTENT);
@@ -274,12 +281,12 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_unknown_variable() {
-        // Includes the required variable so the reference check passes;
-        // Tera rejects the unknown variable during render.
+        // The unknown variable triggers a Tera render error regardless
+        // of which variables are available.
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::System,
-            "{{ schema }} {{ nonexistent }}",
+            "{{ nonexistent }}",
         );
         let err = result.unwrap_err();
         assert!(
@@ -442,7 +449,7 @@ mod tests {
         let role = PromptRole::System;
         let target = PromptTemplateLocation::from((stage, role));
         let file_path = target.resolve(prompts_dir.path());
-        tokio::fs::write(&file_path, "{{ schema }} {{ nonexistent_variable }}")
+        tokio::fs::write(&file_path, "{{ nonexistent_variable }}")
             .await
             .expect("write invalid template");
 

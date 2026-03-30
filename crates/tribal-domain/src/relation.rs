@@ -54,6 +54,11 @@ pub enum RelationSuggestion {
     Unrelated,
 }
 
+impl RelationSuggestion {
+    /// All variants in display order.
+    pub const ALL: &[Self] = &[Self::Supports, Self::Contradicts, Self::Unrelated];
+}
+
 enum_text_conversions!(RelationSuggestion {
     RelationSuggestion::Supports => "supports",
     RelationSuggestion::Contradicts => "contradicts",
