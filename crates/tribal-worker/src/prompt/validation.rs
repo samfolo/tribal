@@ -15,10 +15,11 @@ use super::{
     CandidateOutcome, RelationPromptContext, SimilarItemContext, SimilarItemDecisionContext,
     extraction_user_context,
     legends::SimilarityBand,
-    relation_user_context,
-    renderer::inject_validation_defaults,
-    triage_user_context,
-    variables::{extraction_system_context, relation_system_context, triage_system_context},
+    relation_user_context, triage_user_context,
+    variables::{
+        extraction_system_context, inject_validation_defaults, relation_system_context,
+        triage_system_context,
+    },
 };
 
 /// Builds a [`tera::Context`] matching the production context shape for

@@ -3,38 +3,8 @@
 use strum::IntoEnumIterator;
 use uuid::Uuid;
 
-use super::variables::VAR_NONCE;
+use super::variables::ReservedVariable;
 use crate::error::StageError;
-
-// ---------------------------------------------------------------------------
-// ReservedVariable
-// ---------------------------------------------------------------------------
-
-/// Template variables managed exclusively by the renderer.
-///
-/// Adding a new variant automatically propagates to the reserved-key
-/// panic check in `render()`, validation default injection, and the
-/// coverage test — all driven by `strum::IntoEnumIterator`.
-#[derive(Debug, Clone, Copy, strum::EnumIter)]
-enum ReservedVariable {
-    Nonce,
-}
-
-impl ReservedVariable {
-    /// The Tera context key for this variable.
-    fn key(self) -> &'static str {
-        match self {
-            Self::Nonce => VAR_NONCE,
-        }
-    }
-
-    /// The fixed value used in validation and test contexts.
-    fn validation_default(self) -> &'static str {
-        match self {
-            Self::Nonce => "validation00",
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // PromptRenderer
@@ -118,50 +88,12 @@ impl PromptRenderer {
 }
 
 // ---------------------------------------------------------------------------
-// Template defaults
-// ---------------------------------------------------------------------------
-
-/// Injects validation-safe values for all reserved variables.
-///
-/// Used by `synthetic_validation_context` to ensure the server's
-/// hot-reload validator sees the same variable set that production
-/// rendering provides.
-pub(crate) fn inject_validation_defaults(ctx: &mut tera::Context) {
-    for var in ReservedVariable::iter() {
-        ctx.insert(var.key(), var.validation_default());
-    }
-}
-
-/// Returns the set of reserved variable keys.
-///
-/// The server's hot-reload validator uses this to exclude reserved
-/// keys from the "must be referenced" check — reserved variables
-/// are available in all prompts but only referenced by user templates.
-pub fn reserved_keys() -> Vec<&'static str> {
-    ReservedVariable::iter()
-        .map(ReservedVariable::key)
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_validation_defaults_cover_all_reserved_variables() {
-        let mut ctx = tera::Context::new();
-        inject_validation_defaults(&mut ctx);
-        for var in ReservedVariable::iter() {
-            assert!(
-                ctx.get(var.key()).is_some(),
-                "reserved variable '{var:?}' missing from validation defaults",
-            );
-        }
-    }
 
     #[test]
     fn test_nonce_is_12_hex_chars() {

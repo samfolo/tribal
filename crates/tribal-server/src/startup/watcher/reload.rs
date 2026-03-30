@@ -264,12 +264,12 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_syntax_error() {
-        // Includes the required variable so the reference check passes;
-        // the Tera parser rejects the unclosed block.
+        // The unclosed block triggers a Tera parse error regardless of
+        // which variables are available.
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::System,
-            "{{ schema }} {% if true %}unclosed",
+            "{% if true %}unclosed",
         );
         let err = result.unwrap_err();
         assert_ne!(err, VALIDATION_EMPTY_CONTENT);
@@ -281,12 +281,12 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_unknown_variable() {
-        // Includes the required variable so the reference check passes;
-        // Tera rejects the unknown variable during render.
+        // The unknown variable triggers a Tera render error regardless
+        // of which variables are available.
         let result = validate_prompt_template(
             PromptStage::Extraction,
             PromptRole::System,
-            "{{ schema }} {{ nonexistent }}",
+            "{{ nonexistent }}",
         );
         let err = result.unwrap_err();
         assert!(
@@ -449,7 +449,7 @@ mod tests {
         let role = PromptRole::System;
         let target = PromptTemplateLocation::from((stage, role));
         let file_path = target.resolve(prompts_dir.path());
-        tokio::fs::write(&file_path, "{{ schema }} {{ nonexistent_variable }}")
+        tokio::fs::write(&file_path, "{{ nonexistent_variable }}")
             .await
             .expect("write invalid template");
 
