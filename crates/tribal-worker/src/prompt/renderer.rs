@@ -51,7 +51,7 @@ pub(crate) struct PromptRenderer {
 
 impl PromptRenderer {
     /// Creates a renderer with a fresh random nonce.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             nonce: Uuid::new_v4().simple().to_string()[..12].to_owned(),
         }
@@ -65,39 +65,35 @@ impl PromptRenderer {
         }
     }
 
-    /// Injects validation-safe values for all reserved variables.
-    ///
-    /// Used by `synthetic_validation_context` to ensure the server's
-    /// hot-reload validator sees the same variable set that production
-    /// rendering provides.
-    pub(crate) fn inject_validation_defaults(ctx: &mut tera::Context) {
-        for var in ReservedVariable::iter() {
-            ctx.insert(var.key(), var.validation_default());
-        }
-    }
-
     /// Renders a template, injecting reserved variables before execution.
     ///
     /// Takes ownership of the caller's context, adds internal defaults
     /// (the nonce), and renders. The nonce is harmlessly present even
     /// for system prompts whose templates do not reference it.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the context contains a reserved key. This is a
-    /// programming error — reserved keys are managed by the renderer.
-    pub fn render(
+    /// Returns [`StageError::TemplateRender`] if the context contains a
+    /// reserved key or the template cannot be rendered.
+    pub(crate) fn render(
         &self,
         template: &str,
         mut context: tera::Context,
         description: &'static str,
     ) -> Result<String, StageError> {
         for var in ReservedVariable::iter() {
-            assert!(
-                context.get(var.key()).is_none(),
-                "reserved template variable '{}' must not be set externally",
-                var.key(),
-            );
+            if context.get(var.key()).is_some() {
+                return Err(StageError::TemplateRender {
+                    context: format!(
+                        "reserved template variable '{}' must not be set externally",
+                        var.key(),
+                    ),
+                    source: tera::Error::msg(format!(
+                        "context already contains reserved key '{}'",
+                        var.key(),
+                    )),
+                });
+            }
         }
         self.inject_reserved(&mut context);
 
@@ -122,6 +118,32 @@ impl PromptRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// Template defaults
+// ---------------------------------------------------------------------------
+
+/// Injects validation-safe values for all reserved variables.
+///
+/// Used by `synthetic_validation_context` to ensure the server's
+/// hot-reload validator sees the same variable set that production
+/// rendering provides.
+pub(crate) fn inject_validation_defaults(ctx: &mut tera::Context) {
+    for var in ReservedVariable::iter() {
+        ctx.insert(var.key(), var.validation_default());
+    }
+}
+
+/// Returns the set of reserved variable keys.
+///
+/// The server's hot-reload validator uses this to exclude reserved
+/// keys from the "must be referenced" check — reserved variables
+/// are available in all prompts but only referenced by user templates.
+pub fn reserved_keys() -> Vec<&'static str> {
+    ReservedVariable::iter()
+        .map(ReservedVariable::key)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -132,7 +154,7 @@ mod tests {
     #[test]
     fn test_validation_defaults_cover_all_reserved_variables() {
         let mut ctx = tera::Context::new();
-        PromptRenderer::inject_validation_defaults(&mut ctx);
+        inject_validation_defaults(&mut ctx);
         for var in ReservedVariable::iter() {
             assert!(
                 ctx.get(var.key()).is_some(),
@@ -183,11 +205,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "reserved template variable")]
-    fn test_render_panics_on_reserved_key() {
+    fn test_render_rejects_reserved_key() {
         let renderer = PromptRenderer::new();
         let mut ctx = tera::Context::new();
         ctx.insert("nonce", "sneaky");
-        let _ = renderer.render("{{ nonce }}", ctx, "test");
+        let result = renderer.render("{{ nonce }}", ctx, "test");
+        assert!(result.is_err());
     }
 }

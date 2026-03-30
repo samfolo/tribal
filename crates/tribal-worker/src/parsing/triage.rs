@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(classification.similar_item_decisions.len(), 1);
     }
 
-    // -- reconcile tests --
+    // -- reconcile --------------------------------------------------------
 
     fn classification_with_decisions(
         decision: &str,
