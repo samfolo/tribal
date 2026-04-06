@@ -106,6 +106,8 @@ impl From<TestHandler> for TribalServerHandler {
                 .pool_mcp(th.pool.clone())
                 .pool_worker(th.pool)
                 .instance_id(Arc::from(TEST_INSTANCE_ID))
+                .build_version(Arc::from("test-build"))
+                .inference_parameters(tribal_domain::InferenceParameters::default())
                 .active_prompt_versions(th.active_prompt_versions)
                 .provider_registry(Arc::new(
                     ProviderRegistry::new(Vec::new())

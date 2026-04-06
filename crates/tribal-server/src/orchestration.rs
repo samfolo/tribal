@@ -17,7 +17,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::TribalConfig;
-use tribal_mcp::AppState;
+use tribal_mcp::{AppState, build_inference_parameters};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
 use tribal_worker::{Worker, WorkerError};
 
@@ -403,10 +403,14 @@ async fn bootstrap(
 
     // -- AppState assembly ---------------------------------------------------
 
+    let inference_parameters = build_inference_parameters(&config);
+
     let base = AppState::builder()
         .pool_mcp(pool_mcp)
         .pool_worker(pool_worker)
         .instance_id(instance_id)
+        .build_version(Arc::from(env!("TRIBAL_GIT_DESCRIBE")))
+        .inference_parameters(inference_parameters)
         .active_prompt_versions(Arc::new(RwLock::new(active_prompt_versions)))
         .provider_registry(registry)
         .embedding_provider(embedding_provider)

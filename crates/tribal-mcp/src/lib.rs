@@ -26,6 +26,7 @@ pub use auth::{
     DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED, TransportAuthStrategy,
 };
 pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
+pub use fingerprint::build_inference_parameters;
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
 pub use middleware::{AuthMiddlewareState, require_bearer_auth};
 pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
