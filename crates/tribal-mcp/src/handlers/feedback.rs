@@ -1,6 +1,7 @@
 //! Handler for `tribal_feedback` — retrieval session quality rating.
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -9,13 +10,16 @@ use rmcp::{
 use sqlx::PgConnection;
 use tracing::Instrument;
 use tribal_db::DbError;
-use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode, PrincipalId, span_attrs};
+use tribal_domain::{
+    FeedbackRating, InferenceParameters, KnowledgeItemId, McpErrorCode, PrincipalId, span_attrs,
+};
 
-use super::common::acquire_connection;
+use super::common::begin_transaction;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
+    fingerprint::{FingerprintError, PipelineProviderIdentities, compute_and_upsert_fingerprint},
     mapping::{McpFeedbackRequest, McpFeedbackResponse},
-    server_handler::{ConnectionRepositories, TribalServerHandler},
+    server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
 };
 
 // ---------------------------------------------------------------------------
@@ -40,6 +44,10 @@ struct FeedbackParams {
     principal_id: PrincipalId,
     rating: FeedbackRating,
     notes: Option<String>,
+    active_prompts: ActivePromptVersions,
+    build_version: Arc<str>,
+    provider_identities: PipelineProviderIdentities,
+    inference_parameters: InferenceParameters,
 }
 
 /// Errors that can occur during feedback execution.
@@ -47,12 +55,16 @@ struct FeedbackParams {
 enum FeedbackError {
     #[error(transparent)]
     Db(#[from] DbError),
+
+    #[error(transparent)]
+    Fingerprint(#[from] FingerprintError),
 }
 
 impl IntoMcpError for FeedbackError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
+            Self::Fingerprint(e) => e.into_mcp_error(),
         }
     }
 }
@@ -177,6 +189,15 @@ impl TribalServerHandler {
 
         // -- Build params and execute -----------------------------------------
 
+        let active_prompts = self.state.active_prompt_versions.read().await.clone();
+
+        let provider_identities = PipelineProviderIdentities {
+            extraction: self.state.extraction_provider.identity().clone(),
+            triage: self.state.triage_provider.identity().clone(),
+            relation: self.state.relation_provider.identity().clone(),
+            embedding: self.state.embedding_provider.identity().clone(),
+        };
+
         let feedback_params = FeedbackParams {
             trace_id: request.trace_id,
             query_text: request.query_text,
@@ -186,24 +207,29 @@ impl TribalServerHandler {
             principal_id,
             rating,
             notes: request.notes,
+            active_prompts,
+            build_version: Arc::clone(&self.state.build_version),
+            provider_identities,
+            inference_parameters: self.state.inference_parameters.clone(),
         };
 
-        let mut conn = match acquire_connection(
-            &self.state.pool_mcp,
-            self.config.pool_name,
-            &self.state.metrics,
-        )
-        .await
-        {
-            Ok(conn) => conn,
+        let mut tx = match begin_transaction(&self.state.pool_mcp, self.config.pool_name).await {
+            Ok(tx) => tx,
             Err(call_result) => return Ok(call_result),
         };
 
-        let feedback = match execute_feedback(&mut conn, &self.repositories, feedback_params).await
-        {
+        let feedback = match execute_feedback(&mut tx, &self.repositories, feedback_params).await {
             Ok(f) => f,
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
+
+        if let Err(e) = tx.commit().await {
+            let db_err = DbError::QueryFailed {
+                context: "committing feedback transaction".into(),
+                source: e,
+            };
+            return Ok(db_err.into_mcp_error().into_call_tool_result());
+        }
 
         Ok(McpFeedbackResponse::from(&feedback).into_call_tool_result())
     }
@@ -223,16 +249,30 @@ async fn execute_feedback(
     repositories: &ConnectionRepositories,
     params: FeedbackParams,
 ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
+    // -- System fingerprint ---------------------------------------------------
+
+    let fingerprint_hash = compute_and_upsert_fingerprint(
+        conn,
+        repositories,
+        &params.active_prompts,
+        &params.provider_identities,
+        &params.build_version,
+        &params.inference_parameters,
+    )
+    .await?;
+
+    // -- Feedback record ------------------------------------------------------
+
     let new_feedback = tribal_db::NewRetrievalFeedback::builder()
         .trace_id(params.trace_id.to_ascii_lowercase())
         .query_text(params.query_text)
         .embedding_model(params.embedding_model)
         .returned_item_ids(params.returned_item_ids)
         .explored_anchor_ids(params.explored_anchor_ids)
+        .system_fingerprint_hash(fingerprint_hash)
         .principal_id(params.principal_id)
         .rating(params.rating)
         .notes(params.notes)
-        .policy_version(None)
         .build();
 
     let feedback = repositories

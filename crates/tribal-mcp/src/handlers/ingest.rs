@@ -1,6 +1,7 @@
 //! Handler for `tribal_ingest` — job and extraction task creation.
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -11,11 +12,15 @@ use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_common::JobWatchEntry;
 use tribal_db::{DbError, NewJob, NewTask};
-use tribal_domain::{JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType, span_attrs};
+use tribal_domain::{
+    InferenceParameters, JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType,
+    span_attrs,
+};
 
 use super::common::begin_transaction;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
+    fingerprint::{FingerprintError, PipelineProviderIdentities, compute_and_upsert_fingerprint},
     mapping::{McpIngestRequest, McpIngestResponse},
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
 };
@@ -38,6 +43,9 @@ struct IngestParams {
     source_context: serde_json::Value,
     content: String,
     active_prompts: ActivePromptVersions,
+    build_version: Arc<str>,
+    provider_identities: PipelineProviderIdentities,
+    inference_parameters: InferenceParameters,
 }
 
 /// Domain-level result from the ingest service function.
@@ -51,12 +59,16 @@ struct IngestResult {
 enum IngestError {
     #[error(transparent)]
     Db(#[from] DbError),
+
+    #[error(transparent)]
+    Fingerprint(#[from] FingerprintError),
 }
 
 impl IntoMcpError for IngestError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
+            Self::Fingerprint(e) => e.into_mcp_error(),
         }
     }
 }
@@ -142,12 +154,22 @@ impl TribalServerHandler {
 
         let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
+        let provider_identities = PipelineProviderIdentities {
+            extraction: self.state.extraction_provider.identity().clone(),
+            triage: self.state.triage_provider.identity().clone(),
+            relation: self.state.relation_provider.identity().clone(),
+            embedding: self.state.embedding_provider.identity().clone(),
+        };
+
         let ingest_params = IngestParams {
             project_id,
             principal_id,
             source_context,
             content: request.content,
             active_prompts,
+            build_version: Arc::clone(&self.state.build_version),
+            provider_identities,
+            inference_parameters: self.state.inference_parameters.clone(),
         };
 
         let mut tx = match begin_transaction(&self.state.pool_mcp, self.config.pool_name).await {
@@ -220,6 +242,20 @@ async fn execute_ingest(
         .find_by_id(conn, params.project_id)
         .await?;
 
+    // -- System fingerprint ---------------------------------------------------
+
+    let fingerprint_hash = compute_and_upsert_fingerprint(
+        conn,
+        repositories,
+        &params.active_prompts,
+        &params.provider_identities,
+        &params.build_version,
+        &params.inference_parameters,
+    )
+    .await?;
+
+    // -- Job and task ---------------------------------------------------------
+
     let trace_context = tribal_telemetry::current_trace_context();
 
     let new_job = NewJob::builder()
@@ -235,6 +271,7 @@ async fn execute_ingest(
         .triage_user_prompt_version_id(params.active_prompts.triage_user_prompt_version_id)
         .relation_system_prompt_version_id(params.active_prompts.relation_system_prompt_version_id)
         .relation_user_prompt_version_id(params.active_prompts.relation_user_prompt_version_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .trace_context(trace_context)
         .build();
 
