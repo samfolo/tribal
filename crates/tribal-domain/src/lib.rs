@@ -116,6 +116,7 @@ pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
 pub use scope::{Scope, ScopeParseError, full_access_scopes, is_authorised};
 pub use source_type::SourceType;
 pub use standing::{Standing, StandingBuilder};
+pub use system_fingerprint::{SystemFingerprint, SystemFingerprintBuilder};
 pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};
 pub use tag_similarity_result::TagSimilarityResult;
 pub use task::{Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
