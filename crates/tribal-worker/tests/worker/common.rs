@@ -28,9 +28,9 @@ pub(super) use tribal_telemetry::noop_recorder;
 pub(super) use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
     TestContext, a_candidate, a_completion_response, a_new_extraction_result, a_new_job,
-    a_new_knowledge_item, a_new_prompt_version, a_new_task, a_new_triage_result_created,
-    a_new_triage_result_duplicate, a_relation_hint, an_embedding_response, backdate_task_heartbeat,
-    candidates_json,
+    a_new_knowledge_item, a_new_prompt_version, a_new_system_fingerprint, a_new_task,
+    a_new_triage_result_created, a_new_triage_result_duplicate, a_relation_hint,
+    an_embedding_response, backdate_task_heartbeat, candidates_json,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
@@ -39,6 +39,7 @@ pub(super) use tribal_test_utils::{
     polling::{poll_job_status, poll_task_status, poll_until},
     seed_extraction_job, seed_multiple_triage_tasks, seed_relation_job, seed_triage_job,
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
+    upsert_system_fingerprint,
 };
 pub(super) use tribal_worker::Worker;
 

@@ -9,8 +9,8 @@ use tribal_domain::{
 };
 use tribal_test_utils::{
     a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
-    insert_committed_relation, insert_embedding, insert_prompt_version, set_timestamp,
-    test_context,
+    a_new_system_fingerprint, insert_committed_relation, insert_embedding, insert_prompt_version,
+    set_timestamp, test_context, upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -66,6 +66,19 @@ async fn insert_supersedes_relation(
     let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
     let batch_id = RelationBatchId::new();
 
+    let fingerprint_hash = upsert_system_fingerprint(
+        txn,
+        &a_new_system_fingerprint()
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .build(),
+    )
+    .await;
+
     PgJobRepository
         .insert_for_test(
             txn,
@@ -78,6 +91,7 @@ async fn insert_supersedes_relation(
                 .triage_user_prompt_version_id(pv_id)
                 .relation_system_prompt_version_id(pv_id)
                 .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fingerprint_hash)
                 .build(),
             &JobStateOverride::builder()
                 .status(JobStatus::Completed)
