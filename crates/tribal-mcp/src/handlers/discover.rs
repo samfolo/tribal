@@ -1031,4 +1031,148 @@ mod tests {
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["code"], "internal");
     }
+
+    // -- Service: overfetch behaviour ----------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_discover_overfetch_multiplier_applied() {
+        let search = a_search_response(vec![]);
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .when_semantic_search(|params| params.limit == 15)
+            .respond_with(search, None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+
+        let params = DiscoverParams {
+            original_limit: 5,
+            overfetch_limit: 15,
+            ..default_params()
+        };
+        let result = call_execute(&repos, params).await;
+
+        assert!(
+            result.is_ok(),
+            "predicate on limit == 15 should have matched"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_discover_filters_below_similarity_threshold() {
+        let prin_id = PrincipalId::new();
+        let item_a = a_knowledge_item().principal_id(prin_id).build();
+        let item_b = a_knowledge_item().principal_id(prin_id).build();
+        let item_c = a_knowledge_item().principal_id(prin_id).build();
+
+        let search = a_search_response(vec![
+            a_search_result(&item_a, 0.9),
+            a_search_result(&item_b, 0.3),
+            a_search_result(&item_c, 0.7),
+        ]);
+        let repos =
+            repos_with_search_and_principal(search, vec![test_principal(prin_id, "user:test")]);
+
+        let params = DiscoverParams {
+            similarity_threshold: 0.5,
+            ..default_params()
+        };
+        let result = call_execute(&repos, params).await.unwrap();
+
+        assert_eq!(result.items.len(), 2);
+        assert!(result.items.iter().all(|r| r.similarity >= 0.5));
+    }
+
+    #[tokio::test]
+    async fn test_execute_discover_truncates_to_original_limit() {
+        let prin_id = PrincipalId::new();
+        let items: Vec<_> = (0..4)
+            .map(|_| a_knowledge_item().principal_id(prin_id).build())
+            .collect();
+
+        let similarities = [0.9, 0.8, 0.7, 0.6];
+        let search = a_search_response(
+            items
+                .iter()
+                .zip(similarities)
+                .map(|(item, sim)| a_search_result(item, sim))
+                .collect(),
+        );
+        let repos =
+            repos_with_search_and_principal(search, vec![test_principal(prin_id, "user:test")]);
+
+        let params = DiscoverParams {
+            original_limit: 2,
+            overfetch_limit: 6,
+            similarity_threshold: 0.0,
+            ..default_params()
+        };
+        let result = call_execute(&repos, params).await.unwrap();
+
+        assert_eq!(result.items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_execute_discover_exact_true_when_repo_exact_and_fits() {
+        let prin_id = PrincipalId::new();
+        let items: Vec<_> = (0..3)
+            .map(|_| a_knowledge_item().principal_id(prin_id).build())
+            .collect();
+
+        let search = SemanticSearchResponse {
+            results: items
+                .iter()
+                .map(|item| a_search_result(item, 0.9))
+                .collect(),
+            next_cursor: None,
+            exact: true,
+        };
+        let repos =
+            repos_with_search_and_principal(search, vec![test_principal(prin_id, "user:test")]);
+
+        let params = DiscoverParams {
+            original_limit: 5,
+            overfetch_limit: 15,
+            similarity_threshold: 0.0,
+            ..default_params()
+        };
+        let result = call_execute(&repos, params).await.unwrap();
+
+        assert!(
+            result.exact,
+            "result should be exact when repo says exact and results fit within original_limit",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_discover_exact_false_when_repo_not_exact() {
+        let prin_id = PrincipalId::new();
+        let items: Vec<_> = (0..3)
+            .map(|_| a_knowledge_item().principal_id(prin_id).build())
+            .collect();
+
+        let search = SemanticSearchResponse {
+            results: items
+                .iter()
+                .map(|item| a_search_result(item, 0.9))
+                .collect(),
+            next_cursor: None,
+            exact: false,
+        };
+        let repos =
+            repos_with_search_and_principal(search, vec![test_principal(prin_id, "user:test")]);
+
+        let params = DiscoverParams {
+            original_limit: 5,
+            overfetch_limit: 15,
+            similarity_threshold: 0.0,
+            ..default_params()
+        };
+        let result = call_execute(&repos, params).await.unwrap();
+
+        assert!(
+            !result.exact,
+            "result should not be exact when repo says not exact",
+        );
+    }
 }
