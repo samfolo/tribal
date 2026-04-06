@@ -56,7 +56,7 @@ async fn test_upsert_idempotency() {
 }
 
 #[tokio::test]
-async fn test_upsert_different_build_version_produces_different_hash() {
+async fn test_upsert_different_content_hash_produces_different_id() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgSystemFingerprintRepository;
