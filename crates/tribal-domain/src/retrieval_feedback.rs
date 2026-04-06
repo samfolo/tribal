@@ -32,9 +32,8 @@ pub struct RetrievalFeedback {
     /// Items used as exploration anchors.
     #[builder(default)]
     explored_anchor_ids: Vec<KnowledgeItemId>,
-    /// System config or prompt version if tracked.
-    #[builder(default)]
-    policy_version: Option<String>,
+    /// SHA-256 hash referencing the active system fingerprint.
+    system_fingerprint_hash: String,
     /// The principal who provided the feedback.
     principal_id: PrincipalId,
     /// The feedback rating.
@@ -77,9 +76,9 @@ impl RetrievalFeedback {
         &self.explored_anchor_ids
     }
 
-    /// Returns the policy version, if tracked.
-    pub fn policy_version(&self) -> Option<&str> {
-        self.policy_version.as_deref()
+    /// Returns the system fingerprint hash.
+    pub fn system_fingerprint_hash(&self) -> &str {
+        &self.system_fingerprint_hash
     }
 
     /// Returns the principal who provided the feedback.
