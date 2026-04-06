@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
-use tribal_domain::{GitRemote, ProjectId};
+use tribal_domain::{GitRemote, InferenceParameters, ProjectId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
 use tribal_telemetry::MetricsRecorder;
 use typed_builder::TypedBuilder;
