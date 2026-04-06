@@ -8,7 +8,9 @@ ALTER TABLE retrieval_feedback
 
 ALTER TABLE retrieval_feedback
     ALTER COLUMN system_fingerprint_hash SET NOT NULL,
-    ALTER COLUMN system_fingerprint_hash TYPE VARCHAR(64);
+    ALTER COLUMN system_fingerprint_hash TYPE VARCHAR(64),
+    ADD CONSTRAINT chk_feedback_system_fingerprint_hash_hex
+    CHECK (system_fingerprint_hash ~ '^[0-9a-f]{64}$');
 
 ALTER TABLE retrieval_feedback
     ADD CONSTRAINT fk_feedback_system_fingerprint
