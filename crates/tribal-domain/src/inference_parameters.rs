@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 // StageParameters
 // ---------------------------------------------------------------------------
 
-/// Inference parameters for a single LLM stage (extraction, triage, or
-/// relation).
+/// Inference parameters for a single LLM stage.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct StageParameters {
     /// Sampling temperature.

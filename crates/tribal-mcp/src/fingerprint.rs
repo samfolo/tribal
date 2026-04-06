@@ -225,10 +225,14 @@ pub(crate) enum FingerprintError {
     #[error(transparent)]
     Db(#[from] DbError),
 
-    #[error("{message}")]
+    #[error("{message} (expected {expected}, found {found})")]
     MissingPromptVersions {
         /// Describes which invariant was violated.
         message: &'static str,
+        /// Number of prompt versions expected.
+        expected: usize,
+        /// Number of prompt versions found in the database.
+        found: usize,
     },
 }
 
@@ -236,10 +240,17 @@ impl IntoMcpError for FingerprintError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
-            Self::MissingPromptVersions { message } => McpToolError {
+            Self::MissingPromptVersions {
+                message,
+                expected,
+                found,
+            } => McpToolError {
                 code: McpErrorCode::Internal,
-                message: message.to_owned(),
-                details: serde_json::json!({}),
+                message: format!("{message} (expected {expected}, found {found})"),
+                details: serde_json::json!({
+                    "expected": expected,
+                    "found": found,
+                }),
             },
         }
     }
@@ -266,9 +277,13 @@ pub(crate) async fn compute_and_upsert_fingerprint(
         .find_by_ids(conn, &version_ids)
         .await?;
 
+    let expected = version_ids.len();
+    let found = prompt_versions.len();
     let content_hashes = PromptContentHashes::from_active(active_prompts, &prompt_versions).ok_or(
         FingerprintError::MissingPromptVersions {
             message: MISSING_PROMPT_VERSIONS,
+            expected,
+            found,
         },
     )?;
 
