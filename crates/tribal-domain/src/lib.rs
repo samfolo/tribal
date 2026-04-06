@@ -89,8 +89,8 @@ pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
     AuthTokenId, EmbeddingId, EpisodeId, ExtractionResultId, IdParseError, ItemObservationId,
     JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId,
-    RelationId, RetrievalFeedbackId, SessionId, TaskId, TokenUsageId, TriageResultId,
-    TriageSimilarItemDecisionId,
+    RelationId, RetrievalFeedbackId, SessionId, SystemFingerprintId, TaskId, TokenUsageId,
+    TriageResultId, TriageSimilarItemDecisionId,
 };
 pub use item_observation::{ItemObservation, ItemObservationBuilder};
 pub use job::{Job, JobBuilder, JobOutcome, JobState, JobStatus};
