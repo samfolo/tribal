@@ -18,7 +18,8 @@ use tribal_test_utils::{
     MockPrincipalRepository, MockProjectRepository, MockPromptVersionRepository,
     MockReferenceRepository, MockRelationRepository, MockRetrievalFeedbackRepository,
     MockStandingRepository, MockSystemFingerprintRepository, MockTaskRepository,
-    MockTriageResultRepository, TEST_PRINCIPAL_KEY, lazy_pool,
+    MockTriageResultRepository, TEST_PRINCIPAL_KEY, a_prompt_version, a_system_fingerprint,
+    lazy_pool,
 };
 use typed_builder::TypedBuilder;
 
@@ -250,6 +251,30 @@ pub(crate) fn test_provider_identities() -> PipelineProviderIdentities {
             model: "nomic-embed-text".into(),
         },
     }
+}
+
+/// Configures `prompt_version` and `system_fingerprint` mocks so that
+/// `compute_and_upsert_fingerprint` succeeds for the given active
+/// prompt versions.
+pub(crate) fn configure_fingerprint_mocks(
+    repos: &mut ConnectionRepositories,
+    active: &ActivePromptVersions,
+) {
+    let versions: Vec<_> = active
+        .version_ids()
+        .iter()
+        .map(|&id| a_prompt_version().id(id).build())
+        .collect();
+    repos.prompt_version = Arc::new(
+        MockPromptVersionRepository::builder()
+            .on_find_by_ids(versions, None)
+            .build(),
+    );
+    repos.system_fingerprint = Arc::new(
+        MockSystemFingerprintRepository::builder()
+            .on_upsert(a_system_fingerprint().build(), None)
+            .build(),
+    );
 }
 
 fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {

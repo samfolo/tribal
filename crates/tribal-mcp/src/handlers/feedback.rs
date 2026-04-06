@@ -291,14 +291,19 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
+    use tokio::sync::RwLock;
     use tribal_domain::{
         FeedbackRating, InferenceParameters, KnowledgeItemId, PrincipalId, ProjectId,
     };
-    use tribal_test_utils::{MockRetrievalFeedbackRepository, a_retrieval_feedback, test_context};
+    use tribal_test_utils::{
+        MockPromptVersionRepository, MockRetrievalFeedbackRepository, a_prompt_version,
+        a_retrieval_feedback, test_context,
+    };
 
     use super::*;
     use crate::test_utils::{
-        TestHandler, test_active_prompt_versions, test_provider_identities, test_repositories,
+        TestHandler, configure_fingerprint_mocks, test_active_prompt_versions,
+        test_provider_identities, test_repositories,
     };
 
     // -- Constants ---------------------------------------------------------
@@ -388,6 +393,11 @@ mod tests {
     async fn test_execute_feedback_stores_lowercase_trace_id() {
         let feedback = a_retrieval_feedback().build();
 
+        let params = FeedbackParams {
+            trace_id: "4BF92F3577B34DA6A3CE929D0E0E4736".into(),
+            ..default_params()
+        };
+
         let mut repos = test_repositories();
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
@@ -395,11 +405,8 @@ mod tests {
                 .respond_with(feedback, None)
                 .build(),
         );
+        configure_fingerprint_mocks(&mut repos, &params.active_prompts);
 
-        let params = FeedbackParams {
-            trace_id: "4BF92F3577B34DA6A3CE929D0E0E4736".into(),
-            ..default_params()
-        };
         call_execute(&repos, params).await.expect("should succeed");
     }
 
@@ -576,13 +583,17 @@ mod tests {
     async fn test_apply_feedback_optional_fields_omitted_succeeds() {
         let prin_id = PrincipalId::new();
         let feedback = a_retrieval_feedback().principal_id(prin_id).build();
-        let repos = repos_for_feedback(feedback);
+        let active_prompts = test_active_prompt_versions();
+
+        let mut repos = repos_for_feedback(feedback);
+        configure_fingerprint_mocks(&mut repos, &active_prompts);
 
         let ctx = test_context().await;
         let pool = ctx.create_pool().await.expect("pool");
         let handler = TestHandler::builder()
             .pool(pool)
             .repositories(repos)
+            .active_prompt_versions(Arc::new(RwLock::new(active_prompts)))
             .build();
 
         let ki_id = KnowledgeItemId::new().to_string();
@@ -611,6 +622,11 @@ mod tests {
         let expected_id = feedback.id();
         let expected_rating = feedback.rating();
 
+        let params = FeedbackParams {
+            principal_id: prin_id,
+            ..default_params()
+        };
+
         let mut repos = test_repositories();
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
@@ -618,11 +634,8 @@ mod tests {
                 .respond_with(feedback, None)
                 .build(),
         );
+        configure_fingerprint_mocks(&mut repos, &params.active_prompts);
 
-        let params = FeedbackParams {
-            principal_id: prin_id,
-            ..default_params()
-        };
         let result = call_execute(&repos, params).await.expect("should succeed");
 
         assert_eq!(result.id(), expected_id);
@@ -638,6 +651,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_feedback_db_error_on_insert() {
+        let params = default_params();
+
         let mut repos = test_repositories();
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
@@ -650,13 +665,63 @@ mod tests {
                 )
                 .build(),
         );
+        configure_fingerprint_mocks(&mut repos, &params.active_prompts);
+
+        let err = call_execute(&repos, params).await.expect_err("should fail");
+
+        assert!(matches!(
+            err,
+            FeedbackError::Db(DbError::QueryFailed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_execute_feedback_missing_prompt_versions_returns_error() {
+        let mut repos = test_repositories();
+        repos.prompt_version = Arc::new(
+            MockPromptVersionRepository::builder()
+                .on_find_by_ids(vec![], None)
+                .build(),
+        );
 
         let params = default_params();
         let err = call_execute(&repos, params).await.expect_err("should fail");
 
         assert!(matches!(
             err,
-            FeedbackError::Db(DbError::QueryFailed { .. })
+            FeedbackError::Fingerprint(FingerprintError::MissingPromptVersions { .. })
+        ));
+    }
+
+    /// When `find_by_ids` returns fewer than 6 prompt versions (some
+    /// present, some missing), the fingerprint computation still fails.
+    #[tokio::test]
+    async fn test_execute_feedback_partial_prompt_versions_returns_error() {
+        let prompts = test_active_prompt_versions();
+        let ids = prompts.version_ids();
+
+        // Return versions for only the first 3 of 6 required IDs.
+        let partial: Vec<_> = ids[..3]
+            .iter()
+            .map(|&id| a_prompt_version().id(id).build())
+            .collect();
+
+        let mut repos = test_repositories();
+        repos.prompt_version = Arc::new(
+            MockPromptVersionRepository::builder()
+                .on_find_by_ids(partial, None)
+                .build(),
+        );
+
+        let params = FeedbackParams {
+            active_prompts: prompts,
+            ..default_params()
+        };
+        let err = call_execute(&repos, params).await.expect_err("should fail");
+
+        assert!(matches!(
+            err,
+            FeedbackError::Fingerprint(FingerprintError::MissingPromptVersions { .. })
         ));
     }
 }
