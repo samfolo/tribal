@@ -7,6 +7,7 @@ mod app_state;
 mod auth;
 mod config;
 mod error;
+mod fingerprint;
 mod format;
 mod handlers;
 mod mapping;
