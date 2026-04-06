@@ -20,7 +20,8 @@ const CURSOR_BYTES: usize = 24;
 const SIMILARITY_BYTES: usize = 8;
 
 /// Encodes a (similarity, id) pair into a hex-encoded cursor string.
-pub(crate) fn encode_cursor(similarity: f64, id: uuid::Uuid) -> String {
+#[must_use]
+pub fn encode_cursor(similarity: f64, id: uuid::Uuid) -> String {
     let mut buf = [0u8; CURSOR_BYTES];
     buf[..SIMILARITY_BYTES].copy_from_slice(&similarity.to_be_bytes());
     buf[SIMILARITY_BYTES..].copy_from_slice(id.as_bytes());
