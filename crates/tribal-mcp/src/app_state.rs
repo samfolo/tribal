@@ -109,6 +109,13 @@ pub struct AppState {
     /// Registry key for the relation inference provider.
     pub(crate) relation_key: ProviderKey,
 
+    // -- Fingerprint ----------------------------------------------------------
+    /// Git-describe version of the build, used for fingerprint computation.
+    pub(crate) build_version: Arc<str>,
+
+    /// Pre-computed inference parameters for fingerprint computation.
+    pub(crate) inference_parameters: InferenceParameters,
+
     // -- Config --------------------------------------------------------------
     /// Worker configuration (concurrency, timeouts, thresholds).
     pub(crate) worker_config: WorkerConfig,

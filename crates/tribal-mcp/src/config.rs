@@ -7,7 +7,7 @@
 use tribal_config::{
     DEFAULT_DISCOVERY_LIMIT, DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EXPLORATION_DEPTH,
     DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH, DEFAULT_EXPLORATION_MAX_LIMIT,
-    TribalConfig,
+    DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD, TribalConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -21,7 +21,7 @@ const DEFAULT_POOL_NAME: &str = "<anonymous>";
 // ---------------------------------------------------------------------------
 
 /// Configuration values threaded into [`TribalServerHandler`](crate::TribalServerHandler).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HandlerConfig {
     /// Pool name reported in pool-exhaustion errors, set by the server on
     /// startup.
@@ -60,6 +60,8 @@ impl From<&TribalConfig> for HandlerConfig {
             discovery: HandlerDiscoveryConfig {
                 default_limit: config.discovery.default_limit,
                 max_limit: config.discovery.max_limit,
+                overfetch_multiplier: config.discovery.overfetch_multiplier,
+                similarity_threshold: config.discovery.similarity_threshold,
             },
             exploration: HandlerExplorationConfig {
                 default_depth: config.exploration.default_depth,
@@ -76,17 +78,20 @@ impl From<&TribalConfig> for HandlerConfig {
 // ---------------------------------------------------------------------------
 
 /// Discovery configuration consumed by the `tribal_discover` handler.
-///
-/// `overfetch_multiplier` and `similarity_threshold` from
-/// `DiscoveryConfig` are intentionally omitted — the handler does not
-/// yet consume them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HandlerDiscoveryConfig {
     /// Default number of results when the caller does not specify a limit.
     pub default_limit: u32,
 
     /// Maximum number of results a caller may request.
     pub max_limit: u32,
+
+    /// Factor applied to the requested limit for overfetching before
+    /// similarity filtering.
+    pub overfetch_multiplier: u32,
+
+    /// Minimum cosine similarity for post-search filtering.
+    pub similarity_threshold: f64,
 }
 
 impl Default for HandlerDiscoveryConfig {
@@ -94,6 +99,8 @@ impl Default for HandlerDiscoveryConfig {
         Self {
             default_limit: DEFAULT_DISCOVERY_LIMIT,
             max_limit: DEFAULT_DISCOVERY_MAX_LIMIT,
+            overfetch_multiplier: DEFAULT_OVERFETCH_MULTIPLIER,
+            similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
         }
     }
 }
@@ -142,6 +149,10 @@ mod tests {
         let config = HandlerDiscoveryConfig::default();
         assert_eq!(config.default_limit, DEFAULT_DISCOVERY_LIMIT);
         assert_eq!(config.max_limit, DEFAULT_DISCOVERY_MAX_LIMIT);
+        assert_eq!(config.overfetch_multiplier, DEFAULT_OVERFETCH_MULTIPLIER);
+        assert!(
+            (config.similarity_threshold - DEFAULT_SIMILARITY_THRESHOLD).abs() < f64::EPSILON
+        );
     }
 
     #[test]
@@ -169,6 +180,14 @@ mod tests {
             tribal.discovery.default_limit
         );
         assert_eq!(handler.discovery.max_limit, tribal.discovery.max_limit);
+        assert_eq!(
+            handler.discovery.overfetch_multiplier,
+            tribal.discovery.overfetch_multiplier
+        );
+        assert!(
+            (handler.discovery.similarity_threshold - tribal.discovery.similarity_threshold).abs()
+                < f64::EPSILON
+        );
         assert_eq!(
             handler.exploration.default_depth,
             tribal.exploration.default_depth
