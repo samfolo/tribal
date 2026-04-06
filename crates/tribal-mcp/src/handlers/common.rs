@@ -31,7 +31,9 @@ pub(crate) async fn acquire_connection(
 /// Begins a transaction from the pool, mapping errors to `CallToolResult`.
 ///
 /// Used by write-path handlers that require transactional semantics.
-/// Records pool acquisition latency via `MetricsRecorder`.
+/// Records pool acquisition latency via `MetricsRecorder`. The metric
+/// includes the `BEGIN` statement cost (sub-millisecond) alongside the
+/// pool wait — sqlx's `pool.begin()` bundles both into one operation.
 pub(crate) async fn begin_transaction(
     pool: &PgPool,
     pool_name: &'static str,

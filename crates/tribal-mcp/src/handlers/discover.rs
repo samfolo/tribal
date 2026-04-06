@@ -363,16 +363,17 @@ async fn execute_discover(
     // then trim to the caller's requested limit — all before enrichment
     // to avoid unnecessary lookups for items that will be discarded.
 
+    let pre_filter_count = search_response.results.len();
     search_response
         .results
         .retain(|r| r.similarity >= params.similarity_threshold);
+    let threshold_removed_results = search_response.results.len() < pre_filter_count;
 
-    // `exact` requires two signals: the repository search was exhaustive
-    // (no further candidates beyond the overfetched window), and the
-    // post-filter count fits within the caller's requested limit (no
-    // truncation needed). If either fails, the response may omit results.
-    let exact =
-        search_response.exact && search_response.results.len() <= params.original_limit as usize;
+    // Results are ordered by descending similarity. If the threshold
+    // filtered any results from this window, all subsequent pages would
+    // also be below threshold — pagination should terminate.
+    let exact = (search_response.exact || threshold_removed_results)
+        && search_response.results.len() <= params.original_limit as usize;
 
     search_response
         .results
@@ -1198,5 +1199,41 @@ mod tests {
             !result.exact,
             "result should not be exact when repo says not exact",
         );
+    }
+
+    #[tokio::test]
+    async fn test_execute_discover_exact_true_when_threshold_cuts_tail() {
+        let prin_id = PrincipalId::new();
+        let items: Vec<_> = (0..4)
+            .map(|_| a_knowledge_item().principal_id(prin_id).build())
+            .collect();
+
+        // Two above threshold, two below. Results are ordered by
+        // descending similarity, so once below-threshold rows appear,
+        // further pages cannot contain above-threshold rows.
+        let similarities = [0.9, 0.7, 0.2, 0.1];
+        let search = SemanticSearchResponse {
+            results: items
+                .iter()
+                .zip(similarities)
+                .map(|(item, sim)| a_search_result(item, sim))
+                .collect(),
+            next_cursor: None,
+            exact: false,
+        };
+        let repos =
+            repos_with_search_and_principal(search, vec![test_principal(prin_id, "user:test")]);
+
+        let params = DiscoverParams {
+            original_limit: 5,
+            overfetch_limit: 15,
+            similarity_threshold: 0.5,
+            ..default_params()
+        };
+        let result = call_execute(&repos, params).await.unwrap();
+
+        assert_eq!(result.items.len(), 2);
+        assert!(result.exact, "should be exact when threshold cut the tail");
+        assert!(result.next_cursor.is_none());
     }
 }
