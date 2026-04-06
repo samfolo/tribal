@@ -9,7 +9,7 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tracing::Instrument;
-use tribal_db::{DbError, SemanticSearchParams};
+use tribal_db::{DbError, SemanticSearchParams, encode_cursor};
 use tribal_domain::{
     EmbeddingPurpose, KnowledgeItemId, KnowledgeKind, McpErrorCode, PrincipalId, ProjectId,
     Reference, Standing, span_attrs,
@@ -378,10 +378,22 @@ async fn execute_discover(
         .results
         .truncate(params.original_limit as usize);
 
+    // Recompute the cursor from the last returned item so that items
+    // above the threshold but beyond the original limit are re-fetched
+    // on the next page rather than silently skipped.
+    let next_cursor = if exact {
+        None
+    } else {
+        search_response
+            .results
+            .last()
+            .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+    };
+
     if search_response.results.is_empty() {
         return Ok(DiscoverResult {
             items: Vec::new(),
-            next_cursor: search_response.next_cursor,
+            next_cursor,
             exact,
             applied_project_id: params.project_id,
             project_name,
@@ -466,7 +478,7 @@ async fn execute_discover(
 
     Ok(DiscoverResult {
         items,
-        next_cursor: search_response.next_cursor,
+        next_cursor,
         exact,
         applied_project_id: params.project_id,
         project_name,
@@ -828,7 +840,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_next_cursor_populated_when_more_results() {
+    async fn test_next_cursor_recomputed_from_last_returned_item() {
         let prin_id = PrincipalId::new();
         let item = a_knowledge_item().principal_id(prin_id).build();
         let search = SemanticSearchResponse {
@@ -841,7 +853,11 @@ mod tests {
 
         let result = call_execute(&repos, default_params()).await.unwrap();
 
-        assert_eq!(result.next_cursor.as_deref(), Some("cursor_abc123"));
+        let expected_cursor = encode_cursor(0.9, *item.id().inner());
+        assert_eq!(
+            result.next_cursor.as_deref(),
+            Some(expected_cursor.as_str())
+        );
         assert!(!result.exact);
     }
 

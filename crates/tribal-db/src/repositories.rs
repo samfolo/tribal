@@ -29,6 +29,7 @@ mod triage_result;
 mod triage_similar_item_decision;
 
 pub use auth_token::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
+pub use common::cursor::encode_cursor;
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
 pub use extraction_result::{
     ExtractionResultRepository, NewExtractionResult, PgExtractionResultRepository,

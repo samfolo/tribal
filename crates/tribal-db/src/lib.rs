@@ -39,5 +39,5 @@ pub use repositories::{
     SemanticSearchResult, StandingRepository, SystemFingerprintRepository, TagEmbeddingRepository,
     TagRegistryRepository, TaskRepository, TaskStatusCount, TokenUsageRepository,
     TraversalDirection, TraversalNode, TraversalResponse, TriageResultRepository,
-    TriageSimilarItemDecisionRepository,
+    TriageSimilarItemDecisionRepository, encode_cursor,
 };
