@@ -9,13 +9,15 @@
 
 use async_trait::async_trait;
 use sqlx::PgConnection;
-use tribal_db::{JobStateOverride, PgJobRepository};
+use tribal_db::{
+    JobStateOverride, PgJobRepository, PgSystemFingerprintRepository, SystemFingerprintRepository,
+};
 use tribal_domain::{
     ItemObservationId, JobId, JobOutcome, JobStatus, KnowledgeItemId, PrincipalId, ProjectId,
     RelationBatchId, RelationId,
 };
 
-use crate::{a_new_job, a_new_prompt_version, insert_prompt_version};
+use crate::{a_new_job, a_new_prompt_version, a_new_system_fingerprint, insert_prompt_version};
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -127,6 +129,20 @@ impl SeedRepository for PgSeedRepository {
     ) -> JobId {
         let pv_id = insert_prompt_version(conn, &a_new_prompt_version().build()).await;
 
+        let new_fingerprint = a_new_system_fingerprint()
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .build();
+        let fingerprint_hash = new_fingerprint.content_hash.clone();
+        PgSystemFingerprintRepository
+            .upsert(conn, &new_fingerprint)
+            .await
+            .expect("seed: upsert system fingerprint");
+
         let job = PgJobRepository
             .insert_for_test(
                 conn,
@@ -139,6 +155,7 @@ impl SeedRepository for PgSeedRepository {
                     .triage_user_prompt_version_id(pv_id)
                     .relation_system_prompt_version_id(pv_id)
                     .relation_user_prompt_version_id(pv_id)
+                    .system_fingerprint_hash(fingerprint_hash)
                     .build(),
                 &JobStateOverride::builder()
                     .status(JobStatus::Completed)

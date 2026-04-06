@@ -9,21 +9,22 @@ use tribal_domain::{
 };
 use tribal_test_utils::{
     a_job_status_transition, a_new_job, a_new_principal, a_new_project, a_new_prompt_version,
-    a_new_task, insert_prompt_version, test_context,
+    a_new_system_fingerprint, a_new_task, insert_prompt_version, test_context,
+    upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Inserts a principal, project, and a prompt_version row, returning
-/// the IDs needed to create a job.
+/// Inserts a principal, project, prompt_version, and system fingerprint
+/// row, returning the IDs needed to create a job.
 ///
 /// A single prompt_version ID is reused for all six job FK columns.
 async fn setup_job_prerequisites(
     txn: &mut sqlx::PgConnection,
     suffix: &str,
-) -> (PrincipalId, ProjectId, PromptVersionId) {
+) -> (PrincipalId, ProjectId, PromptVersionId, String) {
     let principal = PgPrincipalRepository
         .insert(
             txn,
@@ -50,7 +51,20 @@ async fn setup_job_prerequisites(
 
     let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
 
-    (principal.id(), project.id(), pv_id)
+    let fingerprint_hash = upsert_system_fingerprint(
+        txn,
+        &a_new_system_fingerprint()
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .build(),
+    )
+    .await;
+
+    (principal.id(), project.id(), pv_id, fingerprint_hash)
 }
 
 // ---------------------------------------------------------------------------
@@ -63,7 +77,8 @@ async fn test_insert_returns_populated_job() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) = setup_job_prerequisites(&mut txn, "insert").await;
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
+        setup_job_prerequisites(&mut txn, "insert").await;
 
     let new = a_new_job()
         .project_id(project_id)
@@ -74,6 +89,7 @@ async fn test_insert_returns_populated_job() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .source_context(serde_json::json!({"tool": "test"}))
         .build();
 
@@ -104,7 +120,7 @@ async fn test_insert_with_optional_fields_round_trips() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) =
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
         setup_job_prerequisites(&mut txn, "insert-optional").await;
 
     let actor = PgPrincipalRepository
@@ -129,6 +145,7 @@ async fn test_insert_with_optional_fields_round_trips() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .raw_input("custom raw input for round-trip".to_owned())
         .trace_context(Some("00-abc-def-01".to_owned()))
         .build();
@@ -151,7 +168,8 @@ async fn test_find_by_id_returns_job() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) = setup_job_prerequisites(&mut txn, "find-by-id").await;
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
+        setup_job_prerequisites(&mut txn, "find-by-id").await;
 
     let new = a_new_job()
         .project_id(project_id)
@@ -162,6 +180,7 @@ async fn test_find_by_id_returns_job() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .build();
 
     let inserted = repo.insert(&mut txn, &new).await.expect("insert");
@@ -199,7 +218,8 @@ async fn test_find_by_project_id_returns_jobs() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) = setup_job_prerequisites(&mut txn, "find-by-proj").await;
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
+        setup_job_prerequisites(&mut txn, "find-by-proj").await;
 
     let base = a_new_job()
         .project_id(project_id)
@@ -209,7 +229,8 @@ async fn test_find_by_project_id_returns_jobs() {
         .triage_system_prompt_version_id(pv_id)
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
-        .relation_user_prompt_version_id(pv_id);
+        .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash);
 
     let first = repo
         .insert(&mut txn, &base.clone().build())
@@ -258,7 +279,8 @@ async fn test_update_status_valid_transition() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) = setup_job_prerequisites(&mut txn, "status-valid").await;
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
+        setup_job_prerequisites(&mut txn, "status-valid").await;
 
     let new = a_new_job()
         .project_id(project_id)
@@ -269,6 +291,7 @@ async fn test_update_status_valid_transition() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -292,7 +315,7 @@ async fn test_update_status_to_completed() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) =
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
         setup_job_prerequisites(&mut txn, "status-completed").await;
 
     let new = a_new_job()
@@ -304,6 +327,7 @@ async fn test_update_status_to_completed() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -332,7 +356,7 @@ async fn test_update_status_to_failed() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) =
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
         setup_job_prerequisites(&mut txn, "status-failed").await;
 
     let new = a_new_job()
@@ -344,6 +368,7 @@ async fn test_update_status_to_failed() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -373,7 +398,7 @@ async fn test_update_status_invalid_transition() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) =
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
         setup_job_prerequisites(&mut txn, "status-invalid").await;
 
     let new = a_new_job()
@@ -385,6 +410,7 @@ async fn test_update_status_invalid_transition() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -430,7 +456,8 @@ async fn test_update_batch_size() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) = setup_job_prerequisites(&mut txn, "batch-size").await;
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
+        setup_job_prerequisites(&mut txn, "batch-size").await;
 
     let new = a_new_job()
         .project_id(project_id)
@@ -441,6 +468,7 @@ async fn test_update_batch_size() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -478,7 +506,7 @@ async fn test_set_committed_batch_id() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) =
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
         setup_job_prerequisites(&mut txn, "committed-batch").await;
 
     let new = a_new_job()
@@ -490,6 +518,7 @@ async fn test_set_committed_batch_id() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -510,7 +539,7 @@ async fn test_set_committed_batch_id_already_set_returns_none() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) =
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
         setup_job_prerequisites(&mut txn, "committed-batch-idem").await;
 
     let new = a_new_job()
@@ -522,6 +551,7 @@ async fn test_set_committed_batch_id_already_set_returns_none() {
         .triage_user_prompt_version_id(pv_id)
         .relation_system_prompt_version_id(pv_id)
         .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .build();
 
     let job = repo.insert(&mut txn, &new).await.expect("insert");
@@ -567,7 +597,7 @@ async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) =
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
         setup_job_prerequisites(&mut txn, "fail-dead-letter").await;
 
     let job = repo
@@ -582,6 +612,7 @@ async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
                 .triage_user_prompt_version_id(pv_id)
                 .relation_system_prompt_version_id(pv_id)
                 .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fingerprint_hash)
                 .build(),
         )
         .await
@@ -636,7 +667,7 @@ async fn test_fail_stale_dead_lettered_jobs_skips_triage() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) =
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
         setup_job_prerequisites(&mut txn, "fail-skip-triage").await;
 
     let job = repo
@@ -651,6 +682,7 @@ async fn test_fail_stale_dead_lettered_jobs_skips_triage() {
                 .triage_user_prompt_version_id(pv_id)
                 .relation_system_prompt_version_id(pv_id)
                 .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fingerprint_hash)
                 .build(),
         )
         .await
@@ -698,7 +730,7 @@ async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgJobRepository;
 
-    let (principal_id, project_id, pv_id) =
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
         setup_job_prerequisites(&mut txn, "fail-already-failed").await;
 
     let job = repo
@@ -713,6 +745,7 @@ async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
                 .triage_user_prompt_version_id(pv_id)
                 .relation_system_prompt_version_id(pv_id)
                 .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fingerprint_hash)
                 .build(),
         )
         .await

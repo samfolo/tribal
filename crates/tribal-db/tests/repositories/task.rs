@@ -5,9 +5,9 @@ use tribal_db::{
 };
 use tribal_domain::{GitRemote, JobId, TaskErrorKind, TaskId, TaskStatus, TaskType};
 use tribal_test_utils::{
-    a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_task,
-    backdate_task_heartbeat, count_tasks_by_status, insert_prompt_version, set_retry_count,
-    shift_timestamp_by_id, test_context,
+    a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
+    a_new_task, backdate_task_heartbeat, count_tasks_by_status, insert_prompt_version,
+    set_retry_count, shift_timestamp_by_id, test_context, upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,19 @@ async fn setup_task_prerequisites(txn: &mut sqlx::PgConnection, suffix: &str) ->
 
     let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
 
+    let fingerprint_hash = upsert_system_fingerprint(
+        txn,
+        &a_new_system_fingerprint()
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .build(),
+    )
+    .await;
+
     let job = PgJobRepository
         .insert(
             txn,
@@ -55,6 +68,7 @@ async fn setup_task_prerequisites(txn: &mut sqlx::PgConnection, suffix: &str) ->
                 .triage_user_prompt_version_id(pv_id)
                 .relation_system_prompt_version_id(pv_id)
                 .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fingerprint_hash)
                 .build(),
         )
         .await
