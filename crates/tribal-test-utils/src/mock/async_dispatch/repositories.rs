@@ -11,10 +11,12 @@ mod job;
 mod knowledge_item;
 mod principal;
 mod project;
+mod prompt_version;
 mod reference;
 mod relation;
 mod retrieval_feedback;
 mod standing;
+mod system_fingerprint;
 mod task;
 mod triage_result;
 
@@ -26,10 +28,12 @@ pub use job::MockJobRepository;
 pub use knowledge_item::MockKnowledgeItemRepository;
 pub use principal::MockPrincipalRepository;
 pub use project::MockProjectRepository;
+pub use prompt_version::MockPromptVersionRepository;
 pub use reference::MockReferenceRepository;
 pub use relation::MockRelationRepository;
 pub use retrieval_feedback::MockRetrievalFeedbackRepository;
 pub use standing::MockStandingRepository;
+pub use system_fingerprint::MockSystemFingerprintRepository;
 pub use task::MockTaskRepository;
 pub use triage_result::MockTriageResultRepository;
 
