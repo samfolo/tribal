@@ -367,29 +367,35 @@ async fn execute_discover(
     search_response
         .results
         .retain(|r| r.similarity >= params.similarity_threshold);
-    let threshold_removed_results = search_response.results.len() < pre_filter_count;
+    let threshold_cut_tail = search_response.results.len() < pre_filter_count;
 
-    // Results are ordered by descending similarity. If the threshold
-    // filtered any results from this window, all subsequent pages would
-    // also be below threshold — pagination should terminate.
-    let exact = (search_response.exact || threshold_removed_results)
-        && search_response.results.len() <= params.original_limit as usize;
-
+    let post_filter_count = search_response.results.len();
     search_response
         .results
         .truncate(params.original_limit as usize);
 
-    // Recompute the cursor from the last returned item so that items
-    // above the threshold but beyond the original limit are re-fetched
-    // on the next page rather than silently skipped.
-    let next_cursor = if exact {
-        None
-    } else {
+    // Determine whether more results can exist beyond this page.
+    // No cursor when: (a) the threshold cut the tail (later pages are
+    // below threshold), or (b) the repo had no more rows and nothing
+    // was truncated. Otherwise, recompute the cursor from the last
+    // returned item.
+    let has_more = !threshold_cut_tail
+        && (search_response.next_cursor.is_some()
+            || post_filter_count > params.original_limit as usize);
+
+    let next_cursor = if has_more {
         search_response
             .results
             .last()
             .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+    } else {
+        None
     };
+
+    // `exact` tells the client whether all matching results are
+    // included. It is derived from the cursor — if there is no cursor,
+    // the client has everything.
+    let exact = next_cursor.is_none();
 
     if search_response.results.is_empty() {
         return Ok(DiscoverResult {
@@ -1196,8 +1202,8 @@ mod tests {
         let result = call_execute(&repos, params).await.unwrap();
 
         assert!(
-            !result.exact,
-            "result should not be exact when repo says not exact",
+            result.exact,
+            "result should be exact when all results fit and no cursor exists",
         );
     }
 
@@ -1235,5 +1241,42 @@ mod tests {
         assert_eq!(result.items.len(), 2);
         assert!(result.exact, "should be exact when threshold cut the tail");
         assert!(result.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_execute_discover_preserves_cursor_when_repo_exact_with_more() {
+        let prin_id = PrincipalId::new();
+        let items: Vec<_> = (0..3)
+            .map(|_| a_knowledge_item().principal_id(prin_id).build())
+            .collect();
+
+        // Repo says exact (narrow window sufficient) but has a cursor
+        // indicating more rows are available. No threshold filtering
+        // occurs (all above 0.0). Cursor must be preserved.
+        let search = SemanticSearchResponse {
+            results: items
+                .iter()
+                .map(|item| a_search_result(item, 0.9))
+                .collect(),
+            next_cursor: Some("repo_cursor".into()),
+            exact: true,
+        };
+        let repos =
+            repos_with_search_and_principal(search, vec![test_principal(prin_id, "user:test")]);
+
+        let params = DiscoverParams {
+            original_limit: 5,
+            overfetch_limit: 15,
+            similarity_threshold: 0.0,
+            ..default_params()
+        };
+        let result = call_execute(&repos, params).await.unwrap();
+
+        assert_eq!(result.items.len(), 3);
+        assert!(!result.exact, "exact should be false when a cursor exists");
+        assert!(
+            result.next_cursor.is_some(),
+            "cursor should be preserved when repo has more rows and no threshold filtering occurred",
+        );
     }
 }
