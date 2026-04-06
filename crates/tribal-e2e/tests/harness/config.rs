@@ -76,6 +76,12 @@ pub fn test_config(
         limits.request_timeout_ms = REQUEST_TIMEOUT_MS;
     }
 
+    // -- Discovery -----------------------------------------------------------
+    // E2E embeddings are synthetic (deterministic but not semantically
+    // meaningful), so the similarity threshold is set to the minimum
+    // valid value to avoid discarding results during overfetch filtering.
+    config.discovery.similarity_threshold = f64::MIN_POSITIVE;
+
     // -- Logging -------------------------------------------------------------
     config.logging.include_llm_content = true;
 
