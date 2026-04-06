@@ -15,6 +15,9 @@ pub const DEFAULT_MAX_LIMIT: u32 = 50;
 /// Default overfetch multiplier for the initial semantic search.
 pub const DEFAULT_OVERFETCH_MULTIPLIER: u32 = 3;
 
+/// Maximum permitted overfetch multiplier.
+pub const MAX_OVERFETCH_MULTIPLIER: u32 = 10;
+
 /// Default minimum cosine similarity to include in results.
 pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.3;
 
