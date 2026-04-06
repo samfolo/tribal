@@ -26,7 +26,7 @@ async fn test_upsert_returns_fingerprint() {
 
     let fp = repo.upsert(&mut txn, &new).await.expect("upsert");
 
-    assert!(fp.id().to_string().starts_with("sf_"));
+    assert!(fp.id().to_string().starts_with("sfp_"));
     assert_eq!(fp.content_hash(), new.content_hash);
     assert_eq!(fp.build_version(), new.build_version);
 }
@@ -99,4 +99,56 @@ async fn test_upsert_different_build_version_produces_different_hash() {
 
     assert_ne!(first.content_hash(), second.content_hash());
     assert_ne!(first.id(), second.id());
+}
+
+// ---------------------------------------------------------------------------
+// find_by_hash
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_find_by_hash_returns_stored_fingerprint() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgSystemFingerprintRepository;
+
+    let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
+
+    let new = a_new_system_fingerprint()
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
+        .build();
+
+    let upserted = repo.upsert(&mut txn, &new).await.expect("upsert");
+
+    let found = repo
+        .find_by_hash(&mut txn, upserted.content_hash())
+        .await
+        .expect("find_by_hash")
+        .expect("should find the fingerprint");
+
+    assert_eq!(found.id(), upserted.id());
+    assert_eq!(found.content_hash(), upserted.content_hash());
+    assert_eq!(found.build_version(), upserted.build_version());
+    assert_eq!(
+        found.inference_parameters(),
+        upserted.inference_parameters()
+    );
+}
+
+#[tokio::test]
+async fn test_find_by_hash_unknown_returns_none() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgSystemFingerprintRepository;
+
+    let result = repo
+        .find_by_hash(&mut txn, &"0".repeat(64))
+        .await
+        .expect("find_by_hash");
+
+    assert!(result.is_none());
 }

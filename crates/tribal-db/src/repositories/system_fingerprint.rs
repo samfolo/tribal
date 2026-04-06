@@ -193,7 +193,7 @@ impl SystemFingerprintRepository for PgSystemFingerprintRepository {
             })?;
 
         if let Some(r) = row {
-            return Ok(map_system_fingerprint_row(&r));
+            return map_system_fingerprint_row(&r);
         }
 
         // Conflict path — fingerprint already exists.
@@ -208,7 +208,7 @@ impl SystemFingerprintRepository for PgSystemFingerprintRepository {
                 source: e,
             })?;
 
-        Ok(map_system_fingerprint_row(&r))
+        map_system_fingerprint_row(&r)
     }
 
     async fn find_by_hash(
@@ -227,7 +227,7 @@ impl SystemFingerprintRepository for PgSystemFingerprintRepository {
                 source: e,
             })?;
 
-        Ok(row.as_ref().map(map_system_fingerprint_row))
+        row.as_ref().map(map_system_fingerprint_row).transpose()
     }
 }
 
@@ -237,12 +237,15 @@ impl SystemFingerprintRepository for PgSystemFingerprintRepository {
 
 /// Maps a raw `sqlx::Row` from a system fingerprint query into a
 /// [`SystemFingerprint`].
-fn map_system_fingerprint_row(r: &sqlx::postgres::PgRow) -> SystemFingerprint {
+fn map_system_fingerprint_row(r: &sqlx::postgres::PgRow) -> Result<SystemFingerprint, DbError> {
     let params_value: serde_json::Value = r.get("inference_parameters");
     let inference_parameters: InferenceParameters =
-        serde_json::from_value(params_value).unwrap_or_default();
+        serde_json::from_value(params_value).map_err(|e| DbError::QueryFailed {
+            context: format!("deserialising inference_parameters for system fingerprint: {e}"),
+            source: sqlx::Error::Decode(Box::new(e)),
+        })?;
 
-    SystemFingerprint::builder()
+    Ok(SystemFingerprint::builder()
         .id(SystemFingerprintId::from(r.get::<uuid::Uuid, _>("id")))
         .content_hash(r.get("content_hash"))
         .build_version(r.get("build_version"))
@@ -274,5 +277,5 @@ fn map_system_fingerprint_row(r: &sqlx::postgres::PgRow) -> SystemFingerprint {
         .embedding_model(r.get("embedding_model"))
         .inference_parameters(inference_parameters)
         .created_at(r.get("created_at"))
-        .build()
+        .build())
 }

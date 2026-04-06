@@ -367,6 +367,10 @@ async fn execute_discover(
         .results
         .retain(|r| r.similarity >= params.similarity_threshold);
 
+    // `exact` requires two signals: the repository search was exhaustive
+    // (no further candidates beyond the overfetched window), and the
+    // post-filter count fits within the caller's requested limit (no
+    // truncation needed). If either fails, the response may omit results.
     let exact =
         search_response.exact && search_response.results.len() <= params.original_limit as usize;
 
@@ -1110,6 +1114,10 @@ mod tests {
         let result = call_execute(&repos, params).await.unwrap();
 
         assert_eq!(result.items.len(), 2);
+        assert!(
+            !result.exact,
+            "exact should be false when post-filter exceeds original_limit"
+        );
     }
 
     #[tokio::test]
