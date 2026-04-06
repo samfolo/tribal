@@ -43,7 +43,9 @@ struct DiscoverParams {
     include_superseded: bool,
     include_standing: bool,
     include_references: bool,
-    limit: u32,
+    original_limit: u32,
+    overfetch_limit: u32,
+    similarity_threshold: f64,
     cursor: Option<String>,
 }
 
@@ -215,7 +217,9 @@ impl TribalServerHandler {
             include_superseded: request.include_superseded.unwrap_or(false),
             include_standing: request.include_standing.unwrap_or(false),
             include_references: request.include_references.unwrap_or(false),
-            limit,
+            original_limit: limit,
+            overfetch_limit: limit.saturating_mul(self.config.discovery.overfetch_multiplier),
+            similarity_threshold: self.config.discovery.similarity_threshold,
             cursor: request.cursor,
         };
 
@@ -344,20 +348,37 @@ async fn execute_discover(
         .time_range_from(params.time_range_from)
         .time_range_to(params.time_range_to)
         .include_superseded(params.include_superseded)
-        .limit(params.limit)
+        .limit(params.overfetch_limit)
         .cursor(params.cursor)
         .build();
 
-    let search_response = repositories
+    let mut search_response = repositories
         .knowledge_item
         .semantic_search(conn, &search_params)
         .await?;
+
+    // -- Overfetch filtering --------------------------------------------------
+    // The search fetched `original_limit * overfetch_multiplier` rows.
+    // Filter by similarity, compute whether the result set is complete,
+    // then trim to the caller's requested limit — all before enrichment
+    // to avoid unnecessary lookups for items that will be discarded.
+
+    search_response
+        .results
+        .retain(|r| r.similarity >= params.similarity_threshold);
+
+    let exact = search_response.exact
+        && search_response.results.len() <= params.original_limit as usize;
+
+    search_response
+        .results
+        .truncate(params.original_limit as usize);
 
     if search_response.results.is_empty() {
         return Ok(DiscoverResult {
             items: Vec::new(),
             next_cursor: search_response.next_cursor,
-            exact: search_response.exact,
+            exact,
             applied_project_id: params.project_id,
             project_name,
             embedding_model: params.embedding_model,
@@ -442,7 +463,7 @@ async fn execute_discover(
     Ok(DiscoverResult {
         items,
         next_cursor: search_response.next_cursor,
-        exact: search_response.exact,
+        exact,
         applied_project_id: params.project_id,
         project_name,
         embedding_model: params.embedding_model,

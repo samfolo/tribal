@@ -106,7 +106,7 @@ pub(crate) struct PipelineProviderIdentities {
 // ---------------------------------------------------------------------------
 
 /// Builds [`InferenceParameters`] from the resolved configuration.
-pub(crate) fn build_inference_parameters(config: &TribalConfig) -> InferenceParameters {
+pub fn build_inference_parameters(config: &TribalConfig) -> InferenceParameters {
     InferenceParameters {
         extraction: StageParameters {
             temperature: config.inference.extraction.temperature,
