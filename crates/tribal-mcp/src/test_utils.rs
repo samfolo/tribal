@@ -15,9 +15,10 @@ use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
-    MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
-    MockRelationRepository, MockRetrievalFeedbackRepository, MockStandingRepository,
-    MockTaskRepository, MockTriageResultRepository, TEST_PRINCIPAL_KEY, lazy_pool,
+    MockPrincipalRepository, MockProjectRepository, MockPromptVersionRepository,
+    MockReferenceRepository, MockRelationRepository, MockRetrievalFeedbackRepository,
+    MockStandingRepository, MockSystemFingerprintRepository, MockTaskRepository,
+    MockTriageResultRepository, TEST_PRINCIPAL_KEY, lazy_pool,
 };
 use typed_builder::TypedBuilder;
 
@@ -56,6 +57,8 @@ pub(crate) fn test_repositories() -> ConnectionRepositories {
         reference: Arc::new(MockReferenceRepository::builder().build()),
         relation: Arc::new(MockRelationRepository::builder().build()),
         principal: Arc::new(MockPrincipalRepository::builder().build()),
+        prompt_version: Arc::new(MockPromptVersionRepository::builder().build()),
+        system_fingerprint: Arc::new(MockSystemFingerprintRepository::builder().build()),
         triage_result: Arc::new(MockTriageResultRepository::builder().build()),
     }
 }

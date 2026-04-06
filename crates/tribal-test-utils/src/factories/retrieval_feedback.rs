@@ -13,7 +13,7 @@ define_factory! {
         embedding_model: String = "nomic-embed-text:v1.5".to_owned(),
         returned_item_ids: Vec<KnowledgeItemId> = Vec::new(),
         explored_anchor_ids: Vec<KnowledgeItemId> = Vec::new(),
-        policy_version: Option<String> = None,
+        system_fingerprint_hash: String = "a".repeat(64),
         principal_id: PrincipalId = PrincipalId::new(),
         rating: FeedbackRating = FeedbackRating::Positive,
         notes: Option<String> = None,
@@ -35,7 +35,7 @@ define_factory! {
         embedding_model: String = "nomic-embed-text:v1.5".to_owned(),
         returned_item_ids: Vec<KnowledgeItemId> = Vec::new(),
         explored_anchor_ids: Vec<KnowledgeItemId> = Vec::new(),
-        policy_version: Option<String> = None,
+        system_fingerprint_hash: String = "a".repeat(64),
         principal_id: PrincipalId = PrincipalId::new(),
         rating: FeedbackRating = FeedbackRating::Positive,
         notes: Option<String> = None,
@@ -66,7 +66,7 @@ mod tests {
         assert_eq!(new.embedding_model, "nomic-embed-text:v1.5");
         assert!(new.returned_item_ids.is_empty());
         assert!(new.explored_anchor_ids.is_empty());
-        assert!(new.policy_version.is_none());
+        assert_eq!(new.system_fingerprint_hash.len(), 64);
         assert_eq!(new.rating, FeedbackRating::Positive);
         assert!(new.notes.is_none());
     }
