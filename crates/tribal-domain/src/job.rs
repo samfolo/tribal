@@ -191,6 +191,8 @@ pub struct Job {
     relation_system_prompt_version_id: PromptVersionId,
     /// Relation user prompt version at job creation time.
     relation_user_prompt_version_id: PromptVersionId,
+    /// SHA-256 hash referencing the active system fingerprint.
+    system_fingerprint_hash: String,
     /// W3C traceparent for distributed tracing.
     #[builder(default)]
     trace_context: Option<String>,
@@ -297,6 +299,11 @@ impl Job {
     /// Returns the relation user prompt version identifier.
     pub fn relation_user_prompt_version_id(&self) -> PromptVersionId {
         self.relation_user_prompt_version_id
+    }
+
+    /// Returns the system fingerprint hash.
+    pub fn system_fingerprint_hash(&self) -> &str {
+        &self.system_fingerprint_hash
     }
 
     /// Returns the W3C traceparent, if set.
