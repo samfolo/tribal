@@ -375,13 +375,12 @@ async fn execute_discover(
         .truncate(params.original_limit as usize);
 
     // Determine whether more results can exist beyond this page.
-    // No cursor when: (a) the threshold cut the tail (later pages are
-    // below threshold), or (b) the repo had no more rows and nothing
-    // was truncated. Otherwise, recompute the cursor from the last
-    // returned item.
-    let has_more = !threshold_cut_tail
-        && (search_response.next_cursor.is_some()
-            || post_filter_count > params.original_limit as usize);
+    // Pagination continues when above-threshold results were truncated,
+    // or when the repo indicates more rows exist. The threshold cutting
+    // the tail only terminates pagination when the surviving results
+    // fit within the original limit.
+    let truncated = post_filter_count > params.original_limit as usize;
+    let has_more = truncated || (!threshold_cut_tail && search_response.next_cursor.is_some());
 
     let next_cursor = if has_more {
         search_response
@@ -1194,5 +1193,23 @@ mod tests {
             run_overfetch_scenario(&[0.9, 0.7, 0.2], true, Some("repo_cursor"), 5, 0.5).await;
         assert_eq!(result.items.len(), 2);
         assert!(result.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_overfetch_cursor_present_when_threshold_cuts_but_above_threshold_exceeds_limit() {
+        // 8 above threshold (0.5), 2 below. original_limit is 5, so
+        // the 8 surviving items are truncated to 5. Pagination must
+        // continue despite the threshold cutting the tail.
+        let result = run_overfetch_scenario(
+            &[0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.2, 0.1],
+            true,
+            None,
+            5,
+            0.5,
+        )
+        .await;
+        assert_eq!(result.items.len(), 5);
+        assert!(result.next_cursor.is_some());
+        assert!(!result.exact);
     }
 }
