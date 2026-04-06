@@ -155,6 +155,6 @@ mod tests {
         let hard_ttl = Duration::from_secs(3600);
         sweep_once(&txs, terminal_ttl, hard_ttl, Instant::now());
 
-        assert_eq!(txs.len(), 1, "fresh non-terminal entry should be retained",);
+        assert_eq!(txs.len(), 1, "fresh non-terminal entry should be retained");
     }
 }
