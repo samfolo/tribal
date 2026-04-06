@@ -54,6 +54,7 @@ mod extraction_result;
 mod feedback_rating;
 mod git;
 mod ids;
+mod inference_parameters;
 mod item_observation;
 mod job;
 mod knowledge;
@@ -68,6 +69,7 @@ mod reference_kind;
 mod relation;
 mod retrieval_feedback;
 mod scope;
+mod system_fingerprint;
 mod source_type;
 pub mod span_attrs;
 mod standing;
@@ -84,6 +86,9 @@ pub use embedding::{Embedding, EmbeddingBuilder};
 pub use embedding_purpose::EmbeddingPurpose;
 pub use error_code::McpErrorCode;
 pub use extraction_result::{ExtractionResult, ExtractionResultBuilder};
+pub use inference_parameters::{
+    EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
+};
 pub use feedback_rating::FeedbackRating;
 pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
