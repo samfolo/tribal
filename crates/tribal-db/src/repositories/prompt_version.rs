@@ -89,6 +89,19 @@ pub trait PromptVersionRepository {
         id: PromptVersionId,
     ) -> Result<PromptVersion, DbError>;
 
+    /// Finds prompt versions by a batch of IDs.
+    ///
+    /// Missing IDs are silently omitted from the result (not an error).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_ids(
+        &self,
+        conn: &mut PgConnection,
+        ids: &[PromptVersionId],
+    ) -> Result<Vec<PromptVersion>, DbError>;
+
     /// Finds a prompt version by its stage, role, and content hash.
     ///
     /// Returns `Ok(None)` when no match exists.
@@ -185,6 +198,33 @@ impl PromptVersionRepository for PgPromptVersionRepository {
             })?;
 
         Ok(map_prompt_version_row(&row))
+    }
+
+    async fn find_by_ids(
+        &self,
+        conn: &mut PgConnection,
+        ids: &[PromptVersionId],
+    ) -> Result<Vec<PromptVersion>, DbError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let raw_ids: Vec<uuid::Uuid> = ids.iter().map(|id| *id.inner()).collect();
+
+        let sql = format!(
+            "SELECT {COLUMNS} FROM prompt_versions WHERE id = ANY($1)",
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(&raw_ids)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("finding prompt versions by {} ids", ids.len()),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_prompt_version_row).collect())
     }
 
     async fn find_by_stage_role_and_hash(
