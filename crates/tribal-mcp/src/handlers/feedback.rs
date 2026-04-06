@@ -1,7 +1,6 @@
 //! Handler for `tribal_feedback` — retrieval session quality rating.
 
-use std::str::FromStr;
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -292,11 +291,15 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
-    use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, ProjectId};
+    use tribal_domain::{
+        FeedbackRating, InferenceParameters, KnowledgeItemId, PrincipalId, ProjectId,
+    };
     use tribal_test_utils::{MockRetrievalFeedbackRepository, a_retrieval_feedback, test_context};
 
     use super::*;
-    use crate::test_utils::{TestHandler, test_repositories};
+    use crate::test_utils::{
+        TestHandler, test_active_prompt_versions, test_provider_identities, test_repositories,
+    };
 
     // -- Constants ---------------------------------------------------------
 
@@ -334,6 +337,10 @@ mod tests {
             principal_id: PrincipalId::new(),
             rating: FeedbackRating::Positive,
             notes: None,
+            active_prompts: test_active_prompt_versions(),
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         }
     }
 
@@ -622,7 +629,9 @@ mod tests {
         assert_eq!(result.rating(), expected_rating);
         assert!(result.explored_anchor_ids().is_empty());
         assert!(result.notes().is_none());
-        assert!(result.policy_version().is_none());
+        let hash = result.system_fingerprint_hash();
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // -- Service: error paths ----------------------------------------------

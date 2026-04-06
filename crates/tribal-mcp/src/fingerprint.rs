@@ -11,12 +11,10 @@ use tribal_common::sha256_hex;
 use tribal_config::TribalConfig;
 use tribal_db::{DbError, NewSystemFingerprint};
 use tribal_domain::{
-    EmbeddingParameters, InferenceParameters, PipelineParameters, PromptVersion, PromptVersionId,
-    StageParameters,
+    EmbeddingParameters, InferenceParameters, McpErrorCode, PipelineParameters, PromptVersion,
+    PromptVersionId, StageParameters,
 };
 use tribal_inference::ProviderIdentity;
-
-use tribal_domain::McpErrorCode;
 
 use crate::{
     error::{IntoMcpError, McpToolError},
@@ -63,12 +61,24 @@ impl PromptContentHashes {
             .collect();
 
         Some(Self {
-            extraction_system: by_id.get(&active.extraction_system_prompt_version_id)?.to_string(),
-            extraction_user: by_id.get(&active.extraction_user_prompt_version_id)?.to_string(),
-            triage_system: by_id.get(&active.triage_system_prompt_version_id)?.to_string(),
-            triage_user: by_id.get(&active.triage_user_prompt_version_id)?.to_string(),
-            relation_system: by_id.get(&active.relation_system_prompt_version_id)?.to_string(),
-            relation_user: by_id.get(&active.relation_user_prompt_version_id)?.to_string(),
+            extraction_system: by_id
+                .get(&active.extraction_system_prompt_version_id)?
+                .to_string(),
+            extraction_user: by_id
+                .get(&active.extraction_user_prompt_version_id)?
+                .to_string(),
+            triage_system: by_id
+                .get(&active.triage_system_prompt_version_id)?
+                .to_string(),
+            triage_user: by_id
+                .get(&active.triage_user_prompt_version_id)?
+                .to_string(),
+            relation_system: by_id
+                .get(&active.relation_system_prompt_version_id)?
+                .to_string(),
+            relation_user: by_id
+                .get(&active.relation_user_prompt_version_id)?
+                .to_string(),
         })
     }
 
@@ -106,6 +116,7 @@ pub(crate) struct PipelineProviderIdentities {
 // ---------------------------------------------------------------------------
 
 /// Builds [`InferenceParameters`] from the resolved configuration.
+#[must_use]
 pub fn build_inference_parameters(config: &TribalConfig) -> InferenceParameters {
     InferenceParameters {
         extraction: StageParameters {
@@ -255,10 +266,11 @@ pub(crate) async fn compute_and_upsert_fingerprint(
         .find_by_ids(conn, &version_ids)
         .await?;
 
-    let content_hashes = PromptContentHashes::from_active(active_prompts, &prompt_versions)
-        .ok_or(FingerprintError::MissingPromptVersions {
+    let content_hashes = PromptContentHashes::from_active(active_prompts, &prompt_versions).ok_or(
+        FingerprintError::MissingPromptVersions {
             message: MISSING_PROMPT_VERSIONS,
-        })?;
+        },
+    )?;
 
     let fingerprint_hash = compute_fingerprint_hash(
         &content_hashes,
@@ -421,20 +433,10 @@ mod tests {
     #[test]
     fn test_changing_model_changes_hash() {
         let mut identities = test_provider_identities();
-        let a = compute_fingerprint_hash(
-            &test_hashes(),
-            &identities,
-            "v0.1.0",
-            &test_params(),
-        );
+        let a = compute_fingerprint_hash(&test_hashes(), &identities, "v0.1.0", &test_params());
 
         identities.triage.model = "different-model".into();
-        let b = compute_fingerprint_hash(
-            &test_hashes(),
-            &identities,
-            "v0.1.0",
-            &test_params(),
-        );
+        let b = compute_fingerprint_hash(&test_hashes(), &identities, "v0.1.0", &test_params());
 
         assert_ne!(a, b);
     }

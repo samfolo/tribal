@@ -150,9 +150,7 @@ mod tests {
         assert_eq!(config.default_limit, DEFAULT_DISCOVERY_LIMIT);
         assert_eq!(config.max_limit, DEFAULT_DISCOVERY_MAX_LIMIT);
         assert_eq!(config.overfetch_multiplier, DEFAULT_OVERFETCH_MULTIPLIER);
-        assert!(
-            (config.similarity_threshold - DEFAULT_SIMILARITY_THRESHOLD).abs() < f64::EPSILON
-        );
+        assert!((config.similarity_threshold - DEFAULT_SIMILARITY_THRESHOLD).abs() < f64::EPSILON);
     }
 
     #[test]

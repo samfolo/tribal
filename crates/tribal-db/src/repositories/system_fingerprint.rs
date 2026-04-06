@@ -197,9 +197,7 @@ impl SystemFingerprintRepository for PgSystemFingerprintRepository {
         }
 
         // Conflict path — fingerprint already exists.
-        let sql = format!(
-            "SELECT {COLUMNS} FROM system_fingerprints WHERE content_hash = $1",
-        );
+        let sql = format!("SELECT {COLUMNS} FROM system_fingerprints WHERE content_hash = $1",);
 
         let r = sqlx::query(&sql)
             .bind(&new.content_hash)
@@ -218,9 +216,7 @@ impl SystemFingerprintRepository for PgSystemFingerprintRepository {
         conn: &mut PgConnection,
         content_hash: &str,
     ) -> Result<Option<SystemFingerprint>, DbError> {
-        let sql = format!(
-            "SELECT {COLUMNS} FROM system_fingerprints WHERE content_hash = $1",
-        );
+        let sql = format!("SELECT {COLUMNS} FROM system_fingerprints WHERE content_hash = $1",);
 
         let row = sqlx::query(&sql)
             .bind(content_hash)

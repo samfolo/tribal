@@ -1,7 +1,6 @@
 //! Handler for `tribal_ingest` — job and extraction task creation.
 
-use std::str::FromStr;
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -303,14 +302,17 @@ mod tests {
     use rmcp::model::ErrorCode;
     use tracing::Instrument;
     use tracing_subscriber::layer::SubscriberExt;
-    use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId};
+    use tribal_domain::{InferenceParameters, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
         MockJobRepository, MockProjectRepository, MockTaskRepository, a_job, a_project, a_task,
         test_context,
     };
 
     use super::*;
-    use crate::test_utils::{TestHandler, session_with_project, test_repositories};
+    use crate::test_utils::{
+        TestHandler, session_with_project, test_active_prompt_versions, test_provider_identities,
+        test_repositories,
+    };
 
     // -- Constants ---------------------------------------------------------
 
@@ -318,17 +320,6 @@ mod tests {
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
 
     // -- Helpers -----------------------------------------------------------
-
-    fn test_active_prompt_versions() -> ActivePromptVersions {
-        ActivePromptVersions {
-            extraction_system_prompt_version_id: PromptVersionId::new(),
-            extraction_user_prompt_version_id: PromptVersionId::new(),
-            triage_system_prompt_version_id: PromptVersionId::new(),
-            triage_user_prompt_version_id: PromptVersionId::new(),
-            relation_system_prompt_version_id: PromptVersionId::new(),
-            relation_user_prompt_version_id: PromptVersionId::new(),
-        }
-    }
 
     async fn call_execute(
         repos: &ConnectionRepositories,
@@ -346,6 +337,9 @@ mod tests {
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "some knowledge".into(),
             active_prompts: test_active_prompt_versions(),
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         }
     }
 
@@ -456,6 +450,9 @@ mod tests {
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "learned something".into(),
             active_prompts: test_active_prompt_versions(),
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -510,6 +507,9 @@ mod tests {
             source_context: serde_json::json!({}),
             content: "test content".into(),
             active_prompts: prompts,
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -551,6 +551,9 @@ mod tests {
             source_context: source_ctx,
             content: "test content".into(),
             active_prompts: test_active_prompt_versions(),
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -655,6 +658,9 @@ mod tests {
             source_context: serde_json::json!({}),
             content: "trace test".into(),
             active_prompts: test_active_prompt_versions(),
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         };
 
         let _guard = tracing::subscriber::set_default(subscriber);

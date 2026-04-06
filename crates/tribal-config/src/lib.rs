@@ -28,11 +28,11 @@ pub use sections::{
     DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL,
     DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH,
     DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL,
-    DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD,
-    DatabaseConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation,
-    InferenceConfig, LimitsConfig, LogFormat, LogOutput, LoggingConfig, MAX_LIFECYCLE_DURATION_MS,
-    PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
-    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
+    DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD, DatabaseConfig, DiscoveryConfig,
+    EmbeddingConfig, ExplorationConfig, FileRotation, InferenceConfig, LimitsConfig, LogFormat,
+    LogOutput, LoggingConfig, MAX_LIFECYCLE_DURATION_MS, PromptsConfig, ProviderKind,
+    ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig,
+    TransportKind, TribalConfig, VERSION, WorkerConfig,
 };
 pub use validation::{ERR_TTL_ZERO, validate};
 

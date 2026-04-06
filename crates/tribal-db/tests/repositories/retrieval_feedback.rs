@@ -49,7 +49,9 @@ async fn test_insert_returns_populated_retrieval_feedback() {
     assert_eq!(fb.embedding_model(), "nomic-embed-text:v1.5");
     assert!(fb.returned_item_ids().is_empty());
     assert!(fb.explored_anchor_ids().is_empty());
-    assert!(fb.policy_version().is_none());
+    let hash = fb.system_fingerprint_hash();
+    assert_eq!(hash.len(), 64);
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     assert_eq!(fb.principal_id(), principal_id);
     assert_eq!(fb.rating(), FeedbackRating::Negative);
     assert_eq!(fb.notes(), Some("not relevant"));

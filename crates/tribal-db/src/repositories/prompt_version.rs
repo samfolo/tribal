@@ -211,9 +211,7 @@ impl PromptVersionRepository for PgPromptVersionRepository {
 
         let raw_ids: Vec<uuid::Uuid> = ids.iter().map(|id| *id.inner()).collect();
 
-        let sql = format!(
-            "SELECT {COLUMNS} FROM prompt_versions WHERE id = ANY($1)",
-        );
+        let sql = format!("SELECT {COLUMNS} FROM prompt_versions WHERE id = ANY($1)",);
 
         let rows = sqlx::query(&sql)
             .bind(&raw_ids)
