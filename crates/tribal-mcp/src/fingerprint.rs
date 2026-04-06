@@ -6,16 +6,29 @@
 
 use std::collections::HashMap;
 
+use sqlx::PgConnection;
 use tribal_common::sha256_hex;
 use tribal_config::TribalConfig;
-use tribal_db::NewSystemFingerprint;
+use tribal_db::{DbError, NewSystemFingerprint};
 use tribal_domain::{
     EmbeddingParameters, InferenceParameters, PipelineParameters, PromptVersion, PromptVersionId,
     StageParameters,
 };
 use tribal_inference::ProviderIdentity;
 
-use crate::server_handler::ActivePromptVersions;
+use tribal_domain::McpErrorCode;
+
+use crate::{
+    error::{IntoMcpError, McpToolError},
+    server_handler::{ActivePromptVersions, ConnectionRepositories},
+};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+pub(crate) const MISSING_PROMPT_VERSIONS: &str =
+    "one or more active prompt versions could not be found in the database";
 
 // ---------------------------------------------------------------------------
 // PromptContentHashes
@@ -59,8 +72,8 @@ impl PromptContentHashes {
         })
     }
 
-    /// Returns hashes in canonical order matching the `SystemFingerprint`
-    /// struct field declaration order.
+    /// Returns hashes in canonical order, matching the
+    /// `SystemFingerprint` struct field declaration order.
     fn as_ordered_slice(&self) -> [&str; 6] {
         [
             &self.extraction_system,
@@ -124,12 +137,9 @@ pub(crate) fn build_inference_parameters(config: &TribalConfig) -> InferencePara
 
 /// Computes the system fingerprint SHA-256 hash.
 ///
-/// Input fields are concatenated with newline separators in the order
-/// defined by the fingerprint specification §2.6:
-/// 1. 6 prompt content hashes (canonical order)
-/// 2. 8 model identifier strings
-/// 3. Build version
-/// 4. Canonical JSON of `InferenceParameters`
+/// Input fields are concatenated with newline separators: prompt
+/// content hashes, then provider identity strings, then build version,
+/// then canonical JSON of `InferenceParameters`.
 pub(crate) fn compute_fingerprint_hash(
     hashes: &PromptContentHashes,
     provider_identities: &PipelineProviderIdentities,
@@ -192,6 +202,85 @@ pub(crate) fn build_new_system_fingerprint(
             serde_json::to_value(params).expect("InferenceParameters serialisation is infallible"),
         )
         .build()
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Errors from fingerprint computation and upsert.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum FingerprintError {
+    #[error(transparent)]
+    Db(#[from] DbError),
+
+    #[error("{message}")]
+    MissingPromptVersions {
+        /// Describes which invariant was violated.
+        message: &'static str,
+    },
+}
+
+impl IntoMcpError for FingerprintError {
+    fn into_mcp_error(self) -> McpToolError {
+        match self {
+            Self::Db(e) => e.into_mcp_error(),
+            Self::MissingPromptVersions { message } => McpToolError {
+                code: McpErrorCode::Internal,
+                message: message.to_owned(),
+                details: serde_json::json!({}),
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Combined compute + upsert
+// ---------------------------------------------------------------------------
+
+/// Looks up prompt content hashes, computes the fingerprint hash,
+/// upserts the fingerprint record, and returns the content hash.
+pub(crate) async fn compute_and_upsert_fingerprint(
+    conn: &mut PgConnection,
+    repositories: &ConnectionRepositories,
+    active_prompts: &ActivePromptVersions,
+    provider_identities: &PipelineProviderIdentities,
+    build_version: &str,
+    inference_parameters: &InferenceParameters,
+) -> Result<String, FingerprintError> {
+    let version_ids = active_prompts.version_ids();
+
+    let prompt_versions = repositories
+        .prompt_version
+        .find_by_ids(conn, &version_ids)
+        .await?;
+
+    let content_hashes = PromptContentHashes::from_active(active_prompts, &prompt_versions)
+        .ok_or(FingerprintError::MissingPromptVersions {
+            message: MISSING_PROMPT_VERSIONS,
+        })?;
+
+    let fingerprint_hash = compute_fingerprint_hash(
+        &content_hashes,
+        provider_identities,
+        build_version,
+        inference_parameters,
+    );
+
+    let new_fingerprint = build_new_system_fingerprint(
+        &fingerprint_hash,
+        build_version,
+        active_prompts,
+        provider_identities,
+        inference_parameters,
+    );
+
+    repositories
+        .system_fingerprint
+        .upsert(conn, &new_fingerprint)
+        .await?;
+
+    Ok(fingerprint_hash)
 }
 
 // ---------------------------------------------------------------------------
