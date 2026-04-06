@@ -1,8 +1,6 @@
 use chrono::Utc;
 use tribal_db::NewSystemFingerprint;
-use tribal_domain::{
-    InferenceParameters, PromptVersionId, SystemFingerprint, SystemFingerprintId,
-};
+use tribal_domain::{InferenceParameters, PromptVersionId, SystemFingerprint, SystemFingerprintId};
 
 define_factory! {
     /// Factory for [`SystemFingerprint`] instances.

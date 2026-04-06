@@ -69,10 +69,10 @@ mod reference_kind;
 mod relation;
 mod retrieval_feedback;
 mod scope;
-mod system_fingerprint;
 mod source_type;
 pub mod span_attrs;
 mod standing;
+mod system_fingerprint;
 mod tag_registry;
 mod tag_similarity_result;
 mod task;
@@ -86,9 +86,6 @@ pub use embedding::{Embedding, EmbeddingBuilder};
 pub use embedding_purpose::EmbeddingPurpose;
 pub use error_code::McpErrorCode;
 pub use extraction_result::{ExtractionResult, ExtractionResultBuilder};
-pub use inference_parameters::{
-    EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
-};
 pub use feedback_rating::FeedbackRating;
 pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
@@ -96,6 +93,9 @@ pub use ids::{
     JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId,
     RelationId, RetrievalFeedbackId, SessionId, SystemFingerprintId, TaskId, TokenUsageId,
     TriageResultId, TriageSimilarItemDecisionId,
+};
+pub use inference_parameters::{
+    EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
 };
 pub use item_observation::{ItemObservation, ItemObservationBuilder};
 pub use job::{Job, JobBuilder, JobOutcome, JobState, JobStatus};

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
 use tribal_domain::{PrincipalId, ProjectId, PromptVersionId};
-use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
+use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderIdentity, ProviderRegistry};
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
@@ -26,6 +26,7 @@ use crate::{
     app_state::AppState,
     auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy},
     config::HandlerConfig,
+    fingerprint::PipelineProviderIdentities,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
     session::{SessionContext, SessionProject},
 };
@@ -211,15 +212,48 @@ fn default_inference_provider() -> Arc<dyn InferenceProvider> {
     Arc::new(MockInferenceProvider::builder().build())
 }
 
-fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-    Arc::new(RwLock::new(ActivePromptVersions {
+/// Default [`ActivePromptVersions`] for handler tests.
+///
+/// Uses freshly generated IDs — the specific values do not matter,
+/// only that they thread through to the right places.
+pub(crate) fn test_active_prompt_versions() -> ActivePromptVersions {
+    ActivePromptVersions {
         extraction_system_prompt_version_id: PromptVersionId::new(),
         extraction_user_prompt_version_id: PromptVersionId::new(),
         triage_system_prompt_version_id: PromptVersionId::new(),
         triage_user_prompt_version_id: PromptVersionId::new(),
         relation_system_prompt_version_id: PromptVersionId::new(),
         relation_user_prompt_version_id: PromptVersionId::new(),
-    }))
+    }
+}
+
+/// Default [`PipelineProviderIdentities`] for handler tests.
+///
+/// Uses placeholder provider/model names — the specific values do not
+/// matter, only that they thread through to the fingerprint computation.
+pub(crate) fn test_provider_identities() -> PipelineProviderIdentities {
+    PipelineProviderIdentities {
+        extraction: ProviderIdentity {
+            name: "ollama".into(),
+            model: "llama3:70b".into(),
+        },
+        triage: ProviderIdentity {
+            name: "ollama".into(),
+            model: "llama3:8b".into(),
+        },
+        relation: ProviderIdentity {
+            name: "ollama".into(),
+            model: "llama3:8b".into(),
+        },
+        embedding: ProviderIdentity {
+            name: "ollama".into(),
+            model: "nomic-embed-text".into(),
+        },
+    }
+}
+
+fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
+    Arc::new(RwLock::new(test_active_prompt_versions()))
 }
 
 fn test_embedding_key() -> tribal_inference::ProviderKey {

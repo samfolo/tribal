@@ -152,6 +152,7 @@ mod tests {
             .triage_user_prompt_version_id(PromptVersionId::new())
             .relation_system_prompt_version_id(PromptVersionId::new())
             .relation_user_prompt_version_id(PromptVersionId::new())
+            .system_fingerprint_hash("a".repeat(64))
             .created_at(chrono::Utc::now())
             .updated_at(chrono::Utc::now())
             .build()

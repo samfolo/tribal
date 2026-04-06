@@ -91,9 +91,13 @@ impl InferenceParameters {
     ///
     /// Field order follows struct declaration order (guaranteed by serde
     /// for structs). The output is an input to the fingerprint hash.
+    ///
+    /// # Panics
+    ///
+    /// Cannot panic in practice — the struct contains only primitives and
+    /// nested structs of primitives, which are infallibly serialisable.
     #[must_use]
     pub fn to_canonical_json(&self) -> String {
-        // Only primitives and nested structs of primitives — infallible.
         serde_json::to_string(self).expect("InferenceParameters serialisation is infallible")
     }
 }

@@ -367,8 +367,8 @@ async fn execute_discover(
         .results
         .retain(|r| r.similarity >= params.similarity_threshold);
 
-    let exact = search_response.exact
-        && search_response.results.len() <= params.original_limit as usize;
+    let exact =
+        search_response.exact && search_response.results.len() <= params.original_limit as usize;
 
     search_response
         .results
@@ -558,7 +558,12 @@ mod tests {
             include_superseded: false,
             include_standing: false,
             include_references: false,
-            limit: config.discovery.default_limit,
+            original_limit: config.discovery.default_limit,
+            overfetch_limit: config
+                .discovery
+                .default_limit
+                .saturating_mul(config.discovery.overfetch_multiplier),
+            similarity_threshold: config.discovery.similarity_threshold,
             cursor: None,
         }
     }

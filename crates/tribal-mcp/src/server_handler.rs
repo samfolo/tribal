@@ -15,10 +15,10 @@ use tribal_db::{
     JobRepository, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
     PgPrincipalRepository, PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository,
     PgRelationRepository, PgRetrievalFeedbackRepository, PgStandingRepository,
-    PgSystemFingerprintRepository, PgTaskRepository, PgTriageResultRepository,
-    PrincipalRepository, ProjectRepository, PromptVersionRepository, ReferenceRepository,
-    RelationRepository, RetrievalFeedbackRepository, StandingRepository,
-    SystemFingerprintRepository, TaskRepository, TriageResultRepository,
+    PgSystemFingerprintRepository, PgTaskRepository, PgTriageResultRepository, PrincipalRepository,
+    ProjectRepository, PromptVersionRepository, ReferenceRepository, RelationRepository,
+    RetrievalFeedbackRepository, StandingRepository, SystemFingerprintRepository, TaskRepository,
+    TriageResultRepository,
 };
 use tribal_domain::{PromptRole, PromptStage, PromptVersionId, is_authorised};
 
