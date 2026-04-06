@@ -45,6 +45,7 @@ const COLUMNS: Columns = Columns(&[
     "triage_user_prompt_version_id",
     "relation_system_prompt_version_id",
     "relation_user_prompt_version_id",
+    "system_fingerprint_hash",
     "trace_context",
     "completed_at",
     "created_at",
