@@ -9,7 +9,7 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tracing::Instrument;
-use tribal_db::{DbError, SemanticSearchParams};
+use tribal_db::{DbError, SemanticSearchParams, encode_cursor};
 use tribal_domain::{
     EmbeddingPurpose, KnowledgeItemId, KnowledgeKind, McpErrorCode, PrincipalId, ProjectId,
     Reference, Standing, span_attrs,
@@ -43,7 +43,9 @@ struct DiscoverParams {
     include_superseded: bool,
     include_standing: bool,
     include_references: bool,
-    limit: u32,
+    original_limit: u32,
+    overfetch_limit: u32,
+    similarity_threshold: f64,
     cursor: Option<String>,
 }
 
@@ -215,7 +217,9 @@ impl TribalServerHandler {
             include_superseded: request.include_superseded.unwrap_or(false),
             include_standing: request.include_standing.unwrap_or(false),
             include_references: request.include_references.unwrap_or(false),
-            limit,
+            original_limit: limit,
+            overfetch_limit: limit.saturating_mul(self.config.discovery.overfetch_multiplier),
+            similarity_threshold: self.config.discovery.similarity_threshold,
             cursor: request.cursor,
         };
 
@@ -344,20 +348,60 @@ async fn execute_discover(
         .time_range_from(params.time_range_from)
         .time_range_to(params.time_range_to)
         .include_superseded(params.include_superseded)
-        .limit(params.limit)
+        .limit(params.overfetch_limit)
         .cursor(params.cursor)
         .build();
 
-    let search_response = repositories
+    let mut search_response = repositories
         .knowledge_item
         .semantic_search(conn, &search_params)
         .await?;
 
+    // -- Overfetch filtering --------------------------------------------------
+    // The search fetched `original_limit * overfetch_multiplier` rows.
+    // Filter by similarity, compute whether the result set is complete,
+    // then trim to the caller's requested limit — all before enrichment
+    // to avoid unnecessary lookups for items that will be discarded.
+
+    let pre_filter_count = search_response.results.len();
+    search_response
+        .results
+        .retain(|r| r.similarity >= params.similarity_threshold);
+    let threshold_cut_tail = search_response.results.len() < pre_filter_count;
+
+    let post_filter_count = search_response.results.len();
+    search_response
+        .results
+        .truncate(params.original_limit as usize);
+
+    // Determine whether more results can exist beyond this page.
+    // Pagination continues when above-threshold results were truncated,
+    // or when the repo indicates more rows exist. The threshold cutting
+    // the tail only terminates pagination when the surviving results
+    // fit within the original limit.
+    let truncated = post_filter_count > params.original_limit as usize;
+    let has_more = truncated || (!threshold_cut_tail && search_response.next_cursor.is_some());
+
+    let next_cursor = if has_more {
+        search_response
+            .results
+            .last()
+            .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+    } else {
+        None
+    };
+
+    // `exact` tells the client whether all matching results are
+    // included. Both conditions must hold: no more pages to fetch,
+    // and the repository's search was itself complete (the ANN
+    // widening heuristic was not exhausted).
+    let exact = next_cursor.is_none() && search_response.exact;
+
     if search_response.results.is_empty() {
         return Ok(DiscoverResult {
             items: Vec::new(),
-            next_cursor: search_response.next_cursor,
-            exact: search_response.exact,
+            next_cursor,
+            exact,
             applied_project_id: params.project_id,
             project_name,
             embedding_model: params.embedding_model,
@@ -441,8 +485,8 @@ async fn execute_discover(
 
     Ok(DiscoverResult {
         items,
-        next_cursor: search_response.next_cursor,
-        exact: search_response.exact,
+        next_cursor,
+        exact,
         applied_project_id: params.project_id,
         project_name,
         embedding_model: params.embedding_model,
@@ -537,7 +581,12 @@ mod tests {
             include_superseded: false,
             include_standing: false,
             include_references: false,
-            limit: config.discovery.default_limit,
+            original_limit: config.discovery.default_limit,
+            overfetch_limit: config
+                .discovery
+                .default_limit
+                .saturating_mul(config.discovery.overfetch_multiplier),
+            similarity_threshold: config.discovery.similarity_threshold,
             cursor: None,
         }
     }
@@ -798,7 +847,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_next_cursor_populated_when_more_results() {
+    async fn test_next_cursor_recomputed_from_last_returned_item() {
         let prin_id = PrincipalId::new();
         let item = a_knowledge_item().principal_id(prin_id).build();
         let search = SemanticSearchResponse {
@@ -811,7 +860,11 @@ mod tests {
 
         let result = call_execute(&repos, default_params()).await.unwrap();
 
-        assert_eq!(result.next_cursor.as_deref(), Some("cursor_abc123"));
+        let expected_cursor = encode_cursor(0.9, *item.id().inner());
+        assert_eq!(
+            result.next_cursor.as_deref(),
+            Some(expected_cursor.as_str())
+        );
         assert!(!result.exact);
     }
 
@@ -1004,5 +1057,159 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect(STRUCTURED_CONTENT);
         assert_eq!(structured["code"], "internal");
+    }
+
+    // -- Service: overfetch behaviour ----------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_discover_overfetch_multiplier_applied() {
+        let search = a_search_response(vec![]);
+        let ki_mock = MockKnowledgeItemRepository::builder()
+            .when_semantic_search(|params| params.limit == 15)
+            .respond_with(search, None)
+            .build();
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(ki_mock);
+
+        let params = DiscoverParams {
+            original_limit: 5,
+            overfetch_limit: 15,
+            ..default_params()
+        };
+        let result = call_execute(&repos, params).await;
+
+        assert!(
+            result.is_ok(),
+            "predicate on limit == 15 should have matched"
+        );
+    }
+
+    // -- Overfetch helper ----------------------------------------------------
+
+    /// Builds a discover scenario and returns the result.
+    ///
+    /// `similarities` defines the items returned by the mock repo (must
+    /// be in descending order). `repo_exact` and `repo_cursor` configure
+    /// the mock's `SemanticSearchResponse`. The remaining parameters map
+    /// directly to `DiscoverParams`.
+    async fn run_overfetch_scenario(
+        similarities: &[f64],
+        repo_exact: bool,
+        repo_cursor: Option<&str>,
+        original_limit: u32,
+        similarity_threshold: f64,
+    ) -> DiscoverResult {
+        let prin_id = PrincipalId::new();
+        let items: Vec<_> = similarities
+            .iter()
+            .map(|_| a_knowledge_item().principal_id(prin_id).build())
+            .collect();
+
+        let search = SemanticSearchResponse {
+            results: items
+                .iter()
+                .zip(similarities)
+                .map(|(item, &sim)| a_search_result(item, sim))
+                .collect(),
+            next_cursor: repo_cursor.map(String::from),
+            exact: repo_exact,
+        };
+        let repos =
+            repos_with_search_and_principal(search, vec![test_principal(prin_id, "user:test")]);
+
+        let params = DiscoverParams {
+            original_limit,
+            overfetch_limit: original_limit.saturating_mul(3),
+            similarity_threshold,
+            ..default_params()
+        };
+        call_execute(&repos, params).await.unwrap()
+    }
+
+    // -- Overfetch: filtering -------------------------------------------------
+
+    #[tokio::test]
+    async fn test_overfetch_filters_below_similarity_threshold() {
+        let result = run_overfetch_scenario(&[0.9, 0.7, 0.3], true, None, 10, 0.5).await;
+        assert_eq!(result.items.len(), 2);
+        assert!(result.items.iter().all(|r| r.similarity >= 0.5));
+    }
+
+    #[tokio::test]
+    async fn test_overfetch_truncates_to_original_limit() {
+        let result = run_overfetch_scenario(&[0.9, 0.8, 0.7, 0.6], true, None, 2, 0.0).await;
+        assert_eq!(result.items.len(), 2);
+        assert!(!result.exact);
+        assert!(result.next_cursor.is_some());
+    }
+
+    // -- Overfetch: exact flag ------------------------------------------------
+
+    #[tokio::test]
+    async fn test_overfetch_exact_true_when_complete_and_fits() {
+        let result = run_overfetch_scenario(&[0.9, 0.8, 0.7], true, None, 5, 0.0).await;
+        assert!(result.exact);
+        assert!(result.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_overfetch_exact_false_when_repo_search_incomplete() {
+        let result = run_overfetch_scenario(&[0.9, 0.8, 0.7], false, None, 5, 0.0).await;
+        assert!(!result.exact);
+        assert!(result.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_overfetch_exact_false_when_threshold_cuts_incomplete_search() {
+        let result = run_overfetch_scenario(&[0.9, 0.7, 0.2, 0.1], false, None, 5, 0.5).await;
+        assert_eq!(result.items.len(), 2);
+        assert!(!result.exact);
+        assert!(result.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_overfetch_exact_true_when_threshold_cuts_complete_search() {
+        let result = run_overfetch_scenario(&[0.9, 0.7, 0.2, 0.1], true, None, 5, 0.5).await;
+        assert_eq!(result.items.len(), 2);
+        assert!(result.exact);
+        assert!(result.next_cursor.is_none());
+    }
+
+    // -- Overfetch: cursor ----------------------------------------------------
+
+    #[tokio::test]
+    async fn test_overfetch_cursor_preserved_when_repo_has_more() {
+        let result =
+            run_overfetch_scenario(&[0.9, 0.8, 0.7], true, Some("repo_cursor"), 5, 0.0).await;
+        assert_eq!(result.items.len(), 3);
+        assert!(!result.exact);
+        assert!(result.next_cursor.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_overfetch_cursor_none_when_threshold_cuts_tail() {
+        let result =
+            run_overfetch_scenario(&[0.9, 0.7, 0.2], true, Some("repo_cursor"), 5, 0.5).await;
+        assert_eq!(result.items.len(), 2);
+        assert!(result.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_overfetch_cursor_present_when_threshold_cuts_but_above_threshold_exceeds_limit() {
+        // 8 above threshold (0.5), 2 below. original_limit is 5, so
+        // the 8 surviving items are truncated to 5. Pagination must
+        // continue despite the threshold cutting the tail.
+        let result = run_overfetch_scenario(
+            &[0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.2, 0.1],
+            true,
+            None,
+            5,
+            0.5,
+        )
+        .await;
+        assert_eq!(result.items.len(), 5);
+        assert!(result.next_cursor.is_some());
+        assert!(!result.exact);
     }
 }

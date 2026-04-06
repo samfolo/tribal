@@ -71,6 +71,8 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
             .pool_mcp(pool.clone())
             .pool_worker(pool)
             .instance_id(Arc::from(TEST_INSTANCE_ID))
+            .build_version(Arc::from("test-build"))
+            .inference_parameters(tribal_domain::InferenceParameters::default())
             .active_prompt_versions(Arc::new(RwLock::new(ActivePromptVersions::new(
                 PromptVersionId::new(),
                 PromptVersionId::new(),

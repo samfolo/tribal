@@ -7,6 +7,7 @@ mod app_state;
 mod auth;
 mod config;
 mod error;
+mod fingerprint;
 mod format;
 mod handlers;
 mod mapping;
@@ -26,6 +27,7 @@ pub use auth::{
 };
 pub use config::{HandlerConfig, HandlerDiscoveryConfig, HandlerExplorationConfig};
 pub use error::{IntoCallToolResult, IntoMcpError, McpToolError};
+pub use fingerprint::build_inference_parameters;
 pub use middleware::{AuthMiddlewareState, require_bearer_auth};
 pub use server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler};
 pub use session::{SessionActor, SessionContext, SessionProject};

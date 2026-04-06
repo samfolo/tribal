@@ -13,10 +13,11 @@ use rmcp::{
 use tokio::sync::RwLock;
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
-    PgPrincipalRepository, PgProjectRepository, PgReferenceRepository, PgRelationRepository,
-    PgRetrievalFeedbackRepository, PgStandingRepository, PgTaskRepository,
-    PgTriageResultRepository, PrincipalRepository, ProjectRepository, ReferenceRepository,
-    RelationRepository, RetrievalFeedbackRepository, StandingRepository, TaskRepository,
+    PgPrincipalRepository, PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository,
+    PgRelationRepository, PgRetrievalFeedbackRepository, PgStandingRepository,
+    PgSystemFingerprintRepository, PgTaskRepository, PgTriageResultRepository, PrincipalRepository,
+    ProjectRepository, PromptVersionRepository, ReferenceRepository, RelationRepository,
+    RetrievalFeedbackRepository, StandingRepository, SystemFingerprintRepository, TaskRepository,
     TriageResultRepository,
 };
 use tribal_domain::{PromptRole, PromptStage, PromptVersionId, is_authorised};
@@ -68,6 +69,8 @@ pub struct ConnectionRepositories {
     pub(crate) reference: Arc<dyn ReferenceRepository + Send + Sync>,
     pub(crate) relation: Arc<dyn RelationRepository + Send + Sync>,
     pub(crate) principal: Arc<dyn PrincipalRepository + Send + Sync>,
+    pub(crate) prompt_version: Arc<dyn PromptVersionRepository + Send + Sync>,
+    pub(crate) system_fingerprint: Arc<dyn SystemFingerprintRepository + Send + Sync>,
     pub(crate) triage_result: Arc<dyn TriageResultRepository + Send + Sync>,
 }
 
@@ -91,6 +94,8 @@ impl ConnectionRepositories {
             reference: Arc::new(PgReferenceRepository),
             relation: Arc::new(PgRelationRepository),
             principal: Arc::new(PgPrincipalRepository),
+            prompt_version: Arc::new(PgPromptVersionRepository),
+            system_fingerprint: Arc::new(PgSystemFingerprintRepository),
             triage_result: Arc::new(PgTriageResultRepository),
         }
     }
@@ -166,6 +171,20 @@ impl ActivePromptVersions {
                 self.relation_user_prompt_version_id = id;
             }
         }
+    }
+
+    /// Returns all version IDs in canonical order, matching the
+    /// `SystemFingerprint` struct field declaration order.
+    #[must_use]
+    pub fn version_ids(&self) -> [PromptVersionId; 6] {
+        [
+            self.extraction_system_prompt_version_id,
+            self.extraction_user_prompt_version_id,
+            self.triage_system_prompt_version_id,
+            self.triage_user_prompt_version_id,
+            self.relation_system_prompt_version_id,
+            self.relation_user_prompt_version_id,
+        ]
     }
 
     /// Returns the active version ID for a single (stage, role) pair.

@@ -29,6 +29,7 @@ define_factory! {
         triage_user_prompt_version_id: PromptVersionId = PromptVersionId::new(),
         relation_system_prompt_version_id: PromptVersionId = PromptVersionId::new(),
         relation_user_prompt_version_id: PromptVersionId = PromptVersionId::new(),
+        system_fingerprint_hash: String = "a".repeat(64),
         trace_context: Option<String> = None,
         completed_at: Option<chrono::DateTime<Utc>> = None,
         created_at: chrono::DateTime<Utc> = Utc::now(),
@@ -56,6 +57,7 @@ define_factory! {
         triage_user_prompt_version_id: PromptVersionId = PromptVersionId::new(),
         relation_system_prompt_version_id: PromptVersionId = PromptVersionId::new(),
         relation_user_prompt_version_id: PromptVersionId = PromptVersionId::new(),
+        system_fingerprint_hash: String = "a".repeat(64),
         trace_context: Option<String> = None,
     }
 }

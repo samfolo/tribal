@@ -1,6 +1,6 @@
 //! Handler for `tribal_ingest` — job and extraction task creation.
 
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -11,11 +11,15 @@ use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_common::JobWatchEntry;
 use tribal_db::{DbError, NewJob, NewTask};
-use tribal_domain::{JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType, span_attrs};
+use tribal_domain::{
+    InferenceParameters, JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType,
+    span_attrs,
+};
 
 use super::common::begin_transaction;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
+    fingerprint::{FingerprintError, PipelineProviderIdentities, compute_and_upsert_fingerprint},
     mapping::{McpIngestRequest, McpIngestResponse},
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
 };
@@ -38,6 +42,9 @@ struct IngestParams {
     source_context: serde_json::Value,
     content: String,
     active_prompts: ActivePromptVersions,
+    build_version: Arc<str>,
+    provider_identities: PipelineProviderIdentities,
+    inference_parameters: InferenceParameters,
 }
 
 /// Domain-level result from the ingest service function.
@@ -51,12 +58,16 @@ struct IngestResult {
 enum IngestError {
     #[error(transparent)]
     Db(#[from] DbError),
+
+    #[error(transparent)]
+    Fingerprint(#[from] FingerprintError),
 }
 
 impl IntoMcpError for IngestError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
+            Self::Fingerprint(e) => e.into_mcp_error(),
         }
     }
 }
@@ -142,15 +153,31 @@ impl TribalServerHandler {
 
         let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
+        let provider_identities = PipelineProviderIdentities {
+            extraction: self.state.extraction_provider.identity().clone(),
+            triage: self.state.triage_provider.identity().clone(),
+            relation: self.state.relation_provider.identity().clone(),
+            embedding: self.state.embedding_provider.identity().clone(),
+        };
+
         let ingest_params = IngestParams {
             project_id,
             principal_id,
             source_context,
             content: request.content,
             active_prompts,
+            build_version: Arc::clone(&self.state.build_version),
+            provider_identities,
+            inference_parameters: self.state.inference_parameters.clone(),
         };
 
-        let mut tx = match begin_transaction(&self.state.pool_mcp, self.config.pool_name).await {
+        let mut tx = match begin_transaction(
+            &self.state.pool_mcp,
+            self.config.pool_name,
+            &self.state.metrics,
+        )
+        .await
+        {
             Ok(tx) => tx,
             Err(call_result) => return Ok(call_result),
         };
@@ -220,6 +247,20 @@ async fn execute_ingest(
         .find_by_id(conn, params.project_id)
         .await?;
 
+    // -- System fingerprint ---------------------------------------------------
+
+    let fingerprint_hash = compute_and_upsert_fingerprint(
+        conn,
+        repositories,
+        &params.active_prompts,
+        &params.provider_identities,
+        &params.build_version,
+        &params.inference_parameters,
+    )
+    .await?;
+
+    // -- Job and task ---------------------------------------------------------
+
     let trace_context = tribal_telemetry::current_trace_context();
 
     let new_job = NewJob::builder()
@@ -235,6 +276,7 @@ async fn execute_ingest(
         .triage_user_prompt_version_id(params.active_prompts.triage_user_prompt_version_id)
         .relation_system_prompt_version_id(params.active_prompts.relation_system_prompt_version_id)
         .relation_user_prompt_version_id(params.active_prompts.relation_user_prompt_version_id)
+        .system_fingerprint_hash(fingerprint_hash)
         .trace_context(trace_context)
         .build();
 
@@ -266,14 +308,17 @@ mod tests {
     use rmcp::model::ErrorCode;
     use tracing::Instrument;
     use tracing_subscriber::layer::SubscriberExt;
-    use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId};
+    use tribal_domain::{InferenceParameters, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
-        MockJobRepository, MockProjectRepository, MockTaskRepository, a_job, a_project, a_task,
-        test_context,
+        MockJobRepository, MockProjectRepository, MockPromptVersionRepository, MockTaskRepository,
+        a_job, a_project, a_prompt_version, a_task, test_context,
     };
 
     use super::*;
-    use crate::test_utils::{TestHandler, session_with_project, test_repositories};
+    use crate::test_utils::{
+        TestHandler, configure_fingerprint_mocks, session_with_project,
+        test_active_prompt_versions, test_provider_identities, test_repositories,
+    };
 
     // -- Constants ---------------------------------------------------------
 
@@ -281,17 +326,6 @@ mod tests {
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
 
     // -- Helpers -----------------------------------------------------------
-
-    fn test_active_prompt_versions() -> ActivePromptVersions {
-        ActivePromptVersions {
-            extraction_system_prompt_version_id: PromptVersionId::new(),
-            extraction_user_prompt_version_id: PromptVersionId::new(),
-            triage_system_prompt_version_id: PromptVersionId::new(),
-            triage_user_prompt_version_id: PromptVersionId::new(),
-            relation_system_prompt_version_id: PromptVersionId::new(),
-            relation_user_prompt_version_id: PromptVersionId::new(),
-        }
-    }
 
     async fn call_execute(
         repos: &ConnectionRepositories,
@@ -309,6 +343,9 @@ mod tests {
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "some knowledge".into(),
             active_prompts: test_active_prompt_versions(),
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         }
     }
 
@@ -398,6 +435,7 @@ mod tests {
         let job = a_job().project_id(proj_id).principal_id(prin_id).build();
         let task = a_task().job_id(job.id()).build();
         let expected_job_id = job.id();
+        let active_prompts = test_active_prompt_versions();
 
         let mut repos = test_repositories();
         repos.project = Arc::new(
@@ -412,13 +450,17 @@ mod tests {
                 .build(),
         );
         repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
+        configure_fingerprint_mocks(&mut repos, &active_prompts);
 
         let params = IngestParams {
             project_id: proj_id,
             principal_id: prin_id,
             source_context: serde_json::json!({"type": "ManualCapture", "capture_method": "mcp"}),
             content: "learned something".into(),
-            active_prompts: test_active_prompt_versions(),
+            active_prompts,
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -466,6 +508,7 @@ mod tests {
         );
         repos.job = Arc::new(job_mock);
         repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
+        configure_fingerprint_mocks(&mut repos, &prompts);
 
         let params = IngestParams {
             project_id: proj_id,
@@ -473,6 +516,9 @@ mod tests {
             source_context: serde_json::json!({}),
             content: "test content".into(),
             active_prompts: prompts,
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -486,6 +532,7 @@ mod tests {
         let project = a_project().id(proj_id).build();
         let job = a_job().project_id(proj_id).principal_id(prin_id).build();
         let task = a_task().job_id(job.id()).build();
+        let active_prompts = test_active_prompt_versions();
 
         let source_ctx = serde_json::json!({
             "type": "AgentMediated",
@@ -507,13 +554,17 @@ mod tests {
         );
         repos.job = Arc::new(job_mock);
         repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
+        configure_fingerprint_mocks(&mut repos, &active_prompts);
 
         let params = IngestParams {
             project_id: proj_id,
             principal_id: prin_id,
             source_context: source_ctx,
             content: "test content".into(),
-            active_prompts: test_active_prompt_versions(),
+            active_prompts,
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -543,6 +594,76 @@ mod tests {
         assert!(
             matches!(err, IngestError::Db(DbError::NotFound { entity, .. }) if entity == "project")
         );
+    }
+
+    #[tokio::test]
+    async fn test_execute_ingest_missing_prompt_versions_returns_error() {
+        let proj_id = ProjectId::new();
+        let project = a_project().id(proj_id).build();
+
+        let mut repos = test_repositories();
+        repos.project = Arc::new(
+            MockProjectRepository::builder()
+                .on_find_by_id(project, None)
+                .build(),
+        );
+        repos.prompt_version = Arc::new(
+            MockPromptVersionRepository::builder()
+                .on_find_by_ids(vec![], None)
+                .build(),
+        );
+
+        let params = IngestParams {
+            project_id: proj_id,
+            ..default_params()
+        };
+        let err = call_execute(&repos, params).await.expect_err("should fail");
+
+        assert!(matches!(
+            err,
+            IngestError::Fingerprint(FingerprintError::MissingPromptVersions { .. })
+        ));
+    }
+
+    /// When `find_by_ids` returns fewer than 6 prompt versions (some
+    /// present, some missing), the fingerprint computation still fails.
+    #[tokio::test]
+    async fn test_execute_ingest_partial_prompt_versions_returns_error() {
+        let proj_id = ProjectId::new();
+        let project = a_project().id(proj_id).build();
+
+        let prompts = test_active_prompt_versions();
+        let ids = prompts.version_ids();
+
+        // Return versions for only the first 3 of 6 required IDs.
+        let partial: Vec<_> = ids[..3]
+            .iter()
+            .map(|&id| a_prompt_version().id(id).build())
+            .collect();
+
+        let mut repos = test_repositories();
+        repos.project = Arc::new(
+            MockProjectRepository::builder()
+                .on_find_by_id(project, None)
+                .build(),
+        );
+        repos.prompt_version = Arc::new(
+            MockPromptVersionRepository::builder()
+                .on_find_by_ids(partial, None)
+                .build(),
+        );
+
+        let params = IngestParams {
+            project_id: proj_id,
+            active_prompts: prompts,
+            ..default_params()
+        };
+        let err = call_execute(&repos, params).await.expect_err("should fail");
+
+        assert!(matches!(
+            err,
+            IngestError::Fingerprint(FingerprintError::MissingPromptVersions { .. })
+        ));
     }
 
     // -- Helper: source context --------------------------------------------
@@ -591,6 +712,7 @@ mod tests {
         let project = a_project().id(proj_id).build();
         let job = a_job().project_id(proj_id).principal_id(prin_id).build();
         let task = a_task().job_id(job.id()).build();
+        let active_prompts = test_active_prompt_versions();
 
         let job_mock = MockJobRepository::builder()
             .when_insert(move |new_job| {
@@ -611,13 +733,17 @@ mod tests {
         );
         repos.job = Arc::new(job_mock);
         repos.task = Arc::new(MockTaskRepository::builder().on_insert(task, None).build());
+        configure_fingerprint_mocks(&mut repos, &active_prompts);
 
         let params = IngestParams {
             project_id: proj_id,
             principal_id: prin_id,
             source_context: serde_json::json!({}),
             content: "trace test".into(),
-            active_prompts: test_active_prompt_versions(),
+            active_prompts,
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         };
 
         let _guard = tracing::subscriber::set_default(subscriber);

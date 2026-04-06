@@ -11,13 +11,15 @@ use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
 use tribal_domain::{PrincipalId, ProjectId, PromptVersionId};
-use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderRegistry};
+use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderIdentity, ProviderRegistry};
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
-    MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
-    MockRelationRepository, MockRetrievalFeedbackRepository, MockStandingRepository,
-    MockTaskRepository, MockTriageResultRepository, TEST_PRINCIPAL_KEY, lazy_pool,
+    MockPrincipalRepository, MockProjectRepository, MockPromptVersionRepository,
+    MockReferenceRepository, MockRelationRepository, MockRetrievalFeedbackRepository,
+    MockStandingRepository, MockSystemFingerprintRepository, MockTaskRepository,
+    MockTriageResultRepository, TEST_PRINCIPAL_KEY, a_prompt_version, a_system_fingerprint,
+    lazy_pool,
 };
 use typed_builder::TypedBuilder;
 
@@ -25,6 +27,7 @@ use crate::{
     app_state::AppState,
     auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy},
     config::HandlerConfig,
+    fingerprint::PipelineProviderIdentities,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
     session::{SessionContext, SessionProject},
 };
@@ -56,6 +59,8 @@ pub(crate) fn test_repositories() -> ConnectionRepositories {
         reference: Arc::new(MockReferenceRepository::builder().build()),
         relation: Arc::new(MockRelationRepository::builder().build()),
         principal: Arc::new(MockPrincipalRepository::builder().build()),
+        prompt_version: Arc::new(MockPromptVersionRepository::builder().build()),
+        system_fingerprint: Arc::new(MockSystemFingerprintRepository::builder().build()),
         triage_result: Arc::new(MockTriageResultRepository::builder().build()),
     }
 }
@@ -106,6 +111,8 @@ impl From<TestHandler> for TribalServerHandler {
                 .pool_mcp(th.pool.clone())
                 .pool_worker(th.pool)
                 .instance_id(Arc::from(TEST_INSTANCE_ID))
+                .build_version(Arc::from("test-build"))
+                .inference_parameters(tribal_domain::InferenceParameters::default())
                 .active_prompt_versions(th.active_prompt_versions)
                 .provider_registry(Arc::new(
                     ProviderRegistry::new(Vec::new())
@@ -206,15 +213,72 @@ fn default_inference_provider() -> Arc<dyn InferenceProvider> {
     Arc::new(MockInferenceProvider::builder().build())
 }
 
-fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
-    Arc::new(RwLock::new(ActivePromptVersions {
+/// Default [`ActivePromptVersions`] for handler tests.
+///
+/// Uses freshly generated IDs — the specific values do not matter,
+/// only that they thread through to the right places.
+pub(crate) fn test_active_prompt_versions() -> ActivePromptVersions {
+    ActivePromptVersions {
         extraction_system_prompt_version_id: PromptVersionId::new(),
         extraction_user_prompt_version_id: PromptVersionId::new(),
         triage_system_prompt_version_id: PromptVersionId::new(),
         triage_user_prompt_version_id: PromptVersionId::new(),
         relation_system_prompt_version_id: PromptVersionId::new(),
         relation_user_prompt_version_id: PromptVersionId::new(),
-    }))
+    }
+}
+
+/// Default [`PipelineProviderIdentities`] for handler tests.
+///
+/// Uses placeholder provider/model names — the specific values do not
+/// matter, only that they thread through to the fingerprint computation.
+pub(crate) fn test_provider_identities() -> PipelineProviderIdentities {
+    PipelineProviderIdentities {
+        extraction: ProviderIdentity {
+            name: "ollama".into(),
+            model: "llama3:70b".into(),
+        },
+        triage: ProviderIdentity {
+            name: "ollama".into(),
+            model: "llama3:8b".into(),
+        },
+        relation: ProviderIdentity {
+            name: "ollama".into(),
+            model: "llama3:8b".into(),
+        },
+        embedding: ProviderIdentity {
+            name: "ollama".into(),
+            model: "nomic-embed-text".into(),
+        },
+    }
+}
+
+/// Configures `prompt_version` and `system_fingerprint` mocks so that
+/// `compute_and_upsert_fingerprint` succeeds for the given active
+/// prompt versions.
+pub(crate) fn configure_fingerprint_mocks(
+    repos: &mut ConnectionRepositories,
+    active: &ActivePromptVersions,
+) {
+    let versions: Vec<_> = active
+        .version_ids()
+        .iter()
+        .map(|&id| a_prompt_version().id(id).build())
+        .collect();
+    repos.prompt_version = Arc::new(
+        MockPromptVersionRepository::builder()
+            .on_find_by_ids(versions, None)
+            .build(),
+    );
+    repos.system_fingerprint = Arc::new(
+        MockSystemFingerprintRepository::builder()
+            .on_upsert(a_system_fingerprint().build(), None)
+            .build(),
+    );
+}
+
+fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
+    Arc::new(RwLock::new(test_active_prompt_versions()))
 }
 
 fn test_embedding_key() -> tribal_inference::ProviderKey {

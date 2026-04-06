@@ -44,6 +44,9 @@ mod retrieval_feedback;
 #[path = "repositories/standing.rs"]
 mod standing;
 
+#[path = "repositories/system_fingerprint.rs"]
+mod system_fingerprint;
+
 #[path = "repositories/tag_embedding.rs"]
 mod tag_embedding;
 

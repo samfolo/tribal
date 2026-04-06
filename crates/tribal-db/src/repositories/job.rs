@@ -45,6 +45,7 @@ const COLUMNS: Columns = Columns(&[
     "triage_user_prompt_version_id",
     "relation_system_prompt_version_id",
     "relation_user_prompt_version_id",
+    "system_fingerprint_hash",
     "trace_context",
     "completed_at",
     "created_at",
@@ -96,6 +97,8 @@ pub struct NewJob {
     pub relation_system_prompt_version_id: PromptVersionId,
     /// Relation user prompt version at job creation time.
     pub relation_user_prompt_version_id: PromptVersionId,
+    /// SHA-256 hash referencing the active system fingerprint.
+    pub system_fingerprint_hash: String,
     /// W3C traceparent for distributed tracing.
     #[builder(default)]
     pub trace_context: Option<String>,
@@ -262,8 +265,8 @@ impl JobRepository for PgJobRepository {
                   extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
                   triage_system_prompt_version_id, triage_user_prompt_version_id, \
                   relation_system_prompt_version_id, relation_user_prompt_version_id, \
-                  trace_context) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+                  system_fingerprint_hash, trace_context) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
              RETURNING {COLUMNS}",
         );
 
@@ -280,6 +283,7 @@ impl JobRepository for PgJobRepository {
             .bind(new_job.triage_user_prompt_version_id.inner())
             .bind(new_job.relation_system_prompt_version_id.inner())
             .bind(new_job.relation_user_prompt_version_id.inner())
+            .bind(&new_job.system_fingerprint_hash)
             .bind(&new_job.trace_context)
             .fetch_one(&mut *conn)
             .await
@@ -580,6 +584,7 @@ fn map_job_row(r: &sqlx::postgres::PgRow) -> Job {
         .relation_user_prompt_version_id(PromptVersionId::from(
             r.get::<uuid::Uuid, _>("relation_user_prompt_version_id"),
         ))
+        .system_fingerprint_hash(r.get("system_fingerprint_hash"))
         .trace_context(r.get("trace_context"))
         .completed_at(r.get("completed_at"))
         .created_at(r.get("created_at"))
@@ -651,9 +656,9 @@ impl PgJobRepository {
                   extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
                   triage_system_prompt_version_id, triage_user_prompt_version_id, \
                   relation_system_prompt_version_id, relation_user_prompt_version_id, \
-                  trace_context, status, outcome, committed_batch_id, \
-                  error_message) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) \
+                  system_fingerprint_hash, trace_context, status, outcome, \
+                  committed_batch_id, error_message) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
              RETURNING {COLUMNS}",
         );
 
@@ -670,6 +675,7 @@ impl PgJobRepository {
             .bind(new_job.triage_user_prompt_version_id.inner())
             .bind(new_job.relation_system_prompt_version_id.inner())
             .bind(new_job.relation_user_prompt_version_id.inner())
+            .bind(&new_job.system_fingerprint_hash)
             .bind(&new_job.trace_context)
             .bind(overrides.status.as_str())
             .bind(overrides.outcome.map(|o| o.as_str().to_owned()))

@@ -7,8 +7,9 @@ use tribal_db::{
 use tribal_domain::{GitRemote, JobId, KnowledgeItemId, PrincipalId, ProjectId, TriageOutcome};
 use tribal_test_utils::{
     a_new_item_observation, a_new_job, a_new_knowledge_item, a_new_principal, a_new_project,
-    a_new_prompt_version, a_new_triage_result_created, a_new_triage_result_duplicate,
-    a_new_triage_result_failed, insert_prompt_version, test_context,
+    a_new_prompt_version, a_new_system_fingerprint, a_new_triage_result_created,
+    a_new_triage_result_duplicate, a_new_triage_result_failed, insert_prompt_version, test_context,
+    upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -47,6 +48,19 @@ async fn setup_prerequisites(
 
     let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
 
+    let fingerprint_hash = upsert_system_fingerprint(
+        txn,
+        &a_new_system_fingerprint()
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .build(),
+    )
+    .await;
+
     let job = tribal_db::PgJobRepository
         .insert(
             txn,
@@ -59,6 +73,7 @@ async fn setup_prerequisites(
                 .triage_user_prompt_version_id(pv_id)
                 .relation_system_prompt_version_id(pv_id)
                 .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fingerprint_hash)
                 .build(),
         )
         .await

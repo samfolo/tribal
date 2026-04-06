@@ -1,8 +1,8 @@
 //! Retrieval feedback repository: trait definition and Postgres implementation.
 //!
 //! Retrieval feedback records are self-sufficient after trace rotation —
-//! each record includes query text, item IDs, model, and policy version
-//! so it remains a usable eval dataset without the trace.
+//! each record includes query text, item IDs, model, and system
+//! fingerprint hash so it remains a usable eval dataset without the trace.
 
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
@@ -25,7 +25,7 @@ const COLUMNS: Columns = Columns(&[
     "embedding_model",
     "returned_item_ids",
     "explored_anchor_ids",
-    "policy_version",
+    "system_fingerprint_hash",
     "principal_id",
     "rating",
     "notes",
@@ -58,9 +58,8 @@ pub struct NewRetrievalFeedback {
     /// Anchor item IDs explored during graph traversal.
     #[builder(default)]
     pub explored_anchor_ids: Vec<KnowledgeItemId>,
-    /// The system policy version at the time of retrieval.
-    #[builder(default)]
-    pub policy_version: Option<String>,
+    /// SHA-256 hash referencing the active system fingerprint.
+    pub system_fingerprint_hash: String,
     /// The principal who provided this feedback.
     pub principal_id: PrincipalId,
     /// The overall rating of the retrieval experience.
@@ -134,7 +133,7 @@ impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
             "INSERT INTO retrieval_feedback \
                  (trace_id, query_text, embedding_model, \
                   returned_item_ids, explored_anchor_ids, \
-                  policy_version, principal_id, rating, notes) \
+                  system_fingerprint_hash, principal_id, rating, notes) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              RETURNING {COLUMNS}",
         );
@@ -145,7 +144,7 @@ impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
             .bind(&new.embedding_model)
             .bind(&returned_ids)
             .bind(&explored_ids)
-            .bind(&new.policy_version)
+            .bind(&new.system_fingerprint_hash)
             .bind(new.principal_id.inner())
             .bind(new.rating.as_str())
             .bind(&new.notes)
@@ -207,7 +206,7 @@ fn map_retrieval_feedback_row(r: &sqlx::postgres::PgRow) -> RetrievalFeedback {
                 .map(KnowledgeItemId::from)
                 .collect(),
         )
-        .policy_version(r.get("policy_version"))
+        .system_fingerprint_hash(r.get("system_fingerprint_hash"))
         .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
         .rating(
             r.get::<String, _>("rating")
