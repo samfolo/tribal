@@ -6,7 +6,7 @@
 use std::net::SocketAddr;
 
 use crate::{
-    MAX_LIFECYCLE_DURATION_MS,
+    MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER,
     error::ConfigError,
     sections::{ProviderKind, TransportKind, TribalConfig},
 };
@@ -241,6 +241,11 @@ fn validate_discovery(config: &TribalConfig, errors: &mut Vec<String>) {
 
     if config.discovery.overfetch_multiplier == 0 {
         errors.push("discovery.overfetch_multiplier must be greater than zero".into());
+    } else if config.discovery.overfetch_multiplier > MAX_OVERFETCH_MULTIPLIER {
+        errors.push(format!(
+            "discovery.overfetch_multiplier ({}) must not exceed {MAX_OVERFETCH_MULTIPLIER}",
+            config.discovery.overfetch_multiplier,
+        ));
     }
 
     let threshold = config.discovery.similarity_threshold;
@@ -397,6 +402,23 @@ mod tests {
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("overfetch_multiplier must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_overfetch_multiplier_above_max() {
+        let mut config = valid_config();
+        config.discovery.overfetch_multiplier = MAX_OVERFETCH_MULTIPLIER + 1;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("overfetch_multiplier"));
+        assert!(msg.contains("must not exceed"));
+    }
+
+    #[test]
+    fn test_validate_accepts_overfetch_multiplier_at_max() {
+        let mut config = valid_config();
+        config.discovery.overfetch_multiplier = MAX_OVERFETCH_MULTIPLIER;
+        assert!(validate(&config).is_ok());
     }
 
     #[test]
