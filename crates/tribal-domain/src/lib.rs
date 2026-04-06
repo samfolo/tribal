@@ -54,6 +54,7 @@ mod extraction_result;
 mod feedback_rating;
 mod git;
 mod ids;
+mod inference_parameters;
 mod item_observation;
 mod job;
 mod knowledge;
@@ -71,6 +72,7 @@ mod scope;
 mod source_type;
 pub mod span_attrs;
 mod standing;
+mod system_fingerprint;
 mod tag_registry;
 mod tag_similarity_result;
 mod task;
@@ -89,8 +91,11 @@ pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
     AuthTokenId, EmbeddingId, EpisodeId, ExtractionResultId, IdParseError, ItemObservationId,
     JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId,
-    RelationId, RetrievalFeedbackId, SessionId, TaskId, TokenUsageId, TriageResultId,
-    TriageSimilarItemDecisionId,
+    RelationId, RetrievalFeedbackId, SessionId, SystemFingerprintId, TaskId, TokenUsageId,
+    TriageResultId, TriageSimilarItemDecisionId,
+};
+pub use inference_parameters::{
+    EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
 };
 pub use item_observation::{ItemObservation, ItemObservationBuilder};
 pub use job::{Job, JobBuilder, JobOutcome, JobState, JobStatus};
@@ -111,6 +116,7 @@ pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
 pub use scope::{Scope, ScopeParseError, full_access_scopes, is_authorised};
 pub use source_type::SourceType;
 pub use standing::{Standing, StandingBuilder};
+pub use system_fingerprint::{SystemFingerprint, SystemFingerprintBuilder};
 pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};
 pub use tag_similarity_result::TagSimilarityResult;
 pub use task::{Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};

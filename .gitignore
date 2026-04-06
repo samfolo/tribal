@@ -8,5 +8,8 @@
 .mcp.json
 .codex/config.toml
 
+# Reviews (local only — archive is Read-denied in settings)
+.reviews/
+
 # OS-specific
 .DS_Store

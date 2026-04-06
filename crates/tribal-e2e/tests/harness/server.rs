@@ -718,7 +718,7 @@ impl TestHarness {
         let auth = resolve_e2e_auth(&self.state, principal_key).await;
         let session = SessionContext::new(None);
         let repositories = ConnectionRepositories::new();
-        let handler_config = HandlerConfig::default();
+        let handler_config = HandlerConfig::from(&self.config);
         let handler = TribalServerHandler::new(
             Arc::clone(&self.state),
             TransportAuthStrategy::AtCreation(auth),
@@ -820,7 +820,7 @@ async fn start_and_connect(
     let session_project = state.resolved_project().map(SessionProject::from);
     let session = SessionContext::new(session_project);
     let repositories = ConnectionRepositories::new();
-    let handler_config = HandlerConfig::default();
+    let handler_config = HandlerConfig::from(config);
     let handler = TribalServerHandler::new(
         Arc::clone(&state),
         TransportAuthStrategy::AtCreation(auth),

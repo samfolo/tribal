@@ -20,6 +20,7 @@ mod reference;
 mod relation;
 mod retrieval_feedback;
 mod standing;
+mod system_fingerprint;
 mod tag_embedding;
 mod tag_registry;
 mod task;
@@ -28,6 +29,7 @@ mod triage_result;
 mod triage_similar_item_decision;
 
 pub use auth_token::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
+pub use common::cursor::encode_cursor;
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
 pub use extraction_result::{
     ExtractionResultRepository, NewExtractionResult, PgExtractionResultRepository,
@@ -55,6 +57,9 @@ pub use retrieval_feedback::{
     NewRetrievalFeedback, PgRetrievalFeedbackRepository, RetrievalFeedbackRepository,
 };
 pub use standing::{PgStandingRepository, StandingRepository};
+pub use system_fingerprint::{
+    NewSystemFingerprint, PgSystemFingerprintRepository, SystemFingerprintRepository,
+};
 pub use tag_embedding::{NewTagEmbedding, PgTagEmbeddingRepository, TagEmbeddingRepository};
 pub use tag_registry::{PgTagRegistryRepository, TagRegistryRepository};
 pub use task::{NewTask, PgTaskRepository, ReclaimOutcome, TaskRepository, TaskStatusCount};

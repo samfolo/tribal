@@ -3,7 +3,10 @@ use tribal_db::{
     RetrievalFeedbackRepository,
 };
 use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedbackId};
-use tribal_test_utils::{a_new_principal, a_new_retrieval_feedback, test_context};
+use tribal_test_utils::{
+    a_new_principal, a_new_prompt_version, a_new_retrieval_feedback, a_new_system_fingerprint,
+    insert_prompt_version, test_context, upsert_system_fingerprint,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,6 +37,19 @@ async fn test_insert_returns_populated_retrieval_feedback() {
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "insert").await;
+    let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
+    upsert_system_fingerprint(
+        &mut txn,
+        &a_new_system_fingerprint()
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .build(),
+    )
+    .await;
 
     let new = a_new_retrieval_feedback()
         .principal_id(principal_id)
@@ -49,7 +65,9 @@ async fn test_insert_returns_populated_retrieval_feedback() {
     assert_eq!(fb.embedding_model(), "nomic-embed-text:v1.5");
     assert!(fb.returned_item_ids().is_empty());
     assert!(fb.explored_anchor_ids().is_empty());
-    assert!(fb.policy_version().is_none());
+    let hash = fb.system_fingerprint_hash();
+    assert_eq!(hash.len(), 64);
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     assert_eq!(fb.principal_id(), principal_id);
     assert_eq!(fb.rating(), FeedbackRating::Negative);
     assert_eq!(fb.notes(), Some("not relevant"));
@@ -62,6 +80,19 @@ async fn test_insert_with_populated_uuid_arrays() {
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "arrays").await;
+    let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
+    upsert_system_fingerprint(
+        &mut txn,
+        &a_new_system_fingerprint()
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .build(),
+    )
+    .await;
 
     let returned = vec![KnowledgeItemId::new(), KnowledgeItemId::new()];
     let explored = vec![KnowledgeItemId::new()];
@@ -85,6 +116,19 @@ async fn test_insert_with_empty_arrays() {
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "empty-arrays").await;
+    let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
+    upsert_system_fingerprint(
+        &mut txn,
+        &a_new_system_fingerprint()
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .build(),
+    )
+    .await;
 
     let new = a_new_retrieval_feedback()
         .principal_id(principal_id)
@@ -107,6 +151,19 @@ async fn test_find_by_id_returns_retrieval_feedback() {
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "find").await;
+    let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
+    upsert_system_fingerprint(
+        &mut txn,
+        &a_new_system_fingerprint()
+            .extraction_system_prompt_version_id(pv_id)
+            .extraction_user_prompt_version_id(pv_id)
+            .triage_system_prompt_version_id(pv_id)
+            .triage_user_prompt_version_id(pv_id)
+            .relation_system_prompt_version_id(pv_id)
+            .relation_user_prompt_version_id(pv_id)
+            .build(),
+    )
+    .await;
 
     let fb = repo
         .insert(

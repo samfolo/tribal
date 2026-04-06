@@ -1,6 +1,6 @@
 //! Handler for `tribal_feedback` — retrieval session quality rating.
 
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 use rmcp::{
     model::{CallToolResult, ErrorData as McpError},
@@ -9,13 +9,16 @@ use rmcp::{
 use sqlx::PgConnection;
 use tracing::Instrument;
 use tribal_db::DbError;
-use tribal_domain::{FeedbackRating, KnowledgeItemId, McpErrorCode, PrincipalId, span_attrs};
+use tribal_domain::{
+    FeedbackRating, InferenceParameters, KnowledgeItemId, McpErrorCode, PrincipalId, span_attrs,
+};
 
-use super::common::acquire_connection;
+use super::common::begin_transaction;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
+    fingerprint::{FingerprintError, PipelineProviderIdentities, compute_and_upsert_fingerprint},
     mapping::{McpFeedbackRequest, McpFeedbackResponse},
-    server_handler::{ConnectionRepositories, TribalServerHandler},
+    server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
 };
 
 // ---------------------------------------------------------------------------
@@ -40,6 +43,10 @@ struct FeedbackParams {
     principal_id: PrincipalId,
     rating: FeedbackRating,
     notes: Option<String>,
+    active_prompts: ActivePromptVersions,
+    build_version: Arc<str>,
+    provider_identities: PipelineProviderIdentities,
+    inference_parameters: InferenceParameters,
 }
 
 /// Errors that can occur during feedback execution.
@@ -47,12 +54,16 @@ struct FeedbackParams {
 enum FeedbackError {
     #[error(transparent)]
     Db(#[from] DbError),
+
+    #[error(transparent)]
+    Fingerprint(#[from] FingerprintError),
 }
 
 impl IntoMcpError for FeedbackError {
     fn into_mcp_error(self) -> McpToolError {
         match self {
             Self::Db(e) => e.into_mcp_error(),
+            Self::Fingerprint(e) => e.into_mcp_error(),
         }
     }
 }
@@ -177,6 +188,15 @@ impl TribalServerHandler {
 
         // -- Build params and execute -----------------------------------------
 
+        let active_prompts = self.state.active_prompt_versions.read().await.clone();
+
+        let provider_identities = PipelineProviderIdentities {
+            extraction: self.state.extraction_provider.identity().clone(),
+            triage: self.state.triage_provider.identity().clone(),
+            relation: self.state.relation_provider.identity().clone(),
+            embedding: self.state.embedding_provider.identity().clone(),
+        };
+
         let feedback_params = FeedbackParams {
             trace_id: request.trace_id,
             query_text: request.query_text,
@@ -186,24 +206,35 @@ impl TribalServerHandler {
             principal_id,
             rating,
             notes: request.notes,
+            active_prompts,
+            build_version: Arc::clone(&self.state.build_version),
+            provider_identities,
+            inference_parameters: self.state.inference_parameters.clone(),
         };
 
-        let mut conn = match acquire_connection(
+        let mut tx = match begin_transaction(
             &self.state.pool_mcp,
             self.config.pool_name,
             &self.state.metrics,
         )
         .await
         {
-            Ok(conn) => conn,
+            Ok(tx) => tx,
             Err(call_result) => return Ok(call_result),
         };
 
-        let feedback = match execute_feedback(&mut conn, &self.repositories, feedback_params).await
-        {
+        let feedback = match execute_feedback(&mut tx, &self.repositories, feedback_params).await {
             Ok(f) => f,
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
+
+        if let Err(e) = tx.commit().await {
+            let db_err = DbError::QueryFailed {
+                context: "committing feedback transaction".into(),
+                source: e,
+            };
+            return Ok(db_err.into_mcp_error().into_call_tool_result());
+        }
 
         Ok(McpFeedbackResponse::from(&feedback).into_call_tool_result())
     }
@@ -223,16 +254,30 @@ async fn execute_feedback(
     repositories: &ConnectionRepositories,
     params: FeedbackParams,
 ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
+    // -- System fingerprint ---------------------------------------------------
+
+    let fingerprint_hash = compute_and_upsert_fingerprint(
+        conn,
+        repositories,
+        &params.active_prompts,
+        &params.provider_identities,
+        &params.build_version,
+        &params.inference_parameters,
+    )
+    .await?;
+
+    // -- Feedback record ------------------------------------------------------
+
     let new_feedback = tribal_db::NewRetrievalFeedback::builder()
         .trace_id(params.trace_id.to_ascii_lowercase())
         .query_text(params.query_text)
         .embedding_model(params.embedding_model)
         .returned_item_ids(params.returned_item_ids)
         .explored_anchor_ids(params.explored_anchor_ids)
+        .system_fingerprint_hash(fingerprint_hash)
         .principal_id(params.principal_id)
         .rating(params.rating)
         .notes(params.notes)
-        .policy_version(None)
         .build();
 
     let feedback = repositories
@@ -252,11 +297,20 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
-    use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, ProjectId};
-    use tribal_test_utils::{MockRetrievalFeedbackRepository, a_retrieval_feedback, test_context};
+    use tokio::sync::RwLock;
+    use tribal_domain::{
+        FeedbackRating, InferenceParameters, KnowledgeItemId, PrincipalId, ProjectId,
+    };
+    use tribal_test_utils::{
+        MockPromptVersionRepository, MockRetrievalFeedbackRepository, a_prompt_version,
+        a_retrieval_feedback, test_context,
+    };
 
     use super::*;
-    use crate::test_utils::{TestHandler, test_repositories};
+    use crate::test_utils::{
+        TestHandler, configure_fingerprint_mocks, test_active_prompt_versions,
+        test_provider_identities, test_repositories,
+    };
 
     // -- Constants ---------------------------------------------------------
 
@@ -294,6 +348,10 @@ mod tests {
             principal_id: PrincipalId::new(),
             rating: FeedbackRating::Positive,
             notes: None,
+            active_prompts: test_active_prompt_versions(),
+            build_version: Arc::from("test-build"),
+            provider_identities: test_provider_identities(),
+            inference_parameters: InferenceParameters::default(),
         }
     }
 
@@ -341,6 +399,11 @@ mod tests {
     async fn test_execute_feedback_stores_lowercase_trace_id() {
         let feedback = a_retrieval_feedback().build();
 
+        let params = FeedbackParams {
+            trace_id: "4BF92F3577B34DA6A3CE929D0E0E4736".into(),
+            ..default_params()
+        };
+
         let mut repos = test_repositories();
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
@@ -348,11 +411,8 @@ mod tests {
                 .respond_with(feedback, None)
                 .build(),
         );
+        configure_fingerprint_mocks(&mut repos, &params.active_prompts);
 
-        let params = FeedbackParams {
-            trace_id: "4BF92F3577B34DA6A3CE929D0E0E4736".into(),
-            ..default_params()
-        };
         call_execute(&repos, params).await.expect("should succeed");
     }
 
@@ -529,13 +589,17 @@ mod tests {
     async fn test_apply_feedback_optional_fields_omitted_succeeds() {
         let prin_id = PrincipalId::new();
         let feedback = a_retrieval_feedback().principal_id(prin_id).build();
-        let repos = repos_for_feedback(feedback);
+        let active_prompts = test_active_prompt_versions();
+
+        let mut repos = repos_for_feedback(feedback);
+        configure_fingerprint_mocks(&mut repos, &active_prompts);
 
         let ctx = test_context().await;
         let pool = ctx.create_pool().await.expect("pool");
         let handler = TestHandler::builder()
             .pool(pool)
             .repositories(repos)
+            .active_prompt_versions(Arc::new(RwLock::new(active_prompts)))
             .build();
 
         let ki_id = KnowledgeItemId::new().to_string();
@@ -564,6 +628,11 @@ mod tests {
         let expected_id = feedback.id();
         let expected_rating = feedback.rating();
 
+        let params = FeedbackParams {
+            principal_id: prin_id,
+            ..default_params()
+        };
+
         let mut repos = test_repositories();
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
@@ -571,24 +640,25 @@ mod tests {
                 .respond_with(feedback, None)
                 .build(),
         );
+        configure_fingerprint_mocks(&mut repos, &params.active_prompts);
 
-        let params = FeedbackParams {
-            principal_id: prin_id,
-            ..default_params()
-        };
         let result = call_execute(&repos, params).await.expect("should succeed");
 
         assert_eq!(result.id(), expected_id);
         assert_eq!(result.rating(), expected_rating);
         assert!(result.explored_anchor_ids().is_empty());
         assert!(result.notes().is_none());
-        assert!(result.policy_version().is_none());
+        let hash = result.system_fingerprint_hash();
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // -- Service: error paths ----------------------------------------------
 
     #[tokio::test]
     async fn test_execute_feedback_db_error_on_insert() {
+        let params = default_params();
+
         let mut repos = test_repositories();
         repos.retrieval_feedback = Arc::new(
             MockRetrievalFeedbackRepository::builder()
@@ -601,13 +671,63 @@ mod tests {
                 )
                 .build(),
         );
+        configure_fingerprint_mocks(&mut repos, &params.active_prompts);
+
+        let err = call_execute(&repos, params).await.expect_err("should fail");
+
+        assert!(matches!(
+            err,
+            FeedbackError::Db(DbError::QueryFailed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_execute_feedback_missing_prompt_versions_returns_error() {
+        let mut repos = test_repositories();
+        repos.prompt_version = Arc::new(
+            MockPromptVersionRepository::builder()
+                .on_find_by_ids(vec![], None)
+                .build(),
+        );
 
         let params = default_params();
         let err = call_execute(&repos, params).await.expect_err("should fail");
 
         assert!(matches!(
             err,
-            FeedbackError::Db(DbError::QueryFailed { .. })
+            FeedbackError::Fingerprint(FingerprintError::MissingPromptVersions { .. })
+        ));
+    }
+
+    /// When `find_by_ids` returns fewer than 6 prompt versions (some
+    /// present, some missing), the fingerprint computation still fails.
+    #[tokio::test]
+    async fn test_execute_feedback_partial_prompt_versions_returns_error() {
+        let prompts = test_active_prompt_versions();
+        let ids = prompts.version_ids();
+
+        // Return versions for only the first 3 of 6 required IDs.
+        let partial: Vec<_> = ids[..3]
+            .iter()
+            .map(|&id| a_prompt_version().id(id).build())
+            .collect();
+
+        let mut repos = test_repositories();
+        repos.prompt_version = Arc::new(
+            MockPromptVersionRepository::builder()
+                .on_find_by_ids(partial, None)
+                .build(),
+        );
+
+        let params = FeedbackParams {
+            active_prompts: prompts,
+            ..default_params()
+        };
+        let err = call_execute(&repos, params).await.expect_err("should fail");
+
+        assert!(matches!(
+            err,
+            FeedbackError::Fingerprint(FingerprintError::MissingPromptVersions { .. })
         ));
     }
 }

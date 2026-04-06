@@ -174,6 +174,19 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
         let obs_id_b = seed_result.observation_ids("existing_b")[0];
 
         // Build a job in Relating status with two Duplicate triage outcomes.
+        let fingerprint_hash = upsert_system_fingerprint(
+            &mut conn,
+            &a_new_system_fingerprint()
+                .extraction_system_prompt_version_id(system_pv_id)
+                .extraction_user_prompt_version_id(user_pv_id)
+                .triage_system_prompt_version_id(system_pv_id)
+                .triage_user_prompt_version_id(user_pv_id)
+                .relation_system_prompt_version_id(system_pv_id)
+                .relation_user_prompt_version_id(user_pv_id)
+                .build(),
+        )
+        .await;
+
         let job = PgJobRepository
             .insert(
                 &mut conn,
@@ -186,6 +199,7 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
                     .triage_user_prompt_version_id(user_pv_id)
                     .relation_system_prompt_version_id(system_pv_id)
                     .relation_user_prompt_version_id(user_pv_id)
+                    .system_fingerprint_hash(fingerprint_hash)
                     .build(),
             )
             .await
