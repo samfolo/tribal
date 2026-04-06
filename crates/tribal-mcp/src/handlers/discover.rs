@@ -1088,8 +1088,8 @@ mod tests {
 
         let search = a_search_response(vec![
             a_search_result(&item_a, 0.9),
-            a_search_result(&item_b, 0.3),
             a_search_result(&item_c, 0.7),
+            a_search_result(&item_b, 0.3),
         ]);
         let repos =
             repos_with_search_and_principal(search, vec![test_principal(prin_id, "user:test")]);
