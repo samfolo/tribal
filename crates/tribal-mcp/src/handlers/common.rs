@@ -31,13 +31,16 @@ pub(crate) async fn acquire_connection(
 /// Begins a transaction from the pool, mapping errors to `CallToolResult`.
 ///
 /// Used by write-path handlers that require transactional semantics.
+/// Records pool acquisition latency via `MetricsRecorder`.
 pub(crate) async fn begin_transaction(
     pool: &PgPool,
     pool_name: &'static str,
+    metrics: &dyn MetricsRecorder,
 ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, CallToolResult> {
-    pool.begin()
-        .await
-        .map_err(|e| map_pool_error(e, pool_name, "beginning transaction"))
+    let start = Instant::now();
+    let result = pool.begin().await;
+    metrics.record_pool_acquire(pool_name, start.elapsed());
+    result.map_err(|e| map_pool_error(e, pool_name, "beginning transaction"))
 }
 
 /// Maps a pool acquisition or transaction-begin error to a `CallToolResult`.
