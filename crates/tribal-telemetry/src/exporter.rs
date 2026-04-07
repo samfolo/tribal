@@ -85,9 +85,8 @@ impl<W: Write + Send + 'static> SpanExporter for WriterSpanExporter<W> {
 
     fn force_flush(&mut self) -> OTelSdkResult {
         if let Ok(mut w) = self.writer.lock() {
-            w.flush().map_err(|e| {
-                OTelSdkError::InternalFailure(format!("flush failed: {e}"))
-            })?;
+            w.flush()
+                .map_err(|e| OTelSdkError::InternalFailure(format!("flush failed: {e}")))?;
         }
         Ok(())
     }
@@ -99,23 +98,23 @@ impl<W: Write + Send> WriterSpanExporter<W> {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
-        let mut writer = self.writer.lock().map_err(|e| {
-            OTelSdkError::InternalFailure(format!("writer lock poisoned: {e}"))
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|e| OTelSdkError::InternalFailure(format!("writer lock poisoned: {e}")))?;
 
         for span_data in batch {
             let span: Span = span_data.into();
-            serde_json::to_writer(&mut *writer, &span).map_err(|e| {
-                OTelSdkError::InternalFailure(format!("serialisation failed: {e}"))
-            })?;
-            writer.write_all(b"\n").map_err(|e| {
-                OTelSdkError::InternalFailure(format!("write failed: {e}"))
-            })?;
+            serde_json::to_writer(&mut *writer, &span)
+                .map_err(|e| OTelSdkError::InternalFailure(format!("serialisation failed: {e}")))?;
+            writer
+                .write_all(b"\n")
+                .map_err(|e| OTelSdkError::InternalFailure(format!("write failed: {e}")))?;
         }
 
-        writer.flush().map_err(|e| {
-            OTelSdkError::InternalFailure(format!("flush failed: {e}"))
-        })?;
+        writer
+            .flush()
+            .map_err(|e| OTelSdkError::InternalFailure(format!("flush failed: {e}")))?;
 
         Ok(())
     }
@@ -141,8 +140,7 @@ mod tests {
         let trace_id =
             TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").expect("valid trace id");
         let span_id = SpanId::from_hex("00f067aa0ba902b7").expect("valid span id");
-        let parent_span_id =
-            SpanId::from_hex("b7ad6b7169203331").expect("valid parent span id");
+        let parent_span_id = SpanId::from_hex("b7ad6b7169203331").expect("valid parent span id");
 
         let span_context = SpanContext::new(
             trace_id,
@@ -206,8 +204,7 @@ mod tests {
         }
 
         let output = String::from_utf8(buf).expect("valid UTF-8");
-        let parsed: serde_json::Value =
-            serde_json::from_str(output.trim()).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).expect("valid JSON");
 
         // Trace and span IDs are hex-serialised by the proto serde support.
         assert_eq!(parsed["traceId"], "0af7651916cd43dd8448eb211c80319c");
@@ -227,10 +224,11 @@ mod tests {
         }
 
         let output = String::from_utf8(buf).expect("valid UTF-8");
-        let parsed: serde_json::Value =
-            serde_json::from_str(output.trim()).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).expect("valid JSON");
 
-        let attrs = parsed["attributes"].as_array().expect("attributes is an array");
+        let attrs = parsed["attributes"]
+            .as_array()
+            .expect("attributes is an array");
         assert!(
             attrs.iter().any(|a| a["key"] == "http.method"),
             "expected http.method attribute in {attrs:?}",
@@ -248,8 +246,7 @@ mod tests {
         }
 
         let output = String::from_utf8(buf).expect("valid UTF-8");
-        let parsed: serde_json::Value =
-            serde_json::from_str(output.trim()).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).expect("valid JSON");
 
         let events = parsed["events"].as_array().expect("events is an array");
         assert_eq!(events.len(), 1);
@@ -267,8 +264,7 @@ mod tests {
         }
 
         let output = String::from_utf8(buf).expect("valid UTF-8");
-        let parsed: serde_json::Value =
-            serde_json::from_str(output.trim()).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).expect("valid JSON");
 
         let links = parsed["links"].as_array().expect("links is an array");
         assert_eq!(links.len(), 1);
@@ -287,8 +283,7 @@ mod tests {
         }
 
         let output = String::from_utf8(buf).expect("valid UTF-8");
-        let parsed: serde_json::Value =
-            serde_json::from_str(output.trim()).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).expect("valid JSON");
 
         let status = &parsed["status"];
         assert_eq!(status["message"], "test error");
