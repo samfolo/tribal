@@ -22,6 +22,7 @@ use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig, Telemetry
 
 use crate::{
     error::TelemetryError,
+    exporter::WriterSpanExporter,
     guard::TelemetryGuard,
     metrics::Metrics,
     otlp,
@@ -139,26 +140,57 @@ fn try_init_subscriber(
         }
     };
 
-    // -- OTLP pipeline (optional) ----------------------------------------
+    // -- Trace pipeline ---------------------------------------------------
+    //
+    // When telemetry is enabled, build a `SdkTracerProvider` with whichever
+    // exporters are configured (OTLP, console, file).  `enabled` acts as a
+    // master switch — when false, sub-flags are silently ignored.
 
     let otlp_enabled = telemetry.enabled && telemetry.otlp_endpoint.is_some();
 
-    // Install the OTel tracing layer when telemetry is enabled so spans
-    // carry valid trace context (trace IDs, span IDs).  When an OTLP
-    // endpoint is configured the provider exports; otherwise spans are
-    // created with valid context but not shipped.
-    let (tracer_provider, otel_layer) = match (telemetry.enabled, otlp_enabled) {
-        (_, true) => {
-            let provider = otlp::build_tracer_provider(telemetry)?;
-            let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
-            (Some(provider), Some(layer))
+    let (tracer_provider, otel_layer) = if telemetry.enabled {
+        let mut builder =
+            SdkTracerProvider::builder().with_resource(otlp::build_resource(telemetry));
+
+        // -- OTLP exporter (optional)
+        if telemetry.otlp_endpoint.is_some() {
+            let exporter = otlp::build_otlp_span_exporter(telemetry)?;
+            builder = builder.with_batch_exporter(exporter);
         }
-        (true, false) => {
-            let provider = SdkTracerProvider::builder().build();
-            let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
-            (Some(provider), Some(layer))
+
+        // -- Console exporter (optional)
+        if telemetry.console_export {
+            let exporter = WriterSpanExporter::new(std::io::stderr());
+            builder = builder.with_batch_exporter(exporter);
         }
-        (false, false) => (None, None),
+
+        // -- File exporter (optional)
+        if telemetry.file_export {
+            let rotation = match telemetry.file_rotation {
+                FileRotation::Daily => Rotation::DAILY,
+                FileRotation::Hourly => Rotation::HOURLY,
+                FileRotation::Never => Rotation::NEVER,
+            };
+
+            let appender = RollingFileAppender::builder()
+                .rotation(rotation)
+                .filename_prefix("tribal-traces")
+                .filename_suffix("jsonl")
+                .build(&telemetry.file_directory)
+                .map_err(|source| TelemetryError::FileAppenderInit {
+                    path: telemetry.file_directory.clone(),
+                    source,
+                })?;
+
+            let exporter = WriterSpanExporter::new(appender);
+            builder = builder.with_batch_exporter(exporter);
+        }
+
+        let provider = builder.build();
+        let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
+        (Some(provider), Some(layer))
+    } else {
+        (None, None)
     };
 
     let (meter_provider, recorder): (Option<_>, Arc<dyn MetricsRecorder>) = if otlp_enabled {
