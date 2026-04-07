@@ -357,4 +357,33 @@ mod tests {
         // Clean up: the second call may have succeeded, leaving the flag true.
         INITIALISED.store(false, Ordering::SeqCst);
     }
+
+    #[test]
+    fn test_trace_file_export_with_invalid_directory_returns_error() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        INITIALISED.store(false, Ordering::SeqCst);
+
+        // Use a regular file as the "directory" to guarantee the appender
+        // cannot create it, regardless of process permissions.
+        let tmp = tempfile::NamedTempFile::new().expect("should create temp file");
+
+        let logging = LoggingConfig::default();
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            file_export: true,
+            file_directory: tmp.path().display().to_string(),
+            ..TelemetryConfig::default()
+        };
+        let result = init_subscriber(&logging, &telemetry);
+
+        assert!(
+            matches!(result, Err(TelemetryError::FileAppenderInit { .. })),
+            "expected FileAppenderInit, got {:?}",
+            result.err(),
+        );
+        assert!(
+            !INITIALISED.load(Ordering::SeqCst),
+            "flag should be reset after failure"
+        );
+    }
 }
