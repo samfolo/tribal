@@ -13,7 +13,7 @@
 
 use std::{
     fmt,
-    io::{self, Write},
+    io::Write,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
