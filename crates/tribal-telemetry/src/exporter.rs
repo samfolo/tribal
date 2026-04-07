@@ -126,13 +126,13 @@ impl<W: Write + Send> WriterSpanExporter<W> {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-    use std::time::SystemTime;
+    use std::{borrow::Cow, time::SystemTime};
 
-    use opentelemetry::InstrumentationScope;
-    use opentelemetry::KeyValue;
-    use opentelemetry::trace::{
-        Event, Link, SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState,
+    use opentelemetry::{
+        InstrumentationScope, KeyValue,
+        trace::{
+            Event, Link, SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState,
+        },
     };
     use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
 
