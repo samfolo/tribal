@@ -28,9 +28,6 @@ pub struct PromptsConfig {
     pub directory: String,
 
     /// Whether to watch for file changes and reload automatically.
-    ///
-    /// The hot-reload feature itself is deferred; this field is defined
-    /// per the configuration schema.
     #[serde(default)]
     pub hot_reload: bool,
 }
