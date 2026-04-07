@@ -18,6 +18,10 @@ use crate::{
 /// Error message for a zero `auth.token_ttl_hours` value.
 pub const ERR_TTL_ZERO: &str = "auth.token_ttl_hours must be greater than zero";
 
+/// Error message when `file_export` is set without `enabled`.
+pub const FILE_EXPORT_REQUIRES_ENABLED: &str =
+    "telemetry.file_export requires telemetry.enabled to be true";
+
 /// Additional connections the worker pool requires beyond the concurrent task
 /// count (heartbeat, reclaim, poll, and one spare).
 const POOL_CONNECTION_OVERHEAD: usize = 4;
@@ -47,6 +51,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_api_key_presence(config, &mut errors);
     validate_discovery(config, &mut errors);
     validate_exploration(config, &mut errors);
+    validate_telemetry(config, &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -279,6 +284,18 @@ fn validate_exploration(config: &TribalConfig, errors: &mut Vec<String>) {
 
     if config.exploration.default_limit > config.exploration.max_limit {
         errors.push("exploration.default_limit must be at most exploration.max_limit".into());
+    }
+}
+
+fn validate_telemetry(config: &TribalConfig, errors: &mut Vec<String>) {
+    // `file_export` defaults to false, so an operator must explicitly set
+    // it.  Requiring `enabled` for file export catches misconfiguration.
+    //
+    // `console_export` is intentionally not validated here: it defaults to
+    // true via serde, so any config setting only `enabled = false` would
+    // fail validation without the operator ever mentioning console_export.
+    if config.telemetry.file_export && !config.telemetry.enabled {
+        errors.push(FILE_EXPORT_REQUIRES_ENABLED.into());
     }
 }
 
@@ -607,5 +624,34 @@ mod tests {
         } else {
             panic!("expected ValidationFailed");
         }
+    }
+
+    #[test]
+    fn test_validate_rejects_file_export_without_enabled() {
+        let mut config = valid_config();
+        config.telemetry.file_export = true;
+        config.telemetry.enabled = false;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(FILE_EXPORT_REQUIRES_ENABLED));
+    }
+
+    #[test]
+    fn test_validate_accepts_file_export_with_enabled() {
+        let mut config = valid_config();
+        config.telemetry.file_export = true;
+        config.telemetry.enabled = true;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_console_export_without_enabled() {
+        let mut config = valid_config();
+        config.telemetry.console_export = true;
+        config.telemetry.enabled = false;
+        assert!(
+            validate(&config).is_ok(),
+            "console_export defaults to true — should not reject when enabled is false",
+        );
     }
 }

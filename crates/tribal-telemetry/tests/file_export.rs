@@ -6,8 +6,6 @@
 //! Requires a tokio runtime because `with_batch_exporter` spawns a
 //! background task via `tokio::spawn`.
 
-use std::time::Duration;
-
 use tribal_config::{LogFormat, LoggingConfig, TelemetryConfig};
 
 #[tokio::test]
@@ -36,10 +34,8 @@ async fn test_file_export_creates_trace_file() {
             tracing::info!("trace file test");
         });
 
-        // Give the batch exporter time to flush.
-        tokio::time::sleep(Duration::from_secs(6)).await;
-
-        // Guard drops here, triggering provider shutdown and final flush.
+        // Guard drops here, triggering provider shutdown which flushes
+        // all batch processors synchronously.
     }
 
     let entries: Vec<_> = std::fs::read_dir(dir.path())
@@ -52,5 +48,13 @@ async fn test_file_export_creates_trace_file() {
         !entries.is_empty(),
         "expected at least one .jsonl file in {}",
         dir.path().display(),
+    );
+
+    // Verify the file contains exported span data, not just that the
+    // appender created an empty file.
+    let content = std::fs::read_to_string(entries[0].path()).expect("should read trace file");
+    assert!(
+        content.contains("test-file-export"),
+        "trace file should contain the exported span name",
     );
 }

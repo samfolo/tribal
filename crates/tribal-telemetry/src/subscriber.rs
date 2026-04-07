@@ -4,9 +4,19 @@
 //! [`LoggingConfig`](tribal_config::LoggingConfig).  When
 //! [`TelemetryConfig::enabled`](tribal_config::TelemetryConfig) is `true`,
 //! an OpenTelemetry tracing layer is installed so spans carry valid trace
-//! context (trace IDs, span IDs).  If an OTLP endpoint is also configured,
-//! spans are exported; otherwise they are created but not shipped.  It
-//! should be called exactly once, early in program startup.
+//! context (trace IDs, span IDs).  Three independently gated export paths
+//! are available:
+//!
+//! - **OTLP** — when an endpoint is configured, spans are exported to a
+//!   collector.
+//! - **Console** — when `console_export` is true, spans are written to
+//!   stderr as OTLP JSON lines.
+//! - **File** — when `file_export` is true, spans are written to rotating
+//!   files in `file_directory`.
+//!
+//! `enabled` acts as a master switch: when false, all export paths are
+//! silently disabled.  It should be called exactly once, early in program
+//! startup.
 
 use std::sync::{
     Arc,
@@ -29,10 +39,19 @@ use crate::{
     recorder::{MetricsRecorder, OtelMetricsRecorder, noop_recorder},
 };
 
+fn rotation_from(file_rotation: FileRotation) -> Rotation {
+    match file_rotation {
+        FileRotation::Daily => Rotation::DAILY,
+        FileRotation::Hourly => Rotation::HOURLY,
+        FileRotation::Never => Rotation::NEVER,
+    }
+}
+
 /// Whether [`init_subscriber`] has already been called.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
 
-/// Initialises the global tracing subscriber and optional OTLP pipeline.
+/// Initialises the global tracing subscriber and optional export
+/// pipelines.
 ///
 /// Builds a layered subscriber stack based on the given configuration:
 ///
@@ -40,17 +59,19 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 /// 2. **Format layer** — JSON or pretty, depending on `logging.format`.
 /// 3. **Output layer** — stderr or rolling file, depending on `logging.output`.
 /// 4. **OpenTelemetry layer** — when `telemetry.enabled` is true, spans
-///    carry valid trace context (trace IDs, span IDs).  If an OTLP
-///    endpoint is also configured, spans are exported; otherwise they
-///    are created but not shipped.
+///    carry valid trace context (trace IDs, span IDs).  Three
+///    independently gated export paths may be active simultaneously:
+///    - OTLP export when `otlp_endpoint` is configured.
+///    - Console export (stderr) when `console_export` is true.
+///    - File export (rotating JSONL) when `file_export` is true.
 ///
 /// Both stderr and file output use non-blocking writers for consistent
 /// behaviour.  The returned [`TelemetryGuard`] must be held for the
-/// program lifetime to ensure pending writes and OTLP data are flushed
+/// program lifetime to ensure pending writes and export data are flushed
 /// on shutdown.
 ///
 /// The returned [`MetricsRecorder`] provides methods for recording
-/// all 11 operational metrics.  When telemetry is disabled or no
+/// all 11 operational metrics.  When telemetry is disabled or no OTLP
 /// endpoint is configured, recordings are silently discarded.
 ///
 /// # Errors
@@ -114,11 +135,7 @@ fn try_init_subscriber(
             (non_blocking, guard)
         }
         LogOutput::File => {
-            let rotation = match logging.file_rotation {
-                FileRotation::Daily => Rotation::DAILY,
-                FileRotation::Hourly => Rotation::HOURLY,
-                FileRotation::Never => Rotation::NEVER,
-            };
+            let rotation = rotation_from(logging.file_rotation);
 
             let suffix = match logging.format {
                 LogFormat::Json => "jsonl",
@@ -166,11 +183,7 @@ fn try_init_subscriber(
 
         // -- File exporter (optional)
         if telemetry.file_export {
-            let rotation = match telemetry.file_rotation {
-                FileRotation::Daily => Rotation::DAILY,
-                FileRotation::Hourly => Rotation::HOURLY,
-                FileRotation::Never => Rotation::NEVER,
-            };
+            let rotation = rotation_from(telemetry.file_rotation);
 
             let appender = RollingFileAppender::builder()
                 .rotation(rotation)

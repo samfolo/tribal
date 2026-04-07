@@ -1,18 +1,18 @@
-//! Telemetry guard that flushes pending writes and OTLP pipelines on drop.
+//! Telemetry guard that flushes pending writes and export pipelines on drop.
 //!
 //! [`TelemetryGuard`] wraps the worker guard from `tracing-appender`'s
-//! non-blocking writer, plus optional OTLP provider handles.  Callers
-//! must hold this value for the program lifetime; dropping it flushes
-//! all buffered output and shuts down OTLP exporters.
+//! non-blocking writer, plus optional trace and metrics provider handles.
+//! Callers must hold this value for the program lifetime; dropping it
+//! flushes all buffered output and shuts down export pipelines.
 
 use opentelemetry_sdk::{metrics::SdkMeterProvider, trace::SdkTracerProvider};
 
 /// Opaque guard returned by [`init_subscriber`](crate::init_subscriber).
 ///
 /// Holds the worker thread guard for the non-blocking log writer and
-/// optional OTLP provider shutdown handles.  When this value is
-/// dropped, OTLP pipelines are flushed first, then the log writer
-/// is drained.
+/// optional trace and metrics provider shutdown handles.  When this
+/// value is dropped, export pipelines are flushed first, then the
+/// log writer is drained.
 ///
 /// # Usage
 ///
@@ -21,7 +21,7 @@ use opentelemetry_sdk::{metrics::SdkMeterProvider, trace::SdkTracerProvider};
 /// ```ignore
 /// let (_guard, _metrics) = tribal_telemetry::init_subscriber(logging, telemetry)?;
 /// // … run program …
-/// // guard dropped here, flushing OTLP and logs
+/// // guard dropped here, flushing exports and logs
 /// ```
 #[derive(Debug)]
 pub struct TelemetryGuard {
@@ -54,7 +54,7 @@ impl TelemetryGuard {
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        // Flush OTLP pipelines before the log writer drains.
+        // Flush export pipelines before the log writer drains.
         // Use eprintln for errors — the tracing subscriber may be
         // shutting down and unable to process log events.
         if let Some(tracer) = self.tracer_provider.take()
