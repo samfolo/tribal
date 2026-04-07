@@ -75,20 +75,25 @@ impl<W: Write + Send + 'static> SpanExporter for WriterSpanExporter<W> {
         std::future::ready(result)
     }
 
+    // Synchronous writer — flush completes without blocking on network
+    // I/O backpressure, so the timeout is unused.
     fn shutdown_with_timeout(&mut self, _timeout: Duration) -> OTelSdkResult {
         self.is_shutdown.store(true, Ordering::SeqCst);
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = w.flush();
-        }
-        Ok(())
+        let mut w = self
+            .writer
+            .lock()
+            .map_err(|e| OTelSdkError::InternalFailure(format!("writer lock poisoned: {e}")))?;
+        w.flush()
+            .map_err(|e| OTelSdkError::InternalFailure(format!("flush failed: {e}")))
     }
 
     fn force_flush(&mut self) -> OTelSdkResult {
-        if let Ok(mut w) = self.writer.lock() {
-            w.flush()
-                .map_err(|e| OTelSdkError::InternalFailure(format!("flush failed: {e}")))?;
-        }
-        Ok(())
+        let mut w = self
+            .writer
+            .lock()
+            .map_err(|e| OTelSdkError::InternalFailure(format!("writer lock poisoned: {e}")))?;
+        w.flush()
+            .map_err(|e| OTelSdkError::InternalFailure(format!("flush failed: {e}")))
     }
 }
 
