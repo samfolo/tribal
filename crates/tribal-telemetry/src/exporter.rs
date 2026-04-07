@@ -127,10 +127,12 @@ impl<W: Write + Send> WriterSpanExporter<W> {
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::time::SystemTime;
 
-    use opentelemetry::{
-        InstrumentationScope, KeyValue,
-        trace::{SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState},
+    use opentelemetry::InstrumentationScope;
+    use opentelemetry::KeyValue;
+    use opentelemetry::trace::{
+        Event, Link, SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState,
     };
     use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
 
@@ -150,42 +152,42 @@ mod tests {
             TraceState::default(),
         );
 
+        let mut events = SpanEvents::default();
+        events.events.push(Event::new(
+            "exception",
+            SystemTime::UNIX_EPOCH,
+            vec![KeyValue::new("exception.message", "something went wrong")],
+            0,
+        ));
+
+        let mut links = SpanLinks::default();
+        links.links.push(Link::new(
+            SpanContext::new(
+                TraceId::from_hex("aaaabbbbccccddddeeee111122223333").expect("valid"),
+                SpanId::from_hex("1122334455667788").expect("valid"),
+                TraceFlags::default(),
+                false,
+                TraceState::default(),
+            ),
+            Vec::new(),
+            0,
+        ));
+
         SpanData {
             span_context,
             parent_span_id,
             parent_span_is_remote: false,
             span_kind: SpanKind::Server,
             name: Cow::Borrowed("test-span"),
-            start_time: std::time::SystemTime::UNIX_EPOCH,
-            end_time: std::time::SystemTime::UNIX_EPOCH,
+            start_time: SystemTime::UNIX_EPOCH,
+            end_time: SystemTime::UNIX_EPOCH,
             attributes: vec![
                 KeyValue::new("http.method", "GET"),
                 KeyValue::new("http.status_code", 200),
             ],
             dropped_attributes_count: 0,
-            events: SpanEvents {
-                events: vec![opentelemetry::trace::Event::new(
-                    "exception",
-                    std::time::SystemTime::UNIX_EPOCH,
-                    vec![KeyValue::new("exception.message", "something went wrong")],
-                    0,
-                )],
-                dropped_count: 0,
-            },
-            links: SpanLinks {
-                links: vec![opentelemetry::trace::Link::new(
-                    SpanContext::new(
-                        TraceId::from_hex("aaaabbbbccccddddeeee111122223333").expect("valid"),
-                        SpanId::from_hex("1122334455667788").expect("valid"),
-                        TraceFlags::default(),
-                        false,
-                        TraceState::default(),
-                    ),
-                    Vec::new(),
-                    0,
-                )],
-                dropped_count: 0,
-            },
+            events,
+            links,
             status: Status::Error {
                 description: "test error".into(),
             },
