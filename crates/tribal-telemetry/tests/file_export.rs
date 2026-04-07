@@ -1,15 +1,13 @@
 //! Integration test: file export creates trace files.
 //!
 //! Verifies that `init_subscriber` succeeds when `file_export` is enabled
-//! and that a `.jsonl` trace file is created in the configured directory.
-//!
-//! Requires a tokio runtime because `with_batch_exporter` spawns a
-//! background task via `tokio::spawn`.
+//! and that a `.jsonl` trace file containing exported span data is created
+//! in the configured directory.
 
 use tribal_config::{LogFormat, LoggingConfig, TelemetryConfig};
 
-#[tokio::test]
-async fn test_file_export_creates_trace_file() {
+#[test]
+fn test_file_export_creates_trace_file() {
     let dir = tempfile::tempdir().expect("should create temp dir");
 
     let logging = LoggingConfig {
