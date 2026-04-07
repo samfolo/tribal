@@ -236,6 +236,13 @@ fn try_init_subscriber(
         );
     }
 
+    if telemetry.file_export && telemetry.used_temp_dir_fallback {
+        tracing::warn!(
+            directory = %telemetry.file_directory,
+            "no standard data directory found; using temporary directory for trace files",
+        );
+    }
+
     Ok((
         TelemetryGuard::new(guard, tracer_provider, meter_provider),
         recorder,
