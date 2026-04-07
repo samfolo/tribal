@@ -45,11 +45,7 @@ async fn test_file_export_creates_trace_file() {
     let entries: Vec<_> = std::fs::read_dir(dir.path())
         .expect("should read dir")
         .filter_map(Result::ok)
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "jsonl")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
         .collect();
 
     assert!(

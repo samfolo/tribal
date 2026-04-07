@@ -23,6 +23,5 @@ async fn test_console_export_initialises() {
         ..TelemetryConfig::default()
     };
 
-    let _ =
-        tribal_telemetry::init_subscriber(&logging, &telemetry).expect("init should succeed");
+    let _ = tribal_telemetry::init_subscriber(&logging, &telemetry).expect("init should succeed");
 }
