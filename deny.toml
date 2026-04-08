@@ -15,59 +15,8 @@ allow = [
     "CDLA-Permissive-2.0",
     "OpenSSL",
     "MPL-2.0",
+    "Elastic-2.0",
 ]
-
-# Workspace crates use Elastic License 2.0 which has no SPDX identifier.
-# cargo-deny sees them as "unlicensed" so we must exempt them explicitly.
-[[licenses.clarify]]
-name = "tribal-common"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
-
-[[licenses.clarify]]
-name = "tribal-domain"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
-
-[[licenses.clarify]]
-name = "tribal-db"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
-
-[[licenses.clarify]]
-name = "tribal-inference"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
-
-[[licenses.clarify]]
-name = "tribal-worker"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
-
-[[licenses.clarify]]
-name = "tribal-mcp"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
-
-[[licenses.clarify]]
-name = "tribal-telemetry"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
-
-[[licenses.clarify]]
-name = "tribal-config"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
-
-[[licenses.clarify]]
-name = "tribal"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
-
-[[licenses.clarify]]
-name = "tribal-test-utils"
-expression = "LicenseRef-Elastic-2.0"
-license-files = [{ path = "../../LICENSE", hash = 0 }]
 
 [licenses.private]
 ignore = true

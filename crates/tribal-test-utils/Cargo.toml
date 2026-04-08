@@ -2,9 +2,9 @@
 name = "tribal-test-utils"
 edition.workspace = true
 version.workspace = true
-license-file.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
