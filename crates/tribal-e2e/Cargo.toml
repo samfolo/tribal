@@ -9,7 +9,6 @@ publish.workspace = true
 [dev-dependencies]
 chrono.workspace = true
 dashmap.workspace = true
-pretty_assertions.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true
 serde_json.workspace = true
