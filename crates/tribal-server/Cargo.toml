@@ -2,9 +2,9 @@
 name = "tribal"
 edition.workspace = true
 version.workspace = true
-license-file = "../../LICENSE"
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 repository = "https://github.com/samfolo/tribal"
 homepage = "https://github.com/samfolo/tribal"
 description = "Capture tribal knowledge. Give it to your agents."
