@@ -9,10 +9,10 @@
 //!
 //! - **OTLP** — when an endpoint is configured, spans are exported to a
 //!   collector.
-//! - **Console** — when `console_export` is true, spans are written to
-//!   stderr as OTLP JSON lines.
-//! - **File** — when `file_export` is true, spans are written to rotating
-//!   files in `file_directory`.
+//! - **Console** — when `console_export` is true, individual spans are
+//!   written to stderr as newline-delimited JSON (proto `Span` objects).
+//! - **File** — when `file_export` is true, individual spans are written
+//!   as newline-delimited JSON to rotating files in `file_directory`.
 //!
 //! `enabled` acts as a master switch: when false, all export paths are
 //! silently disabled.  It should be called exactly once, early in program
@@ -370,6 +370,7 @@ mod tests {
         let logging = LoggingConfig::default();
         let telemetry = TelemetryConfig {
             enabled: true,
+            console_export: false,
             file_export: true,
             file_directory: tmp.path().display().to_string(),
             ..TelemetryConfig::default()

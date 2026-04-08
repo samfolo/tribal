@@ -1,13 +1,17 @@
 //! Writer-backed span exporter.
 //!
-//! [`WriterSpanExporter`] serialises span data as OTLP JSON lines to any
-//! [`std::io::Write`] target.  Used for console export (stderr) and file
-//! export ([`RollingFileAppender`](tracing_appender::rolling::RollingFileAppender)).
+//! [`WriterSpanExporter`] serialises span data as newline-delimited JSON
+//! to any [`std::io::Write`] target.  Used for console export (stderr)
+//! and file export
+//! ([`RollingFileAppender`](tracing_appender::rolling::RollingFileAppender)).
 //!
-//! Span data is converted to the official OTLP proto [`Span`] type via the
-//! [`From<SpanData>`] implementation in `opentelemetry-proto`, then serialised
-//! with `serde_json`.  This ensures the output conforms to the OTLP JSON
-//! specification without hand-rolled serialisation.
+//! Each span is converted to the proto [`Span`] type via the
+//! [`From<SpanData>`] implementation in `opentelemetry-proto`, then
+//! serialised with `serde_json`.  The output is one proto `Span` JSON
+//! object per line — not a full OTLP export envelope
+//! (`ExportTraceServiceRequest` with resource/scope wrapping).  It is
+//! intended for local development inspection and offline analysis, not
+//! for direct ingestion by an OTLP collector.
 //!
 //! [`Span`]: opentelemetry_proto::tonic::trace::v1::Span
 
