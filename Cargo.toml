@@ -48,6 +48,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Observability
 opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto", "metrics"] }
+opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "with-serde", "trace"] }
 opentelemetry-semantic-conventions = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["metrics", "rt-tokio"] }
 tracing = "0.1"

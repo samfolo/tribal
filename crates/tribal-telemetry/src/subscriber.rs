@@ -4,9 +4,19 @@
 //! [`LoggingConfig`](tribal_config::LoggingConfig).  When
 //! [`TelemetryConfig::enabled`](tribal_config::TelemetryConfig) is `true`,
 //! an OpenTelemetry tracing layer is installed so spans carry valid trace
-//! context (trace IDs, span IDs).  If an OTLP endpoint is also configured,
-//! spans are exported; otherwise they are created but not shipped.  It
-//! should be called exactly once, early in program startup.
+//! context (trace IDs, span IDs).  Three independently gated export paths
+//! are available:
+//!
+//! - **OTLP** — when an endpoint is configured, spans are exported to a
+//!   collector.
+//! - **Console** — when `console_export` is true, individual spans are
+//!   written to stderr as newline-delimited JSON (proto `Span` objects).
+//! - **File** — when `file_export` is true, individual spans are written
+//!   as newline-delimited JSON to rotating files in `file_directory`.
+//!
+//! `enabled` acts as a master switch: when false, all export paths are
+//! silently disabled.  It should be called exactly once, early in program
+//! startup.
 
 use std::sync::{
     Arc,
@@ -22,16 +32,26 @@ use tribal_config::{FileRotation, LogFormat, LogOutput, LoggingConfig, Telemetry
 
 use crate::{
     error::TelemetryError,
+    exporter::WriterSpanExporter,
     guard::TelemetryGuard,
     metrics::Metrics,
     otlp,
     recorder::{MetricsRecorder, OtelMetricsRecorder, noop_recorder},
 };
 
+fn rotation_from(file_rotation: FileRotation) -> Rotation {
+    match file_rotation {
+        FileRotation::Daily => Rotation::DAILY,
+        FileRotation::Hourly => Rotation::HOURLY,
+        FileRotation::Never => Rotation::NEVER,
+    }
+}
+
 /// Whether [`init_subscriber`] has already been called.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
 
-/// Initialises the global tracing subscriber and optional OTLP pipeline.
+/// Initialises the global tracing subscriber and optional export
+/// pipelines.
 ///
 /// Builds a layered subscriber stack based on the given configuration:
 ///
@@ -39,17 +59,19 @@ static INITIALISED: AtomicBool = AtomicBool::new(false);
 /// 2. **Format layer** — JSON or pretty, depending on `logging.format`.
 /// 3. **Output layer** — stderr or rolling file, depending on `logging.output`.
 /// 4. **OpenTelemetry layer** — when `telemetry.enabled` is true, spans
-///    carry valid trace context (trace IDs, span IDs).  If an OTLP
-///    endpoint is also configured, spans are exported; otherwise they
-///    are created but not shipped.
+///    carry valid trace context (trace IDs, span IDs).  Three
+///    independently gated export paths may be active simultaneously:
+///    - OTLP export when `otlp_endpoint` is configured.
+///    - Console export (stderr) when `console_export` is true.
+///    - File export (rotating JSONL) when `file_export` is true.
 ///
 /// Both stderr and file output use non-blocking writers for consistent
 /// behaviour.  The returned [`TelemetryGuard`] must be held for the
-/// program lifetime to ensure pending writes and OTLP data are flushed
+/// program lifetime to ensure pending writes and export data are flushed
 /// on shutdown.
 ///
 /// The returned [`MetricsRecorder`] provides methods for recording
-/// all 11 operational metrics.  When telemetry is disabled or no
+/// all 11 operational metrics.  When telemetry is disabled or no OTLP
 /// endpoint is configured, recordings are silently discarded.
 ///
 /// # Errors
@@ -113,11 +135,7 @@ fn try_init_subscriber(
             (non_blocking, guard)
         }
         LogOutput::File => {
-            let rotation = match logging.file_rotation {
-                FileRotation::Daily => Rotation::DAILY,
-                FileRotation::Hourly => Rotation::HOURLY,
-                FileRotation::Never => Rotation::NEVER,
-            };
+            let rotation = rotation_from(logging.file_rotation);
 
             let suffix = match logging.format {
                 LogFormat::Json => "jsonl",
@@ -139,26 +157,53 @@ fn try_init_subscriber(
         }
     };
 
-    // -- OTLP pipeline (optional) ----------------------------------------
+    // -- Trace pipeline ---------------------------------------------------
+    //
+    // When telemetry is enabled, build a `SdkTracerProvider` with whichever
+    // exporters are configured (OTLP, console, file).  `enabled` acts as a
+    // master switch — when false, sub-flags are silently ignored.
 
     let otlp_enabled = telemetry.enabled && telemetry.otlp_endpoint.is_some();
 
-    // Install the OTel tracing layer when telemetry is enabled so spans
-    // carry valid trace context (trace IDs, span IDs).  When an OTLP
-    // endpoint is configured the provider exports; otherwise spans are
-    // created with valid context but not shipped.
-    let (tracer_provider, otel_layer) = match (telemetry.enabled, otlp_enabled) {
-        (_, true) => {
-            let provider = otlp::build_tracer_provider(telemetry)?;
-            let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
-            (Some(provider), Some(layer))
+    let (tracer_provider, otel_layer) = if telemetry.enabled {
+        let mut builder =
+            SdkTracerProvider::builder().with_resource(otlp::build_resource(telemetry));
+
+        // -- OTLP exporter (optional)
+        if telemetry.otlp_endpoint.is_some() {
+            let exporter = otlp::build_otlp_span_exporter(telemetry)?;
+            builder = builder.with_batch_exporter(exporter);
         }
-        (true, false) => {
-            let provider = SdkTracerProvider::builder().build();
-            let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
-            (Some(provider), Some(layer))
+
+        // -- Console exporter (optional)
+        if telemetry.console_export {
+            let exporter = WriterSpanExporter::new(std::io::stderr());
+            builder = builder.with_batch_exporter(exporter);
         }
-        (false, false) => (None, None),
+
+        // -- File exporter (optional)
+        if telemetry.file_export {
+            let rotation = rotation_from(telemetry.file_rotation);
+
+            let appender = RollingFileAppender::builder()
+                .rotation(rotation)
+                .filename_prefix("tribal-traces")
+                .filename_suffix("jsonl")
+                .build(&telemetry.file_directory)
+                .map_err(|source| TelemetryError::FileAppenderInit {
+                    path: telemetry.file_directory.clone(),
+                    source,
+                })?;
+
+            let exporter = WriterSpanExporter::new(appender);
+            builder = builder.with_batch_exporter(exporter);
+        }
+
+        let provider = builder.build();
+        let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("tribal"));
+        (Some(provider), Some(layer))
+    } else {
+        (None, None)
     };
 
     let (meter_provider, recorder): (Option<_>, Arc<dyn MetricsRecorder>) = if otlp_enabled {
@@ -201,6 +246,13 @@ fn try_init_subscriber(
         tracing::warn!(
             directory = %logging.file_directory,
             "no standard state/data directory found; using temporary directory for log files",
+        );
+    }
+
+    if telemetry.file_export && telemetry.used_temp_dir_fallback {
+        tracing::warn!(
+            directory = %telemetry.file_directory,
+            "no standard data directory found; using temporary directory for trace files",
         );
     }
 
@@ -304,5 +356,35 @@ mod tests {
 
         // Clean up: the second call may have succeeded, leaving the flag true.
         INITIALISED.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn test_trace_file_export_with_invalid_directory_returns_error() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        INITIALISED.store(false, Ordering::SeqCst);
+
+        // Use a regular file as the "directory" to guarantee the appender
+        // cannot create it, regardless of process permissions.
+        let tmp = tempfile::NamedTempFile::new().expect("should create temp file");
+
+        let logging = LoggingConfig::default();
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            console_export: false,
+            file_export: true,
+            file_directory: tmp.path().display().to_string(),
+            ..TelemetryConfig::default()
+        };
+        let result = init_subscriber(&logging, &telemetry);
+
+        assert!(
+            matches!(result, Err(TelemetryError::FileAppenderInit { .. })),
+            "expected FileAppenderInit, got {:?}",
+            result.err(),
+        );
+        assert!(
+            !INITIALISED.load(Ordering::SeqCst),
+            "flag should be reset after failure"
+        );
     }
 }

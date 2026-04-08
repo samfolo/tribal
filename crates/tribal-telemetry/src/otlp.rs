@@ -1,14 +1,15 @@
 //! OTLP exporter setup for traces and metrics.
 //!
-//! Builds [`SdkTracerProvider`] and [`SdkMeterProvider`] from
-//! [`TelemetryConfig`], supporting both gRPC and HTTP protocols.
+//! Provides building blocks for constructing [`SdkTracerProvider`] and
+//! [`SdkMeterProvider`] from [`TelemetryConfig`].  The trace exporter and
+//! resource are exposed separately so the subscriber can compose them with
+//! other exporters (console, file).
 
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{MetricExporter, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{
     Resource,
     metrics::{PeriodicReader, SdkMeterProvider},
-    trace::SdkTracerProvider,
 };
 use opentelemetry_semantic_conventions::attribute::SERVICE_NAME;
 use tribal_config::TelemetryConfig;
@@ -16,58 +17,52 @@ use tribal_config::TelemetryConfig;
 use crate::error::TelemetryError;
 
 // ---------------------------------------------------------------------------
-// Trace provider
+// Trace exporter
 // ---------------------------------------------------------------------------
 
-/// Builds an OTLP trace exporter and wraps it in a [`SdkTracerProvider`].
+/// Builds an OTLP span exporter from the given configuration.
 ///
-/// The provider is returned without being installed as the global default —
-/// the caller is responsible for passing it to the tracing-opentelemetry
-/// layer and holding it in [`TelemetryGuard`](crate::TelemetryGuard) for
-/// shutdown.
+/// Returns the exporter without wrapping it in a provider — the caller
+/// assembles the [`SdkTracerProvider`](opentelemetry_sdk::trace::SdkTracerProvider)
+/// with this exporter alongside any other exporters (console, file).
 ///
 /// # Errors
 ///
 /// Returns [`TelemetryError::UnrecognisedOtlpProtocol`] if
 /// `config.otlp_protocol` is not `"grpc"` or `"http"`.
 /// Returns [`TelemetryError::OtlpTracePipelineInit`] if the exporter
-/// or provider fails to initialise.
-pub(crate) fn build_tracer_provider(
+/// fails to initialise.
+pub(crate) fn build_otlp_span_exporter(
     config: &TelemetryConfig,
-) -> Result<SdkTracerProvider, TelemetryError> {
+) -> Result<SpanExporter, TelemetryError> {
     let endpoint = config
         .otlp_endpoint
         .as_deref()
         .ok_or(TelemetryError::OtlpEndpointMissing)?;
 
-    let exporter = match config.otlp_protocol.as_str() {
+    match config.otlp_protocol.as_str() {
         "grpc" => SpanExporter::builder()
             .with_tonic()
             .with_endpoint(endpoint)
             .build()
-            .map_err(|source| TelemetryError::OtlpTracePipelineInit { source })?,
+            .map_err(|source| TelemetryError::OtlpTracePipelineInit { source }),
         "http" => SpanExporter::builder()
             .with_http()
             .with_endpoint(endpoint)
             .build()
-            .map_err(|source| TelemetryError::OtlpTracePipelineInit { source })?,
-        other => {
-            return Err(TelemetryError::UnrecognisedOtlpProtocol {
-                protocol: other.to_owned(),
-            });
-        }
-    };
-
-    let provider = SdkTracerProvider::builder()
-        .with_resource(build_resource(config))
-        .with_batch_exporter(exporter)
-        .build();
-
-    Ok(provider)
+            .map_err(|source| TelemetryError::OtlpTracePipelineInit { source }),
+        other => Err(TelemetryError::UnrecognisedOtlpProtocol {
+            protocol: other.to_owned(),
+        }),
+    }
 }
 
+// ---------------------------------------------------------------------------
+// Resource
+// ---------------------------------------------------------------------------
+
 /// Builds the shared OTLP resource with `service.name`.
-fn build_resource(config: &TelemetryConfig) -> Resource {
+pub(crate) fn build_resource(config: &TelemetryConfig) -> Resource {
     Resource::builder()
         .with_attribute(KeyValue::new(SERVICE_NAME, config.service_name.clone()))
         .build()
@@ -134,7 +129,7 @@ mod tests {
             otlp_protocol: "quic".to_owned(),
             ..TelemetryConfig::default()
         };
-        let result = build_tracer_provider(&config);
+        let result = build_otlp_span_exporter(&config);
         assert!(
             matches!(
                 result,
