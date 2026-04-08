@@ -61,7 +61,6 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Error handling
 thiserror = "2"
-anyhow = "1"
 
 # Builders
 typed-builder = "0.23"
@@ -103,9 +102,6 @@ schemars = { version = "0.8", features = ["uuid1"] }
 # MCP server
 rmcp = { version = "1", features = ["macros", "server", "client", "transport-io", "transport-async-rw", "transport-streamable-http-server"] }
 
-# Async futures utilities
-futures = "0.3"
-
 # Macro utilities
 pastey = "0.2"
 
@@ -131,7 +127,6 @@ gix = { version = "0.80", default-features = false }
 rand = "0.10"
 
 # Testing
-pretty_assertions = "1"
 tempfile = "3"
 testcontainers = "0.27"
 wiremock = "0.6"
