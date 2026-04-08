@@ -4,6 +4,7 @@
 //! OTLP export configuration, metric instruments, and structured logging.
 
 mod error;
+mod exporter;
 mod guard;
 mod metrics;
 mod otlp;
