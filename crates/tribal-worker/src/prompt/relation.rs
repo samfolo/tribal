@@ -52,8 +52,13 @@ pub(crate) struct CandidateOutcome<'a> {
 /// A triage similar item decision for prompt inclusion.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SimilarItemDecisionContext {
-    /// The candidate's position in the extraction batch.
+    /// The `batch_index` of the candidate this similar item was
+    /// matched against during triage.
     pub batch_index: u32,
+    /// This item's position in the unified index space (candidates
+    /// occupy 0..batch_size, similar items occupy batch_size..).
+    /// Used by the model to reference this item in relation edges.
+    pub context_index: u32,
     /// The existing item that was compared against.
     pub matched_item_id: KnowledgeItemId,
     /// The matched item's content.
