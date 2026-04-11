@@ -497,7 +497,9 @@ fn build_candidate_outcomes<'a>(
     triage_results: &[TriageResult],
     batch_size: u32,
 ) -> Result<Vec<CandidateOutcome<'a>>, StageError> {
-    if (batch_size as usize) > candidates.len() {
+    let n_candidates = batch_size as usize;
+
+    if n_candidates > candidates.len() {
         return Err(StageError::Database {
             stage: STAGE_RELATION.into(),
             context: format!(
@@ -519,7 +521,7 @@ fn build_candidate_outcomes<'a>(
     Ok(candidates
         .iter()
         .enumerate()
-        .take(batch_size as usize)
+        .take(n_candidates)
         .map(|(i, candidate)| {
             let batch_index = clamp_to_u32(i);
             let (outcome, item_id) = match triage_by_index.get(&batch_index) {
@@ -767,7 +769,9 @@ fn relation_sqlx_error(context: &str, source: sqlx::Error) -> StageError {
 
 #[cfg(test)]
 mod tests {
-    use tribal_domain::{KnowledgeItemId, TriageOutcome, TriageResult, TriageResultId};
+    use tribal_domain::{
+        KnowledgeItemId, RelationSuggestion, TriageOutcome, TriageResult, TriageResultId,
+    };
 
     use super::*;
     use crate::parsing::IngestionRelationKind;
@@ -813,6 +817,19 @@ mod tests {
                 matched_item_id: matched,
             },
         )
+    }
+
+    fn similar_item(context_index: u32, matched_id: KnowledgeItemId) -> SimilarItemDecisionContext {
+        SimilarItemDecisionContext {
+            batch_index: 0,
+            context_index,
+            matched_item_id: matched_id,
+            matched_content: String::new(),
+            similarity_score: 0.5,
+            similarity_label: String::new(),
+            suggested_relation: RelationSuggestion::Supports,
+            justification: String::new(),
+        }
     }
 
     // -- normalise_edges tests --
@@ -1004,6 +1021,78 @@ mod tests {
         assert_eq!(normalised[1].source_id, ki_b);
         assert_eq!(normalised[1].target_id, ki_similar);
         assert_eq!(skipped, 0);
+    }
+
+    // -- build_unified_lookup tests --
+
+    #[test]
+    fn test_lookup_maps_created_and_duplicate_triage_outcomes() {
+        let ki_created = ki("aaaa");
+        let ki_matched = ki("bbbb");
+        let triage = vec![created(0, ki_created), duplicate(1, ki_matched)];
+
+        let lookup = build_unified_lookup(&triage, &[], 2);
+
+        assert_eq!(lookup.len(), 2);
+        assert_eq!(lookup[0], Some(ki_created));
+        assert_eq!(lookup[1], Some(ki_matched));
+    }
+
+    #[test]
+    fn test_lookup_maps_failed_triage_to_none() {
+        let triage = vec![triage_result(
+            0,
+            TriageOutcome::Failed {
+                error_message: "test failure".into(),
+                retryable: false,
+            },
+        )];
+
+        let lookup = build_unified_lookup(&triage, &[], 1);
+
+        assert_eq!(lookup.len(), 1);
+        assert_eq!(lookup[0], None);
+    }
+
+    #[test]
+    fn test_lookup_appends_similar_items_after_candidates() {
+        let ki_candidate = ki("aaaa");
+        let ki_similar_1 = ki("bbbb");
+        let ki_similar_2 = ki("cccc");
+        let triage = vec![created(0, ki_candidate)];
+        let decisions = vec![similar_item(1, ki_similar_1), similar_item(2, ki_similar_2)];
+
+        let lookup = build_unified_lookup(&triage, &decisions, 1);
+
+        assert_eq!(lookup.len(), 3);
+        assert_eq!(lookup[0], Some(ki_candidate));
+        assert_eq!(lookup[1], Some(ki_similar_1));
+        assert_eq!(lookup[2], Some(ki_similar_2));
+    }
+
+    #[test]
+    fn test_lookup_ignores_triage_result_beyond_batch_size() {
+        let ki_a = ki("aaaa");
+        let ki_stray = ki("bbbb");
+        let triage = vec![created(0, ki_a), created(5, ki_stray)];
+
+        let lookup = build_unified_lookup(&triage, &[], 2);
+
+        assert_eq!(lookup.len(), 2);
+        assert_eq!(lookup[0], Some(ki_a));
+        assert_eq!(lookup[1], None);
+    }
+
+    #[test]
+    fn test_lookup_empty_decisions_produces_batch_size_length() {
+        let triage = vec![created(0, ki("aaaa"))];
+
+        let lookup = build_unified_lookup(&triage, &[], 3);
+
+        assert_eq!(lookup.len(), 3);
+        assert_eq!(lookup[0], Some(ki("aaaa")));
+        assert_eq!(lookup[1], None);
+        assert_eq!(lookup[2], None);
     }
 
     // -- compute_outcome tests --
