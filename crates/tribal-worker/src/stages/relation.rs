@@ -425,32 +425,31 @@ async fn build_similar_item_decision_contexts(
         .map(|item| (item.id(), item.content().to_owned()))
         .collect();
 
-    decisions
-        .iter()
-        .enumerate()
-        .map(|(i, d)| {
-            let content = content_by_id.get(&d.matched_item_id()).ok_or_else(|| {
-                relation_db_error(
-                    "similar item decision refers to missing knowledge item",
-                    tribal_db::DbError::NotFound {
-                        entity: "knowledge_item",
-                        id: d.matched_item_id().to_string(),
-                    },
-                )
-            })?;
+    let mut contexts = Vec::with_capacity(decisions.len());
 
-            Ok(SimilarItemDecisionContext {
-                batch_index: d.batch_index(),
-                context_index: batch_size + clamp_to_u32(i),
-                matched_item_id: d.matched_item_id(),
-                matched_content: content.clone(),
-                similarity_score: d.similarity_score(),
-                similarity_label: SimilarityBand::from(d.similarity_score()).to_string(),
-                suggested_relation: d.suggested_relation(),
-                justification: d.justification_text().to_owned(),
-            })
-        })
-        .collect()
+    for d in decisions {
+        let Some(content) = content_by_id.get(&d.matched_item_id()) else {
+            tracing::warn!(
+                matched_item_id = %d.matched_item_id(),
+                batch_index = d.batch_index(),
+                "dropping stale similar-item decision — matched knowledge item no longer exists",
+            );
+            continue;
+        };
+
+        contexts.push(SimilarItemDecisionContext {
+            batch_index: d.batch_index(),
+            context_index: batch_size + clamp_to_u32(contexts.len()),
+            matched_item_id: d.matched_item_id(),
+            matched_content: content.clone(),
+            similarity_score: d.similarity_score(),
+            similarity_label: SimilarityBand::from(d.similarity_score()).to_string(),
+            suggested_relation: d.suggested_relation(),
+            justification: d.justification_text().to_owned(),
+        });
+    }
+
+    Ok(contexts)
 }
 
 // ---------------------------------------------------------------------------
