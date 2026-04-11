@@ -50,6 +50,8 @@ const EXPECT_RELATION_KEY: &str = "relation key registered at startup";
 pub(crate) struct RelationContext<'a> {
     /// The parent job.
     pub job: &'a Job,
+    /// The job's batch size, extracted once for the entire stage.
+    pub batch_size: u32,
     /// Typed candidates, deserialised from the extraction result.
     pub candidates: Vec<Candidate>,
     /// Typed relation hints, deserialised from the extraction result.
@@ -120,6 +122,15 @@ impl Worker {
         &self,
         job: &'a Job,
     ) -> Result<RelationContext<'a>, StageError> {
+        let batch_size = job.batch_size().ok_or_else(|| StageError::Database {
+            stage: STAGE_RELATION.into(),
+            context: format!("job {} has no batch_size set", job.id()),
+            source: tribal_db::DbError::NotFound {
+                entity: "job.batch_size",
+                id: job.id().to_string(),
+            },
+        })?;
+
         let mut conn = self
             .pool()
             .acquire()
@@ -130,12 +141,14 @@ impl Worker {
         let triage_results = load_triage_results(&mut conn, job).await?;
         let similar_item_decisions = load_similar_item_decisions(&mut conn, job).await?;
         let similar_item_decision_contexts =
-            build_similar_item_decision_contexts(&mut conn, &similar_item_decisions).await?;
+            build_similar_item_decision_contexts(&mut conn, &similar_item_decisions, batch_size)
+                .await?;
 
         drop(conn);
 
         Ok(RelationContext {
             job,
+            batch_size,
             candidates,
             relation_hints,
             triage_results,
@@ -202,16 +215,7 @@ impl Worker {
 
             let ctx = self.load_relation_data(job).await?;
 
-            let batch_size = ctx.job.batch_size().ok_or_else(|| StageError::Database {
-                stage: STAGE_RELATION.into(),
-                context: format!("job {} has no batch_size set", ctx.job.id()),
-                source: tribal_db::DbError::NotFound {
-                    entity: "job.batch_size",
-                    id: ctx.job.id().to_string(),
-                },
-            })?;
-
-            let prompt_context = build_prompt_context(&ctx, batch_size)?;
+            let prompt_context = build_prompt_context(&ctx, ctx.batch_size)?;
 
             let (system_pv, user_pv) = tokio::try_join!(
                 self.load_prompt_version(
@@ -289,10 +293,16 @@ impl Worker {
                 })?
             };
 
+            let lookup = build_unified_lookup(
+                &ctx.triage_results,
+                &ctx.similar_item_decision_contexts,
+                ctx.batch_size,
+            );
             let decision = build_commit_decision(
                 output.relations,
+                &lookup,
                 &ctx.triage_results,
-                batch_size,
+                ctx.batch_size,
                 ctx.job.principal_id(),
             );
 
@@ -388,6 +398,7 @@ async fn load_similar_item_decisions(
 async fn build_similar_item_decision_contexts(
     conn: &mut sqlx::PgConnection,
     decisions: &[TriageSimilarItemDecision],
+    batch_size: u32,
 ) -> Result<Vec<SimilarItemDecisionContext>, StageError> {
     if decisions.is_empty() {
         return Ok(vec![]);
@@ -414,30 +425,31 @@ async fn build_similar_item_decision_contexts(
         .map(|item| (item.id(), item.content().to_owned()))
         .collect();
 
-    decisions
-        .iter()
-        .map(|d| {
-            let content = content_by_id.get(&d.matched_item_id()).ok_or_else(|| {
-                relation_db_error(
-                    "similar item decision refers to missing knowledge item",
-                    tribal_db::DbError::NotFound {
-                        entity: "knowledge_item",
-                        id: d.matched_item_id().to_string(),
-                    },
-                )
-            })?;
+    let mut contexts = Vec::with_capacity(decisions.len());
 
-            Ok(SimilarItemDecisionContext {
-                batch_index: d.batch_index(),
-                matched_item_id: d.matched_item_id(),
-                matched_content: content.clone(),
-                similarity_score: d.similarity_score(),
-                similarity_label: SimilarityBand::from(d.similarity_score()).to_string(),
-                suggested_relation: d.suggested_relation(),
-                justification: d.justification_text().to_owned(),
-            })
-        })
-        .collect()
+    for d in decisions {
+        let Some(content) = content_by_id.get(&d.matched_item_id()) else {
+            tracing::warn!(
+                matched_item_id = %d.matched_item_id(),
+                batch_index = d.batch_index(),
+                "dropping stale similar-item decision — matched knowledge item no longer exists",
+            );
+            continue;
+        };
+
+        contexts.push(SimilarItemDecisionContext {
+            batch_index: d.batch_index(),
+            context_index: batch_size + clamp_to_u32(contexts.len()),
+            matched_item_id: d.matched_item_id(),
+            matched_content: content.clone(),
+            similarity_score: d.similarity_score(),
+            similarity_label: SimilarityBand::from(d.similarity_score()).to_string(),
+            suggested_relation: d.suggested_relation(),
+            justification: d.justification_text().to_owned(),
+        });
+    }
+
+    Ok(contexts)
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +496,9 @@ fn build_candidate_outcomes<'a>(
     triage_results: &[TriageResult],
     batch_size: u32,
 ) -> Result<Vec<CandidateOutcome<'a>>, StageError> {
-    if (batch_size as usize) > candidates.len() {
+    let n_candidates = batch_size as usize;
+
+    if n_candidates > candidates.len() {
         return Err(StageError::Database {
             stage: STAGE_RELATION.into(),
             context: format!(
@@ -506,7 +520,7 @@ fn build_candidate_outcomes<'a>(
     Ok(candidates
         .iter()
         .enumerate()
-        .take(batch_size as usize)
+        .take(n_candidates)
         .map(|(i, candidate)| {
             let batch_index = clamp_to_u32(i);
             let (outcome, item_id) = match triage_by_index.get(&batch_index) {
@@ -538,11 +552,12 @@ fn build_candidate_outcomes<'a>(
 /// decision with `NewKnowledgeItemRelation` rows.
 fn build_commit_decision(
     edges: Vec<RelationEdge>,
+    lookup: &[Option<KnowledgeItemId>],
     triage_results: &[TriageResult],
     batch_size: u32,
     principal_id: PrincipalId,
 ) -> RelationCommitDecision {
-    let (normalised, skipped) = normalise_edges(edges, triage_results);
+    let (normalised, skipped) = normalise_edges(edges, lookup);
     let outcome = compute_outcome(triage_results, batch_size);
     let batch_id = RelationBatchId::new();
 
@@ -569,6 +584,52 @@ fn build_commit_decision(
 }
 
 // ---------------------------------------------------------------------------
+// Unified lookup table
+// ---------------------------------------------------------------------------
+
+/// Builds a unified index-to-ID lookup covering all referenceable items.
+///
+/// Indices `0..batch_size` resolve via triage outcomes (the same
+/// semantics as the previous `resolve_target` for batch indices).
+/// Indices `batch_size..` resolve directly from similar-item decision
+/// targets — these are existing knowledge items whose IDs are known.
+fn build_unified_lookup(
+    triage_results: &[TriageResult],
+    similar_item_decisions: &[SimilarItemDecisionContext],
+    batch_size: u32,
+) -> Vec<Option<KnowledgeItemId>> {
+    let n_candidates = batch_size as usize;
+    let total = n_candidates + similar_item_decisions.len();
+    let mut lookup = vec![None; total];
+
+    // Candidate indices: resolve through triage outcomes.
+    for result in triage_results {
+        let idx = result.batch_index() as usize;
+        if idx < n_candidates {
+            lookup[idx] = match result.outcome() {
+                TriageOutcome::Created { item_id } => Some(*item_id),
+                TriageOutcome::Duplicate {
+                    matched_item_id, ..
+                } => Some(*matched_item_id),
+                TriageOutcome::Failed { .. } => None,
+            };
+        }
+    }
+
+    // Similar-item indices: resolve directly from matched item IDs.
+    for (i, decision) in similar_item_decisions.iter().enumerate() {
+        debug_assert_eq!(
+            n_candidates + i,
+            decision.context_index as usize,
+            "context_index mismatch — decisions may have been reordered",
+        );
+        lookup[n_candidates + i] = Some(decision.matched_item_id);
+    }
+
+    lookup
+}
+
+// ---------------------------------------------------------------------------
 // Edge normalisation
 // ---------------------------------------------------------------------------
 
@@ -583,7 +644,7 @@ struct ResolvedEdge {
 /// Normalises raw relation edges into resolved, deduplicated edges.
 ///
 /// Steps:
-/// 1. Resolve `BatchIndex` endpoints (sources and targets) to `KnowledgeItemId` via triage results.
+/// 1. Resolve `ContextIndex` endpoints to `KnowledgeItemId` via the unified lookup table.
 /// 2. Drop edges with any unresolvable endpoint.
 /// 3. Drop self-edges.
 /// 4. Deduplicate `(source_id, target_id, relation_type)` triples.
@@ -592,13 +653,8 @@ struct ResolvedEdge {
 /// [`IngestionRelationKind`] type excludes the variant entirely.
 fn normalise_edges(
     edges: Vec<RelationEdge>,
-    triage_results: &[TriageResult],
+    lookup: &[Option<KnowledgeItemId>],
 ) -> (Vec<ResolvedEdge>, usize) {
-    let triage_by_index: HashMap<u32, &TriageResult> = triage_results
-        .iter()
-        .map(|r| (r.batch_index(), r))
-        .collect();
-
     let mut seen = HashSet::new();
     let mut result = Vec::with_capacity(edges.len());
     let mut skipped: usize = 0;
@@ -607,7 +663,7 @@ fn normalise_edges(
         let relation_type: RelationKind = edge.relation_type.into();
 
         // Step 1+2: resolve targets.
-        let Some(source_id) = resolve_target(&edge.source, &triage_by_index) else {
+        let Some(source_id) = resolve_target(&edge.source, lookup) else {
             tracing::debug!(
                 ?edge.source, ?edge.target, ?relation_type,
                 "dropping edge — unresolvable source",
@@ -615,7 +671,7 @@ fn normalise_edges(
             skipped += 1;
             continue;
         };
-        let Some(target_id) = resolve_target(&edge.target, &triage_by_index) else {
+        let Some(target_id) = resolve_target(&edge.target, lookup) else {
             tracing::debug!(
                 ?edge.source, ?edge.target, ?relation_type,
                 "dropping edge — unresolvable target",
@@ -659,19 +715,11 @@ fn normalise_edges(
 /// Resolves a single `RelationTarget` to a `KnowledgeItemId`.
 fn resolve_target(
     target: &RelationTarget,
-    triage_by_index: &HashMap<u32, &TriageResult>,
+    lookup: &[Option<KnowledgeItemId>],
 ) -> Option<KnowledgeItemId> {
     match target {
-        RelationTarget::ItemId { item_id } => Some(*item_id),
-        RelationTarget::BatchIndex { batch_index } => {
-            let result = triage_by_index.get(batch_index)?;
-            match result.outcome() {
-                TriageOutcome::Created { item_id } => Some(*item_id),
-                TriageOutcome::Duplicate {
-                    matched_item_id, ..
-                } => Some(*matched_item_id),
-                TriageOutcome::Failed { .. } => None,
-            }
+        RelationTarget::ContextIndex { context_index } => {
+            lookup.get(*context_index as usize).copied().flatten()
         }
     }
 }
@@ -725,7 +773,9 @@ fn relation_sqlx_error(context: &str, source: sqlx::Error) -> StageError {
 
 #[cfg(test)]
 mod tests {
-    use tribal_domain::{KnowledgeItemId, TriageOutcome, TriageResult, TriageResultId};
+    use tribal_domain::{
+        KnowledgeItemId, RelationSuggestion, TriageOutcome, TriageResult, TriageResultId,
+    };
 
     use super::*;
     use crate::parsing::IngestionRelationKind;
@@ -773,20 +823,33 @@ mod tests {
         )
     }
 
+    fn similar_item(context_index: u32, matched_id: KnowledgeItemId) -> SimilarItemDecisionContext {
+        SimilarItemDecisionContext {
+            batch_index: 0,
+            context_index,
+            matched_item_id: matched_id,
+            matched_content: String::new(),
+            similarity_score: 0.5,
+            similarity_label: String::new(),
+            suggested_relation: RelationSuggestion::Supports,
+            justification: String::new(),
+        }
+    }
+
     // -- normalise_edges tests --
 
     #[test]
     fn test_normalise_resolves_created_to_item_id() {
         let ki_a = ki("aaaa");
         let ki_b = ki("bbbb");
-        let results = vec![created(0, ki_a), created(1, ki_b)];
+        let lookup = vec![Some(ki_a), Some(ki_b)];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 1 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 1 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert_eq!(normalised.len(), 1);
         assert_eq!(normalised[0].source_id, ki_a);
         assert_eq!(normalised[0].target_id, ki_b);
@@ -797,19 +860,19 @@ mod tests {
     fn test_normalise_resolves_duplicate_to_matched_item_id() {
         // Candidate 0 was created as ki_created.
         // Candidate 1 was flagged as a duplicate of ki_existing.
-        // An edge from batch 0 → batch 1 should resolve the
+        // An edge from index 0 → index 1 should resolve the
         // duplicate's target to ki_existing (the matched item),
         // not to the candidate itself (which was never created).
         let ki_created = ki("aaaa");
         let ki_existing = ki("cccc");
-        let results = vec![created(0, ki_created), duplicate(1, ki_existing)];
+        let lookup = vec![Some(ki_created), Some(ki_existing)];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 1 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 1 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert_eq!(normalised.len(), 1);
         assert_eq!(normalised[0].source_id, ki_created);
         assert_eq!(normalised[0].target_id, ki_existing);
@@ -817,40 +880,32 @@ mod tests {
     }
 
     #[test]
-    fn test_normalise_drops_unresolved_batch_index() {
+    fn test_normalise_drops_unresolvable_index() {
         let ki_a = ki("aaaa");
-        let results = vec![created(0, ki_a)];
+        let lookup = vec![Some(ki_a)];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 5 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 5 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert!(normalised.is_empty());
         assert_eq!(skipped, 1);
     }
 
     #[test]
-    fn test_normalise_drops_failed_batch_index() {
+    fn test_normalise_drops_failed_candidate() {
         let ki_a = ki("aaaa");
-        let results = vec![
-            created(0, ki_a),
-            triage_result(
-                1,
-                TriageOutcome::Failed {
-                    error_message: "test failure".into(),
-                    retryable: false,
-                },
-            ),
-        ];
+        // Index 1 is None — corresponds to a failed triage outcome.
+        let lookup = vec![Some(ki_a), None];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 1 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 1 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert!(normalised.is_empty());
         assert_eq!(skipped, 1);
     }
@@ -858,14 +913,14 @@ mod tests {
     #[test]
     fn test_normalise_drops_self_edges() {
         let ki_a = ki("aaaa");
-        let results = vec![created(0, ki_a)];
+        let lookup = vec![Some(ki_a)];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 0 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 0 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert!(normalised.is_empty());
         assert_eq!(skipped, 1);
     }
@@ -874,21 +929,21 @@ mod tests {
     fn test_normalise_deduplicates_triples() {
         let ki_a = ki("aaaa");
         let ki_b = ki("bbbb");
-        let results = vec![created(0, ki_a), created(1, ki_b)];
+        let lookup = vec![Some(ki_a), Some(ki_b)];
         let edges = vec![
             edge(
-                RelationTarget::BatchIndex { batch_index: 0 },
-                RelationTarget::BatchIndex { batch_index: 1 },
+                RelationTarget::ContextIndex { context_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
                 IngestionRelationKind::Supports,
             ),
             edge(
-                RelationTarget::BatchIndex { batch_index: 0 },
-                RelationTarget::BatchIndex { batch_index: 1 },
+                RelationTarget::ContextIndex { context_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
                 IngestionRelationKind::Supports,
             ),
         ];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert_eq!(normalised.len(), 1);
         assert_eq!(skipped, 1);
     }
@@ -897,23 +952,151 @@ mod tests {
     fn test_normalise_preserves_inverse_edges() {
         let ki_a = ki("aaaa");
         let ki_b = ki("bbbb");
-        let results = vec![created(0, ki_a), created(1, ki_b)];
+        let lookup = vec![Some(ki_a), Some(ki_b)];
         let edges = vec![
             edge(
-                RelationTarget::BatchIndex { batch_index: 0 },
-                RelationTarget::BatchIndex { batch_index: 1 },
+                RelationTarget::ContextIndex { context_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
                 IngestionRelationKind::Supports,
             ),
             edge(
-                RelationTarget::BatchIndex { batch_index: 1 },
-                RelationTarget::BatchIndex { batch_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
+                RelationTarget::ContextIndex { context_index: 0 },
                 IngestionRelationKind::Supports,
             ),
         ];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert_eq!(normalised.len(), 2);
         assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn test_normalise_resolves_similar_item_index() {
+        // 2 candidates + 2 similar items in the unified lookup.
+        let ki_a = ki("aaaa");
+        let ki_b = ki("bbbb");
+        let ki_similar_1 = ki("cccc");
+        let ki_similar_2 = ki("dddd");
+        let lookup = vec![
+            Some(ki_a),
+            Some(ki_b),
+            Some(ki_similar_1),
+            Some(ki_similar_2),
+        ];
+        let edges = vec![edge(
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 2 },
+            IngestionRelationKind::Supports,
+        )];
+
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
+        assert_eq!(normalised.len(), 1);
+        assert_eq!(normalised[0].source_id, ki_a);
+        assert_eq!(normalised[0].target_id, ki_similar_1);
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn test_normalise_mixed_candidate_and_similar_item_edges() {
+        let ki_a = ki("aaaa");
+        let ki_b = ki("bbbb");
+        let ki_similar = ki("cccc");
+        let lookup = vec![Some(ki_a), Some(ki_b), Some(ki_similar)];
+        let edges = vec![
+            // Candidate → candidate.
+            edge(
+                RelationTarget::ContextIndex { context_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
+                IngestionRelationKind::Supports,
+            ),
+            // Candidate → similar item.
+            edge(
+                RelationTarget::ContextIndex { context_index: 1 },
+                RelationTarget::ContextIndex { context_index: 2 },
+                IngestionRelationKind::Contradicts,
+            ),
+        ];
+
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
+        assert_eq!(normalised.len(), 2);
+        assert_eq!(normalised[0].source_id, ki_a);
+        assert_eq!(normalised[0].target_id, ki_b);
+        assert_eq!(normalised[1].source_id, ki_b);
+        assert_eq!(normalised[1].target_id, ki_similar);
+        assert_eq!(skipped, 0);
+    }
+
+    // -- build_unified_lookup tests --
+
+    #[test]
+    fn test_lookup_maps_created_and_duplicate_triage_outcomes() {
+        let ki_created = ki("aaaa");
+        let ki_matched = ki("bbbb");
+        let triage = vec![created(0, ki_created), duplicate(1, ki_matched)];
+
+        let lookup = build_unified_lookup(&triage, &[], 2);
+
+        assert_eq!(lookup.len(), 2);
+        assert_eq!(lookup[0], Some(ki_created));
+        assert_eq!(lookup[1], Some(ki_matched));
+    }
+
+    #[test]
+    fn test_lookup_maps_failed_triage_to_none() {
+        let triage = vec![triage_result(
+            0,
+            TriageOutcome::Failed {
+                error_message: "test failure".into(),
+                retryable: false,
+            },
+        )];
+
+        let lookup = build_unified_lookup(&triage, &[], 1);
+
+        assert_eq!(lookup.len(), 1);
+        assert_eq!(lookup[0], None);
+    }
+
+    #[test]
+    fn test_lookup_appends_similar_items_after_candidates() {
+        let ki_candidate = ki("aaaa");
+        let ki_similar_1 = ki("bbbb");
+        let ki_similar_2 = ki("cccc");
+        let triage = vec![created(0, ki_candidate)];
+        let decisions = vec![similar_item(1, ki_similar_1), similar_item(2, ki_similar_2)];
+
+        let lookup = build_unified_lookup(&triage, &decisions, 1);
+
+        assert_eq!(lookup.len(), 3);
+        assert_eq!(lookup[0], Some(ki_candidate));
+        assert_eq!(lookup[1], Some(ki_similar_1));
+        assert_eq!(lookup[2], Some(ki_similar_2));
+    }
+
+    #[test]
+    fn test_lookup_ignores_triage_result_beyond_batch_size() {
+        let ki_a = ki("aaaa");
+        let ki_stray = ki("bbbb");
+        let triage = vec![created(0, ki_a), created(5, ki_stray)];
+
+        let lookup = build_unified_lookup(&triage, &[], 2);
+
+        assert_eq!(lookup.len(), 2);
+        assert_eq!(lookup[0], Some(ki_a));
+        assert_eq!(lookup[1], None);
+    }
+
+    #[test]
+    fn test_lookup_empty_decisions_produces_batch_size_length() {
+        let triage = vec![created(0, ki("aaaa"))];
+
+        let lookup = build_unified_lookup(&triage, &[], 3);
+
+        assert_eq!(lookup.len(), 3);
+        assert_eq!(lookup[0], Some(ki("aaaa")));
+        assert_eq!(lookup[1], None);
+        assert_eq!(lookup[2], None);
     }
 
     // -- compute_outcome tests --

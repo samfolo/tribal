@@ -3,7 +3,7 @@ use tribal_config::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,
-    fixtures::{ExtractionFixture, RelationFixture, candidate, intra_batch, novel},
+    fixtures::{ExtractionFixture, RelationFixture, candidate, novel, relate},
     server::TestHarness,
     tool_call::tool_result_json,
 };
@@ -84,15 +84,15 @@ async fn test_relation_normalisation_drops_invalid_edges() {
             m.respond(
                 RelationFixture::builder()
                     // Valid: candidate 0 supports candidate 1.
-                    .edge(intra_batch(0, "supports", 1))
+                    .edge(relate(0, "supports", 1))
                     // Skipped during lenient parsing: unknown relation type.
-                    .edge(intra_batch(0, "unexpected", 2))
+                    .edge(relate(0, "unexpected", 2))
                     // Dropped (step 2): batch index 99 does not exist.
-                    .edge(intra_batch(99, "contradicts", 0))
+                    .edge(relate(99, "contradicts", 0))
                     // Dropped (step 3): self-edge after resolution.
-                    .edge(intra_batch(0, "derived_from", 0))
+                    .edge(relate(0, "derived_from", 0))
                     // Dropped (step 4): exact duplicate of the valid edge.
-                    .edge(intra_batch(0, "supports", 1))
+                    .edge(relate(0, "supports", 1))
                     .build(),
             );
         })

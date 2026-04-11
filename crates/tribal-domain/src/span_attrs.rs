@@ -120,8 +120,11 @@ pub const TRIAGE_OUTCOME: &str = "tribal.triage.outcome";
 /// Span field name for the number of relations committed.
 pub const RELATIONS_COMMITTED: &str = "tribal.relations.committed";
 
-/// Span field name for the number of relations skipped.
+/// Span field name for the number of relations skipped during normalisation.
 pub const RELATIONS_SKIPPED: &str = "tribal.relations.skipped";
+
+/// Span field name for relations dropped by pre-insert endpoint validation.
+pub const RELATIONS_VALIDATION_DROPPED: &str = "tribal.relations.validation_dropped";
 
 /// Span field name for the overall job outcome.
 pub const JOB_OUTCOME: &str = "tribal.job.outcome";

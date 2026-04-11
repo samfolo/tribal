@@ -88,6 +88,7 @@ pub fn synthetic_validation_context(stage: PromptStage, role: PromptRole) -> ter
 
             let decision = SimilarItemDecisionContext {
                 batch_index: 0,
+                context_index: 1,
                 matched_item_id: KnowledgeItemId::new(),
                 matched_content: "x".to_owned(),
                 similarity_score: 0.5,

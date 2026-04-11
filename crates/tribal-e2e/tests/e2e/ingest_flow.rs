@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::harness::{
     assertions::assert_success,
-    fixtures::{ExtractionFixture, RelationFixture, candidate, intra_batch, novel},
+    fixtures::{ExtractionFixture, RelationFixture, candidate, novel, relate},
     server::TestHarness,
     tool_call::tool_result_json,
 };
@@ -60,7 +60,7 @@ async fn test_ingest_pipeline_end_to_end() {
         .mount_relation(|m| {
             m.respond(
                 RelationFixture::builder()
-                    .edge(intra_batch(0, "supports", 1))
+                    .edge(relate(0, "supports", 1))
                     .build(),
             );
         })

@@ -6,5 +6,5 @@ pub use extraction::{
     CandidateSpec, ExtractionFixture, ExtractionFixtureBuilder, ReferenceSpec, RelationHintSpec,
     candidate, hint,
 };
-pub use relation::{EdgeSpec, RelationFixture, RelationFixtureBuilder, intra_batch, to_existing};
+pub use relation::{EdgeSpec, RelationFixture, RelationFixtureBuilder, relate};
 pub use triage::{SimilarItemSpec, TriageFixtureBuilder, duplicate, novel};

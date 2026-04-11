@@ -1,5 +1,7 @@
 //! Domain-effect commit handlers for each pipeline stage.
 
+use std::collections::HashSet;
+
 use chrono::Utc;
 use tracing::Instrument;
 use tribal_common::clamp_to_u32;
@@ -15,8 +17,8 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    Job, JobId, JobOutcome, JobState, JobStatus, ReferenceKind, RelationBatchId, Task,
-    TriageOutcome, span_attrs,
+    Job, JobId, JobOutcome, JobState, JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId,
+    Task, TriageOutcome, span_attrs,
 };
 
 use super::Worker;
@@ -342,6 +344,7 @@ impl Worker {
             { span_attrs::RELATION_BATCH_ID } = tracing::field::Empty,
             { span_attrs::RELATIONS_COMMITTED } = tracing::field::Empty,
             { span_attrs::RELATIONS_SKIPPED } = tracing::field::Empty,
+            { span_attrs::RELATIONS_VALIDATION_DROPPED } = tracing::field::Empty,
         );
 
         async {
@@ -483,6 +486,7 @@ impl Worker {
             return Ok(false);
         }
 
+        let relations = validate_relation_endpoints(txn, relations).await?;
         let relations_count = relations.len();
 
         if !relations.is_empty() {
@@ -757,6 +761,60 @@ async fn validate_triage_noop(
     }
 
     Ok("no_op")
+}
+
+// ---------------------------------------------------------------------------
+// Pre-insert validation
+// ---------------------------------------------------------------------------
+
+/// Validates that all relation endpoint IDs exist in `knowledge_items`.
+///
+/// Drops relations with missing endpoints rather than letting the FK
+/// constraint fail the entire batch. This catches race conditions where
+/// an item is deleted between the triage and relation stages.
+async fn validate_relation_endpoints(
+    conn: &mut sqlx::PgConnection,
+    relations: Vec<NewKnowledgeItemRelation>,
+) -> Result<Vec<NewKnowledgeItemRelation>, StageError> {
+    if relations.is_empty() {
+        tracing::Span::current().record(span_attrs::RELATIONS_VALIDATION_DROPPED, 0usize);
+        return Ok(relations);
+    }
+
+    let all_ids: HashSet<KnowledgeItemId> = relations
+        .iter()
+        .flat_map(|r| [r.source_id, r.target_id])
+        .collect();
+    let id_vec: Vec<KnowledgeItemId> = all_ids.iter().copied().collect();
+
+    let existing_ids: HashSet<KnowledgeItemId> = PgKnowledgeItemRepository
+        .find_existing_ids(conn, &id_vec)
+        .await
+        .map_err(|e| stage_db_error(STAGE_RELATION, "validating relation endpoints", e))?
+        .into_iter()
+        .collect();
+
+    let missing: Vec<KnowledgeItemId> = all_ids.difference(&existing_ids).copied().collect();
+    if missing.is_empty() {
+        tracing::Span::current().record(span_attrs::RELATIONS_VALIDATION_DROPPED, 0usize);
+        return Ok(relations);
+    }
+
+    let before = relations.len();
+    let valid: Vec<NewKnowledgeItemRelation> = relations
+        .into_iter()
+        .filter(|r| existing_ids.contains(&r.source_id) && existing_ids.contains(&r.target_id))
+        .collect();
+    let dropped = before - valid.len();
+
+    tracing::warn!(
+        dropped,
+        ?missing,
+        "dropping relations with non-existent endpoints",
+    );
+    tracing::Span::current().record(span_attrs::RELATIONS_VALIDATION_DROPPED, dropped);
+
+    Ok(valid)
 }
 
 // ---------------------------------------------------------------------------
