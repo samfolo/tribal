@@ -618,6 +618,11 @@ fn build_unified_lookup(
 
     // Similar-item indices: resolve directly from matched item IDs.
     for (i, decision) in similar_item_decisions.iter().enumerate() {
+        debug_assert_eq!(
+            n_candidates + i,
+            decision.context_index as usize,
+            "context_index mismatch — decisions may have been reordered",
+        );
         lookup[n_candidates + i] = Some(decision.matched_item_id);
     }
 

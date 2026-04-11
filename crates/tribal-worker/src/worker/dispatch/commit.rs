@@ -796,6 +796,7 @@ async fn validate_relation_endpoints(
 
     let missing: Vec<KnowledgeItemId> = all_ids.difference(&existing_ids).copied().collect();
     if missing.is_empty() {
+        tracing::Span::current().record(span_attrs::RELATIONS_VALIDATION_DROPPED, 0usize);
         return Ok(relations);
     }
 
