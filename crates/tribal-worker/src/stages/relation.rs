@@ -712,8 +712,8 @@ fn resolve_target(
     lookup: &[Option<KnowledgeItemId>],
 ) -> Option<KnowledgeItemId> {
     match target {
-        RelationTarget::BatchIndex { batch_index } => {
-            lookup.get(*batch_index as usize).copied().flatten()
+        RelationTarget::ContextIndex { context_index } => {
+            lookup.get(*context_index as usize).copied().flatten()
         }
     }
 }
