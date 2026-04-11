@@ -8,7 +8,7 @@ use tribal::App;
 
 fn main() {
     if let Err(err) = App::parse().run() {
-        eprintln!("{err}");
+        err.print_error();
         process::exit(err.exit_code());
     }
 }
