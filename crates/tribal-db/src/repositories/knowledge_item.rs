@@ -616,3 +616,39 @@ fn apply_structured_filters(
         })
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-helpers")]
+impl PgKnowledgeItemRepository {
+    /// Deletes a knowledge item by ID.
+    ///
+    /// Returns `true` if the item existed and was deleted, `false`
+    /// otherwise. This method exists solely for integration tests
+    /// that need to fabricate edge cases (e.g. an item deleted
+    /// between pipeline stages).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn delete_by_id_for_test(
+        &self,
+        conn: &mut PgConnection,
+        id: KnowledgeItemId,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query!(
+            "DELETE FROM knowledge_items WHERE id = $1",
+            id.inner(),
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "deleting knowledge item for test".into(),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected() > 0)
+    }
+}
