@@ -6,44 +6,25 @@ use serde_json::{Value, json};
 
 /// Specifies a relation edge in a relation response.
 pub struct EdgeSpec {
-    source: RelationTargetSpec,
-    target: RelationTargetSpec,
+    source: usize,
+    target: usize,
     relation_type: String,
     justification: Option<String>,
-}
-
-enum RelationTargetSpec {
-    BatchIndex(usize),
-    ItemId(String),
 }
 
 // ---------------------------------------------------------------------------
 // Convenience constructors
 // ---------------------------------------------------------------------------
 
-/// Creates an edge between two candidates in the same batch.
+/// Creates an edge between two items by context index.
 ///
-/// Argument order reads as a sentence: `intra_batch(0, "supports", 1)`
-/// → "batch item 0 supports batch item 1".
+/// Argument order reads as a sentence: `relate(0, "supports", 1)`
+/// → "item 0 supports item 1".
 #[must_use]
-pub fn intra_batch(source: usize, relation_type: &str, target: usize) -> EdgeSpec {
+pub fn relate(source: usize, relation_type: &str, target: usize) -> EdgeSpec {
     EdgeSpec {
-        source: RelationTargetSpec::BatchIndex(source),
-        target: RelationTargetSpec::BatchIndex(target),
-        relation_type: relation_type.to_owned(),
-        justification: None,
-    }
-}
-
-/// Creates an edge from a batch candidate to an existing knowledge item.
-///
-/// Argument order reads as a sentence: `to_existing(0, "supports", id)`
-/// → "batch item 0 supports existing item".
-#[must_use]
-pub fn to_existing(source_index: usize, relation_type: &str, target_id: &str) -> EdgeSpec {
-    EdgeSpec {
-        source: RelationTargetSpec::BatchIndex(source_index),
-        target: RelationTargetSpec::ItemId(target_id.to_owned()),
+        source,
+        target,
         relation_type: relation_type.to_owned(),
         justification: None,
     }
@@ -58,13 +39,8 @@ impl EdgeSpec {
     }
 }
 
-impl RelationTargetSpec {
-    fn to_json(&self) -> Value {
-        match self {
-            Self::BatchIndex(i) => json!({ "kind": "batch_index", "batch_index": i }),
-            Self::ItemId(id) => json!({ "kind": "item_id", "item_id": id }),
-        }
-    }
+fn target_json(index: usize) -> Value {
+    json!({ "kind": "context_index", "context_index": index })
 }
 
 // ---------------------------------------------------------------------------
@@ -103,15 +79,15 @@ impl RelationFixtureBuilder {
             .edges
             .iter()
             .map(|e| {
-                let mut edge = json!({
-                    "source": e.source.to_json(),
-                    "target": e.target.to_json(),
+                let mut val = json!({
+                    "source": target_json(e.source),
+                    "target": target_json(e.target),
                     "relation_type": e.relation_type,
                 });
                 if let Some(j) = &e.justification {
-                    edge["justification"] = json!(j);
+                    val["justification"] = json!(j);
                 }
-                edge
+                val
             })
             .collect();
 

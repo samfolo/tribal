@@ -3,7 +3,7 @@ use tribal_config::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,
-    fixtures::{ExtractionFixture, RelationFixture, candidate, intra_batch, novel},
+    fixtures::{ExtractionFixture, RelationFixture, candidate, novel, relate},
     mocks::{ContentMatcher, error},
     server::TestHarness,
     tool_call::tool_result_json,
@@ -69,7 +69,7 @@ async fn test_provider_failure_and_retry() {
         .mount_relation(|m| {
             m.respond(
                 RelationFixture::builder()
-                    .edge(intra_batch(0, "supports", 1))
+                    .edge(relate(0, "supports", 1))
                     .build(),
             );
         })
