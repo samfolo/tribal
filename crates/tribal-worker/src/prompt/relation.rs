@@ -56,7 +56,7 @@ pub(crate) struct SimilarItemDecisionContext {
     /// matched against during triage.
     pub batch_index: u32,
     /// This item's position in the unified index space (candidates
-    /// occupy 0..batch_size, similar items occupy batch_size..).
+    /// occupy `0..batch_size`, similar items occupy `batch_size..`).
     /// Used by the model to reference this item in relation edges.
     pub context_index: u32,
     /// The existing item that was compared against.
