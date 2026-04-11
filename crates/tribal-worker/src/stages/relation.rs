@@ -50,6 +50,8 @@ const EXPECT_RELATION_KEY: &str = "relation key registered at startup";
 pub(crate) struct RelationContext<'a> {
     /// The parent job.
     pub job: &'a Job,
+    /// The job's batch size, extracted once for the entire stage.
+    pub batch_size: u32,
     /// Typed candidates, deserialised from the extraction result.
     pub candidates: Vec<Candidate>,
     /// Typed relation hints, deserialised from the extraction result.
