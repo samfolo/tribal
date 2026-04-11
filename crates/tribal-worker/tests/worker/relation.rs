@@ -1,24 +1,4 @@
-use super::{common::*, fixtures::batch_index_relation_response_json};
-
-/// Helper: builds a relation response JSON string with `item_id`
-/// targets — a `supports` edge from the first item to each subsequent
-/// item.
-fn item_id_relation_response_json(ki_ids: &[KnowledgeItemId]) -> String {
-    let mut relations = Vec::new();
-
-    if ki_ids.len() >= 2 {
-        for ki_id in &ki_ids[1..] {
-            relations.push(serde_json::json!({
-                "source": { "kind": "item_id", "item_id": ki_ids[0].to_string() },
-                "target": { "kind": "item_id", "item_id": ki_id.to_string() },
-                "relation_type": "supports",
-                "justification": "Test relation",
-            }));
-        }
-    }
-
-    serde_json::json!({ "relations": relations }).to_string()
-}
+use super::{common::*, fixtures::context_index_relation_response_json};
 
 /// Verifies the happy path: the relation stage calls the LLM, parses
 /// the response, commits relations, sets `committed_batch_id`, and
