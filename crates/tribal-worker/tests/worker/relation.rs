@@ -1,24 +1,4 @@
-use super::{common::*, fixtures::batch_index_relation_response_json};
-
-/// Helper: builds a relation response JSON string with `item_id`
-/// targets — a `supports` edge from the first item to each subsequent
-/// item.
-fn item_id_relation_response_json(ki_ids: &[KnowledgeItemId]) -> String {
-    let mut relations = Vec::new();
-
-    if ki_ids.len() >= 2 {
-        for ki_id in &ki_ids[1..] {
-            relations.push(serde_json::json!({
-                "source": { "kind": "item_id", "item_id": ki_ids[0].to_string() },
-                "target": { "kind": "item_id", "item_id": ki_id.to_string() },
-                "relation_type": "supports",
-                "justification": "Test relation",
-            }));
-        }
-    }
-
-    serde_json::json!({ "relations": relations }).to_string()
-}
+use super::{common::*, fixtures::context_index_relation_response_json};
 
 /// Verifies the happy path: the relation stage calls the LLM, parses
 /// the response, commits relations, sets `committed_batch_id`, and
@@ -59,7 +39,7 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
             .on_complete(
-                a_completion_response(batch_index_relation_response_json(ki_ids.len())),
+                a_completion_response(context_index_relation_response_json(ki_ids.len())),
                 None,
             )
             .on_exhaust(ExhaustBehaviour::RepeatLast)
@@ -309,10 +289,7 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
             .on_complete(
-                a_completion_response(item_id_relation_response_json(&[
-                    matched_ki_a,
-                    matched_ki_b,
-                ])),
+                a_completion_response(context_index_relation_response_json(2)),
                 None,
             )
             .on_exhaust(ExhaustBehaviour::RepeatLast)
@@ -577,8 +554,8 @@ async fn test_relation_stage_all_edges_dropped() {
     // Return only Supersedes edges — all will be dropped.
     let supersedes_json = serde_json::json!({
         "relations": [{
-            "source": { "kind": "batch_index", "batch_index": 0 },
-            "target": { "kind": "batch_index", "batch_index": 1 },
+            "source": { "kind": "context_index", "context_index": 0 },
+            "target": { "kind": "context_index", "context_index": 1 },
             "relation_type": "supersedes",
             "justification": "Should be dropped",
         }]

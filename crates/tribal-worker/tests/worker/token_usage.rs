@@ -1,7 +1,7 @@
 use super::{
     common::*,
     fixtures::{
-        batch_index_relation_response_json, extraction_response_json,
+        context_index_relation_response_json, extraction_response_json,
         triage_duplicate_response_json, triage_novel_response_json,
     },
 };
@@ -572,7 +572,7 @@ async fn test_relation_records_token_usage() {
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
             .on_complete(
-                a_completion_response(batch_index_relation_response_json(ki_ids.len())),
+                a_completion_response(context_index_relation_response_json(ki_ids.len())),
                 None,
             )
             .on_exhaust(ExhaustBehaviour::RepeatLast)

@@ -3,7 +3,7 @@ use tribal_config::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,
-    fixtures::{ExtractionFixture, RelationFixture, candidate, intra_batch, novel},
+    fixtures::{ExtractionFixture, RelationFixture, candidate, novel, relate},
     server::TestHarness,
     tool_call::tool_result_json,
 };
@@ -71,8 +71,8 @@ async fn test_explore_graph_traversal() {
         .mount_relation(|m| {
             m.respond(
                 RelationFixture::builder()
-                    .edge(intra_batch(0, "supports", 1))
-                    .edge(intra_batch(1, "contradicts", 2))
+                    .edge(relate(0, "supports", 1))
+                    .edge(relate(1, "contradicts", 2))
                     .build(),
             );
         })

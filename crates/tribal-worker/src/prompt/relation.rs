@@ -52,8 +52,14 @@ pub(crate) struct CandidateOutcome<'a> {
 /// A triage similar item decision for prompt inclusion.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SimilarItemDecisionContext {
-    /// The candidate's position in the extraction batch.
+    /// The `batch_index` of the candidate this similar item was
+    /// matched against during triage. For this item's own position
+    /// in the unified index space, see `context_index`.
     pub batch_index: u32,
+    /// This item's position in the unified index space (candidates
+    /// occupy `0..batch_size`, similar items occupy `batch_size..`).
+    /// Used by the model to reference this item in relation edges.
+    pub context_index: u32,
     /// The existing item that was compared against.
     pub matched_item_id: KnowledgeItemId,
     /// The matched item's content.
@@ -182,6 +188,7 @@ mod tests {
             relation_hints: vec![test_relation_hint(0, 1)],
             similar_item_decisions: vec![SimilarItemDecisionContext {
                 batch_index: 0,
+                context_index: 3,
                 matched_item_id: ki_b,
                 matched_content: "Existing item about memory safety".into(),
                 similarity_score: 0.87,
@@ -306,7 +313,7 @@ mod tests {
         let ctx = rich_context(&data);
         let user_template = concat!(
             "{% for d in similar_item_decisions %}",
-            "batch {{ d.batch_index }}: {{ d.matched_item_id }} ",
+            "batch {{ d.batch_index }}: item {{ d.context_index }} ",
             "({{ d.similarity_score }}) {{ d.suggested_relation }} — {{ d.justification }}\n",
             "{% endfor %}",
         );
@@ -318,8 +325,8 @@ mod tests {
             "batch_index should render: {user_content}",
         );
         assert!(
-            user_content.contains("ki_660e8400"),
-            "matched_item_id should render: {user_content}",
+            user_content.contains("item 3"),
+            "context_index should render: {user_content}",
         );
         assert!(
             user_content.contains("0.87"),

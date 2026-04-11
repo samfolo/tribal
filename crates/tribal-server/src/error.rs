@@ -4,7 +4,7 @@
 //! All variants use named fields where applicable; wrapped errors carry
 //! `#[source]` for error chain propagation.
 
-use std::io;
+use std::{error::Error, io};
 
 use thiserror::Error;
 use tribal_config::{ConfigError, TransportKind};
@@ -267,6 +267,16 @@ impl AppError {
             | Self::WorkerDeath
             | Self::ShutdownDeadlineExceeded { .. } => EXIT_CODE_WORKER_DEATH,
             _ => 1,
+        }
+    }
+
+    /// Prints the error and its full cause chain to stderr.
+    pub fn print_error(&self) {
+        eprintln!("{self}");
+        let mut source = Error::source(self);
+        while let Some(cause) = source {
+            eprintln!("  caused by: {cause}");
+            source = Error::source(cause);
         }
     }
 

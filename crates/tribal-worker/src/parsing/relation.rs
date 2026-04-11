@@ -1,7 +1,7 @@
 //! Relation response parsing and LLM response types.
 
 use serde::Deserialize;
-use tribal_domain::{KnowledgeItemId, RelationKind};
+use tribal_domain::RelationKind;
 use tribal_inference::CompletionResponse;
 
 use crate::error::StageError;
@@ -99,33 +99,25 @@ pub(crate) struct RelationEdge {
 
 /// Identifies one end of a relationship edge.
 ///
-/// The relation agent may reference items by their batch index (for
-/// candidates created in this episode) or by their `KnowledgeItemId`
-/// (for existing items found during triage similarity search).
-/// The worker resolves batch indices to `KnowledgeItemId`s via triage
-/// results before persisting.
+/// All items in the relation prompt context — both extraction
+/// candidates and existing items from similar-item decisions — are
+/// assigned a sequential index. The model references items
+/// exclusively by this index; the worker resolves indices to
+/// `KnowledgeItemId`s via a unified lookup table before persisting.
 ///
 /// Uses `#[serde(tag = "kind")]` (internally tagged) for explicit
-/// discrimination.
+/// discrimination and forward compatibility.
 #[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind")]
-#[schemars(description = "A reference to a knowledge item by batch index or item ID.")]
+#[schemars(description = "A reference to a knowledge item by its context index.")]
 pub(crate) enum RelationTarget {
-    /// A candidate from the current episode, identified by its
-    /// position in the extraction candidates array.
-    /// Wire format: `{"kind": "batch_index", "batch_index": 2}`
-    #[serde(rename = "batch_index")]
-    #[schemars(description = "A candidate from the current batch, referenced by its \
-        zero-based position in the candidates array.")]
-    BatchIndex { batch_index: u32 },
-    /// An existing knowledge item, identified by ID.
-    /// Wire format: `{"kind": "item_id", "item_id": "ki_..."}`
-    #[serde(rename = "item_id")]
-    #[schemars(
-        description = "An existing knowledge item in the database, referenced by \
-        its identifier (format: ki_ followed by a UUID)."
-    )]
-    ItemId { item_id: KnowledgeItemId },
+    /// An item from the prompt context, identified by its zero-based
+    /// position in the numbered item list.
+    /// Wire format: `{"kind": "context_index", "context_index": 2}`
+    #[serde(rename = "context_index")]
+    #[schemars(description = "An item from the prompt context, referenced by its \
+        zero-based index in the numbered item list.")]
+    ContextIndex { context_index: u32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +177,6 @@ struct RawRelationOutput {
 mod tests {
     use std::time::Duration;
 
-    use tribal_domain::KnowledgeItemId;
     use tribal_inference::CompletionUsage;
 
     use super::*;
@@ -215,20 +206,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_valid_relations_with_batch_index_and_item_id() {
-        let ki_id: KnowledgeItemId = "ki_550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
-
+    fn test_parse_valid_relations_with_context_index() {
         let json = r#"{
             "relations": [
                 {
-                    "source": {"kind": "batch_index", "batch_index": 0},
-                    "target": {"kind": "batch_index", "batch_index": 1},
+                    "source": {"kind": "context_index", "context_index": 0},
+                    "target": {"kind": "context_index", "context_index": 1},
                     "relation_type": "supports",
                     "justification": "Both describe memory safety"
                 },
                 {
-                    "source": {"kind": "batch_index", "batch_index": 0},
-                    "target": {"kind": "item_id", "item_id": "ki_550e8400-e29b-41d4-a716-446655440000"},
+                    "source": {"kind": "context_index", "context_index": 0},
+                    "target": {"kind": "context_index", "context_index": 3},
                     "relation_type": "contradicts"
                 }
             ]
@@ -240,14 +229,14 @@ mod tests {
             result.relations,
             vec![
                 RelationEdge {
-                    source: RelationTarget::BatchIndex { batch_index: 0 },
-                    target: RelationTarget::BatchIndex { batch_index: 1 },
+                    source: RelationTarget::ContextIndex { context_index: 0 },
+                    target: RelationTarget::ContextIndex { context_index: 1 },
                     relation_type: IngestionRelationKind::Supports,
                     justification: Some("Both describe memory safety".into()),
                 },
                 RelationEdge {
-                    source: RelationTarget::BatchIndex { batch_index: 0 },
-                    target: RelationTarget::ItemId { item_id: ki_id },
+                    source: RelationTarget::ContextIndex { context_index: 0 },
+                    target: RelationTarget::ContextIndex { context_index: 3 },
                     relation_type: IngestionRelationKind::Contradicts,
                     justification: None,
                 },
@@ -282,8 +271,8 @@ mod tests {
         let json = r#"{
             "relations": [
                 {
-                    "source": {"kind": "item_id", "item_id": "ki_550e8400-e29b-41d4-a716-446655440000"},
-                    "target": {"kind": "item_id", "item_id": "ki_660e8400-e29b-41d4-a716-446655440000"},
+                    "source": {"kind": "context_index", "context_index": 0},
+                    "target": {"kind": "context_index", "context_index": 4},
                     "relation_type": "derived_from",
                     "justification": "The conclusion follows from the premise"
                 }
@@ -303,18 +292,18 @@ mod tests {
         let json = r#"{
             "relations": [
                 {
-                    "source": {"kind": "batch_index", "batch_index": 0},
-                    "target": {"kind": "batch_index", "batch_index": 1},
+                    "source": {"kind": "context_index", "context_index": 0},
+                    "target": {"kind": "context_index", "context_index": 1},
                     "relation_type": "supports"
                 },
                 {
-                    "source": {"kind": "batch_index", "batch_index": 0},
-                    "target": {"kind": "batch_index", "batch_index": 2},
+                    "source": {"kind": "context_index", "context_index": 0},
+                    "target": {"kind": "context_index", "context_index": 2},
                     "relation_type": "supersedes"
                 },
                 {
-                    "source": {"kind": "batch_index", "batch_index": 1},
-                    "target": {"kind": "batch_index", "batch_index": 2},
+                    "source": {"kind": "context_index", "context_index": 1},
+                    "target": {"kind": "context_index", "context_index": 2},
                     "relation_type": "contradicts"
                 }
             ]

@@ -223,6 +223,21 @@ pub trait KnowledgeItemRepository {
         ids: &[KnowledgeItemId],
     ) -> Result<Vec<KnowledgeItem>, DbError>;
 
+    /// Returns which of the given IDs exist in `knowledge_items`.
+    ///
+    /// A lighter alternative to [`find_by_ids`](Self::find_by_ids)
+    /// when only existence is needed — selects IDs only, avoiding
+    /// full row deserialisation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_existing_ids(
+        &self,
+        conn: &mut PgConnection,
+        ids: &[KnowledgeItemId],
+    ) -> Result<Vec<KnowledgeItemId>, DbError>;
+
     /// Performs a semantic search against the knowledge graph.
     ///
     /// Uses cosine similarity against the HNSW-indexed embedding table,
@@ -382,6 +397,31 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
                 )
             })
             .collect())
+    }
+
+    async fn find_existing_ids(
+        &self,
+        conn: &mut PgConnection,
+        ids: &[KnowledgeItemId],
+    ) -> Result<Vec<KnowledgeItemId>, DbError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let raw_ids: Vec<uuid::Uuid> = ids.iter().map(|id| *id.inner()).collect();
+
+        let rows = sqlx::query_scalar!(
+            r#"SELECT id FROM knowledge_items WHERE id = ANY($1)"#,
+            &raw_ids,
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("checking existence of {} knowledge item ids", ids.len()),
+            source: e,
+        })?;
+
+        Ok(rows.into_iter().map(KnowledgeItemId::from).collect())
     }
 
     async fn semantic_search(

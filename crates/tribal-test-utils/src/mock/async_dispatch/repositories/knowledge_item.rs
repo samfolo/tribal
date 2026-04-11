@@ -15,6 +15,8 @@ mock_repository! {
             (id: KnowledgeItemId) { id };
         find_by_ids(Vec<KnowledgeItemId> => Vec<KnowledgeItem>)
             (ids: &[KnowledgeItemId]) { ids.to_vec() };
+        find_existing_ids(Vec<KnowledgeItemId> => Vec<KnowledgeItemId>)
+            (ids: &[KnowledgeItemId]) { ids.to_vec() };
         semantic_search(SemanticSearchParams => SemanticSearchResponse)
             (params: &SemanticSearchParams) { params.clone() }
     }
