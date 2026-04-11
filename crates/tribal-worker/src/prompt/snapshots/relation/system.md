@@ -81,7 +81,7 @@ Examples:
 
 ## Inputs You Will Receive
 
-1. **Candidates**: Items extracted in this episode, each with its triage outcome ("created", "duplicate", or "failed") and resolved item ID where available
+1. **Candidates**: Items extracted in this episode, each with its triage outcome ("created", "duplicate", or "failed")
 2. **Relation hints**: Intra-batch derivation hints from the extraction stage. These are suggestions — validate them against the actual content before accepting
 3. **Similar item decisions**: Cross-episode similarity assessments from triage, including suggested relations and justifications. Use these as input but apply your own judgement — the triage agent assessed items individually and may not have had the full batch context you can see
 

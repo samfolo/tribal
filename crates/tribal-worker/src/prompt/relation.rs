@@ -53,7 +53,8 @@ pub(crate) struct CandidateOutcome<'a> {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SimilarItemDecisionContext {
     /// The `batch_index` of the candidate this similar item was
-    /// matched against during triage.
+    /// matched against during triage. For this item's own position
+    /// in the unified index space, see `context_index`.
     pub batch_index: u32,
     /// This item's position in the unified index space (candidates
     /// occupy `0..batch_size`, similar items occupy `batch_size..`).
