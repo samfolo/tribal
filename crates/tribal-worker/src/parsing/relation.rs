@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_valid_relations_with_batch_index() {
+    fn test_parse_valid_relations_with_context_index() {
         let json = r#"{
             "relations": [
                 {

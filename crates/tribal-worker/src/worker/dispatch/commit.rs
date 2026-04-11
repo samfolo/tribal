@@ -777,6 +777,7 @@ async fn validate_relation_endpoints(
     relations: Vec<NewKnowledgeItemRelation>,
 ) -> Result<Vec<NewKnowledgeItemRelation>, StageError> {
     if relations.is_empty() {
+        tracing::Span::current().record(span_attrs::RELATIONS_VALIDATION_DROPPED, 0usize);
         return Ok(relations);
     }
 
@@ -786,13 +787,12 @@ async fn validate_relation_endpoints(
         .collect();
     let id_vec: Vec<KnowledgeItemId> = all_ids.iter().copied().collect();
 
-    let existing_items = PgKnowledgeItemRepository
-        .find_by_ids(conn, &id_vec)
+    let existing_ids: HashSet<KnowledgeItemId> = PgKnowledgeItemRepository
+        .find_existing_ids(conn, &id_vec)
         .await
-        .map_err(|e| stage_db_error(STAGE_RELATION, "validating relation endpoints", e))?;
-
-    let existing_ids: HashSet<KnowledgeItemId> =
-        existing_items.into_iter().map(|item| item.id()).collect();
+        .map_err(|e| stage_db_error(STAGE_RELATION, "validating relation endpoints", e))?
+        .into_iter()
+        .collect();
 
     let missing: Vec<KnowledgeItemId> = all_ids.difference(&existing_ids).copied().collect();
     if missing.is_empty() {
