@@ -122,6 +122,15 @@ impl Worker {
         &self,
         job: &'a Job,
     ) -> Result<RelationContext<'a>, StageError> {
+        let batch_size = job.batch_size().ok_or_else(|| StageError::Database {
+            stage: STAGE_RELATION.into(),
+            context: format!("job {} has no batch_size set", job.id()),
+            source: tribal_db::DbError::NotFound {
+                entity: "job.batch_size",
+                id: job.id().to_string(),
+            },
+        })?;
+
         let mut conn = self
             .pool()
             .acquire()
@@ -132,12 +141,14 @@ impl Worker {
         let triage_results = load_triage_results(&mut conn, job).await?;
         let similar_item_decisions = load_similar_item_decisions(&mut conn, job).await?;
         let similar_item_decision_contexts =
-            build_similar_item_decision_contexts(&mut conn, &similar_item_decisions).await?;
+            build_similar_item_decision_contexts(&mut conn, &similar_item_decisions, batch_size)
+                .await?;
 
         drop(conn);
 
         Ok(RelationContext {
             job,
+            batch_size,
             candidates,
             relation_hints,
             triage_results,
@@ -204,16 +215,7 @@ impl Worker {
 
             let ctx = self.load_relation_data(job).await?;
 
-            let batch_size = ctx.job.batch_size().ok_or_else(|| StageError::Database {
-                stage: STAGE_RELATION.into(),
-                context: format!("job {} has no batch_size set", ctx.job.id()),
-                source: tribal_db::DbError::NotFound {
-                    entity: "job.batch_size",
-                    id: ctx.job.id().to_string(),
-                },
-            })?;
-
-            let prompt_context = build_prompt_context(&ctx, batch_size)?;
+            let prompt_context = build_prompt_context(&ctx, ctx.batch_size)?;
 
             let (system_pv, user_pv) = tokio::try_join!(
                 self.load_prompt_version(
@@ -294,7 +296,7 @@ impl Worker {
             let decision = build_commit_decision(
                 output.relations,
                 &ctx.triage_results,
-                batch_size,
+                ctx.batch_size,
                 ctx.job.principal_id(),
             );
 
@@ -390,6 +392,7 @@ async fn load_similar_item_decisions(
 async fn build_similar_item_decision_contexts(
     conn: &mut sqlx::PgConnection,
     decisions: &[TriageSimilarItemDecision],
+    batch_size: u32,
 ) -> Result<Vec<SimilarItemDecisionContext>, StageError> {
     if decisions.is_empty() {
         return Ok(vec![]);
@@ -418,7 +421,8 @@ async fn build_similar_item_decision_contexts(
 
     decisions
         .iter()
-        .map(|d| {
+        .enumerate()
+        .map(|(i, d)| {
             let content = content_by_id.get(&d.matched_item_id()).ok_or_else(|| {
                 relation_db_error(
                     "similar item decision refers to missing knowledge item",
@@ -431,6 +435,7 @@ async fn build_similar_item_decision_contexts(
 
             Ok(SimilarItemDecisionContext {
                 batch_index: d.batch_index(),
+                context_index: batch_size + clamp_to_u32(i),
                 matched_item_id: d.matched_item_id(),
                 matched_content: content.clone(),
                 similarity_score: d.similarity_score(),
