@@ -293,8 +293,14 @@ impl Worker {
                 })?
             };
 
+            let lookup = build_unified_lookup(
+                &ctx.triage_results,
+                &ctx.similar_item_decision_contexts,
+                ctx.batch_size,
+            );
             let decision = build_commit_decision(
                 output.relations,
+                &lookup,
                 &ctx.triage_results,
                 ctx.batch_size,
                 ctx.job.principal_id(),
@@ -545,11 +551,12 @@ fn build_candidate_outcomes<'a>(
 /// decision with `NewKnowledgeItemRelation` rows.
 fn build_commit_decision(
     edges: Vec<RelationEdge>,
+    lookup: &[Option<KnowledgeItemId>],
     triage_results: &[TriageResult],
     batch_size: u32,
     principal_id: PrincipalId,
 ) -> RelationCommitDecision {
-    let (normalised, skipped) = normalise_edges(edges, triage_results);
+    let (normalised, skipped) = normalise_edges(edges, lookup);
     let outcome = compute_outcome(triage_results, batch_size);
     let batch_id = RelationBatchId::new();
 
@@ -576,6 +583,47 @@ fn build_commit_decision(
 }
 
 // ---------------------------------------------------------------------------
+// Unified lookup table
+// ---------------------------------------------------------------------------
+
+/// Builds a unified index-to-ID lookup covering all referenceable items.
+///
+/// Indices `0..batch_size` resolve via triage outcomes (the same
+/// semantics as the previous `resolve_target` for `BatchIndex`).
+/// Indices `batch_size..` resolve directly from similar-item decision
+/// targets — these are existing knowledge items whose IDs are known.
+fn build_unified_lookup(
+    triage_results: &[TriageResult],
+    similar_item_decisions: &[SimilarItemDecisionContext],
+    batch_size: u32,
+) -> Vec<Option<KnowledgeItemId>> {
+    let n_candidates = batch_size as usize;
+    let total = n_candidates + similar_item_decisions.len();
+    let mut lookup = vec![None; total];
+
+    // Candidate indices: resolve through triage outcomes.
+    for result in triage_results {
+        let idx = result.batch_index() as usize;
+        if idx < n_candidates {
+            lookup[idx] = match result.outcome() {
+                TriageOutcome::Created { item_id } => Some(*item_id),
+                TriageOutcome::Duplicate {
+                    matched_item_id, ..
+                } => Some(*matched_item_id),
+                TriageOutcome::Failed { .. } => None,
+            };
+        }
+    }
+
+    // Similar-item indices: resolve directly from matched item IDs.
+    for (i, decision) in similar_item_decisions.iter().enumerate() {
+        lookup[n_candidates + i] = Some(decision.matched_item_id);
+    }
+
+    lookup
+}
+
+// ---------------------------------------------------------------------------
 // Edge normalisation
 // ---------------------------------------------------------------------------
 
@@ -590,7 +638,7 @@ struct ResolvedEdge {
 /// Normalises raw relation edges into resolved, deduplicated edges.
 ///
 /// Steps:
-/// 1. Resolve `BatchIndex` endpoints (sources and targets) to `KnowledgeItemId` via triage results.
+/// 1. Resolve `BatchIndex` endpoints to `KnowledgeItemId` via the unified lookup table.
 /// 2. Drop edges with any unresolvable endpoint.
 /// 3. Drop self-edges.
 /// 4. Deduplicate `(source_id, target_id, relation_type)` triples.
@@ -599,13 +647,8 @@ struct ResolvedEdge {
 /// [`IngestionRelationKind`] type excludes the variant entirely.
 fn normalise_edges(
     edges: Vec<RelationEdge>,
-    triage_results: &[TriageResult],
+    lookup: &[Option<KnowledgeItemId>],
 ) -> (Vec<ResolvedEdge>, usize) {
-    let triage_by_index: HashMap<u32, &TriageResult> = triage_results
-        .iter()
-        .map(|r| (r.batch_index(), r))
-        .collect();
-
     let mut seen = HashSet::new();
     let mut result = Vec::with_capacity(edges.len());
     let mut skipped: usize = 0;
@@ -614,7 +657,7 @@ fn normalise_edges(
         let relation_type: RelationKind = edge.relation_type.into();
 
         // Step 1+2: resolve targets.
-        let Some(source_id) = resolve_target(&edge.source, &triage_by_index) else {
+        let Some(source_id) = resolve_target(&edge.source, lookup) else {
             tracing::debug!(
                 ?edge.source, ?edge.target, ?relation_type,
                 "dropping edge — unresolvable source",
@@ -622,7 +665,7 @@ fn normalise_edges(
             skipped += 1;
             continue;
         };
-        let Some(target_id) = resolve_target(&edge.target, &triage_by_index) else {
+        let Some(target_id) = resolve_target(&edge.target, lookup) else {
             tracing::debug!(
                 ?edge.source, ?edge.target, ?relation_type,
                 "dropping edge — unresolvable target",
@@ -666,19 +709,11 @@ fn normalise_edges(
 /// Resolves a single `RelationTarget` to a `KnowledgeItemId`.
 fn resolve_target(
     target: &RelationTarget,
-    triage_by_index: &HashMap<u32, &TriageResult>,
+    lookup: &[Option<KnowledgeItemId>],
 ) -> Option<KnowledgeItemId> {
     match target {
-        RelationTarget::ItemId { item_id } => Some(*item_id),
         RelationTarget::BatchIndex { batch_index } => {
-            let result = triage_by_index.get(batch_index)?;
-            match result.outcome() {
-                TriageOutcome::Created { item_id } => Some(*item_id),
-                TriageOutcome::Duplicate {
-                    matched_item_id, ..
-                } => Some(*matched_item_id),
-                TriageOutcome::Failed { .. } => None,
-            }
+            lookup.get(*batch_index as usize).copied().flatten()
         }
     }
 }
