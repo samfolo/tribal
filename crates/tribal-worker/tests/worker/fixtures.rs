@@ -36,15 +36,15 @@ pub(super) fn triage_duplicate_response_json(matched_item_id: KnowledgeItemId) -
     .to_string()
 }
 
-/// Builds a relation response JSON string with `batch_index`
+/// Builds a relation response JSON string with `context_index`
 /// targets — a `supports` edge from index 0 to each subsequent index.
-pub(super) fn batch_index_relation_response_json(batch_size: usize) -> String {
+pub(super) fn context_index_relation_response_json(batch_size: usize) -> String {
     let mut relations = Vec::new();
 
     for i in 1..batch_size {
         relations.push(serde_json::json!({
-            "source": { "kind": "batch_index", "batch_index": 0 },
-            "target": { "kind": "batch_index", "batch_index": i },
+            "source": { "kind": "context_index", "context_index": 0 },
+            "target": { "kind": "context_index", "context_index": i },
             "relation_type": "supports",
             "justification": "Test relation",
         }));

@@ -187,6 +187,7 @@ mod tests {
             relation_hints: vec![test_relation_hint(0, 1)],
             similar_item_decisions: vec![SimilarItemDecisionContext {
                 batch_index: 0,
+                context_index: 3,
                 matched_item_id: ki_b,
                 matched_content: "Existing item about memory safety".into(),
                 similarity_score: 0.87,

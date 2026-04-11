@@ -821,14 +821,14 @@ mod tests {
     fn test_normalise_resolves_created_to_item_id() {
         let ki_a = ki("aaaa");
         let ki_b = ki("bbbb");
-        let results = vec![created(0, ki_a), created(1, ki_b)];
+        let lookup = vec![Some(ki_a), Some(ki_b)];
         let edges = vec![edge(
             RelationTarget::ContextIndex { context_index: 0 },
             RelationTarget::ContextIndex { context_index: 1 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert_eq!(normalised.len(), 1);
         assert_eq!(normalised[0].source_id, ki_a);
         assert_eq!(normalised[0].target_id, ki_b);
@@ -839,19 +839,19 @@ mod tests {
     fn test_normalise_resolves_duplicate_to_matched_item_id() {
         // Candidate 0 was created as ki_created.
         // Candidate 1 was flagged as a duplicate of ki_existing.
-        // An edge from batch 0 → batch 1 should resolve the
+        // An edge from index 0 → index 1 should resolve the
         // duplicate's target to ki_existing (the matched item),
         // not to the candidate itself (which was never created).
         let ki_created = ki("aaaa");
         let ki_existing = ki("cccc");
-        let results = vec![created(0, ki_created), duplicate(1, ki_existing)];
+        let lookup = vec![Some(ki_created), Some(ki_existing)];
         let edges = vec![edge(
             RelationTarget::ContextIndex { context_index: 0 },
             RelationTarget::ContextIndex { context_index: 1 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert_eq!(normalised.len(), 1);
         assert_eq!(normalised[0].source_id, ki_created);
         assert_eq!(normalised[0].target_id, ki_existing);
@@ -859,40 +859,32 @@ mod tests {
     }
 
     #[test]
-    fn test_normalise_drops_unresolved_batch_index() {
+    fn test_normalise_drops_unresolvable_index() {
         let ki_a = ki("aaaa");
-        let results = vec![created(0, ki_a)];
+        let lookup = vec![Some(ki_a)];
         let edges = vec![edge(
             RelationTarget::ContextIndex { context_index: 0 },
             RelationTarget::ContextIndex { context_index: 5 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert!(normalised.is_empty());
         assert_eq!(skipped, 1);
     }
 
     #[test]
-    fn test_normalise_drops_failed_batch_index() {
+    fn test_normalise_drops_failed_candidate() {
         let ki_a = ki("aaaa");
-        let results = vec![
-            created(0, ki_a),
-            triage_result(
-                1,
-                TriageOutcome::Failed {
-                    error_message: "test failure".into(),
-                    retryable: false,
-                },
-            ),
-        ];
+        // Index 1 is None — corresponds to a failed triage outcome.
+        let lookup = vec![Some(ki_a), None];
         let edges = vec![edge(
             RelationTarget::ContextIndex { context_index: 0 },
             RelationTarget::ContextIndex { context_index: 1 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert!(normalised.is_empty());
         assert_eq!(skipped, 1);
     }
@@ -900,14 +892,14 @@ mod tests {
     #[test]
     fn test_normalise_drops_self_edges() {
         let ki_a = ki("aaaa");
-        let results = vec![created(0, ki_a)];
+        let lookup = vec![Some(ki_a)];
         let edges = vec![edge(
             RelationTarget::ContextIndex { context_index: 0 },
             RelationTarget::ContextIndex { context_index: 0 },
             IngestionRelationKind::Supports,
         )];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert!(normalised.is_empty());
         assert_eq!(skipped, 1);
     }
@@ -916,7 +908,7 @@ mod tests {
     fn test_normalise_deduplicates_triples() {
         let ki_a = ki("aaaa");
         let ki_b = ki("bbbb");
-        let results = vec![created(0, ki_a), created(1, ki_b)];
+        let lookup = vec![Some(ki_a), Some(ki_b)];
         let edges = vec![
             edge(
                 RelationTarget::ContextIndex { context_index: 0 },
@@ -930,7 +922,7 @@ mod tests {
             ),
         ];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert_eq!(normalised.len(), 1);
         assert_eq!(skipped, 1);
     }
@@ -939,7 +931,7 @@ mod tests {
     fn test_normalise_preserves_inverse_edges() {
         let ki_a = ki("aaaa");
         let ki_b = ki("bbbb");
-        let results = vec![created(0, ki_a), created(1, ki_b)];
+        let lookup = vec![Some(ki_a), Some(ki_b)];
         let edges = vec![
             edge(
                 RelationTarget::ContextIndex { context_index: 0 },
@@ -953,8 +945,64 @@ mod tests {
             ),
         ];
 
-        let (normalised, skipped) = normalise_edges(edges, &results);
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
         assert_eq!(normalised.len(), 2);
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn test_normalise_resolves_similar_item_index() {
+        // 2 candidates + 2 similar items in the unified lookup.
+        let ki_a = ki("aaaa");
+        let ki_b = ki("bbbb");
+        let ki_similar_1 = ki("cccc");
+        let ki_similar_2 = ki("dddd");
+        let lookup = vec![
+            Some(ki_a),
+            Some(ki_b),
+            Some(ki_similar_1),
+            Some(ki_similar_2),
+        ];
+        let edges = vec![edge(
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 2 },
+            IngestionRelationKind::Supports,
+        )];
+
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
+        assert_eq!(normalised.len(), 1);
+        assert_eq!(normalised[0].source_id, ki_a);
+        assert_eq!(normalised[0].target_id, ki_similar_1);
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn test_normalise_mixed_candidate_and_similar_item_edges() {
+        let ki_a = ki("aaaa");
+        let ki_b = ki("bbbb");
+        let ki_similar = ki("cccc");
+        let lookup = vec![Some(ki_a), Some(ki_b), Some(ki_similar)];
+        let edges = vec![
+            // Candidate → candidate.
+            edge(
+                RelationTarget::ContextIndex { context_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
+                IngestionRelationKind::Supports,
+            ),
+            // Candidate → similar item.
+            edge(
+                RelationTarget::ContextIndex { context_index: 1 },
+                RelationTarget::ContextIndex { context_index: 2 },
+                IngestionRelationKind::Contradicts,
+            ),
+        ];
+
+        let (normalised, skipped) = normalise_edges(edges, &lookup);
+        assert_eq!(normalised.len(), 2);
+        assert_eq!(normalised[0].source_id, ki_a);
+        assert_eq!(normalised[0].target_id, ki_b);
+        assert_eq!(normalised[1].source_id, ki_b);
+        assert_eq!(normalised[1].target_id, ki_similar);
         assert_eq!(skipped, 0);
     }
 

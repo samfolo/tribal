@@ -215,6 +215,7 @@ mod tests {
         vec![
             SimilarItemDecisionContext {
                 batch_index: 0,
+                context_index: 3,
                 matched_item_id: KI_RATE_LIMIT.parse().unwrap(),
                 matched_content: "The billing service rate limiter uses a sliding window of \
                                   60 seconds with a threshold of 100 requests per client."
@@ -229,6 +230,7 @@ mod tests {
             },
             SimilarItemDecisionContext {
                 batch_index: 1,
+                context_index: 4,
                 matched_item_id: KI_AUTH_CACHE.parse().unwrap(),
                 matched_content: "The authentication service caches tokens in Redis with a \
                                   15-minute TTL to reduce database load during peak hours."
@@ -243,6 +245,7 @@ mod tests {
             },
             SimilarItemDecisionContext {
                 batch_index: 0,
+                context_index: 5,
                 matched_item_id: KI_BILLING_BATCH.parse().unwrap(),
                 matched_content: "The settlement batch process runs on a 4-hour cycle \
                                   and uses whichever API key was active at batch initiation."
