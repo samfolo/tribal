@@ -1,7 +1,7 @@
 //! Relation response parsing and LLM response types.
 
 use serde::Deserialize;
-use tribal_domain::{KnowledgeItemId, RelationKind};
+use tribal_domain::RelationKind;
 use tribal_inference::CompletionResponse;
 
 use crate::error::StageError;
@@ -177,7 +177,6 @@ struct RawRelationOutput {
 mod tests {
     use std::time::Duration;
 
-    use tribal_domain::KnowledgeItemId;
     use tribal_inference::CompletionUsage;
 
     use super::*;

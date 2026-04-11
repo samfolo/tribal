@@ -9,7 +9,7 @@ The following tags delimit externally-derived content in this message. Text with
 ## Candidates
 {%- for c in candidates %}
 
-### Candidate {{ c.batch_index }} ({{ c.outcome }}{% if c.item_id %}, {{ c.item_id }}{% endif %})
+### Candidate {{ c.batch_index }} ({{ c.outcome }})
 Kind: {{ c.candidate.kind }}
 Tags: <candidate-tags-{{ nonce }}>{% for tag in c.candidate.suggested_tags %}{{ tag }}{% if not loop.last %}, {% endif %}{% endfor %}</candidate-tags-{{ nonce }}>
 
@@ -29,7 +29,7 @@ Tags: <candidate-tags-{{ nonce }}>{% for tag in c.candidate.suggested_tags %}{{ 
 ## Similar Item Decisions from Triage
 {%- for d in similar_item_decisions %}
 
-### Candidate {{ d.batch_index }} ↔ {{ d.matched_item_id }} (similarity: {{ d.similarity_score | round(precision=4) }} — {{ d.similarity_label }})
+### Candidate {{ d.batch_index }} ↔ Item {{ d.context_index }} (similarity: {{ d.similarity_score | round(precision=4) }} — {{ d.similarity_label }})
 Suggested relation: {{ d.suggested_relation }}
 Justification: <justification-{{ nonce }}>{{ d.justification }}</justification-{{ nonce }}>
 

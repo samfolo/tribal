@@ -589,7 +589,7 @@ fn build_commit_decision(
 /// Builds a unified index-to-ID lookup covering all referenceable items.
 ///
 /// Indices `0..batch_size` resolve via triage outcomes (the same
-/// semantics as the previous `resolve_target` for `BatchIndex`).
+/// semantics as the previous `resolve_target` for batch indices).
 /// Indices `batch_size..` resolve directly from similar-item decision
 /// targets — these are existing knowledge items whose IDs are known.
 fn build_unified_lookup(
@@ -638,7 +638,7 @@ struct ResolvedEdge {
 /// Normalises raw relation edges into resolved, deduplicated edges.
 ///
 /// Steps:
-/// 1. Resolve `BatchIndex` endpoints to `KnowledgeItemId` via the unified lookup table.
+/// 1. Resolve `ContextIndex` endpoints to `KnowledgeItemId` via the unified lookup table.
 /// 2. Drop edges with any unresolvable endpoint.
 /// 3. Drop self-edges.
 /// 4. Deduplicate `(source_id, target_id, relation_type)` triples.
@@ -823,8 +823,8 @@ mod tests {
         let ki_b = ki("bbbb");
         let results = vec![created(0, ki_a), created(1, ki_b)];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 1 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 1 },
             IngestionRelationKind::Supports,
         )];
 
@@ -846,8 +846,8 @@ mod tests {
         let ki_existing = ki("cccc");
         let results = vec![created(0, ki_created), duplicate(1, ki_existing)];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 1 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 1 },
             IngestionRelationKind::Supports,
         )];
 
@@ -863,8 +863,8 @@ mod tests {
         let ki_a = ki("aaaa");
         let results = vec![created(0, ki_a)];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 5 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 5 },
             IngestionRelationKind::Supports,
         )];
 
@@ -887,8 +887,8 @@ mod tests {
             ),
         ];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 1 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 1 },
             IngestionRelationKind::Supports,
         )];
 
@@ -902,8 +902,8 @@ mod tests {
         let ki_a = ki("aaaa");
         let results = vec![created(0, ki_a)];
         let edges = vec![edge(
-            RelationTarget::BatchIndex { batch_index: 0 },
-            RelationTarget::BatchIndex { batch_index: 0 },
+            RelationTarget::ContextIndex { context_index: 0 },
+            RelationTarget::ContextIndex { context_index: 0 },
             IngestionRelationKind::Supports,
         )];
 
@@ -919,13 +919,13 @@ mod tests {
         let results = vec![created(0, ki_a), created(1, ki_b)];
         let edges = vec![
             edge(
-                RelationTarget::BatchIndex { batch_index: 0 },
-                RelationTarget::BatchIndex { batch_index: 1 },
+                RelationTarget::ContextIndex { context_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
                 IngestionRelationKind::Supports,
             ),
             edge(
-                RelationTarget::BatchIndex { batch_index: 0 },
-                RelationTarget::BatchIndex { batch_index: 1 },
+                RelationTarget::ContextIndex { context_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
                 IngestionRelationKind::Supports,
             ),
         ];
@@ -942,13 +942,13 @@ mod tests {
         let results = vec![created(0, ki_a), created(1, ki_b)];
         let edges = vec![
             edge(
-                RelationTarget::BatchIndex { batch_index: 0 },
-                RelationTarget::BatchIndex { batch_index: 1 },
+                RelationTarget::ContextIndex { context_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
                 IngestionRelationKind::Supports,
             ),
             edge(
-                RelationTarget::BatchIndex { batch_index: 1 },
-                RelationTarget::BatchIndex { batch_index: 0 },
+                RelationTarget::ContextIndex { context_index: 1 },
+                RelationTarget::ContextIndex { context_index: 0 },
                 IngestionRelationKind::Supports,
             ),
         ];
