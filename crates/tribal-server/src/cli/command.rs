@@ -114,6 +114,8 @@ pub enum Command {
     /// Manage authentication tokens.
     #[command(subcommand, display_order = 3)]
     Token(TokenCommand),
+    /// Interact with the resolved configuration.
+    Config(ConfigCommand),
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +429,32 @@ impl TokenRevokeAllArgs {
     pub fn into_cli_overrides(self) -> CliOverrides {
         self.database.into_cli_overrides()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/// Configuration subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Print the fully resolved configuration as YAML. Sensitive fields
+    /// (database URL, API keys) are redacted unless `--show-secrets`
+    /// is passed.
+    Show {
+        /// Arguments for config show.
+        #[command(flatten)]
+        args: ConfigShowArgs,
+    },
+}
+
+/// Arguments for `config show`.
+#[derive(Debug, Args)]
+pub struct ConfigShowArgs {
+    /// Reveal sensitive values (database URL, API keys) instead of
+    /// redacting them.
+    #[arg(long)]
+    pub show_secrets: bool,
 }
 
 // ---------------------------------------------------------------------------

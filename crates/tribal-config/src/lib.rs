@@ -12,6 +12,7 @@ mod env;
 mod error;
 mod loader;
 mod paths;
+mod redact;
 mod render;
 mod sections;
 mod validation;
@@ -22,6 +23,7 @@ pub use divergence::{
 pub use env::{ENV_AUTH_TOKEN, ENV_CONFIG_PATH, ENV_PREFIX, ENV_PROJECT_ID};
 pub use error::ConfigError;
 pub use loader::{CliOverrides, DatabaseCliOverrides, ServerCliOverrides, load_config};
+pub use redact::redact_secrets;
 pub use render::render_minimal_config;
 pub use sections::{
     AuthConfig, DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_BIND_ADDRESS, DEFAULT_DISCOVERY_LIMIT,
