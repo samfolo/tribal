@@ -450,7 +450,7 @@ pub enum ConfigCommand {
 }
 
 /// Arguments for `config show`.
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Copy, Args)]
 pub struct ConfigShowArgs {
     /// Reveal sensitive values (database URL, API keys) instead of
     /// redacting them.
