@@ -261,20 +261,29 @@ pub struct ProjectRegisterArgs {
     #[arg(long, help_heading = "Project")]
     pub branch: Option<String>,
 
-    /// Output a complete MCP server config entry as JSON to stdout.
-    /// The snippet shape varies by transport.
+    /// Output a bare MCP server config entry as JSON to stdout,
+    /// suitable for piping into `claude mcp add-json`. The snippet
+    /// shape varies by transport.
     #[arg(long, help_heading = "Output")]
     pub json: bool,
 
-    /// Transport mode for the MCP config snippet. Only used with
-    /// `--json`. Defaults to stdio.
+    /// Transport mode for the generated MCP config snippet. Controls
+    /// the snippet shape: stdio uses `command`/`args`, while http and
+    /// sse use `url` with optional `headers`. Defaults to stdio.
     #[arg(long, help_heading = "Output")]
     pub transport: Option<TransportKind>,
 
-    /// Bearer token to embed in HTTP/SSE config snippets. Falls back
-    /// to the `TRIBAL_AUTH_TOKEN` environment variable if omitted.
+    /// Bearer token to embed in HTTP/SSE config snippets. Validated
+    /// against the database unless `--skip-validation` is set. Falls
+    /// back to the `TRIBAL_AUTH_TOKEN` environment variable if omitted.
     #[arg(long, help_heading = "Output")]
     pub token: Option<String>,
+
+    /// Skip database validation of the bearer token. Use when the
+    /// token belongs to a different environment or when embedding a
+    /// value that will be resolved later.
+    #[arg(long, help_heading = "Output")]
+    pub skip_validation: bool,
 
     /// Database connection options.
     #[command(flatten)]

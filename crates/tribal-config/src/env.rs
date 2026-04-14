@@ -13,3 +13,6 @@ pub const ENV_CONFIG_PATH: &str = "TRIBAL_CONFIG_PATH";
 
 /// Environment variable for project ID override.
 pub const ENV_PROJECT_ID: &str = "TRIBAL_PROJECT_ID";
+
+/// Environment variable for the bearer token used in HTTP/SSE transport.
+pub const ENV_AUTH_TOKEN: &str = "TRIBAL_AUTH_TOKEN";

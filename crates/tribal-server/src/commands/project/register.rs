@@ -1,10 +1,14 @@
 //! Core register flow: entry point and async orchestration.
 
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
-use tribal_config::{DatabaseConfig, load_config};
-use tribal_db::{DbError, NewProject, PgProjectRepository, ProjectRepository};
+use tribal_config::{DatabaseConfig, ENV_AUTH_TOKEN, TransportKind, TribalConfig, load_config};
+use tribal_db::{
+    DbError, NewProject, PgAuthTokenRepository, PgPrincipalRepository, PgProjectRepository,
+    ProjectRepository,
+};
 use tribal_domain::GitRemote;
+use tribal_mcp::Authenticator;
 
 use super::output;
 use crate::{
@@ -36,21 +40,41 @@ const POOL_NAME_REGISTER: &str = "register";
 /// # Errors
 ///
 /// Returns an [`AppError`] if git detection, config loading, database
-/// connection, or insertion fails.
+/// connection, token validation, or insertion fails.
 pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), AppError> {
     let ProjectRegisterArgs {
         remote,
         name,
         branch,
+        json,
+        transport,
+        token,
+        skip_validation,
         database,
     } = args;
 
     let cli_overrides = database.into_cli_overrides();
     let git_remote = resolve_git_remote(remote.as_deref())?;
-    output::git_remote_resolved(git_remote.as_str());
+
+    if !json {
+        output::git_remote_resolved(git_remote.as_str());
+    }
 
     let name = name.unwrap_or_else(|| git_remote.path().to_owned());
     let branch = branch.unwrap_or_else(|| DEFAULT_BRANCH.to_owned());
+    let transport = transport.unwrap_or_default();
+
+    let raw_token = resolve_token(token)?;
+
+    // HTTP/SSE snippets require a token unless explicitly opted out.
+    if matches!(transport, TransportKind::Http | TransportKind::Sse)
+        && raw_token.is_none()
+        && !skip_validation
+    {
+        return Err(AppError::TokenOperation {
+            reason: output::TOKEN_REQUIRED.to_owned(),
+        });
+    }
 
     let config = load_config(
         config_path,
@@ -63,23 +87,36 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    rt.block_on(run_async(&config.database, &git_remote, &name, &branch))
+    rt.block_on(run_async(
+        &config,
+        &git_remote,
+        &name,
+        &branch,
+        json,
+        transport,
+        raw_token.as_deref(),
+        skip_validation,
+    ))
 }
 
 // ---------------------------------------------------------------------------
 // Async flow
 // ---------------------------------------------------------------------------
 
-/// Connects to the database, inserts (or finds) the project, and prints
-/// the result.
+/// Connects to the database, inserts (or finds) the project, optionally
+/// validates the token, and prints the result.
 async fn run_async(
-    db_config: &DatabaseConfig,
+    config: &TribalConfig,
     git_remote: &GitRemote,
     name: &str,
     branch: &str,
+    json: bool,
+    transport: TransportKind,
+    raw_token: Option<&str>,
+    skip_validation: bool,
 ) -> Result<(), AppError> {
     let pool = tribal_db::create_pool(
-        db_config,
+        &config.database,
         POOL_NAME_REGISTER,
         COMMAND_POOL_MAX_CONNECTIONS,
         COMMAND_STATEMENT_TIMEOUT_MS,
@@ -90,6 +127,25 @@ async fn run_async(
     let mut conn = pool.acquire().await.map_err(|err| {
         AppError::pool_acquire(POOL_NAME_REGISTER, "acquiring register connection", err)
     })?;
+
+    // -- Validate token if provided and validation not skipped ----------------
+
+    if let Some(token) = raw_token {
+        if !skip_validation {
+            let authenticator = Authenticator::new(
+                Arc::new(PgAuthTokenRepository),
+                Arc::new(PgPrincipalRepository),
+            );
+            authenticator
+                .verify_token(&mut conn, token)
+                .await
+                .map_err(|err| AppError::TokenOperation {
+                    reason: format!("{}: {err}", output::TOKEN_INVALID),
+                })?;
+        }
+    }
+
+    // -- Register project ---------------------------------------------------
 
     let new_project = NewProject::builder()
         .git_remote(git_remote.clone())
@@ -118,11 +174,36 @@ async fn run_async(
         Err(source) => return Err(AppError::Database { source }),
     };
 
-    output::registered(&project, already_existed);
-    output::project_id(&project);
-    output::mcp_snippet(&project);
+    // -- Output -------------------------------------------------------------
+
+    let bind_address = config.server.bind_address.as_deref();
+
+    if json {
+        output::json_snippet(&project, transport, raw_token, bind_address);
+    } else {
+        output::registered(&project, already_existed);
+        output::project_id(&project);
+        output::mcp_snippet(&project, transport, raw_token, bind_address);
+    }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Resolves the bearer token from an explicit `--token` flag or the
+/// `TRIBAL_AUTH_TOKEN` environment variable.
+fn resolve_token(explicit: Option<String>) -> Result<Option<String>, AppError> {
+    if let Some(token) = explicit {
+        return Ok(Some(token));
+    }
+
+    match std::env::var(ENV_AUTH_TOKEN) {
+        Ok(val) if !val.is_empty() => Ok(Some(val)),
+        _ => Ok(None),
+    }
 }
 
 // ---------------------------------------------------------------------------
