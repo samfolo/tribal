@@ -112,10 +112,12 @@ fn redact_path(root: &mut serde_yaml::Value, path: &str) {
         return;
     };
 
-    if let Some(leaf) = current.get_mut(*leaf_key) {
-        if !leaf.is_null() && !leaf.is_mapping() && !leaf.is_sequence() {
-            *leaf = serde_yaml::Value::String(REDACTED.to_owned());
-        }
+    if let Some(leaf) = current.get_mut(*leaf_key)
+        && !leaf.is_null()
+        && !leaf.is_mapping()
+        && !leaf.is_sequence()
+    {
+        *leaf = serde_yaml::Value::String(REDACTED.to_owned());
     }
 }
 
