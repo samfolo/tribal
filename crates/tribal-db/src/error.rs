@@ -93,7 +93,7 @@ mod tests {
             "expected context in display, got: {display}",
         );
         assert!(
-            display.contains("RowNotFound"),
+            display.contains("no rows returned"),
             "expected source error in display, got: {display}",
         );
     }
