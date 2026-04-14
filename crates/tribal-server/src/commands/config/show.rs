@@ -1,6 +1,6 @@
 //! Implementation of `tribal config show`.
 
-use tribal_config::load_config;
+use tribal_config::{load_config, redact_secrets};
 
 use super::output;
 use crate::{cli::ConfigShowArgs, error::AppError};
@@ -13,19 +13,14 @@ use crate::{cli::ConfigShowArgs, error::AppError};
 ///
 /// # Errors
 ///
-/// Returns an [`AppError`] if config loading fails.
+/// Returns an [`AppError`] if config loading or serialisation fails.
 pub(crate) fn run(config_path: &str, args: ConfigShowArgs) -> Result<(), AppError> {
     let config = load_config(config_path, None, None)?;
-    let yaml = serde_yaml::to_string(&config).map_err(|e| AppError::Config {
-        source: tribal_config::ConfigError::ValidationFailed {
-            errors: vec![format!("failed to serialise resolved config: {e}")],
-        },
-    })?;
 
     if args.show_secrets {
-        output::resolved_config(&yaml);
+        output::resolved_config(&config.to_yaml()?);
     } else {
-        output::resolved_config(&output::redact_secrets(&yaml));
+        output::resolved_config(&redact_secrets(&config.to_yaml()?));
     }
 
     Ok(())
