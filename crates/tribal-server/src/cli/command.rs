@@ -261,6 +261,21 @@ pub struct ProjectRegisterArgs {
     #[arg(long, help_heading = "Project")]
     pub branch: Option<String>,
 
+    /// Output a complete MCP server config entry as JSON to stdout.
+    /// The snippet shape varies by transport.
+    #[arg(long, help_heading = "Output")]
+    pub json: bool,
+
+    /// Transport mode for the MCP config snippet. Only used with
+    /// `--json`. Defaults to stdio.
+    #[arg(long, help_heading = "Output")]
+    pub transport: Option<TransportKind>,
+
+    /// Bearer token to embed in HTTP/SSE config snippets. Falls back
+    /// to the `TRIBAL_AUTH_TOKEN` environment variable if omitted.
+    #[arg(long, help_heading = "Output")]
+    pub token: Option<String>,
+
     /// Database connection options.
     #[command(flatten)]
     pub database: DatabaseArgs,
