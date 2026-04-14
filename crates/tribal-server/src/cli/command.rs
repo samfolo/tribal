@@ -680,6 +680,10 @@ mod tests {
             if args.remote.is_none()
                 && args.name.is_none()
                 && args.branch.is_none()
+                && !args.json
+                && args.transport.is_none()
+                && args.token.is_none()
+                && !args.skip_validation
                 && args.database.database_url.is_none()
         ));
     }
@@ -696,6 +700,12 @@ mod tests {
             "my-project",
             "--branch",
             "develop",
+            "--json",
+            "--transport",
+            "http",
+            "--token",
+            "test-token",
+            "--skip-validation",
             "-d",
             "postgres://h/db",
         ])
@@ -706,6 +716,10 @@ mod tests {
             if args.remote.as_deref() == Some("git@github.com:user/repo.git")
                 && args.name.as_deref() == Some("my-project")
                 && args.branch.as_deref() == Some("develop")
+                && args.json
+                && args.transport == Some(TransportKind::Http)
+                && args.token.as_deref() == Some("test-token")
+                && args.skip_validation
                 && args.database.database_url.as_deref() == Some("postgres://h/db")
         ));
     }
@@ -910,6 +924,28 @@ mod tests {
         let overrides = args.into_cli_overrides();
         let database = overrides.database.unwrap();
         assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
+    }
+
+    // -- Config show ---------------------------------------------------------
+
+    #[test]
+    fn test_config_show_parses() {
+        let cli = Cli::try_parse_from(["tribal", "config", "show"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config(ConfigCommand::Show { args }))
+            if !args.show_secrets
+        ));
+    }
+
+    #[test]
+    fn test_config_show_parses_show_secrets() {
+        let cli = Cli::try_parse_from(["tribal", "config", "show", "--show-secrets"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config(ConfigCommand::Show { args }))
+            if args.show_secrets
+        ));
     }
 
     // -- No subcommand ------------------------------------------------------
