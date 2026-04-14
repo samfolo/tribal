@@ -115,6 +115,7 @@ pub enum Command {
     #[command(subcommand, display_order = 3)]
     Token(TokenCommand),
     /// Interact with the resolved configuration.
+    #[command(subcommand, display_order = 4)]
     Config(ConfigCommand),
 }
 

@@ -5,6 +5,7 @@
 //! dot-path, the struct field mutation (in tests), and the sentinel
 //! generation.
 
+#[cfg(test)]
 use crate::TribalConfig;
 
 /// Placeholder substituted for secret values in redacted output.
@@ -112,7 +113,7 @@ fn redact_path(root: &mut serde_yaml::Value, path: &str) {
     };
 
     if let Some(leaf) = current.get_mut(*leaf_key) {
-        if !leaf.is_null() {
+        if !leaf.is_null() && !leaf.is_mapping() && !leaf.is_sequence() {
             *leaf = serde_yaml::Value::String(REDACTED.to_owned());
         }
     }

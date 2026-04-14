@@ -85,6 +85,19 @@ pub struct TribalConfig {
     pub telemetry: TelemetryConfig,
 }
 
+impl TribalConfig {
+    /// Serialises the configuration to YAML.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConfigError`] if serialisation fails.
+    pub fn to_yaml(&self) -> Result<String, crate::ConfigError> {
+        serde_yaml::to_string(self).map_err(|e| crate::ConfigError::ValidationFailed {
+            errors: vec![format!("failed to serialise resolved config: {e}")],
+        })
+    }
+}
+
 impl Default for TribalConfig {
     fn default() -> Self {
         Self {
