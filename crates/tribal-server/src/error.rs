@@ -396,6 +396,100 @@ mod tests {
     }
 
     #[test]
+    fn test_display_pool_connection() {
+        let err = AppError::PoolConnection {
+            pool_name: "mcp",
+            attempts: 3,
+            source: DbError::QueryFailed {
+                context: "connecting".into(),
+                source: sqlx::Error::PoolTimedOut,
+            },
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("mcp"),
+            "expected pool name in display, got: {display}",
+        );
+        assert!(
+            display.contains("3 attempts"),
+            "expected attempt count in display, got: {display}",
+        );
+        assert!(
+            display.contains("connecting"),
+            "expected source context in display, got: {display}",
+        );
+    }
+
+    #[test]
+    fn test_display_migration_failed() {
+        let err = AppError::MigrationFailed {
+            source: sqlx::migrate::MigrateError::VersionMissing(42),
+        };
+        let display = err.to_string();
+        assert!(
+            display.starts_with("migration failed: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("42"),
+            "expected migration version in display, got: {display}",
+        );
+    }
+
+    #[test]
+    fn test_display_prompt_io() {
+        let err = AppError::PromptIo {
+            context: "reading extraction template".into(),
+            source: io::Error::new(io::ErrorKind::NotFound, "file not found"),
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("reading extraction template"),
+            "expected context in display, got: {display}",
+        );
+        assert!(
+            display.contains("file not found"),
+            "expected source in display, got: {display}",
+        );
+    }
+
+    #[test]
+    fn test_display_prompt_loading() {
+        let err = AppError::PromptLoading {
+            context: "upserting triage prompt".into(),
+            source: DbError::QueryFailed {
+                context: "insert".into(),
+                source: sqlx::Error::RowNotFound,
+            },
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("upserting triage prompt"),
+            "expected context in display, got: {display}",
+        );
+        assert!(
+            display.contains("insert"),
+            "expected source context in display, got: {display}",
+        );
+    }
+
+    #[test]
+    fn test_display_runtime() {
+        let err = AppError::Runtime {
+            source: io::Error::other("cannot create reactor"),
+        };
+        let display = err.to_string();
+        assert!(
+            display.starts_with("failed to create async runtime: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("cannot create reactor"),
+            "expected source detail in display, got: {display}",
+        );
+    }
+
+    #[test]
     fn test_display_worker_startup() {
         let err = AppError::WorkerStartup {
             source: tribal_worker::WorkerError::Cancelled,
