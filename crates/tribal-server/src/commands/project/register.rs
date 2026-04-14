@@ -64,17 +64,20 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
     let branch = branch.unwrap_or_else(|| DEFAULT_BRANCH.to_owned());
     let transport = transport.unwrap_or_default();
 
-    let raw_token = resolve_token(token);
-
-    // HTTP/SSE snippets require a token unless explicitly opted out.
-    if matches!(transport, TransportKind::Http | TransportKind::Sse)
-        && raw_token.is_none()
-        && !skip_validation
-    {
-        return Err(AppError::TokenOperation {
-            reason: output::TOKEN_REQUIRED.to_owned(),
-        });
-    }
+    // Token is only relevant for HTTP/SSE snippets — stdio never
+    // embeds bearer auth, so stale env vars cannot break the default
+    // workflow.
+    let raw_token = if matches!(transport, TransportKind::Http | TransportKind::Sse) {
+        let resolved = resolve_token(token);
+        if resolved.is_none() && !skip_validation {
+            return Err(AppError::TokenOperation {
+                reason: output::TOKEN_REQUIRED.to_owned(),
+            });
+        }
+        resolved
+    } else {
+        None
+    };
 
     let config = load_config(
         config_path,
