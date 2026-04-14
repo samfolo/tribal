@@ -18,7 +18,7 @@ pub enum DbError {
     ///
     /// Constructed explicitly by repository code with a meaningful context
     /// string alongside the underlying sqlx error.
-    #[error("query failed: {context}")]
+    #[error("query failed ({context}): {source}")]
     QueryFailed {
         /// Human-readable description of what the query was trying to do.
         context: String,
@@ -68,7 +68,7 @@ pub enum DbError {
     },
 
     /// A database migration failed.
-    #[error("migration failed")]
+    #[error("migration failed: {source}")]
     Migration {
         /// The underlying migration error.
         #[from]
@@ -87,7 +87,15 @@ mod tests {
             context: "fetching job by id".to_owned(),
             source: sqlx::Error::RowNotFound,
         };
-        assert_eq!(err.to_string(), "query failed: fetching job by id");
+        let display = err.to_string();
+        assert!(
+            display.contains("fetching job by id"),
+            "expected context in display, got: {display}",
+        );
+        assert!(
+            display.contains("RowNotFound"),
+            "expected source error in display, got: {display}",
+        );
     }
 
     #[test]
@@ -138,7 +146,15 @@ mod tests {
         let err = DbError::Migration {
             source: sqlx::migrate::MigrateError::VersionMissing(1),
         };
-        assert_eq!(err.to_string(), "migration failed");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("migration failed: "),
+            "expected 'migration failed: <source>', got: {display}",
+        );
+        assert!(
+            display.contains('1'),
+            "expected migration version in display, got: {display}",
+        );
     }
 
     #[test]
