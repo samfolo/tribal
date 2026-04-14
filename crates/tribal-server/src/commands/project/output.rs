@@ -87,7 +87,7 @@ pub(super) fn mcp_snippet(
             (key): entry,
         }
     });
-    eprintln!(
+    println!(
         "{}",
         serde_json::to_string_pretty(&wrapped).expect("JSON serialisation cannot fail"),
     );

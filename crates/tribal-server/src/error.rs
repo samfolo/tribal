@@ -49,7 +49,7 @@ pub enum AppError {
     },
 
     /// Failed to write help text to stdout.
-    #[error("failed to write help output")]
+    #[error("failed to write help output: {source}")]
     HelpOutput {
         /// The underlying I/O error.
         #[source]
@@ -104,7 +104,7 @@ pub enum AppError {
     },
 
     /// Prompt file I/O failed.
-    #[error("prompt I/O failed: {context}")]
+    #[error("prompt I/O failed ({context}): {source}")]
     PromptIo {
         /// Description of the failed operation.
         context: String,
@@ -114,7 +114,7 @@ pub enum AppError {
     },
 
     /// Prompt file watcher initialisation failed.
-    #[error("prompt watcher failed: {context}")]
+    #[error("prompt watcher failed ({context}): {source}")]
     PromptWatcher {
         /// Description of the failed operation.
         context: String,
@@ -124,7 +124,7 @@ pub enum AppError {
     },
 
     /// Prompt loading or upsert failed.
-    #[error("prompt loading failed: {context}")]
+    #[error("prompt loading failed ({context}): {source}")]
     PromptLoading {
         /// Description of the failed operation.
         context: String,
@@ -148,7 +148,7 @@ pub enum AppError {
     },
 
     /// Tokio runtime creation failed.
-    #[error("failed to create async runtime")]
+    #[error("failed to create async runtime: {source}")]
     Runtime {
         /// The underlying I/O error.
         #[source]
@@ -164,7 +164,7 @@ pub enum AppError {
     },
 
     /// OS signal handler registration failed.
-    #[error("failed to register OS signal handler")]
+    #[error("failed to register OS signal handler: {source}")]
     SignalHandler {
         /// The underlying I/O error.
         #[source]
@@ -172,7 +172,7 @@ pub enum AppError {
     },
 
     /// Failed to create the worker runtime.
-    #[error("failed to create worker runtime")]
+    #[error("failed to create worker runtime: {source}")]
     WorkerRuntime {
         /// The underlying I/O error.
         #[source]
@@ -191,7 +191,7 @@ pub enum AppError {
     },
 
     /// Transport failed to bind the TCP listener.
-    #[error("failed to bind {transport} transport to {address}")]
+    #[error("failed to bind {transport} transport to {address}: {source}")]
     TransportBind {
         /// The transport that failed to bind.
         transport: TransportKind,
@@ -221,7 +221,7 @@ pub enum AppError {
     },
 
     /// Setup I/O operation failed (directory creation, config file write).
-    #[error("setup I/O failed: {context}")]
+    #[error("setup I/O failed ({context}): {source}")]
     SetupIo {
         /// Description of the failed operation.
         context: String,
@@ -364,7 +364,15 @@ mod tests {
         let err = AppError::HelpOutput {
             source: io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"),
         };
-        assert_eq!(err.to_string(), "failed to write help output");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("failed to write help output: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("pipe closed"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
@@ -404,7 +412,15 @@ mod tests {
         let err = AppError::WorkerRuntime {
             source: io::Error::other("thread pool exhausted"),
         };
-        assert_eq!(err.to_string(), "failed to create worker runtime");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("failed to create worker runtime: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("thread pool exhausted"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
@@ -412,7 +428,15 @@ mod tests {
         let err = AppError::SignalHandler {
             source: io::Error::other("permission denied"),
         };
-        assert_eq!(err.to_string(), "failed to register OS signal handler");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("failed to register OS signal handler: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("permission denied"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
@@ -447,9 +471,17 @@ mod tests {
     fn test_display_prompt_watcher() {
         let err = AppError::PromptWatcher {
             context: "watch /tmp/prompts".into(),
-            source: notify::Error::generic("test"),
+            source: notify::Error::generic("watcher failed"),
         };
-        assert_eq!(err.to_string(), "prompt watcher failed: watch /tmp/prompts");
+        let display = err.to_string();
+        assert!(
+            display.contains("watch /tmp/prompts"),
+            "expected context in display, got: {display}",
+        );
+        assert!(
+            display.contains("watcher failed"),
+            "expected source in display, got: {display}",
+        );
     }
 
     #[test]
@@ -458,9 +490,14 @@ mod tests {
             context: "create config directory /tmp/tribal".into(),
             source: io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"),
         };
+        let display = err.to_string();
         assert!(
-            err.to_string().contains("create config directory"),
-            "unexpected display: {err}",
+            display.contains("create config directory"),
+            "expected context in display, got: {display}",
+        );
+        assert!(
+            display.contains("permission denied"),
+            "expected source in display, got: {display}",
         );
     }
 
@@ -518,11 +555,16 @@ mod tests {
         let err = AppError::TransportBind {
             transport: TransportKind::Http,
             address: addr,
-            source: io::Error::other("test"),
+            source: io::Error::other("address already in use"),
         };
-        assert_eq!(
-            err.to_string(),
-            "failed to bind http transport to 127.0.0.1:8725",
+        let display = err.to_string();
+        assert!(
+            display.contains("127.0.0.1:8725"),
+            "expected address in display, got: {display}",
+        );
+        assert!(
+            display.contains("address already in use"),
+            "expected source in display, got: {display}",
         );
     }
 

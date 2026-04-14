@@ -92,8 +92,8 @@ impl TribalConfig {
     ///
     /// Returns a [`ConfigError`] if serialisation fails.
     pub fn to_yaml(&self) -> Result<String, crate::ConfigError> {
-        serde_yaml::to_string(self).map_err(|e| crate::ConfigError::ValidationFailed {
-            errors: vec![format!("failed to serialise resolved config: {e}")],
+        serde_yaml::to_string(self).map_err(|e| crate::ConfigError::Render {
+            source: Box::new(e),
         })
     }
 }
