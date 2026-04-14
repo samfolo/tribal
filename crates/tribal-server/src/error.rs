@@ -4,7 +4,7 @@
 //! All variants use named fields where applicable; wrapped errors carry
 //! `#[source]` for error chain propagation.
 
-use std::{error::Error, io};
+use std::io;
 
 use thiserror::Error;
 use tribal_config::{ConfigError, TransportKind};
@@ -65,7 +65,7 @@ pub enum AppError {
     },
 
     /// Database pool connection failed after retries.
-    #[error("failed to connect to database pool '{pool_name}' after {attempts} attempts")]
+    #[error("failed to connect to database pool '{pool_name}' after {attempts} attempts: {source}")]
     PoolConnection {
         /// Name of the pool that failed to connect.
         pool_name: &'static str,
@@ -88,7 +88,7 @@ pub enum AppError {
     },
 
     /// Migration execution failed.
-    #[error("migration failed")]
+    #[error("migration failed: {source}")]
     MigrationFailed {
         /// The underlying migration error.
         #[source]
@@ -156,7 +156,7 @@ pub enum AppError {
     },
 
     /// Worker startup failed.
-    #[error("worker startup failed")]
+    #[error("worker startup failed: {source}")]
     WorkerStartup {
         /// The underlying worker error.
         #[source]
@@ -203,7 +203,7 @@ pub enum AppError {
     },
 
     /// Transport encountered a fatal serving error.
-    #[error("{transport} transport serving error")]
+    #[error("{transport} transport serving error: {source}")]
     TransportServe {
         /// The transport that failed.
         transport: TransportKind,
@@ -213,7 +213,7 @@ pub enum AppError {
     },
 
     /// Stdio transport failed during operation.
-    #[error("stdio transport failed")]
+    #[error("stdio transport failed: {source}")]
     TransportStdio {
         /// The underlying error.
         #[source]
@@ -267,16 +267,6 @@ impl AppError {
             | Self::WorkerDeath
             | Self::ShutdownDeadlineExceeded { .. } => EXIT_CODE_WORKER_DEATH,
             _ => 1,
-        }
-    }
-
-    /// Prints the error and its full cause chain to stderr.
-    pub fn print_error(&self) {
-        eprintln!("{self}");
-        let mut source = Error::source(self);
-        while let Some(cause) = source {
-            eprintln!("  caused by: {cause}");
-            source = Error::source(cause);
         }
     }
 
@@ -402,7 +392,11 @@ mod tests {
         let err = AppError::WorkerStartup {
             source: tribal_worker::WorkerError::Cancelled,
         };
-        assert_eq!(err.to_string(), "worker startup failed");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("worker startup failed: "),
+            "expected 'worker startup failed: <source>', got: {display}",
+        );
     }
 
     #[test]
@@ -536,17 +530,33 @@ mod tests {
     fn test_display_transport_serve() {
         let err = AppError::TransportServe {
             transport: TransportKind::Http,
-            source: io::Error::other("test"),
+            source: io::Error::other("connection reset"),
         };
-        assert_eq!(err.to_string(), "http transport serving error");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("http transport serving error: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("connection reset"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
     fn test_display_transport_stdio() {
         let err = AppError::TransportStdio {
-            source: Box::new(io::Error::other("test")),
+            source: Box::new(io::Error::other("pipe broken")),
         };
-        assert_eq!(err.to_string(), "stdio transport failed");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("stdio transport failed: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("pipe broken"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
