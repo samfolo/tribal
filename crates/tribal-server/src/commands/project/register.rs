@@ -2,7 +2,7 @@
 
 use std::{str::FromStr, sync::Arc};
 
-use tribal_config::{DatabaseConfig, ENV_AUTH_TOKEN, TransportKind, TribalConfig, load_config};
+use tribal_config::{ENV_AUTH_TOKEN, TransportKind, TribalConfig, load_config};
 use tribal_db::{
     DbError, NewProject, PgAuthTokenRepository, PgPrincipalRepository, PgProjectRepository,
     ProjectRepository,
@@ -64,7 +64,7 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
     let branch = branch.unwrap_or_else(|| DEFAULT_BRANCH.to_owned());
     let transport = transport.unwrap_or_default();
 
-    let raw_token = resolve_token(token)?;
+    let raw_token = resolve_token(token);
 
     // HTTP/SSE snippets require a token unless explicitly opted out.
     if matches!(transport, TransportKind::Http | TransportKind::Sse)
@@ -87,21 +87,28 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    rt.block_on(run_async(
-        &config,
-        &git_remote,
-        &name,
-        &branch,
+    let opts = OutputOptions {
         json,
         transport,
-        raw_token.as_deref(),
+        raw_token: raw_token.as_deref(),
         skip_validation,
-    ))
+    };
+
+    rt.block_on(run_async(&config, &git_remote, &name, &branch, &opts))
 }
 
 // ---------------------------------------------------------------------------
 // Async flow
 // ---------------------------------------------------------------------------
+
+/// Output options resolved from CLI flags before entering the async
+/// flow.
+struct OutputOptions<'a> {
+    json: bool,
+    transport: TransportKind,
+    raw_token: Option<&'a str>,
+    skip_validation: bool,
+}
 
 /// Connects to the database, inserts (or finds) the project, optionally
 /// validates the token, and prints the result.
@@ -110,10 +117,7 @@ async fn run_async(
     git_remote: &GitRemote,
     name: &str,
     branch: &str,
-    json: bool,
-    transport: TransportKind,
-    raw_token: Option<&str>,
-    skip_validation: bool,
+    opts: &OutputOptions<'_>,
 ) -> Result<(), AppError> {
     let pool = tribal_db::create_pool(
         &config.database,
@@ -130,19 +134,19 @@ async fn run_async(
 
     // -- Validate token if provided and validation not skipped ----------------
 
-    if let Some(token) = raw_token {
-        if !skip_validation {
-            let authenticator = Authenticator::new(
-                Arc::new(PgAuthTokenRepository),
-                Arc::new(PgPrincipalRepository),
-            );
-            authenticator
-                .verify_token(&mut conn, token)
-                .await
-                .map_err(|err| AppError::TokenOperation {
-                    reason: format!("{}: {err}", output::TOKEN_INVALID),
-                })?;
-        }
+    if let Some(token) = opts.raw_token
+        && !opts.skip_validation
+    {
+        let authenticator = Authenticator::new(
+            Arc::new(PgAuthTokenRepository),
+            Arc::new(PgPrincipalRepository),
+        );
+        authenticator
+            .verify_token(&mut conn, token)
+            .await
+            .map_err(|err| AppError::TokenOperation {
+                reason: format!("{}: {err}", output::TOKEN_INVALID),
+            })?;
     }
 
     // -- Register project ---------------------------------------------------
@@ -178,12 +182,12 @@ async fn run_async(
 
     let bind_address = config.server.bind_address.as_deref();
 
-    if json {
-        output::json_snippet(&project, transport, raw_token, bind_address);
+    if opts.json {
+        output::json_snippet(&project, opts.transport, opts.raw_token, bind_address);
     } else {
         output::registered(&project, already_existed);
         output::project_id(&project);
-        output::mcp_snippet(&project, transport, raw_token, bind_address);
+        output::mcp_snippet(&project, opts.transport, opts.raw_token, bind_address);
     }
 
     Ok(())
@@ -195,20 +199,16 @@ async fn run_async(
 
 /// Resolves the bearer token from an explicit `--token` flag or the
 /// `TRIBAL_AUTH_TOKEN` environment variable.
-fn resolve_token(explicit: Option<String>) -> Result<Option<String>, AppError> {
+fn resolve_token(explicit: Option<String>) -> Option<String> {
     if let Some(token) = explicit {
-        return Ok(Some(token));
+        return Some(token);
     }
 
     match std::env::var(ENV_AUTH_TOKEN) {
-        Ok(val) if !val.is_empty() => Ok(Some(val)),
-        _ => Ok(None),
+        Ok(val) if !val.is_empty() => Some(val),
+        _ => None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Resolves the git remote from an explicit `--remote` flag or by
 /// detecting from the current working directory.

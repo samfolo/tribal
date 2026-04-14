@@ -4,7 +4,7 @@
 //! Status messages go to stderr; structured data (IDs, MCP snippets) to
 //! stdout.
 
-use tribal_config::{DEFAULT_BIND_ADDRESS, ENV_AUTH_TOKEN, TransportKind};
+use tribal_config::{DEFAULT_BIND_ADDRESS, TransportKind};
 use tribal_domain::Project;
 
 // ---------------------------------------------------------------------------
