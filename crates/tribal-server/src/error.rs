@@ -237,11 +237,21 @@ pub enum AppError {
         reason: String,
     },
 
-    /// A token management operation failed.
+    /// A token management operation failed (no underlying cause).
     #[error("token operation failed: {reason}")]
     TokenOperation {
         /// Description of why the operation failed.
         reason: String,
+    },
+
+    /// A token management operation failed with an underlying cause.
+    #[error("token operation failed ({reason}): {source}")]
+    TokenVerification {
+        /// Description of what the operation was trying to do.
+        reason: String,
+        /// The underlying authentication error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     /// General database query error.
@@ -418,6 +428,10 @@ mod tests {
             display.contains("connecting"),
             "expected source context in display, got: {display}",
         );
+        assert!(
+            display.contains("pool timed out"),
+            "expected sqlx source detail in display, got: {display}",
+        );
     }
 
     #[test]
@@ -471,6 +485,10 @@ mod tests {
             display.contains("insert"),
             "expected source context in display, got: {display}",
         );
+        assert!(
+            display.contains("no rows returned"),
+            "expected sqlx source detail in display, got: {display}",
+        );
     }
 
     #[test]
@@ -498,6 +516,10 @@ mod tests {
         assert!(
             display.starts_with("worker startup failed: "),
             "expected 'worker startup failed: <source>', got: {display}",
+        );
+        assert!(
+            display.contains("worker cancelled"),
+            "expected source detail in display, got: {display}",
         );
     }
 
@@ -558,6 +580,23 @@ mod tests {
         assert!(
             err.to_string().contains("no token matches prefix"),
             "unexpected display: {err}",
+        );
+    }
+
+    #[test]
+    fn test_display_token_verification() {
+        let err = AppError::TokenVerification {
+            reason: "token validation failed".into(),
+            source: Box::new(io::Error::other("token revoked")),
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("token validation failed"),
+            "expected reason in display, got: {display}",
+        );
+        assert!(
+            display.contains("token revoked"),
+            "expected source in display, got: {display}",
         );
     }
 
