@@ -22,7 +22,8 @@ pub(super) const NO_PROJECTS: &str = "no projects registered";
 
 /// Error when HTTP/SSE transport is selected but no token is available
 /// and `--skip-validation` is not set.
-pub(super) const TOKEN_REQUIRED: &str = "bearer token required for http/sse snippet; pass --token, set TRIBAL_AUTH_TOKEN, or use --skip-validation to omit";
+pub(super) const TOKEN_REQUIRED: &str =
+    "bearer token required for http/sse snippet; pass --token or set TRIBAL_AUTH_TOKEN";
 
 /// Error when a provided token fails validation.
 pub(super) const TOKEN_INVALID: &str = "token validation failed";
