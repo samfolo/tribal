@@ -204,12 +204,12 @@ async fn run_async(
 /// Resolves the bearer token from an explicit `--token` flag or the
 /// `TRIBAL_AUTH_TOKEN` environment variable.
 fn resolve_token(explicit: Option<String>) -> Option<String> {
-    if let Some(token) = explicit {
+    if let Some(token) = explicit.filter(|t| !t.trim().is_empty()) {
         return Some(token);
     }
 
     match std::env::var(ENV_AUTH_TOKEN) {
-        Ok(val) if !val.is_empty() => Some(val),
+        Ok(val) if !val.trim().is_empty() => Some(val),
         _ => None,
     }
 }
