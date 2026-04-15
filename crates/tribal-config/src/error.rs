@@ -26,8 +26,8 @@ pub enum ConfigError {
         errors: Vec<String>,
     },
 
-    /// Config file rendering failed.
-    #[error("failed to render config file: {source}")]
+    /// Configuration serialisation failed.
+    #[error("failed to render configuration: {source}")]
     Render {
         /// The underlying serialisation error.
         #[source]
