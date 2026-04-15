@@ -70,7 +70,7 @@ pub(super) fn project_id(project: &Project) {
     println!("{}", project.id());
 }
 
-/// Prints the wrapped MCP configuration snippet to stderr.
+/// Prints the wrapped MCP configuration snippet to stdout.
 ///
 /// Includes the `mcpServers` wrapper and server key for human
 /// readability when copy-pasting.
