@@ -282,11 +282,12 @@ pub struct ProjectRegisterArgs {
     #[arg(long, help_heading = "Output")]
     pub token: Option<String>,
 
-    /// Skip database validation of the bearer token. When no token
-    /// is available, allows generating a snippet without
-    /// authentication headers. Use when the token belongs to a
-    /// different environment or when embedding a value that will be
-    /// resolved later.
+    /// Skip database validation of the bearer token. Use when the
+    /// token belongs to a different environment or when embedding a
+    /// value that will be resolved later. Also permits generating
+    /// HTTP/SSE snippets without a token, but note that the default
+    /// server configuration requires bearer auth — a tokenless
+    /// snippet will need manual auth configuration to work.
     #[arg(long, help_heading = "Output")]
     pub skip_validation: bool,
 
