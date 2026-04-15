@@ -4,7 +4,7 @@
 //! All variants use named fields where applicable; wrapped errors carry
 //! `#[source]` for error chain propagation.
 
-use std::{error::Error, io};
+use std::io;
 
 use thiserror::Error;
 use tribal_config::{ConfigError, TransportKind};
@@ -49,7 +49,7 @@ pub enum AppError {
     },
 
     /// Failed to write help text to stdout.
-    #[error("failed to write help output")]
+    #[error("failed to write help output: {source}")]
     HelpOutput {
         /// The underlying I/O error.
         #[source]
@@ -65,7 +65,7 @@ pub enum AppError {
     },
 
     /// Database pool connection failed after retries.
-    #[error("failed to connect to database pool '{pool_name}' after {attempts} attempts")]
+    #[error("failed to connect to database pool '{pool_name}' after {attempts} attempts: {source}")]
     PoolConnection {
         /// Name of the pool that failed to connect.
         pool_name: &'static str,
@@ -88,7 +88,7 @@ pub enum AppError {
     },
 
     /// Migration execution failed.
-    #[error("migration failed")]
+    #[error("migration failed: {source}")]
     MigrationFailed {
         /// The underlying migration error.
         #[source]
@@ -104,7 +104,7 @@ pub enum AppError {
     },
 
     /// Prompt file I/O failed.
-    #[error("prompt I/O failed: {context}")]
+    #[error("prompt I/O failed ({context}): {source}")]
     PromptIo {
         /// Description of the failed operation.
         context: String,
@@ -114,7 +114,7 @@ pub enum AppError {
     },
 
     /// Prompt file watcher initialisation failed.
-    #[error("prompt watcher failed: {context}")]
+    #[error("prompt watcher failed ({context}): {source}")]
     PromptWatcher {
         /// Description of the failed operation.
         context: String,
@@ -124,7 +124,7 @@ pub enum AppError {
     },
 
     /// Prompt loading or upsert failed.
-    #[error("prompt loading failed: {context}")]
+    #[error("prompt loading failed ({context}): {source}")]
     PromptLoading {
         /// Description of the failed operation.
         context: String,
@@ -148,7 +148,7 @@ pub enum AppError {
     },
 
     /// Tokio runtime creation failed.
-    #[error("failed to create async runtime")]
+    #[error("failed to create async runtime: {source}")]
     Runtime {
         /// The underlying I/O error.
         #[source]
@@ -156,7 +156,7 @@ pub enum AppError {
     },
 
     /// Worker startup failed.
-    #[error("worker startup failed")]
+    #[error("worker startup failed: {source}")]
     WorkerStartup {
         /// The underlying worker error.
         #[source]
@@ -164,7 +164,7 @@ pub enum AppError {
     },
 
     /// OS signal handler registration failed.
-    #[error("failed to register OS signal handler")]
+    #[error("failed to register OS signal handler: {source}")]
     SignalHandler {
         /// The underlying I/O error.
         #[source]
@@ -172,7 +172,7 @@ pub enum AppError {
     },
 
     /// Failed to create the worker runtime.
-    #[error("failed to create worker runtime")]
+    #[error("failed to create worker runtime: {source}")]
     WorkerRuntime {
         /// The underlying I/O error.
         #[source]
@@ -191,7 +191,7 @@ pub enum AppError {
     },
 
     /// Transport failed to bind the TCP listener.
-    #[error("failed to bind {transport} transport to {address}")]
+    #[error("failed to bind {transport} transport to {address}: {source}")]
     TransportBind {
         /// The transport that failed to bind.
         transport: TransportKind,
@@ -203,7 +203,7 @@ pub enum AppError {
     },
 
     /// Transport encountered a fatal serving error.
-    #[error("{transport} transport serving error")]
+    #[error("{transport} transport serving error: {source}")]
     TransportServe {
         /// The transport that failed.
         transport: TransportKind,
@@ -213,7 +213,7 @@ pub enum AppError {
     },
 
     /// Stdio transport failed during operation.
-    #[error("stdio transport failed")]
+    #[error("stdio transport failed: {source}")]
     TransportStdio {
         /// The underlying error.
         #[source]
@@ -221,7 +221,7 @@ pub enum AppError {
     },
 
     /// Setup I/O operation failed (directory creation, config file write).
-    #[error("setup I/O failed: {context}")]
+    #[error("setup I/O failed ({context}): {source}")]
     SetupIo {
         /// Description of the failed operation.
         context: String,
@@ -237,11 +237,21 @@ pub enum AppError {
         reason: String,
     },
 
-    /// A token management operation failed.
+    /// A token management operation failed (no underlying cause).
     #[error("token operation failed: {reason}")]
     TokenOperation {
         /// Description of why the operation failed.
         reason: String,
+    },
+
+    /// A token management operation failed with an underlying cause.
+    #[error("token operation failed ({reason}): {source}")]
+    TokenVerification {
+        /// Description of what the operation was trying to do.
+        reason: String,
+        /// The underlying authentication error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     /// General database query error.
@@ -267,16 +277,6 @@ impl AppError {
             | Self::WorkerDeath
             | Self::ShutdownDeadlineExceeded { .. } => EXIT_CODE_WORKER_DEATH,
             _ => 1,
-        }
-    }
-
-    /// Prints the error and its full cause chain to stderr.
-    pub fn print_error(&self) {
-        eprintln!("{self}");
-        let mut source = Error::source(self);
-        while let Some(cause) = source {
-            eprintln!("  caused by: {cause}");
-            source = Error::source(cause);
         }
     }
 
@@ -374,7 +374,15 @@ mod tests {
         let err = AppError::HelpOutput {
             source: io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"),
         };
-        assert_eq!(err.to_string(), "failed to write help output");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("failed to write help output: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("pipe closed"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
@@ -398,11 +406,121 @@ mod tests {
     }
 
     #[test]
+    fn test_display_pool_connection() {
+        let err = AppError::PoolConnection {
+            pool_name: "mcp",
+            attempts: 3,
+            source: DbError::QueryFailed {
+                context: "connecting".into(),
+                source: sqlx::Error::PoolTimedOut,
+            },
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("mcp"),
+            "expected pool name in display, got: {display}",
+        );
+        assert!(
+            display.contains("3 attempts"),
+            "expected attempt count in display, got: {display}",
+        );
+        assert!(
+            display.contains("connecting"),
+            "expected source context in display, got: {display}",
+        );
+        assert!(
+            display.contains("pool timed out"),
+            "expected sqlx source detail in display, got: {display}",
+        );
+    }
+
+    #[test]
+    fn test_display_migration_failed() {
+        let err = AppError::MigrationFailed {
+            source: sqlx::migrate::MigrateError::VersionMissing(42),
+        };
+        let display = err.to_string();
+        assert!(
+            display.starts_with("migration failed: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("42"),
+            "expected migration version in display, got: {display}",
+        );
+    }
+
+    #[test]
+    fn test_display_prompt_io() {
+        let err = AppError::PromptIo {
+            context: "reading extraction template".into(),
+            source: io::Error::new(io::ErrorKind::NotFound, "file not found"),
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("reading extraction template"),
+            "expected context in display, got: {display}",
+        );
+        assert!(
+            display.contains("file not found"),
+            "expected source in display, got: {display}",
+        );
+    }
+
+    #[test]
+    fn test_display_prompt_loading() {
+        let err = AppError::PromptLoading {
+            context: "upserting triage prompt".into(),
+            source: DbError::QueryFailed {
+                context: "insert".into(),
+                source: sqlx::Error::RowNotFound,
+            },
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("upserting triage prompt"),
+            "expected context in display, got: {display}",
+        );
+        assert!(
+            display.contains("insert"),
+            "expected source context in display, got: {display}",
+        );
+        assert!(
+            display.contains("no rows returned"),
+            "expected sqlx source detail in display, got: {display}",
+        );
+    }
+
+    #[test]
+    fn test_display_runtime() {
+        let err = AppError::Runtime {
+            source: io::Error::other("cannot create reactor"),
+        };
+        let display = err.to_string();
+        assert!(
+            display.starts_with("failed to create async runtime: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("cannot create reactor"),
+            "expected source detail in display, got: {display}",
+        );
+    }
+
+    #[test]
     fn test_display_worker_startup() {
         let err = AppError::WorkerStartup {
             source: tribal_worker::WorkerError::Cancelled,
         };
-        assert_eq!(err.to_string(), "worker startup failed");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("worker startup failed: "),
+            "expected 'worker startup failed: <source>', got: {display}",
+        );
+        assert!(
+            display.contains("worker cancelled"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
@@ -410,7 +528,15 @@ mod tests {
         let err = AppError::WorkerRuntime {
             source: io::Error::other("thread pool exhausted"),
         };
-        assert_eq!(err.to_string(), "failed to create worker runtime");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("failed to create worker runtime: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("thread pool exhausted"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
@@ -418,7 +544,15 @@ mod tests {
         let err = AppError::SignalHandler {
             source: io::Error::other("permission denied"),
         };
-        assert_eq!(err.to_string(), "failed to register OS signal handler");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("failed to register OS signal handler: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("permission denied"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
@@ -450,12 +584,37 @@ mod tests {
     }
 
     #[test]
+    fn test_display_token_verification() {
+        let err = AppError::TokenVerification {
+            reason: "token validation failed".into(),
+            source: Box::new(io::Error::other("token revoked")),
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("token validation failed"),
+            "expected reason in display, got: {display}",
+        );
+        assert!(
+            display.contains("token revoked"),
+            "expected source in display, got: {display}",
+        );
+    }
+
+    #[test]
     fn test_display_prompt_watcher() {
         let err = AppError::PromptWatcher {
             context: "watch /tmp/prompts".into(),
-            source: notify::Error::generic("test"),
+            source: notify::Error::generic("watcher failed"),
         };
-        assert_eq!(err.to_string(), "prompt watcher failed: watch /tmp/prompts");
+        let display = err.to_string();
+        assert!(
+            display.contains("watch /tmp/prompts"),
+            "expected context in display, got: {display}",
+        );
+        assert!(
+            display.contains("watcher failed"),
+            "expected source in display, got: {display}",
+        );
     }
 
     #[test]
@@ -464,9 +623,14 @@ mod tests {
             context: "create config directory /tmp/tribal".into(),
             source: io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"),
         };
+        let display = err.to_string();
         assert!(
-            err.to_string().contains("create config directory"),
-            "unexpected display: {err}",
+            display.contains("create config directory"),
+            "expected context in display, got: {display}",
+        );
+        assert!(
+            display.contains("permission denied"),
+            "expected source in display, got: {display}",
         );
     }
 
@@ -524,11 +688,16 @@ mod tests {
         let err = AppError::TransportBind {
             transport: TransportKind::Http,
             address: addr,
-            source: io::Error::other("test"),
+            source: io::Error::other("address already in use"),
         };
-        assert_eq!(
-            err.to_string(),
-            "failed to bind http transport to 127.0.0.1:8725",
+        let display = err.to_string();
+        assert!(
+            display.contains("127.0.0.1:8725"),
+            "expected address in display, got: {display}",
+        );
+        assert!(
+            display.contains("address already in use"),
+            "expected source in display, got: {display}",
         );
     }
 
@@ -536,17 +705,33 @@ mod tests {
     fn test_display_transport_serve() {
         let err = AppError::TransportServe {
             transport: TransportKind::Http,
-            source: io::Error::other("test"),
+            source: io::Error::other("connection reset"),
         };
-        assert_eq!(err.to_string(), "http transport serving error");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("http transport serving error: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("connection reset"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]
     fn test_display_transport_stdio() {
         let err = AppError::TransportStdio {
-            source: Box::new(io::Error::other("test")),
+            source: Box::new(io::Error::other("pipe broken")),
         };
-        assert_eq!(err.to_string(), "stdio transport failed");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("stdio transport failed: "),
+            "expected source in display, got: {display}",
+        );
+        assert!(
+            display.contains("pipe broken"),
+            "expected source detail in display, got: {display}",
+        );
     }
 
     #[test]

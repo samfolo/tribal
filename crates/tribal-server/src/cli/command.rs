@@ -114,6 +114,9 @@ pub enum Command {
     /// Manage authentication tokens.
     #[command(subcommand, display_order = 3)]
     Token(TokenCommand),
+    /// Interact with the resolved configuration.
+    #[command(subcommand, display_order = 4)]
+    Config(ConfigCommand),
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +264,33 @@ pub struct ProjectRegisterArgs {
     #[arg(long, help_heading = "Project")]
     pub branch: Option<String>,
 
+    /// Output a bare MCP server config entry as JSON to stdout,
+    /// suitable for piping into `claude mcp add-json`. The snippet
+    /// shape varies by transport.
+    #[arg(long, help_heading = "Output")]
+    pub json: bool,
+
+    /// Transport mode for the generated MCP config snippet. Controls
+    /// the snippet shape: stdio uses `command`/`args`, while http and
+    /// sse use `url` with optional `headers`. Defaults to stdio.
+    #[arg(long, help_heading = "Output")]
+    pub transport: Option<TransportKind>,
+
+    /// Bearer token to embed in HTTP/SSE config snippets. Validated
+    /// against the database unless `--skip-validation` is set. Falls
+    /// back to the `TRIBAL_AUTH_TOKEN` environment variable if omitted.
+    #[arg(long, help_heading = "Output")]
+    pub token: Option<String>,
+
+    /// Skip database validation of the bearer token. Use when the
+    /// token belongs to a different environment or when embedding a
+    /// value that will be resolved later. Also permits generating
+    /// HTTP/SSE snippets without a token, but note that the default
+    /// server configuration requires bearer auth — a tokenless
+    /// snippet will need manual auth configuration to work.
+    #[arg(long, help_heading = "Output")]
+    pub skip_validation: bool,
+
     /// Database connection options.
     #[command(flatten)]
     pub database: DatabaseArgs,
@@ -403,6 +433,32 @@ impl TokenRevokeAllArgs {
     pub fn into_cli_overrides(self) -> CliOverrides {
         self.database.into_cli_overrides()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/// Configuration subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Print the fully resolved configuration as YAML. Sensitive fields
+    /// (database URL, API keys) are redacted unless `--show-secrets`
+    /// is passed.
+    Show {
+        /// Arguments for config show.
+        #[command(flatten)]
+        args: ConfigShowArgs,
+    },
+}
+
+/// Arguments for `config show`.
+#[derive(Debug, Clone, Copy, Args)]
+pub struct ConfigShowArgs {
+    /// Reveal sensitive values (database URL, API keys) instead of
+    /// redacting them.
+    #[arg(long)]
+    pub show_secrets: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +683,10 @@ mod tests {
             if args.remote.is_none()
                 && args.name.is_none()
                 && args.branch.is_none()
+                && !args.json
+                && args.transport.is_none()
+                && args.token.is_none()
+                && !args.skip_validation
                 && args.database.database_url.is_none()
         ));
     }
@@ -643,6 +703,12 @@ mod tests {
             "my-project",
             "--branch",
             "develop",
+            "--json",
+            "--transport",
+            "http",
+            "--token",
+            "test-token",
+            "--skip-validation",
             "-d",
             "postgres://h/db",
         ])
@@ -653,6 +719,10 @@ mod tests {
             if args.remote.as_deref() == Some("git@github.com:user/repo.git")
                 && args.name.as_deref() == Some("my-project")
                 && args.branch.as_deref() == Some("develop")
+                && args.json
+                && args.transport == Some(TransportKind::Http)
+                && args.token.as_deref() == Some("test-token")
+                && args.skip_validation
                 && args.database.database_url.as_deref() == Some("postgres://h/db")
         ));
     }
@@ -857,6 +927,28 @@ mod tests {
         let overrides = args.into_cli_overrides();
         let database = overrides.database.unwrap();
         assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
+    }
+
+    // -- Config show ---------------------------------------------------------
+
+    #[test]
+    fn test_config_show_parses() {
+        let cli = Cli::try_parse_from(["tribal", "config", "show"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config(ConfigCommand::Show { args }))
+            if !args.show_secrets
+        ));
+    }
+
+    #[test]
+    fn test_config_show_parses_show_secrets() {
+        let cli = Cli::try_parse_from(["tribal", "config", "show", "--show-secrets"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config(ConfigCommand::Show { args }))
+            if args.show_secrets
+        ));
     }
 
     // -- No subcommand ------------------------------------------------------

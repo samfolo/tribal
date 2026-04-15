@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use clap::{CommandFactory, Parser};
 
 use crate::{
-    cli::{Cli, Command, ProjectCommand, TokenCommand},
+    cli::{Cli, Command, ConfigCommand, ProjectCommand, TokenCommand},
     commands,
     error::AppError,
 };
@@ -77,6 +77,11 @@ impl App {
                 }
                 ProjectCommand::List { args } => {
                     commands::project::list(&self.cli.global.config, args)?;
+                }
+            },
+            Command::Config(command) => match command {
+                ConfigCommand::Show { args } => {
+                    commands::config::show(&self.cli.global.config, args)?;
                 }
             },
             Command::Token(command) => match command {

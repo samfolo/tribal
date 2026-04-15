@@ -5,6 +5,7 @@
 //! re-exported here as `commands::setup(...)`, `commands::serve(...)`, etc.
 
 pub(crate) mod common;
+pub(crate) mod config;
 pub(crate) mod project;
 mod serve;
 mod setup;
