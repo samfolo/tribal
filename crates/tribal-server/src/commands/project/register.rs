@@ -147,8 +147,9 @@ async fn run_async(
         authenticator
             .verify_token(&mut conn, token)
             .await
-            .map_err(|err| AppError::TokenOperation {
-                reason: format!("{}: {err}", output::TOKEN_INVALID),
+            .map_err(|err| AppError::TokenVerification {
+                reason: output::TOKEN_INVALID.to_owned(),
+                source: Box::new(err),
             })?;
     }
 
