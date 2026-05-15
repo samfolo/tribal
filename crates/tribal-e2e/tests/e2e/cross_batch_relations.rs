@@ -26,7 +26,8 @@ async fn test_cross_batch_relations() {
         // Anthropic triage exercises the Anthropic envelope abstraction.
         setup.config(|c| {
             c.inference.triage.provider = ProviderKind::Anthropic;
-            c.inference.triage.api_key = Some("sk-ant-e2e-000000".to_owned());
+            c.inference.triage.api_key =
+                Some("sk-ant-e2e-000000".parse().expect("test fixture is valid"));
         });
 
         setup.graph(|g| {

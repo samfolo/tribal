@@ -4,6 +4,7 @@
 //! configurable with its own provider, model, and parameters.
 
 use serde::{Deserialize, Serialize};
+use tribal_domain::ApiKey;
 
 use super::provider_kind::ProviderKind;
 
@@ -81,7 +82,7 @@ pub struct StageInferenceConfig {
 
     /// API key for cloud providers.
     #[serde(default)]
-    pub api_key: Option<String>,
+    pub api_key: Option<ApiKey>,
 
     /// Sampling temperature.
     pub temperature: f64,

@@ -23,7 +23,8 @@ async fn test_provider_failure_and_retry() {
         // OpenAI extraction exercises the OpenAI envelope abstraction.
         setup.config(|c| {
             c.inference.extraction.provider = ProviderKind::OpenAi;
-            c.inference.extraction.api_key = Some("sk-e2e-000000".to_owned());
+            c.inference.extraction.api_key =
+                Some("sk-e2e-000000".parse().expect("test fixture is valid"));
         });
     })
     .await;

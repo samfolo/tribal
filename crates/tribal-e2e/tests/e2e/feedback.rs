@@ -22,7 +22,7 @@ async fn test_feedback_after_discovery() {
         // OpenAI embedding exercises the OpenAI embed envelope abstraction.
         setup.config(|c| {
             c.embedding.provider = ProviderKind::OpenAi;
-            c.embedding.api_key = Some("sk-e2e-000000".to_owned());
+            c.embedding.api_key = Some("sk-e2e-000000".parse().expect("test fixture is valid"));
         });
     })
     .await;
