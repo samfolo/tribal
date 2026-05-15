@@ -51,6 +51,7 @@ tribal-domain.workspace = true
 tribal-inference.workspace = true
 tribal-mcp.workspace = true
 tribal-telemetry.workspace = true
+tribal-ui.workspace = true
 tribal-worker.workspace = true
 
 [features]
