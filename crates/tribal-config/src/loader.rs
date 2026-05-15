@@ -9,10 +9,13 @@ use figment::{
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use tribal_domain::ApiKey;
 
 use crate::{
-    LoggingConfig, TelemetryConfig, TribalConfig, env::ENV_PREFIX, error::ConfigError,
-    sections::TransportKind,
+    LoggingConfig, TelemetryConfig, TribalConfig,
+    env::ENV_PREFIX,
+    error::ConfigError,
+    sections::{PromptSource, ProviderKind, TransportKind},
 };
 
 // ---------------------------------------------------------------------------
@@ -65,6 +68,18 @@ pub struct CliOverrides {
     /// Database-related CLI overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseCliOverrides>,
+
+    /// Embedding-stage CLI overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<EmbeddingCliOverrides>,
+
+    /// Inference-stage CLI overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference: Option<InferenceCliOverrides>,
+
+    /// Telemetry CLI overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryCliOverrides>,
 }
 
 /// Server-related CLI flag overrides.
@@ -85,6 +100,54 @@ pub struct DatabaseCliOverrides {
     /// Database URL override from `--database-url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+}
+
+/// Embedding-stage CLI flag overrides.
+#[derive(Debug, Serialize)]
+pub struct EmbeddingCliOverrides {
+    /// Provider override from `--embedding-provider`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderKind>,
+
+    /// Model name override from `--embedding-model`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Inference-stage CLI flag overrides.
+#[derive(Debug, Serialize)]
+pub struct InferenceCliOverrides {
+    /// Extraction-stage overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extraction: Option<InferenceStageCliOverrides>,
+
+    /// Triage-stage overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triage: Option<InferenceStageCliOverrides>,
+
+    /// Relation-stage overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<InferenceStageCliOverrides>,
+}
+
+/// Per-stage inference CLI flag overrides.
+#[derive(Debug, Serialize)]
+pub struct InferenceStageCliOverrides {
+    /// Provider override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderKind>,
+
+    /// Model name override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Telemetry CLI flag overrides.
+#[derive(Debug, Serialize)]
+pub struct TelemetryCliOverrides {
+    /// OTLP exporter endpoint override from `--telemetry-otlp-endpoint`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub otlp_endpoint: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +223,7 @@ pub fn load_config(
         source: Box::new(source),
     })?;
 
+    apply_standard_env_var_fallback(&mut config);
     expand_paths(&mut config);
     restore_temp_dir_fallback_flags(&mut config);
 
@@ -225,8 +289,47 @@ fn restore_temp_dir_fallback_flags(config: &mut TribalConfig) {
     }
 }
 
+/// Populates `api_key` for any cloud-provider stage where prior cascade
+/// layers left it `None`, using the env var returned by
+/// [`ProviderKind::standard_env_var_name`].
+///
+/// The OS env lookup is opportunistic: a missing, non-Unicode, or
+/// malformed value (empty, whitespace-bearing) leaves `api_key` as
+/// `None`, which then triggers the existing `validate_api_key_presence`
+/// error if no usable key emerged from any layer. Empty or
+/// whitespace-bearing values supplied through YAML or `TRIBAL_*__API_KEY`
+/// fail at deserialise time instead, courtesy of [`ApiKey`]'s strict
+/// `FromStr` impl.
+fn apply_standard_env_var_fallback(config: &mut TribalConfig) {
+    apply_stage_fallback(&mut config.embedding.api_key, config.embedding.provider);
+    apply_stage_fallback(
+        &mut config.inference.extraction.api_key,
+        config.inference.extraction.provider,
+    );
+    apply_stage_fallback(
+        &mut config.inference.triage.api_key,
+        config.inference.triage.provider,
+    );
+    apply_stage_fallback(
+        &mut config.inference.relation.api_key,
+        config.inference.relation.provider,
+    );
+}
+
+fn apply_stage_fallback(api_key: &mut Option<ApiKey>, provider: ProviderKind) {
+    if api_key.is_none()
+        && provider.requires_api_key()
+        && let Some(name) = provider.standard_env_var_name()
+        && let Some(parsed) = std::env::var(name).ok().and_then(|v| v.parse().ok())
+    {
+        *api_key = Some(parsed);
+    }
+}
+
 fn expand_paths(config: &mut TribalConfig) {
-    config.prompts.directory = shellexpand::tilde(&config.prompts.directory).into_owned();
+    if let PromptSource::Disk { directory, .. } = &mut config.prompts.source {
+        *directory = shellexpand::tilde(directory).into_owned();
+    }
     config.telemetry.file_directory =
         shellexpand::tilde(&config.telemetry.file_directory).into_owned();
     config.logging.file_directory = shellexpand::tilde(&config.logging.file_directory).into_owned();
@@ -244,7 +347,16 @@ mod tests {
     use figment::Jail;
 
     use super::*;
-    use crate::ProviderKind;
+    use crate::{ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ProviderKind, validate};
+
+    /// Serialises a [`TribalConfig`] and writes it as `tribal.yaml` in the
+    /// jail's working directory. Lets tests assemble fixtures by setting
+    /// fields on a `TribalConfig` instead of hand-rolling YAML strings.
+    fn write_config_yaml(jail: &mut Jail, config: &TribalConfig) {
+        let yaml = serde_yaml::to_string(config).expect("serialise TribalConfig to YAML");
+        jail.create_file("tribal.yaml", &yaml)
+            .expect("write tribal.yaml in jail");
+    }
 
     #[test]
     fn test_defaults_only() {
@@ -292,19 +404,61 @@ server:
     }
 
     #[test]
-    fn test_tilde_expansion() {
+    fn test_tilde_expansion_disk_prompts() {
         Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                r"
+prompts:
+  source:
+    kind: disk
+    directory: ~/somewhere
+",
+            )?;
+
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+
             assert!(
-                !config.prompts.directory.starts_with('~'),
-                "prompts.directory should be expanded: {}",
-                config.prompts.directory
+                matches!(
+                    &config.prompts.source,
+                    PromptSource::Disk { directory, .. } if !directory.starts_with('~'),
+                ),
+                "prompts directory should be expanded: {:?}",
+                config.prompts.source,
             );
             assert!(
                 !config.telemetry.file_directory.starts_with('~'),
                 "telemetry.file_directory should be expanded: {}",
-                config.telemetry.file_directory
+                config.telemetry.file_directory,
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_tilde_expansion_embedded_prompts_no_op() {
+        Jail::expect_with(|jail| {
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(config.prompts.source, PromptSource::Embedded {});
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_embedded_hot_reload_yaml_rejected_at_load() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                "prompts:\n  source:\n    kind: embedded\n    hot_reload: true\n",
+            )?;
+
+            let path = jail.directory().join("tribal.yaml");
+            let result = load_config(path.to_str().unwrap(), None, None);
+            assert!(
+                result.is_err(),
+                "`embedded` variant must reject `hot_reload`, got: {result:?}",
             );
             Ok(())
         });
@@ -333,7 +487,7 @@ server:
                     transport: Some(TransportKind::Sse),
                     bind_address: None,
                 }),
-                database: None,
+                ..CliOverrides::default()
             };
 
             let path = jail.directory().join("tribal.yaml");
@@ -415,7 +569,8 @@ server:
             jail.set_env("TRIBAL_EMBEDDING__DIMENSIONS", "1024");
             jail.set_env("TRIBAL_INFERENCE__EXTRACTION__TEMPERATURE", "0.5");
             jail.set_env("TRIBAL_LIMITS__PROVIDERS__OLLAMA__MAX_IN_FLIGHT", "4");
-            jail.set_env("TRIBAL_PROMPTS__HOT_RELOAD", "true");
+            jail.set_env("TRIBAL_PROMPTS__SOURCE__KIND", "disk");
+            jail.set_env("TRIBAL_PROMPTS__SOURCE__HOT_RELOAD", "true");
             jail.set_env("TRIBAL_DISCOVERY__MAX_LIMIT", "100");
             jail.set_env("TRIBAL_EXPLORATION__MAX_DEPTH", "5");
             jail.set_env("TRIBAL_LOGGING__LEVEL", "debug");
@@ -434,7 +589,17 @@ server:
                 config.limits.providers[&ProviderKind::Ollama].max_in_flight,
                 4
             );
-            assert!(config.prompts.hot_reload);
+            assert!(
+                matches!(
+                    config.prompts.source,
+                    PromptSource::Disk {
+                        hot_reload: true,
+                        ..
+                    },
+                ),
+                "expected Disk variant with hot_reload=true, got {:?}",
+                config.prompts.source,
+            );
             assert_eq!(config.discovery.max_limit, 100);
             assert_eq!(config.exploration.max_depth, 5);
             assert_eq!(config.logging.level, "debug");
@@ -545,10 +710,10 @@ server:
             )?;
 
             let overrides = CliOverrides {
-                server: None,
                 database: Some(DatabaseCliOverrides {
                     url: Some("postgres://cli-wins/tribal".into()),
                 }),
+                ..CliOverrides::default()
             };
 
             let path = jail.directory().join("tribal.yaml");
@@ -556,6 +721,239 @@ server:
             let config =
                 load_config(path.to_str().unwrap(), Some(overrides), Some(&defaults)).unwrap();
             assert_eq!(config.database.url, "postgres://cli-wins/tribal");
+            Ok(())
+        });
+    }
+
+    // -- Standard provider env-var fallback (closes #144) --------------------
+
+    #[test]
+    fn test_openai_api_key_fallback_file_wins() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                "embedding:\n  provider: openai\n  api_key: \"from-file\"\n",
+            )?;
+            jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(
+                config.embedding.api_key.as_ref().map(ApiKey::as_str),
+                Some("from-file")
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_tribal_env_api_key_beats_standard_env() {
+        Jail::expect_with(|jail| {
+            jail.create_file("tribal.yaml", "embedding:\n  provider: openai\n")?;
+            jail.set_env("TRIBAL_EMBEDDING__API_KEY", "from-tribal-env");
+            jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(
+                config.embedding.api_key.as_ref().map(ApiKey::as_str),
+                Some("from-tribal-env"),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openai_api_key_satisfies_validation() {
+        Jail::expect_with(|jail| {
+            let mut fixture = TribalConfig::minimum_valid("postgres://h/db");
+            fixture.embedding.provider = ProviderKind::OpenAi;
+            write_config_yaml(jail, &fixture);
+            jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(
+                config.embedding.api_key.as_ref().map(ApiKey::as_str),
+                Some("from-standard-env"),
+            );
+            let result = validate(&config);
+            assert!(
+                result.is_ok(),
+                "validate must pass when the standard env var supplies the key, got {result:?}",
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_empty_standard_env_var_does_not_satisfy_validation() {
+        Jail::expect_with(|jail| {
+            let mut fixture = TribalConfig::minimum_valid("postgres://h/db");
+            fixture.embedding.provider = ProviderKind::OpenAi;
+            write_config_yaml(jail, &fixture);
+            // Docker compose's `${OPENAI_API_KEY:-}` emits an empty value
+            // when the host env var is unset; the fallback must treat that
+            // as "no key reachable" so validation fires loudly with the
+            // existing "api_key is required" literal.
+            jail.set_env(ENV_OPENAI_API_KEY, "");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert!(config.embedding.api_key.is_none());
+            let result = validate(&config);
+            assert!(
+                result.is_err(),
+                "validate must fail when the standard env var is empty, got {result:?}",
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_mixed_provider_mixed_stage_fallback() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                r"
+embedding:
+  provider: openai
+inference:
+  triage:
+    provider: anthropic
+",
+            )?;
+            jail.set_env(ENV_OPENAI_API_KEY, "openai-key");
+            jail.set_env(ENV_ANTHROPIC_API_KEY, "anthropic-key");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(
+                config.embedding.api_key.as_ref().map(ApiKey::as_str),
+                Some("openai-key")
+            );
+            assert_eq!(
+                config.inference.triage.api_key.as_ref().map(ApiKey::as_str),
+                Some("anthropic-key"),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_no_key_providers_ignore_all_standard_env_vars() {
+        Jail::expect_with(|jail| {
+            // Set every standard env var that any provider exposes, so the
+            // sweep below covers each `ProviderKind` against the full set.
+            for kind in ProviderKind::ALL {
+                if let Some(name) = kind.standard_env_var_name() {
+                    jail.set_env(name, "should-be-ignored");
+                }
+            }
+
+            // For every provider that does not require an API key, the
+            // fallback must leave `api_key` as `None` for every stage that
+            // consults it — not only the embedding stage.
+            for provider in ProviderKind::ALL
+                .into_iter()
+                .filter(|k| !k.requires_api_key())
+            {
+                let yaml = format!(
+                    "\
+embedding:
+  provider: {provider}
+inference:
+  extraction:
+    provider: {provider}
+  triage:
+    provider: {provider}
+  relation:
+    provider: {provider}
+"
+                );
+                jail.create_file("tribal.yaml", &yaml)?;
+                let path = jail.directory().join("tribal.yaml");
+                let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+
+                let stages = [
+                    ("embedding", &config.embedding.api_key),
+                    ("inference.extraction", &config.inference.extraction.api_key),
+                    ("inference.triage", &config.inference.triage.api_key),
+                    ("inference.relation", &config.inference.relation.api_key),
+                ];
+                for (label, api_key) in stages {
+                    assert!(
+                        api_key.is_none(),
+                        "{provider} at {label} consumed a standard env var, got {api_key:?}",
+                    );
+                }
+            }
+            Ok(())
+        });
+    }
+
+    // -- Provider / Telemetry CliOverrides cascade ---------------------------
+
+    #[test]
+    fn test_provider_cli_overrides_cascade() {
+        Jail::expect_with(|jail| {
+            let overrides = CliOverrides {
+                embedding: Some(EmbeddingCliOverrides {
+                    provider: Some(ProviderKind::OpenAi),
+                    model: Some("text-embedding-3-small".into()),
+                }),
+                inference: Some(InferenceCliOverrides {
+                    extraction: Some(InferenceStageCliOverrides {
+                        provider: Some(ProviderKind::Anthropic),
+                        model: Some("claude-opus-4".into()),
+                    }),
+                    triage: Some(InferenceStageCliOverrides {
+                        provider: Some(ProviderKind::OpenAi),
+                        model: Some("gpt-5".into()),
+                    }),
+                    relation: Some(InferenceStageCliOverrides {
+                        provider: Some(ProviderKind::Anthropic),
+                        model: Some("claude-haiku-5".into()),
+                    }),
+                }),
+                ..CliOverrides::default()
+            };
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), Some(overrides), None).unwrap();
+
+            assert_eq!(config.embedding.provider, ProviderKind::OpenAi);
+            assert_eq!(config.embedding.model, "text-embedding-3-small");
+            assert_eq!(
+                config.inference.extraction.provider,
+                ProviderKind::Anthropic,
+            );
+            assert_eq!(config.inference.extraction.model, "claude-opus-4");
+            assert_eq!(config.inference.triage.provider, ProviderKind::OpenAi);
+            assert_eq!(config.inference.triage.model, "gpt-5");
+            assert_eq!(config.inference.relation.provider, ProviderKind::Anthropic);
+            assert_eq!(config.inference.relation.model, "claude-haiku-5");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_telemetry_cli_overrides_cascade() {
+        Jail::expect_with(|jail| {
+            let overrides = CliOverrides {
+                telemetry: Some(TelemetryCliOverrides {
+                    otlp_endpoint: Some("http://collector.internal:4317".into()),
+                }),
+                ..CliOverrides::default()
+            };
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), Some(overrides), None).unwrap();
+
+            assert_eq!(
+                config.telemetry.otlp_endpoint.as_deref(),
+                Some("http://collector.internal:4317"),
+            );
             Ok(())
         });
     }

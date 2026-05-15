@@ -5,11 +5,10 @@
 //! dot-path, the struct field mutation (in tests), and the sentinel
 //! generation.
 
+use tribal_domain::REDACTED;
+
 #[cfg(test)]
 use crate::TribalConfig;
-
-/// Placeholder substituted for secret values in redacted output.
-const REDACTED: &str = "********";
 
 /// Configuration fields that contain sensitive values.
 ///
@@ -56,18 +55,17 @@ impl SecretField {
     /// The exhaustive match ensures a new variant without a
     /// corresponding mutation arm is a compile error.
     fn plant_sentinel(self, config: &mut TribalConfig, value: &str) {
+        let key = || {
+            value
+                .parse::<tribal_domain::ApiKey>()
+                .expect("sentinel value must be a valid api key")
+        };
         match self {
             Self::DatabaseUrl => config.database.url = value.to_owned(),
-            Self::EmbeddingApiKey => config.embedding.api_key = Some(value.to_owned()),
-            Self::ExtractionApiKey => {
-                config.inference.extraction.api_key = Some(value.to_owned());
-            }
-            Self::TriageApiKey => {
-                config.inference.triage.api_key = Some(value.to_owned());
-            }
-            Self::RelationApiKey => {
-                config.inference.relation.api_key = Some(value.to_owned());
-            }
+            Self::EmbeddingApiKey => config.embedding.api_key = Some(key()),
+            Self::ExtractionApiKey => config.inference.extraction.api_key = Some(key()),
+            Self::TriageApiKey => config.inference.triage.api_key = Some(key()),
+            Self::RelationApiKey => config.inference.relation.api_key = Some(key()),
         }
     }
 

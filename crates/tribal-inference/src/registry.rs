@@ -580,7 +580,7 @@ mod tests {
 
         let embedding_limits = ProviderLimits {
             max_in_flight: 2,
-            request_timeout: Duration::from_secs(60),
+            request_timeout: Duration::from_mins(1),
         };
         let inference_limits = ProviderLimits {
             max_in_flight: 4,

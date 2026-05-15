@@ -96,6 +96,21 @@ impl TribalConfig {
             source: Box::new(e),
         })
     }
+
+    /// Builds the smallest configuration that passes [`crate::validate`].
+    ///
+    /// Defaults for every field except those that have no sensible
+    /// default and must be supplied by the caller. The signature is
+    /// the agreed point of update: when a new always-required field
+    /// joins the schema, it joins this parameter list, forcing every
+    /// caller to provide a value rather than hand-rolling a sentinel
+    /// at each call site.
+    #[must_use]
+    pub fn minimum_valid(database_url: impl Into<String>) -> Self {
+        let mut config = Self::default();
+        config.database.url = database_url.into();
+        config
+    }
 }
 
 impl Default for TribalConfig {

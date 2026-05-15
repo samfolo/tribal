@@ -27,7 +27,8 @@ async fn test_concurrent_identical_ingests() {
         // OpenAI relation exercises the OpenAI envelope abstraction.
         setup.config(|c| {
             c.inference.relation.provider = ProviderKind::OpenAi;
-            c.inference.relation.api_key = Some("sk-e2e-000000".to_owned());
+            c.inference.relation.api_key =
+                Some("sk-e2e-000000".parse().expect("test fixture is valid"));
         });
     })
     .await;

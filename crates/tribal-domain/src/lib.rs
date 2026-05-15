@@ -44,6 +44,7 @@ macro_rules! enum_text_conversions {
     };
 }
 
+mod api_key;
 mod auth_token;
 mod candidate;
 mod discovery;
@@ -64,6 +65,7 @@ mod project;
 mod prompt_role;
 mod prompt_stage;
 mod prompt_version;
+mod redaction;
 mod reference;
 mod reference_kind;
 mod relation;
@@ -79,6 +81,7 @@ mod task;
 mod token_usage;
 mod triage;
 
+pub use api_key::{ApiKey, ApiKeyParseError};
 pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
@@ -106,6 +109,7 @@ pub use project::{Project, ProjectBuilder};
 pub use prompt_role::PromptRole;
 pub use prompt_stage::PromptStage;
 pub use prompt_version::{PromptVersion, PromptVersionBuilder};
+pub use redaction::REDACTED;
 pub use reference::{Reference, ReferenceBuilder};
 pub use reference_kind::ReferenceKind;
 pub use relation::{

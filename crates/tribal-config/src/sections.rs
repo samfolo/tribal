@@ -35,7 +35,7 @@ pub use exploration::{
 pub use inference::{InferenceConfig, StageInferenceConfig};
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
-pub use prompts::PromptsConfig;
+pub use prompts::{PromptSource, PromptsConfig};
 pub use provider_kind::{
     DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL, ProviderKind,
 };
