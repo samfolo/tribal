@@ -141,7 +141,10 @@ async fn run_async(
     let outcome = config_file::write_if_absent(config_path, config).await?;
     output::config_file(out, &outcome);
 
-    output::instructions(out, &raw_token);
+    output::instructions(out, &raw_token).map_err(|source| AppError::SetupIo {
+        context: "writing bearer token output".into(),
+        source,
+    })?;
 
     Ok(())
 }

@@ -456,4 +456,42 @@ mod tests {
         let content = std::fs::read_to_string(&custom_path).expect("should read");
         assert_eq!(content, custom, "existing file must not be overwritten");
     }
+
+    #[tokio::test]
+    async fn test_embedded_and_disk_paths_produce_equal_version_ids() {
+        use tribal_test_utils::{serial_lock, test_context, truncate_all_tables};
+
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("create pool");
+
+        let mut conn = pool.acquire().await.expect("acquire connection");
+        truncate_all_tables(&mut conn).await;
+        drop(conn);
+
+        // `ensure_prompt_files` writes the embedded defaults to disk, so
+        // both paths receive byte-identical content. Equal `content_hash`
+        // values yield equal `PromptVersionId`s through the upsert.
+        let prompts_dir = tempfile::tempdir().expect("create prompts dir");
+        ensure_prompt_files(prompts_dir.path())
+            .await
+            .expect("write defaults");
+
+        let embedded = load_prompts_embedded(&pool)
+            .await
+            .expect("load embedded prompts");
+        let disk = load_prompts(&pool, prompts_dir.path())
+            .await
+            .expect("load disk prompts");
+
+        for location in &PromptTemplateLocation::ALL {
+            let stage = location.stage();
+            let role = location.role();
+            assert_eq!(
+                embedded.get_version(stage, role),
+                disk.get_version(stage, role),
+                "embedded and disk paths must produce equal version IDs for {stage}/{role}",
+            );
+        }
+    }
 }
