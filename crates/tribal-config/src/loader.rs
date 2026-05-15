@@ -317,6 +317,7 @@ fn apply_stage_fallback(api_key: &mut Option<String>, provider: ProviderKind) {
         && provider.requires_api_key()
         && let Some(name) = provider.standard_env_var_name()
         && let Ok(value) = std::env::var(name)
+        && !value.is_empty()
     {
         *api_key = Some(value);
     }
@@ -343,7 +344,16 @@ mod tests {
     use figment::Jail;
 
     use super::*;
-    use crate::ProviderKind;
+    use crate::{ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ProviderKind, validate};
+
+    /// Serialises a [`TribalConfig`] and writes it as `tribal.yaml` in the
+    /// jail's working directory. Lets tests assemble fixtures by setting
+    /// fields on a `TribalConfig` instead of hand-rolling YAML strings.
+    fn write_config_yaml(jail: &mut Jail, config: &TribalConfig) {
+        let yaml = serde_yaml::to_string(config).expect("serialise TribalConfig to YAML");
+        jail.create_file("tribal.yaml", &yaml)
+            .expect("write tribal.yaml in jail");
+    }
 
     #[test]
     fn test_defaults_only() {
@@ -703,7 +713,7 @@ prompts:
                 "tribal.yaml",
                 "embedding:\n  provider: openai\n  api_key: \"from-file\"\n",
             )?;
-            jail.set_env("OPENAI_API_KEY", "from-standard-env");
+            jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
@@ -717,7 +727,7 @@ prompts:
         Jail::expect_with(|jail| {
             jail.create_file("tribal.yaml", "embedding:\n  provider: openai\n")?;
             jail.set_env("TRIBAL_EMBEDDING__API_KEY", "from-tribal-env");
-            jail.set_env("OPENAI_API_KEY", "from-standard-env");
+            jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
@@ -729,14 +739,45 @@ prompts:
     #[test]
     fn test_openai_api_key_satisfies_validation() {
         Jail::expect_with(|jail| {
-            jail.create_file("tribal.yaml", "embedding:\n  provider: openai\n")?;
-            jail.set_env("OPENAI_API_KEY", "from-standard-env");
+            let mut fixture = TribalConfig::minimum_valid("postgres://h/db");
+            fixture.embedding.provider = ProviderKind::OpenAi;
+            write_config_yaml(jail, &fixture);
+            jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(
                 config.embedding.api_key.as_deref(),
                 Some("from-standard-env"),
+            );
+            let result = validate(&config);
+            assert!(
+                result.is_ok(),
+                "validate must pass when the standard env var supplies the key, got {result:?}",
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_empty_standard_env_var_does_not_satisfy_validation() {
+        Jail::expect_with(|jail| {
+            let mut fixture = TribalConfig::minimum_valid("postgres://h/db");
+            fixture.embedding.provider = ProviderKind::OpenAi;
+            write_config_yaml(jail, &fixture);
+            // Docker compose's `${OPENAI_API_KEY:-}` emits an empty value
+            // when the host env var is unset; the fallback must treat that
+            // as "no key reachable" so validation fires loudly with the
+            // existing "api_key is required" literal.
+            jail.set_env(ENV_OPENAI_API_KEY, "");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert!(config.embedding.api_key.is_none());
+            let result = validate(&config);
+            assert!(
+                result.is_err(),
+                "validate must fail when the standard env var is empty, got {result:?}",
             );
             Ok(())
         });
@@ -755,8 +796,8 @@ inference:
     provider: anthropic
 ",
             )?;
-            jail.set_env("OPENAI_API_KEY", "openai-key");
-            jail.set_env("ANTHROPIC_API_KEY", "anthropic-key");
+            jail.set_env(ENV_OPENAI_API_KEY, "openai-key");
+            jail.set_env(ENV_ANTHROPIC_API_KEY, "anthropic-key");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
@@ -781,23 +822,41 @@ inference:
             }
 
             // For every provider that does not require an API key, the
-            // fallback must leave `api_key` as `None`.
+            // fallback must leave `api_key` as `None` for every stage that
+            // consults it — not only the embedding stage.
             for provider in ProviderKind::ALL
                 .into_iter()
                 .filter(|k| !k.requires_api_key())
             {
-                jail.create_file(
-                    "tribal.yaml",
-                    &format!("embedding:\n  provider: {provider}\n"),
-                )?;
+                let yaml = format!(
+                    "\
+embedding:
+  provider: {provider}
+inference:
+  extraction:
+    provider: {provider}
+  triage:
+    provider: {provider}
+  relation:
+    provider: {provider}
+"
+                );
+                jail.create_file("tribal.yaml", &yaml)?;
                 let path = jail.directory().join("tribal.yaml");
                 let config = load_config(path.to_str().unwrap(), None, None).unwrap();
-                assert_eq!(config.embedding.provider, provider);
-                assert!(
-                    config.embedding.api_key.is_none(),
-                    "{provider} should not consume any standard env var, got {:?}",
-                    config.embedding.api_key,
-                );
+
+                let stages = [
+                    ("embedding", &config.embedding.api_key),
+                    ("inference.extraction", &config.inference.extraction.api_key),
+                    ("inference.triage", &config.inference.triage.api_key),
+                    ("inference.relation", &config.inference.relation.api_key),
+                ];
+                for (label, api_key) in stages {
+                    assert!(
+                        api_key.is_none(),
+                        "{provider} at {label} consumed a standard env var, got {api_key:?}",
+                    );
+                }
             }
             Ok(())
         });
