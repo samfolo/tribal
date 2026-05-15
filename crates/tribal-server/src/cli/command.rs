@@ -1,7 +1,11 @@
 //! Clap command and argument definitions for the Tribal CLI.
 
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
-use tribal_config::{CliOverrides, DatabaseCliOverrides, ServerCliOverrides, TransportKind};
+use tribal_config::{
+    CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
+    InferenceStageCliOverrides, ProviderKind, ServerCliOverrides, TelemetryCliOverrides,
+    TransportKind,
+};
 
 use super::{default_values::DEFAULT_CONFIG_PATH, styles::STYLES};
 
@@ -199,6 +203,153 @@ impl DatabaseArgs {
 
         CliOverrides {
             database,
+            ..CliOverrides::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared provider arguments
+// ---------------------------------------------------------------------------
+
+/// Provider and model selection flags shared across CLI commands.
+///
+/// Flattened into command-specific args structs via `#[command(flatten)]`.
+/// The `into_cli_overrides` method projects each flag into the figment
+/// overlay layer.
+///
+/// API keys are intentionally absent: the cascade picks them up from
+/// `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` or from `TRIBAL_*__API_KEY`,
+/// never from flags.
+#[derive(Debug, Args)]
+pub struct ProviderArgs {
+    /// Embedding provider override.
+    #[arg(
+        long = "embedding-provider",
+        value_parser = clap::value_parser!(ProviderKind),
+        help_heading = "Providers",
+    )]
+    pub embedding_provider: Option<ProviderKind>,
+
+    /// Embedding model name override.
+    #[arg(long = "embedding-model", help_heading = "Providers")]
+    pub embedding_model: Option<String>,
+
+    /// Extraction-stage inference provider override.
+    #[arg(
+        long = "inference-extraction-provider",
+        value_parser = clap::value_parser!(ProviderKind),
+        help_heading = "Providers",
+    )]
+    pub inference_extraction_provider: Option<ProviderKind>,
+
+    /// Extraction-stage inference model name override.
+    #[arg(long = "inference-extraction-model", help_heading = "Providers")]
+    pub inference_extraction_model: Option<String>,
+
+    /// Triage-stage inference provider override.
+    #[arg(
+        long = "inference-triage-provider",
+        value_parser = clap::value_parser!(ProviderKind),
+        help_heading = "Providers",
+    )]
+    pub inference_triage_provider: Option<ProviderKind>,
+
+    /// Triage-stage inference model name override.
+    #[arg(long = "inference-triage-model", help_heading = "Providers")]
+    pub inference_triage_model: Option<String>,
+
+    /// Relation-stage inference provider override.
+    #[arg(
+        long = "inference-relation-provider",
+        value_parser = clap::value_parser!(ProviderKind),
+        help_heading = "Providers",
+    )]
+    pub inference_relation_provider: Option<ProviderKind>,
+
+    /// Relation-stage inference model name override.
+    #[arg(long = "inference-relation-model", help_heading = "Providers")]
+    pub inference_relation_model: Option<String>,
+}
+
+impl ProviderArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// Each subtree (`embedding`, `inference.*`) is populated only when at
+    /// least one of its flags was supplied, so absent flags never mask
+    /// lower-precedence layers.
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        let embedding = match (self.embedding_provider, self.embedding_model) {
+            (None, None) => None,
+            (provider, model) => Some(EmbeddingCliOverrides { provider, model }),
+        };
+
+        let extraction = inference_stage_overrides(
+            self.inference_extraction_provider,
+            self.inference_extraction_model,
+        );
+        let triage =
+            inference_stage_overrides(self.inference_triage_provider, self.inference_triage_model);
+        let relation = inference_stage_overrides(
+            self.inference_relation_provider,
+            self.inference_relation_model,
+        );
+
+        let inference = if extraction.is_none() && triage.is_none() && relation.is_none() {
+            None
+        } else {
+            Some(InferenceCliOverrides {
+                extraction,
+                triage,
+                relation,
+            })
+        };
+
+        CliOverrides {
+            embedding,
+            inference,
+            ..CliOverrides::default()
+        }
+    }
+}
+
+/// Projects a `(provider, model)` pair into an
+/// [`InferenceStageCliOverrides`], returning `None` when both are absent so
+/// the subtree is omitted from the figment overlay.
+fn inference_stage_overrides(
+    provider: Option<ProviderKind>,
+    model: Option<String>,
+) -> Option<InferenceStageCliOverrides> {
+    match (provider, model) {
+        (None, None) => None,
+        (provider, model) => Some(InferenceStageCliOverrides { provider, model }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared telemetry arguments
+// ---------------------------------------------------------------------------
+
+/// Telemetry flags shared across CLI commands.
+///
+/// Flattened into command-specific args structs via `#[command(flatten)]`.
+#[derive(Debug, Args)]
+pub struct TelemetryArgs {
+    /// OTLP exporter endpoint override.
+    #[arg(long = "telemetry-otlp-endpoint", help_heading = "Telemetry")]
+    pub telemetry_otlp_endpoint: Option<String>,
+}
+
+impl TelemetryArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        let telemetry = self
+            .telemetry_otlp_endpoint
+            .map(|otlp_endpoint| TelemetryCliOverrides {
+                otlp_endpoint: Some(otlp_endpoint),
+            });
+        CliOverrides {
+            telemetry,
             ..CliOverrides::default()
         }
     }
@@ -625,6 +776,143 @@ mod tests {
         let overrides = args.into_cli_overrides();
         let database = overrides.database.unwrap();
         assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
+    }
+
+    // -- ProviderArgs / TelemetryArgs ---------------------------------------
+
+    /// Parser harness flattening [`ProviderArgs`] for standalone clap tests.
+    #[derive(Debug, Parser)]
+    #[command(no_binary_name = true)]
+    struct ProviderArgsHarness {
+        #[command(flatten)]
+        args: ProviderArgs,
+    }
+
+    /// Parser harness flattening [`TelemetryArgs`] for standalone clap tests.
+    #[derive(Debug, Parser)]
+    #[command(no_binary_name = true)]
+    struct TelemetryArgsHarness {
+        #[command(flatten)]
+        args: TelemetryArgs,
+    }
+
+    #[test]
+    fn test_provider_args_parses_all_flags() {
+        let parsed = ProviderArgsHarness::try_parse_from([
+            "--embedding-provider",
+            "openai",
+            "--embedding-model",
+            "text-embedding-3-small",
+            "--inference-extraction-provider",
+            "anthropic",
+            "--inference-extraction-model",
+            "claude-opus-4",
+            "--inference-triage-provider",
+            "openai",
+            "--inference-triage-model",
+            "gpt-5",
+            "--inference-relation-provider",
+            "anthropic",
+            "--inference-relation-model",
+            "claude-haiku-5",
+        ])
+        .unwrap();
+        let args = parsed.args;
+        assert_eq!(args.embedding_provider, Some(ProviderKind::OpenAi));
+        assert_eq!(
+            args.embedding_model.as_deref(),
+            Some("text-embedding-3-small"),
+        );
+        assert_eq!(
+            args.inference_extraction_provider,
+            Some(ProviderKind::Anthropic),
+        );
+        assert_eq!(
+            args.inference_extraction_model.as_deref(),
+            Some("claude-opus-4"),
+        );
+        assert_eq!(args.inference_triage_provider, Some(ProviderKind::OpenAi));
+        assert_eq!(args.inference_triage_model.as_deref(), Some("gpt-5"));
+        assert_eq!(
+            args.inference_relation_provider,
+            Some(ProviderKind::Anthropic),
+        );
+        assert_eq!(
+            args.inference_relation_model.as_deref(),
+            Some("claude-haiku-5"),
+        );
+    }
+
+    #[test]
+    fn test_provider_args_invalid_provider_rejected() {
+        let result = ProviderArgsHarness::try_parse_from(["--embedding-provider", "grpc"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_provider_args_into_cli_overrides_no_flags() {
+        let parsed = ProviderArgsHarness::try_parse_from(std::iter::empty::<&str>()).unwrap();
+        let overrides = parsed.args.into_cli_overrides();
+        assert!(overrides.embedding.is_none());
+        assert!(overrides.inference.is_none());
+    }
+
+    #[test]
+    fn test_provider_args_into_cli_overrides_populated() {
+        let parsed = ProviderArgsHarness::try_parse_from([
+            "--embedding-provider",
+            "openai",
+            "--inference-triage-model",
+            "gpt-5",
+        ])
+        .unwrap();
+        let overrides = parsed.args.into_cli_overrides();
+
+        let embedding = overrides.embedding.expect("embedding subtree populated");
+        assert_eq!(embedding.provider, Some(ProviderKind::OpenAi));
+        assert!(embedding.model.is_none());
+
+        let inference = overrides.inference.expect("inference subtree populated");
+        assert!(inference.extraction.is_none());
+        assert!(inference.relation.is_none());
+        let triage = inference.triage.expect("triage stage populated");
+        assert!(triage.provider.is_none());
+        assert_eq!(triage.model.as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn test_telemetry_args_parses_endpoint() {
+        let parsed = TelemetryArgsHarness::try_parse_from([
+            "--telemetry-otlp-endpoint",
+            "http://collector.internal:4317",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.args.telemetry_otlp_endpoint.as_deref(),
+            Some("http://collector.internal:4317"),
+        );
+    }
+
+    #[test]
+    fn test_telemetry_args_into_cli_overrides_populated() {
+        let parsed = TelemetryArgsHarness::try_parse_from([
+            "--telemetry-otlp-endpoint",
+            "http://collector.internal:4317",
+        ])
+        .unwrap();
+        let overrides = parsed.args.into_cli_overrides();
+        let telemetry = overrides.telemetry.expect("telemetry subtree populated");
+        assert_eq!(
+            telemetry.otlp_endpoint.as_deref(),
+            Some("http://collector.internal:4317"),
+        );
+    }
+
+    #[test]
+    fn test_telemetry_args_into_cli_overrides_no_flags() {
+        let parsed = TelemetryArgsHarness::try_parse_from(std::iter::empty::<&str>()).unwrap();
+        let overrides = parsed.args.into_cli_overrides();
+        assert!(overrides.telemetry.is_none());
     }
 
     // -- Setup defaults ------------------------------------------------------
