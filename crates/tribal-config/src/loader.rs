@@ -14,7 +14,7 @@ use crate::{
     LoggingConfig, TelemetryConfig, TribalConfig,
     env::ENV_PREFIX,
     error::ConfigError,
-    sections::{ProviderKind, PromptSource, TransportKind},
+    sections::{PromptSource, ProviderKind, TransportKind},
 };
 
 // ---------------------------------------------------------------------------
@@ -67,6 +67,18 @@ pub struct CliOverrides {
     /// Database-related CLI overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseCliOverrides>,
+
+    /// Embedding-stage CLI overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<EmbeddingCliOverrides>,
+
+    /// Inference-stage CLI overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference: Option<InferenceCliOverrides>,
+
+    /// Telemetry CLI overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryCliOverrides>,
 }
 
 /// Server-related CLI flag overrides.
@@ -87,6 +99,54 @@ pub struct DatabaseCliOverrides {
     /// Database URL override from `--database-url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+}
+
+/// Embedding-stage CLI flag overrides.
+#[derive(Debug, Serialize)]
+pub struct EmbeddingCliOverrides {
+    /// Provider override from `--embedding-provider`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderKind>,
+
+    /// Model name override from `--embedding-model`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Inference-stage CLI flag overrides.
+#[derive(Debug, Serialize)]
+pub struct InferenceCliOverrides {
+    /// Extraction-stage overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extraction: Option<InferenceStageCliOverrides>,
+
+    /// Triage-stage overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triage: Option<InferenceStageCliOverrides>,
+
+    /// Relation-stage overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<InferenceStageCliOverrides>,
+}
+
+/// Per-stage inference CLI flag overrides.
+#[derive(Debug, Serialize)]
+pub struct InferenceStageCliOverrides {
+    /// Provider override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderKind>,
+
+    /// Model name override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Telemetry CLI flag overrides.
+#[derive(Debug, Serialize)]
+pub struct TelemetryCliOverrides {
+    /// OTLP exporter endpoint override from `--telemetry-otlp-endpoint`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub otlp_endpoint: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +456,7 @@ prompts:
                     transport: Some(TransportKind::Sse),
                     bind_address: None,
                 }),
-                database: None,
+                ..CliOverrides::default()
             };
 
             let path = jail.directory().join("tribal.yaml");
@@ -619,10 +679,10 @@ prompts:
             )?;
 
             let overrides = CliOverrides {
-                server: None,
                 database: Some(DatabaseCliOverrides {
                     url: Some("postgres://cli-wins/tribal".into()),
                 }),
+                ..CliOverrides::default()
             };
 
             let path = jail.directory().join("tribal.yaml");
@@ -661,10 +721,7 @@ prompts:
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
-            assert_eq!(
-                config.embedding.api_key.as_deref(),
-                Some("from-tribal-env"),
-            );
+            assert_eq!(config.embedding.api_key.as_deref(), Some("from-tribal-env"),);
             Ok(())
         });
     }
@@ -742,6 +799,72 @@ inference:
                     config.embedding.api_key,
                 );
             }
+            Ok(())
+        });
+    }
+
+    // -- Provider / Telemetry CliOverrides cascade ---------------------------
+
+    #[test]
+    fn test_provider_cli_overrides_cascade() {
+        Jail::expect_with(|jail| {
+            let overrides = CliOverrides {
+                embedding: Some(EmbeddingCliOverrides {
+                    provider: Some(ProviderKind::OpenAi),
+                    model: Some("text-embedding-3-small".into()),
+                }),
+                inference: Some(InferenceCliOverrides {
+                    extraction: Some(InferenceStageCliOverrides {
+                        provider: Some(ProviderKind::Anthropic),
+                        model: Some("claude-opus-4".into()),
+                    }),
+                    triage: Some(InferenceStageCliOverrides {
+                        provider: Some(ProviderKind::OpenAi),
+                        model: Some("gpt-5".into()),
+                    }),
+                    relation: Some(InferenceStageCliOverrides {
+                        provider: Some(ProviderKind::Anthropic),
+                        model: Some("claude-haiku-5".into()),
+                    }),
+                }),
+                ..CliOverrides::default()
+            };
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), Some(overrides), None).unwrap();
+
+            assert_eq!(config.embedding.provider, ProviderKind::OpenAi);
+            assert_eq!(config.embedding.model, "text-embedding-3-small");
+            assert_eq!(
+                config.inference.extraction.provider,
+                ProviderKind::Anthropic,
+            );
+            assert_eq!(config.inference.extraction.model, "claude-opus-4");
+            assert_eq!(config.inference.triage.provider, ProviderKind::OpenAi);
+            assert_eq!(config.inference.triage.model, "gpt-5");
+            assert_eq!(config.inference.relation.provider, ProviderKind::Anthropic);
+            assert_eq!(config.inference.relation.model, "claude-haiku-5");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_telemetry_cli_overrides_cascade() {
+        Jail::expect_with(|jail| {
+            let overrides = CliOverrides {
+                telemetry: Some(TelemetryCliOverrides {
+                    otlp_endpoint: Some("http://collector.internal:4317".into()),
+                }),
+                ..CliOverrides::default()
+            };
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), Some(overrides), None).unwrap();
+
+            assert_eq!(
+                config.telemetry.otlp_endpoint.as_deref(),
+                Some("http://collector.internal:4317"),
+            );
             Ok(())
         });
     }

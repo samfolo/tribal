@@ -25,7 +25,10 @@ pub use env::{
     ENV_PROJECT_ID,
 };
 pub use error::ConfigError;
-pub use loader::{CliOverrides, DatabaseCliOverrides, ServerCliOverrides, load_config};
+pub use loader::{
+    CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
+    InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides, load_config,
+};
 pub use redact::redact_secrets;
 pub use render::render_minimal_config;
 pub use sections::{

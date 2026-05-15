@@ -164,7 +164,7 @@ impl ServeArgs {
 
         let overrides = CliOverrides {
             server,
-            database: None,
+            ..CliOverrides::default()
         };
         (overrides, self.project)
     }
@@ -198,8 +198,8 @@ impl DatabaseArgs {
             .map(|url| DatabaseCliOverrides { url: Some(url) });
 
         CliOverrides {
-            server: None,
             database,
+            ..CliOverrides::default()
         }
     }
 }
