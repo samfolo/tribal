@@ -30,7 +30,8 @@ async fn test_relation_normalisation_drops_invalid_edges() {
         // OpenAI triage exercises the OpenAI envelope abstraction.
         setup.config(|c| {
             c.inference.triage.provider = ProviderKind::OpenAi;
-            c.inference.triage.api_key = Some("sk-e2e-000000".to_owned());
+            c.inference.triage.api_key =
+                Some("sk-e2e-000000".parse().expect("test fixture is valid"));
         });
     })
     .await;

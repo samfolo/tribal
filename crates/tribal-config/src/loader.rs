@@ -9,6 +9,7 @@ use figment::{
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use tribal_domain::ApiKey;
 
 use crate::{
     LoggingConfig, TelemetryConfig, TribalConfig,
@@ -288,27 +289,18 @@ fn restore_temp_dir_fallback_flags(config: &mut TribalConfig) {
     }
 }
 
-/// Normalises every `api_key` field to `None` when its trimmed form is
-/// empty, then populates any still-`None` field for cloud providers from
-/// the corresponding standard env var (`OPENAI_API_KEY`,
-/// `ANTHROPIC_API_KEY`).
+/// Populates `api_key` for any cloud-provider stage where prior cascade
+/// layers left it `None`, using the env var returned by
+/// [`ProviderKind::standard_env_var_name`].
 ///
-/// The normalisation pass runs before the fallback so that an empty or
-/// whitespace-only value supplied by any cascade layer (file,
-/// `TRIBAL_*__API_KEY`, or the standard env var) is treated uniformly:
-/// validation never sees a `Some("")` it would have to special-case, and
-/// `feedback_trim_at_resolution.md` is honoured at the single resolution
-/// boundary.
-///
-/// Silent best-effort: a missing or non-Unicode env var leaves `api_key`
-/// as `None`, which then triggers the existing `validate_api_key_presence`
-/// error if no usable key emerged from any layer.
+/// The OS env lookup is opportunistic: a missing, non-Unicode, or
+/// malformed value (empty, whitespace-bearing) leaves `api_key` as
+/// `None`, which then triggers the existing `validate_api_key_presence`
+/// error if no usable key emerged from any layer. Empty or
+/// whitespace-bearing values supplied through YAML or `TRIBAL_*__API_KEY`
+/// fail at deserialise time instead, courtesy of [`ApiKey`]'s strict
+/// `FromStr` impl.
 fn apply_standard_env_var_fallback(config: &mut TribalConfig) {
-    normalise_api_key(&mut config.embedding.api_key);
-    normalise_api_key(&mut config.inference.extraction.api_key);
-    normalise_api_key(&mut config.inference.triage.api_key);
-    normalise_api_key(&mut config.inference.relation.api_key);
-
     apply_stage_fallback(&mut config.embedding.api_key, config.embedding.provider);
     apply_stage_fallback(
         &mut config.inference.extraction.api_key,
@@ -324,31 +316,13 @@ fn apply_standard_env_var_fallback(config: &mut TribalConfig) {
     );
 }
 
-/// Resets `api_key` to `None` if its trimmed form is empty; otherwise
-/// stores the trimmed value, eliminating surrounding whitespace from
-/// every source.
-fn normalise_api_key(api_key: &mut Option<String>) {
-    *api_key = api_key.take().and_then(trimmed_some);
-}
-
-fn apply_stage_fallback(api_key: &mut Option<String>, provider: ProviderKind) {
+fn apply_stage_fallback(api_key: &mut Option<ApiKey>, provider: ProviderKind) {
     if api_key.is_none()
         && provider.requires_api_key()
         && let Some(name) = provider.standard_env_var_name()
-        && let Ok(value) = std::env::var(name)
-        && let Some(trimmed) = trimmed_some(value)
+        && let Some(parsed) = std::env::var(name).ok().and_then(|v| v.parse().ok())
     {
-        *api_key = Some(trimmed);
-    }
-}
-
-/// Returns `Some(trimmed)` when `value.trim()` is non-empty, else `None`.
-fn trimmed_some(value: String) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_owned())
+        *api_key = Some(parsed);
     }
 }
 
@@ -746,7 +720,10 @@ prompts:
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
-            assert_eq!(config.embedding.api_key.as_deref(), Some("from-file"));
+            assert_eq!(
+                config.embedding.api_key.as_ref().map(ApiKey::as_str),
+                Some("from-file")
+            );
             Ok(())
         });
     }
@@ -760,7 +737,10 @@ prompts:
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
-            assert_eq!(config.embedding.api_key.as_deref(), Some("from-tribal-env"),);
+            assert_eq!(
+                config.embedding.api_key.as_ref().map(ApiKey::as_str),
+                Some("from-tribal-env"),
+            );
             Ok(())
         });
     }
@@ -776,7 +756,7 @@ prompts:
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(
-                config.embedding.api_key.as_deref(),
+                config.embedding.api_key.as_ref().map(ApiKey::as_str),
                 Some("from-standard-env"),
             );
             let result = validate(&config);
@@ -830,9 +810,12 @@ inference:
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
-            assert_eq!(config.embedding.api_key.as_deref(), Some("openai-key"));
             assert_eq!(
-                config.inference.triage.api_key.as_deref(),
+                config.embedding.api_key.as_ref().map(ApiKey::as_str),
+                Some("openai-key")
+            );
+            assert_eq!(
+                config.inference.triage.api_key.as_ref().map(ApiKey::as_str),
                 Some("anthropic-key"),
             );
             Ok(())

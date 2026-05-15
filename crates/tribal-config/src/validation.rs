@@ -524,7 +524,7 @@ mod tests {
     fn test_validate_rejects_anthropic_embedding_provider() {
         let mut config = valid_config();
         config.embedding.provider = ProviderKind::Anthropic;
-        config.embedding.api_key = Some("sk-test".into());
+        config.embedding.api_key = Some("sk-test".parse().expect("test fixture is valid"));
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("Anthropic does not provide an embedding API"));

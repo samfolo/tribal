@@ -1,6 +1,7 @@
 //! Embedding provider configuration.
 
 use serde::{Deserialize, Serialize};
+use tribal_domain::ApiKey;
 
 use super::provider_kind::ProviderKind;
 
@@ -54,11 +55,11 @@ pub struct EmbeddingConfig {
 
     /// API key for cloud providers.
     ///
-    /// Required when `provider` is `anthropic` or `openai`.  Prefer
+    /// Required when `provider` is `anthropic` or `openai`. Prefer
     /// setting via environment variable to avoid plaintext secrets in
     /// configuration files.
     #[serde(default)]
-    pub api_key: Option<String>,
+    pub api_key: Option<ApiKey>,
 }
 
 impl Default for EmbeddingConfig {

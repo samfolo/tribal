@@ -20,7 +20,8 @@ async fn test_explore_graph_traversal() {
         // Anthropic extraction exercises the Anthropic envelope abstraction.
         setup.config(|c| {
             c.inference.extraction.provider = ProviderKind::Anthropic;
-            c.inference.extraction.api_key = Some("sk-ant-e2e-000000".to_owned());
+            c.inference.extraction.api_key =
+                Some("sk-ant-e2e-000000".parse().expect("test fixture is valid"));
         });
     })
     .await;
