@@ -57,7 +57,7 @@ pub const HEARTBEAT_DETECT: Duration = Duration::from_secs(2);
 ///
 /// Must exceed `test_config().task_timeout_ms` (`5_000`) by a wide
 /// margin to guarantee the reclaim sweep treats the task as stale.
-pub const STALE_HEARTBEAT_BACKDATE: Duration = Duration::from_secs(120);
+pub const STALE_HEARTBEAT_BACKDATE: Duration = Duration::from_mins(2);
 
 // ---------------------------------------------------------------------------
 // Mock provider simulation

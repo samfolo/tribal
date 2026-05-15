@@ -49,7 +49,7 @@ const CLOSURE_REASON_IDLE: &str = "idle_timeout";
 /// Fallback duration used when a configured lifecycle timeout overflows
 /// `Instant`.  One year is far beyond any realistic timeout and safely
 /// within `Instant`'s representable range on all platforms.
-const OVERFLOW_FALLBACK: Duration = Duration::from_secs(365 * 24 * 3600);
+const OVERFLOW_FALLBACK: Duration = Duration::new(365 * 24 * 3600, 0);
 
 // ---------------------------------------------------------------------------
 // Activity tracker
