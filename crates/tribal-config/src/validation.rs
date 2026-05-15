@@ -309,9 +309,7 @@ mod tests {
     use crate::{DEFAULT_BIND_ADDRESS, ProviderKind};
 
     fn valid_config() -> TribalConfig {
-        let mut config = TribalConfig::default();
-        config.database.url = "postgres://localhost/tribal".into();
-        config
+        TribalConfig::minimum_valid("postgres://localhost/tribal")
     }
 
     #[test]

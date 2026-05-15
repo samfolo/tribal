@@ -82,8 +82,7 @@ mod tests {
     #[test]
     fn test_warns_on_url_mismatch() {
         let yaml = "database:\n  url: \"postgres://file-url/db\"\n";
-        let mut config = TribalConfig::default();
-        config.database.url = "postgres://resolved-url/db".to_owned();
+        let config = TribalConfig::minimum_valid("postgres://resolved-url/db");
 
         let warnings = check_config_divergence(yaml, &config);
         assert_eq!(warnings.len(), 1);
@@ -92,8 +91,7 @@ mod tests {
 
     #[test]
     fn test_no_warning_when_urls_match() {
-        let mut config = TribalConfig::default();
-        config.database.url = "postgres://same/db".to_owned();
+        let config = TribalConfig::minimum_valid("postgres://same/db");
 
         let yaml = "database:\n  url: \"postgres://same/db\"\n";
         let warnings = check_config_divergence(yaml, &config);

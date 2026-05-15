@@ -144,8 +144,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut config = TribalConfig::default();
-        config.database.url = "postgres://resolved-url/db".to_owned();
+        let config = TribalConfig::minimum_valid("postgres://resolved-url/db");
 
         let warnings = read_and_check_divergence(path_str, &config).await;
         assert_eq!(warnings.len(), 1);
