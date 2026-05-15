@@ -29,6 +29,7 @@ pub use loader::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
     InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides, load_config,
 };
+pub use paths::{TRIBAL_DIRECTORY_NAME, default_config_file_path};
 pub use redact::redact_secrets;
 pub use render::render_minimal_config;
 pub use sections::{

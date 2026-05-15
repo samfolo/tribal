@@ -4,7 +4,6 @@
 //! parsing and subcommand dispatch.
 
 mod command;
-mod default_values;
 mod styles;
 
 pub use command::{
