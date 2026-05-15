@@ -194,6 +194,42 @@ pub(crate) async fn load_prompts(
     pool: &PgPool,
     prompts_dir: &Path,
 ) -> Result<ActivePromptVersions, AppError> {
+    let mut contents = Vec::with_capacity(PromptTemplateLocation::ALL.len());
+    for location in PromptTemplateLocation::ALL {
+        let file_path = location.resolve(prompts_dir);
+        let content = tokio::fs::read_to_string(&file_path)
+            .await
+            .map_err(|source| AppError::PromptIo {
+                context: format!("read {}", file_path.display()),
+                source,
+            })?;
+        contents.push((location, content));
+    }
+    upsert_prompt_versions(pool, contents).await
+}
+
+/// Hashes and upserts the six prompts compiled into the binary.
+///
+/// Used when [`PromptSource::Embedded`](tribal_config::PromptSource::Embedded)
+/// is in effect: no filesystem IO, no user-editable files. The on-disk
+/// equivalent is [`load_prompts`].
+pub(crate) async fn load_prompts_embedded(pool: &PgPool) -> Result<ActivePromptVersions, AppError> {
+    let contents = PromptTemplateLocation::ALL
+        .into_iter()
+        .map(|location| (location, embedded_default(location).to_owned()));
+    upsert_prompt_versions(pool, contents).await
+}
+
+/// Hashes each `(location, content)` pair and upserts via the prompt-version
+/// repository.
+///
+/// Shared by [`load_prompts`] and [`load_prompts_embedded`] so the disk and
+/// embedded paths produce byte-identical database rows when the on-disk
+/// files contain the embedded defaults.
+async fn upsert_prompt_versions(
+    pool: &PgPool,
+    contents: impl IntoIterator<Item = (PromptTemplateLocation, String)>,
+) -> Result<ActivePromptVersions, AppError> {
     let repo = PgPromptVersionRepository;
     let mut conn = pool
         .acquire()
@@ -203,16 +239,7 @@ pub(crate) async fn load_prompts(
     let mut versions: HashMap<(PromptStage, PromptRole), PromptVersionId> =
         HashMap::with_capacity(PromptTemplateLocation::ALL.len());
 
-    for location in &PromptTemplateLocation::ALL {
-        let file_path = location.resolve(prompts_dir);
-
-        let content = tokio::fs::read_to_string(&file_path)
-            .await
-            .map_err(|source| AppError::PromptIo {
-                context: format!("read {}", file_path.display()),
-                source,
-            })?;
-
+    for (location, content) in contents {
         let content_hash = sha256_hex(&content);
         let stage = location.stage();
         let role = location.role();
@@ -428,5 +455,43 @@ mod tests {
 
         let content = std::fs::read_to_string(&custom_path).expect("should read");
         assert_eq!(content, custom, "existing file must not be overwritten");
+    }
+
+    #[tokio::test]
+    async fn test_embedded_and_disk_paths_produce_equal_version_ids() {
+        use tribal_test_utils::{serial_lock, test_context, truncate_all_tables};
+
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("create pool");
+
+        let mut conn = pool.acquire().await.expect("acquire connection");
+        truncate_all_tables(&mut conn).await;
+        drop(conn);
+
+        // `ensure_prompt_files` writes the embedded defaults to disk, so
+        // both paths receive byte-identical content. Equal `content_hash`
+        // values yield equal `PromptVersionId`s through the upsert.
+        let prompts_dir = tempfile::tempdir().expect("create prompts dir");
+        ensure_prompt_files(prompts_dir.path())
+            .await
+            .expect("write defaults");
+
+        let embedded = load_prompts_embedded(&pool)
+            .await
+            .expect("load embedded prompts");
+        let disk = load_prompts(&pool, prompts_dir.path())
+            .await
+            .expect("load disk prompts");
+
+        for location in &PromptTemplateLocation::ALL {
+            let stage = location.stage();
+            let role = location.role();
+            assert_eq!(
+                embedded.get_version(stage, role),
+                disk.get_version(stage, role),
+                "embedded and disk paths must produce equal version IDs for {stage}/{role}",
+            );
+        }
     }
 }

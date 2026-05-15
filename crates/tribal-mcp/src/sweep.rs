@@ -102,11 +102,11 @@ mod tests {
         let job_id = JobId::new();
         txs.insert(
             job_id,
-            make_entry(Duration::from_secs(60), Some(Duration::from_secs(400))),
+            make_entry(Duration::from_mins(1), Some(Duration::from_secs(400))),
         );
 
-        let terminal_ttl = Duration::from_secs(300);
-        let hard_ttl = Duration::from_secs(3600);
+        let terminal_ttl = Duration::from_mins(5);
+        let hard_ttl = Duration::from_hours(1);
         sweep_once(&txs, terminal_ttl, hard_ttl, Instant::now());
 
         assert!(txs.is_empty(), "terminal entry past TTL should be evicted");
@@ -118,11 +118,11 @@ mod tests {
         let job_id = JobId::new();
         txs.insert(
             job_id,
-            make_entry(Duration::from_secs(60), Some(Duration::from_secs(10))),
+            make_entry(Duration::from_mins(1), Some(Duration::from_secs(10))),
         );
 
-        let terminal_ttl = Duration::from_secs(300);
-        let hard_ttl = Duration::from_secs(3600);
+        let terminal_ttl = Duration::from_mins(5);
+        let hard_ttl = Duration::from_hours(1);
         sweep_once(&txs, terminal_ttl, hard_ttl, Instant::now());
 
         assert_eq!(txs.len(), 1, "recent terminal entry should be retained");
@@ -135,8 +135,8 @@ mod tests {
         // Non-terminal entry past hard TTL.
         txs.insert(job_id, make_entry(Duration::from_secs(4000), None));
 
-        let terminal_ttl = Duration::from_secs(300);
-        let hard_ttl = Duration::from_secs(3600);
+        let terminal_ttl = Duration::from_mins(5);
+        let hard_ttl = Duration::from_hours(1);
         sweep_once(&txs, terminal_ttl, hard_ttl, Instant::now());
 
         assert!(
@@ -151,8 +151,8 @@ mod tests {
         let job_id = JobId::new();
         txs.insert(job_id, make_entry(Duration::from_secs(10), None));
 
-        let terminal_ttl = Duration::from_secs(300);
-        let hard_ttl = Duration::from_secs(3600);
+        let terminal_ttl = Duration::from_mins(5);
+        let hard_ttl = Duration::from_hours(1);
         sweep_once(&txs, terminal_ttl, hard_ttl, Instant::now());
 
         assert_eq!(txs.len(), 1, "fresh non-terminal entry should be retained");

@@ -16,7 +16,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
-use tribal_config::TribalConfig;
+use tribal_config::{PromptSource, TribalConfig};
 use tribal_mcp::{AppState, build_inference_parameters};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
 use tribal_worker::{Worker, WorkerError};
@@ -26,7 +26,8 @@ use crate::{
     startup::{
         POOL_NAME_MCP, POOL_NAME_WORKER, build_embedding_provider, build_inference_provider,
         build_provider_registry, check_first_run, create_pool_with_retry, ensure_prompt_files,
-        generate_instance_id, init_prompt_watcher, load_prompts, resolve_project, run_migrations,
+        generate_instance_id, init_prompt_watcher, load_prompts, load_prompts_embedded,
+        resolve_project, run_migrations,
     },
 };
 
@@ -285,8 +286,12 @@ pub fn start_server(
     // JoinHandle discarded — the watcher is a convenience feature, not
     // a correctness mechanism.  If it panics, prompts remain at the last
     // loaded version until the process restarts.
-    if config.prompts.hot_reload {
-        let prompts_dir = expand_prompts_dir(&config.prompts.directory);
+    if let PromptSource::Disk {
+        directory,
+        hot_reload: true,
+    } = &config.prompts.source
+    {
+        let prompts_dir = expand_prompts_dir(directory);
         let watcher_future = init_prompt_watcher(
             prompts_dir,
             state.mcp_pool().clone(),
@@ -352,9 +357,14 @@ async fn bootstrap(
 
     // -- Prompts -------------------------------------------------------------
 
-    let prompts_dir = expand_prompts_dir(&config.prompts.directory);
-    ensure_prompt_files(&prompts_dir).await?;
-    let active_prompt_versions = load_prompts(&pool_mcp, &prompts_dir).await?;
+    let active_prompt_versions = match &config.prompts.source {
+        PromptSource::Embedded {} => load_prompts_embedded(&pool_mcp).await?,
+        PromptSource::Disk { directory, .. } => {
+            let prompts_dir = expand_prompts_dir(directory);
+            ensure_prompt_files(&prompts_dir).await?;
+            load_prompts(&pool_mcp, &prompts_dir).await?
+        }
+    };
 
     // -- Providers -----------------------------------------------------------
 
@@ -471,6 +481,9 @@ impl Drop for WorkerDeathGuard {
 // ---------------------------------------------------------------------------
 
 /// Expands tilde (`~`) in the prompts directory path.
+///
+/// Defensive: covers programmatic callers that assemble a config
+/// without routing it through the loader's path-expansion contract.
 fn expand_prompts_dir(raw: &str) -> PathBuf {
     PathBuf::from(shellexpand::tilde(raw).as_ref())
 }

@@ -49,7 +49,9 @@ const CLOSURE_REASON_IDLE: &str = "idle_timeout";
 /// Fallback duration used when a configured lifecycle timeout overflows
 /// `Instant`.  One year is far beyond any realistic timeout and safely
 /// within `Instant`'s representable range on all platforms.
-const OVERFLOW_FALLBACK: Duration = Duration::from_secs(365 * 24 * 3600);
+// `Duration::from_days` is not yet stable as a const fn (rust-lang #120301),
+// so the year-in-seconds literal is the cleanest option in const context.
+const OVERFLOW_FALLBACK: Duration = Duration::new(365 * 24 * 3600, 0);
 
 // ---------------------------------------------------------------------------
 // Activity tracker
@@ -563,7 +565,7 @@ mod tests {
 
     /// Long deadline used as the "other" timeout when only one deadline
     /// is under test, ensuring it never fires.
-    const FAR_FUTURE: Duration = Duration::from_secs(60);
+    const FAR_FUTURE: Duration = Duration::from_mins(1);
 
     // -- Mock body ----------------------------------------------------------
 

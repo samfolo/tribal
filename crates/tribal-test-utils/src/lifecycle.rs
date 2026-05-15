@@ -273,6 +273,26 @@ pub async fn count_tasks_by_status(conn: &mut PgConnection, status: &str) -> i64
 }
 
 // ---------------------------------------------------------------------------
+// count_prompt_versions
+// ---------------------------------------------------------------------------
+
+/// Counts rows in the `prompt_versions` table.
+///
+/// Used by setup-flow tests to assert that the `tribal setup` command
+/// does not upsert prompts (that responsibility belongs to `tribal
+/// serve`).
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn count_prompt_versions(conn: &mut PgConnection) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM prompt_versions")
+        .fetch_one(&mut *conn)
+        .await
+        .expect("lifecycle: count prompt versions")
+}
+
+// ---------------------------------------------------------------------------
 // set_task_status_by_job
 // ---------------------------------------------------------------------------
 

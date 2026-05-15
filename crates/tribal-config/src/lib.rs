@@ -20,9 +20,15 @@ mod validation;
 pub use divergence::{
     WARNING_CONFIG_UNPARSEABLE, WARNING_DATABASE_URL_DIVERGENCE, check_config_divergence,
 };
-pub use env::{ENV_AUTH_TOKEN, ENV_CONFIG_PATH, ENV_PREFIX, ENV_PROJECT_ID};
+pub use env::{
+    ENV_ANTHROPIC_API_KEY, ENV_AUTH_TOKEN, ENV_CONFIG_PATH, ENV_OPENAI_API_KEY, ENV_PREFIX,
+    ENV_PROJECT_ID,
+};
 pub use error::ConfigError;
-pub use loader::{CliOverrides, DatabaseCliOverrides, ServerCliOverrides, load_config};
+pub use loader::{
+    CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
+    InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides, load_config,
+};
 pub use redact::redact_secrets;
 pub use render::render_minimal_config;
 pub use sections::{
@@ -32,9 +38,9 @@ pub use sections::{
     DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD, DatabaseConfig, DiscoveryConfig,
     EmbeddingConfig, ExplorationConfig, FileRotation, InferenceConfig, LimitsConfig, LogFormat,
-    LogOutput, LoggingConfig, MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, PromptsConfig,
-    ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig,
-    TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
+    LogOutput, LoggingConfig, MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, PromptSource,
+    PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
+    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
 };
 pub use validation::{ERR_TTL_ZERO, validate};
 

@@ -89,7 +89,11 @@ pub(crate) async fn build_embedding_provider(
                 client,
                 &url,
                 &config.model,
-                config.api_key.as_deref().unwrap_or_default(),
+                config
+                    .api_key
+                    .as_ref()
+                    .map(tribal_domain::ApiKey::as_str)
+                    .unwrap_or_default(),
                 config.dimensions,
             );
             if let Err(e) = p.probe_model().await {
@@ -137,7 +141,11 @@ pub(crate) async fn build_inference_provider(
                 client,
                 &url,
                 &config.model,
-                config.api_key.as_deref().unwrap_or_default(),
+                config
+                    .api_key
+                    .as_ref()
+                    .map(tribal_domain::ApiKey::as_str)
+                    .unwrap_or_default(),
             );
             if let Err(e) = p.probe_model().await {
                 tracing::warn!(%e, "inference model probe failed (non-fatal)");
@@ -149,7 +157,11 @@ pub(crate) async fn build_inference_provider(
                 client,
                 &url,
                 &config.model,
-                config.api_key.as_deref().unwrap_or_default(),
+                config
+                    .api_key
+                    .as_ref()
+                    .map(tribal_domain::ApiKey::as_str)
+                    .unwrap_or_default(),
             );
             if let Err(e) = p.probe_model().await {
                 tracing::warn!(%e, "inference model probe failed (non-fatal)");

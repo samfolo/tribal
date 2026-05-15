@@ -25,9 +25,10 @@ async fn test_duplicate_only_batch() {
         // envelope handling across all three provider implementations.
         setup.config(|c| {
             c.embedding.provider = ProviderKind::OpenAi;
-            c.embedding.api_key = Some("sk-e2e-000000".to_owned());
+            c.embedding.api_key = Some("sk-e2e-000000".parse().expect("test fixture is valid"));
             c.inference.extraction.provider = ProviderKind::Anthropic;
-            c.inference.extraction.api_key = Some("sk-ant-e2e-000000".to_owned());
+            c.inference.extraction.api_key =
+                Some("sk-ant-e2e-000000".parse().expect("test fixture is valid"));
         });
 
         setup.graph(|g| {
