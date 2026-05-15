@@ -78,14 +78,14 @@ fn default_level() -> String {
 }
 
 fn default_file_directory() -> String {
-    let (dir, _) = resolve_directory(dirs::state_dir, dirs::data_local_dir, "tribal/logs");
+    let (dir, _) = resolve_directory(dirs::state_dir, dirs::data_local_dir, "logs");
     dir
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
         let (file_directory, used_temp_dir_fallback) =
-            resolve_directory(dirs::state_dir, dirs::data_local_dir, "tribal/logs");
+            resolve_directory(dirs::state_dir, dirs::data_local_dir, "logs");
         Self {
             level: default_level(),
             format: LogFormat::default(),
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(config.format, LogFormat::Json);
         assert_eq!(config.output, LogOutput::Stderr);
         assert!(!config.file_directory.is_empty());
-        assert!(config.file_directory.ends_with("tribal/logs"));
+        assert!(config.file_directory.ends_with("logs"));
         assert_eq!(config.file_rotation, FileRotation::Daily);
         assert!(!config.include_llm_content);
     }
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(config.level, "info");
         assert_eq!(config.format, LogFormat::Json);
         assert_eq!(config.output, LogOutput::Stderr);
-        assert!(config.file_directory.ends_with("tribal/logs"));
+        assert!(config.file_directory.ends_with("logs"));
     }
 
     #[test]

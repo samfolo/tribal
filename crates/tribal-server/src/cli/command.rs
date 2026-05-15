@@ -4,10 +4,10 @@ use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind
 use tribal_config::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
     InferenceStageCliOverrides, ProviderKind, ServerCliOverrides, TelemetryCliOverrides,
-    TransportKind,
+    TransportKind, default_config_file_path,
 };
 
-use super::{default_values::DEFAULT_CONFIG_PATH, styles::STYLES};
+use super::styles::STYLES;
 
 // ---------------------------------------------------------------------------
 // Long version
@@ -55,7 +55,7 @@ pub struct GlobalArgs {
     #[arg(
         long,
         global = true,
-        default_value = DEFAULT_CONFIG_PATH,
+        default_value_t = default_config_file_path(),
         env = "TRIBAL_CONFIG_PATH",
         value_name = "PATH",
     )]
@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn test_global_defaults() {
         let cli = Cli::try_parse_from(["tribal", "serve"]).unwrap();
-        assert_eq!(cli.global.config, DEFAULT_CONFIG_PATH);
+        assert_eq!(cli.global.config, default_config_file_path());
         assert_eq!(cli.global.verbose, 0);
         assert!(!cli.global.quiet);
     }

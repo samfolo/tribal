@@ -2,15 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Default prompt template directory used by [`PromptSource::Disk`].
-pub const DEFAULT_DIRECTORY: &str = "~/.config/tribal/prompts";
+use crate::paths::default_prompts_directory;
 
 fn default_directory() -> String {
-    String::from(DEFAULT_DIRECTORY)
+    default_prompts_directory()
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +120,7 @@ mod tests {
         assert_eq!(
             parsed,
             PromptSource::Disk {
-                directory: DEFAULT_DIRECTORY.into(),
+                directory: default_prompts_directory(),
                 hot_reload: false,
             },
         );
