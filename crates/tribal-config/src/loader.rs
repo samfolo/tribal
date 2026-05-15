@@ -333,7 +333,7 @@ prompts:
         Jail::expect_with(|jail| {
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
-            assert_eq!(config.prompts.source, PromptSource::Embedded);
+            assert_eq!(config.prompts.source, PromptSource::Embedded {});
             Ok(())
         });
     }

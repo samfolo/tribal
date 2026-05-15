@@ -213,9 +213,7 @@ pub(crate) async fn load_prompts(
 /// Used when [`PromptSource::Embedded`](tribal_config::PromptSource::Embedded)
 /// is in effect: no filesystem IO, no user-editable files. The on-disk
 /// equivalent is [`load_prompts`].
-pub(crate) async fn load_prompts_embedded(
-    pool: &PgPool,
-) -> Result<ActivePromptVersions, AppError> {
+pub(crate) async fn load_prompts_embedded(pool: &PgPool) -> Result<ActivePromptVersions, AppError> {
     let contents = PromptTemplateLocation::ALL
         .into_iter()
         .map(|location| (location, embedded_default(location).to_owned()));
