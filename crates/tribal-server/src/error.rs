@@ -220,6 +220,16 @@ pub enum AppError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
+    /// Resolving a raw CLI / config path to its absolute form failed.
+    #[error("failed to resolve absolute path '{path}': {source}")]
+    PathResolution {
+        /// The raw path that could not be resolved.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
     /// Setup I/O operation failed (directory creation, config file write).
     #[error("setup I/O failed ({context}): {source}")]
     SetupIo {
@@ -630,6 +640,23 @@ mod tests {
         );
         assert!(
             display.contains("permission denied"),
+            "expected source in display, got: {display}",
+        );
+    }
+
+    #[test]
+    fn test_display_path_resolution() {
+        let err = AppError::PathResolution {
+            path: "~/.config/tribal/tribal.yaml".into(),
+            source: io::Error::other("current_dir unavailable"),
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("~/.config/tribal/tribal.yaml"),
+            "expected raw path in display, got: {display}",
+        );
+        assert!(
+            display.contains("current_dir unavailable"),
             "expected source in display, got: {display}",
         );
     }
