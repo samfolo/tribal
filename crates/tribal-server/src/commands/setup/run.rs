@@ -1,6 +1,9 @@
 //! Core setup flow: entry point and async orchestration.
 
-use std::path::Path;
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 
 use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
@@ -57,7 +60,13 @@ pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    rt.block_on(run_async(&config, &expanded_config_path, expires_at))
+    let mut stderr = io::stderr().lock();
+    rt.block_on(run_async(
+        &config,
+        &expanded_config_path,
+        expires_at,
+        &mut stderr,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +78,7 @@ async fn run_async(
     config: &TribalConfig,
     config_path: &str,
     expires_at: DateTime<Utc>,
+    out: &mut dyn Write,
 ) -> Result<(), AppError> {
     let config_dir = Path::new(config_path)
         .parent()
@@ -79,12 +89,12 @@ async fn run_async(
             context: format!("create config directory {}", config_dir.display()),
             source,
         })?;
-    output::config_directory(&config_dir.to_string_lossy());
+    output::config_directory(out, &config_dir.to_string_lossy());
 
     if let PromptSource::Disk { directory, .. } = &config.prompts.source {
         let prompts_dir = Path::new(directory);
         ensure_prompt_files(prompts_dir).await?;
-        output::prompt_files(&prompts_dir.to_string_lossy());
+        output::prompt_files(out, &prompts_dir.to_string_lossy());
     }
 
     let pool = tribal_db::create_pool(
@@ -95,20 +105,20 @@ async fn run_async(
     )
     .await
     .map_err(|source| {
-        output::database_unreachable();
+        output::database_unreachable(out);
         AppError::Database { source }
     })?;
-    output::database_connected();
+    output::database_connected(out);
 
     run_migrations(&pool).await?;
-    output::migrations_complete();
+    output::migrations_complete(out);
 
     let mut conn = pool.acquire().await.map_err(|err| {
         AppError::pool_acquire(POOL_NAME_SETUP, "acquiring setup connection", err)
     })?;
 
     let principal = find_or_create_principal(&mut conn, LOCAL_PRINCIPAL_KEY).await?;
-    output::principal(principal.principal_key());
+    output::principal(out, principal.principal_key());
 
     let raw_token = generate_raw_token();
     let token_hash = sha256_hex(&raw_token);
@@ -124,14 +134,14 @@ async fn run_async(
         .insert(&mut conn, &new_token)
         .await
         .map_err(|source| AppError::Database { source })?;
-    output::token_created(&expires_at.format(TIMESTAMP_FORMAT).to_string());
+    output::token_created(out, &expires_at.format(TIMESTAMP_FORMAT).to_string());
 
     drop(conn);
 
     let outcome = config_file::write_if_absent(config_path, config).await?;
-    output::config_file(&outcome);
+    output::config_file(out, &outcome);
 
-    output::instructions(&raw_token);
+    output::instructions(out, &raw_token);
 
     Ok(())
 }
