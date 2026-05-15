@@ -1,6 +1,6 @@
 //! Core create flow: entry point and async orchestration.
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
 use tribal_config::{DatabaseConfig, load_config};
 use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
@@ -11,7 +11,7 @@ use crate::{
     cli::TokenCreateArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
-        TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, ttl_to_delta,
+        TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, resolve_ttl,
     },
     error::AppError,
 };
@@ -101,92 +101,4 @@ async fn run_async(
     output::token_created(&expires_at.format(TIMESTAMP_FORMAT).to_string());
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// TTL resolution
-// ---------------------------------------------------------------------------
-
-/// Resolves the effective TTL from a CLI flag and config default.
-///
-/// When `--ttl` is provided, validation errors reference the flag name;
-/// when the value comes from config, the underlying config error propagates.
-fn resolve_ttl(cli_ttl: Option<u64>, config_ttl: u64) -> Result<TimeDelta, AppError> {
-    if cli_ttl == Some(0) {
-        return Err(AppError::TokenOperation {
-            reason: output::TTL_MUST_BE_POSITIVE.into(),
-        });
-    }
-
-    let hours = cli_ttl.unwrap_or(config_ttl);
-
-    ttl_to_delta(hours).map_err(|err| {
-        if cli_ttl.is_some() {
-            AppError::TokenOperation {
-                reason: output::TTL_OUT_OF_RANGE.into(),
-            }
-        } else {
-            err
-        }
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use tribal_config::ERR_TTL_ZERO;
-
-    use super::*;
-    use crate::commands::common::TTL_OUT_OF_RANGE as CONFIG_TTL_OUT_OF_RANGE;
-
-    #[test]
-    fn test_resolve_ttl_uses_cli_value() {
-        let delta = resolve_ttl(Some(24), 8760).unwrap();
-        assert_eq!(delta, TimeDelta::try_hours(24).unwrap());
-    }
-
-    #[test]
-    fn test_resolve_ttl_falls_back_to_config() {
-        let delta = resolve_ttl(None, 8760).unwrap();
-        assert_eq!(delta, TimeDelta::try_hours(8760).unwrap());
-    }
-
-    #[test]
-    fn test_resolve_ttl_cli_zero_returns_token_error() {
-        let err = resolve_ttl(Some(0), 8760).unwrap_err();
-        assert!(
-            err.to_string().contains(output::TTL_MUST_BE_POSITIVE),
-            "unexpected error: {err}",
-        );
-    }
-
-    #[test]
-    fn test_resolve_ttl_cli_overflow_returns_token_error() {
-        let err = resolve_ttl(Some(u64::MAX), 8760).unwrap_err();
-        assert!(
-            err.to_string().contains(output::TTL_OUT_OF_RANGE),
-            "unexpected error: {err}",
-        );
-    }
-
-    #[test]
-    fn test_resolve_ttl_config_zero_returns_config_error() {
-        let err = resolve_ttl(None, 0).unwrap_err();
-        assert!(
-            err.to_string().contains(ERR_TTL_ZERO),
-            "unexpected error: {err}",
-        );
-    }
-
-    #[test]
-    fn test_resolve_ttl_config_overflow_returns_config_error() {
-        let err = resolve_ttl(None, u64::MAX).unwrap_err();
-        assert!(
-            err.to_string().contains(CONFIG_TTL_OUT_OF_RANGE),
-            "unexpected error: {err}",
-        );
-    }
 }

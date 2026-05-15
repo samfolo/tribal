@@ -16,7 +16,7 @@ use crate::{
     cli::SetupArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS, TIMESTAMP_FORMAT,
-        find_or_create_principal, generate_raw_token, resolve_absolute_config_path, ttl_to_delta,
+        find_or_create_principal, generate_raw_token, resolve_absolute_config_path, resolve_ttl,
     },
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
@@ -51,7 +51,7 @@ pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
         Some(cli_overrides),
         Some(&DATABASE_COMMAND_DEFAULTS),
     )?;
-    let expires_at = Utc::now() + ttl_to_delta(config.auth.token_ttl_hours)?;
+    let expires_at = Utc::now() + resolve_ttl(None, config.auth.token_ttl_hours)?;
 
     let absolute_config_path = resolve_absolute_config_path(config_path)?;
 
