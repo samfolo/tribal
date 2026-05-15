@@ -20,7 +20,10 @@ mod validation;
 pub use divergence::{
     WARNING_CONFIG_UNPARSEABLE, WARNING_DATABASE_URL_DIVERGENCE, check_config_divergence,
 };
-pub use env::{ENV_AUTH_TOKEN, ENV_CONFIG_PATH, ENV_PREFIX, ENV_PROJECT_ID};
+pub use env::{
+    ENV_ANTHROPIC_API_KEY, ENV_AUTH_TOKEN, ENV_CONFIG_PATH, ENV_OPENAI_API_KEY, ENV_PREFIX,
+    ENV_PROJECT_ID,
+};
 pub use error::ConfigError;
 pub use loader::{CliOverrides, DatabaseCliOverrides, ServerCliOverrides, load_config};
 pub use redact::redact_secrets;
