@@ -11,8 +11,10 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    LoggingConfig, TelemetryConfig, TribalConfig, env::ENV_PREFIX, error::ConfigError,
-    sections::TransportKind,
+    LoggingConfig, TelemetryConfig, TribalConfig,
+    env::ENV_PREFIX,
+    error::ConfigError,
+    sections::{PromptSource, TransportKind},
 };
 
 // ---------------------------------------------------------------------------
@@ -226,7 +228,9 @@ fn restore_temp_dir_fallback_flags(config: &mut TribalConfig) {
 }
 
 fn expand_paths(config: &mut TribalConfig) {
-    config.prompts.directory = shellexpand::tilde(&config.prompts.directory).into_owned();
+    if let PromptSource::Disk { directory, .. } = &mut config.prompts.source {
+        *directory = shellexpand::tilde(directory).into_owned();
+    }
     config.telemetry.file_directory =
         shellexpand::tilde(&config.telemetry.file_directory).into_owned();
     config.logging.file_directory = shellexpand::tilde(&config.logging.file_directory).into_owned();
@@ -292,20 +296,44 @@ server:
     }
 
     #[test]
-    fn test_tilde_expansion() {
+    fn test_tilde_expansion_disk_prompts() {
         Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                r"
+prompts:
+  source:
+    kind: disk
+    directory: ~/somewhere
+",
+            )?;
+
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+
             assert!(
-                !config.prompts.directory.starts_with('~'),
-                "prompts.directory should be expanded: {}",
-                config.prompts.directory
+                matches!(
+                    &config.prompts.source,
+                    PromptSource::Disk { directory, .. } if !directory.starts_with('~'),
+                ),
+                "prompts directory should be expanded: {:?}",
+                config.prompts.source,
             );
             assert!(
                 !config.telemetry.file_directory.starts_with('~'),
                 "telemetry.file_directory should be expanded: {}",
-                config.telemetry.file_directory
+                config.telemetry.file_directory,
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_tilde_expansion_embedded_prompts_no_op() {
+        Jail::expect_with(|jail| {
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(config.prompts.source, PromptSource::Embedded);
             Ok(())
         });
     }
@@ -415,7 +443,8 @@ server:
             jail.set_env("TRIBAL_EMBEDDING__DIMENSIONS", "1024");
             jail.set_env("TRIBAL_INFERENCE__EXTRACTION__TEMPERATURE", "0.5");
             jail.set_env("TRIBAL_LIMITS__PROVIDERS__OLLAMA__MAX_IN_FLIGHT", "4");
-            jail.set_env("TRIBAL_PROMPTS__HOT_RELOAD", "true");
+            jail.set_env("TRIBAL_PROMPTS__SOURCE__KIND", "disk");
+            jail.set_env("TRIBAL_PROMPTS__SOURCE__HOT_RELOAD", "true");
             jail.set_env("TRIBAL_DISCOVERY__MAX_LIMIT", "100");
             jail.set_env("TRIBAL_EXPLORATION__MAX_DEPTH", "5");
             jail.set_env("TRIBAL_LOGGING__LEVEL", "debug");
@@ -434,7 +463,17 @@ server:
                 config.limits.providers[&ProviderKind::Ollama].max_in_flight,
                 4
             );
-            assert!(config.prompts.hot_reload);
+            assert!(
+                matches!(
+                    config.prompts.source,
+                    PromptSource::Disk {
+                        hot_reload: true,
+                        ..
+                    },
+                ),
+                "expected Disk variant with hot_reload=true, got {:?}",
+                config.prompts.source,
+            );
             assert_eq!(config.discovery.max_limit, 100);
             assert_eq!(config.exploration.max_depth, 5);
             assert_eq!(config.logging.level, "debug");
