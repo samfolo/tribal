@@ -170,4 +170,33 @@ mod tests {
             DEFAULT_OPENAI_BASE_URL,
         );
     }
+
+    #[test]
+    fn test_standard_env_var_name() {
+        assert_eq!(ProviderKind::Ollama.standard_env_var_name(), None);
+        assert_eq!(
+            ProviderKind::Anthropic.standard_env_var_name(),
+            Some(ENV_ANTHROPIC_API_KEY),
+        );
+        assert_eq!(
+            ProviderKind::OpenAi.standard_env_var_name(),
+            Some(ENV_OPENAI_API_KEY),
+        );
+    }
+
+    #[test]
+    fn test_from_str_valid() {
+        for kind in ProviderKind::ALL {
+            assert_eq!(kind.as_str().parse::<ProviderKind>().unwrap(), kind);
+        }
+    }
+
+    #[test]
+    fn test_from_str_invalid() {
+        let err = "grpc".parse::<ProviderKind>().unwrap_err();
+        assert_eq!(
+            err,
+            "unknown provider: grpc (expected one of ollama, anthropic, openai)",
+        );
+    }
 }
