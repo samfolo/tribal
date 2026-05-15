@@ -272,6 +272,11 @@ pub struct ProviderArgs {
     pub inference_relation_model: Option<String>,
 }
 
+// Allowed dead-code: consumed by the `tribal bootstrap` subcommand.
+// Tests exercise this impl directly, but `#[cfg(test)]` usage does not
+// satisfy the production-side reachability check. Remove the annotation
+// when bootstrap flattens [`ProviderArgs`].
+#[allow(dead_code)]
 impl ProviderArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
@@ -316,6 +321,10 @@ impl ProviderArgs {
 /// Projects a `(provider, model)` pair into an
 /// [`InferenceStageCliOverrides`], returning `None` when both are absent so
 /// the subtree is omitted from the figment overlay.
+//
+// Allowed dead-code: called only by [`ProviderArgs::into_cli_overrides`];
+// removed alongside that impl when `tribal bootstrap` flattens the args.
+#[allow(dead_code)]
 fn inference_stage_overrides(
     provider: Option<ProviderKind>,
     model: Option<String>,
@@ -340,6 +349,11 @@ pub struct TelemetryArgs {
     pub telemetry_otlp_endpoint: Option<String>,
 }
 
+// Allowed dead-code: consumed by the `tribal bootstrap` subcommand.
+// Tests exercise this impl directly, but `#[cfg(test)]` usage does not
+// satisfy the production-side reachability check. Remove the annotation
+// when bootstrap flattens [`TelemetryArgs`].
+#[allow(dead_code)]
 impl TelemetryArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     pub fn into_cli_overrides(self) -> CliOverrides {
