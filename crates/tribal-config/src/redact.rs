@@ -5,11 +5,10 @@
 //! dot-path, the struct field mutation (in tests), and the sentinel
 //! generation.
 
+use tribal_domain::REDACTED;
+
 #[cfg(test)]
 use crate::TribalConfig;
-
-/// Placeholder substituted for secret values in redacted output.
-const REDACTED: &str = "********";
 
 /// Configuration fields that contain sensitive values.
 ///

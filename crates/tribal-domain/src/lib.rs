@@ -65,6 +65,7 @@ mod project;
 mod prompt_role;
 mod prompt_stage;
 mod prompt_version;
+mod redaction;
 mod reference;
 mod reference_kind;
 mod relation;
@@ -108,6 +109,7 @@ pub use project::{Project, ProjectBuilder};
 pub use prompt_role::PromptRole;
 pub use prompt_stage::PromptStage;
 pub use prompt_version::{PromptVersion, PromptVersionBuilder};
+pub use redaction::REDACTED;
 pub use reference::{Reference, ReferenceBuilder};
 pub use reference_kind::ReferenceKind;
 pub use relation::{
