@@ -79,34 +79,78 @@ pub(crate) fn generate_raw_token() -> String {
 // TTL conversion
 // ---------------------------------------------------------------------------
 
-/// Error message for a token TTL that exceeds the representable range.
+/// Error message for an `auth.token_ttl_hours` config value that exceeds
+/// the representable range.
 pub(crate) const TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
+
+/// Error message when a CLI `--ttl` flag is zero.
+pub(crate) const TTL_FLAG_MUST_BE_POSITIVE: &str = "--ttl must be greater than zero";
+
+/// Error message when a CLI `--ttl` flag exceeds the representable range.
+pub(crate) const TTL_FLAG_OUT_OF_RANGE: &str = "--ttl value is too large";
+
+/// Failure modes for [`ttl_to_delta`].
+///
+/// Typed (rather than wrapped in [`AppError`]) so that callers can
+/// attribute the failure to whichever input source supplied the value —
+/// a CLI flag, a config field, or anywhere else — and pick the right
+/// [`AppError`] variant + message themselves.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TtlError {
+    /// The TTL value was zero.
+    Zero,
+    /// The TTL value exceeded the representable range.
+    OutOfRange,
+}
 
 /// Converts a token TTL in hours to a [`TimeDelta`], validating that the
 /// value is non-zero and within the representable range.
 ///
 /// # Errors
 ///
-/// Returns [`AppError::Config`] if the TTL is zero or exceeds the
-/// representable range for `TimeDelta`.
-pub(crate) fn ttl_to_delta(ttl_hours: u64) -> Result<TimeDelta, AppError> {
+/// Returns [`TtlError::Zero`] when `ttl_hours` is zero and
+/// [`TtlError::OutOfRange`] when the value exceeds the representable
+/// range for `TimeDelta`.
+pub(crate) fn ttl_to_delta(ttl_hours: u64) -> Result<TimeDelta, TtlError> {
     if ttl_hours == 0 {
-        return Err(AppError::Config {
+        return Err(TtlError::Zero);
+    }
+    let hours = i64::try_from(ttl_hours).map_err(|_| TtlError::OutOfRange)?;
+    TimeDelta::try_hours(hours).ok_or(TtlError::OutOfRange)
+}
+
+/// Resolves the effective TTL from a CLI flag and config default,
+/// dispatching the typed [`TtlError`] from [`ttl_to_delta`] to the right
+/// [`AppError`] and message depending on which input supplied the value.
+///
+/// The mapping is exhaustive over (variant, source) so adding a new
+/// [`TtlError`] variant forces an update at this single site rather
+/// than silently falling through to one of the existing messages.
+///
+/// # Errors
+///
+/// Returns [`AppError::TokenOperation`] for invalid CLI flag values and
+/// [`AppError::Config`] for invalid config values.
+pub(crate) fn resolve_ttl(cli_ttl: Option<u64>, config_ttl: u64) -> Result<TimeDelta, AppError> {
+    let hours = cli_ttl.unwrap_or(config_ttl);
+    let from_flag = cli_ttl.is_some();
+
+    ttl_to_delta(hours).map_err(|err| match (err, from_flag) {
+        (TtlError::Zero, true) => AppError::TokenOperation {
+            reason: TTL_FLAG_MUST_BE_POSITIVE.into(),
+        },
+        (TtlError::OutOfRange, true) => AppError::TokenOperation {
+            reason: TTL_FLAG_OUT_OF_RANGE.into(),
+        },
+        (TtlError::Zero, false) => AppError::Config {
             source: ConfigError::ValidationFailed {
                 errors: vec![ERR_TTL_ZERO.into()],
             },
-        });
-    }
-
-    let hours = i64::try_from(ttl_hours).map_err(|_| AppError::Config {
-        source: ConfigError::ValidationFailed {
-            errors: vec![TTL_OUT_OF_RANGE.into()],
         },
-    })?;
-
-    TimeDelta::try_hours(hours).ok_or_else(|| AppError::Config {
-        source: ConfigError::ValidationFailed {
-            errors: vec![TTL_OUT_OF_RANGE.into()],
+        (TtlError::OutOfRange, false) => AppError::Config {
+            source: ConfigError::ValidationFailed {
+                errors: vec![TTL_OUT_OF_RANGE.into()],
+            },
         },
     })
 }
@@ -234,7 +278,49 @@ mod tests {
 
     #[test]
     fn test_ttl_to_delta_rejects_zero() {
-        let err = ttl_to_delta(0).unwrap_err();
+        assert_eq!(ttl_to_delta(0).unwrap_err(), TtlError::Zero);
+    }
+
+    #[test]
+    fn test_ttl_to_delta_rejects_overflow() {
+        assert_eq!(ttl_to_delta(u64::MAX).unwrap_err(), TtlError::OutOfRange);
+    }
+
+    // -- TTL resolution -----------------------------------------------------
+
+    #[test]
+    fn test_resolve_ttl_uses_cli_value() {
+        let delta = resolve_ttl(Some(24), 8760).unwrap();
+        assert_eq!(delta, TimeDelta::try_hours(24).unwrap());
+    }
+
+    #[test]
+    fn test_resolve_ttl_falls_back_to_config() {
+        let delta = resolve_ttl(None, 8760).unwrap();
+        assert_eq!(delta, TimeDelta::try_hours(8760).unwrap());
+    }
+
+    #[test]
+    fn test_resolve_ttl_cli_zero_returns_token_error() {
+        let err = resolve_ttl(Some(0), 8760).unwrap_err();
+        assert!(
+            err.to_string().contains(TTL_FLAG_MUST_BE_POSITIVE),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_resolve_ttl_cli_overflow_returns_token_error() {
+        let err = resolve_ttl(Some(u64::MAX), 8760).unwrap_err();
+        assert!(
+            err.to_string().contains(TTL_FLAG_OUT_OF_RANGE),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_resolve_ttl_config_zero_returns_config_error() {
+        let err = resolve_ttl(None, 0).unwrap_err();
         assert!(
             err.to_string().contains(ERR_TTL_ZERO),
             "unexpected error: {err}",
@@ -242,8 +328,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ttl_to_delta_rejects_overflow() {
-        let err = ttl_to_delta(u64::MAX).unwrap_err();
+    fn test_resolve_ttl_config_overflow_returns_config_error() {
+        let err = resolve_ttl(None, u64::MAX).unwrap_err();
         assert!(
             err.to_string().contains(TTL_OUT_OF_RANGE),
             "unexpected error: {err}",
@@ -266,12 +352,8 @@ mod tests {
 
     #[test]
     fn test_resolve_absolute_config_path_succeeds_for_nonexistent_target() {
-        let resolved =
-            resolve_absolute_config_path("/nonexistent/tribal/tribal.yaml").unwrap();
-        assert_eq!(
-            resolved,
-            PathBuf::from("/nonexistent/tribal/tribal.yaml"),
-        );
+        let resolved = resolve_absolute_config_path("/nonexistent/tribal/tribal.yaml").unwrap();
+        assert_eq!(resolved, PathBuf::from("/nonexistent/tribal/tribal.yaml"),);
     }
 
     #[test]
