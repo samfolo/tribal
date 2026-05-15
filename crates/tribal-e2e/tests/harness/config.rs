@@ -1,4 +1,4 @@
-use tribal_config::TribalConfig;
+use tribal_config::{PromptSource, TribalConfig};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,7 +63,10 @@ pub fn test_config(
     config.inference.relation.base_url = Some(relation_url.to_owned());
 
     // -- Prompts -------------------------------------------------------------
-    config.prompts.directory = prompts_dir.to_owned();
+    config.prompts.source = PromptSource::Disk {
+        directory: prompts_dir.to_owned(),
+        hot_reload: false,
+    };
 
     // -- Worker timings ------------------------------------------------------
     config.worker.poll_interval_ms = POLL_INTERVAL_MS;

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
-use tribal_config::{TribalConfig, load_config};
+use tribal_config::{PromptSource, TribalConfig, load_config};
 use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, full_access_scopes};
 
@@ -81,9 +81,11 @@ async fn run_async(
         })?;
     output::config_directory(&config_dir.to_string_lossy());
 
-    let prompts_dir = Path::new(&config.prompts.directory);
-    ensure_prompt_files(prompts_dir).await?;
-    output::prompt_files(&prompts_dir.to_string_lossy());
+    if let PromptSource::Disk { directory, .. } = &config.prompts.source {
+        let prompts_dir = Path::new(directory);
+        ensure_prompt_files(prompts_dir).await?;
+        output::prompt_files(&prompts_dir.to_string_lossy());
+    }
 
     let pool = tribal_db::create_pool(
         &config.database,

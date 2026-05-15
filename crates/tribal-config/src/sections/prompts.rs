@@ -30,7 +30,12 @@ fn default_directory() -> String {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PromptSource {
     /// Prompts compiled into the binary.
-    Embedded,
+    ///
+    /// Empty struct variant rather than a unit variant: serde's
+    /// `deny_unknown_fields` is only honoured for struct-variant arms of
+    /// internally-tagged enums, so the empty braces are what make
+    /// `{kind: embedded, hot_reload: true}` fail to deserialise.
+    Embedded {},
 
     /// Prompts read from a directory on disk.
     Disk {
@@ -46,7 +51,7 @@ pub enum PromptSource {
 
 impl Default for PromptSource {
     fn default() -> Self {
-        Self::Embedded
+        Self::Embedded {}
     }
 }
 
@@ -73,18 +78,18 @@ mod tests {
     #[test]
     fn test_prompts_config_default_is_embedded() {
         let config = PromptsConfig::default();
-        assert_eq!(config.source, PromptSource::Embedded);
+        assert_eq!(config.source, PromptSource::Embedded {});
     }
 
     #[test]
     fn test_prompt_source_serde_roundtrip_embedded() {
         let yaml = "kind: embedded\n";
         let parsed: PromptSource = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, PromptSource::Embedded);
+        assert_eq!(parsed, PromptSource::Embedded {});
 
-        let serialised = serde_yaml::to_string(&PromptSource::Embedded).unwrap();
+        let serialised = serde_yaml::to_string(&PromptSource::Embedded {}).unwrap();
         let reparsed: PromptSource = serde_yaml::from_str(&serialised).unwrap();
-        assert_eq!(reparsed, PromptSource::Embedded);
+        assert_eq!(reparsed, PromptSource::Embedded {});
     }
 
     #[test]
