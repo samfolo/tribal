@@ -66,31 +66,48 @@ pub(super) fn config_file(out: &mut dyn Write, outcome: &ConfigFileOutcome) {
 }
 
 /// Displays the bearer token and next-step instructions.
-pub(super) fn instructions(out: &mut dyn Write, raw_token: &str) {
-    write_line(out, "");
-    write_line(out, "Setup complete. Your bearer token:");
-    write_line(out, "");
-    write_line(out, &format!("  {raw_token}"));
-    write_line(out, "");
-    write_line(out, "Save this token — it will not be shown again.");
-    write_line(out, "");
-    write_line(out, "Next steps:");
-    write_line(
+///
+/// Unlike the other `output::*` helpers, this one propagates IO failures
+/// rather than swallowing them: the raw bearer token is shown only here,
+/// the database stores just the hash, and the message itself promises
+/// the token "will not be shown again". A silent write failure would
+/// leave the user without recoverable credentials.
+pub(super) fn instructions(out: &mut dyn Write, raw_token: &str) -> io::Result<()> {
+    try_write_line(out, "")?;
+    try_write_line(out, "Setup complete. Your bearer token:")?;
+    try_write_line(out, "")?;
+    try_write_line(out, &format!("  {raw_token}"))?;
+    try_write_line(out, "")?;
+    try_write_line(out, "Save this token — it will not be shown again.")?;
+    try_write_line(out, "")?;
+    try_write_line(out, "Next steps:")?;
+    try_write_line(
         out,
         &format!("  1. Export the token:  export TRIBAL_AUTH_TOKEN=\"{raw_token}\""),
-    );
-    write_line(out, "  2. Register a project:  tribal project register");
-    write_line(out, "");
+    )?;
+    try_write_line(out, "  2. Register a project:  tribal project register")?;
+    try_write_line(out, "")?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Writes `line` followed by a newline. IO errors are ignored — output is a
-/// best-effort signal, not a correctness mechanism.
+/// Writes `line` followed by a newline, swallowing IO errors.
+///
+/// Suitable for progress lines where loss of output is not a correctness
+/// issue. For output the caller cannot afford to lose (e.g. credentials),
+/// use [`try_write_line`].
 fn write_line(out: &mut dyn Write, line: &str) {
-    let _ = writeln!(out, "{line}");
-    // Flush is a best-effort hint for unbuffered stderr; ignore the result.
-    let _: io::Result<()> = out.flush();
+    let _ = try_write_line(out, line);
+}
+
+/// Writes `line` followed by a newline, returning any IO failure.
+///
+/// Both flavours route through the same code path so that the eventual
+/// move to a CLI design system has a single point of substitution.
+fn try_write_line(out: &mut dyn Write, line: &str) -> io::Result<()> {
+    writeln!(out, "{line}")?;
+    out.flush()
 }
