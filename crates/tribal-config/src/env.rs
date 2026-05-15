@@ -16,3 +16,15 @@ pub const ENV_PROJECT_ID: &str = "TRIBAL_PROJECT_ID";
 
 /// Environment variable for the bearer token used in HTTP/SSE transport.
 pub const ENV_AUTH_TOKEN: &str = "TRIBAL_AUTH_TOKEN";
+
+/// Standard environment variable for the `OpenAI` API key.
+///
+/// Consulted as a final fallback when no `TRIBAL_*__API_KEY` or
+/// config-file `api_key` is supplied for an `OpenAi`-provider stage.
+pub const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
+
+/// Standard environment variable for the `Anthropic` API key.
+///
+/// Consulted as a final fallback when no `TRIBAL_*__API_KEY` or
+/// config-file `api_key` is supplied for an `Anthropic`-provider stage.
+pub const ENV_ANTHROPIC_API_KEY: &str = "ANTHROPIC_API_KEY";
