@@ -16,7 +16,7 @@ use crate::{
     cli::SetupArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS, TIMESTAMP_FORMAT,
-        find_or_create_principal, generate_raw_token, ttl_to_delta,
+        find_or_create_principal, generate_raw_token, resolve_absolute_config_path, ttl_to_delta,
     },
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
@@ -53,7 +53,7 @@ pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
     )?;
     let expires_at = Utc::now() + ttl_to_delta(config.auth.token_ttl_hours)?;
 
-    let expanded_config_path = shellexpand::tilde(config_path).into_owned();
+    let absolute_config_path = resolve_absolute_config_path(config_path)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -63,7 +63,7 @@ pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
     let mut stderr = io::stderr().lock();
     rt.block_on(run_async(
         &config,
-        &expanded_config_path,
+        &absolute_config_path,
         expires_at,
         &mut stderr,
     ))
@@ -76,13 +76,11 @@ pub(crate) fn run(config_path: &str, args: SetupArgs) -> Result<(), AppError> {
 /// Executes the setup steps asynchronously.
 async fn run_async(
     config: &TribalConfig,
-    config_path: &str,
+    config_path: &Path,
     expires_at: DateTime<Utc>,
     out: &mut dyn Write,
 ) -> Result<(), AppError> {
-    let config_dir = Path::new(config_path)
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     tokio::fs::create_dir_all(config_dir)
         .await
         .map_err(|source| AppError::SetupIo {
@@ -184,7 +182,7 @@ mod tests {
         let expires_at = Utc::now() + chrono::Duration::hours(1);
 
         let mut buf: Vec<u8> = Vec::new();
-        run_async(&config, config_path.to_str().unwrap(), expires_at, &mut buf)
+        run_async(&config, &config_path, expires_at, &mut buf)
             .await
             .expect("setup succeeds");
 
@@ -223,7 +221,7 @@ mod tests {
         let expires_at = Utc::now() + chrono::Duration::hours(1);
 
         let mut buf: Vec<u8> = Vec::new();
-        run_async(&config, config_path.to_str().unwrap(), expires_at, &mut buf)
+        run_async(&config, &config_path, expires_at, &mut buf)
             .await
             .expect("setup succeeds");
 
@@ -264,7 +262,7 @@ mod tests {
         let expires_at = Utc::now() + chrono::Duration::hours(1);
 
         let mut buf: Vec<u8> = Vec::new();
-        let result = run_async(&config, config_path.to_str().unwrap(), expires_at, &mut buf).await;
+        let result = run_async(&config, &config_path, expires_at, &mut buf).await;
         assert!(
             result.is_err(),
             "setup must fail when the database is unreachable",
