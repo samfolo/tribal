@@ -1,9 +1,11 @@
 //! Sealed API-key type.
 
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::REDACTED;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -49,13 +51,23 @@ pub enum ApiKeyParseError {
 /// `Authorization` header). Serde serialisation goes through
 /// [`From<ApiKey> for String`] rather than `Display`.
 ///
+/// **Redacting `Debug`**: implemented by hand rather than derived, so
+/// that `tracing::debug!("{key:?}")` and similar paths cannot leak the
+/// raw value either.
+///
 /// Opportunistic callers — where an empty or malformed input should be
 /// treated as "not set" rather than an error — should use
 /// `value.parse::<ApiKey>().ok()` to convert the [`Result`] into an
 /// `Option`, matching the standard idiom.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ApiKey(String);
+
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ApiKey").field(&REDACTED).finish()
+    }
+}
 
 impl ApiKey {
     /// Returns the raw key string.
@@ -189,5 +201,19 @@ mod tests {
     fn test_serialize_emits_inner_string() {
         let key: ApiKey = "sk-abc".parse().unwrap();
         assert_eq!(serde_json::to_string(&key).unwrap(), "\"sk-abc\"");
+    }
+
+    #[test]
+    fn test_debug_does_not_leak_inner_value() {
+        let key: ApiKey = "sk-secret-abc".parse().unwrap();
+        let debug = format!("{key:?}");
+        assert!(
+            !debug.contains("sk-secret-abc"),
+            "debug leaked key: {debug}"
+        );
+        assert!(
+            debug.contains(REDACTED),
+            "debug missing placeholder: {debug}"
+        );
     }
 }
