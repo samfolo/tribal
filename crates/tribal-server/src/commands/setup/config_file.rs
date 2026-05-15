@@ -49,12 +49,10 @@ pub(super) enum ConfigFileOutcome {
 ///
 /// Returns a [`ConfigFileOutcome`] describing what happened.
 pub(super) async fn write_if_absent(
-    config_path: &str,
+    config_path: &Path,
     config: &TribalConfig,
 ) -> Result<ConfigFileOutcome, AppError> {
-    let path = Path::new(config_path);
-
-    if tokio::fs::try_exists(path).await.unwrap_or(false) {
+    if tokio::fs::try_exists(config_path).await.unwrap_or(false) {
         let warnings = read_and_check_divergence(config_path, config).await;
         return Ok(ConfigFileOutcome::AlreadyExists { warnings });
     }
@@ -62,15 +60,15 @@ pub(super) async fn write_if_absent(
     let content = render_minimal_config(&config.database.url)
         .map_err(|source| AppError::Config { source })?;
 
-    tokio::fs::write(path, content)
+    tokio::fs::write(config_path, content)
         .await
         .map_err(|source| AppError::SetupIo {
-            context: format!("write config file {}", path.display()),
+            context: format!("write config file {}", config_path.display()),
             source,
         })?;
 
     Ok(ConfigFileOutcome::Written {
-        path: config_path.to_owned(),
+        path: config_path.display().to_string(),
     })
 }
 
@@ -80,7 +78,7 @@ pub(super) async fn write_if_absent(
 
 /// Reads the existing config file and delegates divergence detection to
 /// `tribal-config`.
-async fn read_and_check_divergence(config_path: &str, config: &TribalConfig) -> Vec<String> {
+async fn read_and_check_divergence(config_path: &Path, config: &TribalConfig) -> Vec<String> {
     let content = match tokio::fs::read_to_string(config_path).await {
         Ok(c) => c,
         Err(err) => {
@@ -105,10 +103,9 @@ mod tests {
     async fn test_write_if_absent_creates_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tribal.yaml");
-        let path_str = path.to_str().unwrap();
 
         let config = TribalConfig::default();
-        let outcome = write_if_absent(path_str, &config).await.unwrap();
+        let outcome = write_if_absent(&path, &config).await.unwrap();
 
         assert!(matches!(outcome, ConfigFileOutcome::Written { .. }));
         let content = tokio::fs::read_to_string(&path).await.unwrap();
@@ -119,13 +116,12 @@ mod tests {
     async fn test_write_if_absent_skips_existing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tribal.yaml");
-        let path_str = path.to_str().unwrap();
 
         let original = "# my custom config\n";
         tokio::fs::write(&path, original).await.unwrap();
 
         let config = TribalConfig::default();
-        let outcome = write_if_absent(path_str, &config).await.unwrap();
+        let outcome = write_if_absent(&path, &config).await.unwrap();
 
         assert!(matches!(outcome, ConfigFileOutcome::AlreadyExists { .. }));
         let content = tokio::fs::read_to_string(&path).await.unwrap();
@@ -138,7 +134,6 @@ mod tests {
     async fn test_read_and_check_divergence_warns_on_url_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tribal.yaml");
-        let path_str = path.to_str().unwrap();
 
         tokio::fs::write(&path, "database:\n  url: \"postgres://file-url/db\"\n")
             .await
@@ -146,7 +141,7 @@ mod tests {
 
         let config = TribalConfig::minimum_valid("postgres://resolved-url/db");
 
-        let warnings = read_and_check_divergence(path_str, &config).await;
+        let warnings = read_and_check_divergence(&path, &config).await;
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0], tribal_config::WARNING_DATABASE_URL_DIVERGENCE);
     }
@@ -154,7 +149,8 @@ mod tests {
     #[tokio::test]
     async fn test_read_and_check_divergence_handles_read_failure() {
         let config = TribalConfig::default();
-        let warnings = read_and_check_divergence("/nonexistent/path.yaml", &config).await;
+        let warnings =
+            read_and_check_divergence(Path::new("/nonexistent/path.yaml"), &config).await;
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].starts_with(WARNING_CONFIG_UNREADABLE));
     }

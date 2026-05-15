@@ -1,5 +1,7 @@
 //! Shared utilities for CLI command implementations.
 
+use std::path::{Path, PathBuf};
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::TimeDelta;
 use rand::RngExt;
@@ -154,6 +156,39 @@ pub(crate) async fn find_or_create_principal(
 }
 
 // ---------------------------------------------------------------------------
+// Path resolution
+// ---------------------------------------------------------------------------
+
+/// Resolves a raw config path to an absolute, normalised form.
+///
+/// Expands a leading `~` via `shellexpand::tilde`, absolutises against
+/// the current working directory via [`std::path::absolute`], and
+/// performs logical `..` normalisation via `path_clean::clean`. The
+/// target file is **not** required to exist (no `std::fs::canonicalize`)
+/// — first-run setup writes through the resolved path before any file
+/// exists on disk.
+///
+/// All three command entry points that accept `--config` (setup,
+/// register, mcp-config) route through this helper, so the absolute
+/// path threaded through to the shared MCP-config builder is
+/// byte-identical across commands.
+///
+/// # Errors
+///
+/// Returns [`AppError::PathResolution`] when [`std::path::absolute`]
+/// fails (typically a missing or inaccessible `current_dir`).
+pub(crate) fn resolve_absolute_config_path(raw: &str) -> Result<PathBuf, AppError> {
+    let expanded = shellexpand::tilde(raw);
+    let absolute = std::path::absolute(Path::new(expanded.as_ref())).map_err(|source| {
+        AppError::PathResolution {
+            path: raw.to_owned(),
+            source,
+        }
+    })?;
+    Ok(path_clean::clean(absolute))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -212,6 +247,44 @@ mod tests {
         assert!(
             err.to_string().contains(TTL_OUT_OF_RANGE),
             "unexpected error: {err}",
+        );
+    }
+
+    // -- Path resolution ----------------------------------------------------
+
+    #[test]
+    fn test_resolve_absolute_config_path_normalises_dotdot() {
+        let resolved = resolve_absolute_config_path("/foo/bar/../baz.yaml").unwrap();
+        assert_eq!(resolved, PathBuf::from("/foo/baz.yaml"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_config_path_passes_through_clean_absolute() {
+        let resolved = resolve_absolute_config_path("/etc/tribal/tribal.yaml").unwrap();
+        assert_eq!(resolved, PathBuf::from("/etc/tribal/tribal.yaml"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_config_path_succeeds_for_nonexistent_target() {
+        let resolved =
+            resolve_absolute_config_path("/nonexistent/tribal/tribal.yaml").unwrap();
+        assert_eq!(
+            resolved,
+            PathBuf::from("/nonexistent/tribal/tribal.yaml"),
+        );
+    }
+
+    #[test]
+    fn test_resolve_absolute_config_path_expands_tilde() {
+        let resolved = resolve_absolute_config_path("~/.config/tribal/tribal.yaml").unwrap();
+        let rendered = resolved.to_string_lossy();
+        assert!(
+            !rendered.contains('~'),
+            "tilde should have been expanded, got {rendered}",
+        );
+        assert!(
+            resolved.is_absolute(),
+            "resolved path should be absolute, got {rendered}",
         );
     }
 }
