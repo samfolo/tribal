@@ -29,19 +29,21 @@ pub use loader::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
     InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides, load_config,
 };
-pub use paths::{TRIBAL_DIRECTORY_NAME, default_config_file_path};
+pub use paths::{ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path};
 pub use redact::redact_secrets;
 pub use render::render_minimal_config;
 pub use sections::{
-    AuthConfig, DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_BIND_ADDRESS, DEFAULT_DISCOVERY_LIMIT,
-    DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL,
-    DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH,
-    DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL,
-    DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD, DatabaseConfig, DiscoveryConfig,
-    EmbeddingConfig, ExplorationConfig, FileRotation, InferenceConfig, LimitsConfig, LogFormat,
-    LogOutput, LoggingConfig, MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, PromptSource,
-    PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
-    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
+    Auth, AuthConfig, CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX,
+    Credentials, CredentialsWriteError, DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_BIND_ADDRESS,
+    DEFAULT_DISCOVERY_LIMIT, DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS,
+    DEFAULT_EMBEDDING_MODEL, DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT,
+    DEFAULT_EXPLORATION_MAX_DEPTH, DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OPENAI_BASE_URL, DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD,
+    DatabaseConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation,
+    InferenceConfig, LimitsConfig, LogFormat, LogOutput, LoggingConfig, MAX_LIFECYCLE_DURATION_MS,
+    MAX_OVERFETCH_MULTIPLIER, PromptSource, PromptsConfig, ProviderKind, ProviderLimitsConfig,
+    ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig,
+    VERSION, WorkerConfig, write_credentials,
 };
 pub use validation::{ERR_TTL_ZERO, validate};
 
