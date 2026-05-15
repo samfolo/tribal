@@ -1,0 +1,23 @@
+[package]
+name = "tribal-ui"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anstream.workspace = true
+anstyle.workspace = true
+chrono.workspace = true
+chrono-humanize.workspace = true
+crossterm.workspace = true
+owo-colors.workspace = true
+supports-color.workspace = true
+termbg.workspace = true
+textwrap.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
