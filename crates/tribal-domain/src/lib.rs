@@ -44,6 +44,7 @@ macro_rules! enum_text_conversions {
     };
 }
 
+mod api_key;
 mod auth_token;
 mod candidate;
 mod discovery;
@@ -79,6 +80,7 @@ mod task;
 mod token_usage;
 mod triage;
 
+pub use api_key::ApiKey;
 pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
