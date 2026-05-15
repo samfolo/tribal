@@ -91,12 +91,6 @@ async fn run_async(
         })?;
     output::config_directory(out, &config_dir.to_string_lossy());
 
-    if let PromptSource::Disk { directory, .. } = &config.prompts.source {
-        let prompts_dir = Path::new(directory);
-        ensure_prompt_files(prompts_dir).await?;
-        output::prompt_files(out, &prompts_dir.to_string_lossy());
-    }
-
     let pool = tribal_db::create_pool(
         &config.database,
         POOL_NAME_SETUP,
@@ -112,6 +106,15 @@ async fn run_async(
 
     run_migrations(&pool).await?;
     output::migrations_complete(out);
+
+    // Disk prompt-file IO runs after migrations so a setup that fails
+    // at the database or migration step does not leave a half-written
+    // prompts directory or emit the prompts-directory line.
+    if let PromptSource::Disk { directory, .. } = &config.prompts.source {
+        let prompts_dir = Path::new(directory);
+        ensure_prompt_files(prompts_dir).await?;
+        output::prompt_files(out, &prompts_dir.to_string_lossy());
+    }
 
     let mut conn = pool.acquire().await.map_err(|err| {
         AppError::pool_acquire(POOL_NAME_SETUP, "acquiring setup connection", err)
@@ -174,8 +177,7 @@ mod tests {
         let config_dir = tempfile::tempdir().expect("config dir");
         let config_path = config_dir.path().join("tribal.yaml");
 
-        let mut config = TribalConfig::default();
-        config.database.url = ctx.database_url().to_owned();
+        let mut config = TribalConfig::minimum_valid(ctx.database_url());
         config.database.max_connect_attempts = 1;
         // Default `PromptSource::Embedded` — no `prompts.source` override
         // needed.
@@ -212,8 +214,7 @@ mod tests {
         let config_dir = tempfile::tempdir().expect("config dir");
         let config_path = config_dir.path().join("tribal.yaml");
 
-        let mut config = TribalConfig::default();
-        config.database.url = ctx.database_url().to_owned();
+        let mut config = TribalConfig::minimum_valid(ctx.database_url());
         config.database.max_connect_attempts = 1;
         config.prompts.source = PromptSource::Disk {
             directory: prompts_dir.path().to_string_lossy().into_owned(),
@@ -243,5 +244,45 @@ mod tests {
 
         let mut conn = pool.acquire().await.expect("acquire connection");
         assert_eq!(count_prompt_versions(&mut conn).await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_setup_disk_writes_no_prompts_when_database_unreachable() {
+        // Port 1 is privileged on every supported platform, so nothing
+        // listens there; `create_pool` fails fast with
+        // `max_connect_attempts = 1`. No testcontainers handle is needed.
+        let prompts_dir = tempfile::tempdir().expect("prompts dir");
+        let config_dir = tempfile::tempdir().expect("config dir");
+        let config_path = config_dir.path().join("tribal.yaml");
+
+        let mut config = TribalConfig::minimum_valid("postgres://invalid:invalid@127.0.0.1:1/x");
+        config.database.max_connect_attempts = 1;
+        config.prompts.source = PromptSource::Disk {
+            directory: prompts_dir.path().to_string_lossy().into_owned(),
+            hot_reload: false,
+        };
+        let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+        let mut buf: Vec<u8> = Vec::new();
+        let result = run_async(&config, config_path.to_str().unwrap(), expires_at, &mut buf).await;
+        assert!(
+            result.is_err(),
+            "setup must fail when the database is unreachable",
+        );
+
+        let captured = String::from_utf8(buf).expect("utf8");
+        assert!(
+            !captured.contains("prompt files:"),
+            "no prompts-directory line should appear when the database fails first, got:\n{captured}",
+        );
+
+        let entries: Vec<_> = std::fs::read_dir(prompts_dir.path())
+            .expect("read prompts dir")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "prompts dir must remain empty when the database fails first, got {} entries",
+            entries.len(),
+        );
     }
 }

@@ -288,15 +288,27 @@ fn restore_temp_dir_fallback_flags(config: &mut TribalConfig) {
     }
 }
 
-/// Populates `api_key` for any embedding or inference stage where the
-/// config file and the `TRIBAL_*__API_KEY` env var both left it `None`,
-/// using the provider's standard env var (`OPENAI_API_KEY`,
-/// `ANTHROPIC_API_KEY`) as a final fallback.
+/// Normalises every `api_key` field to `None` when its trimmed form is
+/// empty, then populates any still-`None` field for cloud providers from
+/// the corresponding standard env var (`OPENAI_API_KEY`,
+/// `ANTHROPIC_API_KEY`).
+///
+/// The normalisation pass runs before the fallback so that an empty or
+/// whitespace-only value supplied by any cascade layer (file,
+/// `TRIBAL_*__API_KEY`, or the standard env var) is treated uniformly:
+/// validation never sees a `Some("")` it would have to special-case, and
+/// `feedback_trim_at_resolution.md` is honoured at the single resolution
+/// boundary.
 ///
 /// Silent best-effort: a missing or non-Unicode env var leaves `api_key`
 /// as `None`, which then triggers the existing `validate_api_key_presence`
 /// error if no usable key emerged from any layer.
 fn apply_standard_env_var_fallback(config: &mut TribalConfig) {
+    normalise_api_key(&mut config.embedding.api_key);
+    normalise_api_key(&mut config.inference.extraction.api_key);
+    normalise_api_key(&mut config.inference.triage.api_key);
+    normalise_api_key(&mut config.inference.relation.api_key);
+
     apply_stage_fallback(&mut config.embedding.api_key, config.embedding.provider);
     apply_stage_fallback(
         &mut config.inference.extraction.api_key,
@@ -312,14 +324,31 @@ fn apply_standard_env_var_fallback(config: &mut TribalConfig) {
     );
 }
 
+/// Resets `api_key` to `None` if its trimmed form is empty; otherwise
+/// stores the trimmed value, eliminating surrounding whitespace from
+/// every source.
+fn normalise_api_key(api_key: &mut Option<String>) {
+    *api_key = api_key.take().and_then(trimmed_some);
+}
+
 fn apply_stage_fallback(api_key: &mut Option<String>, provider: ProviderKind) {
     if api_key.is_none()
         && provider.requires_api_key()
         && let Some(name) = provider.standard_env_var_name()
         && let Ok(value) = std::env::var(name)
-        && !value.is_empty()
+        && let Some(trimmed) = trimmed_some(value)
     {
-        *api_key = Some(value);
+        *api_key = Some(trimmed);
+    }
+}
+
+/// Returns `Some(trimmed)` when `value.trim()` is non-empty, else `None`.
+fn trimmed_some(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
     }
 }
 
