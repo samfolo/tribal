@@ -112,6 +112,7 @@ notify-debouncer-mini = "0.7"
 
 # Configuration
 figment = { version = "0.10", features = ["yaml", "env"] }
+path-clean = "1"
 shellexpand = "3"
 dirs = "6"
 
