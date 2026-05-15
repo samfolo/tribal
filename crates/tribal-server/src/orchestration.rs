@@ -481,6 +481,9 @@ impl Drop for WorkerDeathGuard {
 // ---------------------------------------------------------------------------
 
 /// Expands tilde (`~`) in the prompts directory path.
+///
+/// Defensive: covers programmatic callers that assemble a config
+/// without routing it through the loader's path-expansion contract.
 fn expand_prompts_dir(raw: &str) -> PathBuf {
     PathBuf::from(shellexpand::tilde(raw).as_ref())
 }

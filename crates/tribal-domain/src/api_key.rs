@@ -12,6 +12,11 @@ use crate::REDACTED;
 // ---------------------------------------------------------------------------
 
 /// Failure parsing an [`ApiKey`].
+///
+/// Variants are intentionally fieldless: parse failures may originate
+/// from a value that is *almost* a real key (a sk-… string with a
+/// trailing newline, say), so carrying the raw input here would defeat
+/// the redaction discipline enforced on [`ApiKey`] itself.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ApiKeyParseError {
     /// The input was empty.
@@ -26,10 +31,7 @@ pub enum ApiKeyParseError {
     /// Rejecting strictly surfaces the malformed value at the boundary
     /// instead of silently emitting a broken `Authorization` header.
     #[error("api key must not contain whitespace")]
-    ContainsWhitespace {
-        /// The full input string that failed to parse.
-        input: String,
-    },
+    ContainsWhitespace,
 }
 
 // ---------------------------------------------------------------------------
@@ -95,9 +97,7 @@ impl FromStr for ApiKey {
             return Err(ApiKeyParseError::Empty);
         }
         if raw.chars().any(char::is_whitespace) {
-            return Err(ApiKeyParseError::ContainsWhitespace {
-                input: raw.to_owned(),
-            });
+            return Err(ApiKeyParseError::ContainsWhitespace);
         }
         Ok(Self(raw.to_owned()))
     }
@@ -138,25 +138,25 @@ mod tests {
     #[test]
     fn test_from_str_rejects_whitespace_only() {
         let err = "   ".parse::<ApiKey>().unwrap_err();
-        assert!(matches!(err, ApiKeyParseError::ContainsWhitespace { .. }));
+        assert_eq!(err, ApiKeyParseError::ContainsWhitespace);
     }
 
     #[test]
     fn test_from_str_rejects_leading_whitespace() {
         let err = "  sk-abc".parse::<ApiKey>().unwrap_err();
-        assert!(matches!(err, ApiKeyParseError::ContainsWhitespace { .. }));
+        assert_eq!(err, ApiKeyParseError::ContainsWhitespace);
     }
 
     #[test]
     fn test_from_str_rejects_trailing_whitespace() {
         let err = "sk-abc\n".parse::<ApiKey>().unwrap_err();
-        assert!(matches!(err, ApiKeyParseError::ContainsWhitespace { .. }));
+        assert_eq!(err, ApiKeyParseError::ContainsWhitespace);
     }
 
     #[test]
     fn test_from_str_rejects_internal_whitespace() {
         let err = "sk abc".parse::<ApiKey>().unwrap_err();
-        assert!(matches!(err, ApiKeyParseError::ContainsWhitespace { .. }));
+        assert_eq!(err, ApiKeyParseError::ContainsWhitespace);
     }
 
     #[test]
@@ -214,6 +214,24 @@ mod tests {
         assert!(
             debug.contains(REDACTED),
             "debug missing placeholder: {debug}"
+        );
+    }
+
+    #[test]
+    fn test_parse_error_debug_does_not_leak_malformed_input() {
+        // A real key with a trailing newline is the realistic malformed
+        // case; the parse error must not carry the value through to any
+        // log line, tracing call, or test diagnostic.
+        let err = "sk-secret-with-newline\n".parse::<ApiKey>().unwrap_err();
+        let debug = format!("{err:?}");
+        let display = format!("{err}");
+        assert!(
+            !debug.contains("sk-secret-with-newline"),
+            "debug leaked malformed input: {debug}",
+        );
+        assert!(
+            !display.contains("sk-secret-with-newline"),
+            "display leaked malformed input: {display}",
         );
     }
 }
