@@ -81,7 +81,7 @@ mod task;
 mod token_usage;
 mod triage;
 
-pub use api_key::ApiKey;
+pub use api_key::{ApiKey, ApiKeyParseError};
 pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};

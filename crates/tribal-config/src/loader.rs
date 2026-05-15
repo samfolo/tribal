@@ -447,6 +447,24 @@ prompts:
     }
 
     #[test]
+    fn test_embedded_hot_reload_yaml_rejected_at_load() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                "prompts:\n  source:\n    kind: embedded\n    hot_reload: true\n",
+            )?;
+
+            let path = jail.directory().join("tribal.yaml");
+            let result = load_config(path.to_str().unwrap(), None, None);
+            assert!(
+                result.is_err(),
+                "`embedded` variant must reject `hot_reload`, got: {result:?}",
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_env_var_overrides_yaml() {
         Jail::expect_with(|jail| {
             jail.create_file("tribal.yaml", "database:\n  pool_mcp_max_connections: 4\n")?;
