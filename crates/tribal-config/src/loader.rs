@@ -14,7 +14,7 @@ use crate::{
     LoggingConfig, TelemetryConfig, TribalConfig,
     env::ENV_PREFIX,
     error::ConfigError,
-    sections::{PromptSource, TransportKind},
+    sections::{ProviderKind, PromptSource, TransportKind},
 };
 
 // ---------------------------------------------------------------------------
@@ -162,6 +162,7 @@ pub fn load_config(
         source: Box::new(source),
     })?;
 
+    apply_standard_env_var_fallback(&mut config);
     expand_paths(&mut config);
     restore_temp_dir_fallback_flags(&mut config);
 
@@ -224,6 +225,40 @@ fn restore_temp_dir_fallback_flags(config: &mut TribalConfig) {
     let default_telemetry = TelemetryConfig::default();
     if config.telemetry.file_directory == default_telemetry.file_directory {
         config.telemetry.used_temp_dir_fallback = default_telemetry.used_temp_dir_fallback;
+    }
+}
+
+/// Populates `api_key` for any embedding or inference stage where the
+/// config file and the `TRIBAL_*__API_KEY` env var both left it `None`,
+/// using the provider's standard env var (`OPENAI_API_KEY`,
+/// `ANTHROPIC_API_KEY`) as a final fallback.
+///
+/// Silent best-effort: a missing or non-Unicode env var leaves `api_key`
+/// as `None`, which then triggers the existing `validate_api_key_presence`
+/// error if no usable key emerged from any layer.
+fn apply_standard_env_var_fallback(config: &mut TribalConfig) {
+    apply_stage_fallback(&mut config.embedding.api_key, config.embedding.provider);
+    apply_stage_fallback(
+        &mut config.inference.extraction.api_key,
+        config.inference.extraction.provider,
+    );
+    apply_stage_fallback(
+        &mut config.inference.triage.api_key,
+        config.inference.triage.provider,
+    );
+    apply_stage_fallback(
+        &mut config.inference.relation.api_key,
+        config.inference.relation.provider,
+    );
+}
+
+fn apply_stage_fallback(api_key: &mut Option<String>, provider: ProviderKind) {
+    if api_key.is_none()
+        && provider.requires_api_key()
+        && let Some(name) = provider.standard_env_var_name()
+        && let Ok(value) = std::env::var(name)
+    {
+        *api_key = Some(value);
     }
 }
 
@@ -595,6 +630,118 @@ prompts:
             let config =
                 load_config(path.to_str().unwrap(), Some(overrides), Some(&defaults)).unwrap();
             assert_eq!(config.database.url, "postgres://cli-wins/tribal");
+            Ok(())
+        });
+    }
+
+    // -- Standard provider env-var fallback (closes #144) --------------------
+
+    #[test]
+    fn test_openai_api_key_fallback_file_wins() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                "embedding:\n  provider: openai\n  api_key: \"from-file\"\n",
+            )?;
+            jail.set_env("OPENAI_API_KEY", "from-standard-env");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(config.embedding.api_key.as_deref(), Some("from-file"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_tribal_env_api_key_beats_standard_env() {
+        Jail::expect_with(|jail| {
+            jail.create_file("tribal.yaml", "embedding:\n  provider: openai\n")?;
+            jail.set_env("TRIBAL_EMBEDDING__API_KEY", "from-tribal-env");
+            jail.set_env("OPENAI_API_KEY", "from-standard-env");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(
+                config.embedding.api_key.as_deref(),
+                Some("from-tribal-env"),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openai_api_key_satisfies_validation() {
+        Jail::expect_with(|jail| {
+            jail.create_file("tribal.yaml", "embedding:\n  provider: openai\n")?;
+            jail.set_env("OPENAI_API_KEY", "from-standard-env");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(
+                config.embedding.api_key.as_deref(),
+                Some("from-standard-env"),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_mixed_provider_mixed_stage_fallback() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "tribal.yaml",
+                r"
+embedding:
+  provider: openai
+inference:
+  triage:
+    provider: anthropic
+",
+            )?;
+            jail.set_env("OPENAI_API_KEY", "openai-key");
+            jail.set_env("ANTHROPIC_API_KEY", "anthropic-key");
+
+            let path = jail.directory().join("tribal.yaml");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(config.embedding.api_key.as_deref(), Some("openai-key"));
+            assert_eq!(
+                config.inference.triage.api_key.as_deref(),
+                Some("anthropic-key"),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_no_key_providers_ignore_all_standard_env_vars() {
+        Jail::expect_with(|jail| {
+            // Set every standard env var that any provider exposes, so the
+            // sweep below covers each `ProviderKind` against the full set.
+            for kind in ProviderKind::ALL {
+                if let Some(name) = kind.standard_env_var_name() {
+                    jail.set_env(name, "should-be-ignored");
+                }
+            }
+
+            // For every provider that does not require an API key, the
+            // fallback must leave `api_key` as `None`.
+            for provider in ProviderKind::ALL
+                .into_iter()
+                .filter(|k| !k.requires_api_key())
+            {
+                jail.create_file(
+                    "tribal.yaml",
+                    &format!("embedding:\n  provider: {provider}\n"),
+                )?;
+                let path = jail.directory().join("tribal.yaml");
+                let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+                assert_eq!(config.embedding.provider, provider);
+                assert!(
+                    config.embedding.api_key.is_none(),
+                    "{provider} should not consume any standard env var, got {:?}",
+                    config.embedding.api_key,
+                );
+            }
             Ok(())
         });
     }
