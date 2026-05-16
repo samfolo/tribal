@@ -94,7 +94,7 @@ pub(super) fn mcp_snippet(
     project: &Project,
     entry: &serde_json::Value,
 ) -> io::Result<()> {
-    let key = snippet_key(project);
+    let key = snippet_key(project.git_remote());
     let wrapped = serde_json::json!({
         "mcpServers": {
             (key): entry,
