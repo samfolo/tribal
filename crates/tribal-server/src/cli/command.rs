@@ -95,8 +95,17 @@ impl GlobalArgs {
 /// Available subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Start the MCP server.
+    /// Bootstrap a project end-to-end: database setup, token, project
+    /// registration, and MCP wire-up snippet in one invocation.
     #[command(display_order = 0)]
+    Bootstrap {
+        /// Arguments for the bootstrap subcommand.
+        #[command(flatten)]
+        args: BootstrapArgs,
+    },
+
+    /// Start the MCP server.
+    #[command(display_order = 1)]
     Serve {
         /// Arguments for the serve subcommand.
         #[command(flatten)]
@@ -104,7 +113,7 @@ pub enum Command {
     },
 
     /// Run first-time database setup and migrations.
-    #[command(display_order = 1)]
+    #[command(display_order = 2)]
     Setup {
         /// Arguments for the setup subcommand.
         #[command(flatten)]
@@ -112,14 +121,15 @@ pub enum Command {
     },
 
     /// Manage projects.
-    #[command(subcommand, display_order = 2)]
+    #[command(subcommand, display_order = 3)]
     Project(ProjectCommand),
 
     /// Manage authentication tokens.
-    #[command(subcommand, display_order = 3)]
-    Token(TokenCommand),
-    /// Interact with the resolved configuration.
     #[command(subcommand, display_order = 4)]
+    Token(TokenCommand),
+
+    /// Interact with the resolved configuration.
+    #[command(subcommand, display_order = 5)]
     Config(ConfigCommand),
 }
 
@@ -272,11 +282,6 @@ pub struct ProviderArgs {
     pub inference_relation_model: Option<String>,
 }
 
-// Allowed dead-code: consumed by the `tribal bootstrap` subcommand.
-// Tests exercise this impl directly, but `#[cfg(test)]` usage does not
-// satisfy the production-side reachability check. Remove the annotation
-// when bootstrap flattens [`ProviderArgs`].
-#[allow(dead_code)]
 impl ProviderArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
@@ -321,10 +326,6 @@ impl ProviderArgs {
 /// Projects a `(provider, model)` pair into an
 /// [`InferenceStageCliOverrides`], returning `None` when both are absent so
 /// the subtree is omitted from the figment overlay.
-//
-// Allowed dead-code: called only by [`ProviderArgs::into_cli_overrides`];
-// removed alongside that impl when `tribal bootstrap` flattens the args.
-#[allow(dead_code)]
 fn inference_stage_overrides(
     provider: Option<ProviderKind>,
     model: Option<String>,
@@ -349,11 +350,6 @@ pub struct TelemetryArgs {
     pub telemetry_otlp_endpoint: Option<String>,
 }
 
-// Allowed dead-code: consumed by the `tribal bootstrap` subcommand.
-// Tests exercise this impl directly, but `#[cfg(test)]` usage does not
-// satisfy the production-side reachability check. Remove the annotation
-// when bootstrap flattens [`TelemetryArgs`].
-#[allow(dead_code)]
 impl TelemetryArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     pub fn into_cli_overrides(self) -> CliOverrides {
@@ -364,6 +360,97 @@ impl TelemetryArgs {
             });
         CliOverrides {
             telemetry,
+            ..CliOverrides::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `bootstrap` subcommand.
+///
+/// Flattens [`DatabaseArgs`], [`ProviderArgs`], and [`TelemetryArgs`]
+/// alongside its own session-scoped flags so a single invocation can mint
+/// a token, register a project, and emit the wire-up snippet.
+#[derive(Debug, Args)]
+pub struct BootstrapArgs {
+    /// Transport mode for the generated MCP config snippet. Controls
+    /// the snippet shape: stdio uses `command`/`args`, while http and
+    /// sse use `url` with optional `headers`. Defaults to stdio.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub transport: Option<TransportKind>,
+
+    /// Git remote URL to register. Detected from the current repository
+    /// if omitted.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub remote: Option<String>,
+
+    /// Human-friendly project name. Derived from the git remote path
+    /// if omitted.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub name: Option<String>,
+
+    /// Principal key to associate with the bearer token (e.g.
+    /// `user:sam`). Defaults to `principal:local` if omitted; the
+    /// `principal:local` row is always ensured regardless.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub principal: Option<String>,
+
+    /// Token lifetime in hours. Overrides the config default for this
+    /// token only.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub ttl: Option<u64>,
+
+    /// Emit a single JSON object describing the resolved wire-up
+    /// (bearer token, project, MCP snippet) instead of the polished
+    /// human output. Suitable for scripting.
+    #[arg(long, help_heading = "Output")]
+    pub json: bool,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+
+    /// Provider and model selection.
+    #[command(flatten)]
+    pub provider: ProviderArgs,
+
+    /// Telemetry options.
+    #[command(flatten)]
+    pub telemetry: TelemetryArgs,
+}
+
+impl BootstrapArgs {
+    /// Builds [`CliOverrides`] by delegating to each flattened arg's
+    /// own impl and overlaying the populated subtrees.
+    ///
+    /// Each constituent `into_cli_overrides` populates only its own
+    /// section, so combining them is a flat field-by-field assembly
+    /// rather than a deep merge.
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        let Self {
+            transport: _,
+            remote: _,
+            name: _,
+            principal: _,
+            ttl: _,
+            json: _,
+            database,
+            provider,
+            telemetry,
+        } = self;
+
+        let database = database.into_cli_overrides();
+        let provider = provider.into_cli_overrides();
+        let telemetry = telemetry.into_cli_overrides();
+
+        CliOverrides {
+            database: database.database,
+            embedding: provider.embedding,
+            inference: provider.inference,
+            telemetry: telemetry.telemetry,
             ..CliOverrides::default()
         }
     }

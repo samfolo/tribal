@@ -32,7 +32,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 /// Default branch name used when `--branch` is not provided.
-const DEFAULT_BRANCH: &str = "main";
+pub(crate) const DEFAULT_BRANCH: &str = "main";
 
 /// Pool name for the register connection.
 const POOL_NAME_REGISTER: &str = "register";
@@ -126,18 +126,18 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
 
 /// Output options resolved from CLI flags before entering the async
 /// flow.
-struct OutputOptions<'a> {
-    json: bool,
-    transport: TransportKind,
-    auth: Option<&'a Auth>,
-    skip_validation: bool,
-    config_path: &'a Path,
+pub(crate) struct OutputOptions<'a> {
+    pub(crate) json: bool,
+    pub(crate) transport: TransportKind,
+    pub(crate) auth: Option<&'a Auth>,
+    pub(crate) skip_validation: bool,
+    pub(crate) config_path: &'a Path,
 }
 
 /// Connects to the database, inserts (or finds) the project, optionally
 /// validates the token, prints the result, and returns the registered
 /// project alongside the JSON-shaped MCP server entry.
-async fn run_async(
+pub(crate) async fn run_async(
     config: &TribalConfig,
     git_remote: &GitRemote,
     name: &str,
