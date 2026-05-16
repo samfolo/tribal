@@ -251,7 +251,7 @@ pub(crate) fn resolve_absolute_config_path(raw: &str) -> Result<PathBuf, AppErro
 /// the credentials path resolves through `$XDG_CONFIG_HOME` — a
 /// process-global the existing `run_async` convention deliberately
 /// avoids.
-pub(crate) fn persist_credentials(out: &mut dyn Write, token: &BearerToken) {
+pub fn persist_credentials(out: &mut dyn Write, token: &BearerToken) {
     let creds = Credentials::bearer(token.clone());
     let Err(err) = write_credentials(&creds) else {
         return;
