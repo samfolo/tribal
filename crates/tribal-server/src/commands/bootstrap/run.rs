@@ -107,12 +107,17 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
 /// `out_stdout` receives the `--json` payload (when requested);
 /// `out_stderr` receives the human hand-off and any persistence
 /// warnings.
+///
+/// # Errors
+///
+/// Returns an [`AppError`] if setup, project registration, or the
+/// hand-off write fails.
 //
 // Bootstrap orchestrates two composed commands and their session args,
 // so the parameter set is wide by nature. Bundling would create a
 // single-use struct heavier than the function it serves.
 #[allow(clippy::too_many_arguments)]
-async fn run_async(
+pub async fn run_async(
     config: &TribalConfig,
     config_path: &Path,
     principal_key: Option<&str>,

@@ -99,7 +99,12 @@ pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppE
 ///
 /// `out_stdout` receives the rendered JSON; `out_stderr` carries warnings
 /// (stdio `--token` ignored, permissions drift).
-async fn run_async(
+///
+/// # Errors
+///
+/// Returns an [`AppError`] if the database connection, project
+/// resolution, credentials read, or snippet write fails.
+pub async fn run_async(
     config: &TribalConfig,
     config_path: &Path,
     project_override: Option<String>,

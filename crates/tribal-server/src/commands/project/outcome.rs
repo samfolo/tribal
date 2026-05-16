@@ -12,7 +12,7 @@ use tribal_domain::{GitRemote, ProjectId};
 /// consumes it to compose its own polished presentation across the
 /// setup + register pair.
 #[derive(Debug)]
-pub(crate) struct RegisterOutcome {
+pub struct RegisterOutcome {
     /// Database id of the registered (or pre-existing) project.
     pub project_id: ProjectId,
     /// Human-friendly project name.

@@ -126,18 +126,23 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
 
 /// Output options resolved from CLI flags before entering the async
 /// flow.
-pub(crate) struct OutputOptions<'a> {
-    pub(crate) json: bool,
-    pub(crate) transport: TransportKind,
-    pub(crate) auth: Option<&'a Auth>,
-    pub(crate) skip_validation: bool,
-    pub(crate) config_path: &'a Path,
+pub struct OutputOptions<'a> {
+    pub json: bool,
+    pub transport: TransportKind,
+    pub auth: Option<&'a Auth>,
+    pub skip_validation: bool,
+    pub config_path: &'a Path,
 }
 
 /// Connects to the database, inserts (or finds) the project, optionally
 /// validates the token, prints the result, and returns the registered
 /// project alongside the JSON-shaped MCP server entry.
-pub(crate) async fn run_async(
+///
+/// # Errors
+///
+/// Returns an [`AppError`] if the database connection, token
+/// validation, project insertion, or output write fails.
+pub async fn run_async(
     config: &TribalConfig,
     git_remote: &GitRemote,
     name: &str,

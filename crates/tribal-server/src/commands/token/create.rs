@@ -65,7 +65,12 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
 // ---------------------------------------------------------------------------
 
 /// Creates a new auth token for the resolved principal and returns it.
-async fn run_async(
+///
+/// # Errors
+///
+/// Returns an [`AppError`] if the database connection, principal
+/// lookup, or token insertion fails.
+pub async fn run_async(
     db_config: &DatabaseConfig,
     principal_key: &str,
     expires_at: DateTime<Utc>,
