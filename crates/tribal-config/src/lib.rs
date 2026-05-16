@@ -33,7 +33,7 @@ pub use error::ConfigError;
 pub use loader::load_config;
 pub use paths::{ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path};
 pub use redact::redact_secrets;
-pub use render::{render_minimal_config, render_persisted_config};
+pub use render::{ConfigPersistence, render_minimal_config, render_persisted_config};
 pub use sections::{
     Auth, AuthConfig, CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX,
     Credentials, CredentialsWriteError, DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_BIND_ADDRESS,
