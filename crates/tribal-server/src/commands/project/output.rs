@@ -4,6 +4,8 @@
 //! Status messages go to stderr; structured data (IDs, MCP snippets) to
 //! stdout.
 
+use std::path::Path;
+
 use tribal_config::{Auth, TransportKind};
 use tribal_domain::Project;
 
@@ -81,9 +83,10 @@ pub(super) fn mcp_snippet(
     project: &Project,
     transport: TransportKind,
     auth: Option<&Auth>,
-    bind_address: Option<&str>,
+    config_path: &Path,
+    advertised_url: &str,
 ) {
-    let entry = build_snippet_entry(project, transport, auth, bind_address);
+    let entry = build_snippet_entry(project, transport, auth, config_path, advertised_url);
     let key = snippet_key(project);
     let wrapped = serde_json::json!({
         "mcpServers": {
@@ -104,9 +107,10 @@ pub(super) fn json_snippet(
     project: &Project,
     transport: TransportKind,
     auth: Option<&Auth>,
-    bind_address: Option<&str>,
+    config_path: &Path,
+    advertised_url: &str,
 ) {
-    let entry = build_snippet_entry(project, transport, auth, bind_address);
+    let entry = build_snippet_entry(project, transport, auth, config_path, advertised_url);
     println!(
         "{}",
         serde_json::to_string_pretty(&entry).expect("JSON serialisation cannot fail"),

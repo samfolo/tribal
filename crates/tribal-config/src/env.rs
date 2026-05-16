@@ -17,6 +17,14 @@ pub const ENV_PROJECT_ID: &str = "TRIBAL_PROJECT_ID";
 /// Environment variable for the bearer token used in HTTP/SSE transport.
 pub const ENV_AUTH_TOKEN: &str = "TRIBAL_AUTH_TOKEN";
 
+/// Environment variable for the publicly-advertised MCP URL.
+///
+/// When set, overrides the bind-address-derived URL in HTTP/SSE
+/// `mcp-config` snippets. Intended for deployments behind a reverse
+/// proxy or load balancer where the URL clients should reach differs
+/// from the server's local bind address.
+pub const ENV_PUBLIC_MCP_URL: &str = "TRIBAL_PUBLIC_MCP_URL";
+
 /// Standard environment variable for the `OpenAI` API key.
 ///
 /// Consulted as a final fallback when no `TRIBAL_*__API_KEY` or

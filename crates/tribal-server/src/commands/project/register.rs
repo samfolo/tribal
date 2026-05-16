@@ -1,6 +1,6 @@
 //! Core register flow: entry point and async orchestration.
 
-use std::{str::FromStr, sync::Arc};
+use std::{path::Path, str::FromStr, sync::Arc};
 
 use tribal_config::{Auth, ENV_AUTH_TOKEN, TransportKind, TribalConfig, load_config};
 use tribal_db::{
@@ -15,10 +15,11 @@ use crate::{
     cli::ProjectRegisterArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
-        PROJECT_SCHEMA_VERSION,
+        PROJECT_SCHEMA_VERSION, resolve_absolute_config_path,
     },
     error::AppError,
     git::detect_git_remote,
+    output::resolved_advertised_url,
 };
 
 // ---------------------------------------------------------------------------
@@ -84,6 +85,7 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
         Some(cli_overrides),
         Some(&DATABASE_COMMAND_DEFAULTS),
     )?;
+    let absolute_config_path = resolve_absolute_config_path(config_path)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -95,6 +97,7 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
         transport,
         auth: auth.as_ref(),
         skip_validation,
+        config_path: &absolute_config_path,
     };
 
     rt.block_on(run_async(&config, &git_remote, &name, &branch, &opts))
@@ -111,6 +114,7 @@ struct OutputOptions<'a> {
     transport: TransportKind,
     auth: Option<&'a Auth>,
     skip_validation: bool,
+    config_path: &'a Path,
 }
 
 /// Connects to the database, inserts (or finds) the project, optionally
@@ -188,14 +192,26 @@ async fn run_async(
 
     // -- Output -------------------------------------------------------------
 
-    let bind_address = config.server.bind_address.as_deref();
+    let advertised_url = resolved_advertised_url(config);
 
     if opts.json {
-        output::json_snippet(&project, opts.transport, opts.auth, bind_address);
+        output::json_snippet(
+            &project,
+            opts.transport,
+            opts.auth,
+            opts.config_path,
+            &advertised_url,
+        );
     } else {
         output::registered(&project, already_existed);
         output::project_id(&project);
-        output::mcp_snippet(&project, opts.transport, opts.auth, bind_address);
+        output::mcp_snippet(
+            &project,
+            opts.transport,
+            opts.auth,
+            opts.config_path,
+            &advertised_url,
+        );
     }
 
     Ok(())

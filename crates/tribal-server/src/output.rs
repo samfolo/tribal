@@ -7,4 +7,4 @@
 
 mod mcp_config;
 
-pub(crate) use mcp_config::{build_snippet_entry, snippet_key};
+pub(crate) use mcp_config::{build_snippet_entry, resolved_advertised_url, snippet_key};
