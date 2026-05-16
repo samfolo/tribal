@@ -7,6 +7,7 @@
 #![deny(warnings)]
 #![warn(clippy::pedantic)]
 
+mod cli_overrides;
 mod divergence;
 mod env;
 mod error;
@@ -17,6 +18,10 @@ mod render;
 mod sections;
 mod validation;
 
+pub use cli_overrides::{
+    CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
+    InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
+};
 pub use divergence::{
     WARNING_CONFIG_UNPARSEABLE, WARNING_DATABASE_URL_DIVERGENCE, check_config_divergence,
 };
@@ -25,10 +30,7 @@ pub use env::{
     ENV_PROJECT_ID, ENV_PUBLIC_MCP_URL,
 };
 pub use error::ConfigError;
-pub use loader::{
-    CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
-    InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides, load_config,
-};
+pub use loader::load_config;
 pub use paths::{ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path};
 pub use redact::redact_secrets;
 pub use render::render_minimal_config;
