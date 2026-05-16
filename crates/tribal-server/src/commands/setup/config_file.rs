@@ -1,13 +1,13 @@
 //! Config file writing and divergence detection.
 //!
-//! Handles writing the minimal `tribal.yaml` on first run and detecting
-//! when the resolved configuration diverges from an existing file.
-//! YAML rendering and divergence comparison are delegated to
-//! `tribal-config`.
+//! Handles writing `tribal.yaml` on first run and detecting when the
+//! resolved configuration diverges from an existing file. YAML content
+//! is rendered by the caller; this module concerns itself only with the
+//! file-on-disk side of the contract.
 
 use std::path::Path;
 
-use tribal_config::{TribalConfig, check_config_divergence, render_minimal_config};
+use tribal_config::{TribalConfig, check_config_divergence};
 
 use crate::error::AppError;
 
@@ -41,24 +41,21 @@ pub(super) enum ConfigFileOutcome {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Writes the minimal config file if it does not already exist.
+/// Writes `content` to `config_path` if the file does not already exist.
 ///
-/// When the file exists, checks for configuration divergence and returns
-/// diagnostic messages for the caller to present. When the file does not
-/// exist, writes a minimal YAML containing only `database.url`.
-///
-/// Returns a [`ConfigFileOutcome`] describing what happened.
+/// When the file exists, the on-disk content is compared against the
+/// resolved `config` and any divergence is returned as warnings rather
+/// than overwriting. When the file does not exist, `content` is written
+/// verbatim — choice of YAML shape is the caller's.
 pub(super) async fn write_if_absent(
     config_path: &Path,
     config: &TribalConfig,
+    content: &str,
 ) -> Result<ConfigFileOutcome, AppError> {
     if tokio::fs::try_exists(config_path).await.unwrap_or(false) {
         let warnings = read_and_check_divergence(config_path, config).await;
         return Ok(ConfigFileOutcome::AlreadyExists { warnings });
     }
-
-    let content = render_minimal_config(&config.database.url)
-        .map_err(|source| AppError::Config { source })?;
 
     tokio::fs::write(config_path, content)
         .await
@@ -105,11 +102,12 @@ mod tests {
         let path = dir.path().join("tribal.yaml");
 
         let config = TribalConfig::default();
-        let outcome = write_if_absent(&path, &config).await.unwrap();
+        let content = "database:\n  url: \"postgres://test/db\"\n";
+        let outcome = write_if_absent(&path, &config, content).await.unwrap();
 
         assert!(matches!(outcome, ConfigFileOutcome::Written { .. }));
-        let content = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(content.contains("database"));
+        let written = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(written, content);
     }
 
     #[tokio::test]
@@ -121,11 +119,11 @@ mod tests {
         tokio::fs::write(&path, original).await.unwrap();
 
         let config = TribalConfig::default();
-        let outcome = write_if_absent(&path, &config).await.unwrap();
+        let outcome = write_if_absent(&path, &config, "ignored\n").await.unwrap();
 
         assert!(matches!(outcome, ConfigFileOutcome::AlreadyExists { .. }));
-        let content = tokio::fs::read_to_string(&path).await.unwrap();
-        assert_eq!(content, original, "existing file should not be overwritten");
+        let written = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(written, original, "existing file should not be overwritten");
     }
 
     // -- Divergence via file read -------------------------------------------

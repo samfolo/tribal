@@ -7,7 +7,7 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
-use tribal_config::{PromptSource, TribalConfig, load_config, validate};
+use tribal_config::{ConfigPersistence, PromptSource, TribalConfig, load_config, validate};
 use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, full_access_scopes};
 
@@ -70,6 +70,7 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
         &absolute_config_path,
         principal.as_deref(),
         expires_at,
+        ConfigPersistence::Minimal,
         &mut stderr,
     ))?;
     persist_credentials(&mut stderr, &outcome.bearer_token);
@@ -91,6 +92,7 @@ pub(crate) async fn run_async(
     config_path: &Path,
     principal_key: Option<&str>,
     expires_at: DateTime<Utc>,
+    persistence: ConfigPersistence<'_>,
     out: &mut dyn Write,
 ) -> Result<SetupOutcome, AppError> {
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
@@ -161,7 +163,10 @@ pub(crate) async fn run_async(
 
     drop(conn);
 
-    let config_file_outcome = config_file::write_if_absent(config_path, config).await?;
+    let content = persistence
+        .render(config)
+        .map_err(|source| AppError::Config { source })?;
+    let config_file_outcome = config_file::write_if_absent(config_path, config, &content).await?;
     output::config_file(out, &config_file_outcome);
 
     let bearer_token: BearerToken =
@@ -233,9 +238,16 @@ mod tests {
         let expires_at = Utc::now() + chrono::Duration::hours(1);
 
         let mut buf: Vec<u8> = Vec::new();
-        run_async(&config, &config_path, None, expires_at, &mut buf)
-            .await
-            .expect("setup succeeds");
+        run_async(
+            &config,
+            &config_path,
+            None,
+            expires_at,
+            ConfigPersistence::Minimal,
+            &mut buf,
+        )
+        .await
+        .expect("setup succeeds");
 
         let captured = String::from_utf8(buf).expect("utf8");
         assert!(
@@ -272,9 +284,16 @@ mod tests {
         let expires_at = Utc::now() + chrono::Duration::hours(1);
 
         let mut buf: Vec<u8> = Vec::new();
-        run_async(&config, &config_path, None, expires_at, &mut buf)
-            .await
-            .expect("setup succeeds");
+        run_async(
+            &config,
+            &config_path,
+            None,
+            expires_at,
+            ConfigPersistence::Minimal,
+            &mut buf,
+        )
+        .await
+        .expect("setup succeeds");
 
         let captured = String::from_utf8(buf).expect("utf8");
         let expected = format!("prompt files: {}", prompts_dir.path().display());
@@ -313,7 +332,15 @@ mod tests {
         let expires_at = Utc::now() + chrono::Duration::hours(1);
 
         let mut buf: Vec<u8> = Vec::new();
-        let result = run_async(&config, &config_path, None, expires_at, &mut buf).await;
+        let result = run_async(
+            &config,
+            &config_path,
+            None,
+            expires_at,
+            ConfigPersistence::Minimal,
+            &mut buf,
+        )
+        .await;
         assert!(
             result.is_err(),
             "setup must fail when the database is unreachable",
@@ -355,9 +382,16 @@ mod tests {
         let expires_at = Utc::now() + chrono::Duration::hours(1);
 
         let mut buf: Vec<u8> = Vec::new();
-        let outcome = run_async(&config, &config_path, None, expires_at, &mut buf)
-            .await
-            .expect("setup succeeds");
+        let outcome = run_async(
+            &config,
+            &config_path,
+            None,
+            expires_at,
+            ConfigPersistence::Minimal,
+            &mut buf,
+        )
+        .await
+        .expect("setup succeeds");
 
         let captured = String::from_utf8(buf).expect("utf8");
         let normalised = normalise_setup_stderr(
@@ -396,6 +430,7 @@ mod tests {
             &config_path,
             Some("user:alice"),
             expires_at,
+            ConfigPersistence::Minimal,
             &mut buf,
         )
         .await
