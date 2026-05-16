@@ -2,9 +2,14 @@
 //!
 //! All user-facing presentation lives here, separated from business logic.
 //! Status messages go to stderr; structured data (IDs, MCP snippets) to
-//! stdout.
+//! stdout. The register-side helpers take explicit writers so callers
+//! that compose multiple commands (`bootstrap`) can redirect output to
+//! `io::sink` and assemble their own polished presentation.
 
-use std::path::Path;
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 
 use tribal_config::{Auth, TransportKind};
 use tribal_domain::Project;
@@ -52,40 +57,48 @@ const COL_SEPARATOR: &str = "  ";
 // Register output
 // ---------------------------------------------------------------------------
 
-/// Reports the resolved git remote to stderr.
-pub(super) fn git_remote_resolved(remote: &str) {
-    eprintln!("  git remote: {remote}");
+/// Reports the resolved git remote to the stderr-equivalent writer.
+pub(super) fn git_remote_resolved(out: &mut dyn Write, remote: &str) {
+    write_line(out, &format!("  git remote: {remote}"));
 }
 
-/// Reports a successful registration or existing project to stderr.
-pub(super) fn registered(project: &Project, already_existed: bool) {
+/// Reports a successful registration or existing project to the
+/// stderr-equivalent writer.
+pub(super) fn registered(out: &mut dyn Write, project: &Project, already_existed: bool) {
     let msg = if already_existed {
         PROJECT_ALREADY_EXISTS
     } else {
         PROJECT_REGISTERED
     };
-    eprintln!("  {msg}: {} ({})", project.name(), project.id());
+    write_line(
+        out,
+        &format!("  {msg}: {} ({})", project.name(), project.id()),
+    );
 }
 
-/// Prints the bare project ID to stdout.
+/// Writes the bare project ID to the stdout-equivalent writer.
 ///
-/// Emitted as the first stdout line so that scripted consumers can
-/// capture it via `tribal project register | head -1`.
-pub(super) fn project_id(project: &Project) {
-    println!("{}", project.id());
+/// Emitted as the first stdout line so scripted consumers can capture
+/// it via `tribal project register | head -1` — write failures
+/// propagate so a broken pipe surfaces rather than dropping the ID
+/// silently.
+pub(super) fn project_id(out: &mut dyn Write, project: &Project) -> io::Result<()> {
+    try_write_line(out, &project.id().to_string())
 }
 
-/// Prints the wrapped MCP configuration snippet to stdout.
+/// Writes the wrapped MCP configuration snippet to the
+/// stdout-equivalent writer.
 ///
 /// Includes the `mcpServers` wrapper and server key for human
 /// readability when copy-pasting.
 pub(super) fn mcp_snippet(
+    out: &mut dyn Write,
     project: &Project,
     transport: TransportKind,
     auth: Option<&Auth>,
     config_path: &Path,
     advertised_url: &str,
-) {
+) -> io::Result<()> {
     let entry = build_snippet_entry(project, transport, auth, config_path, advertised_url);
     let key = snippet_key(project);
     let wrapped = serde_json::json!({
@@ -93,28 +106,47 @@ pub(super) fn mcp_snippet(
             (key): entry,
         }
     });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&wrapped).expect("JSON serialisation cannot fail"),
-    );
+    let rendered = serde_json::to_string_pretty(&wrapped).expect("JSON serialisation cannot fail");
+    try_write_line(out, &rendered)
 }
 
-/// Prints the bare MCP server entry to stdout for piping into tools
-/// like `claude mcp add-json <name> <json>`.
+/// Writes the bare MCP server entry to the stdout-equivalent writer
+/// for piping into tools like `claude mcp add-json <name> <json>`.
 ///
 /// No `mcpServers` wrapper, no project ID, no stderr output.
 pub(super) fn json_snippet(
+    out: &mut dyn Write,
     project: &Project,
     transport: TransportKind,
     auth: Option<&Auth>,
     config_path: &Path,
     advertised_url: &str,
-) {
+) -> io::Result<()> {
     let entry = build_snippet_entry(project, transport, auth, config_path, advertised_url);
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&entry).expect("JSON serialisation cannot fail"),
-    );
+    let rendered = serde_json::to_string_pretty(&entry).expect("JSON serialisation cannot fail");
+    try_write_line(out, &rendered)
+}
+
+// ---------------------------------------------------------------------------
+// Writer helpers
+// ---------------------------------------------------------------------------
+
+/// Writes `line` followed by a newline, swallowing IO errors.
+///
+/// Suitable for progress lines where loss of output is not a correctness
+/// issue. For output the caller cannot afford to lose (e.g. the project
+/// ID feeding a downstream pipe), use [`try_write_line`].
+fn write_line(out: &mut dyn Write, line: &str) {
+    let _ = try_write_line(out, line);
+}
+
+/// Writes `line` followed by a newline, returning any IO failure.
+///
+/// Both flavours route through the same code path so that the eventual
+/// move to a CLI design system has a single point of substitution.
+fn try_write_line(out: &mut dyn Write, line: &str) -> io::Result<()> {
+    writeln!(out, "{line}")?;
+    out.flush()
 }
 
 // ---------------------------------------------------------------------------
@@ -188,4 +220,3 @@ pub(super) fn project_table(projects: &[Project]) {
         );
     }
 }
-
