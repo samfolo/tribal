@@ -4,8 +4,10 @@
 //! Status messages go to stderr; structured data (IDs, MCP snippets) to
 //! stdout.
 
-use tribal_config::{DEFAULT_BIND_ADDRESS, TransportKind};
+use tribal_config::{Auth, TransportKind};
 use tribal_domain::Project;
+
+use crate::output::{build_snippet_entry, snippet_key};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -78,10 +80,10 @@ pub(super) fn project_id(project: &Project) {
 pub(super) fn mcp_snippet(
     project: &Project,
     transport: TransportKind,
-    token: Option<&str>,
+    auth: Option<&Auth>,
     bind_address: Option<&str>,
 ) {
-    let entry = build_snippet_entry(project, transport, token, bind_address);
+    let entry = build_snippet_entry(project, transport, auth, bind_address);
     let key = snippet_key(project);
     let wrapped = serde_json::json!({
         "mcpServers": {
@@ -101,62 +103,14 @@ pub(super) fn mcp_snippet(
 pub(super) fn json_snippet(
     project: &Project,
     transport: TransportKind,
-    token: Option<&str>,
+    auth: Option<&Auth>,
     bind_address: Option<&str>,
 ) {
-    let entry = build_snippet_entry(project, transport, token, bind_address);
+    let entry = build_snippet_entry(project, transport, auth, bind_address);
     println!(
         "{}",
         serde_json::to_string_pretty(&entry).expect("JSON serialisation cannot fail"),
     );
-}
-
-/// Builds the MCP server entry for a project.
-///
-/// The shape varies by transport: stdio uses `command`/`args`, while
-/// HTTP and SSE use `url` with optional `headers`.
-fn build_snippet_entry(
-    project: &Project,
-    transport: TransportKind,
-    token: Option<&str>,
-    bind_address: Option<&str>,
-) -> serde_json::Value {
-    match transport {
-        TransportKind::Stdio => build_stdio_entry(project),
-        TransportKind::Http | TransportKind::Sse => build_network_entry(token, bind_address),
-    }
-}
-
-/// Builds a stdio-transport MCP server entry.
-fn build_stdio_entry(project: &Project) -> serde_json::Value {
-    serde_json::json!({
-        "command": "tribal",
-        "args": ["serve", "--project", project.id().to_string()]
-    })
-}
-
-/// Builds an HTTP or SSE transport MCP server entry.
-///
-/// The project ID is not included — it is configured on the server
-/// side via `tribal serve --project <id>`, not in the client config.
-fn build_network_entry(token: Option<&str>, bind_address: Option<&str>) -> serde_json::Value {
-    let addr = bind_address.unwrap_or(DEFAULT_BIND_ADDRESS);
-    let url = format!("http://{addr}/mcp");
-
-    let mut entry = serde_json::json!({ "url": url });
-
-    if let Some(tok) = token {
-        entry["headers"] = serde_json::json!({
-            "Authorization": format!("Bearer {tok}"),
-        });
-    }
-
-    entry
-}
-
-/// The MCP server key: `tribal@namespace/repo`.
-fn snippet_key(project: &Project) -> String {
-    format!("tribal@{}", project.git_remote().path())
 }
 
 // ---------------------------------------------------------------------------
@@ -231,103 +185,3 @@ pub(super) fn project_table(projects: &[Project]) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use tribal_domain::{GitRemote, ProjectId};
-    use tribal_test_utils::a_project;
-
-    use super::*;
-
-    // -- Stdio snippet --------------------------------------------------------
-
-    #[test]
-    fn test_build_stdio_entry_structure() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry = build_snippet_entry(&project, TransportKind::Stdio, None, None);
-        assert_eq!(entry["command"], "tribal");
-
-        let args = entry["args"].as_array().expect("args should be an array");
-        assert_eq!(args[0], "serve");
-        assert_eq!(args[1], "--project");
-
-        let project_arg = args[2].as_str().expect("project arg should be a string");
-        let _: ProjectId = project_arg
-            .parse()
-            .expect("project arg should be a valid ProjectId");
-    }
-
-    // -- Network snippet ------------------------------------------------------
-
-    #[test]
-    fn test_build_http_entry_with_token() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry =
-            build_snippet_entry(&project, TransportKind::Http, Some("test-token-abc"), None);
-
-        assert_eq!(entry["url"], format!("http://{DEFAULT_BIND_ADDRESS}/mcp"));
-        assert_eq!(entry["headers"]["Authorization"], "Bearer test-token-abc");
-        assert!(
-            entry.get("command").is_none(),
-            "network entry must not have command"
-        );
-    }
-
-    #[test]
-    fn test_build_http_entry_custom_bind_address() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry = build_snippet_entry(
-            &project,
-            TransportKind::Http,
-            Some("tok"),
-            Some("10.0.0.1:9999"),
-        );
-
-        assert_eq!(entry["url"], "http://10.0.0.1:9999/mcp");
-    }
-
-    #[test]
-    fn test_build_http_entry_without_token_omits_headers() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry = build_snippet_entry(&project, TransportKind::Http, None, None);
-        assert!(entry.get("headers").is_none(), "no headers without token");
-    }
-
-    #[test]
-    fn test_build_sse_entry_same_shape_as_http() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry = build_snippet_entry(&project, TransportKind::Sse, Some("tok"), None);
-
-        assert_eq!(entry["url"], format!("http://{DEFAULT_BIND_ADDRESS}/mcp"));
-        assert_eq!(entry["headers"]["Authorization"], "Bearer tok");
-    }
-
-    // -- Snippet key ----------------------------------------------------------
-
-    #[test]
-    fn test_snippet_key_preserves_slashes() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("gitlab.com", "org/sub/repo", None))
-            .build();
-
-        assert_eq!(snippet_key(&project), "tribal@org/sub/repo");
-    }
-}
