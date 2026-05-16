@@ -1,0 +1,34 @@
+  setup complete
+  principal: principal:local
+  project registered: widgets (proj_00000000-0000-0000-0000-000000000002)
+  config file: written to /etc/tribal/tribal.yaml
+
+Next steps:
+  1. Verify the install:
+       tribal check
+       tribal check --providers
+
+  2. Wire up your MCP harness:
+       claude mcp add-json tribal@acme/widgets '{"args":["--config","/etc/tribal/tribal.yaml","serve","--project","proj_00000000-0000-0000-0000-000000000002"],"command":"tribal","type":"stdio"}'
+
+MCP server entry:
+
+{
+  "mcpServers": {
+    "tribal@acme/widgets": {
+      "args": [
+        "--config",
+        "/etc/tribal/tribal.yaml",
+        "serve",
+        "--project",
+        "proj_00000000-0000-0000-0000-000000000002"
+      ],
+      "command": "tribal",
+      "type": "stdio"
+    }
+  }
+}
+
+Save this token (it will not be shown again):
+
+  test-bearer-token
