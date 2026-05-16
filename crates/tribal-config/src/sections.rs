@@ -19,8 +19,10 @@ mod worker;
 
 pub use auth::AuthConfig;
 pub use credentials::{
-    Auth, CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials,
-    CredentialsWriteError, write_credentials,
+    Auth, CREDENTIALS_PERMISSIONS_DRIFT_PREFIX, CREDENTIALS_PERMISSIONS_DRIFT_SUFFIX,
+    CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials,
+    CredentialsPermissions, CredentialsReadError, CredentialsWriteError, LoadedCredentials,
+    read_credentials, write_credentials,
 };
 pub use database::DatabaseConfig;
 pub use discovery::{
