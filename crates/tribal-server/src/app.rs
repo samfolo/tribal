@@ -65,6 +65,9 @@ impl App {
         };
 
         match command {
+            Command::Bootstrap { args } => {
+                commands::bootstrap(&self.cli.global.config, args)?;
+            }
             Command::Setup { args } => {
                 commands::setup(&self.cli.global.config, args)?;
             }

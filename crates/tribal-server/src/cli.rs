@@ -7,7 +7,7 @@ mod command;
 mod styles;
 
 pub use command::{
-    Cli, Command, ConfigCommand, ConfigShowArgs, ProjectCommand, ProjectListArgs,
+    BootstrapArgs, Cli, Command, ConfigCommand, ConfigShowArgs, ProjectCommand, ProjectListArgs,
     ProjectRegisterArgs, ServeArgs, SetupArgs, TokenCommand, TokenCreateArgs, TokenListArgs,
     TokenRevokeAllArgs, TokenRevokeArgs,
 };

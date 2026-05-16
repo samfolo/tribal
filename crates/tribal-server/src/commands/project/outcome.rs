@@ -11,9 +11,6 @@ use tribal_domain::{GitRemote, ProjectId};
 /// discards this value after printing its own output; `bootstrap`
 /// consumes it to compose its own polished presentation across the
 /// setup + register pair.
-// Fields are read by `bootstrap::run_async` in Phase 5 of issue #152.
-// Remove this allow when bootstrap lands.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct RegisterOutcome {
     /// Database id of the registered (or pre-existing) project.

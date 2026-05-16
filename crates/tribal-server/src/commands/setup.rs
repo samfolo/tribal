@@ -10,4 +10,4 @@ mod outcome;
 mod output;
 mod run;
 
-pub(crate) use run::run;
+pub(crate) use run::{run, run_async};
