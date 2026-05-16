@@ -1,0 +1,1 @@
+  project registered: widgets (<PROJECT_ID>)

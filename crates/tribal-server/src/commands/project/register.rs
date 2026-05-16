@@ -295,7 +295,18 @@ fn resolve_git_remote(explicit: Option<&str>) -> Result<GitRemote, AppError> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use tribal_test_utils::{
+        assert_json_snapshot, assert_text_snapshot, serial_lock, test_context, truncate_all_tables,
+    };
+
     use super::*;
+
+    /// A representative absolute config path for fixtures.
+    fn fixture_config_path() -> PathBuf {
+        PathBuf::from("/etc/tribal/tribal.yaml")
+    }
 
     #[test]
     fn test_resolve_git_remote_explicit_valid() {
@@ -311,5 +322,96 @@ mod tests {
             matches!(err, AppError::GitDetection { .. }),
             "expected GitDetection, got: {err}",
         );
+    }
+
+    // -- Snapshot locks -----------------------------------------------------
+
+    #[tokio::test]
+    async fn test_register_stderr_stdio_matches_snapshot() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("create pool");
+        let mut conn = pool.acquire().await.expect("acquire");
+        truncate_all_tables(&mut conn).await;
+        drop(conn);
+
+        let mut config = TribalConfig::minimum_valid(ctx.database_url());
+        config.database.max_connect_attempts = 1;
+        let git_remote = GitRemote::from_parts("github.com", "acme/widgets", None);
+        let config_path = fixture_config_path();
+        let opts = OutputOptions {
+            json: false,
+            transport: TransportKind::Stdio,
+            auth: None,
+            skip_validation: false,
+            config_path: &config_path,
+        };
+
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        let outcome = run_async(
+            &config,
+            &git_remote,
+            "widgets",
+            "main",
+            &opts,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await
+        .expect("register succeeds");
+
+        let captured = String::from_utf8(stderr).expect("utf8");
+        let normalised = captured.replace(&outcome.project_id.to_string(), "<PROJECT_ID>");
+        assert_text_snapshot!(
+            &normalised,
+            "src/commands/project/snapshots/stderr-stdio.txt"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_json_http_matches_snapshot() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("create pool");
+        let mut conn = pool.acquire().await.expect("acquire");
+        truncate_all_tables(&mut conn).await;
+        drop(conn);
+
+        let mut config = TribalConfig::minimum_valid(ctx.database_url());
+        config.database.max_connect_attempts = 1;
+        let git_remote = GitRemote::from_parts("github.com", "acme/widgets", None);
+        let config_path = fixture_config_path();
+        let auth = Auth::Bearer {
+            token: "test-bearer-token"
+                .parse()
+                .expect("test token parses as BearerToken"),
+        };
+        let opts = OutputOptions {
+            json: true,
+            transport: TransportKind::Http,
+            auth: Some(&auth),
+            skip_validation: true,
+            config_path: &config_path,
+        };
+
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        run_async(
+            &config,
+            &git_remote,
+            "widgets",
+            "main",
+            &opts,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await
+        .expect("register succeeds");
+
+        let captured = String::from_utf8(stdout).expect("utf8");
+        let entry: serde_json::Value =
+            serde_json::from_str(&captured).expect("stdout is valid JSON");
+        assert_json_snapshot!(&entry, "src/commands/project/snapshots/json-http.json");
     }
 }
