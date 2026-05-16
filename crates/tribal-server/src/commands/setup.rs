@@ -11,5 +11,4 @@ mod output;
 mod run;
 
 pub(crate) use config_file::ConfigFileOutcome;
-pub(crate) use run::run;
-pub use run::run_async;
+pub(crate) use run::{run, run_async};

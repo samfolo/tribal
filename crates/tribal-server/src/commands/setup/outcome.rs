@@ -11,7 +11,7 @@ use super::config_file::ConfigFileOutcome;
 /// on `config_file` to decide whether user-supplied flags reached disk
 /// or whether an existing file silently blocked them.
 #[derive(Debug)]
-pub struct SetupOutcome {
+pub(crate) struct SetupOutcome {
     /// The bearer token in plain text.
     pub bearer_token: BearerToken,
     /// Key of the principal the token was issued against.

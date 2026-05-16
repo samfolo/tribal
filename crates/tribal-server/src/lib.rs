@@ -14,8 +14,7 @@ mod transport;
 
 pub use app::App;
 pub use commands::{
-    bootstrap_async, common::persist_credentials, mcp_config_async, register_async, setup_async,
-    token_create_async,
+    bootstrap_async, common::persist_credentials, mcp_config_async, token_create_async,
 };
 pub use error::AppError;
 pub use orchestration::{ServerHandle, start_server};

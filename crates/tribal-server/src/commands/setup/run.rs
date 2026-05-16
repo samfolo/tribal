@@ -87,13 +87,7 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
 /// `Some(key)` and `key != LOCAL_PRINCIPAL_KEY`, the token is issued
 /// against that principal; `principal:local` is still ensured to satisfy
 /// the stdio-transport invariant in [`tribal_mcp::auth::Authenticator`].
-///
-/// # Errors
-///
-/// Returns an [`AppError`] if directory creation, database connection,
-/// migrations, prompt-file IO, principal lookup, token insertion, or
-/// the config-file write fails.
-pub async fn run_async(
+pub(crate) async fn run_async(
     config: &TribalConfig,
     config_path: &Path,
     principal_key: Option<&str>,
