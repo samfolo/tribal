@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use tribal_config::{Auth, DEFAULT_BIND_ADDRESS, ENV_PUBLIC_MCP_URL, TransportKind, TribalConfig};
-use tribal_domain::{GitRemote, Project};
+use tribal_domain::{GitRemote, ProjectId};
 
 /// Builds the MCP server entry for a project.
 ///
@@ -17,14 +17,14 @@ use tribal_domain::{GitRemote, Project};
 /// inner builders to update via exhaustive match rather than silently
 /// falling through to a "bearer-shaped" assumption.
 pub(crate) fn build_snippet_entry(
-    project: &Project,
+    project_id: ProjectId,
     transport: TransportKind,
     auth: Option<&Auth>,
     config_path: &Path,
     advertised_url: &str,
 ) -> serde_json::Value {
     match transport {
-        TransportKind::Stdio => build_stdio_entry(project, config_path),
+        TransportKind::Stdio => build_stdio_entry(project_id, config_path),
         TransportKind::Http | TransportKind::Sse => {
             build_network_entry(transport, auth, advertised_url)
         }
@@ -34,7 +34,7 @@ pub(crate) fn build_snippet_entry(
 /// Builds a stdio-transport MCP server entry, propagating the resolved
 /// absolute `config_path` so a harness-spawned `tribal serve` reads the
 /// same config the human used.
-fn build_stdio_entry(project: &Project, config_path: &Path) -> serde_json::Value {
+fn build_stdio_entry(project_id: ProjectId, config_path: &Path) -> serde_json::Value {
     serde_json::json!({
         "type": "stdio",
         "command": "tribal",
@@ -43,7 +43,7 @@ fn build_stdio_entry(project: &Project, config_path: &Path) -> serde_json::Value
             config_path.display().to_string(),
             "serve",
             "--project",
-            project.id().to_string(),
+            project_id.to_string(),
         ],
     })
 }
@@ -139,7 +139,7 @@ mod tests {
             .build();
 
         let entry = build_snippet_entry(
-            &project,
+            project.id(),
             TransportKind::Stdio,
             None,
             &config_path(),
@@ -168,7 +168,7 @@ mod tests {
         let custom = PathBuf::from("/var/lib/tribal/alt.yaml");
 
         let entry = build_snippet_entry(
-            &project,
+            project.id(),
             TransportKind::Stdio,
             None,
             &custom,
@@ -188,7 +188,7 @@ mod tests {
         let auth = bearer("test-token-abc");
 
         let entry = build_snippet_entry(
-            &project,
+            project.id(),
             TransportKind::Http,
             Some(&auth),
             &config_path(),
@@ -213,7 +213,7 @@ mod tests {
         let url = "https://tribal.example.com/mcp";
 
         let entry = build_snippet_entry(
-            &project,
+            project.id(),
             TransportKind::Http,
             Some(&auth),
             &config_path(),
@@ -230,7 +230,7 @@ mod tests {
             .build();
 
         let entry = build_snippet_entry(
-            &project,
+            project.id(),
             TransportKind::Http,
             None,
             &config_path(),
@@ -248,7 +248,7 @@ mod tests {
         let auth = bearer("tok");
 
         let entry = build_snippet_entry(
-            &project,
+            project.id(),
             TransportKind::Sse,
             Some(&auth),
             &config_path(),
