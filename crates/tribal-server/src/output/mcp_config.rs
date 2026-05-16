@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use tribal_config::{Auth, DEFAULT_BIND_ADDRESS, ENV_PUBLIC_MCP_URL, TransportKind, TribalConfig};
-use tribal_domain::Project;
+use tribal_domain::{GitRemote, Project};
 
 /// Builds the MCP server entry for a project.
 ///
@@ -73,8 +73,8 @@ fn build_network_entry(
 }
 
 /// The MCP server key: `tribal@namespace/repo`.
-pub(crate) fn snippet_key(project: &Project) -> String {
-    format!("tribal@{}", project.git_remote().path())
+pub(crate) fn snippet_key(git_remote: &GitRemote) -> String {
+    format!("tribal@{}", git_remote.path())
 }
 
 /// Resolves the URL clients should reach for HTTP/SSE transports.
@@ -264,11 +264,8 @@ mod tests {
 
     #[test]
     fn test_snippet_key_preserves_slashes() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("gitlab.com", "org/sub/repo", None))
-            .build();
-
-        assert_eq!(snippet_key(&project), "tribal@org/sub/repo");
+        let remote = GitRemote::from_parts("gitlab.com", "org/sub/repo", None);
+        assert_eq!(snippet_key(&remote), "tribal@org/sub/repo");
     }
 
     // -- Advertised URL resolution -------------------------------------------
