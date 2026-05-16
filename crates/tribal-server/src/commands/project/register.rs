@@ -214,7 +214,7 @@ pub(crate) async fn run_async(
 
     let advertised_url = resolved_advertised_url(config);
     let mcp_config = build_snippet_entry(
-        &project,
+        project.id(),
         opts.transport,
         opts.auth,
         opts.config_path,

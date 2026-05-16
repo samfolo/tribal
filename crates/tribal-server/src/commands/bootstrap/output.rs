@@ -284,7 +284,7 @@ mod tests {
         let project = fixture_project();
         let path = fixture_config_path();
         build_snippet_entry(
-            &project,
+            project.id(),
             transport,
             auth,
             &path,
