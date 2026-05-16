@@ -2,12 +2,14 @@
 
 use tribal_domain::{BearerToken, PrincipalId};
 
+use super::config_file::ConfigFileOutcome;
+
 /// Result of [`super::run::run`] when setup completes successfully.
 ///
-/// Holds the freshly-minted bearer token and the principal it was
-/// issued against. The standalone `setup` wrapper discards this value
-/// after printing instructions; `bootstrap` consumes it to thread the
-/// credentials onward into project registration.
+/// Holds the freshly-minted bearer token, the principal it was issued
+/// against, and the outcome of the config-file write. Callers dispatch
+/// on `config_file` to decide whether user-supplied flags reached disk
+/// or whether an existing file silently blocked them.
 #[derive(Debug)]
 pub(crate) struct SetupOutcome {
     /// The bearer token in plain text.
@@ -16,4 +18,6 @@ pub(crate) struct SetupOutcome {
     pub principal_key: String,
     /// Database id of the principal the token was issued against.
     pub principal_id: PrincipalId,
+    /// What happened to the config file during this run.
+    pub config_file: ConfigFileOutcome,
 }

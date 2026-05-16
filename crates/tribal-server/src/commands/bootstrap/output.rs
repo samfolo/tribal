@@ -7,10 +7,10 @@
 use std::io::{self, Write};
 
 use serde_json::Value;
-use tribal_config::TransportKind;
+use tribal_config::{ConfigPersistence, TransportKind};
 use tribal_domain::{BearerToken, GitRemote, PrincipalId, ProjectId};
 
-use crate::output::snippet_key;
+use crate::{commands::setup::ConfigFileOutcome, output::snippet_key};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -25,15 +25,19 @@ const SAVE_TOKEN_HEADING: &str = "Save this token (it will not be shown again):"
 /// Heading for the inline MCP server entry.
 const MCP_ENTRY_HEADING: &str = "MCP server entry:";
 
+/// Prefix of the warning emitted when an existing config file blocks
+/// flag persistence. The full literal is composed with the resolved
+/// path as a runtime substitution.
+const FLAG_PERSISTENCE_BLOCKED_PREFIX: &str = "warning: tribal.yaml already exists at ";
+
+/// Suffix of [`FLAG_PERSISTENCE_BLOCKED_PREFIX`].
+const FLAG_PERSISTENCE_BLOCKED_SUFFIX: &str = "; supplied flags were not persisted. Edit the file or remove it and re-run to pin the resolved values.";
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
 
 /// Bundle of everything the bootstrap renderers need.
-///
-/// Flat by design: the renderer is the last consumer in the chain, so
-/// it reads straight from the resolved values rather than holding a
-/// nested outcome graph.
 pub(super) struct Handoff<'a> {
     pub(super) bearer_token: &'a BearerToken,
     pub(super) principal_key: &'a str,
@@ -42,8 +46,9 @@ pub(super) struct Handoff<'a> {
     pub(super) project_name: &'a str,
     pub(super) git_remote: &'a GitRemote,
     pub(super) transport: TransportKind,
-    pub(super) mcp_config: &'a Value,
-    pub(super) config_path: &'a str,
+    pub(super) mcp_entry: &'a Value,
+    pub(super) config_file: &'a ConfigFileOutcome,
+    pub(super) persistence: ConfigPersistence<'a>,
 }
 
 // ---------------------------------------------------------------------------
@@ -60,8 +65,8 @@ pub(super) fn write_json(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Resu
         "project_name": handoff.project_name,
         "git_remote": handoff.git_remote.as_str(),
         "transport": handoff.transport.to_string(),
-        "mcp_config": handoff.mcp_config,
-        "config_path": handoff.config_path,
+        "mcp_config": handoff.mcp_entry,
+        "config_path": handoff.config_file.path().display().to_string(),
     });
     let rendered = serde_json::to_string_pretty(&value).expect("JSON serialisation cannot fail");
     try_write_line(out, &rendered)
@@ -73,12 +78,30 @@ pub(super) fn write_json(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Resu
 
 /// Writes the bootstrap result as a polished hand-off on stderr.
 ///
-/// Status lines come first, then a transport-dependent action list,
-/// then the MCP entry. For stdio the bearer token appears as a
-/// stash-for-later block since it is not part of the wire-up snippet;
-/// for http/sse it is surfaced inside the action list because the user
-/// needs to export it before starting the server.
+/// An action-required warning leads when an existing config file
+/// blocked flag persistence. Status lines, the transport-dependent
+/// action list, and the MCP entry follow. For stdio the bearer token
+/// closes with a stash-for-later block; for http/sse the token appears
+/// inside the action list since the user needs to export it before
+/// starting the server.
 pub(super) fn write_human(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Result<()> {
+    match handoff.persistence {
+        ConfigPersistence::Persisted(_) => match handoff.config_file {
+            ConfigFileOutcome::AlreadyExists { path, .. } => {
+                try_write_line(
+                    out,
+                    &format!(
+                        "{FLAG_PERSISTENCE_BLOCKED_PREFIX}{}{FLAG_PERSISTENCE_BLOCKED_SUFFIX}",
+                        path.display(),
+                    ),
+                )?;
+                try_write_line(out, "")?;
+            }
+            ConfigFileOutcome::Written { .. } => {}
+        },
+        ConfigPersistence::Minimal => {}
+    }
+
     write_status_lines(out, handoff)?;
     try_write_line(out, "")?;
     write_action_list(out, handoff)?;
@@ -101,7 +124,15 @@ fn write_status_lines(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Result<
             handoff.project_name, handoff.project_id,
         ),
     )?;
-    try_write_line(out, &format!("  config file: {}", handoff.config_path))
+    let config_status = match handoff.config_file {
+        ConfigFileOutcome::Written { path } => {
+            format!("  config file: written to {}", path.display())
+        }
+        ConfigFileOutcome::AlreadyExists { path, .. } => {
+            format!("  config file: already exists at {}", path.display())
+        }
+    };
+    try_write_line(out, &config_status)
 }
 
 fn write_action_list(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Result<()> {
@@ -129,7 +160,9 @@ fn write_action_list(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Result<(
                 out,
                 &format!(
                     "       tribal --config {} serve --transport {} --project {}",
-                    handoff.config_path, handoff.transport, handoff.project_id,
+                    handoff.config_file.path().display(),
+                    handoff.transport,
+                    handoff.project_id,
                 ),
             )?;
             try_write_line(out, "")?;
@@ -141,8 +174,7 @@ fn write_action_list(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Result<(
     try_write_line(out, "       tribal check --providers")?;
     try_write_line(out, "")?;
     step += 1;
-    let snippet =
-        serde_json::to_string(handoff.mcp_config).expect("JSON serialisation cannot fail");
+    let snippet = serde_json::to_string(handoff.mcp_entry).expect("JSON serialisation cannot fail");
     try_write_line(out, &format!("  {step}. Wire up your MCP harness:"))?;
     try_write_line(
         out,
@@ -159,7 +191,7 @@ fn write_mcp_entry(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Result<()>
     try_write_line(out, "")?;
     let wrapped = serde_json::json!({
         "mcpServers": {
-            snippet_key(handoff.git_remote): handoff.mcp_config,
+            snippet_key(handoff.git_remote): handoff.mcp_entry,
         }
     });
     let rendered = serde_json::to_string_pretty(&wrapped).expect("JSON serialisation cannot fail");

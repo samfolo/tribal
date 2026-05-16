@@ -169,7 +169,6 @@ async fn run_async(
 
     // -- Hand-off -----------------------------------------------------------
 
-    let config_path_display = config_path.display().to_string();
     let handoff = Handoff {
         bearer_token: &setup_outcome.bearer_token,
         principal_key: &setup_outcome.principal_key,
@@ -178,8 +177,9 @@ async fn run_async(
         project_name: &register_outcome.project_name,
         git_remote: &register_outcome.git_remote,
         transport,
-        mcp_config: &register_outcome.mcp_config,
-        config_path: &config_path_display,
+        mcp_entry: &register_outcome.mcp_config,
+        config_file: &setup_outcome.config_file,
+        persistence: ConfigPersistence::Persisted(persisted_overrides),
     };
 
     if json {

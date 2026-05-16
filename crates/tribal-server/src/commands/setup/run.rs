@@ -166,8 +166,8 @@ pub(crate) async fn run_async(
     let content = persistence
         .render(config)
         .map_err(|source| AppError::Config { source })?;
-    let config_file_outcome = config_file::write_if_absent(config_path, config, &content).await?;
-    output::config_file(out, &config_file_outcome);
+    let config_file = config_file::write_if_absent(config_path, config, &content).await?;
+    output::config_file(out, &config_file);
 
     let bearer_token: BearerToken =
         raw_token
@@ -185,6 +185,7 @@ pub(crate) async fn run_async(
         bearer_token,
         principal_key: token_principal.principal_key().to_owned(),
         principal_id: token_principal.id(),
+        config_file,
     })
 }
 

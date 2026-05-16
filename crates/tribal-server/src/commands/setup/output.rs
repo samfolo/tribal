@@ -54,9 +54,12 @@ pub(super) fn token_created(out: &mut dyn Write, expires_date: &str) {
 pub(super) fn config_file(out: &mut dyn Write, outcome: &ConfigFileOutcome) {
     match outcome {
         ConfigFileOutcome::Written { path } => {
-            write_line(out, &format!("  config file: written to {path}"));
+            write_line(
+                out,
+                &format!("  config file: written to {}", path.display()),
+            );
         }
-        ConfigFileOutcome::AlreadyExists { warnings } => {
+        ConfigFileOutcome::AlreadyExists { warnings, .. } => {
             write_line(out, "  config file: already exists, skipping");
             for warning in warnings {
                 write_line(out, &format!("  warning: {warning}"));

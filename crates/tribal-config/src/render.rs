@@ -152,6 +152,7 @@ impl Persisted for CliOverrides {
 ///
 /// New variants force every dispatch site to handle them via the
 /// exhaustive match in [`ConfigPersistence::render`].
+#[derive(Clone, Copy)]
 pub enum ConfigPersistence<'a> {
     /// Render only `database.url`.
     Minimal,

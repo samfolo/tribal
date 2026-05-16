@@ -5,7 +5,7 @@
 //! is rendered by the caller; this module concerns itself only with the
 //! file-on-disk side of the contract.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tribal_config::{TribalConfig, check_config_divergence};
 
@@ -16,7 +16,7 @@ use crate::error::AppError;
 // ---------------------------------------------------------------------------
 
 /// Warning emitted when the existing config file cannot be read.
-pub(super) const WARNING_CONFIG_UNREADABLE: &str =
+pub(crate) const WARNING_CONFIG_UNREADABLE: &str =
     "could not read existing config file for comparison";
 
 // ---------------------------------------------------------------------------
@@ -24,17 +24,29 @@ pub(super) const WARNING_CONFIG_UNREADABLE: &str =
 // ---------------------------------------------------------------------------
 
 /// Outcome of the config file write attempt.
-pub(super) enum ConfigFileOutcome {
+#[derive(Debug)]
+pub(crate) enum ConfigFileOutcome {
     /// The file was written successfully.
     Written {
         /// Path where the file was written.
-        path: String,
+        path: PathBuf,
     },
     /// The file already existed and was not modified.
     AlreadyExists {
+        /// Path of the existing file.
+        path: PathBuf,
         /// Warnings about configuration divergence (may be empty).
         warnings: Vec<String>,
     },
+}
+
+impl ConfigFileOutcome {
+    /// The path the write targeted, regardless of variant.
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            Self::Written { path } | Self::AlreadyExists { path, .. } => path,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -47,14 +59,17 @@ pub(super) enum ConfigFileOutcome {
 /// resolved `config` and any divergence is returned as warnings rather
 /// than overwriting. When the file does not exist, `content` is written
 /// verbatim — choice of YAML shape is the caller's.
-pub(super) async fn write_if_absent(
+pub(crate) async fn write_if_absent(
     config_path: &Path,
     config: &TribalConfig,
     content: &str,
 ) -> Result<ConfigFileOutcome, AppError> {
     if tokio::fs::try_exists(config_path).await.unwrap_or(false) {
         let warnings = read_and_check_divergence(config_path, config).await;
-        return Ok(ConfigFileOutcome::AlreadyExists { warnings });
+        return Ok(ConfigFileOutcome::AlreadyExists {
+            path: config_path.to_path_buf(),
+            warnings,
+        });
     }
 
     tokio::fs::write(config_path, content)
@@ -65,7 +80,7 @@ pub(super) async fn write_if_absent(
         })?;
 
     Ok(ConfigFileOutcome::Written {
-        path: config_path.display().to_string(),
+        path: config_path.to_path_buf(),
     })
 }
 
