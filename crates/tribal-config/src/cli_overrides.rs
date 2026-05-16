@@ -18,7 +18,7 @@ use crate::sections::{ProviderKind, TransportKind};
 // ---------------------------------------------------------------------------
 
 /// CLI flag overrides merged at the highest precedence.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct CliOverrides {
     /// Server-related CLI overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,7 +46,7 @@ pub struct CliOverrides {
 // ---------------------------------------------------------------------------
 
 /// Server-related CLI flag overrides.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ServerCliOverrides {
     /// Transport override from `--transport`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,7 +58,7 @@ pub struct ServerCliOverrides {
 }
 
 /// Database-related CLI flag overrides.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DatabaseCliOverrides {
     /// Database URL override from `--database-url`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,7 +66,7 @@ pub struct DatabaseCliOverrides {
 }
 
 /// Embedding-stage CLI flag overrides.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EmbeddingCliOverrides {
     /// Provider override from `--embedding-provider`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,7 +78,7 @@ pub struct EmbeddingCliOverrides {
 }
 
 /// Inference-stage CLI flag overrides.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InferenceCliOverrides {
     /// Extraction-stage overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,7 +94,7 @@ pub struct InferenceCliOverrides {
 }
 
 /// Per-stage inference CLI flag overrides.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InferenceStageCliOverrides {
     /// Provider override.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,7 +106,7 @@ pub struct InferenceStageCliOverrides {
 }
 
 /// Telemetry CLI flag overrides.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TelemetryCliOverrides {
     /// OTLP exporter endpoint override from `--telemetry-otlp-endpoint`.
     #[serde(skip_serializing_if = "Option::is_none")]

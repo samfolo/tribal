@@ -145,6 +145,35 @@ impl Persisted for CliOverrides {
 }
 
 // ---------------------------------------------------------------------------
+// Strategy dispatch
+// ---------------------------------------------------------------------------
+
+/// Caller-selected strategy for rendering a config file at install time.
+///
+/// New variants force every dispatch site to handle them via the
+/// exhaustive match in [`ConfigPersistence::render`].
+pub enum ConfigPersistence<'a> {
+    /// Render only `database.url`.
+    Minimal,
+    /// Render `database.url` plus every flag pinned in the overrides.
+    Persisted(&'a CliOverrides),
+}
+
+impl ConfigPersistence<'_> {
+    /// Renders the YAML content for this strategy against `config`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Render`] if YAML serialisation fails.
+    pub fn render(&self, config: &TribalConfig) -> Result<String, ConfigError> {
+        match self {
+            Self::Minimal => render_minimal_config(&config.database.url),
+            Self::Persisted(overrides) => render_persisted_config(config, overrides),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
