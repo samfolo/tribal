@@ -15,7 +15,7 @@ use tribal_db::{
 use tribal_domain::{BearerToken, GitRemote};
 use tribal_mcp::Authenticator;
 
-use super::output;
+use super::{outcome::RegisterOutcome, output};
 use crate::{
     cli::ProjectRegisterArgs,
     commands::common::{
@@ -24,7 +24,7 @@ use crate::{
     },
     error::AppError,
     git::detect_git_remote,
-    output::resolved_advertised_url,
+    output::{build_snippet_entry, resolved_advertised_url},
 };
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
         config_path: &absolute_config_path,
     };
 
-    rt.block_on(run_async(
+    let _outcome = rt.block_on(run_async(
         &config,
         &git_remote,
         &name,
@@ -116,7 +116,8 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
         &opts,
         &mut stdout,
         &mut stderr,
-    ))
+    ))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +135,8 @@ struct OutputOptions<'a> {
 }
 
 /// Connects to the database, inserts (or finds) the project, optionally
-/// validates the token, and prints the result.
+/// validates the token, prints the result, and returns the registered
+/// project alongside the JSON-shaped MCP server entry.
 async fn run_async(
     config: &TribalConfig,
     git_remote: &GitRemote,
@@ -143,7 +145,7 @@ async fn run_async(
     opts: &OutputOptions<'_>,
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
-) -> Result<(), AppError> {
+) -> Result<RegisterOutcome, AppError> {
     let pool = tribal_db::create_pool(
         &config.database,
         POOL_NAME_REGISTER,
@@ -211,17 +213,16 @@ async fn run_async(
     // -- Output -------------------------------------------------------------
 
     let advertised_url = resolved_advertised_url(config);
+    let mcp_config = build_snippet_entry(
+        &project,
+        opts.transport,
+        opts.auth,
+        opts.config_path,
+        &advertised_url,
+    );
 
     if opts.json {
-        output::json_snippet(
-            out_stdout,
-            &project,
-            opts.transport,
-            opts.auth,
-            opts.config_path,
-            &advertised_url,
-        )
-        .map_err(|source| AppError::SetupIo {
+        output::json_snippet(out_stdout, &mcp_config).map_err(|source| AppError::SetupIo {
             context: "writing project register --json snippet".into(),
             source,
         })?;
@@ -231,21 +232,20 @@ async fn run_async(
             context: "writing project id".into(),
             source,
         })?;
-        output::mcp_snippet(
-            out_stdout,
-            &project,
-            opts.transport,
-            opts.auth,
-            opts.config_path,
-            &advertised_url,
-        )
-        .map_err(|source| AppError::SetupIo {
-            context: "writing project register mcp snippet".into(),
-            source,
+        output::mcp_snippet(out_stdout, &project, &mcp_config).map_err(|source| {
+            AppError::SetupIo {
+                context: "writing project register mcp snippet".into(),
+                source,
+            }
         })?;
     }
 
-    Ok(())
+    Ok(RegisterOutcome {
+        project_id: project.id(),
+        project_name: project.name().to_owned(),
+        git_remote: project.git_remote().clone(),
+        mcp_config,
+    })
 }
 
 // ---------------------------------------------------------------------------
