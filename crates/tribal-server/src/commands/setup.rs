@@ -6,6 +6,7 @@
 //! token, and writes a minimal config file.
 
 mod config_file;
+mod outcome;
 mod output;
 mod run;
 

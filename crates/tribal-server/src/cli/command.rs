@@ -376,6 +376,17 @@ impl TelemetryArgs {
 /// Arguments for the `setup` subcommand.
 #[derive(Debug, Args)]
 pub struct SetupArgs {
+    /// Principal key to associate with the bearer token (e.g.
+    /// `user:sam`). Defaults to `principal:local` if omitted; the
+    /// `principal:local` row is always ensured regardless.
+    #[arg(long, help_heading = "Setup")]
+    pub principal: Option<String>,
+
+    /// Token lifetime in hours. Overrides the config default for this
+    /// token only.
+    #[arg(long, help_heading = "Setup")]
+    pub ttl: Option<u64>,
+
     /// Database connection options.
     #[command(flatten)]
     pub database: DatabaseArgs,
@@ -384,7 +395,8 @@ pub struct SetupArgs {
 impl SetupArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
-    /// Delegates to [`DatabaseArgs::into_cli_overrides`].
+    /// `--principal` and `--ttl` affect only the bearer token minted by
+    /// this setup run, so they do not appear in [`CliOverrides`].
     pub fn into_cli_overrides(self) -> CliOverrides {
         self.database.into_cli_overrides()
     }
@@ -965,6 +977,8 @@ mod tests {
     #[test]
     fn test_setup_into_cli_overrides_delegates_to_database_args() {
         let args = SetupArgs {
+            principal: None,
+            ttl: None,
             database: DatabaseArgs {
                 database_url: Some("postgres://h/db".into()),
             },

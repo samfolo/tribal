@@ -1,0 +1,17 @@
+  config directory: <CONFIG_DIR>
+  database: connected
+  migrations: complete
+  principal: principal:local
+  token: created (expires <TIMESTAMP>)
+  config file: written to <CONFIG_DIR>/tribal.yaml
+
+Setup complete. Your bearer token:
+
+  <TOKEN>
+
+Save this token — it will not be shown again.
+
+Next steps:
+  1. Export the token:  export TRIBAL_AUTH_TOKEN="<TOKEN>"
+  2. Register a project:  tribal project register
+
