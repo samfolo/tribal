@@ -16,7 +16,8 @@ use crate::{
     cli::SetupArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS, TIMESTAMP_FORMAT,
-        find_or_create_principal, generate_raw_token, resolve_absolute_config_path, resolve_ttl,
+        find_or_create_principal, generate_raw_token, persist_credentials,
+        resolve_absolute_config_path, resolve_ttl,
     },
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
@@ -64,13 +65,14 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
         .map_err(|source| AppError::Runtime { source })?;
 
     let mut stderr = io::stderr().lock();
-    let _outcome = rt.block_on(run_async(
+    let outcome = rt.block_on(run_async(
         &config,
         &absolute_config_path,
         principal.as_deref(),
         expires_at,
         &mut stderr,
     ))?;
+    persist_credentials(&mut stderr, &outcome.bearer_token);
     Ok(())
 }
 
@@ -189,8 +191,7 @@ async fn run_async(
 #[cfg(test)]
 mod tests {
     use tribal_test_utils::{
-        assert_text_snapshot, count_prompt_versions, serial_lock, test_context,
-        truncate_all_tables,
+        assert_text_snapshot, count_prompt_versions, serial_lock, test_context, truncate_all_tables,
     };
 
     use super::*;
@@ -206,7 +207,10 @@ mod tests {
     ) -> String {
         captured
             .replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
-            .replace(&expires_at.format(TIMESTAMP_FORMAT).to_string(), "<TIMESTAMP>")
+            .replace(
+                &expires_at.format(TIMESTAMP_FORMAT).to_string(),
+                "<TIMESTAMP>",
+            )
             .replace(bearer_token.as_str(), "<TOKEN>")
     }
 
@@ -357,8 +361,12 @@ mod tests {
             .expect("setup succeeds");
 
         let captured = String::from_utf8(buf).expect("utf8");
-        let normalised =
-            normalise_setup_stderr(&captured, config_dir.path(), expires_at, &outcome.bearer_token);
+        let normalised = normalise_setup_stderr(
+            &captured,
+            config_dir.path(),
+            expires_at,
+            &outcome.bearer_token,
+        );
 
         assert_text_snapshot!(
             &normalised,
@@ -395,8 +403,12 @@ mod tests {
         .expect("setup succeeds");
 
         let captured = String::from_utf8(buf).expect("utf8");
-        let normalised =
-            normalise_setup_stderr(&captured, config_dir.path(), expires_at, &outcome.bearer_token);
+        let normalised = normalise_setup_stderr(
+            &captured,
+            config_dir.path(),
+            expires_at,
+            &outcome.bearer_token,
+        );
 
         assert_text_snapshot!(
             &normalised,
