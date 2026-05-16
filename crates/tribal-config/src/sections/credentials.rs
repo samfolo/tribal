@@ -38,6 +38,15 @@ pub const CREDENTIALS_WRITE_FAILED_PREFIX: &str = "warning: could not persist cr
 /// that the token is still valid despite the file write failing.
 pub const CREDENTIALS_WRITE_FAILED_SUFFIX: &str = ". The token has been printed above and is valid in the database; you can recover it from this output or by running `tribal token create` again.";
 
+/// Prefix of the warning emitted when the on-disk credentials file has
+/// wider POSIX permissions than the `0600` invariant enforced at write
+/// time. Composed with the resolved path at the emission site.
+pub const CREDENTIALS_PERMISSIONS_DRIFT_PREFIX: &str = "warning: credentials.json at ";
+
+/// Suffix of [`CREDENTIALS_PERMISSIONS_DRIFT_PREFIX`].
+pub const CREDENTIALS_PERMISSIONS_DRIFT_SUFFIX: &str =
+    " has wider permissions than 0600; restrict with `chmod 600`.";
+
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
@@ -232,6 +241,160 @@ fn write_credentials_at(path: &Path, creds: &Credentials) -> Result<(), Credenti
 }
 
 // ---------------------------------------------------------------------------
+// Read
+// ---------------------------------------------------------------------------
+
+/// Credentials read from disk together with the metadata callers need to
+/// render warnings.
+#[derive(Debug)]
+pub struct LoadedCredentials {
+    /// Parsed credentials envelope.
+    pub credentials: Credentials,
+    /// Path the credentials were read from.
+    pub path: PathBuf,
+    /// State of the file's POSIX mode bits at read time.
+    pub permissions: CredentialsPermissions,
+}
+
+/// State of the credentials file's POSIX mode bits.
+///
+/// The write side sets mode `0600` (Unix) so the file is readable only by
+/// its owner. The reader checks the same invariant on load. Drift does
+/// not invalidate the credentials — the variant is purely a security
+/// signal callers can warn on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialsPermissions {
+    /// Mode bits match the `0600` invariant set at write time.
+    Locked,
+    /// Mode bits are wider than `0600`; the file is readable by other
+    /// users on the system. Callers warn-and-proceed.
+    Drifted,
+    /// Permissions could not be determined: the host is non-Unix or
+    /// the file metadata could not be read.
+    Unknown,
+}
+
+/// Failure loading [`Credentials`] from disk.
+///
+/// The `#[error]` strings double as the user-facing literals: `mcp-config`
+/// renders these directly to stderr via the standard `eprintln!("{err}")`
+/// dispatch in `main.rs`.
+#[derive(Debug, Error)]
+pub enum CredentialsReadError {
+    /// Resolution of the credentials path itself failed (e.g. missing
+    /// `$XDG_CONFIG_HOME` and `$HOME`).
+    #[error(transparent)]
+    Path(#[from] ConfigDirError),
+
+    /// The credentials file does not exist at the resolved path.
+    #[error(
+        "no saved credentials; run `tribal setup` or `tribal bootstrap`, or pass `--token` explicitly."
+    )]
+    NotFound,
+
+    /// Reading the file failed for an I/O reason other than absence.
+    #[error("could not read credentials.json at {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    /// JSON deserialisation failed.
+    #[error(
+        "credentials.json at {path} is malformed: {source}; re-mint with `tribal token create`"
+    )]
+    Malformed {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// The on-disk `schema_version` is not what this binary supports.
+    #[error(
+        "credentials.json schema_version {schema_version} is not supported by this binary; re-mint with `tribal token create`"
+    )]
+    UnsupportedSchema { schema_version: u32 },
+}
+
+/// Resolves the credentials.json path under `$XDG_CONFIG_HOME` (or
+/// `$HOME/.config` as a POSIX fallback) and loads its contents.
+///
+/// Implementation: resolve path → check existence → read bytes → parse as
+/// JSON → enforce `schema_version` matches [`Credentials::SCHEMA_VERSION`]
+/// → inspect POSIX permissions (Unix only).
+///
+/// Permissions drift wider than `0600` is reported via the
+/// [`CredentialsPermissions`] state on the returned value rather than
+/// failing the load — callers warn-and-proceed because the file is still
+/// readable.
+///
+/// # Errors
+///
+/// Returns [`CredentialsReadError`] when path resolution, file read, JSON
+/// parse, or schema-version check fails.
+pub fn read_credentials() -> Result<LoadedCredentials, CredentialsReadError> {
+    let path = credentials_file_path()?;
+    read_credentials_at(&path)
+}
+
+fn read_credentials_at(path: &Path) -> Result<LoadedCredentials, CredentialsReadError> {
+    let raw = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Err(CredentialsReadError::NotFound);
+        }
+        Err(source) => {
+            return Err(CredentialsReadError::Read {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+
+    let credentials: Credentials =
+        serde_json::from_slice(&raw).map_err(|source| CredentialsReadError::Malformed {
+            path: path.to_owned(),
+            source,
+        })?;
+
+    if credentials.schema_version != Credentials::SCHEMA_VERSION {
+        return Err(CredentialsReadError::UnsupportedSchema {
+            schema_version: credentials.schema_version,
+        });
+    }
+
+    let permissions = inspect_permissions(path);
+
+    Ok(LoadedCredentials {
+        credentials,
+        path: path.to_owned(),
+        permissions,
+    })
+}
+
+/// Classifies the POSIX mode bits at `path` against the `0600` invariant.
+/// Always returns [`CredentialsPermissions::Unknown`] on non-Unix targets
+/// or when metadata cannot be read.
+#[cfg(unix)]
+fn inspect_permissions(path: &Path) -> CredentialsPermissions {
+    let Ok(metadata) = fs::metadata(path) else {
+        return CredentialsPermissions::Unknown;
+    };
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode == CREDENTIALS_FILE_MODE {
+        CredentialsPermissions::Locked
+    } else {
+        CredentialsPermissions::Drifted
+    }
+}
+
+#[cfg(not(unix))]
+fn inspect_permissions(_path: &Path) -> CredentialsPermissions {
+    CredentialsPermissions::Unknown
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -390,5 +553,126 @@ mod tests {
 
         // Restore permissions so the tempdir cleanup succeeds.
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    // -- Read --------------------------------------------------------------
+
+    #[test]
+    fn test_read_credentials_at_round_trips_written_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+
+        let original = sample_credentials();
+        write_credentials_at(&path, &original).unwrap();
+
+        let loaded = read_credentials_at(&path).unwrap();
+        assert_eq!(loaded.credentials, original);
+        assert_eq!(loaded.path, path);
+    }
+
+    #[test]
+    fn test_read_credentials_at_returns_not_found_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent.json");
+        let err = read_credentials_at(&path).unwrap_err();
+        assert!(
+            matches!(err, CredentialsReadError::NotFound),
+            "expected NotFound, got: {err:?}",
+        );
+    }
+
+    #[test]
+    fn test_read_credentials_at_returns_malformed_for_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        fs::write(&path, b"{ not json").unwrap();
+
+        let err = read_credentials_at(&path).unwrap_err();
+        assert!(
+            matches!(err, CredentialsReadError::Malformed { .. }),
+            "expected Malformed, got: {err:?}",
+        );
+    }
+
+    #[test]
+    fn test_read_credentials_at_returns_unsupported_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let future_version = Credentials::SCHEMA_VERSION + 1;
+        let payload = format!(
+            r#"{{"schema_version": {future_version}, "auth": {{"type": "bearer", "token": "x"}}}}"#,
+        );
+        fs::write(&path, payload).unwrap();
+
+        let err = read_credentials_at(&path).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CredentialsReadError::UnsupportedSchema { schema_version }
+                    if schema_version == future_version,
+            ),
+            "expected UnsupportedSchema {{ schema_version: {future_version} }}, got: {err:?}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_read_credentials_at_reports_permissions_locked_after_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        write_credentials_at(&path, &sample_credentials()).unwrap();
+
+        let loaded = read_credentials_at(&path).unwrap();
+        assert_eq!(loaded.permissions, CredentialsPermissions::Locked);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_read_credentials_at_reports_permissions_drifted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        write_credentials_at(&path, &sample_credentials()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let loaded = read_credentials_at(&path).unwrap();
+        assert_eq!(loaded.permissions, CredentialsPermissions::Drifted);
+    }
+
+    // -- Error display literals --------------------------------------------
+
+    #[test]
+    fn test_not_found_display_matches_literal() {
+        let err = CredentialsReadError::NotFound;
+        assert_eq!(
+            err.to_string(),
+            "no saved credentials; run `tribal setup` or `tribal bootstrap`, or pass `--token` explicitly.",
+        );
+    }
+
+    #[test]
+    fn test_unsupported_schema_display_matches_literal() {
+        let err = CredentialsReadError::UnsupportedSchema { schema_version: 2 };
+        assert_eq!(
+            err.to_string(),
+            "credentials.json schema_version 2 is not supported by this binary; re-mint with `tribal token create`",
+        );
+    }
+
+    #[test]
+    fn test_malformed_display_includes_path_and_recovery_hint() {
+        let err = serde_json::from_slice::<Credentials>(b"{ not json").unwrap_err();
+        let display = CredentialsReadError::Malformed {
+            path: PathBuf::from("/tmp/credentials.json"),
+            source: err,
+        }
+        .to_string();
+        assert!(
+            display.starts_with("credentials.json at /tmp/credentials.json is malformed: "),
+            "unexpected prefix: {display}",
+        );
+        assert!(
+            display.ends_with("; re-mint with `tribal token create`"),
+            "unexpected suffix: {display}",
+        );
     }
 }
