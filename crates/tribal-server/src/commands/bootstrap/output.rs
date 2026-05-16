@@ -217,3 +217,276 @@ fn try_write_line(out: &mut dyn Write, line: &str) -> io::Result<()> {
     writeln!(out, "{line}")?;
     out.flush()
 }
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use tribal_config::{
+        Auth, CliOverrides, DEFAULT_BIND_ADDRESS, EmbeddingCliOverrides, ProviderKind,
+    };
+    use tribal_domain::Project;
+    use tribal_test_utils::{a_project, assert_json_snapshot, assert_text_snapshot};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::output::build_snippet_entry;
+
+    /// Inputs that swing between snapshot cases.
+    struct Case<'a> {
+        transport: TransportKind,
+        persistence: ConfigPersistence<'a>,
+        config_file: ConfigFileOutcome,
+    }
+
+    fn fixture_bearer_token() -> BearerToken {
+        "test-bearer-token"
+            .parse()
+            .expect("fixture token parses as BearerToken")
+    }
+
+    fn fixture_principal_id() -> PrincipalId {
+        PrincipalId::from(Uuid::from_u128(1))
+    }
+
+    fn fixture_config_path() -> PathBuf {
+        PathBuf::from("/etc/tribal/tribal.yaml")
+    }
+
+    fn fixture_overrides() -> CliOverrides {
+        CliOverrides {
+            embedding: Some(EmbeddingCliOverrides {
+                provider: Some(ProviderKind::OpenAi),
+                model: Some("text-embedding-3-small".into()),
+            }),
+            ..CliOverrides::default()
+        }
+    }
+
+    /// Builds the same `Project` value used to drive every render in
+    /// the suite. Pinning `id` and `git_remote` keeps the snapshots
+    /// deterministic.
+    fn fixture_project() -> Project {
+        a_project()
+            .id(ProjectId::from(Uuid::from_u128(2)))
+            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
+            .name("widgets".to_owned())
+            .build()
+    }
+
+    /// Drives the production builder against a fixture project so the
+    /// stderr/JSON renders consume the exact shape callers see in
+    /// production.
+    fn fixture_mcp_entry(transport: TransportKind, auth: Option<&Auth>) -> Value {
+        let project = fixture_project();
+        let path = fixture_config_path();
+        build_snippet_entry(
+            &project,
+            transport,
+            auth,
+            &path,
+            &format!("http://{DEFAULT_BIND_ADDRESS}/mcp"),
+        )
+    }
+
+    fn render_stderr(case: &Case<'_>) -> String {
+        let bearer = fixture_bearer_token();
+        let project = fixture_project();
+        let auth = Auth::Bearer {
+            token: bearer.clone(),
+        };
+        let mcp_entry = fixture_mcp_entry(case.transport, Some(&auth));
+        let handoff = Handoff {
+            bearer_token: &bearer,
+            principal_key: "principal:local",
+            principal_id: fixture_principal_id(),
+            project_id: project.id(),
+            project_name: project.name(),
+            git_remote: project.git_remote(),
+            transport: case.transport,
+            mcp_entry: &mcp_entry,
+            config_file: &case.config_file,
+            persistence: case.persistence,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        write_human(&mut buf, &handoff).expect("write_human succeeds");
+        String::from_utf8(buf).expect("utf8")
+    }
+
+    fn render_json(transport: TransportKind) -> serde_json::Value {
+        let bearer = fixture_bearer_token();
+        let project = fixture_project();
+        let auth = Auth::Bearer {
+            token: bearer.clone(),
+        };
+        let mcp_entry = fixture_mcp_entry(transport, Some(&auth));
+        let config_file = ConfigFileOutcome::Written {
+            path: fixture_config_path(),
+        };
+        let handoff = Handoff {
+            bearer_token: &bearer,
+            principal_key: "principal:local",
+            principal_id: fixture_principal_id(),
+            project_id: project.id(),
+            project_name: project.name(),
+            git_remote: project.git_remote(),
+            transport,
+            mcp_entry: &mcp_entry,
+            config_file: &config_file,
+            persistence: ConfigPersistence::Minimal,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        write_json(&mut buf, &handoff).expect("write_json succeeds");
+        let captured = String::from_utf8(buf).expect("utf8");
+        serde_json::from_str(&captured).expect("output is valid JSON")
+    }
+
+    // -- Stderr × stdio -------------------------------------------------------
+
+    #[test]
+    fn test_stderr_stdio_minimal_first_run_matches_snapshot() {
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Stdio,
+            persistence: ConfigPersistence::Minimal,
+            config_file: ConfigFileOutcome::Written {
+                path: fixture_config_path(),
+            },
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-stdio-minimal-first-run.txt"
+        );
+    }
+
+    #[test]
+    fn test_stderr_stdio_minimal_file_exists_matches_snapshot() {
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Stdio,
+            persistence: ConfigPersistence::Minimal,
+            config_file: ConfigFileOutcome::AlreadyExists {
+                path: fixture_config_path(),
+                warnings: Vec::new(),
+            },
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-stdio-minimal-file-exists.txt"
+        );
+    }
+
+    #[test]
+    fn test_stderr_stdio_persisted_first_run_matches_snapshot() {
+        let overrides = fixture_overrides();
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Stdio,
+            persistence: ConfigPersistence::Persisted(&overrides),
+            config_file: ConfigFileOutcome::Written {
+                path: fixture_config_path(),
+            },
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-stdio-persisted-first-run.txt"
+        );
+    }
+
+    #[test]
+    fn test_stderr_stdio_persisted_file_exists_matches_snapshot() {
+        let overrides = fixture_overrides();
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Stdio,
+            persistence: ConfigPersistence::Persisted(&overrides),
+            config_file: ConfigFileOutcome::AlreadyExists {
+                path: fixture_config_path(),
+                warnings: Vec::new(),
+            },
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-stdio-persisted-file-exists.txt"
+        );
+    }
+
+    // -- Stderr × http --------------------------------------------------------
+
+    #[test]
+    fn test_stderr_http_minimal_first_run_matches_snapshot() {
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Http,
+            persistence: ConfigPersistence::Minimal,
+            config_file: ConfigFileOutcome::Written {
+                path: fixture_config_path(),
+            },
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-http-minimal-first-run.txt"
+        );
+    }
+
+    #[test]
+    fn test_stderr_http_minimal_file_exists_matches_snapshot() {
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Http,
+            persistence: ConfigPersistence::Minimal,
+            config_file: ConfigFileOutcome::AlreadyExists {
+                path: fixture_config_path(),
+                warnings: Vec::new(),
+            },
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-http-minimal-file-exists.txt"
+        );
+    }
+
+    #[test]
+    fn test_stderr_http_persisted_first_run_matches_snapshot() {
+        let overrides = fixture_overrides();
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Http,
+            persistence: ConfigPersistence::Persisted(&overrides),
+            config_file: ConfigFileOutcome::Written {
+                path: fixture_config_path(),
+            },
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-http-persisted-first-run.txt"
+        );
+    }
+
+    #[test]
+    fn test_stderr_http_persisted_file_exists_matches_snapshot() {
+        let overrides = fixture_overrides();
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Http,
+            persistence: ConfigPersistence::Persisted(&overrides),
+            config_file: ConfigFileOutcome::AlreadyExists {
+                path: fixture_config_path(),
+                warnings: Vec::new(),
+            },
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-http-persisted-file-exists.txt"
+        );
+    }
+
+    // -- JSON -----------------------------------------------------------------
+
+    #[test]
+    fn test_json_stdio_matches_snapshot() {
+        let payload = render_json(TransportKind::Stdio);
+        assert_json_snapshot!(&payload, "src/commands/bootstrap/snapshots/json-stdio.json");
+    }
+
+    #[test]
+    fn test_json_http_matches_snapshot() {
+        let payload = render_json(TransportKind::Http);
+        assert_json_snapshot!(&payload, "src/commands/bootstrap/snapshots/json-http.json");
+    }
+}
