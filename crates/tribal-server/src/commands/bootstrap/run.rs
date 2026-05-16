@@ -7,7 +7,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use tribal_config::{Auth, TransportKind, TribalConfig, load_config, validate};
+use tribal_config::{
+    Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config, validate,
+};
 use tribal_domain::GitRemote;
 
 use super::output::{Handoff, write_human, write_json};
@@ -51,7 +53,13 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
     let ttl = args.ttl;
     let json = args.json;
 
+    // Bootstrap needs `cli_overrides` twice: once consumed by the
+    // figment cascade in `load_config`, once borrowed by setup's
+    // persisted-config write. The clone is cheap (all fields are
+    // `Option<scalar>`) and keeps each consumer free of the other's
+    // lifetime concerns.
     let cli_overrides = args.into_cli_overrides();
+    let persisted_overrides = cli_overrides.clone();
 
     let config = load_config(
         config_path,
@@ -79,6 +87,7 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
         &absolute_config_path,
         principal.as_deref(),
         expires_at,
+        &persisted_overrides,
         &git_remote,
         &project_name,
         transport,
@@ -108,6 +117,7 @@ async fn run_async(
     config_path: &Path,
     principal_key: Option<&str>,
     expires_at: DateTime<Utc>,
+    persisted_overrides: &CliOverrides,
     git_remote: &GitRemote,
     project_name: &str,
     transport: TransportKind,
@@ -122,6 +132,7 @@ async fn run_async(
         config_path,
         principal_key,
         expires_at,
+        ConfigPersistence::Persisted(persisted_overrides),
         &mut io::sink(),
     )
     .await?;
