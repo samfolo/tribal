@@ -1,0 +1,7 @@
+{
+  "headers": {
+    "Authorization": "Bearer test-bearer-token"
+  },
+  "type": "http",
+  "url": "http://127.0.0.1:8725/mcp"
+}

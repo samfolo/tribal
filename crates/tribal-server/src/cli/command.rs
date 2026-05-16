@@ -131,6 +131,15 @@ pub enum Command {
     /// Interact with the resolved configuration.
     #[command(subcommand, display_order = 5)]
     Config(ConfigCommand),
+
+    /// Print an MCP server-config entry for the active project to
+    /// stdout.
+    #[command(name = "mcp-config", display_order = 6)]
+    McpConfig {
+        /// Arguments for the mcp-config subcommand.
+        #[command(flatten)]
+        args: McpConfigArgs,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -723,6 +732,49 @@ pub struct ConfigShowArgs {
     /// redacting them.
     #[arg(long)]
     pub show_secrets: bool,
+}
+
+// ---------------------------------------------------------------------------
+// MCP config
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `mcp-config` subcommand.
+///
+/// Renders the wire-up snippet bootstrap emits, reconstructed from the
+/// resolved project and the persisted bearer token. The database is
+/// reached through the same overlay cascade as every other command so
+/// `--project` typos surface immediately rather than at server start.
+#[derive(Debug, Args)]
+pub struct McpConfigArgs {
+    /// Transport mode for the generated snippet. Falls back to
+    /// `server.transport` from the resolved configuration when omitted.
+    #[arg(long, help_heading = "Output")]
+    pub transport: Option<TransportKind>,
+
+    /// Project ID (`proj_`-prefixed) to render the snippet for. Falls
+    /// back to `TRIBAL_PROJECT_ID` and then to git-remote detection.
+    #[arg(long, env = "TRIBAL_PROJECT_ID", help_heading = "Session")]
+    pub project: Option<String>,
+
+    /// Bearer token override for http/sse snippets. When omitted the
+    /// token is read from the persisted credentials file. Ignored for
+    /// stdio.
+    #[arg(long, help_heading = "Output")]
+    pub token: Option<String>,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+}
+
+impl McpConfigArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// `--transport`, `--project`, and `--token` affect only this single
+    /// rendering and do not flow into [`CliOverrides`].
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        self.database.into_cli_overrides()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1352,6 +1404,60 @@ mod tests {
             Some(Command::Config(ConfigCommand::Show { args }))
             if args.show_secrets
         ));
+    }
+
+    // -- MCP config ----------------------------------------------------------
+
+    #[test]
+    fn test_mcp_config_parses_without_flags() {
+        let cli = Cli::try_parse_from(["tribal", "mcp-config"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::McpConfig { ref args })
+            if args.transport.is_none()
+                && args.token.is_none()
+                && args.database.database_url.is_none()
+        ));
+    }
+
+    #[test]
+    fn test_mcp_config_parses_all_flags() {
+        let cli = Cli::try_parse_from([
+            "tribal",
+            "mcp-config",
+            "--transport",
+            "http",
+            "--project",
+            "proj_00000000-0000-0000-0000-000000000001",
+            "--token",
+            "test-token",
+            "-d",
+            "postgres://h/db",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::McpConfig { ref args })
+            if args.transport == Some(TransportKind::Http)
+                && args.project.as_deref() == Some("proj_00000000-0000-0000-0000-000000000001")
+                && args.token.as_deref() == Some("test-token")
+                && args.database.database_url.as_deref() == Some("postgres://h/db")
+        ));
+    }
+
+    #[test]
+    fn test_mcp_config_into_cli_overrides_delegates_to_database_args() {
+        let args = McpConfigArgs {
+            transport: None,
+            project: None,
+            token: None,
+            database: DatabaseArgs {
+                database_url: Some("postgres://h/db".into()),
+            },
+        };
+        let overrides = args.into_cli_overrides();
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
     }
 
     // -- No subcommand ------------------------------------------------------

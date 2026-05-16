@@ -7,7 +7,7 @@
 use std::io;
 
 use thiserror::Error;
-use tribal_config::{ConfigError, TransportKind};
+use tribal_config::{ConfigError, CredentialsReadError, TransportKind};
 use tribal_db::DbError;
 use tribal_inference::ProviderRegistryError;
 use tribal_telemetry::TelemetryError;
@@ -270,6 +270,16 @@ pub enum AppError {
         /// The underlying database error.
         #[source]
         source: DbError,
+    },
+
+    /// Loading the persisted credentials file failed. The wrapped error's
+    /// `Display` is the user-facing literal `tribal mcp-config` renders;
+    /// no prefix is added.
+    #[error("{source}")]
+    Credentials {
+        /// The underlying credentials-read error.
+        #[source]
+        source: CredentialsReadError,
     },
 }
 
