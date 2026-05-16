@@ -8,6 +8,7 @@ mod commands;
 mod error;
 mod git;
 mod orchestration;
+mod output;
 mod startup;
 mod transport;
 

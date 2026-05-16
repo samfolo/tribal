@@ -2,12 +2,12 @@
 
 use std::{str::FromStr, sync::Arc};
 
-use tribal_config::{ENV_AUTH_TOKEN, TransportKind, TribalConfig, load_config};
+use tribal_config::{Auth, ENV_AUTH_TOKEN, TransportKind, TribalConfig, load_config};
 use tribal_db::{
     DbError, NewProject, PgAuthTokenRepository, PgPrincipalRepository, PgProjectRepository,
     ProjectRepository,
 };
-use tribal_domain::GitRemote;
+use tribal_domain::{BearerToken, GitRemote};
 use tribal_mcp::Authenticator;
 
 use super::output;
@@ -64,11 +64,11 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
     let branch = branch.unwrap_or_else(|| DEFAULT_BRANCH.to_owned());
     let transport = transport.unwrap_or_default();
 
-    // Token is only relevant for HTTP/SSE snippets — stdio never
+    // Auth is only relevant for HTTP/SSE snippets — stdio never
     // embeds bearer auth, so stale env vars cannot break the default
     // workflow.
-    let raw_token = if matches!(transport, TransportKind::Http | TransportKind::Sse) {
-        let resolved = resolve_token(token);
+    let auth = if matches!(transport, TransportKind::Http | TransportKind::Sse) {
+        let resolved = resolve_auth(token)?;
         if resolved.is_none() && !skip_validation {
             return Err(AppError::TokenOperation {
                 reason: output::TOKEN_REQUIRED.to_owned(),
@@ -93,7 +93,7 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
     let opts = OutputOptions {
         json,
         transport,
-        raw_token: raw_token.as_deref(),
+        auth: auth.as_ref(),
         skip_validation,
     };
 
@@ -109,7 +109,7 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
 struct OutputOptions<'a> {
     json: bool,
     transport: TransportKind,
-    raw_token: Option<&'a str>,
+    auth: Option<&'a Auth>,
     skip_validation: bool,
 }
 
@@ -135,22 +135,26 @@ async fn run_async(
         AppError::pool_acquire(POOL_NAME_REGISTER, "acquiring register connection", err)
     })?;
 
-    // -- Validate token if provided and validation not skipped ----------------
+    // -- Validate auth if provided and validation not skipped -----------------
 
-    if let Some(token) = opts.raw_token
+    if let Some(auth) = opts.auth
         && !opts.skip_validation
     {
         let authenticator = Authenticator::new(
             Arc::new(PgAuthTokenRepository),
             Arc::new(PgPrincipalRepository),
         );
-        authenticator
-            .verify_token(&mut conn, token)
-            .await
-            .map_err(|err| AppError::TokenVerification {
-                reason: output::TOKEN_INVALID.to_owned(),
-                source: Box::new(err),
-            })?;
+        match auth {
+            Auth::Bearer { token } => {
+                authenticator
+                    .verify_token(&mut conn, token.as_str())
+                    .await
+                    .map_err(|err| AppError::TokenVerification {
+                        reason: output::TOKEN_INVALID.to_owned(),
+                        source: Box::new(err),
+                    })?;
+            }
+        }
     }
 
     // -- Register project ---------------------------------------------------
@@ -187,11 +191,11 @@ async fn run_async(
     let bind_address = config.server.bind_address.as_deref();
 
     if opts.json {
-        output::json_snippet(&project, opts.transport, opts.raw_token, bind_address);
+        output::json_snippet(&project, opts.transport, opts.auth, bind_address);
     } else {
         output::registered(&project, already_existed);
         output::project_id(&project);
-        output::mcp_snippet(&project, opts.transport, opts.raw_token, bind_address);
+        output::mcp_snippet(&project, opts.transport, opts.auth, bind_address);
     }
 
     Ok(())
@@ -201,16 +205,28 @@ async fn run_async(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolves the bearer token from an explicit `--token` flag or the
-/// `TRIBAL_AUTH_TOKEN` environment variable.
-fn resolve_token(explicit: Option<String>) -> Option<String> {
-    let raw = explicit.or_else(|| std::env::var(ENV_AUTH_TOKEN).ok())?;
+/// Resolves the bearer auth value from an explicit `--token` flag or
+/// the `TRIBAL_AUTH_TOKEN` environment variable.
+///
+/// # Errors
+///
+/// Returns [`AppError::TokenVerification`] when the resolved string is
+/// not a well-formed [`BearerToken`] (empty or contains whitespace).
+fn resolve_auth(explicit: Option<String>) -> Result<Option<Auth>, AppError> {
+    let Some(raw) = explicit.or_else(|| std::env::var(ENV_AUTH_TOKEN).ok()) else {
+        return Ok(None);
+    };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_owned())
+        return Ok(None);
     }
+    let token: BearerToken = trimmed
+        .parse()
+        .map_err(|source| AppError::TokenVerification {
+            reason: "bearer token from --token or TRIBAL_AUTH_TOKEN is invalid".into(),
+            source: Box::new(source),
+        })?;
+    Ok(Some(Auth::Bearer { token }))
 }
 
 /// Resolves the git remote from an explicit `--remote` flag or by
