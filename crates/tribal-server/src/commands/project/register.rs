@@ -1,6 +1,11 @@
 //! Core register flow: entry point and async orchestration.
 
-use std::{path::Path, str::FromStr, sync::Arc};
+use std::{
+    io::{self, Write},
+    path::Path,
+    str::FromStr,
+    sync::Arc,
+};
 
 use tribal_config::{Auth, ENV_AUTH_TOKEN, TransportKind, TribalConfig, load_config};
 use tribal_db::{
@@ -57,8 +62,11 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
     let cli_overrides = database.into_cli_overrides();
     let git_remote = resolve_git_remote(remote.as_deref())?;
 
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
+
     if !json {
-        output::git_remote_resolved(git_remote.as_str());
+        output::git_remote_resolved(&mut stderr, git_remote.as_str());
     }
 
     let name = name.unwrap_or_else(|| git_remote.path().to_owned());
@@ -100,7 +108,15 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
         config_path: &absolute_config_path,
     };
 
-    rt.block_on(run_async(&config, &git_remote, &name, &branch, &opts))
+    rt.block_on(run_async(
+        &config,
+        &git_remote,
+        &name,
+        &branch,
+        &opts,
+        &mut stdout,
+        &mut stderr,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +141,8 @@ async fn run_async(
     name: &str,
     branch: &str,
     opts: &OutputOptions<'_>,
+    out_stdout: &mut dyn Write,
+    out_stderr: &mut dyn Write,
 ) -> Result<(), AppError> {
     let pool = tribal_db::create_pool(
         &config.database,
@@ -196,22 +214,35 @@ async fn run_async(
 
     if opts.json {
         output::json_snippet(
+            out_stdout,
             &project,
             opts.transport,
             opts.auth,
             opts.config_path,
             &advertised_url,
-        );
+        )
+        .map_err(|source| AppError::SetupIo {
+            context: "writing project register --json snippet".into(),
+            source,
+        })?;
     } else {
-        output::registered(&project, already_existed);
-        output::project_id(&project);
+        output::registered(out_stderr, &project, already_existed);
+        output::project_id(out_stdout, &project).map_err(|source| AppError::SetupIo {
+            context: "writing project id".into(),
+            source,
+        })?;
         output::mcp_snippet(
+            out_stdout,
             &project,
             opts.transport,
             opts.auth,
             opts.config_path,
             &advertised_url,
-        );
+        )
+        .map_err(|source| AppError::SetupIo {
+            context: "writing project register mcp snippet".into(),
+            source,
+        })?;
     }
 
     Ok(())
