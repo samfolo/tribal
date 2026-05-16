@@ -1,14 +1,20 @@
 //! Shared utilities for CLI command implementations.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::TimeDelta;
 use rand::RngExt;
 use sqlx::{Postgres, pool::PoolConnection};
-use tribal_config::{ConfigError, ERR_TTL_ZERO};
+use tribal_config::{
+    CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, ConfigError, Credentials,
+    ERR_TTL_ZERO, write_credentials,
+};
 use tribal_db::{DbError, NewPrincipal, PgPrincipalRepository, PrincipalRepository};
-use tribal_domain::Principal;
+use tribal_domain::{BearerToken, Principal};
 
 use crate::error::AppError;
 
@@ -230,6 +236,33 @@ pub(crate) fn resolve_absolute_config_path(raw: &str) -> Result<PathBuf, AppErro
         }
     })?;
     Ok(path_clean::clean(absolute))
+}
+
+// ---------------------------------------------------------------------------
+// Credentials persistence
+// ---------------------------------------------------------------------------
+
+/// Best-effort persistence of a bearer token via
+/// [`write_credentials`]. On failure, writes a warning to `out` and
+/// returns: persistence loss is recoverable since the token already
+/// exists in the database and has been surfaced to the user.
+///
+/// Lives at the wrapper layer rather than inside `run_async` because
+/// the credentials path resolves through `$XDG_CONFIG_HOME` — a
+/// process-global the existing `run_async` convention deliberately
+/// avoids.
+pub(crate) fn persist_credentials(out: &mut dyn Write, token: &BearerToken) {
+    let creds = Credentials::bearer(token.clone());
+    let Err(err) = write_credentials(&creds) else {
+        return;
+    };
+    let path = err
+        .path()
+        .map_or_else(|| "<unresolved>".to_owned(), |p| p.display().to_string());
+    let _ = writeln!(
+        out,
+        "{CREDENTIALS_WRITE_FAILED_PREFIX}{path}: {err}{CREDENTIALS_WRITE_FAILED_SUFFIX}",
+    );
 }
 
 // ---------------------------------------------------------------------------

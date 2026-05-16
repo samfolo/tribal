@@ -1,17 +1,20 @@
 //! Core create flow: entry point and async orchestration.
 
+use std::io;
+
 use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
 use tribal_config::{DatabaseConfig, load_config};
 use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
-use tribal_domain::{LOCAL_PRINCIPAL_KEY, full_access_scopes};
+use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, full_access_scopes};
 
 use super::output;
 use crate::{
     cli::TokenCreateArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
-        TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, resolve_ttl,
+        TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, persist_credentials,
+        resolve_ttl,
     },
     error::AppError,
 };
@@ -52,19 +55,21 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    rt.block_on(run_async(&config.database, &principal_key, expires_at))
+    let bearer_token = rt.block_on(run_async(&config.database, &principal_key, expires_at))?;
+    persist_credentials(&mut io::stderr().lock(), &bearer_token);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Async flow
 // ---------------------------------------------------------------------------
 
-/// Creates a new auth token for the resolved principal.
+/// Creates a new auth token for the resolved principal and returns it.
 async fn run_async(
     db_config: &DatabaseConfig,
     principal_key: &str,
     expires_at: DateTime<Utc>,
-) -> Result<(), AppError> {
+) -> Result<BearerToken, AppError> {
     let pool = tribal_db::create_pool(
         db_config,
         POOL_NAME,
@@ -97,8 +102,16 @@ async fn run_async(
         .await
         .map_err(|source| AppError::Database { source })?;
 
-    output::raw_token(&raw_token);
+    let bearer_token: BearerToken =
+        raw_token
+            .parse()
+            .map_err(|source| AppError::TokenVerification {
+                reason: "generated bearer token failed parse validation".into(),
+                source: Box::new(source),
+            })?;
+
+    output::raw_token(bearer_token.as_str());
     output::token_created(&expires_at.format(TIMESTAMP_FORMAT).to_string());
 
-    Ok(())
+    Ok(bearer_token)
 }
