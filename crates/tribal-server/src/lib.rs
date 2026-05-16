@@ -13,6 +13,9 @@ mod startup;
 mod transport;
 
 pub use app::App;
+pub use commands::{
+    bootstrap_async, mcp_config_async, register_async, setup_async, token_create_async,
+};
 pub use error::AppError;
 pub use orchestration::{ServerHandle, start_server};
 #[cfg(feature = "test-helpers")]

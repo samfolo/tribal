@@ -25,7 +25,7 @@ pub(crate) const WARNING_CONFIG_UNREADABLE: &str =
 
 /// Outcome of the config file write attempt.
 #[derive(Debug)]
-pub(crate) enum ConfigFileOutcome {
+pub enum ConfigFileOutcome {
     /// The file was written successfully.
     Written {
         /// Path where the file was written.
@@ -42,7 +42,8 @@ pub(crate) enum ConfigFileOutcome {
 
 impl ConfigFileOutcome {
     /// The path the write targeted, regardless of variant.
-    pub(crate) fn path(&self) -> &Path {
+    #[must_use]
+    pub fn path(&self) -> &Path {
         match self {
             Self::Written { path } | Self::AlreadyExists { path, .. } => path,
         }
