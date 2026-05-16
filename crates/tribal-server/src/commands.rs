@@ -10,9 +10,13 @@
 mod bootstrap;
 pub(crate) mod common;
 pub(crate) mod config;
+mod mcp_config;
 pub(crate) mod project;
 mod serve;
 pub(crate) mod setup;
 pub(crate) mod token;
 
-pub(crate) use self::{bootstrap::run as bootstrap, serve::run as serve, setup::run as setup};
+pub(crate) use self::{
+    bootstrap::run as bootstrap, mcp_config::run as mcp_config, serve::run as serve,
+    setup::run as setup,
+};
