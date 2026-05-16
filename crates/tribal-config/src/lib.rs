@@ -22,7 +22,7 @@ pub use divergence::{
 };
 pub use env::{
     ENV_ANTHROPIC_API_KEY, ENV_AUTH_TOKEN, ENV_CONFIG_PATH, ENV_OPENAI_API_KEY, ENV_PREFIX,
-    ENV_PROJECT_ID,
+    ENV_PROJECT_ID, ENV_PUBLIC_MCP_URL,
 };
 pub use error::ConfigError;
 pub use loader::{

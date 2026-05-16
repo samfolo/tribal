@@ -59,7 +59,8 @@ tribal-worker.workspace = true
 test-helpers = []
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+figment = { workspace = true, features = ["test"] }
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 tribal-test-utils.workspace = true
