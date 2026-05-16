@@ -6,15 +6,11 @@
 //! that compose multiple commands (`bootstrap`) can redirect output to
 //! `io::sink` and assemble their own polished presentation.
 
-use std::{
-    io::{self, Write},
-    path::Path,
-};
+use std::io::{self, Write};
 
-use tribal_config::{Auth, TransportKind};
 use tribal_domain::Project;
 
-use crate::output::{build_snippet_entry, snippet_key};
+use crate::output::snippet_key;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -90,16 +86,14 @@ pub(super) fn project_id(out: &mut dyn Write, project: &Project) -> io::Result<(
 /// stdout-equivalent writer.
 ///
 /// Includes the `mcpServers` wrapper and server key for human
-/// readability when copy-pasting.
+/// readability when copy-pasting. The caller pre-builds the inner
+/// `entry` so it can also be stashed in a `RegisterOutcome` without
+/// double-rendering.
 pub(super) fn mcp_snippet(
     out: &mut dyn Write,
     project: &Project,
-    transport: TransportKind,
-    auth: Option<&Auth>,
-    config_path: &Path,
-    advertised_url: &str,
+    entry: &serde_json::Value,
 ) -> io::Result<()> {
-    let entry = build_snippet_entry(project, transport, auth, config_path, advertised_url);
     let key = snippet_key(project);
     let wrapped = serde_json::json!({
         "mcpServers": {
@@ -114,16 +108,8 @@ pub(super) fn mcp_snippet(
 /// for piping into tools like `claude mcp add-json <name> <json>`.
 ///
 /// No `mcpServers` wrapper, no project ID, no stderr output.
-pub(super) fn json_snippet(
-    out: &mut dyn Write,
-    project: &Project,
-    transport: TransportKind,
-    auth: Option<&Auth>,
-    config_path: &Path,
-    advertised_url: &str,
-) -> io::Result<()> {
-    let entry = build_snippet_entry(project, transport, auth, config_path, advertised_url);
-    let rendered = serde_json::to_string_pretty(&entry).expect("JSON serialisation cannot fail");
+pub(super) fn json_snippet(out: &mut dyn Write, entry: &serde_json::Value) -> io::Result<()> {
+    let rendered = serde_json::to_string_pretty(entry).expect("JSON serialisation cannot fail");
     try_write_line(out, &rendered)
 }
 

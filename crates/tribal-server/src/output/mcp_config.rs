@@ -2,9 +2,7 @@
 
 use std::path::Path;
 
-use tribal_config::{
-    Auth, DEFAULT_BIND_ADDRESS, ENV_PUBLIC_MCP_URL, TransportKind, TribalConfig,
-};
+use tribal_config::{Auth, DEFAULT_BIND_ADDRESS, ENV_PUBLIC_MCP_URL, TransportKind, TribalConfig};
 use tribal_domain::Project;
 
 /// Builds the MCP server entry for a project.

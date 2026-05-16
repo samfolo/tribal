@@ -1,6 +1,7 @@
 //! Implementation of `tribal project` subcommands.
 
 mod list;
+mod outcome;
 mod output;
 mod register;
 
