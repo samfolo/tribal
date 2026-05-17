@@ -107,6 +107,7 @@ impl Component for HandoffView<'_> {
             TransportKind::Http | TransportKind::Sse => {
                 HttpSseTokenBlock {
                     token: h.bearer_token,
+                    credentials: h.credentials,
                 }
                 .render(ctx)?;
                 writeln!(ctx)?;
@@ -455,19 +456,15 @@ mod tests {
         );
     }
 
-    // -- Stderr × stdio (credentials failure) ---------------------------------
+    // -- Stderr × credentials failure (both transports) ----------------------
 
-    /// When credentials.json could not be persisted, the stdio token
-    /// block must NOT claim it was saved. Exercised here against a
-    /// representative `Failed` outcome.
-    #[test]
-    fn test_stderr_stdio_credentials_failed_matches_snapshot() {
+    fn render_stderr_credentials_failed(transport: TransportKind) -> String {
         let bearer = fixture_bearer_token();
         let project = fixture_project();
         let auth = Auth::Bearer {
             token: bearer.clone(),
         };
-        let mcp_entry = fixture_mcp_entry(TransportKind::Stdio, Some(&auth));
+        let mcp_entry = fixture_mcp_entry(transport, Some(&auth));
         let advertised_url = fixture_advertised_url();
         let config_file = fixture_written();
         let credentials = CredentialsPersistOutcome::Failed {
@@ -480,7 +477,7 @@ mod tests {
             project_id: project.id(),
             project_name: project.name(),
             git_remote: project.git_remote(),
-            transport: TransportKind::Stdio,
+            transport,
             mcp_entry: &mcp_entry,
             config_file: &config_file,
             credentials: &credentials,
@@ -493,10 +490,24 @@ mod tests {
             let mut writer = AutoStream::new(&mut buf, ColorChoice::Never);
             write_human(&mut writer, &theme, &handoff).expect("write_human succeeds");
         }
-        let captured = String::from_utf8(buf).expect("utf8");
+        String::from_utf8(buf).expect("utf8")
+    }
+
+    #[test]
+    fn test_stderr_stdio_credentials_failed_matches_snapshot() {
+        let captured = render_stderr_credentials_failed(TransportKind::Stdio);
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-stdio-credentials-failed.txt"
+        );
+    }
+
+    #[test]
+    fn test_stderr_http_credentials_failed_matches_snapshot() {
+        let captured = render_stderr_credentials_failed(TransportKind::Http);
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-http-credentials-failed.txt"
         );
     }
 

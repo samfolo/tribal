@@ -9,9 +9,7 @@ warning: database.url differs from the resolved value
 Next steps:
 
 1. These flag values were NOT persisted because the config file already exists.
-   /etc/tribal/tribal.yaml already exists. Edit it or export the
-   corresponding TRIBAL_* env vars to make the supplied
-   flag values durable:
+   Edit /etc/tribal/tribal.yaml or export the corresponding TRIBAL_* env vars:
      export TRIBAL_EMBEDDING__PROVIDER=…
      export TRIBAL_EMBEDDING__MODEL=…
      export TRIBAL_INFERENCE__EXTRACTION__PROVIDER=…

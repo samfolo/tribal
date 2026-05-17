@@ -46,14 +46,25 @@ impl Component for StdioTokenBlock<'_> {
 /// because step 1 (`export TRIBAL_AUTH_TOKEN=…`) references the token.
 pub(super) struct HttpSseTokenBlock<'a> {
     pub token: &'a BearerToken,
+    pub credentials: &'a CredentialsPersistOutcome,
 }
 
 impl Component for HttpSseTokenBlock<'_> {
     fn render(&self, ctx: &mut RenderCtx) -> io::Result<()> {
         let style = ctx.theme().typography.body;
-        Text::new("Bearer token (save this — it will not be shown again):")
-            .with_style(style)
-            .renderln(ctx)?;
+        let heading = match self.credentials {
+            CredentialsPersistOutcome::Persisted { path } => {
+                format!(
+                    "Bearer token (save this — it will not be shown again; also saved to {}):",
+                    path.display(),
+                )
+            }
+            CredentialsPersistOutcome::Failed { .. } => {
+                "Bearer token (save this — credentials.json was NOT written, copy it manually):"
+                    .to_owned()
+            }
+        };
+        Text::new(heading).with_style(style).renderln(ctx)?;
         writeln!(ctx)?;
         Text::new(self.token.as_str())
             .with_style(style)

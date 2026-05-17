@@ -12,7 +12,7 @@ use tribal_config::{
     Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config,
 };
 use tribal_domain::GitRemote;
-use tribal_ui::{Mode, Stream, StreamThemeContext, Theme, resolve_mode};
+use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
 
 use super::output::{Handoff, write_human, write_json};
 use crate::{
@@ -31,6 +31,14 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Context surfaced through [`AppError::SetupIo`] when the credentials
+/// warning emit fails.
+const CREDENTIALS_WARNING_WRITE_CONTEXT: &str = "writing bootstrap credentials warning";
+
+// ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
 
@@ -39,7 +47,8 @@ use crate::{
 /// Constructed by the synchronous [`run`] wrapper from a parsed
 /// [`BootstrapArgs`] plus the resolved config and git remote. Tests
 /// construct the same struct against fixture inputs so the production
-/// pipeline is the unit under test.
+/// pipeline is the unit under test. Crate-public under the
+/// `test-helpers` feature.
 pub struct BootstrapOptions<'a> {
     /// Fully merged + validated configuration.
     pub config: &'a TribalConfig,
@@ -113,7 +122,7 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
 
     let stderr_lock = io::stderr().lock();
     let is_tty = stderr_lock.is_terminal();
-    let stream_ctx = StreamThemeContext::probe(Stream::Stderr, is_tty, resolve_mode(Mode::Auto));
+    let stream_ctx = StreamThemeContext::probe_stderr(is_tty, resolve_mode(Mode::Auto));
     let mut wrapped_stderr = AutoStream::new(stderr_lock, stream_ctx.color_choice);
     let mut stdout = io::stdout().lock();
 
@@ -139,12 +148,20 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
 // Async flow
 // ---------------------------------------------------------------------------
 
-/// Drives setup → register → output, discarding the intermediate stderr
-/// of each composed step.
+/// Drives setup → register → output.
 ///
 /// `out_stdout` receives the `--json` payload (when requested);
 /// `out_stderr` receives the human hand-off and any persistence
 /// warnings.
+///
+/// Setup's own stderr is captured into an in-memory buffer so the raw
+/// token print — which setup emits immediately after the DB insert as
+/// its recovery contract — is preserved through later failures. A
+/// [`RecoveryGuard`] then watches every IO step after the insert: any
+/// early return before the polished hand-off renders replays the
+/// captured output via the guard's [`Drop`]. On success the guard is
+/// disarmed and the buffer is discarded — the hand-off has already
+/// rendered the token in a better form.
 ///
 /// # Errors
 ///
@@ -157,15 +174,27 @@ pub async fn run_async(
 ) -> Result<(), AppError> {
     // -- Setup --------------------------------------------------------------
 
+    let mut setup_buf: Vec<u8> = Vec::new();
     let setup_outcome = setup::run_async(
         opts.config,
         opts.config_path,
         opts.principal_key,
         opts.expires_at,
         ConfigPersistence::Persisted(opts.persisted_overrides),
-        &mut io::sink(),
+        &mut setup_buf,
     )
-    .await?;
+    .await
+    .inspect_err(|_| {
+        // Setup failed before its caller could arm the recovery guard;
+        // replay the captured output here so the token print (emitted
+        // immediately after the DB insert) still reaches the user.
+        let _ = out_stderr.write_all(&setup_buf);
+    })?;
+
+    // From here on, any error path replays the captured setup output
+    // via the guard's `Drop` rather than peppering each bail-out with
+    // a manual replay.
+    let mut recovery = RecoveryGuard::arm(out_stderr, &setup_buf);
 
     // -- Register -----------------------------------------------------------
 
@@ -214,20 +243,68 @@ pub async fn run_async(
             source,
         })?;
     } else {
-        write_human(out_stderr, opts.theme, &handoff).map_err(|source| AppError::SetupIo {
+        write_human(recovery.dest(), opts.theme, &handoff).map_err(|source| AppError::SetupIo {
             context: "writing bootstrap stderr output".into(),
             source,
         })?;
     }
 
-    // Surface the credentials-write warning after the hand-off so the
-    // literal's "printed above" claim resolves against the freshly
-    // rendered token block.
+    // The hand-off rendered the token block in its better form. Anything
+    // after this point is best-effort decoration, not a recovery
+    // surface, so disarm the guard.
+    recovery.disarm();
+
     if let CredentialsPersistOutcome::Failed { warning } = &setup_outcome.credentials {
-        let _ = writeln!(out_stderr, "{warning}");
+        writeln!(recovery.dest(), "{warning}").map_err(|source| AppError::SetupIo {
+            context: CREDENTIALS_WARNING_WRITE_CONTEXT.into(),
+            source,
+        })?;
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Recovery guard
+// ---------------------------------------------------------------------------
+
+/// Replays a captured stderr buffer on drop when armed.
+///
+/// Borrows `dest` mutably for the guarded scope; consumers reach the
+/// underlying writer through [`dest`](Self::dest) so a single early
+/// return through `?` triggers the replay via [`Drop`]. The replay is
+/// best-effort: the caller is already returning a more informative
+/// [`AppError`], and a broken stderr should not mask it.
+struct RecoveryGuard<'a> {
+    dest: &'a mut dyn Write,
+    buf: &'a [u8],
+    armed: bool,
+}
+
+impl<'a> RecoveryGuard<'a> {
+    fn arm(dest: &'a mut dyn Write, buf: &'a [u8]) -> Self {
+        Self {
+            dest,
+            buf,
+            armed: true,
+        }
+    }
+
+    fn dest(&mut self) -> &mut dyn Write {
+        self.dest
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RecoveryGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.dest.write_all(self.buf);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
