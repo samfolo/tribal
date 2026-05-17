@@ -148,6 +148,16 @@ pub(crate) async fn run_async(
         }
     };
 
+    // Compute and write the config file BEFORE the token insert so a
+    // render or filesystem failure leaves no DB token row behind. After
+    // the insert succeeds the only remaining fallible step is the
+    // instructions writeln; if that fails, the user can rerun
+    // `tribal token create` against an already-valid config file.
+    let content = persistence
+        .render(config)
+        .map_err(|source| AppError::Config { source })?;
+    let config_file = config_file::write_if_absent(config_path, config, &content).await?;
+
     let raw_token = generate_raw_token();
     let token_hash = sha256_hex(&raw_token);
 
@@ -166,6 +176,8 @@ pub(crate) async fn run_async(
 
     drop(conn);
 
+    output::config_file(out, &config_file);
+
     let bearer_token: BearerToken =
         raw_token
             .parse()
@@ -174,21 +186,12 @@ pub(crate) async fn run_async(
                 source: Box::new(source),
             })?;
 
-    // Print the raw token first so any later failure leaves the user
-    // with a recoverable value; persistence and the config-file write
-    // are best-effort artefacts on top of an already-visible token.
     output::instructions(out, bearer_token.as_str()).map_err(|source| AppError::SetupIo {
         context: "writing bearer token output".into(),
         source,
     })?;
 
     let credentials = persist_credentials(&bearer_token);
-
-    let content = persistence
-        .render(config)
-        .map_err(|source| AppError::Config { source })?;
-    let config_file = config_file::write_if_absent(config_path, config, &content).await?;
-    output::config_file(out, &config_file);
 
     Ok(SetupOutcome {
         bearer_token,
