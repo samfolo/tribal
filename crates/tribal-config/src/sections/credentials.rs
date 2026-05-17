@@ -106,6 +106,11 @@ impl Credentials {
 // ---------------------------------------------------------------------------
 
 /// Failure persisting [`Credentials`] to disk.
+///
+/// Each post-resolution variant carries the credentials file path the
+/// writer was targeting, plus the underlying `io::Error` formatted via
+/// `{source}` so warn-and-success output preserves both pieces of
+/// diagnostic information.
 #[derive(Debug, Error)]
 pub enum CredentialsWriteError {
     /// Resolution of the credentials path itself failed (e.g. missing
@@ -114,28 +119,28 @@ pub enum CredentialsWriteError {
     Path(#[from] ConfigDirError),
 
     /// The parent directory could not be created.
-    #[error("could not create directory {path}")]
+    #[error("could not create parent directory for {path}: {source}")]
     CreateDir {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
 
-    /// Writing the tempfile in the parent directory failed.
-    #[error("could not write tempfile in {parent}")]
+    /// Writing the tempfile alongside the target credentials file failed.
+    #[error("could not write tempfile beside {path}: {source}")]
     WriteTempfile {
-        parent: PathBuf,
+        path: PathBuf,
         #[source]
         source: io::Error,
     },
 
     /// Serialising the credentials to JSON failed.
-    #[error("could not serialise credentials to JSON")]
+    #[error("could not serialise credentials to JSON: {0}")]
     Serialise(#[source] serde_json::Error),
 
     /// Setting the `0600` file mode failed.
     #[cfg(unix)]
-    #[error("could not set permissions on {path}")]
+    #[error("could not set permissions on {path}: {source}")]
     SetPermissions {
         path: PathBuf,
         #[source]
@@ -143,7 +148,7 @@ pub enum CredentialsWriteError {
     },
 
     /// Renaming the tempfile to the target path failed.
-    #[error("could not persist tempfile to {path}")]
+    #[error("could not persist tempfile to {path}: {source}")]
     Persist {
         path: PathBuf,
         #[source]
@@ -160,9 +165,9 @@ impl CredentialsWriteError {
         match self {
             Self::Path(_) | Self::Serialise(_) => None,
             Self::CreateDir { path, .. }
+            | Self::WriteTempfile { path, .. }
             | Self::SetPermissions { path, .. }
             | Self::Persist { path, .. } => Some(path),
-            Self::WriteTempfile { parent, .. } => Some(parent),
         }
     }
 }
@@ -199,14 +204,14 @@ fn write_credentials_at(path: &Path, creds: &Credentials) -> Result<(), Credenti
 
     let mut tempfile =
         NamedTempFile::new_in(parent).map_err(|source| CredentialsWriteError::WriteTempfile {
-            parent: parent.to_owned(),
+            path: path.to_owned(),
             source,
         })?;
 
     tempfile
         .write_all(&payload)
         .map_err(|source| CredentialsWriteError::WriteTempfile {
-            parent: parent.to_owned(),
+            path: path.to_owned(),
             source,
         })?;
 
@@ -214,7 +219,7 @@ fn write_credentials_at(path: &Path, creds: &Credentials) -> Result<(), Credenti
         .as_file()
         .sync_all()
         .map_err(|source| CredentialsWriteError::WriteTempfile {
-            parent: parent.to_owned(),
+            path: path.to_owned(),
             source,
         })?;
 
@@ -578,7 +583,19 @@ mod tests {
             matches!(err, CredentialsWriteError::WriteTempfile { .. }),
             "expected WriteTempfile, got: {err:?}",
         );
-        assert_eq!(err.path(), Some(parent.as_path()));
+        // The error reports the credentials file path, not its parent
+        // directory; the message surfaces alongside the underlying
+        // io::Error so callers see both the target and the cause.
+        assert_eq!(err.path(), Some(path.as_path()));
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("credentials.json"),
+            "warning should name the credentials file: {rendered}",
+        );
+        assert!(
+            rendered.contains("Permission denied") || rendered.contains("permission denied"),
+            "warning should surface the underlying io::Error: {rendered}",
+        );
 
         // Restore permissions so the tempdir cleanup succeeds.
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
