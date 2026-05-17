@@ -7,7 +7,7 @@ Transport:   stdio (no bearer token required at runtime)
 Next steps:
 
 1. Persisted to /etc/tribal/tribal.yaml: --embedding-provider, --embedding-model, --inference-extraction-provider, --inference-extraction-model, --telemetry-otlp-endpoint.
-   Future `tribal serve` invocations will read these from the config.
+   Future invocations will read these from the config file.
 
 2. Verify your installation is ready for use:
    tribal check
@@ -22,6 +22,6 @@ Next steps:
 5. (Optional) Install Tribal skills into your agent:
    npx skills add samfolo/tribal-skills
 
-Bearer token (also saved to ~/.config/tribal/credentials.json):
+Bearer token (also saved to /home/sam/.config/tribal/credentials.json):
 
   test-bearer-token

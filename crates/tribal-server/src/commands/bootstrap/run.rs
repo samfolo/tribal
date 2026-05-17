@@ -9,10 +9,10 @@ use std::{
 use anstream::AutoStream;
 use chrono::{DateTime, Utc};
 use tribal_config::{
-    Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config, validate,
+    Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config,
 };
 use tribal_domain::GitRemote;
-use tribal_ui::{Mode, Stream, StreamThemeContext, Theme, probe::resolve_mode};
+use tribal_ui::{Mode, Stream, StreamThemeContext, Theme, resolve_mode};
 
 use super::output::{Handoff, write_human, write_json};
 use crate::{
@@ -99,7 +99,6 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
         Some(cli_overrides),
         Some(&DATABASE_COMMAND_DEFAULTS),
     )?;
-    validate(&config)?;
 
     let expires_at = Utc::now() + resolve_ttl(ttl, config.auth.token_ttl_hours)?;
     let absolute_config_path = resolve_absolute_config_path(config_path)?;
@@ -168,14 +167,6 @@ pub async fn run_async(
     )
     .await?;
 
-    // Surface any credentials-write warning on the hand-off stream
-    // ahead of the polished output. The persistence attempt itself
-    // happened inside `setup::run_async` immediately after the token
-    // print.
-    if let CredentialsPersistOutcome::Failed { warning } = &setup_outcome.credentials {
-        let _ = writeln!(out_stderr, "{warning}");
-    }
-
     // -- Register -----------------------------------------------------------
 
     let auth = Auth::Bearer {
@@ -212,6 +203,7 @@ pub async fn run_async(
         transport: opts.transport,
         mcp_entry: &project.mcp_config,
         config_file: &setup_outcome.config_file,
+        credentials: &setup_outcome.credentials,
         persistence: ConfigPersistence::Persisted(opts.persisted_overrides),
         advertised_url: &advertised_url,
     };
@@ -226,6 +218,13 @@ pub async fn run_async(
             context: "writing bootstrap stderr output".into(),
             source,
         })?;
+    }
+
+    // Surface the credentials-write warning after the hand-off so the
+    // literal's "printed above" claim resolves against the freshly
+    // rendered token block.
+    if let CredentialsPersistOutcome::Failed { warning } = &setup_outcome.credentials {
+        let _ = writeln!(out_stderr, "{warning}");
     }
 
     Ok(())

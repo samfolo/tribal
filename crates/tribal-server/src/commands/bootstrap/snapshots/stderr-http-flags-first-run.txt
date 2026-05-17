@@ -23,7 +23,7 @@ Next steps:
    bind, `server.bind_address`).
 
 3. Persisted to /etc/tribal/tribal.yaml: --embedding-provider, --embedding-model, --inference-extraction-provider, --inference-extraction-model, --telemetry-otlp-endpoint.
-   Future `tribal serve` invocations will read these from the config.
+   Future invocations will read these from the config file.
 
 4. Start the server in another terminal (it is NOT running yet —
    bootstrap registers + mints a token but does not start serve):

@@ -19,6 +19,6 @@ Next steps:
 4. (Optional) Install Tribal skills into your agent:
    npx skills add samfolo/tribal-skills
 
-Bearer token (also saved to ~/.config/tribal/credentials.json):
+Bearer token (also saved to /home/sam/.config/tribal/credentials.json):
 
   test-bearer-token

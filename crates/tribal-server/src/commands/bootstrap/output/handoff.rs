@@ -7,14 +7,14 @@ use std::io::{self, Write};
 use serde_json::Value;
 use tribal_config::{ConfigPersistence, TransportKind};
 use tribal_domain::{BearerToken, GitRemote, PrincipalId, ProjectId};
-use tribal_ui::{Component, Header, RenderCtx, Theme};
+use tribal_ui::{Component, Header, RenderCtx, Text, Theme};
 
 use super::{
     action_list::{ActionInputs, ActionList, http_sse_steps, stdio_steps},
     status_block::StatusBlock,
     token_block::{HttpSseTokenBlock, StdioTokenBlock},
 };
-use crate::commands::setup::ConfigFileOutcome;
+use crate::commands::{common::CredentialsPersistOutcome, setup::ConfigFileOutcome};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,6 +38,7 @@ pub(in crate::commands::bootstrap) struct Handoff<'a> {
     pub transport: TransportKind,
     pub mcp_entry: &'a Value,
     pub config_file: &'a ConfigFileOutcome,
+    pub credentials: &'a CredentialsPersistOutcome,
     pub persistence: ConfigPersistence<'a>,
     pub advertised_url: &'a str,
 }
@@ -70,6 +71,18 @@ impl Component for HandoffView<'_> {
         .render(ctx)?;
         writeln!(ctx)?;
 
+        if let ConfigFileOutcome::AlreadyExists { warnings, .. } = h.config_file {
+            let style = ctx.theme().typography.body;
+            for warning in warnings {
+                Text::new(format!("warning: {warning}"))
+                    .with_style(style)
+                    .renderln(ctx)?;
+            }
+            if !warnings.is_empty() {
+                writeln!(ctx)?;
+            }
+        }
+
         let inputs = ActionInputs {
             bearer_token: h.bearer_token,
             transport: h.transport,
@@ -87,6 +100,7 @@ impl Component for HandoffView<'_> {
                 writeln!(ctx)?;
                 StdioTokenBlock {
                     token: h.bearer_token,
+                    credentials: h.credentials,
                 }
                 .render(ctx)?;
             }
@@ -257,6 +271,16 @@ mod tests {
         }
     }
 
+    /// Representative `Persisted` outcome used by every snapshot case
+    /// that exercises the success path. The path matches the eventual
+    /// `$XDG_CONFIG_HOME` resolution so the stdio token block prints a
+    /// concrete location.
+    fn fixture_credentials_persisted() -> CredentialsPersistOutcome {
+        CredentialsPersistOutcome::Persisted {
+            path: PathBuf::from("/home/sam/.config/tribal/credentials.json"),
+        }
+    }
+
     fn render_stderr(case: &Case<'_>) -> String {
         let bearer = fixture_bearer_token();
         let project = fixture_project();
@@ -265,6 +289,7 @@ mod tests {
         };
         let mcp_entry = fixture_mcp_entry(case.transport, Some(&auth));
         let advertised_url = fixture_advertised_url();
+        let credentials = fixture_credentials_persisted();
         let handoff = Handoff {
             bearer_token: &bearer,
             principal_key: "principal:local",
@@ -275,6 +300,7 @@ mod tests {
             transport: case.transport,
             mcp_entry: &mcp_entry,
             config_file: &case.config_file,
+            credentials: &credentials,
             persistence: case.persistence,
             advertised_url: &advertised_url,
         };
@@ -296,6 +322,7 @@ mod tests {
         let mcp_entry = fixture_mcp_entry(transport, Some(&auth));
         let config_file = fixture_written();
         let advertised_url = fixture_advertised_url();
+        let credentials = fixture_credentials_persisted();
         let handoff = Handoff {
             bearer_token: &bearer,
             principal_key: "principal:local",
@@ -306,6 +333,7 @@ mod tests {
             transport,
             mcp_entry: &mcp_entry,
             config_file: &config_file,
+            credentials: &credentials,
             persistence: ConfigPersistence::Minimal,
             advertised_url: &advertised_url,
         };
@@ -424,6 +452,51 @@ mod tests {
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-http-flags-file-exists.txt"
+        );
+    }
+
+    // -- Stderr × stdio (credentials failure) ---------------------------------
+
+    /// When credentials.json could not be persisted, the stdio token
+    /// block must NOT claim it was saved. Exercised here against a
+    /// representative `Failed` outcome.
+    #[test]
+    fn test_stderr_stdio_credentials_failed_matches_snapshot() {
+        let bearer = fixture_bearer_token();
+        let project = fixture_project();
+        let auth = Auth::Bearer {
+            token: bearer.clone(),
+        };
+        let mcp_entry = fixture_mcp_entry(TransportKind::Stdio, Some(&auth));
+        let advertised_url = fixture_advertised_url();
+        let config_file = fixture_written();
+        let credentials = CredentialsPersistOutcome::Failed {
+            warning: "warning: could not persist credentials.json at /tmp/x: …".into(),
+        };
+        let handoff = Handoff {
+            bearer_token: &bearer,
+            principal_key: "principal:local",
+            principal_id: fixture_principal_id(),
+            project_id: project.id(),
+            project_name: project.name(),
+            git_remote: project.git_remote(),
+            transport: TransportKind::Stdio,
+            mcp_entry: &mcp_entry,
+            config_file: &config_file,
+            credentials: &credentials,
+            persistence: ConfigPersistence::Minimal,
+            advertised_url: &advertised_url,
+        };
+        let theme = Theme::default_dark();
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut writer = AutoStream::new(&mut buf, ColorChoice::Never);
+            write_human(&mut writer, &theme, &handoff).expect("write_human succeeds");
+        }
+        let captured = String::from_utf8(buf).expect("utf8");
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-stdio-credentials-failed.txt"
         );
     }
 

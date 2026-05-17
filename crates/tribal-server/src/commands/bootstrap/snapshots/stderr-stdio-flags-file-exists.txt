@@ -4,6 +4,8 @@ Project:     widgets (proj_00000000-0000-0000-0000-000000000002)
 Git remote:  github.com/acme/widgets
 Transport:   stdio (no bearer token required at runtime)
 
+warning: database.url differs from the resolved value
+
 Next steps:
 
 1. These flag values were NOT persisted because the config file already exists.
@@ -29,6 +31,6 @@ Next steps:
 5. (Optional) Install Tribal skills into your agent:
    npx skills add samfolo/tribal-skills
 
-Bearer token (also saved to ~/.config/tribal/credentials.json):
+Bearer token (also saved to /home/sam/.config/tribal/credentials.json):
 
   test-bearer-token

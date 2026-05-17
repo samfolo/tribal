@@ -54,7 +54,6 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
         Some(cli_overrides),
         Some(&DATABASE_COMMAND_DEFAULTS),
     )?;
-    validate(&config)?;
 
     let expires_at = Utc::now() + resolve_ttl(ttl, config.auth.token_ttl_hours)?;
     let absolute_config_path = resolve_absolute_config_path(config_path)?;
@@ -97,6 +96,8 @@ pub(crate) async fn run_async(
     persistence: ConfigPersistence<'_>,
     out: &mut dyn Write,
 ) -> Result<SetupOutcome, AppError> {
+    validate(config)?;
+
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     tokio::fs::create_dir_all(config_dir)
         .await
@@ -173,9 +174,14 @@ pub(crate) async fn run_async(
                 source: Box::new(source),
             })?;
 
-    // Persist credentials.json before any further fallible work so a
-    // later failure (config-file write, etc.) cannot leave a DB-side
-    // token row whose raw value the user never sees again.
+    // Print the raw token first so any later failure leaves the user
+    // with a recoverable value; persistence and the config-file write
+    // are best-effort artefacts on top of an already-visible token.
+    output::instructions(out, bearer_token.as_str()).map_err(|source| AppError::SetupIo {
+        context: "writing bearer token output".into(),
+        source,
+    })?;
+
     let credentials = persist_credentials(&bearer_token);
 
     let content = persistence
@@ -183,11 +189,6 @@ pub(crate) async fn run_async(
         .map_err(|source| AppError::Config { source })?;
     let config_file = config_file::write_if_absent(config_path, config, &content).await?;
     output::config_file(out, &config_file);
-
-    output::instructions(out, bearer_token.as_str()).map_err(|source| AppError::SetupIo {
-        context: "writing bearer token output".into(),
-        source,
-    })?;
 
     Ok(SetupOutcome {
         bearer_token,
