@@ -254,9 +254,11 @@ pub enum CredentialsPersistOutcome {
 
 /// Best-effort persistence of `token` via [`write_credentials`].
 ///
-/// Callers must invoke this only after the token row has been printed
-/// to its output stream, so a write failure leaves the user with a
-/// recoverable token rather than a hash-only row in the database.
+/// Callers invoke this immediately after the token row is inserted and
+/// **before** any fallible post-insert output. credentials.json is then
+/// the durable recovery artefact if a later writeln fails. The returned
+/// `Failed` warning is emitted by the caller on its preferred stream
+/// under the warn-and-success rule.
 pub fn persist_credentials(token: &BearerToken) -> CredentialsPersistOutcome {
     let creds = Credentials::bearer(token.clone());
     match write_credentials(&creds) {
