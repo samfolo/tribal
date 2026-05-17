@@ -202,7 +202,7 @@ impl ServeArgs {
 /// Flattened into command-specific args structs via `#[command(flatten)]`.
 /// The `into_cli_overrides` method projects the database URL into the
 /// figment overlay layer.
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct DatabaseArgs {
     /// `PostgreSQL` connection URL for the Tribal database.
     #[arg(long = "database-url", short = 'd', help_heading = "Database")]
@@ -240,7 +240,7 @@ impl DatabaseArgs {
 /// API keys are intentionally absent: the cascade picks them up from
 /// `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` or from `TRIBAL_*__API_KEY`,
 /// never from flags.
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct ProviderArgs {
     /// Embedding provider override.
     #[arg(
@@ -364,7 +364,7 @@ fn inference_stage_overrides(
 /// Telemetry flags shared across CLI commands.
 ///
 /// Flattened into command-specific args structs via `#[command(flatten)]`.
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct TelemetryArgs {
     /// OTLP exporter endpoint override.
     #[arg(
@@ -398,7 +398,7 @@ impl TelemetryArgs {
 /// Flattens [`DatabaseArgs`], [`ProviderArgs`], and [`TelemetryArgs`]
 /// alongside its own session-scoped flags so a single invocation can mint
 /// a token, register a project, and emit the wire-up snippet.
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct BootstrapArgs {
     /// Transport mode for the generated MCP config snippet. Controls
     /// the snippet shape: stdio uses `command`/`args`, while http and
@@ -455,7 +455,7 @@ impl BootstrapArgs {
     /// rather than a deep merge.
     pub fn into_cli_overrides(self) -> CliOverrides {
         let Self {
-            transport: _,
+            transport,
             remote: _,
             name: _,
             principal: _,
@@ -470,12 +470,22 @@ impl BootstrapArgs {
         let provider = provider.into_cli_overrides();
         let telemetry = telemetry.into_cli_overrides();
 
+        // `--transport` must flow into the validated in-memory config so
+        // `validate_server` reconciles the choice against `bind_address`
+        // (which may be set via env/file). `CliOverrides::persisted()`
+        // drops server fields, so this affects only the live invocation,
+        // not the first-run config file.
+        let server = transport.map(|t| ServerCliOverrides {
+            transport: Some(t),
+            bind_address: None,
+        });
+
         CliOverrides {
+            server,
             database: database.database,
             embedding: provider.embedding,
             inference: provider.inference,
             telemetry: telemetry.telemetry,
-            ..CliOverrides::default()
         }
     }
 }
@@ -928,6 +938,31 @@ mod tests {
         let server = overrides.server.unwrap();
         assert_eq!(server.transport, Some(TransportKind::Http));
         assert_eq!(server.bind_address.as_deref(), Some(DEFAULT_BIND_ADDRESS));
+    }
+
+    // -- BootstrapArgs into_cli_overrides -----------------------------------
+
+    #[test]
+    fn test_bootstrap_into_cli_overrides_no_transport() {
+        let overrides = BootstrapArgs::default().into_cli_overrides();
+        assert!(overrides.server.is_none());
+    }
+
+    #[test]
+    fn test_bootstrap_into_cli_overrides_threads_transport() {
+        let args = BootstrapArgs {
+            transport: Some(TransportKind::Http),
+            ..BootstrapArgs::default()
+        };
+        let overrides = args.into_cli_overrides();
+        let server = overrides
+            .server
+            .expect("transport override populates server slot");
+        assert_eq!(server.transport, Some(TransportKind::Http));
+        assert!(
+            server.bind_address.is_none(),
+            "bootstrap never overrides bind_address",
+        );
     }
 
     // -- Invalid input ------------------------------------------------------
