@@ -4,7 +4,10 @@
 //! Status messages go to stderr; structured data (raw tokens, tables) to
 //! stdout.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    io::{self, Write},
+};
 
 use chrono::{DateTime, Utc};
 use tribal_domain::{AuthToken, Principal, PrincipalId};
@@ -92,21 +95,18 @@ const COL_SEPARATOR: &str = "  ";
 // Create output
 // ---------------------------------------------------------------------------
 
-/// Prints the raw token to stdout as a bare value (no label, no prefix).
-///
-/// Suitable for piping, e.g. `tribal token create | pbcopy`.
-pub(super) fn raw_token(token: &str) {
-    println!("{token}");
+/// Writes the raw token as a bare value — suitable for piping, e.g.
+/// `tribal token create | pbcopy`.
+pub(super) fn raw_token(out: &mut dyn Write, token: &str) -> io::Result<()> {
+    writeln!(out, "{token}")
 }
 
-/// Reports the resolved principal to stderr.
-pub(super) fn principal_resolved(key: &str) {
-    eprintln!("  principal: {key}");
+pub(super) fn principal_resolved(out: &mut dyn Write, key: &str) {
+    let _ = writeln!(out, "  principal: {key}");
 }
 
-/// Reports a successful token creation to stderr.
-pub(super) fn token_created(expires: &str) {
-    eprintln!("  {TOKEN_CREATED} (expires {expires})");
+pub(super) fn token_created(out: &mut dyn Write, expires: &str) {
+    let _ = writeln!(out, "  {TOKEN_CREATED} (expires {expires})");
 }
 
 // ---------------------------------------------------------------------------

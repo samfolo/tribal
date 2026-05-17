@@ -10,5 +10,7 @@ mod outcome;
 mod output;
 mod run;
 
-pub(crate) use config_file::ConfigFileOutcome;
-pub(crate) use run::{run, run_async};
+pub use config_file::ConfigFileOutcome;
+pub use outcome::SetupOutcome;
+pub(crate) use run::run;
+pub use run::run_async;

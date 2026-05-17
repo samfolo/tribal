@@ -11,10 +11,10 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use tempfile::TempDir;
 use tribal::{
-    AppError, BootstrapOptions, CredentialsPersistOutcome, McpConfigOptions, bootstrap_async,
-    mcp_config_async, token_create_async,
+    AppError, BootstrapOptions, CredentialsPersistOutcome, McpConfigOptions, SetupOutcome,
+    bootstrap_async, mcp_config_async, setup_async, token_create_async,
 };
-use tribal_config::{CliOverrides, TransportKind, TribalConfig, load_config};
+use tribal_config::{CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config};
 use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY};
 use tribal_test_utils::{TestContext, truncate_all_tables};
 use tribal_ui::Theme;
@@ -270,6 +270,34 @@ fn load_test_config(
     Ok(load_config(path, Some(overrides), Some(&db_defaults))?)
 }
 
+/// Drives the full setup pipeline — `load_config` → `setup_async` —
+/// mirroring the synchronous CLI wrapper. The credentials.json write
+/// happens inside `setup_async`; the warn-and-success literal is
+/// emitted here into the returned stderr buffer to mirror the
+/// wrapper's behaviour.
+pub(crate) async fn run_setup(
+    ctx: &TestContext,
+    config_path: &Path,
+    principal_key: Option<&str>,
+) -> Result<(SetupOutcome, Vec<u8>), AppError> {
+    let merged = load_test_config(ctx, config_path, CliOverrides::default())?;
+    let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
+    let mut stderr = Vec::<u8>::new();
+    let outcome = setup_async(
+        &merged,
+        config_path,
+        principal_key,
+        expires_at,
+        ConfigPersistence::Minimal,
+        &mut stderr,
+    )
+    .await?;
+    if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
+        let _ = writeln!(stderr, "{warning}");
+    }
+    Ok((outcome, stderr))
+}
+
 /// Drives the full token-create pipeline — `load_config` →
 /// `token_create_async` — mirroring the synchronous CLI wrapper.
 /// token-create does not call `validate` in production, so the helper
@@ -283,13 +311,16 @@ pub(crate) async fn run_token_create(
 ) -> Result<(BearerToken, Vec<u8>), AppError> {
     let merged = load_test_config(ctx, config_path, CliOverrides::default())?;
     let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
+    let mut stdout = Vec::<u8>::new();
+    let mut stderr = Vec::<u8>::new();
     let outcome = token_create_async(
         &merged.database,
         principal_key.unwrap_or(LOCAL_PRINCIPAL_KEY),
         expires_at,
+        &mut stdout,
+        &mut stderr,
     )
     .await?;
-    let mut stderr = Vec::<u8>::new();
     if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
         let _ = writeln!(stderr, "{warning}");
     }
