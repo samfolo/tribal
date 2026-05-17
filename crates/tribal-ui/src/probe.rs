@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use supports_color::{ColorLevel, Stream};
+use supports_color::ColorLevel;
 
 use crate::theme::{Capability, Mode, Theme, ThemeRender, ThemeSelection};
 
@@ -35,14 +35,21 @@ pub struct StreamThemeContext {
 }
 
 impl StreamThemeContext {
-    /// Probe `stream` for colour capability and assemble the matching
+    /// Probe `stderr` for colour capability and assemble the matching
     /// theme. `is_tty` is supplied by the caller via
     /// [`IsTerminal::is_terminal`](std::io::IsTerminal::is_terminal)
     /// on the concrete stream handle so this module stays free of
     /// `std::io::stdout`/`std::io::stderr` coupling.
+    ///
+    /// There is intentionally no `probe_stdout` counterpart. Tribal's
+    /// stdout carries machine-readable payloads only (JSON, IDs, MCP
+    /// config snippets); embedding SGR escapes there would poison
+    /// pipes and break the `--json` contract. All human-facing output
+    /// goes to stderr.
     #[must_use]
-    pub fn probe(stream: Stream, is_tty: bool, mode: Mode) -> Self {
-        let capability = Capability::from(supports_color::on_cached(stream));
+    pub fn probe_stderr(is_tty: bool, mode: Mode) -> Self {
+        let capability =
+            Capability::from(supports_color::on_cached(supports_color::Stream::Stderr));
         let selection = ThemeSelection {
             capability,
             is_tty,

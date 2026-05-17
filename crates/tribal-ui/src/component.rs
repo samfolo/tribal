@@ -2,10 +2,10 @@
 //!
 //! Every catalogued component implements `Component`. Components
 //! whose rendered output is a single line with no embedded `\n`
-//! additionally implement `InlineComponent`; that marker is what
-//! `HStack` requires of its children, so a multi-line component
-//! composed inside an `HStack` is a compile error rather than a
-//! layout corruption at runtime.
+//! additionally implement `InlineComponent`; parents that require
+//! single-line children bound on the marker so the constraint is
+//! enforced at compile time rather than as a layout corruption at
+//! runtime.
 
 use std::io;
 
@@ -16,8 +16,8 @@ use crate::{render_ctx::RenderCtx, theme::Theme};
 /// **Newline discipline.** A component's `render` writes the
 /// component's own bytes and stops. Parents that compose children
 /// vertically write an explicit `\n` (or `writeln!`) between them;
-/// the final child gets no trailing newline. This rule keeps
-/// `HStack` well-defined and `TreeNode` recursion clean.
+/// the final child gets no trailing newline. This keeps inline
+/// composition well-defined and recursive layouts clean.
 pub trait Component {
     /// Render this component to the writer in `ctx`.
     ///
@@ -44,8 +44,9 @@ pub trait Component {
 }
 
 /// Marker for components whose rendered output is a single line with
-/// no embedded `\n`. Used as a bound on `HStack` so heterogeneous
-/// horizontal composition is type-safe.
+/// no embedded `\n`. Parents that require single-line children bound
+/// on this marker so heterogeneous horizontal composition is
+/// type-safe.
 pub trait InlineComponent: Component {}
 
 /// Opt-in capability for components that own a tier-3 style recipe
@@ -66,7 +67,7 @@ pub trait ThemedComponent: Component {
 }
 
 // Forwarding impls for `Box<T>` so heterogeneous inline layouts can
-// be composed as `HStack<Box<dyn InlineComponent>>`.
+// be composed as `Vec<Box<dyn InlineComponent>>`.
 
 impl<T: Component + ?Sized> Component for Box<T> {
     fn render(&self, ctx: &mut RenderCtx) -> io::Result<()> {
