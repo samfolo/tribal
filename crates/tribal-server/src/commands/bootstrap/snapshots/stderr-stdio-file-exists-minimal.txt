@@ -1,7 +1,8 @@
   setup complete
   principal: principal:local
   project registered: widgets (proj_00000000-0000-0000-0000-000000000002)
-  config file: written to /etc/tribal/tribal.yaml
+  config file: already exists at /etc/tribal/tribal.yaml
+  warning: database.url differs from the resolved value
 
 Next steps:
   1. Verify the install:

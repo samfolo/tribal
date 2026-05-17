@@ -124,15 +124,24 @@ fn write_status_lines(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Result<
             handoff.project_name, handoff.project_id,
         ),
     )?;
-    let config_status = match handoff.config_file {
+    match handoff.config_file {
         ConfigFileOutcome::Written { path } => {
-            format!("  config file: written to {}", path.display())
+            try_write_line(
+                out,
+                &format!("  config file: written to {}", path.display()),
+            )?;
         }
-        ConfigFileOutcome::AlreadyExists { path, .. } => {
-            format!("  config file: already exists at {}", path.display())
+        ConfigFileOutcome::AlreadyExists { path, warnings } => {
+            try_write_line(
+                out,
+                &format!("  config file: already exists at {}", path.display()),
+            )?;
+            for warning in warnings {
+                try_write_line(out, &format!("  warning: {warning}"))?;
+            }
         }
-    };
-    try_write_line(out, &config_status)
+    }
+    Ok(())
 }
 
 fn write_action_list(out: &mut dyn Write, handoff: &Handoff<'_>) -> io::Result<()> {
@@ -266,6 +275,10 @@ mod tests {
         }
     }
 
+    /// Sample divergence warning used in `AlreadyExists` fixtures so the
+    /// warning-rendering path is exercised.
+    const SAMPLE_WARNING: &str = "database.url differs from the resolved value";
+
     /// Builds the same `Project` value used to drive every render in
     /// the suite. Pinning `id` and `git_remote` keeps the snapshots
     /// deterministic.
@@ -290,6 +303,22 @@ mod tests {
             &path,
             &format!("http://{DEFAULT_BIND_ADDRESS}/mcp"),
         )
+    }
+
+    /// `ConfigFileOutcome::Written` fixture.
+    fn fixture_written() -> ConfigFileOutcome {
+        ConfigFileOutcome::Written {
+            path: fixture_config_path(),
+        }
+    }
+
+    /// `ConfigFileOutcome::AlreadyExists` fixture carrying a sample
+    /// divergence warning.
+    fn fixture_already_exists_with_warning() -> ConfigFileOutcome {
+        ConfigFileOutcome::AlreadyExists {
+            path: fixture_config_path(),
+            warnings: vec![SAMPLE_WARNING.to_owned()],
+        }
     }
 
     fn render_stderr(case: &Case<'_>) -> String {
@@ -323,9 +352,7 @@ mod tests {
             token: bearer.clone(),
         };
         let mcp_entry = fixture_mcp_entry(transport, Some(&auth));
-        let config_file = ConfigFileOutcome::Written {
-            path: fixture_config_path(),
-        };
+        let config_file = fixture_written();
         let handoff = Handoff {
             bearer_token: &bearer,
             principal_key: "principal:local",
@@ -347,132 +374,84 @@ mod tests {
     // -- Stderr × stdio -------------------------------------------------------
 
     #[test]
-    fn test_stderr_stdio_minimal_first_run_matches_snapshot() {
+    fn test_stderr_stdio_first_run_matches_snapshot() {
         let captured = render_stderr(&Case {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Minimal,
-            config_file: ConfigFileOutcome::Written {
-                path: fixture_config_path(),
-            },
+            config_file: fixture_written(),
         });
         assert_text_snapshot!(
             &captured,
-            "src/commands/bootstrap/snapshots/stderr-stdio-minimal-first-run.txt"
+            "src/commands/bootstrap/snapshots/stderr-stdio-first-run.txt"
         );
     }
 
     #[test]
-    fn test_stderr_stdio_minimal_file_exists_matches_snapshot() {
+    fn test_stderr_stdio_file_exists_minimal_matches_snapshot() {
         let captured = render_stderr(&Case {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Minimal,
-            config_file: ConfigFileOutcome::AlreadyExists {
-                path: fixture_config_path(),
-                warnings: Vec::new(),
-            },
+            config_file: fixture_already_exists_with_warning(),
         });
         assert_text_snapshot!(
             &captured,
-            "src/commands/bootstrap/snapshots/stderr-stdio-minimal-file-exists.txt"
+            "src/commands/bootstrap/snapshots/stderr-stdio-file-exists-minimal.txt"
         );
     }
 
     #[test]
-    fn test_stderr_stdio_persisted_first_run_matches_snapshot() {
+    fn test_stderr_stdio_file_exists_persisted_matches_snapshot() {
         let overrides = fixture_overrides();
         let captured = render_stderr(&Case {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Persisted(&overrides),
-            config_file: ConfigFileOutcome::Written {
-                path: fixture_config_path(),
-            },
+            config_file: fixture_already_exists_with_warning(),
         });
         assert_text_snapshot!(
             &captured,
-            "src/commands/bootstrap/snapshots/stderr-stdio-persisted-first-run.txt"
-        );
-    }
-
-    #[test]
-    fn test_stderr_stdio_persisted_file_exists_matches_snapshot() {
-        let overrides = fixture_overrides();
-        let captured = render_stderr(&Case {
-            transport: TransportKind::Stdio,
-            persistence: ConfigPersistence::Persisted(&overrides),
-            config_file: ConfigFileOutcome::AlreadyExists {
-                path: fixture_config_path(),
-                warnings: Vec::new(),
-            },
-        });
-        assert_text_snapshot!(
-            &captured,
-            "src/commands/bootstrap/snapshots/stderr-stdio-persisted-file-exists.txt"
+            "src/commands/bootstrap/snapshots/stderr-stdio-file-exists-persisted.txt"
         );
     }
 
     // -- Stderr × http --------------------------------------------------------
 
     #[test]
-    fn test_stderr_http_minimal_first_run_matches_snapshot() {
+    fn test_stderr_http_first_run_matches_snapshot() {
         let captured = render_stderr(&Case {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Minimal,
-            config_file: ConfigFileOutcome::Written {
-                path: fixture_config_path(),
-            },
+            config_file: fixture_written(),
         });
         assert_text_snapshot!(
             &captured,
-            "src/commands/bootstrap/snapshots/stderr-http-minimal-first-run.txt"
+            "src/commands/bootstrap/snapshots/stderr-http-first-run.txt"
         );
     }
 
     #[test]
-    fn test_stderr_http_minimal_file_exists_matches_snapshot() {
+    fn test_stderr_http_file_exists_minimal_matches_snapshot() {
         let captured = render_stderr(&Case {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Minimal,
-            config_file: ConfigFileOutcome::AlreadyExists {
-                path: fixture_config_path(),
-                warnings: Vec::new(),
-            },
+            config_file: fixture_already_exists_with_warning(),
         });
         assert_text_snapshot!(
             &captured,
-            "src/commands/bootstrap/snapshots/stderr-http-minimal-file-exists.txt"
+            "src/commands/bootstrap/snapshots/stderr-http-file-exists-minimal.txt"
         );
     }
 
     #[test]
-    fn test_stderr_http_persisted_first_run_matches_snapshot() {
+    fn test_stderr_http_file_exists_persisted_matches_snapshot() {
         let overrides = fixture_overrides();
         let captured = render_stderr(&Case {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Persisted(&overrides),
-            config_file: ConfigFileOutcome::Written {
-                path: fixture_config_path(),
-            },
+            config_file: fixture_already_exists_with_warning(),
         });
         assert_text_snapshot!(
             &captured,
-            "src/commands/bootstrap/snapshots/stderr-http-persisted-first-run.txt"
-        );
-    }
-
-    #[test]
-    fn test_stderr_http_persisted_file_exists_matches_snapshot() {
-        let overrides = fixture_overrides();
-        let captured = render_stderr(&Case {
-            transport: TransportKind::Http,
-            persistence: ConfigPersistence::Persisted(&overrides),
-            config_file: ConfigFileOutcome::AlreadyExists {
-                path: fixture_config_path(),
-                warnings: Vec::new(),
-            },
-        });
-        assert_text_snapshot!(
-            &captured,
-            "src/commands/bootstrap/snapshots/stderr-http-persisted-file-exists.txt"
+            "src/commands/bootstrap/snapshots/stderr-http-file-exists-persisted.txt"
         );
     }
 

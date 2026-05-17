@@ -3,4 +3,4 @@
 mod run;
 
 pub(crate) use run::run;
-pub use run::run_async;
+pub use run::{McpConfigOptions, run_async};

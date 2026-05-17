@@ -24,6 +24,27 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------------
+
+/// Bundle of inputs threaded into [`run_async`].
+///
+/// Constructed by the synchronous [`run`] wrapper from the parsed
+/// [`McpConfigArgs`] plus the resolved config and absolute config path.
+pub struct McpConfigOptions<'a> {
+    /// Fully merged + validated configuration.
+    pub config: &'a TribalConfig,
+    /// Absolute path the rendered stdio snippet should embed.
+    pub config_path: &'a Path,
+    /// Project override from `--project` or `TRIBAL_PROJECT_ID`.
+    pub project_override: Option<String>,
+    /// Resolved transport for the rendered snippet.
+    pub transport: TransportKind,
+    /// Bearer token override from `--token`, if supplied.
+    pub explicit_token: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -80,11 +101,13 @@ pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppE
     let mut stderr = io::stderr().lock();
 
     rt.block_on(run_async(
-        &config,
-        &absolute_config_path,
-        project,
-        transport,
-        token,
+        McpConfigOptions {
+            config: &config,
+            config_path: &absolute_config_path,
+            project_override: project,
+            transport,
+            explicit_token: token,
+        },
         &mut stdout,
         &mut stderr,
     ))
@@ -105,16 +128,12 @@ pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppE
 /// Returns an [`AppError`] if the database connection, project
 /// resolution, credentials read, or snippet write fails.
 pub async fn run_async(
-    config: &TribalConfig,
-    config_path: &Path,
-    project_override: Option<String>,
-    transport: TransportKind,
-    explicit_token: Option<String>,
+    opts: McpConfigOptions<'_>,
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
 ) -> Result<(), AppError> {
     let pool = tribal_db::create_pool(
-        &config.database,
+        &opts.config.database,
         POOL_NAME_MCP_CONFIG,
         COMMAND_POOL_MAX_CONNECTIONS,
         COMMAND_STATEMENT_TIMEOUT_MS,
@@ -122,19 +141,19 @@ pub async fn run_async(
     .await
     .map_err(|source| AppError::Database { source })?;
 
-    let resolved = resolve_project(&pool, project_override)
+    let resolved = resolve_project(&pool, opts.project_override)
         .await?
         .ok_or_else(|| AppError::ProjectResolution {
             context: PROJECT_RESOLUTION_FAILED_CONTEXT.into(),
         })?;
 
-    let auth = resolve_auth(transport, explicit_token, out_stderr)?;
-    let advertised_url = resolved_advertised_url(config);
+    let auth = resolve_auth(opts.transport, opts.explicit_token, out_stderr)?;
+    let advertised_url = resolved_advertised_url(opts.config);
     let entry = build_snippet_entry(
         resolved.id(),
-        transport,
+        opts.transport,
         auth.as_ref(),
-        config_path,
+        opts.config_path,
         &advertised_url,
     );
 

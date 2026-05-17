@@ -28,6 +28,37 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------------
+
+/// Bundle of inputs threaded into [`run_async`].
+///
+/// Constructed by the synchronous [`run`] wrapper from a parsed
+/// [`BootstrapArgs`] plus the resolved config and git remote. Tests
+/// construct the same struct against fixture inputs so the production
+/// pipeline is the unit under test.
+pub struct BootstrapOptions<'a> {
+    /// Fully merged + validated configuration.
+    pub config: &'a TribalConfig,
+    /// Absolute path the harness-spawned `tribal serve` should read.
+    pub config_path: &'a Path,
+    /// Principal key override from `--principal`, if supplied.
+    pub principal_key: Option<&'a str>,
+    /// Absolute expiry for the freshly minted bearer token.
+    pub expires_at: DateTime<Utc>,
+    /// CLI overrides used by the persisted-config renderer.
+    pub persisted_overrides: &'a CliOverrides,
+    /// Resolved git remote (`--remote` flag or repository detection).
+    pub git_remote: &'a GitRemote,
+    /// Human-friendly project name.
+    pub project_name: &'a str,
+    /// Resolved transport for the rendered snippet.
+    pub transport: TransportKind,
+    /// Whether to emit a single JSON object on stdout (`--json`).
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -43,9 +74,6 @@ use crate::{
 /// Returns an [`AppError`] if config loading, validation, git detection,
 /// or any composed step fails.
 pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppError> {
-    // Drain the bootstrap-specific fields before consuming `args` so
-    // `into_cli_overrides` can take ownership of the per-section args
-    // unencumbered. Mirrors the pattern at `setup/run.rs`.
     let transport = args.transport;
     let remote = args.remote.take();
     let name = args.name.take();
@@ -53,11 +81,9 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
     let ttl = args.ttl;
     let json = args.json;
 
-    // Bootstrap needs `cli_overrides` twice: once consumed by the
-    // figment cascade in `load_config`, once borrowed by setup's
-    // persisted-config write. The clone is cheap (all fields are
-    // `Option<scalar>`) and keeps each consumer free of the other's
-    // lifetime concerns.
+    // `cli_overrides` is consumed by `load_config`; the persisted-config
+    // renderer needs the same shape later. Cloning is cheap (each field
+    // is `Option<scalar>`).
     let cli_overrides = args.into_cli_overrides();
     let persisted_overrides = cli_overrides.clone();
 
@@ -83,15 +109,17 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
     let mut stderr = io::stderr().lock();
 
     rt.block_on(run_async(
-        &config,
-        &absolute_config_path,
-        principal.as_deref(),
-        expires_at,
-        &persisted_overrides,
-        &git_remote,
-        &project_name,
-        transport,
-        json,
+        BootstrapOptions {
+            config: &config,
+            config_path: &absolute_config_path,
+            principal_key: principal.as_deref(),
+            expires_at,
+            persisted_overrides: &persisted_overrides,
+            git_remote: &git_remote,
+            project_name: &project_name,
+            transport,
+            json,
+        },
         &mut stdout,
         &mut stderr,
     ))
@@ -112,32 +140,19 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
 ///
 /// Returns an [`AppError`] if setup, project registration, or the
 /// hand-off write fails.
-//
-// Bootstrap orchestrates two composed commands and their session args,
-// so the parameter set is wide by nature. Bundling would create a
-// single-use struct heavier than the function it serves.
-#[allow(clippy::too_many_arguments)]
 pub async fn run_async(
-    config: &TribalConfig,
-    config_path: &Path,
-    principal_key: Option<&str>,
-    expires_at: DateTime<Utc>,
-    persisted_overrides: &CliOverrides,
-    git_remote: &GitRemote,
-    project_name: &str,
-    transport: TransportKind,
-    json: bool,
+    opts: BootstrapOptions<'_>,
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
 ) -> Result<(), AppError> {
     // -- Setup --------------------------------------------------------------
 
     let setup_outcome = setup::run_async(
-        config,
-        config_path,
-        principal_key,
-        expires_at,
-        ConfigPersistence::Persisted(persisted_overrides),
+        opts.config,
+        opts.config_path,
+        opts.principal_key,
+        opts.expires_at,
+        ConfigPersistence::Persisted(opts.persisted_overrides),
         &mut io::sink(),
     )
     .await?;
@@ -152,25 +167,23 @@ pub async fn run_async(
     let auth = Auth::Bearer {
         token: setup_outcome.bearer_token.clone(),
     };
-    let opts = OutputOptions {
-        json: false,
-        transport,
-        auth: Some(&auth),
-        // The token was just minted by setup against this same
-        // database — re-verifying would only add a round trip.
-        skip_validation: true,
-        config_path,
-    };
-    let register_outcome = register::run_async(
-        config,
-        git_remote,
-        project_name,
+    let project = register::compute(
+        opts.config,
+        opts.git_remote,
+        opts.project_name,
         DEFAULT_BRANCH,
-        &opts,
-        &mut io::sink(),
-        &mut io::sink(),
+        &OutputOptions {
+            json: false,
+            transport: opts.transport,
+            auth: Some(&auth),
+            // The token was just minted by setup against this same
+            // database — re-verifying would only add a round trip.
+            skip_validation: true,
+            config_path: opts.config_path,
+        },
     )
-    .await?;
+    .await?
+    .into_project();
 
     // -- Hand-off -----------------------------------------------------------
 
@@ -178,16 +191,16 @@ pub async fn run_async(
         bearer_token: &setup_outcome.bearer_token,
         principal_key: &setup_outcome.principal_key,
         principal_id: setup_outcome.principal_id,
-        project_id: register_outcome.project_id,
-        project_name: &register_outcome.project_name,
-        git_remote: &register_outcome.git_remote,
-        transport,
-        mcp_entry: &register_outcome.mcp_config,
+        project_id: project.project_id,
+        project_name: &project.project_name,
+        git_remote: &project.git_remote,
+        transport: opts.transport,
+        mcp_entry: &project.mcp_config,
         config_file: &setup_outcome.config_file,
-        persistence: ConfigPersistence::Persisted(persisted_overrides),
+        persistence: ConfigPersistence::Persisted(opts.persisted_overrides),
     };
 
-    if json {
+    if opts.json {
         write_json(out_stdout, &handoff).map_err(|source| AppError::SetupIo {
             context: "writing bootstrap --json output".into(),
             source,

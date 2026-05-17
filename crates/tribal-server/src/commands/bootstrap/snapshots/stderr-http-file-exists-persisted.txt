@@ -1,7 +1,10 @@
+warning: tribal.yaml already exists at /etc/tribal/tribal.yaml; supplied flags were not persisted. Edit the file or remove it and re-run to pin the resolved values.
+
   setup complete
   principal: principal:local
   project registered: widgets (proj_00000000-0000-0000-0000-000000000002)
   config file: already exists at /etc/tribal/tribal.yaml
+  warning: database.url differs from the resolved value
 
 Next steps:
   1. Export the bearer token:
