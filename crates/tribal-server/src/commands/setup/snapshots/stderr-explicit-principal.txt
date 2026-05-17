@@ -3,8 +3,8 @@
   migrations: complete
   principal: principal:local
   principal: user:alice
-  token: created (expires <TIMESTAMP>)
   config file: written to <CONFIG_DIR>/tribal.yaml
+  token: created (expires <TIMESTAMP>)
 
 Setup complete. Your bearer token:
 

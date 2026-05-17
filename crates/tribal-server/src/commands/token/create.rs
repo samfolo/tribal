@@ -71,16 +71,13 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
 
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
-    let outcome = rt.block_on(run_async(
+    rt.block_on(run_async(
         &config.database,
         &principal_key,
         expires_at,
         &mut stdout,
         &mut stderr,
     ))?;
-    if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
-        let _ = writeln!(stderr, "{warning}");
-    }
     Ok(())
 }
 
@@ -148,11 +145,17 @@ pub async fn run_async(
             })?;
     let credentials = persist_credentials(&bearer_token);
 
-    output::raw_token(out_stdout, bearer_token.as_str()).map_err(|source| AppError::SetupIo {
+    let raw_token_result = output::raw_token(out_stdout, bearer_token.as_str());
+    output::token_created(out_stderr, &expires_at.format(TIMESTAMP_FORMAT).to_string());
+
+    if let CredentialsPersistOutcome::Failed { warning } = &credentials {
+        let _ = writeln!(out_stderr, "{warning}");
+    }
+
+    raw_token_result.map_err(|source| AppError::SetupIo {
         context: "writing raw bearer token".into(),
         source,
     })?;
-    output::token_created(out_stderr, &expires_at.format(TIMESTAMP_FORMAT).to_string());
 
     Ok(TokenCreateOutcome {
         bearer_token,

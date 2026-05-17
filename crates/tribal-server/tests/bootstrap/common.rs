@@ -3,7 +3,6 @@
 
 use std::{
     ffi::{OsStr, OsString},
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -11,8 +10,8 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use tempfile::TempDir;
 use tribal::{
-    AppError, BootstrapOptions, CredentialsPersistOutcome, McpConfigOptions, SetupOutcome,
-    bootstrap_async, mcp_config_async, setup_async, token_create_async,
+    AppError, BootstrapOptions, McpConfigOptions, SetupOutcome, bootstrap_async, mcp_config_async,
+    setup_async, token_create_async,
 };
 use tribal_config::{CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config};
 use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY};
@@ -271,10 +270,8 @@ fn load_test_config(
 }
 
 /// Drives the full setup pipeline — `load_config` → `setup_async` —
-/// mirroring the synchronous CLI wrapper. The credentials.json write
-/// happens inside `setup_async`; the warn-and-success literal is
-/// emitted here into the returned stderr buffer to mirror the
-/// wrapper's behaviour.
+/// mirroring the synchronous CLI wrapper. `setup_async` emits the
+/// warn-and-success literal internally on its provided stderr.
 pub(crate) async fn run_setup(
     ctx: &TestContext,
     config_path: &Path,
@@ -292,18 +289,14 @@ pub(crate) async fn run_setup(
         &mut stderr,
     )
     .await?;
-    if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
-        let _ = writeln!(stderr, "{warning}");
-    }
     Ok((outcome, stderr))
 }
 
 /// Drives the full token-create pipeline — `load_config` →
 /// `token_create_async` — mirroring the synchronous CLI wrapper.
 /// token-create does not call `validate` in production, so the helper
-/// skips it too. The credentials.json write happens inside
-/// `token_create_async`; any warn-and-success literal is emitted here
-/// into the returned stderr buffer to mirror the wrapper's behaviour.
+/// skips it too. `token_create_async` emits the warn-and-success literal
+/// internally on its provided stderr.
 pub(crate) async fn run_token_create(
     ctx: &TestContext,
     config_path: &Path,
@@ -321,9 +314,6 @@ pub(crate) async fn run_token_create(
         &mut stderr,
     )
     .await?;
-    if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
-        let _ = writeln!(stderr, "{warning}");
-    }
     Ok((outcome.bearer_token, stderr))
 }
 
