@@ -3,6 +3,7 @@
 
 use std::{
     ffi::{OsStr, OsString},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -10,12 +11,13 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use tempfile::TempDir;
 use tribal::{
-    AppError, BootstrapOptions, McpConfigOptions, bootstrap_async, mcp_config_async,
-    persist_credentials, token_create_async,
+    AppError, BootstrapOptions, CredentialsPersistOutcome, McpConfigOptions, bootstrap_async,
+    mcp_config_async, token_create_async,
 };
 use tribal_config::{CliOverrides, TransportKind, TribalConfig, load_config, validate};
 use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY};
 use tribal_test_utils::{TestContext, truncate_all_tables};
+use tribal_ui::Theme;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -198,9 +200,11 @@ pub(crate) async fn run_bootstrap(
     transport: TransportKind,
     json: bool,
 ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
-    let merged = load_and_validate(ctx, config_path, overrides.clone())?;
+    let merged = load_test_config(ctx, config_path, overrides.clone())?;
+    validate(&merged)?;
     let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
     let git_remote = fixture_git_remote();
+    let theme = Theme::default_dark();
     let mut stdout = Vec::<u8>::new();
     let mut stderr = Vec::<u8>::new();
     bootstrap_async(
@@ -214,6 +218,7 @@ pub(crate) async fn run_bootstrap(
             project_name: PROJECT_NAME,
             transport,
             json,
+            theme: &theme,
         },
         &mut stdout,
         &mut stderr,
@@ -222,9 +227,10 @@ pub(crate) async fn run_bootstrap(
     Ok((stdout, stderr))
 }
 
-/// Drives the full mcp-config pipeline — `load_config` → `validate` →
+/// Drives the full mcp-config pipeline — `load_config` →
 /// `mcp_config_async` — with the same cascade fidelity as
-/// [`run_bootstrap`].
+/// [`run_bootstrap`]. mcp-config is a pure renderer and does not call
+/// `validate`, so the helper skips that step too.
 pub(crate) async fn run_mcp_config(
     ctx: &TestContext,
     config_path: &Path,
@@ -233,7 +239,7 @@ pub(crate) async fn run_mcp_config(
     transport: TransportKind,
     explicit_token: Option<String>,
 ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
-    let merged = load_and_validate(ctx, config_path, overrides)?;
+    let merged = load_test_config(ctx, config_path, overrides)?;
     let mut stdout = Vec::<u8>::new();
     let mut stderr = Vec::<u8>::new();
     mcp_config_async(
@@ -251,42 +257,43 @@ pub(crate) async fn run_mcp_config(
     Ok((stdout, stderr))
 }
 
-/// Mirrors what the synchronous `*::run` wrappers do before entering
-/// `*_async`: feed `cli_overrides` through `load_config`, then run
-/// `validate`. Returns the merged + validated [`TribalConfig`].
-fn load_and_validate(
+/// Feeds `overrides` through `load_config` with the testcontainer URL
+/// injected as a command-defaults layer. The merged config matches what
+/// the production wrappers compute before entering `*_async`.
+fn load_test_config(
     ctx: &TestContext,
     config_path: &Path,
     overrides: CliOverrides,
 ) -> Result<TribalConfig, AppError> {
     let db_defaults: [(&str, &str); 1] = [("database.url", ctx.database_url())];
     let path = config_path.to_str().expect("utf8 config path");
-    let merged = load_config(path, Some(overrides), Some(&db_defaults))?;
-    validate(&merged)?;
-    Ok(merged)
+    Ok(load_config(path, Some(overrides), Some(&db_defaults))?)
 }
 
 /// Drives the full token-create pipeline — `load_config` →
-/// `token_create_async` → `persist_credentials` — mirroring the
-/// synchronous CLI wrapper. Returns the freshly-minted token plus
-/// captured stderr (where the warn-and-success literal lands on
-/// persistence failure).
+/// `token_create_async` — mirroring the synchronous CLI wrapper.
+/// token-create does not call `validate` in production, so the helper
+/// skips it too. The credentials.json write happens inside
+/// `token_create_async`; any warn-and-success literal is emitted here
+/// into the returned stderr buffer to mirror the wrapper's behaviour.
 pub(crate) async fn run_token_create(
     ctx: &TestContext,
     config_path: &Path,
     principal_key: Option<&str>,
 ) -> Result<(BearerToken, Vec<u8>), AppError> {
-    let merged = load_and_validate(ctx, config_path, CliOverrides::default())?;
+    let merged = load_test_config(ctx, config_path, CliOverrides::default())?;
     let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
-    let token = token_create_async(
+    let outcome = token_create_async(
         &merged.database,
         principal_key.unwrap_or(LOCAL_PRINCIPAL_KEY),
         expires_at,
     )
     .await?;
     let mut stderr = Vec::<u8>::new();
-    persist_credentials(&mut stderr, &token);
-    Ok((token, stderr))
+    if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
+        let _ = writeln!(stderr, "{warning}");
+    }
+    Ok((outcome.bearer_token, stderr))
 }
 
 // ---------------------------------------------------------------------------

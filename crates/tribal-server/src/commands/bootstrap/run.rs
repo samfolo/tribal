@@ -1,23 +1,25 @@
 //! Core bootstrap flow: entry point and async orchestration.
 
 use std::{
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::Path,
     str::FromStr,
 };
 
+use anstream::AutoStream;
 use chrono::{DateTime, Utc};
 use tribal_config::{
     Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config, validate,
 };
 use tribal_domain::GitRemote;
+use tribal_ui::{Mode, Stream, StreamThemeContext, Theme, probe::resolve_mode};
 
 use super::output::{Handoff, write_human, write_json};
 use crate::{
     cli::BootstrapArgs,
     commands::{
         common::{
-            DATABASE_COMMAND_DEFAULTS, persist_credentials, resolve_absolute_config_path,
+            CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS, resolve_absolute_config_path,
             resolve_ttl,
         },
         project::register::{self, DEFAULT_BRANCH, OutputOptions},
@@ -25,6 +27,7 @@ use crate::{
     },
     error::AppError,
     git::detect_git_remote,
+    output::resolved_advertised_url,
 };
 
 // ---------------------------------------------------------------------------
@@ -56,6 +59,10 @@ pub struct BootstrapOptions<'a> {
     pub transport: TransportKind,
     /// Whether to emit a single JSON object on stdout (`--json`).
     pub json: bool,
+    /// Theme the human-output renderer applies. Production probes
+    /// stderr at the sync wrapper to pick light/dark + capability;
+    /// tests pass [`Theme::default_dark`] for deterministic snapshots.
+    pub theme: &'a Theme,
 }
 
 // ---------------------------------------------------------------------------
@@ -105,8 +112,11 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
+    let stderr_lock = io::stderr().lock();
+    let is_tty = stderr_lock.is_terminal();
+    let stream_ctx = StreamThemeContext::probe(Stream::Stderr, is_tty, resolve_mode(Mode::Auto));
+    let mut wrapped_stderr = AutoStream::new(stderr_lock, stream_ctx.color_choice);
     let mut stdout = io::stdout().lock();
-    let mut stderr = io::stderr().lock();
 
     rt.block_on(run_async(
         BootstrapOptions {
@@ -119,9 +129,10 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
             project_name: &project_name,
             transport,
             json,
+            theme: &stream_ctx.theme,
         },
         &mut stdout,
-        &mut stderr,
+        &mut wrapped_stderr,
     ))
 }
 
@@ -157,10 +168,13 @@ pub async fn run_async(
     )
     .await?;
 
-    // Persist credentials before the hand-off so any warning surfaces
-    // ahead of the polished output. Setup left the in-memory token
-    // intact regardless of persistence success.
-    persist_credentials(out_stderr, &setup_outcome.bearer_token);
+    // Surface any credentials-write warning on the hand-off stream
+    // ahead of the polished output. The persistence attempt itself
+    // happened inside `setup::run_async` immediately after the token
+    // print.
+    if let CredentialsPersistOutcome::Failed { warning } = &setup_outcome.credentials {
+        let _ = writeln!(out_stderr, "{warning}");
+    }
 
     // -- Register -----------------------------------------------------------
 
@@ -187,6 +201,7 @@ pub async fn run_async(
 
     // -- Hand-off -----------------------------------------------------------
 
+    let advertised_url = resolved_advertised_url(opts.config);
     let handoff = Handoff {
         bearer_token: &setup_outcome.bearer_token,
         principal_key: &setup_outcome.principal_key,
@@ -198,6 +213,7 @@ pub async fn run_async(
         mcp_entry: &project.mcp_config,
         config_file: &setup_outcome.config_file,
         persistence: ConfigPersistence::Persisted(opts.persisted_overrides),
+        advertised_url: &advertised_url,
     };
 
     if opts.json {
@@ -206,7 +222,7 @@ pub async fn run_async(
             source,
         })?;
     } else {
-        write_human(out_stderr, &handoff).map_err(|source| AppError::SetupIo {
+        write_human(out_stderr, opts.theme, &handoff).map_err(|source| AppError::SetupIo {
             context: "writing bootstrap stderr output".into(),
             source,
         })?;

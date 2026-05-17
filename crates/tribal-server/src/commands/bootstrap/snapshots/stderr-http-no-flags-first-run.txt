@@ -1,0 +1,41 @@
+Bootstrap complete.
+
+Project:     widgets (proj_00000000-0000-0000-0000-000000000002)
+Git remote:  github.com/acme/widgets
+Transport:   http
+MCP URL:     http://127.0.0.1:8725/mcp
+
+Bearer token (save this — it will not be shown again):
+
+  test-bearer-token
+
+Next steps:
+
+1. Export the token for your shell session:
+   export TRIBAL_AUTH_TOKEN="test-bearer-token"
+
+2. Make this transport durable so `tribal check` and `tribal serve`
+   pick it up without re-passing flags. Either set:
+     export TRIBAL_SERVER__TRANSPORT="http"
+   for the current shell, or edit your config file:
+     /etc/tribal/tribal.yaml
+   to set `server.transport: http` (and if you want a non-default
+   bind, `server.bind_address`).
+
+3. Start the server in another terminal (it is NOT running yet —
+   bootstrap registers + mints a token but does not start serve):
+   tribal --config /etc/tribal/tribal.yaml serve --transport http --project proj_00000000-0000-0000-0000-000000000002
+   Leave it running. The MCP URL above is what your agent connects to.
+
+4. Verify your installation is ready for use:
+   tribal check
+
+5. (When ready for real ingest) verify providers:
+   tribal check --providers
+
+6. Wire Tribal into your agent harness. For Claude Code:
+     claude mcp add-json tribal "$(tribal mcp-config)"
+   For Codex / Gemini CLI / OpenCode, see the installation skill.
+
+7. (Optional) Install Tribal skills into your agent:
+   npx skills add samfolo/tribal-skills

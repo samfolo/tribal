@@ -4,6 +4,7 @@
 //! parsing and subcommand dispatch.
 
 mod command;
+mod flags;
 mod styles;
 
 pub use command::{
@@ -11,3 +12,4 @@ pub use command::{
     ProjectListArgs, ProjectRegisterArgs, ServeArgs, SetupArgs, TokenCommand, TokenCreateArgs,
     TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
 };
+pub(crate) use flags::PersistableFlag;

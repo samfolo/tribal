@@ -1,6 +1,6 @@
 //! Core create flow: entry point and async orchestration.
 
-use std::io;
+use std::io::{self, Write};
 
 use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
@@ -12,12 +12,26 @@ use super::output;
 use crate::{
     cli::TokenCreateArgs,
     commands::common::{
-        COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, DATABASE_COMMAND_DEFAULTS,
-        TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, persist_credentials,
-        resolve_ttl,
+        COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, CredentialsPersistOutcome,
+        DATABASE_COMMAND_DEFAULTS, TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token,
+        persist_credentials, resolve_ttl,
     },
     error::AppError,
 };
+
+// ---------------------------------------------------------------------------
+// Outcome
+// ---------------------------------------------------------------------------
+
+/// Result of [`run`] when token-create completes successfully.
+#[derive(Debug)]
+pub struct TokenCreateOutcome {
+    /// The bearer token in plain text.
+    pub bearer_token: BearerToken,
+    /// What happened to the credentials.json write that followed the
+    /// token-row insert.
+    pub credentials: CredentialsPersistOutcome,
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -55,8 +69,10 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    let bearer_token = rt.block_on(run_async(&config.database, &principal_key, expires_at))?;
-    persist_credentials(&mut io::stderr().lock(), &bearer_token);
+    let outcome = rt.block_on(run_async(&config.database, &principal_key, expires_at))?;
+    if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
+        let _ = writeln!(io::stderr().lock(), "{warning}");
+    }
     Ok(())
 }
 
@@ -64,7 +80,9 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
 // Async flow
 // ---------------------------------------------------------------------------
 
-/// Creates a new auth token for the resolved principal and returns it.
+/// Creates a new auth token for the resolved principal, persists the
+/// credentials.json artefact (warn-and-success on failure), and returns
+/// the [`TokenCreateOutcome`].
 ///
 /// # Errors
 ///
@@ -74,7 +92,7 @@ pub async fn run_async(
     db_config: &DatabaseConfig,
     principal_key: &str,
     expires_at: DateTime<Utc>,
-) -> Result<BearerToken, AppError> {
+) -> Result<TokenCreateOutcome, AppError> {
     let pool = tribal_db::create_pool(
         db_config,
         POOL_NAME,
@@ -118,5 +136,10 @@ pub async fn run_async(
     output::raw_token(bearer_token.as_str());
     output::token_created(&expires_at.format(TIMESTAMP_FORMAT).to_string());
 
-    Ok(bearer_token)
+    let credentials = persist_credentials(&bearer_token);
+
+    Ok(TokenCreateOutcome {
+        bearer_token,
+        credentials,
+    })
 }
