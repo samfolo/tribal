@@ -21,6 +21,7 @@ pub(crate) use self::{
     setup::run as setup,
 };
 pub use self::{
-    bootstrap::run_async as bootstrap_async, mcp_config::run_async as mcp_config_async,
+    bootstrap::{BootstrapOptions, run_async as bootstrap_async},
+    mcp_config::{McpConfigOptions, run_async as mcp_config_async},
     token::create_async as token_create_async,
 };

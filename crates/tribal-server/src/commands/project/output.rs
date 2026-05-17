@@ -2,13 +2,11 @@
 //!
 //! All user-facing presentation lives here, separated from business logic.
 //! Status messages go to stderr; structured data (IDs, MCP snippets) to
-//! stdout. The register-side helpers take explicit writers so callers
-//! that compose multiple commands (`bootstrap`) can redirect output to
-//! `io::sink` and assemble their own polished presentation.
+//! stdout.
 
 use std::io::{self, Write};
 
-use tribal_domain::Project;
+use tribal_domain::{GitRemote, Project, ProjectId};
 
 use crate::output::snippet_key;
 
@@ -58,18 +56,15 @@ pub(super) fn git_remote_resolved(out: &mut dyn Write, remote: &str) {
     write_line(out, &format!("  git remote: {remote}"));
 }
 
-/// Reports a successful registration or existing project to the
-/// stderr-equivalent writer.
-pub(super) fn registered(out: &mut dyn Write, project: &Project, already_existed: bool) {
-    let msg = if already_existed {
-        PROJECT_ALREADY_EXISTS
-    } else {
-        PROJECT_REGISTERED
-    };
-    write_line(
-        out,
-        &format!("  {msg}: {} ({})", project.name(), project.id()),
-    );
+/// Reports a freshly registered project to the stderr-equivalent
+/// writer.
+pub(super) fn registered(out: &mut dyn Write, name: &str, id: ProjectId) {
+    write_line(out, &format!("  {PROJECT_REGISTERED}: {name} ({id})"));
+}
+
+/// Reports a pre-existing project to the stderr-equivalent writer.
+pub(super) fn already_exists(out: &mut dyn Write, name: &str, id: ProjectId) {
+    write_line(out, &format!("  {PROJECT_ALREADY_EXISTS}: {name} ({id})"));
 }
 
 /// Writes the bare project ID to the stdout-equivalent writer.
@@ -78,8 +73,8 @@ pub(super) fn registered(out: &mut dyn Write, project: &Project, already_existed
 /// it via `tribal project register | head -1` — write failures
 /// propagate so a broken pipe surfaces rather than dropping the ID
 /// silently.
-pub(super) fn project_id(out: &mut dyn Write, project: &Project) -> io::Result<()> {
-    try_write_line(out, &project.id().to_string())
+pub(super) fn project_id(out: &mut dyn Write, id: ProjectId) -> io::Result<()> {
+    try_write_line(out, &id.to_string())
 }
 
 /// Writes the wrapped MCP configuration snippet to the
@@ -91,10 +86,10 @@ pub(super) fn project_id(out: &mut dyn Write, project: &Project) -> io::Result<(
 /// double-rendering.
 pub(super) fn mcp_snippet(
     out: &mut dyn Write,
-    project: &Project,
+    git_remote: &GitRemote,
     entry: &serde_json::Value,
 ) -> io::Result<()> {
-    let key = snippet_key(project.git_remote());
+    let key = snippet_key(git_remote);
     let wrapped = serde_json::json!({
         "mcpServers": {
             (key): entry,

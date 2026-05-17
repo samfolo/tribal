@@ -15,7 +15,10 @@ use tribal_db::{
 use tribal_domain::{BearerToken, GitRemote};
 use tribal_mcp::Authenticator;
 
-use super::{outcome::RegisterOutcome, output};
+use super::{
+    outcome::{RegisterOutcome, RegisteredProject},
+    output,
+};
 use crate::{
     cli::ProjectRegisterArgs,
     commands::common::{
@@ -135,16 +138,17 @@ pub(crate) struct OutputOptions<'a> {
 }
 
 /// Connects to the database, inserts (or finds) the project, optionally
-/// validates the token, prints the result, and returns the registered
-/// project alongside the JSON-shaped MCP server entry.
-pub(crate) async fn run_async(
+/// validates the token, and returns the [`RegisterOutcome`].
+///
+/// Pure with respect to user-facing output: bootstrap reuses this entry
+/// point to assemble its own polished hand-off without paying for
+/// register-side print work that would only get discarded.
+pub(crate) async fn compute(
     config: &TribalConfig,
     git_remote: &GitRemote,
     name: &str,
     branch: &str,
     opts: &OutputOptions<'_>,
-    out_stdout: &mut dyn Write,
-    out_stderr: &mut dyn Write,
 ) -> Result<RegisterOutcome, AppError> {
     let pool = tribal_db::create_pool(
         &config.database,
@@ -210,8 +214,6 @@ pub(crate) async fn run_async(
         Err(source) => return Err(AppError::Database { source }),
     };
 
-    // -- Output -------------------------------------------------------------
-
     let advertised_url = resolved_advertised_url(config);
     let mcp_config = build_snippet_entry(
         project.id(),
@@ -221,31 +223,64 @@ pub(crate) async fn run_async(
         &advertised_url,
     );
 
-    if opts.json {
-        output::json_snippet(out_stdout, &mcp_config).map_err(|source| AppError::SetupIo {
-            context: "writing project register --json snippet".into(),
-            source,
-        })?;
-    } else {
-        output::registered(out_stderr, &project, already_existed);
-        output::project_id(out_stdout, &project).map_err(|source| AppError::SetupIo {
-            context: "writing project id".into(),
-            source,
-        })?;
-        output::mcp_snippet(out_stdout, &project, &mcp_config).map_err(|source| {
-            AppError::SetupIo {
-                context: "writing project register mcp snippet".into(),
-                source,
-            }
-        })?;
-    }
-
-    Ok(RegisterOutcome {
+    let registered = RegisteredProject {
         project_id: project.id(),
         project_name: project.name().to_owned(),
         git_remote: project.git_remote().clone(),
         mcp_config,
+    };
+
+    Ok(if already_existed {
+        RegisterOutcome::AlreadyExists(registered)
+    } else {
+        RegisterOutcome::Registered(registered)
     })
+}
+
+/// Computes the registration and writes the user-facing output. Used
+/// by the standalone `tribal project register` subcommand; bootstrap
+/// calls [`compute`] directly to skip the print pass.
+pub(crate) async fn run_async(
+    config: &TribalConfig,
+    git_remote: &GitRemote,
+    name: &str,
+    branch: &str,
+    opts: &OutputOptions<'_>,
+    out_stdout: &mut dyn Write,
+    out_stderr: &mut dyn Write,
+) -> Result<RegisterOutcome, AppError> {
+    let outcome = compute(config, git_remote, name, branch, opts).await?;
+    let project = outcome.project();
+
+    if opts.json {
+        output::json_snippet(out_stdout, &project.mcp_config).map_err(|source| {
+            AppError::SetupIo {
+                context: "writing project register --json snippet".into(),
+                source,
+            }
+        })?;
+    } else {
+        match &outcome {
+            RegisterOutcome::Registered(p) => {
+                output::registered(out_stderr, p.project_name.as_str(), p.project_id);
+            }
+            RegisterOutcome::AlreadyExists(p) => {
+                output::already_exists(out_stderr, p.project_name.as_str(), p.project_id);
+            }
+        }
+        output::project_id(out_stdout, project.project_id).map_err(|source| AppError::SetupIo {
+            context: "writing project id".into(),
+            source,
+        })?;
+        output::mcp_snippet(out_stdout, &project.git_remote, &project.mcp_config).map_err(
+            |source| AppError::SetupIo {
+                context: "writing project register mcp snippet".into(),
+                source,
+            },
+        )?;
+    }
+
+    Ok(outcome)
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +397,8 @@ mod tests {
         .expect("register succeeds");
 
         let captured = String::from_utf8(stderr).expect("utf8");
-        let normalised = captured.replace(&outcome.project_id.to_string(), "<PROJECT_ID>");
+        let normalised =
+            captured.replace(&outcome.project().project_id.to_string(), "<PROJECT_ID>");
         assert_text_snapshot!(
             &normalised,
             "src/commands/project/snapshots/stderr-stdio.txt"

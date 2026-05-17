@@ -10,7 +10,8 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use tempfile::TempDir;
 use tribal::{
-    AppError, bootstrap_async, mcp_config_async, persist_credentials, token_create_async,
+    AppError, BootstrapOptions, McpConfigOptions, bootstrap_async, mcp_config_async,
+    persist_credentials, token_create_async,
 };
 use tribal_config::{CliOverrides, TransportKind, TribalConfig, load_config, validate};
 use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY};
@@ -203,15 +204,17 @@ pub(crate) async fn run_bootstrap(
     let mut stdout = Vec::<u8>::new();
     let mut stderr = Vec::<u8>::new();
     bootstrap_async(
-        &merged,
-        config_path,
-        principal_key,
-        expires_at,
-        &overrides,
-        &git_remote,
-        PROJECT_NAME,
-        transport,
-        json,
+        BootstrapOptions {
+            config: &merged,
+            config_path,
+            principal_key,
+            expires_at,
+            persisted_overrides: &overrides,
+            git_remote: &git_remote,
+            project_name: PROJECT_NAME,
+            transport,
+            json,
+        },
         &mut stdout,
         &mut stderr,
     )
@@ -234,11 +237,13 @@ pub(crate) async fn run_mcp_config(
     let mut stdout = Vec::<u8>::new();
     let mut stderr = Vec::<u8>::new();
     mcp_config_async(
-        &merged,
-        config_path,
-        project_override,
-        transport,
-        explicit_token,
+        McpConfigOptions {
+            config: &merged,
+            config_path,
+            project_override,
+            transport,
+            explicit_token,
+        },
         &mut stdout,
         &mut stderr,
     )

@@ -3,17 +3,10 @@
 use serde_json::Value;
 use tribal_domain::{GitRemote, ProjectId};
 
-/// Result of [`super::register::run`] when registration completes
-/// successfully.
-///
-/// Holds the resolved project identifiers, git remote, and the
-/// JSON-shaped MCP server entry. The standalone `register` wrapper
-/// discards this value after printing its own output; `bootstrap`
-/// consumes it to compose its own polished presentation across the
-/// setup + register pair.
+/// Resolved project fields shared by every [`RegisterOutcome`] variant.
 #[derive(Debug)]
-pub(crate) struct RegisterOutcome {
-    /// Database id of the registered (or pre-existing) project.
+pub(crate) struct RegisteredProject {
+    /// Database id of the registered project.
     pub project_id: ProjectId,
     /// Human-friendly project name.
     pub project_name: String,
@@ -21,4 +14,30 @@ pub(crate) struct RegisterOutcome {
     pub git_remote: GitRemote,
     /// JSON-shaped MCP server entry (transport-specific shape).
     pub mcp_config: Value,
+}
+
+/// Result of [`super::register::compute`].
+#[derive(Debug)]
+pub(crate) enum RegisterOutcome {
+    /// The project row was just inserted by this run.
+    Registered(RegisteredProject),
+    /// A project for this git remote already existed and was returned
+    /// via `find_by_git_remote`.
+    AlreadyExists(RegisteredProject),
+}
+
+impl RegisterOutcome {
+    /// Returns the resolved [`RegisteredProject`] regardless of variant.
+    pub(crate) fn project(&self) -> &RegisteredProject {
+        match self {
+            Self::Registered(p) | Self::AlreadyExists(p) => p,
+        }
+    }
+
+    /// Consumes the outcome, returning the inner [`RegisteredProject`].
+    pub(crate) fn into_project(self) -> RegisteredProject {
+        match self {
+            Self::Registered(p) | Self::AlreadyExists(p) => p,
+        }
+    }
 }

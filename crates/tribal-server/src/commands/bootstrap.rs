@@ -10,4 +10,4 @@ mod output;
 mod run;
 
 pub(crate) use run::run;
-pub use run::run_async;
+pub use run::{BootstrapOptions, run_async};
