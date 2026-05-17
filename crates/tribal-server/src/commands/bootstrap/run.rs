@@ -140,20 +140,9 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
 // Async flow
 // ---------------------------------------------------------------------------
 
-/// Drives setup → register → output.
-///
-/// `out_stdout` receives the `--json` payload (when requested);
-/// `out_stderr` receives the human hand-off and any persistence
-/// warnings.
-///
-/// Setup's own stderr is captured into an in-memory buffer so the raw
-/// token print — which setup emits immediately after the DB insert as
-/// its recovery contract — is preserved through later failures. A
-/// [`RecoveryGuard`] then watches every IO step after the insert: any
-/// early return before the polished hand-off renders replays the
-/// captured output via the guard's [`Drop`]. On success the guard is
-/// disarmed and the buffer is discarded — the hand-off has already
-/// rendered the token in a better form.
+/// Drives setup → register → output. `out_stdout` carries the `--json`
+/// payload; `out_stderr` carries the hand-off. The minted token is
+/// durable in credentials.json once setup returns.
 ///
 /// # Errors
 ///
@@ -177,9 +166,7 @@ pub async fn run_async(
     )
     .await
     .inspect_err(|_| {
-        // Setup failed before its caller could arm the recovery guard;
-        // replay the captured output here so the token print (emitted
-        // immediately after the DB insert) still reaches the user.
+        // Replay any progress captured before setup failed.
         let _ = out_stderr.write_all(&setup_buf);
     })?;
 

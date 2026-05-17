@@ -88,7 +88,13 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
 /// `Some(key)` and `key != LOCAL_PRINCIPAL_KEY`, the token is issued
 /// against that principal; `principal:local` is still ensured to satisfy
 /// the stdio-transport invariant in [`tribal_mcp::auth::Authenticator`].
-pub(crate) async fn run_async(
+///
+/// # Errors
+///
+/// Returns an [`AppError`] if validation, database connection,
+/// migrations, principal resolution, config-file writing, or token
+/// insertion fails.
+pub async fn run_async(
     config: &TribalConfig,
     config_path: &Path,
     principal_key: Option<&str>,
@@ -172,12 +178,11 @@ pub(crate) async fn run_async(
         .insert(&mut conn, &new_token)
         .await
         .map_err(|source| AppError::Database { source })?;
-    output::token_created(out, &expires_at.format(TIMESTAMP_FORMAT).to_string());
 
     drop(conn);
 
-    output::config_file(out, &config_file);
-
+    // Persist credentials.json before any post-insert output so the
+    // file remains a recoverable artefact if a later writeln fails.
     let bearer_token: BearerToken =
         raw_token
             .parse()
@@ -185,13 +190,14 @@ pub(crate) async fn run_async(
                 reason: "generated bearer token failed parse validation".into(),
                 source: Box::new(source),
             })?;
+    let credentials = persist_credentials(&bearer_token);
 
+    output::token_created(out, &expires_at.format(TIMESTAMP_FORMAT).to_string());
+    output::config_file(out, &config_file);
     output::instructions(out, bearer_token.as_str()).map_err(|source| AppError::SetupIo {
         context: "writing bearer token output".into(),
         source,
     })?;
-
-    let credentials = persist_credentials(&bearer_token);
 
     Ok(SetupOutcome {
         bearer_token,
