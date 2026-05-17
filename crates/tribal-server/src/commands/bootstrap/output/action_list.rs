@@ -178,11 +178,9 @@ fn persistence_step_written(path: &str, flags: &[PersistableFlag]) -> ActionStep
 }
 
 fn persistence_step_already_exists(path: &str, flags: &[PersistableFlag]) -> ActionStep {
-    let mut body = vec![
-        BodyLine::new(format!("{path} already exists. Edit it or export the")),
-        BodyLine::new("corresponding TRIBAL_* env vars to make the supplied"),
-        BodyLine::new("flag values durable:"),
-    ];
+    let mut body = vec![BodyLine::new(format!(
+        "Edit {path} or export the corresponding TRIBAL_* env vars:",
+    ))];
     for flag in flags {
         body.push(BodyLine::new(format!("export {}=…", flag.env_var())).indented_by(DEEPER));
     }
