@@ -16,7 +16,7 @@ use super::common::{EnvGuard, TestEnv, fresh_db, parse_json, run_bootstrap, run_
 /// Bootstrap → mcp-config must produce a byte-identical `mcp_config`
 /// shape — the shared snippet builder is the single source of truth.
 #[tokio::test]
-async fn bootstrap_then_mcp_config_round_trip_stdio() {
+async fn test_bootstrap_then_mcp_config_round_trip_stdio() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -59,7 +59,7 @@ async fn bootstrap_then_mcp_config_round_trip_stdio() {
 /// embedded by bootstrap must match the one mcp-config reads back
 /// from the persisted credentials.
 #[tokio::test]
-async fn bootstrap_then_mcp_config_round_trip_http() {
+async fn test_bootstrap_then_mcp_config_round_trip_http() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -106,7 +106,7 @@ async fn bootstrap_then_mcp_config_round_trip_http() {
 /// (so stdio auth keeps working) and `user:alice` (the explicit
 /// token holder).
 #[tokio::test]
-async fn bootstrap_with_explicit_principal_provisions_both() {
+async fn test_bootstrap_with_explicit_principal_provisions_both() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let pool = fresh_db(ctx).await;
@@ -146,7 +146,7 @@ async fn bootstrap_with_explicit_principal_provisions_both() {
 /// full cascade so a regression in the figment overlay or the
 /// validate rule would surface here.
 #[tokio::test]
-async fn bootstrap_validation_rejects_openai_without_key() {
+async fn test_bootstrap_validation_rejects_openai_without_key() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -187,7 +187,7 @@ async fn bootstrap_validation_rejects_openai_without_key() {
 /// invocation with the same flags must leave the file byte-identical
 /// (file-exists path, no silent rewrites).
 #[tokio::test]
-async fn bootstrap_persists_then_leaves_file_unchanged_on_second_run() {
+async fn test_bootstrap_persists_then_leaves_file_unchanged_on_second_run() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
