@@ -10,7 +10,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use tribal_config::{
-    CREDENTIALS_PERMISSIONS_DRIFT_SUFFIX, CliOverrides, Credentials, TransportKind,
+    CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX, CliOverrides, Credentials, TransportKind,
 };
 use tribal_test_utils::{TestContext, serial_lock, test_context};
 
@@ -209,13 +209,13 @@ async fn mcp_config_http_schema_mismatch_errors_with_literal() {
     );
 }
 
-/// Permissions drift (mode wider than 0600) must warn on stderr but
-/// still render the snippet successfully. The warning suffix is
-/// asserted against the imported constant so a re-wording in
-/// production cascades to the test rather than silently drifting.
+/// A permissive credentials file (mode wider than 0600) must warn on
+/// stderr but still render the snippet successfully. The warning suffix
+/// is asserted against the imported constant so a re-wording in
+/// production cascades to the test.
 #[cfg(unix)]
 #[tokio::test]
-async fn mcp_config_http_permissions_drift_warns_and_succeeds() {
+async fn mcp_config_http_permissive_credentials_warn_and_succeed() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -226,7 +226,7 @@ async fn mcp_config_http_permissions_drift_warns_and_succeeds() {
         env.credentials_path(),
         std::fs::Permissions::from_mode(0o644),
     )
-    .expect("chmod drift");
+    .expect("chmod to permissive mode");
 
     let (_stdout, stderr) = run_mcp_config(
         ctx,
@@ -237,12 +237,12 @@ async fn mcp_config_http_permissions_drift_warns_and_succeeds() {
         None,
     )
     .await
-    .expect("mcp-config still succeeds with permission drift");
+    .expect("mcp-config still succeeds with permissive credentials");
 
     let stderr = String::from_utf8(stderr).expect("utf8 stderr");
     assert!(
-        stderr.contains(CREDENTIALS_PERMISSIONS_DRIFT_SUFFIX),
-        "expected permissions-drift suffix in: {stderr}",
+        stderr.contains(CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX),
+        "expected permissive-permissions suffix in: {stderr}",
     );
 }
 

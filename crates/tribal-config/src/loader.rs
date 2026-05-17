@@ -12,7 +12,7 @@ use tribal_domain::ApiKey;
 
 use crate::{
     CliOverrides, LoggingConfig, TelemetryConfig, TribalConfig,
-    env::ENV_PREFIX,
+    env::{ENV_NESTED_SEPARATOR, ENV_PREFIX},
     error::ConfigError,
     sections::{PromptSource, ProviderKind},
 };
@@ -20,11 +20,6 @@ use crate::{
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// Separator used to encode nested paths in environment variable names.
-///
-/// `TRIBAL_DATABASE__URL` maps to `database.url`.
-const ENV_SEPARATOR: &str = "__";
 
 /// Top-level scalar fields that should not be overridden via env vars.
 #[cfg(test)]
@@ -82,7 +77,7 @@ pub fn load_config(
     let expanded_path = shellexpand::tilde(config_path);
 
     let nested_env = Env::prefixed(ENV_PREFIX)
-        .split(ENV_SEPARATOR)
+        .split(ENV_NESTED_SEPARATOR)
         .filter(|key| {
             let k = key.as_str().to_lowercase();
             KNOWN_SECTIONS.iter().any(|section| k.starts_with(section))

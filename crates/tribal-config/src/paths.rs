@@ -66,6 +66,16 @@ pub fn default_config_file_path() -> String {
     format!("~/.config/{TRIBAL_DIRECTORY_NAME}/{CONFIG_FILENAME}")
 }
 
+/// Default path of the user's credentials file, expressed with a
+/// leading tilde so callers can render it in user-facing messages
+/// without invoking the runtime resolver. The actual resolved path
+/// (with `$XDG_CONFIG_HOME` honoured) comes from
+/// [`credentials_file_path`].
+#[must_use]
+pub fn default_credentials_file_path() -> String {
+    format!("~/.config/{TRIBAL_DIRECTORY_NAME}/{CREDENTIALS_FILENAME}")
+}
+
 /// Default path of the user's on-disk prompts directory, expressed with
 /// a leading tilde for later expansion by `shellexpand`.
 #[must_use]
@@ -88,7 +98,11 @@ pub fn credentials_file_path() -> Result<PathBuf, ConfigDirError> {
 }
 
 fn user_config_directory() -> Result<PathBuf, ConfigDirError> {
+    // Per the XDG Base Directory Specification, `XDG_CONFIG_HOME` is only
+    // authoritative when set AND non-empty; the empty case falls through
+    // to `$HOME/.config` rather than resolving to a bare `/`.
     std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .ok_or(ConfigDirError::Unavailable)
@@ -190,6 +204,24 @@ mod tests {
             assert_eq!(
                 path,
                 PathBuf::from("/home/sam/.config/tribal/credentials.json")
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_credentials_path_treats_empty_xdg_config_home_as_unset() {
+        // XDG spec: an empty `XDG_CONFIG_HOME` must fall through to
+        // `$HOME/.config`, not resolve to a bare `/tribal/credentials.json`.
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("XDG_CONFIG_HOME", "");
+            jail.set_env("HOME", "/home/sam");
+
+            let path = credentials_file_path().expect("path resolves");
+            assert_eq!(
+                path,
+                PathBuf::from("/home/sam/.config/tribal/credentials.json"),
             );
             Ok(())
         });

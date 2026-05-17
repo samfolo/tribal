@@ -6,9 +6,9 @@ use std::{
 };
 
 use tribal_config::{
-    Auth, CREDENTIALS_PERMISSIONS_DRIFT_PREFIX, CREDENTIALS_PERMISSIONS_DRIFT_SUFFIX,
+    Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
     CredentialsPermissions, LoadedCredentials, TransportKind, TribalConfig, load_config,
-    read_credentials, validate,
+    read_credentials,
 };
 use tribal_domain::BearerToken;
 
@@ -74,8 +74,13 @@ const POOL_NAME_MCP_CONFIG: &str = "mcp-config";
 ///
 /// # Errors
 ///
-/// Returns an [`AppError`] if config loading, validation, database
-/// connection, project resolution, or credentials read fails.
+/// Returns an [`AppError`] if config loading, database connection,
+/// project resolution, or credentials read fails.
+///
+/// mcp-config is a pure renderer — it does **not** call `validate`. A
+/// successful bootstrap should be enough to make this command work even
+/// after the user rotates the cloud-provider API key out of their shell:
+/// rendering an existing project's snippet needs no inference keys.
 pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppError> {
     let transport = args.transport;
     let project = args.project.take();
@@ -87,7 +92,6 @@ pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppE
         Some(cli_overrides),
         Some(&DATABASE_COMMAND_DEFAULTS),
     )?;
-    validate(&config)?;
 
     let absolute_config_path = resolve_absolute_config_path(config_path)?;
     let transport = transport.unwrap_or(config.server.transport);
@@ -212,10 +216,10 @@ fn resolve_network_auth(
     } = loaded;
 
     match permissions {
-        CredentialsPermissions::Drifted => {
+        CredentialsPermissions::Permissive => {
             let _ = writeln!(
                 out_stderr,
-                "{CREDENTIALS_PERMISSIONS_DRIFT_PREFIX}{}{CREDENTIALS_PERMISSIONS_DRIFT_SUFFIX}",
+                "{CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX}{}{CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX}",
                 path.display(),
             );
         }
