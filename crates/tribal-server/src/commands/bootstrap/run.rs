@@ -34,13 +34,9 @@ use crate::{
 // Inputs
 // ---------------------------------------------------------------------------
 
-/// Bundle of inputs threaded into [`run_async`].
-///
-/// Constructed by the synchronous [`run`] wrapper from a parsed
-/// [`BootstrapArgs`] plus the resolved config and git remote. Tests
-/// construct the same struct against fixture inputs so the production
-/// pipeline is the unit under test. Crate-public under the
-/// `test-helpers` feature.
+/// Bundle of inputs threaded into [`run_async`]. Re-exported at the
+/// crate root under the `test-helpers` feature for integration-test
+/// consumers.
 pub struct BootstrapOptions<'a> {
     /// Fully merged + validated configuration.
     pub config: &'a TribalConfig,
@@ -140,8 +136,9 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
 // ---------------------------------------------------------------------------
 
 /// Drives setup → register → output. `out_stdout` carries the `--json`
-/// payload; `out_stderr` carries the hand-off. The minted token is
-/// durable in credentials.json once setup returns.
+/// payload; `out_stderr` carries the hand-off. Setup attempts a
+/// best-effort write of credentials.json; the warn-and-success literal
+/// records the outcome on failure.
 ///
 /// # Errors
 ///
