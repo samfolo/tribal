@@ -213,12 +213,25 @@ pub async fn run_async(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// `Jail::expect_with` closures return `Result<(), figment::Error>` (208 bytes),
+// which we cannot reduce without wrapping an upstream type.
+#[allow(clippy::result_large_err)]
 mod tests {
+    use figment::Jail;
     use tribal_test_utils::{
         assert_text_snapshot, count_prompt_versions, serial_lock, test_context, truncate_all_tables,
     };
 
     use super::*;
+
+    /// Builds a current-thread runtime for tests that run inside a sync
+    /// `figment::Jail` closure but still need to drive async setup work.
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build test runtime")
+    }
 
     /// Normalises the run-time-dynamic substrings in setup's captured
     /// stderr so the result is suitable for snapshot comparison: the
@@ -238,100 +251,126 @@ mod tests {
             .replace(bearer_token.as_str(), "<TOKEN>")
     }
 
-    #[tokio::test]
-    async fn test_setup_embedded_omits_prompts_directory_line() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("create pool");
+    #[test]
+    fn test_setup_embedded_omits_prompts_directory_line() {
+        Jail::expect_with(|jail| {
+            let xdg = tempfile::tempdir().expect("xdg tempdir");
+            jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
+            test_runtime().block_on(async {
+                let _guard = serial_lock().await;
+                let ctx = test_context().await;
+                let pool = ctx.create_pool().await.expect("create pool");
 
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        truncate_all_tables(&mut conn).await;
-        drop(conn);
+                let mut conn = pool.acquire().await.expect("acquire connection");
+                truncate_all_tables(&mut conn).await;
+                drop(conn);
 
-        let config_dir = tempfile::tempdir().expect("config dir");
-        let config_path = config_dir.path().join("tribal.yaml");
+                let config_dir = tempfile::tempdir().expect("config dir");
+                let config_path = config_dir.path().join("tribal.yaml");
 
-        let mut config = TribalConfig::minimum_valid(ctx.database_url());
-        config.database.max_connect_attempts = 1;
-        // Default `PromptSource::Embedded` — no `prompts.source` override
-        // needed.
-        let expires_at = Utc::now() + chrono::Duration::hours(1);
+                let mut config = TribalConfig::minimum_valid(ctx.database_url());
+                config.database.max_connect_attempts = 1;
+                // Default `PromptSource::Embedded` — no `prompts.source`
+                // override needed.
+                let expires_at = Utc::now() + chrono::Duration::hours(1);
 
-        let mut buf: Vec<u8> = Vec::new();
-        run_async(
-            &config,
-            &config_path,
-            None,
-            expires_at,
-            ConfigPersistence::Minimal,
-            &mut buf,
-        )
-        .await
-        .expect("setup succeeds");
+                let mut buf: Vec<u8> = Vec::new();
+                run_async(
+                    &config,
+                    &config_path,
+                    None,
+                    expires_at,
+                    ConfigPersistence::Minimal,
+                    &mut buf,
+                )
+                .await
+                .expect("setup succeeds");
 
-        let captured = String::from_utf8(buf).expect("utf8");
-        assert!(
-            !captured.contains("prompt files:"),
-            "embedded mode must not emit the prompts-directory line, got:\n{captured}",
-        );
+                let captured = String::from_utf8(buf).expect("utf8");
+                assert!(
+                    !captured.contains("prompt files:"),
+                    "embedded mode must not emit the prompts-directory line, got:\n{captured}",
+                );
 
-        // Setup does not upsert prompts — that responsibility belongs to
-        // `serve`.
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        assert_eq!(count_prompt_versions(&mut conn).await, 0);
+                // Credentials must land inside the tempdir, not the
+                // developer's real `~/.config/tribal/credentials.json`.
+                assert!(
+                    xdg.path().join("tribal").join("credentials.json").exists(),
+                    "credentials.json must be written under the tempdir XDG",
+                );
+
+                // Setup does not upsert prompts — that responsibility
+                // belongs to `serve`.
+                let mut conn = pool.acquire().await.expect("acquire connection");
+                assert_eq!(count_prompt_versions(&mut conn).await, 0);
+            });
+            Ok(())
+        });
     }
 
-    #[tokio::test]
-    async fn test_setup_disk_emits_prompts_directory_line_and_writes_files() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("create pool");
+    #[test]
+    fn test_setup_disk_emits_prompts_directory_line_and_writes_files() {
+        Jail::expect_with(|jail| {
+            let xdg = tempfile::tempdir().expect("xdg tempdir");
+            jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
+            test_runtime().block_on(async {
+                let _guard = serial_lock().await;
+                let ctx = test_context().await;
+                let pool = ctx.create_pool().await.expect("create pool");
 
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        truncate_all_tables(&mut conn).await;
-        drop(conn);
+                let mut conn = pool.acquire().await.expect("acquire connection");
+                truncate_all_tables(&mut conn).await;
+                drop(conn);
 
-        let prompts_dir = tempfile::tempdir().expect("prompts dir");
-        let config_dir = tempfile::tempdir().expect("config dir");
-        let config_path = config_dir.path().join("tribal.yaml");
+                let prompts_dir = tempfile::tempdir().expect("prompts dir");
+                let config_dir = tempfile::tempdir().expect("config dir");
+                let config_path = config_dir.path().join("tribal.yaml");
 
-        let mut config = TribalConfig::minimum_valid(ctx.database_url());
-        config.database.max_connect_attempts = 1;
-        config.prompts.source = PromptSource::Disk {
-            directory: prompts_dir.path().to_string_lossy().into_owned(),
-            hot_reload: false,
-        };
-        let expires_at = Utc::now() + chrono::Duration::hours(1);
+                let mut config = TribalConfig::minimum_valid(ctx.database_url());
+                config.database.max_connect_attempts = 1;
+                config.prompts.source = PromptSource::Disk {
+                    directory: prompts_dir.path().to_string_lossy().into_owned(),
+                    hot_reload: false,
+                };
+                let expires_at = Utc::now() + chrono::Duration::hours(1);
 
-        let mut buf: Vec<u8> = Vec::new();
-        run_async(
-            &config,
-            &config_path,
-            None,
-            expires_at,
-            ConfigPersistence::Minimal,
-            &mut buf,
-        )
-        .await
-        .expect("setup succeeds");
+                let mut buf: Vec<u8> = Vec::new();
+                run_async(
+                    &config,
+                    &config_path,
+                    None,
+                    expires_at,
+                    ConfigPersistence::Minimal,
+                    &mut buf,
+                )
+                .await
+                .expect("setup succeeds");
 
-        let captured = String::from_utf8(buf).expect("utf8");
-        let expected = format!("prompt files: {}", prompts_dir.path().display());
-        assert!(
-            captured.contains(&expected),
-            "disk mode must emit the prompts-directory line, got:\n{captured}",
-        );
+                let captured = String::from_utf8(buf).expect("utf8");
+                let expected = format!("prompt files: {}", prompts_dir.path().display());
+                assert!(
+                    captured.contains(&expected),
+                    "disk mode must emit the prompts-directory line, got:\n{captured}",
+                );
 
-        // The six embedded defaults must have been written to disk.
-        for stage in ["extraction", "triage", "relation"] {
-            for role in ["system.tera", "user.tera"] {
-                let file = prompts_dir.path().join(stage).join(role);
-                assert!(file.exists(), "missing prompt file: {}", file.display());
-            }
-        }
+                // The six embedded defaults must have been written to disk.
+                for stage in ["extraction", "triage", "relation"] {
+                    for role in ["system.tera", "user.tera"] {
+                        let file = prompts_dir.path().join(stage).join(role);
+                        assert!(file.exists(), "missing prompt file: {}", file.display());
+                    }
+                }
 
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        assert_eq!(count_prompt_versions(&mut conn).await, 0);
+                assert!(
+                    xdg.path().join("tribal").join("credentials.json").exists(),
+                    "credentials.json must be written under the tempdir XDG",
+                );
+
+                let mut conn = pool.acquire().await.expect("acquire connection");
+                assert_eq!(count_prompt_versions(&mut conn).await, 0);
+            });
+            Ok(())
+        });
     }
 
     #[tokio::test]
@@ -384,89 +423,113 @@ mod tests {
 
     // -- Snapshot locks -----------------------------------------------------
 
-    #[tokio::test]
-    async fn test_setup_stderr_default_principal_matches_snapshot() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("create pool");
+    #[test]
+    fn test_setup_stderr_default_principal_matches_snapshot() {
+        Jail::expect_with(|jail| {
+            let xdg = tempfile::tempdir().expect("xdg tempdir");
+            jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
+            test_runtime().block_on(async {
+                let _guard = serial_lock().await;
+                let ctx = test_context().await;
+                let pool = ctx.create_pool().await.expect("create pool");
 
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        truncate_all_tables(&mut conn).await;
-        drop(conn);
+                let mut conn = pool.acquire().await.expect("acquire connection");
+                truncate_all_tables(&mut conn).await;
+                drop(conn);
 
-        let config_dir = tempfile::tempdir().expect("config dir");
-        let config_path = config_dir.path().join("tribal.yaml");
+                let config_dir = tempfile::tempdir().expect("config dir");
+                let config_path = config_dir.path().join("tribal.yaml");
 
-        let mut config = TribalConfig::minimum_valid(ctx.database_url());
-        config.database.max_connect_attempts = 1;
-        let expires_at = Utc::now() + chrono::Duration::hours(1);
+                let mut config = TribalConfig::minimum_valid(ctx.database_url());
+                config.database.max_connect_attempts = 1;
+                let expires_at = Utc::now() + chrono::Duration::hours(1);
 
-        let mut buf: Vec<u8> = Vec::new();
-        let outcome = run_async(
-            &config,
-            &config_path,
-            None,
-            expires_at,
-            ConfigPersistence::Minimal,
-            &mut buf,
-        )
-        .await
-        .expect("setup succeeds");
+                let mut buf: Vec<u8> = Vec::new();
+                let outcome = run_async(
+                    &config,
+                    &config_path,
+                    None,
+                    expires_at,
+                    ConfigPersistence::Minimal,
+                    &mut buf,
+                )
+                .await
+                .expect("setup succeeds");
 
-        let captured = String::from_utf8(buf).expect("utf8");
-        let normalised = normalise_setup_stderr(
-            &captured,
-            config_dir.path(),
-            expires_at,
-            &outcome.bearer_token,
-        );
+                assert!(
+                    xdg.path().join("tribal").join("credentials.json").exists(),
+                    "credentials.json must be written under the tempdir XDG",
+                );
 
-        assert_text_snapshot!(
-            &normalised,
-            "src/commands/setup/snapshots/stderr-default-principal.txt"
-        );
+                let captured = String::from_utf8(buf).expect("utf8");
+                let normalised = normalise_setup_stderr(
+                    &captured,
+                    config_dir.path(),
+                    expires_at,
+                    &outcome.bearer_token,
+                );
+
+                assert_text_snapshot!(
+                    &normalised,
+                    "src/commands/setup/snapshots/stderr-default-principal.txt"
+                );
+            });
+            Ok(())
+        });
     }
 
-    #[tokio::test]
-    async fn test_setup_stderr_explicit_principal_matches_snapshot() {
-        let _guard = serial_lock().await;
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("create pool");
+    #[test]
+    fn test_setup_stderr_explicit_principal_matches_snapshot() {
+        Jail::expect_with(|jail| {
+            let xdg = tempfile::tempdir().expect("xdg tempdir");
+            jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
+            test_runtime().block_on(async {
+                let _guard = serial_lock().await;
+                let ctx = test_context().await;
+                let pool = ctx.create_pool().await.expect("create pool");
 
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        truncate_all_tables(&mut conn).await;
-        drop(conn);
+                let mut conn = pool.acquire().await.expect("acquire connection");
+                truncate_all_tables(&mut conn).await;
+                drop(conn);
 
-        let config_dir = tempfile::tempdir().expect("config dir");
-        let config_path = config_dir.path().join("tribal.yaml");
+                let config_dir = tempfile::tempdir().expect("config dir");
+                let config_path = config_dir.path().join("tribal.yaml");
 
-        let mut config = TribalConfig::minimum_valid(ctx.database_url());
-        config.database.max_connect_attempts = 1;
-        let expires_at = Utc::now() + chrono::Duration::hours(1);
+                let mut config = TribalConfig::minimum_valid(ctx.database_url());
+                config.database.max_connect_attempts = 1;
+                let expires_at = Utc::now() + chrono::Duration::hours(1);
 
-        let mut buf: Vec<u8> = Vec::new();
-        let outcome = run_async(
-            &config,
-            &config_path,
-            Some("user:alice"),
-            expires_at,
-            ConfigPersistence::Minimal,
-            &mut buf,
-        )
-        .await
-        .expect("setup succeeds");
+                let mut buf: Vec<u8> = Vec::new();
+                let outcome = run_async(
+                    &config,
+                    &config_path,
+                    Some("user:alice"),
+                    expires_at,
+                    ConfigPersistence::Minimal,
+                    &mut buf,
+                )
+                .await
+                .expect("setup succeeds");
 
-        let captured = String::from_utf8(buf).expect("utf8");
-        let normalised = normalise_setup_stderr(
-            &captured,
-            config_dir.path(),
-            expires_at,
-            &outcome.bearer_token,
-        );
+                assert!(
+                    xdg.path().join("tribal").join("credentials.json").exists(),
+                    "credentials.json must be written under the tempdir XDG",
+                );
 
-        assert_text_snapshot!(
-            &normalised,
-            "src/commands/setup/snapshots/stderr-explicit-principal.txt"
-        );
+                let captured = String::from_utf8(buf).expect("utf8");
+                let normalised = normalise_setup_stderr(
+                    &captured,
+                    config_dir.path(),
+                    expires_at,
+                    &outcome.bearer_token,
+                );
+
+                assert_text_snapshot!(
+                    &normalised,
+                    "src/commands/setup/snapshots/stderr-explicit-principal.txt"
+                );
+            });
+            Ok(())
+        });
     }
 }
