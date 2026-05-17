@@ -25,7 +25,8 @@ pub use components::{
     Badge, Decimal, Header, KeyValueGrid, OrderedList, OrderedListMarker, SectionRule, Status,
     StatusLine, Text,
 };
+pub use format::time::{Precision, format_absolute, format_elapsed};
 pub use probe::{StreamThemeContext, resolve_mode};
 pub use render_ctx::RenderCtx;
-pub use supports_color::Stream;
 pub use theme::{Capability, Mode, Theme, ThemeRender, ThemeSelection};
+pub use time_display::TimeDisplay;

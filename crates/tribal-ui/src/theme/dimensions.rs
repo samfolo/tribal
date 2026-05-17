@@ -2,8 +2,8 @@
 //!
 //! Computed once at CLI startup using saturating arithmetic so narrow
 //! terminals and non-TTY fallback never underflow. Terminal width is
-//! supplied by the caller — the dispatcher reads
-//! `crossterm::terminal::size()` at startup and feeds it here. The
+//! supplied by the caller — the dispatcher probes the host terminal
+//! at startup and feeds the result here. The
 //! intra-column gutter (extra whitespace inside the name column to
 //! keep adjacent column edges from visually colliding) reads from the
 //! supplied `SpacingRamp` so a "compact" theme that tightens
