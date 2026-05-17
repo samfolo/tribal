@@ -31,14 +31,6 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Context surfaced through [`AppError::SetupIo`] when the credentials
-/// warning emit fails.
-const CREDENTIALS_WARNING_WRITE_CONTEXT: &str = "writing bootstrap credentials warning";
-
-// ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
 
@@ -191,6 +183,15 @@ pub async fn run_async(
         let _ = out_stderr.write_all(&setup_buf);
     })?;
 
+    // Carry the credentials-write warning inside the recovery payload so
+    // a later replay (register failure, hand-off failure) surfaces it
+    // alongside setup's captured output rather than dropping it on the
+    // floor. The happy-path emit further down still runs in addition,
+    // landing the warning right under the polished hand-off.
+    if let CredentialsPersistOutcome::Failed { warning } = &setup_outcome.credentials {
+        let _ = writeln!(setup_buf, "{warning}");
+    }
+
     // From here on, any error path replays the captured setup output
     // via the guard's `Drop` rather than peppering each bail-out with
     // a manual replay.
@@ -254,11 +255,12 @@ pub async fn run_async(
     // surface, so disarm the guard.
     recovery.disarm();
 
+    // Credentials persistence is governed by the warn-and-success rule:
+    // a write failure must never escalate to command failure. The
+    // warning emit therefore mirrors `setup::run` and `token::create::run`
+    // — `let _ = writeln!(...)` — rather than `?`-propagating.
     if let CredentialsPersistOutcome::Failed { warning } = &setup_outcome.credentials {
-        writeln!(recovery.dest(), "{warning}").map_err(|source| AppError::SetupIo {
-            context: CREDENTIALS_WARNING_WRITE_CONTEXT.into(),
-            source,
-        })?;
+        let _ = writeln!(recovery.dest(), "{warning}");
     }
 
     Ok(())
