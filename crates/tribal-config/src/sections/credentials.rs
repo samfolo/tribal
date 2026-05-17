@@ -135,8 +135,12 @@ pub enum CredentialsWriteError {
     },
 
     /// Serialising the credentials to JSON failed.
-    #[error("could not serialise credentials to JSON: {0}")]
-    Serialise(#[source] serde_json::Error),
+    #[error("could not serialise credentials for {path}: {source}")]
+    Serialise {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
 
     /// Setting the `0600` file mode failed.
     #[cfg(unix)]
@@ -163,9 +167,10 @@ impl CredentialsWriteError {
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Self::Path(_) | Self::Serialise(_) => None,
+            Self::Path(_) => None,
             Self::CreateDir { path, .. }
             | Self::WriteTempfile { path, .. }
+            | Self::Serialise { path, .. }
             | Self::SetPermissions { path, .. }
             | Self::Persist { path, .. } => Some(path),
         }
@@ -200,7 +205,11 @@ fn write_credentials_at(path: &Path, creds: &Credentials) -> Result<(), Credenti
         source,
     })?;
 
-    let payload = serde_json::to_vec_pretty(creds).map_err(CredentialsWriteError::Serialise)?;
+    let payload =
+        serde_json::to_vec_pretty(creds).map_err(|source| CredentialsWriteError::Serialise {
+            path: path.to_owned(),
+            source,
+        })?;
 
     let mut tempfile =
         NamedTempFile::new_in(parent).map_err(|source| CredentialsWriteError::WriteTempfile {
