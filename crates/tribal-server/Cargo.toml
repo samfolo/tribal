@@ -16,6 +16,11 @@ dist = true
 name = "tribal"
 path = "src/main.rs"
 
+[[test]]
+name = "bootstrap"
+path = "tests/bootstrap.rs"
+required-features = ["test-helpers"]
+
 [dependencies]
 axum.workspace = true
 base64.workspace = true
