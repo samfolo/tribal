@@ -90,8 +90,7 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
     let json = args.json;
 
     // `cli_overrides` is consumed by `load_config`; the persisted-config
-    // renderer needs the same shape later. Cloning is cheap (each field
-    // is `Option<scalar>`).
+    // renderer needs the same shape later.
     let cli_overrides = args.into_cli_overrides();
     let persisted_overrides = cli_overrides.clone();
 
@@ -176,7 +175,7 @@ pub async fn run_async(
     // floor. The happy-path emit further down still runs in addition,
     // landing the warning right under the polished hand-off.
     if let CredentialsPersistOutcome::Failed { warning } = &setup_outcome.credentials {
-        let _ = writeln!(setup_buf, "{warning}");
+        writeln!(setup_buf, "{warning}").expect("writeln to Vec<u8> is infallible");
     }
 
     // From here on, any error path replays the captured setup output
