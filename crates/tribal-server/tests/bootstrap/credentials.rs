@@ -12,7 +12,7 @@ use tribal_config::{
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository};
 use tribal_test_utils::{serial_lock, test_context};
 
-use super::common::{TestEnv, fresh_db, run_bootstrap, run_token_create};
+use super::common::{TestEnv, fresh_db, run_bootstrap, run_setup, run_token_create};
 
 // ---------------------------------------------------------------------------
 // Happy path
@@ -89,6 +89,76 @@ async fn test_credentials_unwritable_parent_emits_warning_and_keeps_token_row() 
     // DB row should be present and valid even though the file write failed.
     let mut conn = pool.acquire().await.expect("acquire");
     let token_hash = sha256_hex(token.as_str());
+    let row = PgAuthTokenRepository
+        .find_by_hash(&mut conn, &token_hash)
+        .await
+        .expect("query token");
+    assert!(row.is_some(), "minted token row must exist in DB");
+
+    // Restore so the tempdir cleanup can run.
+    std::fs::set_permissions(&tribal_dir, std::fs::Permissions::from_mode(0o700)).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Standalone setup exercises the credentials write site too
+// ---------------------------------------------------------------------------
+
+/// `tribal setup` must persist credentials.json on its own. The file
+/// content must match the freshly-minted bearer.
+#[tokio::test]
+async fn test_setup_writes_credentials_with_minted_bearer() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+
+    let (outcome, _stderr) = run_setup(ctx, &env.config_path, None)
+        .await
+        .expect("setup succeeds");
+
+    let creds_path = env.credentials_path();
+    assert!(
+        creds_path.exists(),
+        "credentials.json present at {creds_path:?}",
+    );
+    let raw = std::fs::read_to_string(&creds_path).expect("read credentials.json");
+    let parsed: Credentials = serde_json::from_str(&raw).expect("parse json");
+    let Auth::Bearer { token: persisted } = parsed.auth;
+    assert_eq!(
+        persisted, outcome.bearer_token,
+        "persisted token matches the minted bearer",
+    );
+}
+
+/// A read-only credentials parent must not abort `tribal setup`: the
+/// warn-and-success literal lands on stderr, the DB token row is still
+/// valid, and the function returns Ok.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_setup_credentials_unwritable_emits_warning_and_keeps_token_row() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+
+    let tribal_dir = env.xdg_dir.path().join("tribal");
+    std::fs::create_dir(&tribal_dir).expect("pre-create tribal dir");
+    std::fs::set_permissions(&tribal_dir, std::fs::Permissions::from_mode(0o500))
+        .expect("chmod r-x");
+
+    let (outcome, stderr) = run_setup(ctx, &env.config_path, None)
+        .await
+        .expect("setup still succeeds when credentials write fails");
+
+    let stderr = String::from_utf8(stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains(CREDENTIALS_WRITE_FAILED_PREFIX),
+        "expected canonical warn-and-success prefix in: {stderr}",
+    );
+
+    // DB row must be present and valid even though credentials.json failed.
+    let mut conn = pool.acquire().await.expect("acquire");
+    let token_hash = sha256_hex(outcome.bearer_token.as_str());
     let row = PgAuthTokenRepository
         .find_by_hash(&mut conn, &token_hash)
         .await
