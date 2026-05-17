@@ -18,7 +18,7 @@ use thiserror::Error;
 /// `$XDG_STATE_HOME/tribal/logs/`).
 pub const TRIBAL_DIRECTORY_NAME: &str = "tribal";
 
-const CREDENTIALS_FILENAME: &str = "credentials.json";
+pub const CREDENTIALS_FILENAME: &str = "credentials.json";
 const CONFIG_FILENAME: &str = "tribal.yaml";
 const PROMPTS_DIRECTORY_NAME: &str = "prompts";
 
@@ -100,11 +100,17 @@ pub fn credentials_file_path() -> Result<PathBuf, ConfigDirError> {
 fn user_config_directory() -> Result<PathBuf, ConfigDirError> {
     // Per the XDG Base Directory Specification, `XDG_CONFIG_HOME` is only
     // authoritative when set AND non-empty; the empty case falls through
-    // to `$HOME/.config` rather than resolving to a bare `/`.
+    // to `$HOME/.config` rather than resolving to a bare `/`. Apply the
+    // same non-empty guard to `HOME` so an empty value does not produce
+    // a root-relative `/.config` either.
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|s| !s.is_empty())
+                .map(|h| PathBuf::from(h).join(".config"))
+        })
         .ok_or(ConfigDirError::Unavailable)
 }
 
@@ -223,6 +229,22 @@ mod tests {
                 path,
                 PathBuf::from("/home/sam/.config/tribal/credentials.json"),
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_credentials_path_treats_empty_home_as_unset() {
+        // Mirrors the XDG empty-string guard: an empty `HOME` must not
+        // produce a root-relative `/.config/tribal/credentials.json`.
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("HOME", "");
+
+            assert!(matches!(
+                credentials_file_path(),
+                Err(ConfigDirError::Unavailable),
+            ));
             Ok(())
         });
     }
