@@ -175,7 +175,7 @@ pub async fn run_async(
 /// explicit `--token` override, falling back to the persisted credentials
 /// file via [`read_credentials`]. The `--token` value is trimmed once at
 /// this boundary; empty-after-trim falls through to the credentials
-/// cascade (matches `register::resolve_auth`).
+/// file (mcp-config does not consult `TRIBAL_AUTH_TOKEN`).
 fn resolve_auth(
     transport: TransportKind,
     explicit_token: Option<String>,
