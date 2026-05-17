@@ -48,7 +48,7 @@ async fn seed_project(ctx: &TestContext, env: &TestEnv) -> String {
 /// stdio renders without consulting credentials.json — missing file
 /// is not an error.
 #[tokio::test]
-async fn mcp_config_stdio_succeeds_without_credentials() {
+async fn test_mcp_config_stdio_succeeds_without_credentials() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -72,7 +72,7 @@ async fn mcp_config_stdio_succeeds_without_credentials() {
 /// (stdio authenticates as `principal:local` at runtime) but still
 /// emit the snippet and exit 0.
 #[tokio::test]
-async fn mcp_config_stdio_token_emits_warning_and_succeeds() {
+async fn test_mcp_config_stdio_token_emits_warning_and_succeeds() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -105,7 +105,7 @@ async fn mcp_config_stdio_token_emits_warning_and_succeeds() {
 /// surface the canonical "no saved credentials" literal and exit
 /// non-zero.
 #[tokio::test]
-async fn mcp_config_http_missing_credentials_errors_with_literal() {
+async fn test_mcp_config_http_missing_credentials_errors_with_literal() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -139,7 +139,7 @@ async fn mcp_config_http_missing_credentials_errors_with_literal() {
 /// stays robust to future stylisation that wraps the line in ANSI
 /// codes.
 #[tokio::test]
-async fn mcp_config_http_malformed_credentials_errors_with_literal() {
+async fn test_mcp_config_http_malformed_credentials_errors_with_literal() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -175,7 +175,7 @@ async fn mcp_config_http_malformed_credentials_errors_with_literal() {
 /// the binary's [`Credentials::SCHEMA_VERSION`] must reject and quote
 /// the offending version.
 #[tokio::test]
-async fn mcp_config_http_schema_mismatch_errors_with_literal() {
+async fn test_mcp_config_http_schema_mismatch_errors_with_literal() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -215,7 +215,7 @@ async fn mcp_config_http_schema_mismatch_errors_with_literal() {
 /// production cascades to the test.
 #[cfg(unix)]
 #[tokio::test]
-async fn mcp_config_http_permissive_credentials_warn_and_succeed() {
+async fn test_mcp_config_http_permissive_credentials_warn_and_succeed() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -249,7 +249,7 @@ async fn mcp_config_http_permissive_credentials_warn_and_succeed() {
 /// `--token T` overrides whatever credentials.json contains — the
 /// emitted snippet must carry `Bearer T` regardless.
 #[tokio::test]
-async fn mcp_config_http_explicit_token_overrides_credentials() {
+async fn test_mcp_config_http_explicit_token_overrides_credentials() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
@@ -284,7 +284,7 @@ async fn mcp_config_http_explicit_token_overrides_credentials() {
 /// no `.git`, the resolution cascade exhausts and surfaces the
 /// canonical literal.
 #[tokio::test]
-async fn mcp_config_project_resolution_failure_errors_with_literal() {
+async fn test_mcp_config_project_resolution_failure_errors_with_literal() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
