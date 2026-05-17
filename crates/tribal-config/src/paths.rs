@@ -66,16 +66,6 @@ pub fn default_config_file_path() -> String {
     format!("~/.config/{TRIBAL_DIRECTORY_NAME}/{CONFIG_FILENAME}")
 }
 
-/// Default path of the user's credentials file, expressed with a
-/// leading tilde so callers can render it in user-facing messages
-/// without invoking the runtime resolver. The actual resolved path
-/// (with `$XDG_CONFIG_HOME` honoured) comes from
-/// [`credentials_file_path`].
-#[must_use]
-pub fn default_credentials_file_path() -> String {
-    format!("~/.config/{TRIBAL_DIRECTORY_NAME}/{CREDENTIALS_FILENAME}")
-}
-
 /// Default path of the user's on-disk prompts directory, expressed with
 /// a leading tilde for later expansion by `shellexpand`.
 #[must_use]
