@@ -14,7 +14,7 @@ use tribal::{
     AppError, BootstrapOptions, CredentialsPersistOutcome, McpConfigOptions, bootstrap_async,
     mcp_config_async, token_create_async,
 };
-use tribal_config::{CliOverrides, TransportKind, TribalConfig, load_config, validate};
+use tribal_config::{CliOverrides, TransportKind, TribalConfig, load_config};
 use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY};
 use tribal_test_utils::{TestContext, truncate_all_tables};
 use tribal_ui::Theme;
@@ -183,7 +183,7 @@ pub(crate) async fn fresh_db(ctx: &TestContext) -> PgPool {
 // Bootstrap / mcp-config drivers
 // ---------------------------------------------------------------------------
 
-/// Drives the full bootstrap pipeline — `load_config` → `validate` →
+/// Drives the full bootstrap pipeline — `load_config` →
 /// `bootstrap_async` — mirroring the synchronous CLI wrapper. The
 /// `overrides` argument is what `BootstrapArgs::into_cli_overrides`
 /// would produce in production; the helper threads it through both
@@ -191,7 +191,8 @@ pub(crate) async fn fresh_db(ctx: &TestContext) -> PgPool {
 /// and the persistence renderer (so the YAML reflects user-supplied
 /// flags). The testcontainer URL is injected via the command-defaults
 /// layer so `cli_overrides.database` stays untouched and tests can
-/// model `--database-url` independently.
+/// model `--database-url` independently. Validation runs inside
+/// `setup::run_async`, so the helper does not call it here.
 pub(crate) async fn run_bootstrap(
     ctx: &TestContext,
     config_path: &Path,
@@ -201,7 +202,6 @@ pub(crate) async fn run_bootstrap(
     json: bool,
 ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
     let merged = load_test_config(ctx, config_path, overrides.clone())?;
-    validate(&merged)?;
     let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
     let git_remote = fixture_git_remote();
     let theme = Theme::default_dark();

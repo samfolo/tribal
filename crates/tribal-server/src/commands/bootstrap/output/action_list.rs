@@ -172,7 +172,7 @@ fn persistence_step_written(path: &str, flags: &[PersistableFlag]) -> ActionStep
     ActionStep::new(
         format!("Persisted to {path}: {flag_list}."),
         vec![BodyLine::new(
-            "Future `tribal serve` invocations will read these from the config.",
+            "Future invocations will read these from the config file.",
         )],
     )
 }

@@ -5,6 +5,8 @@ Git remote:  github.com/acme/widgets
 Transport:   http
 MCP URL:     http://127.0.0.1:8725/mcp
 
+warning: database.url differs from the resolved value
+
 Bearer token (save this — it will not be shown again):
 
   test-bearer-token
