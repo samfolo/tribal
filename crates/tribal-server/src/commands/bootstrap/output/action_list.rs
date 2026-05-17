@@ -151,16 +151,17 @@ fn persistence_step(inputs: &ActionInputs<'_>) -> Option<ActionStep> {
     let ConfigPersistence::Persisted(overrides) = inputs.persistence else {
         return None;
     };
-    let flags = PersistableFlag::from_cli_overrides(overrides);
-    if flags.is_empty() {
-        return None;
-    }
-    Some(match inputs.config_file {
-        ConfigFileOutcome::Written { .. } => persistence_step_written(&inputs.config_path, &flags),
-        ConfigFileOutcome::AlreadyExists { .. } => {
-            persistence_step_already_exists(&inputs.config_path, &flags)
+    match inputs.config_file {
+        ConfigFileOutcome::Written { .. } => {
+            let flags = PersistableFlag::from_cli_overrides(overrides);
+            (!flags.is_empty()).then(|| persistence_step_written(&inputs.config_path, &flags))
         }
-    })
+        ConfigFileOutcome::AlreadyExists { .. } => {
+            let resolved = PersistableFlag::resolve_overrides(overrides);
+            (!resolved.is_empty())
+                .then(|| persistence_step_already_exists(&inputs.config_path, &resolved))
+        }
+    }
 }
 
 fn persistence_step_written(path: &str, flags: &[PersistableFlag]) -> ActionStep {
@@ -177,12 +178,21 @@ fn persistence_step_written(path: &str, flags: &[PersistableFlag]) -> ActionStep
     )
 }
 
-fn persistence_step_already_exists(path: &str, flags: &[PersistableFlag]) -> ActionStep {
+fn persistence_step_already_exists(
+    path: &str,
+    resolved: &[(PersistableFlag, String)],
+) -> ActionStep {
     let mut body = vec![BodyLine::new(format!(
         "Edit {path} or export the corresponding TRIBAL_* env vars:",
     ))];
-    for flag in flags {
-        body.push(BodyLine::new(format!("export {}=…", flag.env_var())).indented_by(DEEPER));
+    for (flag, value) in resolved {
+        let env_var = flag.env_var();
+        let line = if let Ok(quoted) = shlex::try_quote(value) {
+            format!("export {env_var}={quoted}")
+        } else {
+            format!("# {env_var} unsupported (value contains NUL)")
+        };
+        body.push(BodyLine::new(line).indented_by(DEEPER));
     }
     ActionStep::new(
         "These flag values were NOT persisted because the config file already exists.",
@@ -226,13 +236,18 @@ fn durable_transport_step(inputs: &ActionInputs<'_>) -> ActionStep {
 }
 
 fn start_server_step(inputs: &ActionInputs<'_>) -> ActionStep {
+    let quoted_path = if let Ok(quoted) = shlex::try_quote(&inputs.config_path) {
+        quoted.into_owned()
+    } else {
+        inputs.config_path.clone()
+    };
     ActionStep::new(
         "Start the server in another terminal (it is NOT running yet —",
         vec![
             BodyLine::new("bootstrap registers + mints a token but does not start serve):"),
             BodyLine::new(format!(
-                "tribal --config {} serve --transport {} --project {}",
-                inputs.config_path, inputs.transport, inputs.project_id,
+                "tribal --config {quoted_path} serve --transport {} --project {}",
+                inputs.transport, inputs.project_id,
             )),
             BodyLine::new("Leave it running. The MCP URL above is what your agent connects to."),
         ],
