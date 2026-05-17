@@ -7,7 +7,7 @@ use tribal_config::{
     TransportKind, default_config_file_path,
 };
 
-use super::styles::STYLES;
+use super::{flags::PersistableFlag, styles::STYLES};
 
 // ---------------------------------------------------------------------------
 // Long version
@@ -244,50 +244,62 @@ impl DatabaseArgs {
 pub struct ProviderArgs {
     /// Embedding provider override.
     #[arg(
-        long = "embedding-provider",
+        long = PersistableFlag::EmbeddingProvider.flag_name(),
         value_parser = clap::value_parser!(ProviderKind),
         help_heading = "Providers",
     )]
     pub embedding_provider: Option<ProviderKind>,
 
     /// Embedding model name override.
-    #[arg(long = "embedding-model", help_heading = "Providers")]
+    #[arg(
+        long = PersistableFlag::EmbeddingModel.flag_name(),
+        help_heading = "Providers",
+    )]
     pub embedding_model: Option<String>,
 
     /// Extraction-stage inference provider override.
     #[arg(
-        long = "inference-extraction-provider",
+        long = PersistableFlag::InferenceExtractionProvider.flag_name(),
         value_parser = clap::value_parser!(ProviderKind),
         help_heading = "Providers",
     )]
     pub inference_extraction_provider: Option<ProviderKind>,
 
     /// Extraction-stage inference model name override.
-    #[arg(long = "inference-extraction-model", help_heading = "Providers")]
+    #[arg(
+        long = PersistableFlag::InferenceExtractionModel.flag_name(),
+        help_heading = "Providers",
+    )]
     pub inference_extraction_model: Option<String>,
 
     /// Triage-stage inference provider override.
     #[arg(
-        long = "inference-triage-provider",
+        long = PersistableFlag::InferenceTriageProvider.flag_name(),
         value_parser = clap::value_parser!(ProviderKind),
         help_heading = "Providers",
     )]
     pub inference_triage_provider: Option<ProviderKind>,
 
     /// Triage-stage inference model name override.
-    #[arg(long = "inference-triage-model", help_heading = "Providers")]
+    #[arg(
+        long = PersistableFlag::InferenceTriageModel.flag_name(),
+        help_heading = "Providers",
+    )]
     pub inference_triage_model: Option<String>,
 
     /// Relation-stage inference provider override.
     #[arg(
-        long = "inference-relation-provider",
+        long = PersistableFlag::InferenceRelationProvider.flag_name(),
         value_parser = clap::value_parser!(ProviderKind),
         help_heading = "Providers",
     )]
     pub inference_relation_provider: Option<ProviderKind>,
 
     /// Relation-stage inference model name override.
-    #[arg(long = "inference-relation-model", help_heading = "Providers")]
+    #[arg(
+        long = PersistableFlag::InferenceRelationModel.flag_name(),
+        help_heading = "Providers",
+    )]
     pub inference_relation_model: Option<String>,
 }
 
@@ -355,7 +367,10 @@ fn inference_stage_overrides(
 #[derive(Debug, Args)]
 pub struct TelemetryArgs {
     /// OTLP exporter endpoint override.
-    #[arg(long = "telemetry-otlp-endpoint", help_heading = "Telemetry")]
+    #[arg(
+        long = PersistableFlag::TelemetryOtlpEndpoint.flag_name(),
+        help_heading = "Telemetry",
+    )]
     pub telemetry_otlp_endpoint: Option<String>,
 }
 

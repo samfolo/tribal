@@ -15,7 +15,7 @@ mod transport;
 pub use app::App;
 #[cfg(feature = "test-helpers")]
 pub use commands::{
-    BootstrapOptions, McpConfigOptions, bootstrap_async, common::persist_credentials,
+    BootstrapOptions, McpConfigOptions, bootstrap_async, common::CredentialsPersistOutcome,
     mcp_config_async, token_create_async,
 };
 pub use error::AppError;

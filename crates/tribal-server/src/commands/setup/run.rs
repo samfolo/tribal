@@ -15,8 +15,8 @@ use super::{config_file, outcome::SetupOutcome, output};
 use crate::{
     cli::SetupArgs,
     commands::common::{
-        COMMAND_POOL_MAX_CONNECTIONS, DATABASE_COMMAND_DEFAULTS, TIMESTAMP_FORMAT,
-        find_or_create_principal, generate_raw_token, persist_credentials,
+        COMMAND_POOL_MAX_CONNECTIONS, CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS,
+        TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, persist_credentials,
         resolve_absolute_config_path, resolve_ttl,
     },
     error::AppError,
@@ -73,7 +73,9 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
         ConfigPersistence::Minimal,
         &mut stderr,
     ))?;
-    persist_credentials(&mut stderr, &outcome.bearer_token);
+    if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
+        let _ = writeln!(stderr, "{warning}");
+    }
     Ok(())
 }
 
@@ -163,12 +165,6 @@ pub(crate) async fn run_async(
 
     drop(conn);
 
-    let content = persistence
-        .render(config)
-        .map_err(|source| AppError::Config { source })?;
-    let config_file = config_file::write_if_absent(config_path, config, &content).await?;
-    output::config_file(out, &config_file);
-
     let bearer_token: BearerToken =
         raw_token
             .parse()
@@ -176,6 +172,18 @@ pub(crate) async fn run_async(
                 reason: "generated bearer token failed parse validation".into(),
                 source: Box::new(source),
             })?;
+
+    // Persist credentials.json before any further fallible work so a
+    // later failure (config-file write, etc.) cannot leave a DB-side
+    // token row whose raw value the user never sees again.
+    let credentials = persist_credentials(&bearer_token);
+
+    let content = persistence
+        .render(config)
+        .map_err(|source| AppError::Config { source })?;
+    let config_file = config_file::write_if_absent(config_path, config, &content).await?;
+    output::config_file(out, &config_file);
+
     output::instructions(out, bearer_token.as_str()).map_err(|source| AppError::SetupIo {
         context: "writing bearer token output".into(),
         source,
@@ -186,6 +194,7 @@ pub(crate) async fn run_async(
         principal_key: token_principal.principal_key().to_owned(),
         principal_id: token_principal.id(),
         config_file,
+        credentials,
     })
 }
 

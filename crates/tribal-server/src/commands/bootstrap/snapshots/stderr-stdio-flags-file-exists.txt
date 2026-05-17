@@ -1,0 +1,34 @@
+Bootstrap complete.
+
+Project:     widgets (proj_00000000-0000-0000-0000-000000000002)
+Git remote:  github.com/acme/widgets
+Transport:   stdio (no bearer token required at runtime)
+
+Next steps:
+
+1. These flag values were NOT persisted because the config file already exists.
+   /etc/tribal/tribal.yaml already exists. Edit it or export the
+   corresponding TRIBAL_* env vars to make the supplied
+   flag values durable:
+     export TRIBAL_EMBEDDING__PROVIDER=…
+     export TRIBAL_EMBEDDING__MODEL=…
+     export TRIBAL_INFERENCE__EXTRACTION__PROVIDER=…
+     export TRIBAL_INFERENCE__EXTRACTION__MODEL=…
+     export TRIBAL_TELEMETRY__OTLP_ENDPOINT=…
+
+2. Verify your installation is ready for use:
+   tribal check
+
+3. (When ready for real ingest) verify providers:
+   tribal check --providers
+
+4. Wire Tribal into your agent harness. For Claude Code:
+     claude mcp add-json tribal "$(tribal mcp-config)"
+   For Codex / Gemini CLI / OpenCode, see the installation skill.
+
+5. (Optional) Install Tribal skills into your agent:
+   npx skills add samfolo/tribal-skills
+
+Bearer token (also saved to ~/.config/tribal/credentials.json):
+
+  test-bearer-token

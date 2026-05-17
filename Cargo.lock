@@ -5180,6 +5180,7 @@ dependencies = [
 name = "tribal"
 version = "0.1.1"
 dependencies = [
+ "anstream 1.0.0",
  "axum",
  "base64 0.22.1",
  "bytes",

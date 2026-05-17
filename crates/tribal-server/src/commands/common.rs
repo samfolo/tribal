@@ -1,9 +1,6 @@
 //! Shared utilities for CLI command implementations.
 
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::TimeDelta;
@@ -242,27 +239,38 @@ pub(crate) fn resolve_absolute_config_path(raw: &str) -> Result<PathBuf, AppErro
 // Credentials persistence
 // ---------------------------------------------------------------------------
 
-/// Best-effort persistence of a bearer token via
-/// [`write_credentials`]. On failure, writes a warning to `out` and
-/// returns: persistence loss is recoverable since the token already
-/// exists in the database and has been surfaced to the user.
+/// Outcome of attempting to persist a bearer token to credentials.json.
 ///
-/// Lives at the wrapper layer rather than inside `run_async` because
-/// the credentials path resolves through `$XDG_CONFIG_HOME` — a
-/// process-global the existing `run_async` convention deliberately
-/// avoids.
-pub fn persist_credentials(out: &mut dyn Write, token: &BearerToken) {
+/// `Failed` carries a pre-formatted warn-and-success literal so each
+/// caller can route the warning to the appropriate stream.
+#[derive(Debug)]
+pub enum CredentialsPersistOutcome {
+    /// Credentials successfully written to the resolved path.
+    Persisted { path: PathBuf },
+    /// Write failed. `warning` is the pre-formatted warn-and-success
+    /// literal; the caller emits it to its preferred stream.
+    Failed { warning: String },
+}
+
+/// Best-effort persistence of `token` via [`write_credentials`].
+///
+/// Callers must invoke this only after the token row has been printed
+/// to its output stream, so a write failure leaves the user with a
+/// recoverable token rather than a hash-only row in the database.
+pub fn persist_credentials(token: &BearerToken) -> CredentialsPersistOutcome {
     let creds = Credentials::bearer(token.clone());
-    let Err(err) = write_credentials(&creds) else {
-        return;
-    };
-    let path = err
-        .path()
-        .map_or_else(|| "<unresolved>".to_owned(), |p| p.display().to_string());
-    let _ = writeln!(
-        out,
-        "{CREDENTIALS_WRITE_FAILED_PREFIX}{path}: {err}{CREDENTIALS_WRITE_FAILED_SUFFIX}",
-    );
+    match write_credentials(&creds) {
+        Ok(path) => CredentialsPersistOutcome::Persisted { path },
+        Err(err) => {
+            let path = err
+                .path()
+                .map_or_else(|| "<unresolved>".to_owned(), |p| p.display().to_string());
+            let warning = format!(
+                "{CREDENTIALS_WRITE_FAILED_PREFIX}{path}: {err}{CREDENTIALS_WRITE_FAILED_SUFFIX}",
+            );
+            CredentialsPersistOutcome::Failed { warning }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
