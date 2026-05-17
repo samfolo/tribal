@@ -119,7 +119,7 @@ pub enum CredentialsWriteError {
     Path(#[from] ConfigDirError),
 
     /// The parent directory could not be created.
-    #[error("could not create parent directory for {path}: {source}")]
+    #[error("could not create parent directory of {path}: {source}")]
     CreateDir {
         path: PathBuf,
         #[source]
@@ -196,7 +196,7 @@ fn write_credentials_at(path: &Path, creds: &Credentials) -> Result<(), Credenti
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
 
     fs::create_dir_all(parent).map_err(|source| CredentialsWriteError::CreateDir {
-        path: parent.to_owned(),
+        path: path.to_owned(),
         source,
     })?;
 
@@ -435,6 +435,7 @@ fn inspect_permissions(_path: &Path) -> CredentialsPermissions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::{CREDENTIALS_FILENAME, TRIBAL_DIRECTORY_NAME};
 
     fn sample_token() -> BearerToken {
         "Iz5pXq-test-token".parse().unwrap()
@@ -593,12 +594,44 @@ mod tests {
             "warning should name the credentials file: {rendered}",
         );
         assert!(
-            rendered.contains("Permission denied") || rendered.contains("permission denied"),
+            rendered.contains("Permission denied"),
             "warning should surface the underlying io::Error: {rendered}",
         );
 
         // Restore permissions so the tempdir cleanup succeeds.
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_credentials_at_errors_when_create_dir_fails() {
+        // Forces the `CreateDir` branch by making the grandparent
+        // directory read-only so `create_dir_all` cannot mkdir the
+        // missing `tribal/` parent.
+        let dir = tempfile::tempdir().unwrap();
+        let outer = dir.path().join("locked");
+        fs::create_dir(&outer).unwrap();
+        fs::set_permissions(&outer, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let path = outer.join(TRIBAL_DIRECTORY_NAME).join(CREDENTIALS_FILENAME);
+        let err = write_credentials_at(&path, &sample_credentials()).unwrap_err();
+        assert!(
+            matches!(err, CredentialsWriteError::CreateDir { .. }),
+            "expected CreateDir, got: {err:?}",
+        );
+        assert_eq!(err.path(), Some(path.as_path()));
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains(CREDENTIALS_FILENAME),
+            "warning should name the credentials file: {rendered}",
+        );
+        assert!(
+            rendered.contains("Permission denied"),
+            "warning should surface the underlying io::Error: {rendered}",
+        );
+
+        // Restore so the tempdir cleanup can run.
+        fs::set_permissions(&outer, fs::Permissions::from_mode(0o700)).ok();
     }
 
     // -- Read --------------------------------------------------------------

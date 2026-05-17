@@ -32,7 +32,8 @@ pub use env::{
 pub use error::ConfigError;
 pub use loader::load_config;
 pub use paths::{
-    ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path, default_credentials_file_path,
+    CREDENTIALS_FILENAME, ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path,
+    default_credentials_file_path,
 };
 pub use redact::redact_secrets;
 pub use render::{ConfigPersistence, render_minimal_config, render_persisted_config};
