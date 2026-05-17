@@ -1,8 +1,8 @@
 //! OpenTelemetry metric instruments for Tribal.
 //!
-//! [`Metrics`] bundles all 11 instruments defined in Server §6.7.
-//! Consumers clone the struct (cheap — instruments are `Arc`-based)
-//! and call recording methods at the appropriate sites.
+//! [`Metrics`] bundles every instrument. Consumers clone the struct
+//! (cheap — instruments are `Arc`-based) and call recording methods at
+//! the appropriate sites.
 
 use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, MeterProvider};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
