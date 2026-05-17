@@ -68,10 +68,6 @@ pub(crate) fn run(config_path: &str, args: ProjectRegisterArgs) -> Result<(), Ap
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
 
-    if !json {
-        output::git_remote_resolved(&mut stderr, git_remote.as_str());
-    }
-
     let name = name.unwrap_or_else(|| git_remote.path().to_owned());
     let branch = branch.unwrap_or_else(|| DEFAULT_BRANCH.to_owned());
     let transport = transport.unwrap_or_default();
@@ -249,6 +245,9 @@ pub(crate) async fn run_async(
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
 ) -> Result<RegisterOutcome, AppError> {
+    if !opts.json {
+        output::git_remote_resolved(out_stderr, git_remote.as_str());
+    }
     let outcome = compute(config, git_remote, name, branch, opts).await?;
     let project = outcome.project();
 
