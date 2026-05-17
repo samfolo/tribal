@@ -173,29 +173,35 @@ pub async fn run_async(
 /// stdio short-circuits to `None` — harness-spawned servers authenticate
 /// as `principal:local` at runtime. Network transports prefer the
 /// explicit `--token` override, falling back to the persisted credentials
-/// file via [`read_credentials`].
+/// file via [`read_credentials`]. The `--token` value is trimmed once at
+/// this boundary; empty-after-trim falls through to the credentials
+/// cascade (matches `register::resolve_auth`).
 fn resolve_auth(
     transport: TransportKind,
     explicit_token: Option<String>,
     out_stderr: &mut dyn Write,
 ) -> Result<Option<Auth>, AppError> {
+    let trimmed_token = explicit_token
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+
     match transport {
         TransportKind::Stdio => {
-            if explicit_token.is_some() {
+            if trimmed_token.is_some() {
                 let _ = writeln!(out_stderr, "{STDIO_TOKEN_IGNORED}");
             }
             Ok(None)
         }
         TransportKind::Http | TransportKind::Sse => {
-            let auth = resolve_network_auth(explicit_token, out_stderr)?;
+            let auth = resolve_network_auth(trimmed_token, out_stderr)?;
             Ok(Some(auth))
         }
     }
 }
 
-/// Network-transport auth resolution: explicit `--token` first, then
-/// persisted credentials. Permissions drift warns on stderr but does not
-/// block.
+/// Network-transport auth resolution: explicit `--token` first (already
+/// trimmed by [`resolve_auth`]), then persisted credentials. Permissions
+/// drift warns on stderr but does not block.
 fn resolve_network_auth(
     explicit_token: Option<String>,
     out_stderr: &mut dyn Write,
