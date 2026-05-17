@@ -70,52 +70,65 @@ impl PersistableFlag {
         env_var_for_path(self.config_path())
     }
 
-    /// Returns the persistable flags the user explicitly set in
-    /// `overrides`, in the canonical declaration order of the enum.
+    /// Returns the persistable flags the user explicitly set, in the
+    /// canonical declaration order of the enum. Use [`Self::resolve_overrides`]
+    /// when the caller needs each flag's resolved value too.
     #[must_use]
     pub fn from_cli_overrides(overrides: &CliOverrides) -> Vec<Self> {
+        Self::resolve_overrides(overrides)
+            .into_iter()
+            .map(|(flag, _)| flag)
+            .collect()
+    }
+
+    /// Returns the persistable flags the user explicitly set in
+    /// `overrides`, paired with each flag's resolved value, in the
+    /// canonical declaration order of the enum.
+    #[must_use]
+    pub fn resolve_overrides(overrides: &CliOverrides) -> Vec<(Self, String)> {
         let mut out = Vec::new();
         if let Some(embedding) = &overrides.embedding {
-            if embedding.provider.is_some() {
-                out.push(Self::EmbeddingProvider);
+            if let Some(provider) = &embedding.provider {
+                out.push((Self::EmbeddingProvider, provider.to_string()));
             }
-            if embedding.model.is_some() {
-                out.push(Self::EmbeddingModel);
+            if let Some(model) = &embedding.model {
+                out.push((Self::EmbeddingModel, model.clone()));
             }
         }
         if let Some(inference) = &overrides.inference {
             if let Some(stage) = &inference.extraction {
-                if stage.provider.is_some() {
-                    out.push(Self::InferenceExtractionProvider);
+                if let Some(provider) = &stage.provider {
+                    out.push((Self::InferenceExtractionProvider, provider.to_string()));
                 }
-                if stage.model.is_some() {
-                    out.push(Self::InferenceExtractionModel);
+                if let Some(model) = &stage.model {
+                    out.push((Self::InferenceExtractionModel, model.clone()));
                 }
             }
             if let Some(stage) = &inference.triage {
-                if stage.provider.is_some() {
-                    out.push(Self::InferenceTriageProvider);
+                if let Some(provider) = &stage.provider {
+                    out.push((Self::InferenceTriageProvider, provider.to_string()));
                 }
-                if stage.model.is_some() {
-                    out.push(Self::InferenceTriageModel);
+                if let Some(model) = &stage.model {
+                    out.push((Self::InferenceTriageModel, model.clone()));
                 }
             }
             if let Some(stage) = &inference.relation {
-                if stage.provider.is_some() {
-                    out.push(Self::InferenceRelationProvider);
+                if let Some(provider) = &stage.provider {
+                    out.push((Self::InferenceRelationProvider, provider.to_string()));
                 }
-                if stage.model.is_some() {
-                    out.push(Self::InferenceRelationModel);
+                if let Some(model) = &stage.model {
+                    out.push((Self::InferenceRelationModel, model.clone()));
                 }
             }
         }
         if let Some(telemetry) = &overrides.telemetry
-            && telemetry.otlp_endpoint.is_some()
+            && let Some(endpoint) = &telemetry.otlp_endpoint
         {
-            out.push(Self::TelemetryOtlpEndpoint);
+            out.push((Self::TelemetryOtlpEndpoint, endpoint.clone()));
         }
         out
     }
+
 }
 
 // ---------------------------------------------------------------------------

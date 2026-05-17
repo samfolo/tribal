@@ -114,6 +114,7 @@ notify-debouncer-mini = "0.7"
 figment = { version = "0.10", features = ["yaml", "env"] }
 path-clean = "1"
 shellexpand = "3"
+shlex = "2"
 dirs = "6"
 
 # CLI argument parsing
