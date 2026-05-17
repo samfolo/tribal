@@ -4,6 +4,7 @@
   principal: principal:local
   principal: user:alice
   token: created (expires <TIMESTAMP>)
+  config file: written to <CONFIG_DIR>/tribal.yaml
 
 Setup complete. Your bearer token:
 
@@ -15,4 +16,3 @@ Next steps:
   1. Export the token:  export TRIBAL_AUTH_TOKEN="<TOKEN>"
   2. Register a project:  tribal project register
 
-  config file: written to <CONFIG_DIR>/tribal.yaml
