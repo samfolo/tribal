@@ -133,13 +133,18 @@ async fn test_bootstrap_credentials_unwritable_emits_warning_with_handoff() {
     .expect("bootstrap still succeeds when credentials write fails");
 
     let stderr = String::from_utf8(stderr).expect("utf8 stderr");
+    let handoff_offset = stderr.find("Bootstrap complete.").unwrap_or_else(|| {
+        panic!("hand-off must still render alongside the warning: {stderr}");
+    });
+    let warning_offset = stderr
+        .find(CREDENTIALS_WRITE_FAILED_PREFIX)
+        .unwrap_or_else(|| {
+            panic!("expected canonical warn-and-success prefix in: {stderr}");
+        });
     assert!(
-        stderr.contains(CREDENTIALS_WRITE_FAILED_PREFIX),
-        "expected canonical warn-and-success prefix in: {stderr}",
-    );
-    assert!(
-        stderr.contains("Bootstrap complete."),
-        "hand-off must still render alongside the warning: {stderr}",
+        warning_offset > handoff_offset,
+        "warn-and-success literal must follow the hand-off block; \
+         got warning at {warning_offset}, hand-off at {handoff_offset}: {stderr}",
     );
 
     // Restore so the tempdir cleanup can run.
