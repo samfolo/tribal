@@ -25,7 +25,7 @@ pub(crate) const WARNING_CONFIG_UNREADABLE: &str =
 
 /// Outcome of the config file write attempt.
 #[derive(Debug)]
-pub(crate) enum ConfigFileOutcome {
+pub enum ConfigFileOutcome {
     /// The file was written successfully.
     Written {
         /// Path where the file was written.

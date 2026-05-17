@@ -20,6 +20,13 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Pool name for the create connection.
+const POOL_NAME: &str = "token-create";
+
+// ---------------------------------------------------------------------------
 // Outcome
 // ---------------------------------------------------------------------------
 
@@ -32,13 +39,6 @@ pub struct TokenCreateOutcome {
     /// token-row insert.
     pub credentials: CredentialsPersistOutcome,
 }
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Pool name for the create connection.
-const POOL_NAME: &str = "token-create";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -69,9 +69,17 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    let outcome = rt.block_on(run_async(&config.database, &principal_key, expires_at))?;
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
+    let outcome = rt.block_on(run_async(
+        &config.database,
+        &principal_key,
+        expires_at,
+        &mut stdout,
+        &mut stderr,
+    ))?;
     if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
-        let _ = writeln!(io::stderr().lock(), "{warning}");
+        let _ = writeln!(stderr, "{warning}");
     }
     Ok(())
 }
@@ -92,6 +100,8 @@ pub async fn run_async(
     db_config: &DatabaseConfig,
     principal_key: &str,
     expires_at: DateTime<Utc>,
+    out_stdout: &mut dyn Write,
+    out_stderr: &mut dyn Write,
 ) -> Result<TokenCreateOutcome, AppError> {
     let pool = tribal_db::create_pool(
         db_config,
@@ -108,7 +118,7 @@ pub async fn run_async(
         .map_err(|err| AppError::pool_acquire(POOL_NAME, "acquiring create connection", err))?;
 
     let principal = find_or_create_principal(&mut conn, principal_key).await?;
-    output::principal_resolved(principal.principal_key());
+    output::principal_resolved(out_stderr, principal.principal_key());
 
     let raw_token = generate_raw_token();
     let token_hash = sha256_hex(&raw_token);
@@ -125,6 +135,10 @@ pub async fn run_async(
         .await
         .map_err(|source| AppError::Database { source })?;
 
+    drop(conn);
+
+    // Persist credentials.json before any post-insert output so the
+    // file remains a recoverable artefact if the stdout write fails.
     let bearer_token: BearerToken =
         raw_token
             .parse()
@@ -132,11 +146,13 @@ pub async fn run_async(
                 reason: "generated bearer token failed parse validation".into(),
                 source: Box::new(source),
             })?;
-
-    output::raw_token(bearer_token.as_str());
-    output::token_created(&expires_at.format(TIMESTAMP_FORMAT).to_string());
-
     let credentials = persist_credentials(&bearer_token);
+
+    output::raw_token(out_stdout, bearer_token.as_str()).map_err(|source| AppError::SetupIo {
+        context: "writing raw bearer token".into(),
+        source,
+    })?;
+    output::token_created(out_stderr, &expires_at.format(TIMESTAMP_FORMAT).to_string());
 
     Ok(TokenCreateOutcome {
         bearer_token,

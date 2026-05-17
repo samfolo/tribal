@@ -7,7 +7,7 @@ use crate::commands::common::CredentialsPersistOutcome;
 
 /// Result of [`super::run::run`] when setup completes successfully.
 #[derive(Debug)]
-pub(crate) struct SetupOutcome {
+pub struct SetupOutcome {
     /// The bearer token in plain text.
     pub bearer_token: BearerToken,
     /// Key of the principal the token was issued against.
