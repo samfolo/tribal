@@ -64,7 +64,7 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
         .map_err(|source| AppError::Runtime { source })?;
 
     let mut stderr = io::stderr().lock();
-    let outcome = rt.block_on(run_async(
+    rt.block_on(run_async(
         &config,
         &absolute_config_path,
         principal.as_deref(),
@@ -72,9 +72,6 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
         ConfigPersistence::Minimal,
         &mut stderr,
     ))?;
-    if let CredentialsPersistOutcome::Failed { warning } = &outcome.credentials {
-        let _ = writeln!(stderr, "{warning}");
-    }
     Ok(())
 }
 
@@ -192,9 +189,18 @@ pub async fn run_async(
             })?;
     let credentials = persist_credentials(&bearer_token);
 
-    output::token_created(out, &expires_at.format(TIMESTAMP_FORMAT).to_string());
     output::config_file(out, &config_file);
-    output::instructions(out, bearer_token.as_str()).map_err(|source| AppError::SetupIo {
+    output::token_created(out, &expires_at.format(TIMESTAMP_FORMAT).to_string());
+    let instructions_result = output::instructions(out, bearer_token.as_str());
+
+    // Emit the credentials warning best-effort regardless of whether
+    // instructions succeeded — otherwise a broken stderr would
+    // suppress the only signal that credentials.json wasn't written.
+    if let CredentialsPersistOutcome::Failed { warning } = &credentials {
+        let _ = writeln!(out, "{warning}");
+    }
+
+    instructions_result.map_err(|source| AppError::SetupIo {
         context: "writing bearer token output".into(),
         source,
     })?;
@@ -253,11 +259,12 @@ mod tests {
 
     #[test]
     fn test_setup_embedded_omits_prompts_directory_line() {
+        let rt = test_runtime();
+        let _serial_guard = rt.block_on(serial_lock());
         Jail::expect_with(|jail| {
             let xdg = tempfile::tempdir().expect("xdg tempdir");
             jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
-            test_runtime().block_on(async {
-                let _guard = serial_lock().await;
+            rt.block_on(async {
                 let ctx = test_context().await;
                 let pool = ctx.create_pool().await.expect("create pool");
 
@@ -310,11 +317,12 @@ mod tests {
 
     #[test]
     fn test_setup_disk_emits_prompts_directory_line_and_writes_files() {
+        let rt = test_runtime();
+        let _serial_guard = rt.block_on(serial_lock());
         Jail::expect_with(|jail| {
             let xdg = tempfile::tempdir().expect("xdg tempdir");
             jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
-            test_runtime().block_on(async {
-                let _guard = serial_lock().await;
+            rt.block_on(async {
                 let ctx = test_context().await;
                 let pool = ctx.create_pool().await.expect("create pool");
 
@@ -425,11 +433,12 @@ mod tests {
 
     #[test]
     fn test_setup_stderr_default_principal_matches_snapshot() {
+        let rt = test_runtime();
+        let _serial_guard = rt.block_on(serial_lock());
         Jail::expect_with(|jail| {
             let xdg = tempfile::tempdir().expect("xdg tempdir");
             jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
-            test_runtime().block_on(async {
-                let _guard = serial_lock().await;
+            rt.block_on(async {
                 let ctx = test_context().await;
                 let pool = ctx.create_pool().await.expect("create pool");
 
@@ -480,11 +489,12 @@ mod tests {
 
     #[test]
     fn test_setup_stderr_explicit_principal_matches_snapshot() {
+        let rt = test_runtime();
+        let _serial_guard = rt.block_on(serial_lock());
         Jail::expect_with(|jail| {
             let xdg = tempfile::tempdir().expect("xdg tempdir");
             jail.set_env("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf8 xdg"));
-            test_runtime().block_on(async {
-                let _guard = serial_lock().await;
+            rt.block_on(async {
                 let ctx = test_context().await;
                 let pool = ctx.create_pool().await.expect("create pool");
 
