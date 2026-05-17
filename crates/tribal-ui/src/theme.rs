@@ -17,14 +17,9 @@ mod timings;
 mod types;
 mod typography;
 
-pub use dimensions::{Dimensions, NARROW_TERMINAL_THRESHOLD, NON_TTY_WIDTH};
-pub use glyphs::{GlyphSet, SpinnerTemplate};
-pub use indentation::{Indent, IndentRamp};
-pub use palette::{Palette, Shade};
-pub use spacing::{Spacing, SpacingRamp};
-pub use time_format::{
-    AbsoluteFormat, AbsoluteStyle, ElapsedFormat, RelativeAccuracy, RelativeFormat, TimeFormat,
-};
-pub use timings::Timings;
+pub use glyphs::GlyphSet;
+pub use indentation::Indent;
+pub use palette::Palette;
+pub use spacing::Spacing;
 pub use types::{Capability, Mode, Theme, ThemeRender, ThemeSelection};
 pub use typography::Typography;

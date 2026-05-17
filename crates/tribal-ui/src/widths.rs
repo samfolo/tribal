@@ -20,20 +20,6 @@ pub fn pad_right(text: &str, width: usize) -> String {
     out
 }
 
-/// Right-align `text` within a column of `width` display columns,
-/// padding with spaces on the left.
-#[must_use]
-pub fn pad_left(text: &str, width: usize) -> String {
-    let actual = UnicodeWidthStr::width(text);
-    if actual >= width {
-        return text.to_owned();
-    }
-    let mut out = String::with_capacity(text.len() + (width - actual));
-    out.push_str(&" ".repeat(width - actual));
-    out.push_str(text);
-    out
-}
-
 /// Take the leading `width` display columns of `text` without
 /// appending an ellipsis. Grapheme-safe. If `text` already fits,
 /// return it unchanged. Use [`truncate`] when an ellipsis is wanted.
@@ -105,11 +91,6 @@ mod tests {
     #[test]
     fn test_pad_right_passes_through_when_already_wider() {
         assert_eq!(pad_right("abcdef", 4), "abcdef");
-    }
-
-    #[test]
-    fn test_pad_left_ascii_pads_on_the_left() {
-        assert_eq!(pad_left("ab", 5), "   ab");
     }
 
     // -----------------------------------------------------------------

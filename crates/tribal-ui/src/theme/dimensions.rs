@@ -24,11 +24,6 @@ pub const MAX_NAME_CEILING: usize = 72;
 /// Fallback width used when no terminal is attached.
 pub const NON_TTY_WIDTH: usize = 100;
 
-/// Below this width the renderer collapses to the most compact
-/// layout — components that need horizontal room cannot find it on a
-/// narrower terminal.
-pub const NARROW_TERMINAL_THRESHOLD: usize = 60;
-
 /// Width of the right-aligned timing column. Sized to fit every
 /// duration variant up to 100 hours with one column of separation.
 pub const TIMING_COLUMN_WIDTH: usize = 8;

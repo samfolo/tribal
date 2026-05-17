@@ -8,25 +8,24 @@
 #![deny(warnings)]
 #![warn(clippy::pedantic)]
 
-pub mod component;
-pub mod components;
-pub mod format;
-pub mod probe;
-pub mod render_ctx;
-pub mod theme;
-pub mod time_display;
-pub mod widths;
-pub mod wrap;
+mod component;
+mod components;
+mod format;
+mod probe;
+mod render_ctx;
+mod theme;
+mod time_display;
+mod widths;
 
 #[cfg(test)]
-pub(crate) mod test_support;
+mod test_support;
 
 pub use component::{Component, InlineComponent, ThemedComponent};
 pub use components::{
     Badge, Decimal, Header, KeyValueGrid, OrderedList, OrderedListMarker, SectionRule, Status,
     StatusLine, Text,
 };
-pub use probe::StreamThemeContext;
+pub use probe::{StreamThemeContext, resolve_mode};
 pub use render_ctx::RenderCtx;
 pub use supports_color::Stream;
 pub use theme::{Capability, Mode, Theme, ThemeRender, ThemeSelection};
