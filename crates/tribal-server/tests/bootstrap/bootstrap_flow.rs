@@ -1,9 +1,13 @@
 //! End-to-end tests for `tribal bootstrap`.
 
+use tribal_common::sha256_hex;
 use tribal_config::{
-    CliOverrides, ENV_OPENAI_API_KEY, EmbeddingCliOverrides, ProviderKind, TransportKind,
+    CliOverrides, ENV_OPENAI_API_KEY, EmbeddingCliOverrides, ProviderKind, TelemetryCliOverrides,
+    TransportKind,
 };
-use tribal_db::{PgPrincipalRepository, PrincipalRepository};
+use tribal_db::{
+    AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
+};
 use tribal_domain::LOCAL_PRINCIPAL_KEY;
 use tribal_test_utils::{serial_lock, test_context};
 
@@ -112,7 +116,7 @@ async fn test_bootstrap_with_explicit_principal_provisions_both() {
     let pool = fresh_db(ctx).await;
     let env = TestEnv::new();
 
-    let (_stdout, _stderr) = run_bootstrap(
+    let (stdout, _stderr) = run_bootstrap(
         ctx,
         &env.config_path,
         CliOverrides::default(),
@@ -131,10 +135,35 @@ async fn test_bootstrap_with_explicit_principal_provisions_both() {
     let alice = PgPrincipalRepository
         .find_by_key(&mut conn, "user:alice")
         .await
-        .expect("query alice principal");
+        .expect("query alice principal")
+        .expect("user:alice must be provisioned");
 
     assert!(local.is_some(), "principal:local must be provisioned");
-    assert!(alice.is_some(), "user:alice must be provisioned");
+
+    // The minted token must be issued against `user:alice`, not the
+    // ambient `principal:local`. Verified both via the JSON payload's
+    // declared principal_key and by looking the token row up by hash
+    // and asserting its principal_id matches alice's.
+    let payload = parse_json(&stdout);
+    assert_eq!(
+        payload["principal_key"].as_str(),
+        Some("user:alice"),
+        "bootstrap --json must report the token's principal as user:alice: {payload}",
+    );
+    let bearer = payload["bearer_token"]
+        .as_str()
+        .expect("bootstrap --json carries bearer_token");
+    let token_hash = sha256_hex(bearer);
+    let token_row = PgAuthTokenRepository
+        .find_by_hash(&mut conn, &token_hash)
+        .await
+        .expect("query minted token")
+        .expect("minted token row must exist");
+    assert_eq!(
+        token_row.principal_id(),
+        alice.id(),
+        "minted token must be owned by user:alice, not principal:local",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +230,9 @@ async fn test_bootstrap_persists_then_leaves_file_unchanged_on_second_run() {
             provider: Some(ProviderKind::OpenAi),
             model: Some("text-embedding-3-small".into()),
         }),
+        telemetry: Some(TelemetryCliOverrides {
+            otlp_endpoint: Some("http://localhost:4317".into()),
+        }),
         ..CliOverrides::default()
     };
 
@@ -220,9 +252,30 @@ async fn test_bootstrap_persists_then_leaves_file_unchanged_on_second_run() {
     let first_content = tokio::fs::read_to_string(&env.config_path)
         .await
         .expect("read first config");
+
+    // The persisted YAML must contain the database URL plus the
+    // explicitly-passed persistable fields, and must omit unpassed
+    // families (inference, server). Substring on top-level keys —
+    // sufficient against the renderer's deterministic output.
     assert!(
-        first_content.contains("openai"),
-        "persisted YAML mentions openai: {first_content}",
+        first_content.contains("database:"),
+        "database section is present: {first_content}",
+    );
+    assert!(
+        first_content.contains("embedding:"),
+        "embedding section is present: {first_content}",
+    );
+    assert!(
+        first_content.contains("telemetry:"),
+        "telemetry section is present: {first_content}",
+    );
+    assert!(
+        !first_content.contains("inference:"),
+        "inference section must be absent: {first_content}",
+    );
+    assert!(
+        !first_content.contains("server:"),
+        "server section must be absent: {first_content}",
     );
 
     // -- Second run finds the file, leaves it byte-identical ----------------
