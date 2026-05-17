@@ -19,7 +19,7 @@ mod worker;
 
 pub use auth::AuthConfig;
 pub use credentials::{
-    Auth, CREDENTIALS_PERMISSIONS_DRIFT_PREFIX, CREDENTIALS_PERMISSIONS_DRIFT_SUFFIX,
+    Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
     CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials,
     CredentialsPermissions, CredentialsReadError, CredentialsWriteError, LoadedCredentials,
     read_credentials, write_credentials,

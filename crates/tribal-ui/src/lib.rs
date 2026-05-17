@@ -22,7 +22,11 @@ pub mod wrap;
 pub(crate) mod test_support;
 
 pub use component::{Component, InlineComponent, ThemedComponent};
-pub use components::{Badge, Header, SectionRule, Status, StatusLine, Text};
+pub use components::{
+    Badge, Decimal, Header, KeyValueGrid, OrderedList, OrderedListMarker, SectionRule, Status,
+    StatusLine, Text,
+};
 pub use probe::StreamThemeContext;
 pub use render_ctx::RenderCtx;
+pub use supports_color::Stream;
 pub use theme::{Capability, Mode, Theme, ThemeRender, ThemeSelection};

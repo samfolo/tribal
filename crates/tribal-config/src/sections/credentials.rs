@@ -41,10 +41,10 @@ pub const CREDENTIALS_WRITE_FAILED_SUFFIX: &str = ". The token has been printed 
 /// Prefix of the warning emitted when the on-disk credentials file has
 /// wider POSIX permissions than the `0600` invariant enforced at write
 /// time. Composed with the resolved path at the emission site.
-pub const CREDENTIALS_PERMISSIONS_DRIFT_PREFIX: &str = "warning: credentials.json at ";
+pub const CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX: &str = "warning: credentials.json at ";
 
-/// Suffix of [`CREDENTIALS_PERMISSIONS_DRIFT_PREFIX`].
-pub const CREDENTIALS_PERMISSIONS_DRIFT_SUFFIX: &str =
+/// Suffix of [`CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX`].
+pub const CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX: &str =
     " has wider permissions than 0600; restrict with `chmod 600`.";
 
 // ---------------------------------------------------------------------------
@@ -259,18 +259,19 @@ pub struct LoadedCredentials {
 /// State of the credentials file's POSIX mode bits.
 ///
 /// The write side sets mode `0600` (Unix) so the file is readable only by
-/// its owner. The reader checks the same invariant on load. Drift does
-/// not invalidate the credentials — the variant is purely a security
-/// signal callers can warn on.
+/// its owner. The reader checks the same invariant on load. A permissive
+/// mode does not invalidate the credentials — the variant is purely a
+/// security signal callers can warn on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialsPermissions {
-    /// Mode bits match the `0600` invariant set at write time.
+    /// Mode bits restrict access to the file's owner (`(mode & 0o077) == 0`).
     Locked,
-    /// Mode bits are wider than `0600`; the file is readable by other
-    /// users on the system. Callers warn-and-proceed.
-    Drifted,
-    /// Permissions could not be determined: the host is non-Unix or
-    /// the file metadata could not be read.
+    /// Mode bits grant access to group or other (`(mode & 0o077) != 0`),
+    /// making the file readable, writable, or executable by users beyond
+    /// its owner. Callers warn-and-proceed.
+    Permissive,
+    /// Permissions could not be determined: the host is non-Unix or the
+    /// file metadata could not be read.
     Unknown,
 }
 
@@ -338,6 +339,19 @@ pub fn read_credentials() -> Result<LoadedCredentials, CredentialsReadError> {
     read_credentials_at(&path)
 }
 
+/// Minimal envelope used to read [`Credentials::schema_version`] before
+/// strict deserialisation. A future envelope with additional top-level
+/// fields would fail `Credentials`'s `deny_unknown_fields` check, so the
+/// version is inspected first and an [`UnsupportedSchema`] error is
+/// returned before the strict parse rejects unknown fields as
+/// [`CredentialsReadError::Malformed`].
+///
+/// [`UnsupportedSchema`]: CredentialsReadError::UnsupportedSchema
+#[derive(Deserialize)]
+struct CredentialsEnvelope {
+    schema_version: u32,
+}
+
 fn read_credentials_at(path: &Path) -> Result<LoadedCredentials, CredentialsReadError> {
     let raw = match fs::read(path) {
         Ok(bytes) => bytes,
@@ -352,17 +366,23 @@ fn read_credentials_at(path: &Path) -> Result<LoadedCredentials, CredentialsRead
         }
     };
 
-    let credentials: Credentials =
+    let envelope: CredentialsEnvelope =
         serde_json::from_slice(&raw).map_err(|source| CredentialsReadError::Malformed {
             path: path.to_owned(),
             source,
         })?;
 
-    if credentials.schema_version != Credentials::SCHEMA_VERSION {
+    if envelope.schema_version != Credentials::SCHEMA_VERSION {
         return Err(CredentialsReadError::UnsupportedSchema {
-            schema_version: credentials.schema_version,
+            schema_version: envelope.schema_version,
         });
     }
+
+    let credentials: Credentials =
+        serde_json::from_slice(&raw).map_err(|source| CredentialsReadError::Malformed {
+            path: path.to_owned(),
+            source,
+        })?;
 
     let permissions = inspect_permissions(path);
 
@@ -376,16 +396,25 @@ fn read_credentials_at(path: &Path) -> Result<LoadedCredentials, CredentialsRead
 /// Classifies the POSIX mode bits at `path` against the `0600` invariant.
 /// Always returns [`CredentialsPermissions::Unknown`] on non-Unix targets
 /// or when metadata cannot be read.
+///
+/// Drift is defined as the file being readable, writable, or executable
+/// by group or other (`(mode & 0o077) != 0`). Modes narrower than `0o600`
+/// (e.g. owner-read-only `0o400`) are not drifted — the security signal
+/// is "other users on the system can read this", not "the mode differs
+/// from the bytes we wrote".
 #[cfg(unix)]
 fn inspect_permissions(path: &Path) -> CredentialsPermissions {
     let Ok(metadata) = fs::metadata(path) else {
         return CredentialsPermissions::Unknown;
     };
     let mode = metadata.permissions().mode() & 0o777;
-    if mode == CREDENTIALS_FILE_MODE {
+    // Bit-mask form is the idiom for POSIX permission checks; the
+    // clippy-preferred `trailing_zeros >= 6` obscures the intent.
+    #[allow(clippy::verbose_bit_mask)]
+    if mode & 0o077 == 0 {
         CredentialsPermissions::Locked
     } else {
-        CredentialsPermissions::Drifted
+        CredentialsPermissions::Permissive
     }
 }
 
@@ -615,6 +644,33 @@ mod tests {
         );
     }
 
+    /// A future envelope shape may introduce additional top-level fields
+    /// (e.g. a `profiles` map). The current binary's `deny_unknown_fields`
+    /// would reject those as malformed if the version were not inspected
+    /// first — verify the envelope read returns `UnsupportedSchema` so the
+    /// user sees the upgrade hint rather than a misleading JSON-parse
+    /// error.
+    #[test]
+    fn test_read_credentials_at_returns_unsupported_schema_for_future_shape_with_extra_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let future_version = Credentials::SCHEMA_VERSION + 1;
+        let payload = format!(
+            r#"{{"schema_version": {future_version}, "auth": {{"type": "bearer", "token": "x"}}, "profiles": {{}}}}"#,
+        );
+        fs::write(&path, payload).unwrap();
+
+        let err = read_credentials_at(&path).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CredentialsReadError::UnsupportedSchema { schema_version }
+                    if schema_version == future_version,
+            ),
+            "expected UnsupportedSchema {{ schema_version: {future_version} }}, got: {err:?}",
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_read_credentials_at_reports_permissions_locked_after_write() {
@@ -628,14 +684,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_read_credentials_at_reports_permissions_drifted() {
+    fn test_read_credentials_at_reports_permissions_permissive_for_wider_mode() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credentials.json");
         write_credentials_at(&path, &sample_credentials()).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
 
         let loaded = read_credentials_at(&path).unwrap();
-        assert_eq!(loaded.permissions, CredentialsPermissions::Drifted);
+        assert_eq!(loaded.permissions, CredentialsPermissions::Permissive);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_read_credentials_at_reports_permissions_locked_for_narrower_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        write_credentials_at(&path, &sample_credentials()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+
+        let loaded = read_credentials_at(&path).unwrap();
+        assert_eq!(loaded.permissions, CredentialsPermissions::Locked);
     }
 
     // -- Error display literals --------------------------------------------
