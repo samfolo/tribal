@@ -53,6 +53,10 @@ pub(in crate::commands::check) enum CheckOutcome {
         detail: CheckDetail,
         remediation: Option<CheckRemediation>,
     },
+    Skip {
+        name: CheckName,
+        detail: CheckDetail,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +123,52 @@ pub(in crate::commands::check) enum CheckDetail {
     ProjectCascadeMissing,
     /// Project resolution failed at the infrastructure layer.
     ProjectQueryFailed { error: String },
+    /// Stdio transport with no `--token` supplied; verification skipped.
+    TokenSkippedStdio,
+    /// Token verified against the database.
+    TokenVerified { transport: TokenTransport },
+    /// Token verification failed.
+    TokenVerificationFailed {
+        transport: TokenTransport,
+        reason: TokenFailureReason,
+    },
+    /// No token resolvable from any source, but the database has at
+    /// least one active token.
+    TokenAggregateWarn,
+    /// No token resolvable from any source and the database has no
+    /// active tokens.
+    NoActiveTokens,
+    /// The aggregate any-active query failed at the infrastructure layer.
+    TokenAggregateQueryFailed { error: String },
+}
+
+// ---------------------------------------------------------------------------
+// TokenTransport / TokenFailureReason
+// ---------------------------------------------------------------------------
+
+/// The transport context against which a token was verified.
+///
+/// `Http` covers both `http` and `sse` transports — the two share token
+/// verification semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::commands::check) enum TokenTransport {
+    Stdio,
+    Http,
+}
+
+/// Why token verification failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::commands::check) enum TokenFailureReason {
+    /// No matching token row in the database.
+    Invalid,
+    /// The token row has been revoked.
+    Revoked,
+    /// The token has expired.
+    Expired,
+    /// Token row resolves but its `principal_id` has no matching row.
+    PrincipalMissing,
+    /// Database error during verification.
+    DatabaseUnavailable { context: String },
 }
 
 impl CheckDetail {
@@ -156,9 +206,48 @@ impl CheckDetail {
             Self::ProjectQueryFailed { error } => {
                 format!("project lookup failed: {error}")
             }
+            Self::TokenSkippedStdio => {
+                "stdio transport: no `--token` supplied; verification skipped".into()
+            }
+            Self::TokenVerified { transport } => match transport {
+                TokenTransport::Stdio => format!("token verified {STDIO_QUALIFIER}"),
+                TokenTransport::Http => "token verified".into(),
+            },
+            Self::TokenVerificationFailed { transport, reason } => {
+                let base = match reason {
+                    TokenFailureReason::Invalid => "token is invalid".to_owned(),
+                    TokenFailureReason::Revoked => "token is revoked".to_owned(),
+                    TokenFailureReason::Expired => "token is expired".to_owned(),
+                    TokenFailureReason::PrincipalMissing => {
+                        "token's principal not found".to_owned()
+                    }
+                    TokenFailureReason::DatabaseUnavailable { context } => {
+                        format!("token verification failed; database unavailable: {context}")
+                    }
+                };
+                match transport {
+                    TokenTransport::Stdio => format!("{base} {STDIO_QUALIFIER}"),
+                    TokenTransport::Http => base,
+                }
+            }
+            Self::TokenAggregateWarn => {
+                "no token resolvable, but at least one active token exists in the database".into()
+            }
+            Self::NoActiveTokens => {
+                "no token resolvable and no active tokens exist in the database".into()
+            }
+            Self::TokenAggregateQueryFailed { error } => {
+                format!("token aggregate check failed: {error}")
+            }
         }
     }
 }
+
+/// Suffix appended to stdio token-verification renderings — stdio
+/// transport does not actually consume the token at runtime, so the
+/// outcome describes the verification only.
+const STDIO_QUALIFIER: &str =
+    "(checked against --token; stdio transport does not use this token at runtime)";
 
 // ---------------------------------------------------------------------------
 // CheckRemediation
@@ -183,6 +272,8 @@ pub(in crate::commands::check) enum CheckRemediation {
     /// Register a project with `tribal project register` or set
     /// `TRIBAL_PROJECT_ID`.
     RegisterProjectOrSetEnv,
+    /// Mint a new bearer token with `tribal token create`.
+    RunTribalTokenCreate,
 }
 
 impl CheckRemediation {
@@ -209,6 +300,9 @@ impl CheckRemediation {
             Self::RegisterProjectOrSetEnv => {
                 "register a project with `tribal project register` or set `TRIBAL_PROJECT_ID`"
                     .into()
+            }
+            Self::RunTribalTokenCreate => {
+                "mint a new bearer token with `tribal token create`".into()
             }
         }
     }

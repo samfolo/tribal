@@ -35,6 +35,10 @@ pub enum CheckResult {
         detail: String,
         remediation: Option<String>,
     },
+    Skip {
+        name: CheckName,
+        detail: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +82,10 @@ impl From<&CheckOutcome> for CheckResult {
                 name: *name,
                 detail: detail.render(),
                 remediation: remediation.as_ref().map(CheckRemediation::render),
+            },
+            CheckOutcome::Skip { name, detail } => Self::Skip {
+                name: *name,
+                detail: detail.render(),
             },
         }
     }
@@ -182,6 +190,22 @@ mod tests {
         assert_eq!(pass["name"], "config_parse");
         assert_eq!(pass["detail"], "config loaded from /etc/tribal/config.yaml");
         assert!(pass.get("remediation").is_none());
+    }
+
+    #[test]
+    fn test_skip_wire_shape_omits_remediation_field() {
+        let output = CheckOutput {
+            ok: true,
+            checks: vec![CheckResult::Skip {
+                name: CheckName::ValidTokenExists,
+                detail: "stdio transport: no `--token` supplied; verification skipped".into(),
+            }],
+        };
+        let json = serde_json::to_value(&output).expect("serialise");
+        let skip = &json["checks"][0];
+        assert_eq!(skip["status"], "skip");
+        assert_eq!(skip["name"], "valid_token_exists");
+        assert!(skip.get("remediation").is_none());
     }
 
     #[test]
