@@ -88,7 +88,7 @@ pub struct TelemetryConfig {
 impl Default for TelemetryConfig {
     fn default() -> Self {
         let (file_directory, used_temp_dir_fallback) =
-            resolve_directory(dirs::data_local_dir, || None, "tribal/traces");
+            resolve_directory(dirs::data_local_dir, || None, "traces");
         Self {
             enabled: default_enabled(),
             otlp_endpoint: None,
@@ -120,7 +120,7 @@ const fn default_console_export() -> bool {
 }
 
 fn default_file_directory() -> String {
-    let (dir, _) = resolve_directory(dirs::data_local_dir, dirs::data_local_dir, "tribal/traces");
+    let (dir, _) = resolve_directory(dirs::data_local_dir, dirs::data_local_dir, "traces");
     dir
 }
 
@@ -154,7 +154,7 @@ mod tests {
         assert!(config.console_export);
         assert!(!config.file_export);
         assert!(!config.file_directory.is_empty());
-        assert!(config.file_directory.ends_with("tribal/traces"));
+        assert!(config.file_directory.ends_with("traces"));
         assert_eq!(config.file_rotation, FileRotation::Daily);
     }
 

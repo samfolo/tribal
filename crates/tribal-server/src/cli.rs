@@ -4,11 +4,12 @@
 //! parsing and subcommand dispatch.
 
 mod command;
-mod default_values;
+mod flags;
 mod styles;
 
 pub use command::{
-    Cli, Command, ConfigCommand, ConfigShowArgs, ProjectCommand, ProjectListArgs,
-    ProjectRegisterArgs, ServeArgs, SetupArgs, TokenCommand, TokenCreateArgs, TokenListArgs,
-    TokenRevokeAllArgs, TokenRevokeArgs,
+    BootstrapArgs, Cli, Command, ConfigCommand, ConfigShowArgs, McpConfigArgs, ProjectCommand,
+    ProjectListArgs, ProjectRegisterArgs, ServeArgs, SetupArgs, TokenCommand, TokenCreateArgs,
+    TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
 };
+pub(crate) use flags::PersistableFlag;

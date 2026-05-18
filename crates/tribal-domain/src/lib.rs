@@ -46,6 +46,7 @@ macro_rules! enum_text_conversions {
 
 mod api_key;
 mod auth_token;
+mod bearer_token;
 mod candidate;
 mod discovery;
 mod embedding;
@@ -65,6 +66,7 @@ mod project;
 mod prompt_role;
 mod prompt_stage;
 mod prompt_version;
+mod redacted_secret;
 mod redaction;
 mod reference;
 mod reference_kind;
@@ -83,6 +85,7 @@ mod triage;
 
 pub use api_key::{ApiKey, ApiKeyParseError};
 pub use auth_token::{AuthToken, AuthTokenBuilder};
+pub use bearer_token::{BearerToken, BearerTokenParseError};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use embedding::{Embedding, EmbeddingBuilder};

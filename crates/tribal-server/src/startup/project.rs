@@ -73,13 +73,15 @@ async fn resolve_by_id(pool: &PgPool, raw: &str) -> Result<ResolvedProject, AppE
     let project = repo
         .find_by_id(&mut conn, project_id)
         .await
-        .map_err(|source| match &source {
+        .map_err(|source| match source {
             DbError::NotFound { .. } => AppError::ProjectResolution {
                 context: format!("project {raw} not found in database"),
             },
-            _ => AppError::ProjectResolution {
-                context: format!("failed to look up project {raw}: {source}"),
-            },
+            // Infrastructure failures (pool exhaustion, query errors,
+            // row decode failures) are not user-input problems, so they
+            // surface through `Database` rather than masquerading as
+            // resolution-cascade failures.
+            source => AppError::Database { source },
         })?;
 
     tracing::info!(

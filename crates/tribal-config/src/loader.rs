@@ -7,25 +7,19 @@ use figment::{
     Figment,
     providers::{Env, Format, Serialized, Yaml},
 };
-use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tribal_domain::ApiKey;
 
 use crate::{
-    LoggingConfig, TelemetryConfig, TribalConfig,
-    env::ENV_PREFIX,
+    CliOverrides, LoggingConfig, TelemetryConfig, TribalConfig,
+    env::{ENV_NESTED_SEPARATOR, ENV_PREFIX},
     error::ConfigError,
-    sections::{PromptSource, ProviderKind, TransportKind},
+    sections::{PromptSource, ProviderKind},
 };
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// Separator used to encode nested paths in environment variable names.
-///
-/// `TRIBAL_DATABASE__URL` maps to `database.url`.
-const ENV_SEPARATOR: &str = "__";
 
 /// Top-level scalar fields that should not be overridden via env vars.
 #[cfg(test)]
@@ -50,105 +44,6 @@ const KNOWN_SECTIONS: &[&str] = &[
     "logging.",
     "telemetry.",
 ];
-
-// ---------------------------------------------------------------------------
-// CliOverrides
-// ---------------------------------------------------------------------------
-
-/// CLI flag overrides merged at the highest precedence.
-///
-/// Only explicitly-passed values participate in the merge; absent fields
-/// are skipped via `skip_serializing_if`.
-#[derive(Debug, Default, Serialize)]
-pub struct CliOverrides {
-    /// Server-related CLI overrides.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub server: Option<ServerCliOverrides>,
-
-    /// Database-related CLI overrides.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub database: Option<DatabaseCliOverrides>,
-
-    /// Embedding-stage CLI overrides.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub embedding: Option<EmbeddingCliOverrides>,
-
-    /// Inference-stage CLI overrides.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inference: Option<InferenceCliOverrides>,
-
-    /// Telemetry CLI overrides.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<TelemetryCliOverrides>,
-}
-
-/// Server-related CLI flag overrides.
-#[derive(Debug, Serialize)]
-pub struct ServerCliOverrides {
-    /// Transport override from `--transport`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transport: Option<TransportKind>,
-
-    /// Bind address override from `--bind`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bind_address: Option<String>,
-}
-
-/// Database-related CLI flag overrides.
-#[derive(Debug, Serialize)]
-pub struct DatabaseCliOverrides {
-    /// Database URL override from `--database-url`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-}
-
-/// Embedding-stage CLI flag overrides.
-#[derive(Debug, Serialize)]
-pub struct EmbeddingCliOverrides {
-    /// Provider override from `--embedding-provider`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<ProviderKind>,
-
-    /// Model name override from `--embedding-model`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-/// Inference-stage CLI flag overrides.
-#[derive(Debug, Serialize)]
-pub struct InferenceCliOverrides {
-    /// Extraction-stage overrides.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extraction: Option<InferenceStageCliOverrides>,
-
-    /// Triage-stage overrides.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub triage: Option<InferenceStageCliOverrides>,
-
-    /// Relation-stage overrides.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub relation: Option<InferenceStageCliOverrides>,
-}
-
-/// Per-stage inference CLI flag overrides.
-#[derive(Debug, Serialize)]
-pub struct InferenceStageCliOverrides {
-    /// Provider override.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<ProviderKind>,
-
-    /// Model name override.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-/// Telemetry CLI flag overrides.
-#[derive(Debug, Serialize)]
-pub struct TelemetryCliOverrides {
-    /// OTLP exporter endpoint override from `--telemetry-otlp-endpoint`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otlp_endpoint: Option<String>,
-}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -182,7 +77,7 @@ pub fn load_config(
     let expanded_path = shellexpand::tilde(config_path);
 
     let nested_env = Env::prefixed(ENV_PREFIX)
-        .split(ENV_SEPARATOR)
+        .split(ENV_NESTED_SEPARATOR)
         .filter(|key| {
             let k = key.as_str().to_lowercase();
             KNOWN_SECTIONS.iter().any(|section| k.starts_with(section))
@@ -347,7 +242,14 @@ mod tests {
     use figment::Jail;
 
     use super::*;
-    use crate::{ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ProviderKind, validate};
+    use crate::{
+        ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ProviderKind, TransportKind,
+        cli_overrides::{
+            DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
+            InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
+        },
+        validate,
+    };
 
     /// Serialises a [`TribalConfig`] and writes it as `tribal.yaml` in the
     /// jail's working directory. Lets tests assemble fixtures by setting

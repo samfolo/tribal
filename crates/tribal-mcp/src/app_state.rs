@@ -41,6 +41,26 @@ pub struct ResolvedProject {
     pub(crate) git_remote: GitRemote,
 }
 
+impl ResolvedProject {
+    /// Returns the project's database identifier.
+    #[must_use]
+    pub fn id(&self) -> ProjectId {
+        self.id
+    }
+
+    /// Returns the project's human-friendly name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the normalised git remote identity.
+    #[must_use]
+    pub fn git_remote(&self) -> &GitRemote {
+        &self.git_remote
+    }
+}
+
 impl From<&ResolvedProject> for SessionProject {
     fn from(rp: &ResolvedProject) -> Self {
         Self {
