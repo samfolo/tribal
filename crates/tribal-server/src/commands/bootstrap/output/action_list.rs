@@ -201,6 +201,8 @@ fn persistence_step_already_exists(
 }
 
 fn export_token_step(inputs: &ActionInputs<'_>) -> ActionStep {
+    // BearerToken uses a base64url charset — no shell-significant
+    // characters — so unconditional `"…"` quoting is safe.
     ActionStep::new(
         "Export the token for your shell session:",
         vec![BodyLine::new(format!(
@@ -215,6 +217,9 @@ fn durable_transport_step(inputs: &ActionInputs<'_>) -> ActionStep {
     // (see `cli::flags`), so derive the env var directly from the
     // config path through the same loader convention.
     let server_transport_env = env_var_for_path("server.transport");
+    // TransportKind Display is one of `stdio` / `http` / `sse` — no
+    // shell-significant characters — so unconditional `"…"` quoting is
+    // safe.
     ActionStep::new(
         "Make this transport durable so `tribal check` and `tribal serve`",
         vec![
