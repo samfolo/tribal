@@ -5109,6 +5109,7 @@ dependencies = [
  "rand 0.10.1",
  "reqwest 0.13.2",
  "rmcp",
+ "serde",
  "serde_json",
  "shellexpand",
  "shlex 2.0.1",
