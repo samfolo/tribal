@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::checks::{CheckName, CheckOutcome, CheckOutcomes, CheckRemediation};
+use super::checks::{CheckName, CheckOutcome, CheckOutcomes};
 
 // ---------------------------------------------------------------------------
 // CheckResult
@@ -28,12 +28,12 @@ pub enum CheckResult {
     Warn {
         name: CheckName,
         detail: String,
-        remediation: Option<String>,
+        remediation: String,
     },
     Fail {
         name: CheckName,
         detail: String,
-        remediation: Option<String>,
+        remediation: String,
     },
     Skip {
         name: CheckName,
@@ -71,7 +71,7 @@ impl From<&CheckOutcome> for CheckResult {
             } => Self::Warn {
                 name: detail.name(),
                 detail: detail.render(),
-                remediation: remediation.as_ref().map(CheckRemediation::render),
+                remediation: remediation.render(),
             },
             CheckOutcome::Fail {
                 detail,
@@ -79,7 +79,7 @@ impl From<&CheckOutcome> for CheckResult {
             } => Self::Fail {
                 name: detail.name(),
                 detail: detail.render(),
-                remediation: remediation.as_ref().map(CheckRemediation::render),
+                remediation: remediation.render(),
             },
             CheckOutcome::Skip { detail } => Self::Skip {
                 name: detail.name(),
@@ -163,7 +163,7 @@ mod tests {
                 CheckResult::Fail {
                     name: CheckName::DatabaseReachable,
                     detail: "cannot connect".into(),
-                    remediation: Some("run `pg_isready`".into()),
+                    remediation: "run `pg_isready`".into(),
                 },
             ],
         };
@@ -213,7 +213,7 @@ mod tests {
             checks: vec![CheckResult::Warn {
                 name: CheckName::ProjectResolution,
                 detail: "no project resolved".into(),
-                remediation: Some("set TRIBAL_PROJECT_ID".into()),
+                remediation: "set TRIBAL_PROJECT_ID".into(),
             }],
         };
         let json = serde_json::to_value(&output).expect("serialise");
@@ -232,7 +232,7 @@ mod tests {
             checks: vec![CheckResult::Fail {
                 name: CheckName::ConfigParse,
                 detail: "config at /etc/tribal/config.yaml failed to load: ...".into(),
-                remediation: Some("inspect /etc/tribal/config.yaml for syntax errors".into()),
+                remediation: "inspect /etc/tribal/config.yaml for syntax errors".into(),
             }],
         };
         let json = serde_json::to_value(&output).expect("serialise");

@@ -27,7 +27,7 @@ impl CheckOutcome {
     pub(in crate::commands::check) fn database_unreachable(error: String) -> Self {
         Self::Fail {
             detail: CheckDetail::DatabaseUnreachable { error },
-            remediation: Some(CheckRemediation::CheckPgIsready),
+            remediation: CheckRemediation::CheckPgIsready,
         }
     }
 }
@@ -74,7 +74,7 @@ mod tests {
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::DatabaseUnreachable { error },
-                remediation: Some(CheckRemediation::CheckPgIsready),
+                remediation: CheckRemediation::CheckPgIsready,
             } if error == "connection refused",
         ));
     }

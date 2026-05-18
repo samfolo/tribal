@@ -37,7 +37,7 @@ impl CheckOutcome {
     ) -> Self {
         Self::Fail {
             detail: CheckDetail::AdvertisedUrlUnreachable { url, error },
-            remediation: Some(CheckRemediation::StartServeOnAdvertisedUrl),
+            remediation: CheckRemediation::StartServeOnAdvertisedUrl,
         }
     }
 }
@@ -99,7 +99,7 @@ mod tests {
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::AdvertisedUrlUnreachable { url, error },
-                remediation: Some(CheckRemediation::StartServeOnAdvertisedUrl),
+                remediation: CheckRemediation::StartServeOnAdvertisedUrl,
             } if url == "http://localhost:8080/mcp" && error == "connection refused",
         ));
     }
