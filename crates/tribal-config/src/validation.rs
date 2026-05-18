@@ -22,6 +22,34 @@ pub const ERR_TTL_ZERO: &str = "auth.token_ttl_hours must be greater than zero";
 pub const FILE_EXPORT_REQUIRES_ENABLED: &str =
     "telemetry.file_export requires telemetry.enabled to be true";
 
+/// Prefix of the validation error raised when `embedding.provider` is
+/// a cloud provider with no `embedding.api_key`.  The trailing
+/// `<provider>` token is appended at runtime by [`validate_api_key_presence`].
+///
+/// Cross-module consumers (e.g. orchestrator skip-rule predicates) match
+/// against this prefix to associate validation errors with the embedding
+/// stage.  Keep the constant as the single source of truth.
+pub const EMBEDDING_API_KEY_REQUIRED_PREFIX: &str =
+    "embedding.api_key is required when embedding.provider is";
+
+/// Prefix of the validation error raised when `inference.extraction`
+/// is a cloud provider with no `api_key`.  See
+/// [`EMBEDDING_API_KEY_REQUIRED_PREFIX`] for the cross-module contract.
+pub const EXTRACTION_API_KEY_REQUIRED_PREFIX: &str =
+    "inference.extraction.api_key is required when inference.extraction.provider is";
+
+/// Prefix of the validation error raised when `inference.triage`
+/// is a cloud provider with no `api_key`.  See
+/// [`EMBEDDING_API_KEY_REQUIRED_PREFIX`] for the cross-module contract.
+pub const TRIAGE_API_KEY_REQUIRED_PREFIX: &str =
+    "inference.triage.api_key is required when inference.triage.provider is";
+
+/// Prefix of the validation error raised when `inference.relation`
+/// is a cloud provider with no `api_key`.  See
+/// [`EMBEDDING_API_KEY_REQUIRED_PREFIX`] for the cross-module contract.
+pub const RELATION_API_KEY_REQUIRED_PREFIX: &str =
+    "inference.relation.api_key is required when inference.relation.provider is";
+
 /// Additional connections the worker pool requires beyond the concurrent task
 /// count (heartbeat, reclaim, poll, and one spare).
 const POOL_CONNECTION_OVERHEAD: usize = 4;
@@ -211,22 +239,22 @@ fn validate_provider_limits(config: &TribalConfig, errors: &mut Vec<String>) {
 fn validate_api_key_presence(config: &TribalConfig, errors: &mut Vec<String>) {
     if config.embedding.provider.requires_api_key() && config.embedding.api_key.is_none() {
         errors.push(format!(
-            "embedding.api_key is required when embedding.provider is {}",
+            "{EMBEDDING_API_KEY_REQUIRED_PREFIX} {}",
             config.embedding.provider
         ));
     }
 
     let stages = [
-        ("inference.extraction", &config.inference.extraction),
-        ("inference.triage", &config.inference.triage),
-        ("inference.relation", &config.inference.relation),
+        (
+            EXTRACTION_API_KEY_REQUIRED_PREFIX,
+            &config.inference.extraction,
+        ),
+        (TRIAGE_API_KEY_REQUIRED_PREFIX, &config.inference.triage),
+        (RELATION_API_KEY_REQUIRED_PREFIX, &config.inference.relation),
     ];
-    for (path, stage) in stages {
+    for (prefix, stage) in stages {
         if stage.provider.requires_api_key() && stage.api_key.is_none() {
-            errors.push(format!(
-                "{path}.api_key is required when {path}.provider is {}",
-                stage.provider
-            ));
+            errors.push(format!("{prefix} {}", stage.provider));
         }
     }
 }
@@ -408,6 +436,42 @@ mod tests {
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("embedding.api_key is required"));
+    }
+
+    /// Verifies each per-stage api-key error string begins with the
+    /// matching exported prefix constant.  The prefixes are the
+    /// source-of-truth that cross-module consumers (orchestrator skip
+    /// rules) match against; this test would fail if a future edit
+    /// drifted the producer in [`validate_api_key_presence`] away from
+    /// the exported constants.
+    #[test]
+    fn test_api_key_required_prefixes_match_produced_strings() {
+        let mut config = valid_config();
+        config.embedding.provider = ProviderKind::OpenAi;
+        config.embedding.api_key = None;
+        config.inference.extraction.provider = ProviderKind::OpenAi;
+        config.inference.extraction.api_key = None;
+        config.inference.triage.provider = ProviderKind::OpenAi;
+        config.inference.triage.api_key = None;
+        config.inference.relation.provider = ProviderKind::OpenAi;
+        config.inference.relation.api_key = None;
+
+        let err = validate(&config).unwrap_err();
+        let ConfigError::ValidationFailed { errors } = err else {
+            panic!("expected ValidationFailed, got {err:?}");
+        };
+
+        for prefix in [
+            EMBEDDING_API_KEY_REQUIRED_PREFIX,
+            EXTRACTION_API_KEY_REQUIRED_PREFIX,
+            TRIAGE_API_KEY_REQUIRED_PREFIX,
+            RELATION_API_KEY_REQUIRED_PREFIX,
+        ] {
+            assert!(
+                errors.iter().any(|e| e.starts_with(prefix)),
+                "no validation error starts with prefix {prefix:?}; errors: {errors:?}"
+            );
+        }
     }
 
     #[test]
