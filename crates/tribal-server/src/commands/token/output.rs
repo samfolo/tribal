@@ -96,9 +96,11 @@ const COL_SEPARATOR: &str = "  ";
 // ---------------------------------------------------------------------------
 
 /// Writes the raw token as a bare value — suitable for piping, e.g.
-/// `tribal token create | pbcopy`.
+/// `tribal token create | pbcopy`. Flushes before returning so a
+/// downstream pipe reader sees the bytes even on abrupt process exit.
 pub(super) fn raw_token(out: &mut dyn Write, token: &str) -> io::Result<()> {
-    writeln!(out, "{token}")
+    writeln!(out, "{token}")?;
+    out.flush()
 }
 
 pub(super) fn principal_resolved(out: &mut dyn Write, key: &str) {
