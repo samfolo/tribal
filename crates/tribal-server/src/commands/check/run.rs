@@ -5,11 +5,11 @@ use std::{
     path::Path,
 };
 
-use tribal_config::load_config;
+use tribal_config::{ConfigError, load_config, validate};
 
 use super::{
-    checks::CheckOutcome,
-    output::{CheckOutput, CheckResult},
+    checks::{CheckOutcome, CheckOutcomes},
+    output::CheckOutput,
 };
 use crate::{
     cli::CheckArgs,
@@ -94,17 +94,26 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
         .to_str()
         .expect("CheckOptions::config_path is resolved from a &str input path");
 
-    let outcome =
-        if let Err(error) = load_config(config_path_str, None, Some(&DATABASE_COMMAND_DEFAULTS)) {
-            CheckOutcome::config_parse_failed(&error, opts.config_path)
-        } else {
-            CheckOutcome::config_parse_loaded(opts.config_path.to_path_buf())
-        };
+    let parse_result = load_config(config_path_str, None, Some(&DATABASE_COMMAND_DEFAULTS));
+    let mut outcomes = CheckOutcomes::new();
 
-    let output = CheckOutput {
-        ok: !matches!(outcome, CheckOutcome::Fail { .. }),
-        checks: vec![CheckResult::from(&outcome)],
-    };
+    outcomes.push(if let Err(error) = &parse_result {
+        CheckOutcome::config_parse_failed(error, opts.config_path)
+    } else {
+        CheckOutcome::config_parse_loaded(opts.config_path.to_path_buf())
+    });
+
+    if let Ok(config) = parse_result {
+        outcomes.push(match validate(&config) {
+            Ok(()) => CheckOutcome::config_validate_satisfied(),
+            Err(ConfigError::ValidationFailed { errors }) => {
+                CheckOutcome::config_validate_failed(errors)
+            }
+            Err(other) => CheckOutcome::config_validate_failed(vec![other.to_string()]),
+        });
+    }
+
+    let output = CheckOutput::from(&outcomes);
 
     if opts.json {
         let rendered =

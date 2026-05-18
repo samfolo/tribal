@@ -50,6 +50,32 @@ pub(in crate::commands::check) enum CheckOutcome {
 }
 
 // ---------------------------------------------------------------------------
+// CheckOutcomes
+// ---------------------------------------------------------------------------
+
+/// Ordered collection of [`CheckOutcome`] values produced during a run.
+///
+/// Centralises the discipline of "what counts as ok" and the projection
+/// to the wire format — both are facts about the collection, not about
+/// any single outcome.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(in crate::commands::check) struct CheckOutcomes(Vec<CheckOutcome>);
+
+impl CheckOutcomes {
+    pub(in crate::commands::check) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(in crate::commands::check) fn push(&mut self, outcome: CheckOutcome) {
+        self.0.push(outcome);
+    }
+
+    pub(in crate::commands::check) fn iter(&self) -> std::slice::Iter<'_, CheckOutcome> {
+        self.0.iter()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CheckDetail
 // ---------------------------------------------------------------------------
 
@@ -60,6 +86,10 @@ pub(in crate::commands::check) enum CheckDetail {
     ConfigLoaded { path: PathBuf },
     /// Config file failed to load or deserialise.
     ConfigParseFailed { error: String, path: PathBuf },
+    /// All configuration invariants passed.
+    AllInvariantsSatisfied,
+    /// One or more configuration invariants failed.
+    ValidationFailed { errors: Vec<String> },
 }
 
 impl CheckDetail {
@@ -70,6 +100,8 @@ impl CheckDetail {
             Self::ConfigParseFailed { error, path } => {
                 format!("config at {} failed to load: {error}", path.display())
             }
+            Self::AllInvariantsSatisfied => "all configuration invariants satisfied".into(),
+            Self::ValidationFailed { errors } => errors.join("\n"),
         }
     }
 }
@@ -83,6 +115,8 @@ impl CheckDetail {
 pub(in crate::commands::check) enum CheckRemediation {
     /// Inspect the config file at `path` for parse errors.
     InspectConfigFile { path: PathBuf },
+    /// One or more targeted hints for the validation errors collected.
+    FixConfigInvariant { hints: Vec<String> },
 }
 
 impl CheckRemediation {
@@ -92,6 +126,7 @@ impl CheckRemediation {
             Self::InspectConfigFile { path } => {
                 format!("inspect {} for syntax errors", path.display())
             }
+            Self::FixConfigInvariant { hints } => hints.join("\n"),
         }
     }
 }

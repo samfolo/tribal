@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::checks::{CheckName, CheckOutcome, CheckRemediation};
+use super::checks::{CheckName, CheckOutcome, CheckOutcomes, CheckRemediation};
 
 // ---------------------------------------------------------------------------
 // CheckResult
@@ -69,6 +69,17 @@ impl From<&CheckOutcome> for CheckResult {
     }
 }
 
+impl From<&CheckOutcomes> for CheckOutput {
+    fn from(outcomes: &CheckOutcomes) -> Self {
+        Self {
+            ok: outcomes
+                .iter()
+                .all(|o| !matches!(o, CheckOutcome::Fail { .. })),
+            checks: outcomes.iter().map(CheckResult::from).collect(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -90,6 +101,34 @@ mod tests {
                 detail,
             } if detail == "config loaded from /etc/tribal/config.yaml",
         ));
+    }
+
+    #[test]
+    fn test_check_output_from_outcomes_ok_when_no_fail() {
+        let mut outcomes = CheckOutcomes::new();
+        outcomes.push(CheckOutcome::config_parse_loaded(PathBuf::from(
+            "/cfg.yaml",
+        )));
+        outcomes.push(CheckOutcome::config_validate_satisfied());
+
+        let output = CheckOutput::from(&outcomes);
+        assert!(output.ok);
+        assert_eq!(output.checks.len(), 2);
+    }
+
+    #[test]
+    fn test_check_output_from_outcomes_not_ok_when_any_fail() {
+        let mut outcomes = CheckOutcomes::new();
+        outcomes.push(CheckOutcome::config_parse_loaded(PathBuf::from(
+            "/cfg.yaml",
+        )));
+        outcomes.push(CheckOutcome::config_validate_failed(vec![
+            "database.url must not be empty".into(),
+        ]));
+
+        let output = CheckOutput::from(&outcomes);
+        assert!(!output.ok);
+        assert_eq!(output.checks.len(), 2);
     }
 
     #[test]
