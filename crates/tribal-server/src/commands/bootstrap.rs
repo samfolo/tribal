@@ -5,4 +5,5 @@ mod output;
 mod run;
 
 pub(crate) use run::run;
+#[cfg(feature = "test-helpers")]
 pub use run::{BootstrapOptions, run_async};

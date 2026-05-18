@@ -10,7 +10,11 @@ mod outcome;
 mod output;
 mod run;
 
-pub use config_file::ConfigFileOutcome;
+pub(crate) use config_file::ConfigFileOutcome;
+#[cfg(feature = "test-helpers")]
 pub use outcome::SetupOutcome;
 pub(crate) use run::run;
+#[cfg(feature = "test-helpers")]
 pub use run::run_async;
+#[cfg(not(feature = "test-helpers"))]
+pub(crate) use run::run_async;

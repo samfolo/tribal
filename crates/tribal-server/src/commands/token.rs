@@ -7,6 +7,7 @@ mod revoke;
 mod revoke_all;
 
 pub(crate) use create::run as create;
+#[cfg(feature = "test-helpers")]
 pub use create::run_async as create_async;
 pub(crate) use list::run as list;
 pub(crate) use revoke::run as revoke;
