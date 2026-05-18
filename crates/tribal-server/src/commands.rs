@@ -20,6 +20,7 @@ pub(crate) use self::{
     bootstrap::run as bootstrap, mcp_config::run as mcp_config, serve::run as serve,
     setup::run as setup,
 };
+#[cfg(feature = "test-helpers")]
 pub use self::{
     bootstrap::{BootstrapOptions, run_async as bootstrap_async},
     mcp_config::{McpConfigOptions, run_async as mcp_config_async},

@@ -3,4 +3,5 @@
 mod run;
 
 pub(crate) use run::run;
+#[cfg(feature = "test-helpers")]
 pub use run::{McpConfigOptions, run_async};
