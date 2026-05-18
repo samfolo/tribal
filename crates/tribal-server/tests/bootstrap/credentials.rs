@@ -112,7 +112,7 @@ async fn test_setup_writes_credentials_with_minted_bearer() {
     let _pool = fresh_db(ctx).await;
     let env = TestEnv::new();
 
-    let (outcome, _stderr) = run_setup(ctx, &env.config_path, None)
+    let (outcome, _stderr) = run_setup(ctx, &env.config_path, CliOverrides::default(), None)
         .await
         .expect("setup succeeds");
 
@@ -146,7 +146,7 @@ async fn test_setup_credentials_unwritable_emits_warning_and_keeps_token_row() {
     std::fs::set_permissions(&tribal_dir, std::fs::Permissions::from_mode(0o500))
         .expect("chmod r-x");
 
-    let (outcome, stderr) = run_setup(ctx, &env.config_path, None)
+    let (outcome, stderr) = run_setup(ctx, &env.config_path, CliOverrides::default(), None)
         .await
         .expect("setup still succeeds when credentials write fails");
 
@@ -206,11 +206,14 @@ async fn test_bootstrap_credentials_unwritable_emits_warning_with_handoff() {
     let handoff_offset = stderr.find("Bootstrap complete.").unwrap_or_else(|| {
         panic!("hand-off must still render alongside the warning: {stderr}");
     });
+    let warning_count = stderr.matches(CREDENTIALS_WRITE_FAILED_PREFIX).count();
+    assert_eq!(
+        warning_count, 1,
+        "warn-and-success literal must appear exactly once: {stderr}",
+    );
     let warning_offset = stderr
         .find(CREDENTIALS_WRITE_FAILED_PREFIX)
-        .unwrap_or_else(|| {
-            panic!("expected canonical warn-and-success prefix in: {stderr}");
-        });
+        .expect("warning prefix present, asserted above");
     assert!(
         warning_offset > handoff_offset,
         "warn-and-success literal must follow the hand-off block; \
