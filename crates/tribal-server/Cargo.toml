@@ -63,11 +63,12 @@ tribal-ui.workspace = true
 tribal-worker.workspace = true
 
 [features]
-test-helpers = []
+test-helpers = ["tribal-inference/test-helpers"]
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
 
 tribal-test-utils.workspace = true
