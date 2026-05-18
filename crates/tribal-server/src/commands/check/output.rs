@@ -1,15 +1,13 @@
 //! Wire types for `tribal check` and the conversion from the internal
 //! [`CheckOutcome`] data layer.
 //!
-//! [`CheckOutput`] is the frozen JSON shape consumed by downstream
-//! tooling: every field is additive-only and discriminants stay
-//! lowercase.  Internal callers (the orchestrator in `super::run`)
-//! produce [`CheckOutcome`] values, then map them through the [`From`]
-//! impl on this layer before serialisation.
+//! [`CheckOutput`] is the JSON shape consumed by downstream tooling.
+//! The status is the variant tag: `Pass` and `Skip` cannot carry a
+//! `remediation` field, mirroring [`CheckOutcome`].
 
 use serde::{Deserialize, Serialize};
 
-use super::checks::{CheckName, CheckOutcome, CheckStatus};
+use super::checks::{CheckName, CheckOutcome, CheckRemediation};
 
 // ---------------------------------------------------------------------------
 // CheckResult
@@ -17,14 +15,21 @@ use super::checks::{CheckName, CheckOutcome, CheckStatus};
 
 /// One row of the `checks` array in the wire format.
 ///
-/// `detail` and `remediation` are rendered from the matching typed
-/// variants on [`CheckOutcome`].
+/// Serialised with `status` as an internal tag so each row deserialises
+/// to `{"status": "<lowercase variant>", "name": ..., "detail": ...,
+/// "remediation"?: ...}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckResult {
-    pub name: CheckName,
-    pub status: CheckStatus,
-    pub detail: String,
-    pub remediation: Option<String>,
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum CheckResult {
+    Pass {
+        name: CheckName,
+        detail: String,
+    },
+    Fail {
+        name: CheckName,
+        detail: String,
+        remediation: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -33,8 +38,7 @@ pub struct CheckResult {
 
 /// The wire format `tribal check --json` emits.
 ///
-/// `ok` is `true` iff every entry in `checks` is `pass | warn | skip`.
-/// Frozen schema: additive-only field changes after this commit lands.
+/// `ok` is `true` iff no entry in `checks` is `fail`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckOutput {
     pub ok: bool,
@@ -47,11 +51,20 @@ pub struct CheckOutput {
 
 impl From<&CheckOutcome> for CheckResult {
     fn from(outcome: &CheckOutcome) -> Self {
-        Self {
-            name: outcome.name,
-            status: outcome.status,
-            detail: outcome.detail.render(),
-            remediation: None,
+        match outcome {
+            CheckOutcome::Pass { name, detail } => Self::Pass {
+                name: *name,
+                detail: detail.render(),
+            },
+            CheckOutcome::Fail {
+                name,
+                detail,
+                remediation,
+            } => Self::Fail {
+                name: *name,
+                detail: detail.render(),
+                remediation: remediation.as_ref().map(CheckRemediation::render),
+            },
         }
     }
 }
@@ -65,23 +78,18 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::commands::check::checks::CheckDetail;
 
     #[test]
-    fn test_check_result_from_outcome_renders_detail() {
-        let outcome = CheckOutcome {
-            name: CheckName::ConfigParse,
-            status: CheckStatus::Pass,
-            detail: CheckDetail::ConfigLoaded {
-                path: PathBuf::from("/etc/tribal/config.yaml"),
-            },
-        };
-
+    fn test_check_result_from_pass_outcome_omits_remediation() {
+        let outcome = CheckOutcome::config_parse_loaded(PathBuf::from("/etc/tribal/config.yaml"));
         let result = CheckResult::from(&outcome);
-        assert_eq!(result.name, CheckName::ConfigParse);
-        assert_eq!(result.status, CheckStatus::Pass);
-        assert_eq!(result.detail, "config loaded from /etc/tribal/config.yaml");
-        assert_eq!(result.remediation, None);
+        assert!(matches!(
+            &result,
+            CheckResult::Pass {
+                name: CheckName::ConfigParse,
+                detail,
+            } if detail == "config loaded from /etc/tribal/config.yaml",
+        ));
     }
 
     #[test]
@@ -89,15 +97,12 @@ mod tests {
         let output = CheckOutput {
             ok: false,
             checks: vec![
-                CheckResult {
+                CheckResult::Pass {
                     name: CheckName::ConfigParse,
-                    status: CheckStatus::Pass,
                     detail: "config loaded from /a".into(),
-                    remediation: None,
                 },
-                CheckResult {
+                CheckResult::Fail {
                     name: CheckName::DatabaseReachable,
-                    status: CheckStatus::Fail,
                     detail: "cannot connect".into(),
                     remediation: Some("run `pg_isready`".into()),
                 },
@@ -110,25 +115,41 @@ mod tests {
     }
 
     #[test]
-    fn test_check_output_wire_shape_is_stable() {
+    fn test_pass_wire_shape_omits_remediation_field() {
         let output = CheckOutput {
             ok: true,
-            checks: vec![CheckResult {
-                name: CheckName::ConfigValidate,
-                status: CheckStatus::Warn,
-                detail: "no project resolved".into(),
-                remediation: Some("set TRIBAL_PROJECT_ID".into()),
+            checks: vec![CheckResult::Pass {
+                name: CheckName::ConfigParse,
+                detail: "config loaded from /etc/tribal/config.yaml".into(),
             }],
         };
-
         let json = serde_json::to_value(&output).expect("serialise");
-        assert_eq!(json["ok"], serde_json::Value::Bool(true));
-        let checks = json["checks"].as_array().expect("checks is array");
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0]["name"], "config_validate");
-        assert_eq!(checks[0]["status"], "warn");
-        assert_eq!(checks[0]["detail"], "no project resolved");
-        assert_eq!(checks[0]["remediation"], "set TRIBAL_PROJECT_ID");
+        let pass = &json["checks"][0];
+        assert_eq!(pass["status"], "pass");
+        assert_eq!(pass["name"], "config_parse");
+        assert_eq!(pass["detail"], "config loaded from /etc/tribal/config.yaml");
+        assert!(pass.get("remediation").is_none());
+    }
+
+    #[test]
+    fn test_fail_wire_shape_includes_remediation_field() {
+        let output = CheckOutput {
+            ok: false,
+            checks: vec![CheckResult::Fail {
+                name: CheckName::ConfigParse,
+                detail: "config at /etc/tribal/config.yaml failed to load: ...".into(),
+                remediation: Some("inspect /etc/tribal/config.yaml for syntax errors".into()),
+            }],
+        };
+        let json = serde_json::to_value(&output).expect("serialise");
+        let fail = &json["checks"][0];
+        assert_eq!(fail["status"], "fail");
+        assert_eq!(fail["name"], "config_parse");
+        assert!(fail["detail"].as_str().unwrap().starts_with("config at"));
+        assert_eq!(
+            fail["remediation"],
+            "inspect /etc/tribal/config.yaml for syntax errors"
+        );
     }
 
     #[test]

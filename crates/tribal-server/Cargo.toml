@@ -72,4 +72,5 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 
+tribal-inference = { workspace = true, features = ["test-helpers"] }
 tribal-test-utils.workspace = true

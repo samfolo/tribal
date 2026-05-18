@@ -5,11 +5,17 @@ use std::{
     path::Path,
 };
 
+use tribal_config::load_config;
+
 use super::{
-    checks::{CheckDetail, CheckName, CheckOutcome, CheckStatus},
+    checks::CheckOutcome,
     output::{CheckOutput, CheckResult},
 };
-use crate::{cli::CheckArgs, commands::common::resolve_absolute_config_path, error::AppError};
+use crate::{
+    cli::CheckArgs,
+    commands::common::{DATABASE_COMMAND_DEFAULTS, resolve_absolute_config_path},
+    error::AppError,
+};
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -79,17 +85,24 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
 /// Panics if JSON serialisation of [`CheckOutput`] fails.  All fields
 /// derive `Serialize` from primitive types, so this is unreachable in
 /// practice.
+// Async by design — DB and HTTP probes land in subsequent check
+// commits; remove this allow once the first `.await` is in place.
+#[allow(clippy::unused_async)]
 pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
-    let outcome = CheckOutcome {
-        name: CheckName::ConfigParse,
-        status: CheckStatus::Pass,
-        detail: CheckDetail::ConfigLoaded {
-            path: opts.config_path.to_path_buf(),
-        },
-    };
+    let config_path_str = opts
+        .config_path
+        .to_str()
+        .expect("CheckOptions::config_path is resolved from a &str input path");
+
+    let outcome =
+        if let Err(error) = load_config(config_path_str, None, Some(&DATABASE_COMMAND_DEFAULTS)) {
+            CheckOutcome::config_parse_failed(&error, opts.config_path)
+        } else {
+            CheckOutcome::config_parse_loaded(opts.config_path.to_path_buf())
+        };
 
     let output = CheckOutput {
-        ok: true,
+        ok: !matches!(outcome, CheckOutcome::Fail { .. }),
         checks: vec![CheckResult::from(&outcome)],
     };
 
