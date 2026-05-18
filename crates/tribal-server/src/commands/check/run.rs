@@ -8,7 +8,7 @@ use std::{
 use tribal_config::{ConfigError, load_config, validate};
 
 use super::{
-    checks::{CheckOutcome, CheckOutcomes, database_reachable},
+    checks::{CheckContext, CheckOutcome, CheckOutcomes, database_reachable, migrations_current},
     output::CheckOutput,
 };
 use crate::{
@@ -109,7 +109,12 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
             Err(other) => CheckOutcome::config_validate_failed(vec![other.to_string()]),
         });
 
-        outcomes.push(database_reachable(&config.database).await);
+        let (db_outcome, pool) = database_reachable(&config.database).await;
+        outcomes.push(db_outcome);
+        if let Some(pool) = pool {
+            let ctx = CheckContext { pool };
+            outcomes.push(migrations_current(&ctx).await);
+        }
     }
 
     let output = CheckOutput::from(&outcomes);
