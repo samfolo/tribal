@@ -146,6 +146,13 @@ pub(in crate::commands::check) enum CheckDetail {
     AdvertisedUrlReachable { url: String, status: u16 },
     /// Advertised URL did not respond; `error` describes the failure.
     AdvertisedUrlUnreachable { url: String, error: String },
+    /// Exactly one `tribal` binary resolved on PATH.
+    BinaryUnique { path: PathBuf },
+    /// Multiple `tribal` binaries resolved on PATH — shadowing risk.
+    BinaryDuplicate { paths: Vec<PathBuf> },
+    /// No `tribal` binary resolved on PATH — the binary running this
+    /// check is not discoverable through PATH lookup.
+    BinaryAbsent,
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +216,9 @@ impl CheckDetail {
             Self::AdvertisedUrlSkippedStdio
             | Self::AdvertisedUrlReachable { .. }
             | Self::AdvertisedUrlUnreachable { .. } => CheckName::AdvertisedUrlReachable,
+            Self::BinaryUnique { .. } | Self::BinaryDuplicate { .. } | Self::BinaryAbsent => {
+                CheckName::BinaryUniqueness
+            }
         }
     }
 
@@ -286,6 +296,19 @@ impl CheckDetail {
             Self::AdvertisedUrlUnreachable { url, error } => {
                 format!("{url} unreachable: {error}")
             }
+            Self::BinaryUnique { path } => format!("`tribal` resolves to {}", path.display()),
+            Self::BinaryDuplicate { paths } => {
+                let rendered: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+                format!(
+                    "multiple `tribal` binaries on PATH: {}",
+                    rendered.join(", "),
+                )
+            }
+            Self::BinaryAbsent => {
+                "no `tribal` binary resolves from PATH (running via an absolute or relative \
+                 path bypasses PATH lookup)"
+                    .into()
+            }
         }
     }
 }
@@ -323,6 +346,9 @@ pub(in crate::commands::check) enum CheckRemediation {
     RunTribalTokenCreate,
     /// Start `tribal serve` so it binds the advertised URL.
     StartServeOnAdvertisedUrl,
+    /// Remove the duplicate `tribal` binaries from PATH or reorder so
+    /// the intended one wins.
+    PruneDuplicateBinaries { paths: Vec<PathBuf> },
 }
 
 impl CheckRemediation {
@@ -355,6 +381,13 @@ impl CheckRemediation {
             }
             Self::StartServeOnAdvertisedUrl => {
                 "start `tribal serve` so it binds the advertised URL".into()
+            }
+            Self::PruneDuplicateBinaries { paths } => {
+                let rendered: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+                format!(
+                    "remove or reorder the duplicate `tribal` entries on PATH: {}",
+                    rendered.join(", "),
+                )
             }
         }
     }

@@ -5,6 +5,7 @@
 //! detail variants, remediation variants — live in [`types`].
 
 mod advertised_url_reachable;
+mod binary_uniqueness;
 mod config_parse;
 mod config_validate;
 mod context;
@@ -15,6 +16,7 @@ mod types;
 mod valid_token_exists;
 
 pub(super) use advertised_url_reachable::run as advertised_url_reachable;
+pub(super) use binary_uniqueness::run as binary_uniqueness;
 pub(super) use context::CheckContext;
 pub(super) use database_reachable::run as database_reachable;
 pub(super) use migrations_current::run as migrations_current;
