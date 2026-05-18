@@ -5,6 +5,7 @@
 //! detail variants, remediation variants — live in [`types`].
 
 mod config_parse;
+mod config_validate;
 mod types;
 
-pub(super) use types::{CheckName, CheckOutcome, CheckRemediation};
+pub(super) use types::{CheckName, CheckOutcome, CheckOutcomes, CheckRemediation};
