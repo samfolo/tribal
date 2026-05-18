@@ -264,12 +264,8 @@ pub fn persist_credentials(token: &BearerToken) -> CredentialsPersistOutcome {
     match write_credentials(&creds) {
         Ok(path) => CredentialsPersistOutcome::Persisted { path },
         Err(err) => {
-            let path = err
-                .path()
-                .map_or_else(|| "<unresolved>".to_owned(), |p| p.display().to_string());
-            let warning = format!(
-                "{CREDENTIALS_WRITE_FAILED_PREFIX}{path}: {err}{CREDENTIALS_WRITE_FAILED_SUFFIX}",
-            );
+            let warning =
+                format!("{CREDENTIALS_WRITE_FAILED_PREFIX}{err}{CREDENTIALS_WRITE_FAILED_SUFFIX}");
             CredentialsPersistOutcome::Failed { warning }
         }
     }

@@ -30,9 +30,10 @@ const CREDENTIALS_FILE_MODE: u32 = 0o600;
 
 /// Prefix of the warn-and-success message emitted when a credentials write fails.
 ///
-/// Composed with the resolved path and the underlying `io::Error` at the
-/// emission site: `format!("{PREFIX}{path}: {err}{SUFFIX}")`.
-pub const CREDENTIALS_WRITE_FAILED_PREFIX: &str = "warning: could not persist credentials.json at ";
+/// Composed with the underlying [`CredentialsWriteError`] at the
+/// emission site: `format!("{PREFIX}{err}{SUFFIX}")`. The error's own
+/// display string carries the resolved path, so the prefix omits it.
+pub const CREDENTIALS_WRITE_FAILED_PREFIX: &str = "warning: could not persist credentials.json: ";
 
 /// Suffix of the warn-and-success message — recovery hint and reassurance
 /// that the token is still valid despite the file write failing.
