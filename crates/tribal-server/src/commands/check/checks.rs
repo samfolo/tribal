@@ -9,9 +9,11 @@ mod config_validate;
 mod context;
 mod database_reachable;
 mod migrations_current;
+mod project_resolution;
 mod types;
 
 pub(super) use context::CheckContext;
 pub(super) use database_reachable::run as database_reachable;
 pub(super) use migrations_current::run as migrations_current;
+pub(super) use project_resolution::run as project_resolution;
 pub(super) use types::{CheckName, CheckOutcome, CheckOutcomes, CheckRemediation};

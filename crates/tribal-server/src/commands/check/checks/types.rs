@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tribal_domain::ProjectId;
 
 // ---------------------------------------------------------------------------
 // CheckName
@@ -41,6 +42,11 @@ pub(in crate::commands::check) enum CheckOutcome {
     Pass {
         name: CheckName,
         detail: CheckDetail,
+    },
+    Warn {
+        name: CheckName,
+        detail: CheckDetail,
+        remediation: Option<CheckRemediation>,
     },
     Fail {
         name: CheckName,
@@ -104,6 +110,15 @@ pub(in crate::commands::check) enum CheckDetail {
     MigrationsTableMissing,
     /// Migration head query failed unexpectedly; `error` is the rendered cause.
     MigrationsQueryFailed { error: String },
+    /// Project resolved from CLI override, env var, or git remote.
+    ProjectFound { project_id: ProjectId, name: String },
+    /// User-supplied project (CLI flag or `TRIBAL_PROJECT_ID`) could
+    /// not be resolved; `error` is the reason.
+    ProjectNotFound { error: String },
+    /// No project resolvable from any cascade step.
+    ProjectCascadeMissing,
+    /// Project resolution failed at the infrastructure layer.
+    ProjectQueryFailed { error: String },
 }
 
 impl CheckDetail {
@@ -131,6 +146,16 @@ impl CheckDetail {
             Self::MigrationsQueryFailed { error } => {
                 format!("migration check query failed: {error}")
             }
+            Self::ProjectFound { project_id, name } => {
+                format!("resolved project `{name}` ({project_id})")
+            }
+            Self::ProjectNotFound { error } => format!("project not found: {error}"),
+            Self::ProjectCascadeMissing => {
+                "no project resolved from CLI flag, environment, or git remote".into()
+            }
+            Self::ProjectQueryFailed { error } => {
+                format!("project lookup failed: {error}")
+            }
         }
     }
 }
@@ -155,6 +180,9 @@ pub(in crate::commands::check) enum CheckRemediation {
     /// Upgrade the `tribal` binary to a version that knows about the
     /// migrations already applied to the database.
     UpgradeBinary,
+    /// Register a project with `tribal project register` or set
+    /// `TRIBAL_PROJECT_ID`.
+    RegisterProjectOrSetEnv,
 }
 
 impl CheckRemediation {
@@ -176,6 +204,10 @@ impl CheckRemediation {
             Self::UpgradeBinary => {
                 "upgrade the `tribal` binary to a version that includes the database's \
                  applied migrations"
+                    .into()
+            }
+            Self::RegisterProjectOrSetEnv => {
+                "register a project with `tribal project register` or set `TRIBAL_PROJECT_ID`"
                     .into()
             }
         }

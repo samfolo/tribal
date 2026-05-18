@@ -8,7 +8,10 @@ use std::{
 use tribal_config::{ConfigError, load_config, validate};
 
 use super::{
-    checks::{CheckContext, CheckOutcome, CheckOutcomes, database_reachable, migrations_current},
+    checks::{
+        CheckContext, CheckOutcome, CheckOutcomes, database_reachable, migrations_current,
+        project_resolution,
+    },
     output::CheckOutput,
 };
 use crate::{
@@ -112,8 +115,12 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
         let (db_outcome, pool) = database_reachable(&config.database).await;
         outcomes.push(db_outcome);
         if let Some(pool) = pool {
-            let ctx = CheckContext { pool };
+            let ctx = CheckContext {
+                pool,
+                project_override: opts.project.map(str::to_owned),
+            };
             outcomes.push(migrations_current(&ctx).await);
+            outcomes.push(project_resolution(&ctx).await);
         }
     }
 
@@ -134,7 +141,6 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
     }
 
     let _ = opts.providers;
-    let _ = opts.project;
     let _ = opts.token;
 
     Ok(())
