@@ -230,9 +230,10 @@ pub enum AppError {
         source: io::Error,
     },
 
-    /// Setup I/O operation failed (directory creation, config file write).
-    #[error("setup I/O failed ({context}): {source}")]
-    SetupIo {
+    /// I/O operation failed (file write, stdout/stderr flush, directory
+    /// creation, etc.).
+    #[error("I/O failed ({context}): {source}")]
+    Io {
         /// Description of the failed operation.
         context: String,
         /// The underlying I/O error.
@@ -638,8 +639,8 @@ mod tests {
     }
 
     #[test]
-    fn test_display_setup_io() {
-        let err = AppError::SetupIo {
+    fn test_display_io() {
+        let err = AppError::Io {
             context: "create config directory /tmp/tribal".into(),
             source: io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"),
         };
