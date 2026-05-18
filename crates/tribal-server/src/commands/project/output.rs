@@ -4,8 +4,11 @@
 //! Status messages go to stderr; structured data (IDs, MCP snippets) to
 //! stdout.
 
-use tribal_config::{DEFAULT_BIND_ADDRESS, TransportKind};
-use tribal_domain::Project;
+use std::io::{self, Write};
+
+use tribal_domain::{GitRemote, Project, ProjectId};
+
+use crate::output::snippet_key;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -48,115 +51,83 @@ const COL_SEPARATOR: &str = "  ";
 // Register output
 // ---------------------------------------------------------------------------
 
-/// Reports the resolved git remote to stderr.
-pub(super) fn git_remote_resolved(remote: &str) {
-    eprintln!("  git remote: {remote}");
+/// Reports the resolved git remote to the stderr-equivalent writer.
+pub(super) fn git_remote_resolved(out: &mut dyn Write, remote: &str) {
+    write_line(out, &format!("  git remote: {remote}"));
 }
 
-/// Reports a successful registration or existing project to stderr.
-pub(super) fn registered(project: &Project, already_existed: bool) {
-    let msg = if already_existed {
-        PROJECT_ALREADY_EXISTS
-    } else {
-        PROJECT_REGISTERED
-    };
-    eprintln!("  {msg}: {} ({})", project.name(), project.id());
+/// Reports a freshly registered project to the stderr-equivalent
+/// writer.
+pub(super) fn registered(out: &mut dyn Write, name: &str, id: ProjectId) {
+    write_line(out, &format!("  {PROJECT_REGISTERED}: {name} ({id})"));
 }
 
-/// Prints the bare project ID to stdout.
+/// Reports a pre-existing project to the stderr-equivalent writer.
+pub(super) fn already_exists(out: &mut dyn Write, name: &str, id: ProjectId) {
+    write_line(out, &format!("  {PROJECT_ALREADY_EXISTS}: {name} ({id})"));
+}
+
+/// Writes the bare project ID to the stdout-equivalent writer.
 ///
-/// Emitted as the first stdout line so that scripted consumers can
-/// capture it via `tribal project register | head -1`.
-pub(super) fn project_id(project: &Project) {
-    println!("{}", project.id());
+/// Emitted as the first stdout line so scripted consumers can capture
+/// it via `tribal project register | head -1` — write failures
+/// propagate so a broken pipe surfaces rather than dropping the ID
+/// silently.
+pub(super) fn project_id(out: &mut dyn Write, id: ProjectId) -> io::Result<()> {
+    try_write_line(out, &id.to_string())
 }
 
-/// Prints the wrapped MCP configuration snippet to stdout.
+/// Writes the wrapped MCP configuration snippet to the
+/// stdout-equivalent writer.
 ///
 /// Includes the `mcpServers` wrapper and server key for human
-/// readability when copy-pasting.
+/// readability when copy-pasting. The caller pre-builds the inner
+/// `entry` so it can also be stashed in a `RegisterOutcome` without
+/// double-rendering.
 pub(super) fn mcp_snippet(
-    project: &Project,
-    transport: TransportKind,
-    token: Option<&str>,
-    bind_address: Option<&str>,
-) {
-    let entry = build_snippet_entry(project, transport, token, bind_address);
-    let key = snippet_key(project);
+    out: &mut dyn Write,
+    git_remote: &GitRemote,
+    entry: &serde_json::Value,
+) -> io::Result<()> {
+    let key = snippet_key(git_remote);
     let wrapped = serde_json::json!({
         "mcpServers": {
             (key): entry,
         }
     });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&wrapped).expect("JSON serialisation cannot fail"),
-    );
+    let rendered = serde_json::to_string_pretty(&wrapped).expect("JSON serialisation cannot fail");
+    try_write_line(out, &rendered)
 }
 
-/// Prints the bare MCP server entry to stdout for piping into tools
-/// like `claude mcp add-json <name> <json>`.
+/// Writes the bare MCP server entry to the stdout-equivalent writer
+/// for piping into tools like `claude mcp add-json <name> <json>`.
 ///
 /// No `mcpServers` wrapper, no project ID, no stderr output.
-pub(super) fn json_snippet(
-    project: &Project,
-    transport: TransportKind,
-    token: Option<&str>,
-    bind_address: Option<&str>,
-) {
-    let entry = build_snippet_entry(project, transport, token, bind_address);
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&entry).expect("JSON serialisation cannot fail"),
-    );
+pub(super) fn json_snippet(out: &mut dyn Write, entry: &serde_json::Value) -> io::Result<()> {
+    let rendered = serde_json::to_string_pretty(entry).expect("JSON serialisation cannot fail");
+    try_write_line(out, &rendered)
 }
 
-/// Builds the MCP server entry for a project.
+// ---------------------------------------------------------------------------
+// Writer helpers
+// ---------------------------------------------------------------------------
+
+/// Writes `line` followed by a newline, swallowing IO errors.
 ///
-/// The shape varies by transport: stdio uses `command`/`args`, while
-/// HTTP and SSE use `url` with optional `headers`.
-fn build_snippet_entry(
-    project: &Project,
-    transport: TransportKind,
-    token: Option<&str>,
-    bind_address: Option<&str>,
-) -> serde_json::Value {
-    match transport {
-        TransportKind::Stdio => build_stdio_entry(project),
-        TransportKind::Http | TransportKind::Sse => build_network_entry(token, bind_address),
-    }
+/// Suitable for progress lines where loss of output is not a correctness
+/// issue. For output the caller cannot afford to lose (e.g. the project
+/// ID feeding a downstream pipe), use [`try_write_line`].
+fn write_line(out: &mut dyn Write, line: &str) {
+    let _ = try_write_line(out, line);
 }
 
-/// Builds a stdio-transport MCP server entry.
-fn build_stdio_entry(project: &Project) -> serde_json::Value {
-    serde_json::json!({
-        "command": "tribal",
-        "args": ["serve", "--project", project.id().to_string()]
-    })
-}
-
-/// Builds an HTTP or SSE transport MCP server entry.
+/// Writes `line` followed by a newline, returning any IO failure.
 ///
-/// The project ID is not included — it is configured on the server
-/// side via `tribal serve --project <id>`, not in the client config.
-fn build_network_entry(token: Option<&str>, bind_address: Option<&str>) -> serde_json::Value {
-    let addr = bind_address.unwrap_or(DEFAULT_BIND_ADDRESS);
-    let url = format!("http://{addr}/mcp");
-
-    let mut entry = serde_json::json!({ "url": url });
-
-    if let Some(tok) = token {
-        entry["headers"] = serde_json::json!({
-            "Authorization": format!("Bearer {tok}"),
-        });
-    }
-
-    entry
-}
-
-/// The MCP server key: `tribal@namespace/repo`.
-fn snippet_key(project: &Project) -> String {
-    format!("tribal@{}", project.git_remote().path())
+/// Both flavours route through the same code path so that the eventual
+/// move to a CLI design system has a single point of substitution.
+fn try_write_line(out: &mut dyn Write, line: &str) -> io::Result<()> {
+    writeln!(out, "{line}")?;
+    out.flush()
 }
 
 // ---------------------------------------------------------------------------
@@ -228,106 +199,5 @@ pub(super) fn project_table(projects: &[Project]) {
             remote_w = remote_width,
             branch_w = branch_width,
         );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use tribal_domain::{GitRemote, ProjectId};
-    use tribal_test_utils::a_project;
-
-    use super::*;
-
-    // -- Stdio snippet --------------------------------------------------------
-
-    #[test]
-    fn test_build_stdio_entry_structure() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry = build_snippet_entry(&project, TransportKind::Stdio, None, None);
-        assert_eq!(entry["command"], "tribal");
-
-        let args = entry["args"].as_array().expect("args should be an array");
-        assert_eq!(args[0], "serve");
-        assert_eq!(args[1], "--project");
-
-        let project_arg = args[2].as_str().expect("project arg should be a string");
-        let _: ProjectId = project_arg
-            .parse()
-            .expect("project arg should be a valid ProjectId");
-    }
-
-    // -- Network snippet ------------------------------------------------------
-
-    #[test]
-    fn test_build_http_entry_with_token() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry =
-            build_snippet_entry(&project, TransportKind::Http, Some("test-token-abc"), None);
-
-        assert_eq!(entry["url"], format!("http://{DEFAULT_BIND_ADDRESS}/mcp"));
-        assert_eq!(entry["headers"]["Authorization"], "Bearer test-token-abc");
-        assert!(
-            entry.get("command").is_none(),
-            "network entry must not have command"
-        );
-    }
-
-    #[test]
-    fn test_build_http_entry_custom_bind_address() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry = build_snippet_entry(
-            &project,
-            TransportKind::Http,
-            Some("tok"),
-            Some("10.0.0.1:9999"),
-        );
-
-        assert_eq!(entry["url"], "http://10.0.0.1:9999/mcp");
-    }
-
-    #[test]
-    fn test_build_http_entry_without_token_omits_headers() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry = build_snippet_entry(&project, TransportKind::Http, None, None);
-        assert!(entry.get("headers").is_none(), "no headers without token");
-    }
-
-    #[test]
-    fn test_build_sse_entry_same_shape_as_http() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry = build_snippet_entry(&project, TransportKind::Sse, Some("tok"), None);
-
-        assert_eq!(entry["url"], format!("http://{DEFAULT_BIND_ADDRESS}/mcp"));
-        assert_eq!(entry["headers"]["Authorization"], "Bearer tok");
-    }
-
-    // -- Snippet key ----------------------------------------------------------
-
-    #[test]
-    fn test_snippet_key_preserves_slashes() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("gitlab.com", "org/sub/repo", None))
-            .build();
-
-        assert_eq!(snippet_key(&project), "tribal@org/sub/repo");
     }
 }

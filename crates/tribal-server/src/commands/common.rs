@@ -1,12 +1,17 @@
 //! Shared utilities for CLI command implementations.
 
+use std::path::{Path, PathBuf};
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::TimeDelta;
 use rand::RngExt;
 use sqlx::{Postgres, pool::PoolConnection};
-use tribal_config::{ConfigError, ERR_TTL_ZERO};
+use tribal_config::{
+    CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, ConfigError, Credentials,
+    ERR_TTL_ZERO, write_credentials,
+};
 use tribal_db::{DbError, NewPrincipal, PgPrincipalRepository, PrincipalRepository};
-use tribal_domain::Principal;
+use tribal_domain::{BearerToken, Principal};
 
 use crate::error::AppError;
 
@@ -77,34 +82,78 @@ pub(crate) fn generate_raw_token() -> String {
 // TTL conversion
 // ---------------------------------------------------------------------------
 
-/// Error message for a token TTL that exceeds the representable range.
+/// Error message for an `auth.token_ttl_hours` config value that exceeds
+/// the representable range.
 pub(crate) const TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
+
+/// Error message when a CLI `--ttl` flag is zero.
+pub(crate) const TTL_FLAG_MUST_BE_POSITIVE: &str = "--ttl must be greater than zero";
+
+/// Error message when a CLI `--ttl` flag exceeds the representable range.
+pub(crate) const TTL_FLAG_OUT_OF_RANGE: &str = "--ttl value is too large";
+
+/// Failure modes for [`ttl_to_delta`].
+///
+/// Typed (rather than wrapped in [`AppError`]) so that callers can
+/// attribute the failure to whichever input source supplied the value —
+/// a CLI flag, a config field, or anywhere else — and pick the right
+/// [`AppError`] variant + message themselves.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TtlError {
+    /// The TTL value was zero.
+    Zero,
+    /// The TTL value exceeded the representable range.
+    OutOfRange,
+}
 
 /// Converts a token TTL in hours to a [`TimeDelta`], validating that the
 /// value is non-zero and within the representable range.
 ///
 /// # Errors
 ///
-/// Returns [`AppError::Config`] if the TTL is zero or exceeds the
-/// representable range for `TimeDelta`.
-pub(crate) fn ttl_to_delta(ttl_hours: u64) -> Result<TimeDelta, AppError> {
+/// Returns [`TtlError::Zero`] when `ttl_hours` is zero and
+/// [`TtlError::OutOfRange`] when the value exceeds the representable
+/// range for `TimeDelta`.
+pub(crate) fn ttl_to_delta(ttl_hours: u64) -> Result<TimeDelta, TtlError> {
     if ttl_hours == 0 {
-        return Err(AppError::Config {
+        return Err(TtlError::Zero);
+    }
+    let hours = i64::try_from(ttl_hours).map_err(|_| TtlError::OutOfRange)?;
+    TimeDelta::try_hours(hours).ok_or(TtlError::OutOfRange)
+}
+
+/// Resolves the effective TTL from a CLI flag and config default,
+/// dispatching the typed [`TtlError`] from [`ttl_to_delta`] to the right
+/// [`AppError`] and message depending on which input supplied the value.
+///
+/// The mapping is exhaustive over (variant, source) so adding a new
+/// [`TtlError`] variant forces an update at this single site rather
+/// than silently falling through to one of the existing messages.
+///
+/// # Errors
+///
+/// Returns [`AppError::TokenOperation`] for invalid CLI flag values and
+/// [`AppError::Config`] for invalid config values.
+pub(crate) fn resolve_ttl(cli_ttl: Option<u64>, config_ttl: u64) -> Result<TimeDelta, AppError> {
+    let hours = cli_ttl.unwrap_or(config_ttl);
+    let from_flag = cli_ttl.is_some();
+
+    ttl_to_delta(hours).map_err(|err| match (err, from_flag) {
+        (TtlError::Zero, true) => AppError::TokenOperation {
+            reason: TTL_FLAG_MUST_BE_POSITIVE.into(),
+        },
+        (TtlError::OutOfRange, true) => AppError::TokenOperation {
+            reason: TTL_FLAG_OUT_OF_RANGE.into(),
+        },
+        (TtlError::Zero, false) => AppError::Config {
             source: ConfigError::ValidationFailed {
                 errors: vec![ERR_TTL_ZERO.into()],
             },
-        });
-    }
-
-    let hours = i64::try_from(ttl_hours).map_err(|_| AppError::Config {
-        source: ConfigError::ValidationFailed {
-            errors: vec![TTL_OUT_OF_RANGE.into()],
         },
-    })?;
-
-    TimeDelta::try_hours(hours).ok_or_else(|| AppError::Config {
-        source: ConfigError::ValidationFailed {
-            errors: vec![TTL_OUT_OF_RANGE.into()],
+        (TtlError::OutOfRange, false) => AppError::Config {
+            source: ConfigError::ValidationFailed {
+                errors: vec![TTL_OUT_OF_RANGE.into()],
+            },
         },
     })
 }
@@ -154,6 +203,75 @@ pub(crate) async fn find_or_create_principal(
 }
 
 // ---------------------------------------------------------------------------
+// Path resolution
+// ---------------------------------------------------------------------------
+
+/// Resolves a raw config path to an absolute, normalised form.
+///
+/// Expands a leading `~` via `shellexpand::tilde`, absolutises against
+/// the current working directory via [`std::path::absolute`], and
+/// performs logical `..` normalisation via `path_clean::clean`. The
+/// target file is **not** required to exist (no `std::fs::canonicalize`)
+/// — first-run setup writes through the resolved path before any file
+/// exists on disk.
+///
+/// All three command entry points that accept `--config` (setup,
+/// register, mcp-config) route through this helper, so the absolute
+/// path threaded through to the shared MCP-config builder is
+/// byte-identical across commands.
+///
+/// # Errors
+///
+/// Returns [`AppError::PathResolution`] when [`std::path::absolute`]
+/// fails (typically a missing or inaccessible `current_dir`).
+pub(crate) fn resolve_absolute_config_path(raw: &str) -> Result<PathBuf, AppError> {
+    let expanded = shellexpand::tilde(raw);
+    let absolute = std::path::absolute(Path::new(expanded.as_ref())).map_err(|source| {
+        AppError::PathResolution {
+            path: raw.to_owned(),
+            source,
+        }
+    })?;
+    Ok(path_clean::clean(absolute))
+}
+
+// ---------------------------------------------------------------------------
+// Credentials persistence
+// ---------------------------------------------------------------------------
+
+/// Outcome of attempting to persist a bearer token to credentials.json.
+///
+/// `Failed` carries a pre-formatted warn-and-success literal so each
+/// caller can route the warning to the appropriate stream.
+#[derive(Debug)]
+pub enum CredentialsPersistOutcome {
+    /// Credentials successfully written to the resolved path.
+    Persisted { path: PathBuf },
+    /// Write failed. `warning` is the pre-formatted warn-and-success
+    /// literal; the caller emits it to its preferred stream.
+    Failed { warning: String },
+}
+
+/// Best-effort persistence of `token` via [`write_credentials`].
+///
+/// Callers invoke this immediately after the token row is inserted and
+/// **before** any fallible post-insert output. credentials.json is then
+/// the durable recovery artefact if a later writeln fails. The returned
+/// `Failed` warning is emitted by the caller on its preferred stream
+/// under the warn-and-success rule.
+pub fn persist_credentials(token: &BearerToken) -> CredentialsPersistOutcome {
+    let creds = Credentials::bearer(token.clone());
+    match write_credentials(&creds) {
+        Ok(path) => CredentialsPersistOutcome::Persisted { path },
+        Err(err) => {
+            let warning =
+                format!("{CREDENTIALS_WRITE_FAILED_PREFIX}{err}{CREDENTIALS_WRITE_FAILED_SUFFIX}");
+            CredentialsPersistOutcome::Failed { warning }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -199,7 +317,49 @@ mod tests {
 
     #[test]
     fn test_ttl_to_delta_rejects_zero() {
-        let err = ttl_to_delta(0).unwrap_err();
+        assert_eq!(ttl_to_delta(0).unwrap_err(), TtlError::Zero);
+    }
+
+    #[test]
+    fn test_ttl_to_delta_rejects_overflow() {
+        assert_eq!(ttl_to_delta(u64::MAX).unwrap_err(), TtlError::OutOfRange);
+    }
+
+    // -- TTL resolution -----------------------------------------------------
+
+    #[test]
+    fn test_resolve_ttl_uses_cli_value() {
+        let delta = resolve_ttl(Some(24), 8760).unwrap();
+        assert_eq!(delta, TimeDelta::try_hours(24).unwrap());
+    }
+
+    #[test]
+    fn test_resolve_ttl_falls_back_to_config() {
+        let delta = resolve_ttl(None, 8760).unwrap();
+        assert_eq!(delta, TimeDelta::try_hours(8760).unwrap());
+    }
+
+    #[test]
+    fn test_resolve_ttl_cli_zero_returns_token_error() {
+        let err = resolve_ttl(Some(0), 8760).unwrap_err();
+        assert!(
+            err.to_string().contains(TTL_FLAG_MUST_BE_POSITIVE),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_resolve_ttl_cli_overflow_returns_token_error() {
+        let err = resolve_ttl(Some(u64::MAX), 8760).unwrap_err();
+        assert!(
+            err.to_string().contains(TTL_FLAG_OUT_OF_RANGE),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_resolve_ttl_config_zero_returns_config_error() {
+        let err = resolve_ttl(None, 0).unwrap_err();
         assert!(
             err.to_string().contains(ERR_TTL_ZERO),
             "unexpected error: {err}",
@@ -207,11 +367,45 @@ mod tests {
     }
 
     #[test]
-    fn test_ttl_to_delta_rejects_overflow() {
-        let err = ttl_to_delta(u64::MAX).unwrap_err();
+    fn test_resolve_ttl_config_overflow_returns_config_error() {
+        let err = resolve_ttl(None, u64::MAX).unwrap_err();
         assert!(
             err.to_string().contains(TTL_OUT_OF_RANGE),
             "unexpected error: {err}",
+        );
+    }
+
+    // -- Path resolution ----------------------------------------------------
+
+    #[test]
+    fn test_resolve_absolute_config_path_normalises_dotdot() {
+        let resolved = resolve_absolute_config_path("/foo/bar/../baz.yaml").unwrap();
+        assert_eq!(resolved, PathBuf::from("/foo/baz.yaml"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_config_path_passes_through_clean_absolute() {
+        let resolved = resolve_absolute_config_path("/etc/tribal/tribal.yaml").unwrap();
+        assert_eq!(resolved, PathBuf::from("/etc/tribal/tribal.yaml"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_config_path_succeeds_for_nonexistent_target() {
+        let resolved = resolve_absolute_config_path("/nonexistent/tribal/tribal.yaml").unwrap();
+        assert_eq!(resolved, PathBuf::from("/nonexistent/tribal/tribal.yaml"),);
+    }
+
+    #[test]
+    fn test_resolve_absolute_config_path_expands_tilde() {
+        let resolved = resolve_absolute_config_path("~/.config/tribal/tribal.yaml").unwrap();
+        let rendered = resolved.to_string_lossy();
+        assert!(
+            !rendered.contains('~'),
+            "tilde should have been expanded, got {rendered}",
+        );
+        assert!(
+            resolved.is_absolute(),
+            "resolved path should be absolute, got {rendered}",
         );
     }
 }

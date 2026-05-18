@@ -1,0 +1,26 @@
+Bootstrap complete.
+
+Project:     widgets (proj_00000000-0000-0000-0000-000000000002)
+Git remote:  github.com/acme/widgets
+Transport:   stdio (no bearer token required at runtime)
+
+warning: database.url differs from the resolved value
+
+Next steps:
+
+1. Verify your installation is ready for use:
+   tribal check
+
+2. (When ready for real ingest) verify providers:
+   tribal check --providers
+
+3. Wire Tribal into your agent harness. For Claude Code:
+     claude mcp add-json tribal "$(tribal mcp-config)"
+   For Codex / Gemini CLI / OpenCode, see the installation skill.
+
+4. (Optional) Install Tribal skills into your agent:
+   npx skills add samfolo/tribal-skills
+
+Bearer token (also saved to /home/sam/.config/tribal/credentials.json):
+
+  test-bearer-token

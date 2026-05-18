@@ -65,6 +65,9 @@ impl App {
         };
 
         match command {
+            Command::Bootstrap { args } => {
+                commands::bootstrap(&self.cli.global.config, args)?;
+            }
             Command::Setup { args } => {
                 commands::setup(&self.cli.global.config, args)?;
             }
@@ -98,6 +101,9 @@ impl App {
                     commands::token::revoke_all(&self.cli.global.config, args)?;
                 }
             },
+            Command::McpConfig { args } => {
+                commands::mcp_config(&self.cli.global.config, args)?;
+            }
         }
 
         Ok(())

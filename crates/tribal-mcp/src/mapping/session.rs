@@ -81,8 +81,8 @@ pub(crate) struct McpSessionActor {
 /// Typed response for `tribal_set_context`.
 ///
 /// The `project` field is non-required in the output schema but always
-/// included (null when absent) for consistency with the session resource
-/// representation and Tool Surface §3.2.
+/// included (null when absent) for consistency with the session
+/// resource representation.
 #[derive(Debug, Serialize)]
 pub(crate) struct McpSetContextResponse {
     pub(crate) project: Option<McpSessionProject>,

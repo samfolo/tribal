@@ -8,13 +8,17 @@ mod commands;
 mod error;
 mod git;
 mod orchestration;
+mod output;
 mod startup;
 mod transport;
 
 pub use app::App;
+#[cfg(feature = "test-helpers")]
+pub use commands::{
+    BootstrapOptions, McpConfigOptions, SetupOutcome, bootstrap_async,
+    common::CredentialsPersistOutcome, mcp_config_async, setup_async, token_create_async,
+};
 pub use error::AppError;
 pub use orchestration::{ServerHandle, start_server};
 #[cfg(feature = "test-helpers")]
-pub use transport::run_http_transport;
-#[cfg(feature = "test-helpers")]
-pub use transport::run_sse_transport;
+pub use transport::{run_http_transport, run_sse_transport};

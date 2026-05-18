@@ -1,6 +1,7 @@
 //! Configuration section types.
 
 mod auth;
+mod credentials;
 mod database;
 mod discovery;
 mod embedding;
@@ -17,6 +18,12 @@ mod transport_kind;
 mod worker;
 
 pub use auth::AuthConfig;
+pub use credentials::{
+    Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
+    CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials,
+    CredentialsPermissions, CredentialsReadError, CredentialsWriteError, LoadedCredentials,
+    read_credentials, write_credentials,
+};
 pub use database::DatabaseConfig;
 pub use discovery::{
     DEFAULT_LIMIT as DEFAULT_DISCOVERY_LIMIT, DEFAULT_MAX_LIMIT as DEFAULT_DISCOVERY_MAX_LIMIT,

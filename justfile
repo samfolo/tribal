@@ -1,10 +1,10 @@
 # Run all tests
 test:
-    cargo test --workspace
+    cargo test --workspace --features tribal/test-helpers
 
 # Run only unit tests (no database required)
 test-unit:
-    cargo test --workspace --lib
+    cargo test --workspace --lib --features tribal/test-helpers
 
 # Format and lint check (no live database required)
 check:

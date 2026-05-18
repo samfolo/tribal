@@ -4,10 +4,10 @@ use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind
 use tribal_config::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
     InferenceStageCliOverrides, ProviderKind, ServerCliOverrides, TelemetryCliOverrides,
-    TransportKind,
+    TransportKind, default_config_file_path,
 };
 
-use super::{default_values::DEFAULT_CONFIG_PATH, styles::STYLES};
+use super::{flags::PersistableFlag, styles::STYLES};
 
 // ---------------------------------------------------------------------------
 // Long version
@@ -55,7 +55,7 @@ pub struct GlobalArgs {
     #[arg(
         long,
         global = true,
-        default_value = DEFAULT_CONFIG_PATH,
+        default_value_t = default_config_file_path(),
         env = "TRIBAL_CONFIG_PATH",
         value_name = "PATH",
     )]
@@ -95,8 +95,17 @@ impl GlobalArgs {
 /// Available subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Start the MCP server.
+    /// Bootstrap a project end-to-end: database setup, token, project
+    /// registration, and MCP wire-up snippet in one invocation.
     #[command(display_order = 0)]
+    Bootstrap {
+        /// Arguments for the bootstrap subcommand.
+        #[command(flatten)]
+        args: BootstrapArgs,
+    },
+
+    /// Start the MCP server.
+    #[command(display_order = 1)]
     Serve {
         /// Arguments for the serve subcommand.
         #[command(flatten)]
@@ -104,7 +113,7 @@ pub enum Command {
     },
 
     /// Run first-time database setup and migrations.
-    #[command(display_order = 1)]
+    #[command(display_order = 2)]
     Setup {
         /// Arguments for the setup subcommand.
         #[command(flatten)]
@@ -112,15 +121,25 @@ pub enum Command {
     },
 
     /// Manage projects.
-    #[command(subcommand, display_order = 2)]
+    #[command(subcommand, display_order = 3)]
     Project(ProjectCommand),
 
     /// Manage authentication tokens.
-    #[command(subcommand, display_order = 3)]
-    Token(TokenCommand),
-    /// Interact with the resolved configuration.
     #[command(subcommand, display_order = 4)]
+    Token(TokenCommand),
+
+    /// Interact with the resolved configuration.
+    #[command(subcommand, display_order = 5)]
     Config(ConfigCommand),
+
+    /// Print an MCP server-config entry for the active project to
+    /// stdout.
+    #[command(name = "mcp-config", display_order = 6)]
+    McpConfig {
+        /// Arguments for the mcp-config subcommand.
+        #[command(flatten)]
+        args: McpConfigArgs,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +202,7 @@ impl ServeArgs {
 /// Flattened into command-specific args structs via `#[command(flatten)]`.
 /// The `into_cli_overrides` method projects the database URL into the
 /// figment overlay layer.
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct DatabaseArgs {
     /// `PostgreSQL` connection URL for the Tribal database.
     #[arg(long = "database-url", short = 'd', help_heading = "Database")]
@@ -221,62 +240,69 @@ impl DatabaseArgs {
 /// API keys are intentionally absent: the cascade picks them up from
 /// `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` or from `TRIBAL_*__API_KEY`,
 /// never from flags.
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct ProviderArgs {
     /// Embedding provider override.
     #[arg(
-        long = "embedding-provider",
+        long = PersistableFlag::EmbeddingProvider.flag_name(),
         value_parser = clap::value_parser!(ProviderKind),
         help_heading = "Providers",
     )]
     pub embedding_provider: Option<ProviderKind>,
 
     /// Embedding model name override.
-    #[arg(long = "embedding-model", help_heading = "Providers")]
+    #[arg(
+        long = PersistableFlag::EmbeddingModel.flag_name(),
+        help_heading = "Providers",
+    )]
     pub embedding_model: Option<String>,
 
     /// Extraction-stage inference provider override.
     #[arg(
-        long = "inference-extraction-provider",
+        long = PersistableFlag::InferenceExtractionProvider.flag_name(),
         value_parser = clap::value_parser!(ProviderKind),
         help_heading = "Providers",
     )]
     pub inference_extraction_provider: Option<ProviderKind>,
 
     /// Extraction-stage inference model name override.
-    #[arg(long = "inference-extraction-model", help_heading = "Providers")]
+    #[arg(
+        long = PersistableFlag::InferenceExtractionModel.flag_name(),
+        help_heading = "Providers",
+    )]
     pub inference_extraction_model: Option<String>,
 
     /// Triage-stage inference provider override.
     #[arg(
-        long = "inference-triage-provider",
+        long = PersistableFlag::InferenceTriageProvider.flag_name(),
         value_parser = clap::value_parser!(ProviderKind),
         help_heading = "Providers",
     )]
     pub inference_triage_provider: Option<ProviderKind>,
 
     /// Triage-stage inference model name override.
-    #[arg(long = "inference-triage-model", help_heading = "Providers")]
+    #[arg(
+        long = PersistableFlag::InferenceTriageModel.flag_name(),
+        help_heading = "Providers",
+    )]
     pub inference_triage_model: Option<String>,
 
     /// Relation-stage inference provider override.
     #[arg(
-        long = "inference-relation-provider",
+        long = PersistableFlag::InferenceRelationProvider.flag_name(),
         value_parser = clap::value_parser!(ProviderKind),
         help_heading = "Providers",
     )]
     pub inference_relation_provider: Option<ProviderKind>,
 
     /// Relation-stage inference model name override.
-    #[arg(long = "inference-relation-model", help_heading = "Providers")]
+    #[arg(
+        long = PersistableFlag::InferenceRelationModel.flag_name(),
+        help_heading = "Providers",
+    )]
     pub inference_relation_model: Option<String>,
 }
 
-// Allowed dead-code: consumed by the `tribal bootstrap` subcommand.
-// Tests exercise this impl directly, but `#[cfg(test)]` usage does not
-// satisfy the production-side reachability check. Remove the annotation
-// when bootstrap flattens [`ProviderArgs`].
-#[allow(dead_code)]
 impl ProviderArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
@@ -321,10 +347,6 @@ impl ProviderArgs {
 /// Projects a `(provider, model)` pair into an
 /// [`InferenceStageCliOverrides`], returning `None` when both are absent so
 /// the subtree is omitted from the figment overlay.
-//
-// Allowed dead-code: called only by [`ProviderArgs::into_cli_overrides`];
-// removed alongside that impl when `tribal bootstrap` flattens the args.
-#[allow(dead_code)]
 fn inference_stage_overrides(
     provider: Option<ProviderKind>,
     model: Option<String>,
@@ -342,18 +364,16 @@ fn inference_stage_overrides(
 /// Telemetry flags shared across CLI commands.
 ///
 /// Flattened into command-specific args structs via `#[command(flatten)]`.
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct TelemetryArgs {
     /// OTLP exporter endpoint override.
-    #[arg(long = "telemetry-otlp-endpoint", help_heading = "Telemetry")]
+    #[arg(
+        long = PersistableFlag::TelemetryOtlpEndpoint.flag_name(),
+        help_heading = "Telemetry",
+    )]
     pub telemetry_otlp_endpoint: Option<String>,
 }
 
-// Allowed dead-code: consumed by the `tribal bootstrap` subcommand.
-// Tests exercise this impl directly, but `#[cfg(test)]` usage does not
-// satisfy the production-side reachability check. Remove the annotation
-// when bootstrap flattens [`TelemetryArgs`].
-#[allow(dead_code)]
 impl TelemetryArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     pub fn into_cli_overrides(self) -> CliOverrides {
@@ -370,12 +390,124 @@ impl TelemetryArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `bootstrap` subcommand.
+///
+/// Flattens [`DatabaseArgs`], [`ProviderArgs`], and [`TelemetryArgs`]
+/// alongside its own session-scoped flags so a single invocation can mint
+/// a token, register a project, and emit the wire-up snippet.
+#[derive(Debug, Default, Args)]
+pub struct BootstrapArgs {
+    /// Transport mode for the generated MCP config snippet. Controls
+    /// the snippet shape: stdio uses `command`/`args`, while http and
+    /// sse use `url` with optional `headers`. Defaults to stdio.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub transport: Option<TransportKind>,
+
+    /// Git remote URL to register. Detected from the current repository
+    /// if omitted.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub remote: Option<String>,
+
+    /// Human-friendly project name. Derived from the git remote path
+    /// if omitted.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub name: Option<String>,
+
+    /// Principal key to associate with the bearer token (e.g.
+    /// `user:sam`). Defaults to `principal:local` if omitted; the
+    /// `principal:local` row is always ensured regardless.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub principal: Option<String>,
+
+    /// Token lifetime in hours. Overrides the config default for this
+    /// token only.
+    #[arg(long, help_heading = "Bootstrap")]
+    pub ttl: Option<u64>,
+
+    /// Emit a single JSON object describing the resolved wire-up
+    /// (bearer token, project, MCP snippet) instead of the polished
+    /// human output. Suitable for scripting.
+    #[arg(long, help_heading = "Output")]
+    pub json: bool,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+
+    /// Provider and model selection.
+    #[command(flatten)]
+    pub provider: ProviderArgs,
+
+    /// Telemetry options.
+    #[command(flatten)]
+    pub telemetry: TelemetryArgs,
+}
+
+impl BootstrapArgs {
+    /// Builds [`CliOverrides`] by delegating to each flattened arg's
+    /// own impl and overlaying the populated subtrees.
+    ///
+    /// Each constituent `into_cli_overrides` populates only its own
+    /// section, so combining them is a flat field-by-field assembly
+    /// rather than a deep merge.
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        let Self {
+            transport,
+            remote: _,
+            name: _,
+            principal: _,
+            ttl: _,
+            json: _,
+            database,
+            provider,
+            telemetry,
+        } = self;
+
+        let database = database.into_cli_overrides();
+        let provider = provider.into_cli_overrides();
+        let telemetry = telemetry.into_cli_overrides();
+
+        // `--transport` must flow into the validated in-memory config so
+        // `validate_server` reconciles the choice against `bind_address`
+        // (which may be set via env/file). `CliOverrides::persisted()`
+        // drops server fields, so this affects only the live invocation,
+        // not the first-run config file.
+        let server = transport.map(|t| ServerCliOverrides {
+            transport: Some(t),
+            bind_address: None,
+        });
+
+        CliOverrides {
+            server,
+            database: database.database,
+            embedding: provider.embedding,
+            inference: provider.inference,
+            telemetry: telemetry.telemetry,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
 
 /// Arguments for the `setup` subcommand.
 #[derive(Debug, Args)]
 pub struct SetupArgs {
+    /// Principal key to associate with the bearer token (e.g.
+    /// `user:sam`). Defaults to `principal:local` if omitted; the
+    /// `principal:local` row is always ensured regardless.
+    #[arg(long, help_heading = "Setup")]
+    pub principal: Option<String>,
+
+    /// Token lifetime in hours. Overrides the config default for this
+    /// token only.
+    #[arg(long, help_heading = "Setup")]
+    pub ttl: Option<u64>,
+
     /// Database connection options.
     #[command(flatten)]
     pub database: DatabaseArgs,
@@ -384,7 +516,8 @@ pub struct SetupArgs {
 impl SetupArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
-    /// Delegates to [`DatabaseArgs::into_cli_overrides`].
+    /// `--principal` and `--ttl` affect only the bearer token minted by
+    /// this setup run, so they do not appear in [`CliOverrides`].
     pub fn into_cli_overrides(self) -> CliOverrides {
         self.database.into_cli_overrides()
     }
@@ -627,6 +760,49 @@ pub struct ConfigShowArgs {
 }
 
 // ---------------------------------------------------------------------------
+// MCP config
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `mcp-config` subcommand.
+///
+/// Renders the wire-up snippet bootstrap emits, reconstructed from the
+/// resolved project and the persisted bearer token. The database is
+/// reached through the same overlay cascade as every other command so
+/// `--project` typos surface immediately rather than at server start.
+#[derive(Debug, Args)]
+pub struct McpConfigArgs {
+    /// Transport mode for the generated snippet. Falls back to
+    /// `server.transport` from the resolved configuration when omitted.
+    #[arg(long, help_heading = "Output")]
+    pub transport: Option<TransportKind>,
+
+    /// Project ID (`proj_`-prefixed) to render the snippet for. Falls
+    /// back to `TRIBAL_PROJECT_ID` and then to git-remote detection.
+    #[arg(long, env = "TRIBAL_PROJECT_ID", help_heading = "Session")]
+    pub project: Option<String>,
+
+    /// Bearer token override for http/sse snippets. When omitted the
+    /// token is read from the persisted credentials file. Ignored for
+    /// stdio.
+    #[arg(long, help_heading = "Output")]
+    pub token: Option<String>,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
+}
+
+impl McpConfigArgs {
+    /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
+    ///
+    /// `--transport`, `--project`, and `--token` affect only this single
+    /// rendering and do not flow into [`CliOverrides`].
+    pub fn into_cli_overrides(self) -> CliOverrides {
+        self.database.into_cli_overrides()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -649,7 +825,7 @@ mod tests {
     #[test]
     fn test_global_defaults() {
         let cli = Cli::try_parse_from(["tribal", "serve"]).unwrap();
-        assert_eq!(cli.global.config, DEFAULT_CONFIG_PATH);
+        assert_eq!(cli.global.config, default_config_file_path());
         assert_eq!(cli.global.verbose, 0);
         assert!(!cli.global.quiet);
     }
@@ -762,6 +938,31 @@ mod tests {
         let server = overrides.server.unwrap();
         assert_eq!(server.transport, Some(TransportKind::Http));
         assert_eq!(server.bind_address.as_deref(), Some(DEFAULT_BIND_ADDRESS));
+    }
+
+    // -- BootstrapArgs into_cli_overrides -----------------------------------
+
+    #[test]
+    fn test_bootstrap_into_cli_overrides_no_transport() {
+        let overrides = BootstrapArgs::default().into_cli_overrides();
+        assert!(overrides.server.is_none());
+    }
+
+    #[test]
+    fn test_bootstrap_into_cli_overrides_threads_transport() {
+        let args = BootstrapArgs {
+            transport: Some(TransportKind::Http),
+            ..BootstrapArgs::default()
+        };
+        let overrides = args.into_cli_overrides();
+        let server = overrides
+            .server
+            .expect("transport override populates server slot");
+        assert_eq!(server.transport, Some(TransportKind::Http));
+        assert!(
+            server.bind_address.is_none(),
+            "bootstrap never overrides bind_address",
+        );
     }
 
     // -- Invalid input ------------------------------------------------------
@@ -965,6 +1166,8 @@ mod tests {
     #[test]
     fn test_setup_into_cli_overrides_delegates_to_database_args() {
         let args = SetupArgs {
+            principal: None,
+            ttl: None,
             database: DatabaseArgs {
                 database_url: Some("postgres://h/db".into()),
             },
@@ -1251,6 +1454,60 @@ mod tests {
             Some(Command::Config(ConfigCommand::Show { args }))
             if args.show_secrets
         ));
+    }
+
+    // -- MCP config ----------------------------------------------------------
+
+    #[test]
+    fn test_mcp_config_parses_without_flags() {
+        let cli = Cli::try_parse_from(["tribal", "mcp-config"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::McpConfig { ref args })
+            if args.transport.is_none()
+                && args.token.is_none()
+                && args.database.database_url.is_none()
+        ));
+    }
+
+    #[test]
+    fn test_mcp_config_parses_all_flags() {
+        let cli = Cli::try_parse_from([
+            "tribal",
+            "mcp-config",
+            "--transport",
+            "http",
+            "--project",
+            "proj_00000000-0000-0000-0000-000000000001",
+            "--token",
+            "test-token",
+            "-d",
+            "postgres://h/db",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::McpConfig { ref args })
+            if args.transport == Some(TransportKind::Http)
+                && args.project.as_deref() == Some("proj_00000000-0000-0000-0000-000000000001")
+                && args.token.as_deref() == Some("test-token")
+                && args.database.database_url.as_deref() == Some("postgres://h/db")
+        ));
+    }
+
+    #[test]
+    fn test_mcp_config_into_cli_overrides_delegates_to_database_args() {
+        let args = McpConfigArgs {
+            transport: None,
+            project: None,
+            token: None,
+            database: DatabaseArgs {
+                database_url: Some("postgres://h/db".into()),
+            },
+        };
+        let overrides = args.into_cli_overrides();
+        let database = overrides.database.unwrap();
+        assert_eq!(database.url.as_deref(), Some("postgres://h/db"));
     }
 
     // -- No subcommand ------------------------------------------------------

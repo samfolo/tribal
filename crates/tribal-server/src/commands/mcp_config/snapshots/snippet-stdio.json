@@ -1,0 +1,11 @@
+{
+  "args": [
+    "--config",
+    "/etc/tribal/tribal.yaml",
+    "serve",
+    "--project",
+    "proj_00000000-0000-0000-0000-000000000001"
+  ],
+  "command": "tribal",
+  "type": "stdio"
+}
