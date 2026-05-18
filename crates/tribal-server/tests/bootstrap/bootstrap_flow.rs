@@ -11,7 +11,9 @@ use tribal_db::{
 use tribal_domain::LOCAL_PRINCIPAL_KEY;
 use tribal_test_utils::{serial_lock, test_context};
 
-use super::common::{EnvGuard, TestEnv, fresh_db, parse_json, run_bootstrap, run_mcp_config};
+use super::common::{
+    EnvGuard, TestEnv, fresh_db, parse_json, run_bootstrap, run_mcp_config, run_setup,
+};
 
 // ---------------------------------------------------------------------------
 // Round trip
@@ -200,6 +202,36 @@ async fn test_bootstrap_validation_rejects_openai_without_key() {
     )
     .await
     .expect_err("openai without key must fail");
+
+    let display = err.to_string();
+    assert!(
+        display.contains("embedding.api_key is required when embedding.provider is openai"),
+        "missing canonical literal in: {display}",
+    );
+}
+
+/// Same canonical literal, driven through standalone `tribal setup`
+/// directly so a regression that moved `validate(&config)` out of
+/// `setup::run_async` (and into bootstrap) would still surface here.
+#[tokio::test]
+async fn test_setup_validation_rejects_openai_without_key() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    let _api_key_guard = EnvGuard::remove(ENV_OPENAI_API_KEY);
+
+    let overrides = CliOverrides {
+        embedding: Some(EmbeddingCliOverrides {
+            provider: Some(ProviderKind::OpenAi),
+            model: None,
+        }),
+        ..CliOverrides::default()
+    };
+
+    let err = run_setup(ctx, &env.config_path, overrides, None)
+        .await
+        .expect_err("openai without key must fail");
 
     let display = err.to_string();
     assert!(

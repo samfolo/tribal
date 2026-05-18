@@ -275,9 +275,10 @@ fn load_test_config(
 pub(crate) async fn run_setup(
     ctx: &TestContext,
     config_path: &Path,
+    overrides: CliOverrides,
     principal_key: Option<&str>,
 ) -> Result<(SetupOutcome, Vec<u8>), AppError> {
-    let merged = load_test_config(ctx, config_path, CliOverrides::default())?;
+    let merged = load_test_config(ctx, config_path, overrides)?;
     let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
     let mut stderr = Vec::<u8>::new();
     let outcome = setup_async(
