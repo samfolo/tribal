@@ -104,6 +104,9 @@ impl App {
             Command::McpConfig { args } => {
                 commands::mcp_config(&self.cli.global.config, args)?;
             }
+            Command::Check { args } => {
+                commands::check(&self.cli.global.config, args)?;
+            }
         }
 
         Ok(())

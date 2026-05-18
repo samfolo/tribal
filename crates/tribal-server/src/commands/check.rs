@@ -11,3 +11,8 @@
 
 mod checks;
 mod output;
+mod run;
+
+pub(crate) use run::run;
+#[cfg(feature = "test-helpers")]
+pub use run::{CheckOptions, run_async};

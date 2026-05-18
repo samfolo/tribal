@@ -18,12 +18,13 @@ pub(crate) mod setup;
 pub(crate) mod token;
 
 pub(crate) use self::{
-    bootstrap::run as bootstrap, mcp_config::run as mcp_config, serve::run as serve,
-    setup::run as setup,
+    bootstrap::run as bootstrap, check::run as check, mcp_config::run as mcp_config,
+    serve::run as serve, setup::run as setup,
 };
 #[cfg(feature = "test-helpers")]
 pub use self::{
     bootstrap::{BootstrapOptions, run_async as bootstrap_async},
+    check::{CheckOptions, run_async as check_async},
     mcp_config::{McpConfigOptions, run_async as mcp_config_async},
     setup::{SetupOutcome, run_async as setup_async},
     token::create_async as token_create_async,

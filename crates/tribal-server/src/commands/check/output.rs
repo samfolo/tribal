@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::checks::{CheckDetail, CheckName, CheckOutcome, CheckRemediation, CheckStatus};
+use super::checks::{CheckName, CheckOutcome, CheckStatus};
 
 // ---------------------------------------------------------------------------
 // CheckResult
@@ -51,7 +51,7 @@ impl From<&CheckOutcome> for CheckResult {
             name: outcome.name,
             status: outcome.status,
             detail: outcome.detail.render(),
-            remediation: outcome.remediation.as_ref().map(CheckRemediation::render),
+            remediation: None,
         }
     }
 }
@@ -65,42 +65,23 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::commands::check::checks::CheckDetail;
 
     #[test]
-    fn test_check_result_from_outcome_renders_pass_with_no_remediation() {
-        let outcome = CheckOutcome {
-            name: CheckName::ConfigValidate,
-            status: CheckStatus::Pass,
-            detail: CheckDetail::AllInvariantsSatisfied,
-            remediation: None,
-        };
-
-        let result = CheckResult::from(&outcome);
-        assert_eq!(result.name, CheckName::ConfigValidate);
-        assert_eq!(result.status, CheckStatus::Pass);
-        assert_eq!(result.detail, "all config invariants satisfied");
-        assert_eq!(result.remediation, None);
-    }
-
-    #[test]
-    fn test_check_result_from_outcome_renders_remediation_when_present() {
+    fn test_check_result_from_outcome_renders_detail() {
         let outcome = CheckOutcome {
             name: CheckName::ConfigParse,
             status: CheckStatus::Pass,
             detail: CheckDetail::ConfigLoaded {
                 path: PathBuf::from("/etc/tribal/config.yaml"),
             },
-            remediation: Some(CheckRemediation::InspectConfigFile {
-                path: PathBuf::from("/etc/tribal/config.yaml"),
-            }),
         };
 
         let result = CheckResult::from(&outcome);
+        assert_eq!(result.name, CheckName::ConfigParse);
+        assert_eq!(result.status, CheckStatus::Pass);
         assert_eq!(result.detail, "config loaded from /etc/tribal/config.yaml");
-        assert_eq!(
-            result.remediation.as_deref(),
-            Some("inspect the config file at /etc/tribal/config.yaml"),
-        );
+        assert_eq!(result.remediation, None);
     }
 
     #[test]
