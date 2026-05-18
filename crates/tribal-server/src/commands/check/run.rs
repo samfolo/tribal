@@ -9,8 +9,8 @@ use tribal_config::{ConfigError, load_config, validate};
 
 use super::{
     checks::{
-        CheckContext, CheckOutcome, CheckOutcomes, advertised_url_reachable, database_reachable,
-        migrations_current, project_resolution, valid_token_exists,
+        CheckContext, CheckOutcome, CheckOutcomes, advertised_url_reachable, binary_uniqueness,
+        database_reachable, migrations_current, project_resolution, valid_token_exists,
     },
     output::CheckOutput,
 };
@@ -134,6 +134,9 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
             outcomes.push(valid_token_exists(&ctx).await);
             outcomes.push(advertised_url_reachable(&ctx).await);
         }
+
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        outcomes.push(binary_uniqueness(&path_var));
     }
 
     let output = CheckOutput::from(&outcomes);
