@@ -40,6 +40,7 @@ pin-project-lite.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 shellexpand.workspace = true
 shlex.workspace = true

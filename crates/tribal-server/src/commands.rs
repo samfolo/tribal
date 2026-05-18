@@ -8,6 +8,7 @@
 //! explicit writers.
 
 mod bootstrap;
+mod check;
 pub(crate) mod common;
 pub(crate) mod config;
 mod mcp_config;
