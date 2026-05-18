@@ -8,7 +8,7 @@ use std::{
 use tribal_config::{ConfigError, load_config, validate};
 
 use super::{
-    checks::{CheckOutcome, CheckOutcomes},
+    checks::{CheckOutcome, CheckOutcomes, database_reachable},
     output::CheckOutput,
 };
 use crate::{
@@ -85,9 +85,6 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
 /// Panics if JSON serialisation of [`CheckOutput`] fails.  All fields
 /// derive `Serialize` from primitive types, so this is unreachable in
 /// practice.
-// Async by design — DB and HTTP probes land in subsequent check
-// commits; remove this allow once the first `.await` is in place.
-#[allow(clippy::unused_async)]
 pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
     let config_path_str = opts
         .config_path
@@ -111,6 +108,8 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
             }
             Err(other) => CheckOutcome::config_validate_failed(vec![other.to_string()]),
         });
+
+        outcomes.push(database_reachable(&config.database).await);
     }
 
     let output = CheckOutput::from(&outcomes);
