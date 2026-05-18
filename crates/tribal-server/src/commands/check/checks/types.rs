@@ -37,24 +37,24 @@ pub enum CheckName {
 // ---------------------------------------------------------------------------
 
 /// What a single check produces.
+///
+/// The check name is derived from the carried [`CheckDetail`] via
+/// [`CheckDetail::name`], so a pairing of `(Pass, DatabaseReachable)`
+/// is impossible to build with a `ConfigLoaded` detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::commands::check) enum CheckOutcome {
     Pass {
-        name: CheckName,
         detail: CheckDetail,
     },
     Warn {
-        name: CheckName,
         detail: CheckDetail,
         remediation: Option<CheckRemediation>,
     },
     Fail {
-        name: CheckName,
         detail: CheckDetail,
         remediation: Option<CheckRemediation>,
     },
     Skip {
-        name: CheckName,
         detail: CheckDetail,
     },
 }
@@ -178,6 +178,40 @@ pub(in crate::commands::check) enum TokenFailureReason {
 }
 
 impl CheckDetail {
+    /// Returns the [`CheckName`] each detail variant belongs to.
+    ///
+    /// The exhaustive match is the single audit point: adding a new
+    /// detail variant forces the compiler to assign it to a name here.
+    pub(in crate::commands::check) fn name(&self) -> CheckName {
+        match self {
+            Self::ConfigLoaded { .. } | Self::ConfigParseFailed { .. } => CheckName::ConfigParse,
+            Self::AllInvariantsSatisfied | Self::ValidationFailed { .. } => {
+                CheckName::ConfigValidate
+            }
+            Self::DatabaseReachable | Self::DatabaseUnreachable { .. } => {
+                CheckName::DatabaseReachable
+            }
+            Self::MigrationsMatch
+            | Self::MigrationsBehind { .. }
+            | Self::MigrationsAhead { .. }
+            | Self::MigrationsTableMissing
+            | Self::MigrationsQueryFailed { .. } => CheckName::MigrationsCurrent,
+            Self::ProjectFound { .. }
+            | Self::ProjectNotFound { .. }
+            | Self::ProjectCascadeMissing
+            | Self::ProjectQueryFailed { .. } => CheckName::ProjectResolution,
+            Self::TokenSkippedStdio
+            | Self::TokenVerified { .. }
+            | Self::TokenVerificationFailed { .. }
+            | Self::TokenAggregateWarn
+            | Self::NoActiveTokens
+            | Self::TokenAggregateQueryFailed { .. } => CheckName::ValidTokenExists,
+            Self::AdvertisedUrlSkippedStdio
+            | Self::AdvertisedUrlReachable { .. }
+            | Self::AdvertisedUrlUnreachable { .. } => CheckName::AdvertisedUrlReachable,
+        }
+    }
+
     /// Renders the detail as the wire-format string.
     pub(in crate::commands::check) fn render(&self) -> String {
         match self {

@@ -9,7 +9,7 @@ use tribal_config::{
     RELATION_API_KEY_REQUIRED_PREFIX, TRIAGE_API_KEY_REQUIRED_PREFIX, env_var_for_path,
 };
 
-use super::types::{CheckDetail, CheckName, CheckOutcome, CheckRemediation};
+use super::types::{CheckDetail, CheckOutcome, CheckRemediation};
 
 /// Configuration paths whose API-key prefix triggers a targeted hint.
 ///
@@ -33,7 +33,6 @@ impl CheckOutcome {
     /// invariant in [`tribal_config::validate`].
     pub(in crate::commands::check) fn config_validate_satisfied() -> Self {
         Self::Pass {
-            name: CheckName::ConfigValidate,
             detail: CheckDetail::AllInvariantsSatisfied,
         }
     }
@@ -49,7 +48,6 @@ impl CheckOutcome {
             Some(CheckRemediation::FixConfigInvariant { hints })
         };
         Self::Fail {
-            name: CheckName::ConfigValidate,
             detail: CheckDetail::ValidationFailed { errors },
             remediation,
         }
@@ -73,7 +71,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::config_validate_satisfied(),
             CheckOutcome::Pass {
-                name: CheckName::ConfigValidate,
                 detail: CheckDetail::AllInvariantsSatisfied,
             },
         ));
@@ -87,7 +84,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::ConfigValidate,
                 detail: CheckDetail::ValidationFailed { errors: stored },
                 remediation: Some(CheckRemediation::FixConfigInvariant { hints }),
             } if stored == &errors
@@ -105,7 +101,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::ConfigValidate,
                 detail: CheckDetail::ValidationFailed { errors: stored },
                 remediation: None,
             } if stored == &errors,

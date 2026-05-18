@@ -61,30 +61,28 @@ pub struct CheckOutput {
 impl From<&CheckOutcome> for CheckResult {
     fn from(outcome: &CheckOutcome) -> Self {
         match outcome {
-            CheckOutcome::Pass { name, detail } => Self::Pass {
-                name: *name,
+            CheckOutcome::Pass { detail } => Self::Pass {
+                name: detail.name(),
                 detail: detail.render(),
             },
             CheckOutcome::Warn {
-                name,
                 detail,
                 remediation,
             } => Self::Warn {
-                name: *name,
+                name: detail.name(),
                 detail: detail.render(),
                 remediation: remediation.as_ref().map(CheckRemediation::render),
             },
             CheckOutcome::Fail {
-                name,
                 detail,
                 remediation,
             } => Self::Fail {
-                name: *name,
+                name: detail.name(),
                 detail: detail.render(),
                 remediation: remediation.as_ref().map(CheckRemediation::render),
             },
-            CheckOutcome::Skip { name, detail } => Self::Skip {
-                name: *name,
+            CheckOutcome::Skip { detail } => Self::Skip {
+                name: detail.name(),
                 detail: detail.render(),
             },
         }

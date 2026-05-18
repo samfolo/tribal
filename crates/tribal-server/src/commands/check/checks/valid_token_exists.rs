@@ -15,22 +15,18 @@ use tribal_mcp::{AuthError, Authenticator};
 
 use super::{
     context::CheckContext,
-    types::{
-        CheckDetail, CheckName, CheckOutcome, CheckRemediation, TokenFailureReason, TokenTransport,
-    },
+    types::{CheckDetail, CheckOutcome, CheckRemediation, TokenFailureReason, TokenTransport},
 };
 
 impl CheckOutcome {
     pub(in crate::commands::check) fn token_skipped_stdio() -> Self {
         Self::Skip {
-            name: CheckName::ValidTokenExists,
             detail: CheckDetail::TokenSkippedStdio,
         }
     }
 
     pub(in crate::commands::check) fn token_verified(transport: TokenTransport) -> Self {
         Self::Pass {
-            name: CheckName::ValidTokenExists,
             detail: CheckDetail::TokenVerified { transport },
         }
     }
@@ -40,7 +36,6 @@ impl CheckOutcome {
         reason: TokenFailureReason,
     ) -> Self {
         Self::Fail {
-            name: CheckName::ValidTokenExists,
             detail: CheckDetail::TokenVerificationFailed { transport, reason },
             remediation: Some(CheckRemediation::RunTribalTokenCreate),
         }
@@ -48,7 +43,6 @@ impl CheckOutcome {
 
     pub(in crate::commands::check) fn token_aggregate_warn() -> Self {
         Self::Warn {
-            name: CheckName::ValidTokenExists,
             detail: CheckDetail::TokenAggregateWarn,
             remediation: Some(CheckRemediation::RunTribalTokenCreate),
         }
@@ -56,7 +50,6 @@ impl CheckOutcome {
 
     pub(in crate::commands::check) fn no_active_tokens() -> Self {
         Self::Fail {
-            name: CheckName::ValidTokenExists,
             detail: CheckDetail::NoActiveTokens,
             remediation: Some(CheckRemediation::RunTribalTokenCreate),
         }
@@ -64,7 +57,6 @@ impl CheckOutcome {
 
     pub(in crate::commands::check) fn token_aggregate_query_failed(error: String) -> Self {
         Self::Fail {
-            name: CheckName::ValidTokenExists,
             detail: CheckDetail::TokenAggregateQueryFailed { error },
             remediation: Some(CheckRemediation::CheckPgIsready),
         }
@@ -173,7 +165,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::token_skipped_stdio(),
             CheckOutcome::Skip {
-                name: CheckName::ValidTokenExists,
                 detail: CheckDetail::TokenSkippedStdio,
             },
         ));
@@ -186,7 +177,6 @@ mod tests {
             assert!(matches!(
                 &outcome,
                 CheckOutcome::Pass {
-                    name: CheckName::ValidTokenExists,
                     detail: CheckDetail::TokenVerified { transport: t },
                 } if *t == transport,
             ));
@@ -202,7 +192,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::ValidTokenExists,
                 detail: CheckDetail::TokenVerificationFailed {
                     transport: TokenTransport::Http,
                     reason: TokenFailureReason::Revoked,
@@ -217,7 +206,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::token_aggregate_warn(),
             CheckOutcome::Warn {
-                name: CheckName::ValidTokenExists,
                 detail: CheckDetail::TokenAggregateWarn,
                 remediation: Some(CheckRemediation::RunTribalTokenCreate),
             },
@@ -229,7 +217,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::no_active_tokens(),
             CheckOutcome::Fail {
-                name: CheckName::ValidTokenExists,
                 detail: CheckDetail::NoActiveTokens,
                 remediation: Some(CheckRemediation::RunTribalTokenCreate),
             },
@@ -242,7 +229,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::ValidTokenExists,
                 detail: CheckDetail::TokenAggregateQueryFailed { error },
                 remediation: Some(CheckRemediation::CheckPgIsready),
             } if error == "pool exhausted",
