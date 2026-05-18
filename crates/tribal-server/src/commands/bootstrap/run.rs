@@ -166,15 +166,6 @@ pub async fn run_async(
         let _ = out_stderr.write_all(&setup_buf);
     })?;
 
-    // Carry the credentials-write warning inside the recovery payload so
-    // a later replay (register failure, hand-off failure) surfaces it
-    // alongside setup's captured output rather than dropping it on the
-    // floor. The happy-path emit further down still runs in addition,
-    // landing the warning right under the polished hand-off.
-    if let CredentialsPersistOutcome::Failed { warning } = &setup_outcome.credentials {
-        writeln!(setup_buf, "{warning}").expect("writeln to Vec<u8> is infallible");
-    }
-
     // From here on, any error path replays the captured setup output
     // via the guard's `Drop` rather than peppering each bail-out with
     // a manual replay.
