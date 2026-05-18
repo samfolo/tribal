@@ -665,3 +665,103 @@ async fn test_revoke_all_includes_token_expiring_at_revocation_time() {
         "token expiring exactly at revocation time is still active"
     );
 }
+
+// ---------------------------------------------------------------------------
+// any_active
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_any_active_returns_false_when_table_is_empty() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let exists = repo
+        .any_active(&mut txn, Utc::now())
+        .await
+        .expect("any_active");
+
+    assert!(!exists);
+}
+
+#[tokio::test]
+async fn test_any_active_returns_true_when_one_token_is_active() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "any-active-true").await;
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(make_token_hash())
+            .principal_id(principal_id)
+            .expires_at(Utc::now() + chrono::Duration::hours(1))
+            .build(),
+    )
+    .await
+    .expect("insert active token");
+
+    let exists = repo
+        .any_active(&mut txn, Utc::now())
+        .await
+        .expect("any_active");
+
+    assert!(exists);
+}
+
+#[tokio::test]
+async fn test_any_active_returns_false_when_all_tokens_are_revoked() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "any-active-revoked").await;
+    let inserted = repo
+        .insert(
+            &mut txn,
+            &a_new_auth_token()
+                .token_hash(make_token_hash())
+                .principal_id(principal_id)
+                .expires_at(Utc::now() + chrono::Duration::hours(1))
+                .build(),
+        )
+        .await
+        .expect("insert token to revoke");
+
+    let now = Utc::now();
+    repo.revoke(&mut txn, inserted.id(), now)
+        .await
+        .expect("revoke");
+
+    let exists = repo.any_active(&mut txn, now).await.expect("any_active");
+
+    assert!(!exists);
+}
+
+#[tokio::test]
+async fn test_any_active_returns_false_when_all_tokens_are_expired() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgAuthTokenRepository;
+
+    let principal_id = setup_principal(&mut txn, "any-active-expired").await;
+    let expired_at = Utc::now() - chrono::Duration::hours(1);
+    repo.insert(
+        &mut txn,
+        &a_new_auth_token()
+            .token_hash(make_token_hash())
+            .principal_id(principal_id)
+            .expires_at(expired_at)
+            .build(),
+    )
+    .await
+    .expect("insert expired token");
+
+    let exists = repo
+        .any_active(&mut txn, Utc::now())
+        .await
+        .expect("any_active");
+
+    assert!(!exists);
+}
