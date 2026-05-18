@@ -307,7 +307,7 @@ pub(crate) async fn run_token_create(
     let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
     let mut stdout = Vec::<u8>::new();
     let mut stderr = Vec::<u8>::new();
-    let outcome = token_create_async(
+    let bearer_token = token_create_async(
         &merged.database,
         principal_key.unwrap_or(LOCAL_PRINCIPAL_KEY),
         expires_at,
@@ -315,7 +315,7 @@ pub(crate) async fn run_token_create(
         &mut stderr,
     )
     .await?;
-    Ok((outcome.bearer_token, stderr))
+    Ok((bearer_token, stderr))
 }
 
 // ---------------------------------------------------------------------------

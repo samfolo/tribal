@@ -27,20 +27,6 @@ use crate::{
 const POOL_NAME: &str = "token-create";
 
 // ---------------------------------------------------------------------------
-// Outcome
-// ---------------------------------------------------------------------------
-
-/// Result of [`run`] when token-create completes successfully.
-#[derive(Debug)]
-pub struct TokenCreateOutcome {
-    /// The bearer token in plain text.
-    pub bearer_token: BearerToken,
-    /// What happened to the credentials.json write that followed the
-    /// token-row insert.
-    pub credentials: CredentialsPersistOutcome,
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -87,7 +73,7 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
 
 /// Creates a new auth token for the resolved principal, persists the
 /// credentials.json artefact (warn-and-success on failure), and returns
-/// the [`TokenCreateOutcome`].
+/// the freshly-minted bearer token.
 ///
 /// # Errors
 ///
@@ -99,7 +85,7 @@ pub async fn run_async(
     expires_at: DateTime<Utc>,
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
-) -> Result<TokenCreateOutcome, AppError> {
+) -> Result<BearerToken, AppError> {
     let pool = tribal_db::create_pool(
         db_config,
         POOL_NAME,
@@ -157,8 +143,5 @@ pub async fn run_async(
         source,
     })?;
 
-    Ok(TokenCreateOutcome {
-        bearer_token,
-        credentials,
-    })
+    Ok(bearer_token)
 }
