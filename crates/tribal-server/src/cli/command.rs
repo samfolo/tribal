@@ -140,6 +140,15 @@ pub enum Command {
         #[command(flatten)]
         args: McpConfigArgs,
     },
+
+    /// Run readiness diagnostics across config, database, project,
+    /// token, advertised URL, and binary uniqueness.
+    #[command(display_order = 7)]
+    Check {
+        /// Arguments for the check subcommand.
+        #[command(flatten)]
+        args: CheckArgs,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +497,34 @@ impl BootstrapArgs {
             telemetry: telemetry.telemetry,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Check
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `check` subcommand.
+#[derive(Debug, Default, Args)]
+pub struct CheckArgs {
+    /// Run fatal probes against the configured embedding and
+    /// inference providers.
+    #[arg(long, help_heading = "Check")]
+    pub providers: bool,
+
+    /// Project ID to verify directly, bypassing the
+    /// `TRIBAL_PROJECT_ID` / git-remote cascade.
+    #[arg(long, help_heading = "Check")]
+    pub project: Option<String>,
+
+    /// Bearer token to verify, overriding the
+    /// `TRIBAL_AUTH_TOKEN` / `credentials.json` resolution order.
+    #[arg(long, help_heading = "Check")]
+    pub token: Option<String>,
+
+    /// Emit a single JSON object on stdout instead of the human
+    /// form on stderr.
+    #[arg(long, help_heading = "Output")]
+    pub json: bool,
 }
 
 // ---------------------------------------------------------------------------

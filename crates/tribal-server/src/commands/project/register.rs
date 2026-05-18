@@ -252,11 +252,9 @@ pub(crate) async fn run_async(
     let project = outcome.project();
 
     if opts.json {
-        output::json_snippet(out_stdout, &project.mcp_config).map_err(|source| {
-            AppError::Io {
-                context: "writing project register --json snippet".into(),
-                source,
-            }
+        output::json_snippet(out_stdout, &project.mcp_config).map_err(|source| AppError::Io {
+            context: "writing project register --json snippet".into(),
+            source,
         })?;
     } else {
         match &outcome {

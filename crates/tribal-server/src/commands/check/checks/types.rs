@@ -1,10 +1,10 @@
 //! Internal data layer for `tribal check`.
 //!
-//! Each check returns a [`CheckOutcome`] carrying a typed [`CheckDetail`]
-//! and optional [`CheckRemediation`].  The variants own their data so
-//! presentation (rendering to the wire format, rendering to the human
-//! form) can be a single match per enum rather than concatenated string
-//! literals scattered across per-check files.
+//! Each check returns a [`CheckOutcome`] carrying a typed [`CheckDetail`].
+//! The variants own their data so presentation (rendering to the wire
+//! format, rendering to the human form) is a single match per enum
+//! rather than concatenated string literals scattered across per-check
+//! files.  New variants land alongside their producers.
 
 use std::path::PathBuf;
 
@@ -56,15 +56,11 @@ pub enum CheckStatus {
 // ---------------------------------------------------------------------------
 
 /// What a single check produces.
-///
-/// `detail` and `remediation` are typed; the wire format renders them
-/// via the conversion in `super::super::output`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::commands::check) struct CheckOutcome {
     pub name: CheckName,
     pub status: CheckStatus,
     pub detail: CheckDetail,
-    pub remediation: Option<CheckRemediation>,
 }
 
 // ---------------------------------------------------------------------------
@@ -72,15 +68,10 @@ pub(in crate::commands::check) struct CheckOutcome {
 // ---------------------------------------------------------------------------
 
 /// Typed description of what a check observed.
-///
-/// New variants are added by the per-check work as it lands; rendering
-/// is a single exhaustive `match` in [`CheckDetail::render`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::commands::check) enum CheckDetail {
     /// Config file parsed successfully from `path`.
     ConfigLoaded { path: PathBuf },
-    /// All configuration invariants passed.
-    AllInvariantsSatisfied,
 }
 
 impl CheckDetail {
@@ -88,34 +79,6 @@ impl CheckDetail {
     pub(in crate::commands::check) fn render(&self) -> String {
         match self {
             Self::ConfigLoaded { path } => format!("config loaded from {}", path.display()),
-            Self::AllInvariantsSatisfied => "all config invariants satisfied".to_owned(),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CheckRemediation
-// ---------------------------------------------------------------------------
-
-/// Typed remediation hint paired with a non-`Pass` outcome.
-///
-/// New variants are added by the per-check work as it lands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::commands::check) enum CheckRemediation {
-    /// Direct the operator at the resolved config file path.
-    InspectConfigFile { path: PathBuf },
-    /// Direct the operator to run `tribal setup`.
-    RunTribalSetup,
-}
-
-impl CheckRemediation {
-    /// Renders the remediation as the wire-format string.
-    pub(in crate::commands::check) fn render(&self) -> String {
-        match self {
-            Self::InspectConfigFile { path } => {
-                format!("inspect the config file at {}", path.display())
-            }
-            Self::RunTribalSetup => "run `tribal setup`".to_owned(),
         }
     }
 }
@@ -163,14 +126,6 @@ mod tests {
     }
 
     #[test]
-    fn test_check_detail_renders_no_field_variant() {
-        assert_eq!(
-            CheckDetail::AllInvariantsSatisfied.render(),
-            "all config invariants satisfied",
-        );
-    }
-
-    #[test]
     fn test_check_detail_renders_path_variant() {
         let detail = CheckDetail::ConfigLoaded {
             path: PathBuf::from("/etc/tribal/config.yaml"),
@@ -178,25 +133,6 @@ mod tests {
         assert_eq!(
             detail.render(),
             "config loaded from /etc/tribal/config.yaml"
-        );
-    }
-
-    #[test]
-    fn test_check_remediation_renders_no_field_variant() {
-        assert_eq!(
-            CheckRemediation::RunTribalSetup.render(),
-            "run `tribal setup`"
-        );
-    }
-
-    #[test]
-    fn test_check_remediation_renders_path_variant() {
-        let remediation = CheckRemediation::InspectConfigFile {
-            path: PathBuf::from("/etc/tribal/config.yaml"),
-        };
-        assert_eq!(
-            remediation.render(),
-            "inspect the config file at /etc/tribal/config.yaml",
         );
     }
 }

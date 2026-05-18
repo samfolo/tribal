@@ -6,4 +6,4 @@
 
 mod types;
 
-pub(super) use types::{CheckDetail, CheckName, CheckOutcome, CheckRemediation, CheckStatus};
+pub(super) use types::{CheckDetail, CheckName, CheckOutcome, CheckStatus};
