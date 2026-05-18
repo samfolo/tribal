@@ -140,6 +140,12 @@ pub(in crate::commands::check) enum CheckDetail {
     NoActiveTokens,
     /// The aggregate any-active query failed at the infrastructure layer.
     TokenAggregateQueryFailed { error: String },
+    /// Stdio transport has no advertised URL — nothing to probe.
+    AdvertisedUrlSkippedStdio,
+    /// Advertised URL responded; `status` is the HTTP response code.
+    AdvertisedUrlReachable { url: String, status: u16 },
+    /// Advertised URL did not respond; `error` describes the failure.
+    AdvertisedUrlUnreachable { url: String, error: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +245,13 @@ impl CheckDetail {
             Self::TokenAggregateQueryFailed { error } => {
                 format!("token aggregate check failed: {error}")
             }
+            Self::AdvertisedUrlSkippedStdio => "stdio transport: no advertised URL to probe".into(),
+            Self::AdvertisedUrlReachable { url, status } => {
+                format!("{url} responded with HTTP {status}")
+            }
+            Self::AdvertisedUrlUnreachable { url, error } => {
+                format!("{url} unreachable: {error}")
+            }
         }
     }
 }
@@ -274,6 +287,8 @@ pub(in crate::commands::check) enum CheckRemediation {
     RegisterProjectOrSetEnv,
     /// Mint a new bearer token with `tribal token create`.
     RunTribalTokenCreate,
+    /// Start `tribal serve` so it binds the advertised URL.
+    StartServeOnAdvertisedUrl,
 }
 
 impl CheckRemediation {
@@ -303,6 +318,9 @@ impl CheckRemediation {
             }
             Self::RunTribalTokenCreate => {
                 "mint a new bearer token with `tribal token create`".into()
+            }
+            Self::StartServeOnAdvertisedUrl => {
+                "start `tribal serve` so it binds the advertised URL".into()
             }
         }
     }

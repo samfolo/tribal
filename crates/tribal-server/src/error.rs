@@ -241,6 +241,17 @@ pub enum AppError {
         source: io::Error,
     },
 
+    /// Constructing the shared HTTP client failed (TLS init, DNS
+    /// resolver setup, or similar).
+    #[error("could not build HTTP client ({context}): {source}")]
+    HttpClient {
+        /// Description of which client construction failed.
+        context: String,
+        /// The underlying reqwest error.
+        #[source]
+        source: reqwest::Error,
+    },
+
     /// Git remote detection failed.
     #[error("git remote detection failed: {reason}")]
     GitDetection {

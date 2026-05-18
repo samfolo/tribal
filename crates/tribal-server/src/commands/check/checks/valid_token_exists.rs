@@ -73,7 +73,7 @@ impl CheckOutcome {
 
 /// Runs the transport-aware token check.
 pub(in crate::commands::check) async fn run(ctx: &CheckContext) -> CheckOutcome {
-    match ctx.transport {
+    match ctx.config.server.transport {
         TransportKind::Stdio => stdio_path(ctx).await,
         TransportKind::Http | TransportKind::Sse => network_path(ctx).await,
     }

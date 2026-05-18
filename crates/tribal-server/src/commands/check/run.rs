@@ -9,8 +9,8 @@ use tribal_config::{ConfigError, load_config, validate};
 
 use super::{
     checks::{
-        CheckContext, CheckOutcome, CheckOutcomes, database_reachable, migrations_current,
-        project_resolution, valid_token_exists,
+        CheckContext, CheckOutcome, CheckOutcomes, advertised_url_reachable, database_reachable,
+        migrations_current, project_resolution, valid_token_exists,
     },
     output::CheckOutput,
 };
@@ -115,15 +115,24 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
         let (db_outcome, pool) = database_reachable(&config.database).await;
         outcomes.push(db_outcome);
         if let Some(pool) = pool {
+            let http_client =
+                reqwest::Client::builder()
+                    .build()
+                    .map_err(|source| AppError::HttpClient {
+                        context: "tribal check probe client".into(),
+                        source,
+                    })?;
             let ctx = CheckContext {
                 pool,
-                transport: config.server.transport,
+                config,
+                http_client,
                 project_override: opts.project.map(str::to_owned),
                 token_override: opts.token.map(str::to_owned),
             };
             outcomes.push(migrations_current(&ctx).await);
             outcomes.push(project_resolution(&ctx).await);
             outcomes.push(valid_token_exists(&ctx).await);
+            outcomes.push(advertised_url_reachable(&ctx).await);
         }
     }
 
