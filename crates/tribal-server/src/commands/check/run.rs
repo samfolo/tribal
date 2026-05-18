@@ -10,7 +10,7 @@ use tribal_config::{ConfigError, load_config, validate};
 use super::{
     checks::{
         CheckContext, CheckOutcome, CheckOutcomes, database_reachable, migrations_current,
-        project_resolution,
+        project_resolution, valid_token_exists,
     },
     output::CheckOutput,
 };
@@ -117,10 +117,13 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
         if let Some(pool) = pool {
             let ctx = CheckContext {
                 pool,
+                transport: config.server.transport,
                 project_override: opts.project.map(str::to_owned),
+                token_override: opts.token.map(str::to_owned),
             };
             outcomes.push(migrations_current(&ctx).await);
             outcomes.push(project_resolution(&ctx).await);
+            outcomes.push(valid_token_exists(&ctx).await);
         }
     }
 
@@ -141,7 +144,6 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
     }
 
     let _ = opts.providers;
-    let _ = opts.token;
 
     Ok(())
 }
