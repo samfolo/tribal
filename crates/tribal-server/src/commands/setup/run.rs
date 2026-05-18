@@ -104,7 +104,7 @@ pub async fn run_async(
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     tokio::fs::create_dir_all(config_dir)
         .await
-        .map_err(|source| AppError::SetupIo {
+        .map_err(|source| AppError::Io {
             context: format!("create config directory {}", config_dir.display()),
             source,
         })?;
@@ -200,7 +200,7 @@ pub async fn run_async(
         let _ = writeln!(out, "{warning}");
     }
 
-    instructions_result.map_err(|source| AppError::SetupIo {
+    instructions_result.map_err(|source| AppError::Io {
         context: "writing bearer token output".into(),
         source,
     })?;

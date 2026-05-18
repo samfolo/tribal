@@ -74,7 +74,7 @@ pub(crate) async fn write_if_absent(
 
     tokio::fs::write(config_path, content)
         .await
-        .map_err(|source| AppError::SetupIo {
+        .map_err(|source| AppError::Io {
             context: format!("write config file {}", config_path.display()),
             source,
         })?;
