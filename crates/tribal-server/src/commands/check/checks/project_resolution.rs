@@ -4,21 +4,19 @@ use tribal_domain::ProjectId;
 
 use super::{
     context::CheckContext,
-    types::{CheckDetail, CheckName, CheckOutcome, CheckRemediation},
+    types::{CheckDetail, CheckOutcome, CheckRemediation},
 };
 use crate::{error::AppError, startup::resolve_project};
 
 impl CheckOutcome {
     pub(in crate::commands::check) fn project_found(project_id: ProjectId, name: String) -> Self {
         Self::Pass {
-            name: CheckName::ProjectResolution,
             detail: CheckDetail::ProjectFound { project_id, name },
         }
     }
 
     pub(in crate::commands::check) fn project_cascade_missing() -> Self {
         Self::Warn {
-            name: CheckName::ProjectResolution,
             detail: CheckDetail::ProjectCascadeMissing,
             remediation: Some(CheckRemediation::RegisterProjectOrSetEnv),
         }
@@ -26,7 +24,6 @@ impl CheckOutcome {
 
     pub(in crate::commands::check) fn project_not_found(error: String) -> Self {
         Self::Fail {
-            name: CheckName::ProjectResolution,
             detail: CheckDetail::ProjectNotFound { error },
             remediation: None,
         }
@@ -34,7 +31,6 @@ impl CheckOutcome {
 
     pub(in crate::commands::check) fn project_query_failed(error: String) -> Self {
         Self::Fail {
-            name: CheckName::ProjectResolution,
             detail: CheckDetail::ProjectQueryFailed { error },
             remediation: Some(CheckRemediation::CheckPgIsready),
         }
@@ -69,7 +65,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Pass {
-                name: CheckName::ProjectResolution,
                 detail: CheckDetail::ProjectFound { project_id, name },
             } if *project_id == id && name == "tribal",
         ));
@@ -80,7 +75,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::project_cascade_missing(),
             CheckOutcome::Warn {
-                name: CheckName::ProjectResolution,
                 detail: CheckDetail::ProjectCascadeMissing,
                 remediation: Some(CheckRemediation::RegisterProjectOrSetEnv),
             },
@@ -93,7 +87,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::ProjectResolution,
                 detail: CheckDetail::ProjectNotFound { error },
                 remediation: None,
             } if error == "project proj_xxx not found",
@@ -106,7 +99,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::ProjectResolution,
                 detail: CheckDetail::ProjectQueryFailed { error },
                 remediation: Some(CheckRemediation::CheckPgIsready),
             } if error == "pool exhausted",

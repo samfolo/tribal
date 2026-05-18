@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use tribal_config::DatabaseConfig;
 use tribal_db::create_pool;
 
-use super::types::{CheckDetail, CheckName, CheckOutcome, CheckRemediation};
+use super::types::{CheckDetail, CheckOutcome, CheckRemediation};
 use crate::commands::common::{COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS};
 
 /// Pool-name tag passed to [`create_pool`] for tracing.
@@ -20,14 +20,12 @@ const POOL_NAME: &str = "check";
 impl CheckOutcome {
     pub(in crate::commands::check) fn database_reachable() -> Self {
         Self::Pass {
-            name: CheckName::DatabaseReachable,
             detail: CheckDetail::DatabaseReachable,
         }
     }
 
     pub(in crate::commands::check) fn database_unreachable(error: String) -> Self {
         Self::Fail {
-            name: CheckName::DatabaseReachable,
             detail: CheckDetail::DatabaseUnreachable { error },
             remediation: Some(CheckRemediation::CheckPgIsready),
         }
@@ -64,7 +62,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::database_reachable(),
             CheckOutcome::Pass {
-                name: CheckName::DatabaseReachable,
                 detail: CheckDetail::DatabaseReachable,
             },
         ));
@@ -76,7 +73,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::DatabaseReachable,
                 detail: CheckDetail::DatabaseUnreachable { error },
                 remediation: Some(CheckRemediation::CheckPgIsready),
             } if error == "connection refused",

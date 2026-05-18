@@ -4,20 +4,18 @@ use tribal_db::{MIGRATOR, MigrationHeadStatus, MigrationRepository, PgMigrationR
 
 use super::{
     context::CheckContext,
-    types::{CheckDetail, CheckName, CheckOutcome, CheckRemediation},
+    types::{CheckDetail, CheckOutcome, CheckRemediation},
 };
 
 impl CheckOutcome {
     pub(in crate::commands::check) fn migrations_match() -> Self {
         Self::Pass {
-            name: CheckName::MigrationsCurrent,
             detail: CheckDetail::MigrationsMatch,
         }
     }
 
     pub(in crate::commands::check) fn migrations_behind(expected: i64, found: i64) -> Self {
         Self::Fail {
-            name: CheckName::MigrationsCurrent,
             detail: CheckDetail::MigrationsBehind { expected, found },
             remediation: Some(CheckRemediation::RunTribalSetup),
         }
@@ -25,7 +23,6 @@ impl CheckOutcome {
 
     pub(in crate::commands::check) fn migrations_ahead(expected: i64, found: i64) -> Self {
         Self::Fail {
-            name: CheckName::MigrationsCurrent,
             detail: CheckDetail::MigrationsAhead { expected, found },
             remediation: Some(CheckRemediation::UpgradeBinary),
         }
@@ -33,7 +30,6 @@ impl CheckOutcome {
 
     pub(in crate::commands::check) fn migrations_table_missing() -> Self {
         Self::Fail {
-            name: CheckName::MigrationsCurrent,
             detail: CheckDetail::MigrationsTableMissing,
             remediation: Some(CheckRemediation::RunTribalSetup),
         }
@@ -41,7 +37,6 @@ impl CheckOutcome {
 
     pub(in crate::commands::check) fn migrations_query_failed(error: String) -> Self {
         Self::Fail {
-            name: CheckName::MigrationsCurrent,
             detail: CheckDetail::MigrationsQueryFailed { error },
             remediation: Some(CheckRemediation::CheckPgIsready),
         }
@@ -87,7 +82,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::migrations_match(),
             CheckOutcome::Pass {
-                name: CheckName::MigrationsCurrent,
                 detail: CheckDetail::MigrationsMatch,
             },
         ));
@@ -98,7 +92,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::migrations_behind(42, 30),
             CheckOutcome::Fail {
-                name: CheckName::MigrationsCurrent,
                 detail: CheckDetail::MigrationsBehind {
                     expected: 42,
                     found: 30,
@@ -113,7 +106,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::migrations_ahead(30, 42),
             CheckOutcome::Fail {
-                name: CheckName::MigrationsCurrent,
                 detail: CheckDetail::MigrationsAhead {
                     expected: 30,
                     found: 42,
@@ -128,7 +120,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::migrations_table_missing(),
             CheckOutcome::Fail {
-                name: CheckName::MigrationsCurrent,
                 detail: CheckDetail::MigrationsTableMissing,
                 remediation: Some(CheckRemediation::RunTribalSetup),
             },
@@ -141,7 +132,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::MigrationsCurrent,
                 detail: CheckDetail::MigrationsQueryFailed { error },
                 remediation: Some(CheckRemediation::CheckPgIsready),
             } if error == "connection lost",

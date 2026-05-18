@@ -4,13 +4,12 @@ use std::path::{Path, PathBuf};
 
 use tribal_config::ConfigError;
 
-use super::types::{CheckDetail, CheckName, CheckOutcome, CheckRemediation};
+use super::types::{CheckDetail, CheckOutcome, CheckRemediation};
 
 impl CheckOutcome {
     /// Constructs the outcome for a successful config load from `path`.
     pub(in crate::commands::check) fn config_parse_loaded(path: PathBuf) -> Self {
         Self::Pass {
-            name: CheckName::ConfigParse,
             detail: CheckDetail::ConfigLoaded { path },
         }
     }
@@ -21,7 +20,6 @@ impl CheckOutcome {
         path: &Path,
     ) -> Self {
         Self::Fail {
-            name: CheckName::ConfigParse,
             detail: CheckDetail::ConfigParseFailed {
                 error: error.to_string(),
                 path: path.to_path_buf(),
@@ -44,7 +42,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Pass {
-                name: CheckName::ConfigParse,
                 detail: CheckDetail::ConfigLoaded { path: p },
             } if p == &path,
         ));
@@ -61,7 +58,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::ConfigParse,
                 detail: CheckDetail::ConfigParseFailed {
                     error: msg,
                     path: detail_path,

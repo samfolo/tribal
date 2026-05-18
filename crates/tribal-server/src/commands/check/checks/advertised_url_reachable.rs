@@ -7,7 +7,7 @@ use tribal_config::TransportKind;
 
 use super::{
     context::CheckContext,
-    types::{CheckDetail, CheckName, CheckOutcome, CheckRemediation},
+    types::{CheckDetail, CheckOutcome, CheckRemediation},
 };
 use crate::output::resolved_advertised_url;
 
@@ -21,14 +21,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 impl CheckOutcome {
     pub(in crate::commands::check) fn advertised_url_skipped_stdio() -> Self {
         Self::Skip {
-            name: CheckName::AdvertisedUrlReachable,
             detail: CheckDetail::AdvertisedUrlSkippedStdio,
         }
     }
 
     pub(in crate::commands::check) fn advertised_url_reachable(url: String, status: u16) -> Self {
         Self::Pass {
-            name: CheckName::AdvertisedUrlReachable,
             detail: CheckDetail::AdvertisedUrlReachable { url, status },
         }
     }
@@ -38,7 +36,6 @@ impl CheckOutcome {
         error: String,
     ) -> Self {
         Self::Fail {
-            name: CheckName::AdvertisedUrlReachable,
             detail: CheckDetail::AdvertisedUrlUnreachable { url, error },
             remediation: Some(CheckRemediation::StartServeOnAdvertisedUrl),
         }
@@ -75,7 +72,6 @@ mod tests {
         assert!(matches!(
             &CheckOutcome::advertised_url_skipped_stdio(),
             CheckOutcome::Skip {
-                name: CheckName::AdvertisedUrlReachable,
                 detail: CheckDetail::AdvertisedUrlSkippedStdio,
             },
         ));
@@ -88,7 +84,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Pass {
-                name: CheckName::AdvertisedUrlReachable,
                 detail: CheckDetail::AdvertisedUrlReachable { url, status: 200 },
             } if url == "http://localhost:8080/mcp",
         ));
@@ -103,7 +98,6 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                name: CheckName::AdvertisedUrlReachable,
                 detail: CheckDetail::AdvertisedUrlUnreachable { url, error },
                 remediation: Some(CheckRemediation::StartServeOnAdvertisedUrl),
             } if url == "http://localhost:8080/mcp" && error == "connection refused",
