@@ -1,9 +1,10 @@
 //! Per-check modules and shared internal types.
 //!
-//! Each check is a leaf module under this namespace producing a typed
-//! `CheckOutcome`.  The dispatch path lives in `super::run` (added in
-//! a later step); the wire-format conversion lives in `super::output`.
+//! Each leaf module under this namespace produces a typed
+//! [`CheckOutcome`] for one diagnostic check.  Shared types — status,
+//! detail variants, remediation variants — live in [`types`].
 
+mod config_parse;
 mod types;
 
-pub(super) use types::{CheckDetail, CheckName, CheckOutcome, CheckStatus};
+pub(super) use types::{CheckName, CheckOutcome, CheckRemediation};
