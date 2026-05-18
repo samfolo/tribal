@@ -90,6 +90,10 @@ pub(in crate::commands::check) enum CheckDetail {
     AllInvariantsSatisfied,
     /// One or more configuration invariants failed.
     ValidationFailed { errors: Vec<String> },
+    /// Database connection succeeded.
+    DatabaseReachable,
+    /// Database connection failed; `error` is the underlying sqlx error.
+    DatabaseUnreachable { error: String },
 }
 
 impl CheckDetail {
@@ -102,6 +106,8 @@ impl CheckDetail {
             }
             Self::AllInvariantsSatisfied => "all configuration invariants satisfied".into(),
             Self::ValidationFailed { errors } => errors.join("\n"),
+            Self::DatabaseReachable => "database connection succeeded".into(),
+            Self::DatabaseUnreachable { error } => format!("database unreachable: {error}"),
         }
     }
 }
@@ -117,6 +123,9 @@ pub(in crate::commands::check) enum CheckRemediation {
     InspectConfigFile { path: PathBuf },
     /// One or more targeted hints for the validation errors collected.
     FixConfigInvariant { hints: Vec<String> },
+    /// Verify database availability with `pg_isready` and review the
+    /// `database.url` field.
+    CheckPgIsready,
 }
 
 impl CheckRemediation {
@@ -127,6 +136,11 @@ impl CheckRemediation {
                 format!("inspect {} for syntax errors", path.display())
             }
             Self::FixConfigInvariant { hints } => hints.join("\n"),
+            Self::CheckPgIsready => {
+                "run `pg_isready` against the configured database URL and verify the host, \
+                 port, and credentials"
+                    .into()
+            }
         }
     }
 }
