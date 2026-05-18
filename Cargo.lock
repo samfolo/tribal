@@ -5131,6 +5131,7 @@ dependencies = [
  "tribal-ui",
  "tribal-worker",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
