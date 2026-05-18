@@ -94,6 +94,16 @@ pub(in crate::commands::check) enum CheckDetail {
     DatabaseReachable,
     /// Database connection failed; `error` is the underlying sqlx error.
     DatabaseUnreachable { error: String },
+    /// Database migration head matches the binary's compile-time head.
+    MigrationsMatch,
+    /// Database is older than the binary expects.
+    MigrationsBehind { expected: i64, found: i64 },
+    /// Database is newer than the binary expects.
+    MigrationsAhead { expected: i64, found: i64 },
+    /// `_sqlx_migrations` table does not exist — database was never set up.
+    MigrationsTableMissing,
+    /// Migration head query failed unexpectedly; `error` is the rendered cause.
+    MigrationsQueryFailed { error: String },
 }
 
 impl CheckDetail {
@@ -108,6 +118,19 @@ impl CheckDetail {
             Self::ValidationFailed { errors } => errors.join("\n"),
             Self::DatabaseReachable => "database connection succeeded".into(),
             Self::DatabaseUnreachable { error } => format!("database unreachable: {error}"),
+            Self::MigrationsMatch => "migrations are current".into(),
+            Self::MigrationsBehind { expected, found } => format!(
+                "database is at migration {found}; binary expects {expected}; database is behind"
+            ),
+            Self::MigrationsAhead { expected, found } => format!(
+                "database is at migration {found}; binary expects {expected}; database is ahead"
+            ),
+            Self::MigrationsTableMissing => {
+                "database is uninitialised; run `tribal setup` first".into()
+            }
+            Self::MigrationsQueryFailed { error } => {
+                format!("migration check query failed: {error}")
+            }
         }
     }
 }
@@ -126,6 +149,12 @@ pub(in crate::commands::check) enum CheckRemediation {
     /// Verify database availability with `pg_isready` and review the
     /// `database.url` field.
     CheckPgIsready,
+    /// Run `tribal setup` to initialise the database or apply pending
+    /// migrations.
+    RunTribalSetup,
+    /// Upgrade the `tribal` binary to a version that knows about the
+    /// migrations already applied to the database.
+    UpgradeBinary,
 }
 
 impl CheckRemediation {
@@ -139,6 +168,14 @@ impl CheckRemediation {
             Self::CheckPgIsready => {
                 "run `pg_isready` against the configured database URL and verify the host, \
                  port, and credentials"
+                    .into()
+            }
+            Self::RunTribalSetup => {
+                "run `tribal setup` to initialise or migrate the database".into()
+            }
+            Self::UpgradeBinary => {
+                "upgrade the `tribal` binary to a version that includes the database's \
+                 applied migrations"
                     .into()
             }
         }

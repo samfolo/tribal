@@ -1,14 +1,21 @@
 //! Outcome constructors and probe for the `database_reachable` check.
 //!
-//! Probes the configured database by opening a single connection.  The
-//! outcome carries no URL information — the user's configured URL lives
-//! in their config file, and the sqlx error on failure carries enough
-//! diagnostic context (host, error kind) without including credentials.
+//! Builds the shared pool the rest of the database-dependent checks
+//! reuse.  The pool is returned alongside the outcome so the
+//! orchestrator can thread it into [`CheckContext`].  No URL crosses
+//! the wire — the configured URL lives in the user's config file and
+//! the sqlx error provides diagnostic context without leaking
+//! credentials.
 
-use sqlx::{Connection, PgConnection};
+use sqlx::PgPool;
 use tribal_config::DatabaseConfig;
+use tribal_db::create_pool;
 
 use super::types::{CheckDetail, CheckName, CheckOutcome, CheckRemediation};
+use crate::commands::common::{COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS};
+
+/// Pool-name tag passed to [`create_pool`] for tracing.
+const POOL_NAME: &str = "check";
 
 impl CheckOutcome {
     pub(in crate::commands::check) fn database_reachable() -> Self {
@@ -27,17 +34,29 @@ impl CheckOutcome {
     }
 }
 
-/// Opens a single connection to the configured database and reports the
-/// outcome.  The connection drops at function exit.
-pub(in crate::commands::check) async fn run(database_config: &DatabaseConfig) -> CheckOutcome {
-    let Err(err) = PgConnection::connect(&database_config.url).await else {
-        return CheckOutcome::database_reachable();
-    };
-    CheckOutcome::database_unreachable(err.to_string())
+/// Builds the shared `tribal check` pool and reports the outcome.  On
+/// success returns the pool for downstream database-dependent checks;
+/// on failure returns `None`.
+pub(in crate::commands::check) async fn run(
+    database_config: &DatabaseConfig,
+) -> (CheckOutcome, Option<PgPool>) {
+    match create_pool(
+        database_config,
+        POOL_NAME,
+        COMMAND_POOL_MAX_CONNECTIONS,
+        COMMAND_STATEMENT_TIMEOUT_MS,
+    )
+    .await
+    {
+        Ok(pool) => (CheckOutcome::database_reachable(), Some(pool)),
+        Err(err) => (CheckOutcome::database_unreachable(err.to_string()), None),
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use sqlx::{Connection, PgConnection};
+
     use super::*;
 
     #[test]
@@ -66,8 +85,11 @@ mod tests {
 
     /// Asserts that `sqlx::Error::to_string()` for a failed connection
     /// against a URL carrying a password never includes that password
-    /// in the rendered message.  If this test ever fails, switch the
-    /// outcome detail to a strictly redacted form before merging.
+    /// in the rendered message.  `create_pool` wraps this in
+    /// `DbError::QueryFailed` via `{source}` interpolation, so the same
+    /// guarantee transitively covers our error path.  If this test ever
+    /// fails, switch the outcome detail to a strictly redacted form
+    /// before merging.
     #[tokio::test]
     async fn test_sqlx_error_does_not_leak_password_in_connection_string() {
         let url =
