@@ -24,9 +24,9 @@ impl CheckOutcome {
                 error: error.to_string(),
                 path: path.to_path_buf(),
             },
-            remediation: Some(CheckRemediation::InspectConfigFile {
+            remediation: CheckRemediation::InspectConfigFile {
                 path: path.to_path_buf(),
-            }),
+            },
         }
     }
 }
@@ -62,7 +62,7 @@ mod tests {
                     error: msg,
                     path: detail_path,
                 },
-                remediation: Some(CheckRemediation::InspectConfigFile { path: rec_path }),
+                remediation: CheckRemediation::InspectConfigFile { path: rec_path },
             } if msg.contains("database.url must not be empty")
                 && detail_path == &path
                 && rec_path == &path,

@@ -38,18 +38,17 @@ impl CheckOutcome {
     }
 
     /// Constructs the outcome for one or more configuration invariant
-    /// violations.  Each error string is matched against known
-    /// prefixes; matches contribute a targeted hint to the remediation.
+    /// violations.  Each error string is matched against known prefixes
+    /// for a targeted hint; unmatched errors are echoed verbatim so the
+    /// remediation always carries one hint per error.
     pub(in crate::commands::check) fn config_validate_failed(errors: Vec<String>) -> Self {
-        let hints: Vec<String> = errors.iter().filter_map(|e| hint_for_error(e)).collect();
-        let remediation = if hints.is_empty() {
-            None
-        } else {
-            Some(CheckRemediation::FixConfigInvariant { hints })
-        };
+        let hints: Vec<String> = errors
+            .iter()
+            .map(|e| hint_for_error(e).unwrap_or_else(|| format!("fix: {e}")))
+            .collect();
         Self::Fail {
             detail: CheckDetail::ValidationFailed { errors },
-            remediation,
+            remediation: CheckRemediation::FixConfigInvariant { hints },
         }
     }
 }
@@ -77,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_validate_failed_with_api_key_error_has_hint() {
+    fn test_config_validate_failed_with_api_key_error_has_targeted_hint() {
         let errors = vec![format!("{EMBEDDING_API_KEY_REQUIRED_PREFIX} openai")];
         let outcome = CheckOutcome::config_validate_failed(errors.clone());
 
@@ -85,7 +84,7 @@ mod tests {
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::ValidationFailed { errors: stored },
-                remediation: Some(CheckRemediation::FixConfigInvariant { hints }),
+                remediation: CheckRemediation::FixConfigInvariant { hints },
             } if stored == &errors
                 && hints.len() == 1
                 && hints[0].contains("embedding.api_key")
@@ -94,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_validate_failed_with_unknown_error_has_no_remediation() {
+    fn test_config_validate_failed_with_unknown_error_falls_back_to_verbatim_hint() {
         let errors = vec!["database.url must not be empty".into()];
         let outcome = CheckOutcome::config_validate_failed(errors.clone());
 
@@ -102,13 +101,15 @@ mod tests {
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::ValidationFailed { errors: stored },
-                remediation: None,
-            } if stored == &errors,
+                remediation: CheckRemediation::FixConfigInvariant { hints },
+            } if stored == &errors
+                && hints.len() == 1
+                && hints[0] == "fix: database.url must not be empty",
         ));
     }
 
     #[test]
-    fn test_config_validate_failed_mixes_known_and_unknown_errors() {
+    fn test_config_validate_failed_emits_one_hint_per_error() {
         let errors = vec![
             "database.url must not be empty".into(),
             format!("{TRIAGE_API_KEY_REQUIRED_PREFIX} openai"),
@@ -119,9 +120,12 @@ mod tests {
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                remediation: Some(CheckRemediation::FixConfigInvariant { hints }),
+                remediation: CheckRemediation::FixConfigInvariant { hints },
                 ..
-            } if hints.len() == 1 && hints[0].contains("inference.triage.api_key"),
+            } if hints.len() == 3
+                && hints[0] == "fix: database.url must not be empty"
+                && hints[1].contains("inference.triage.api_key")
+                && hints[2] == "fix: auth.token_ttl_hours must be greater than zero",
         ));
     }
 }

@@ -17,28 +17,28 @@ impl CheckOutcome {
     pub(in crate::commands::check) fn migrations_behind(expected: i64, found: i64) -> Self {
         Self::Fail {
             detail: CheckDetail::MigrationsBehind { expected, found },
-            remediation: Some(CheckRemediation::RunTribalSetup),
+            remediation: CheckRemediation::RunTribalSetup,
         }
     }
 
     pub(in crate::commands::check) fn migrations_ahead(expected: i64, found: i64) -> Self {
         Self::Fail {
             detail: CheckDetail::MigrationsAhead { expected, found },
-            remediation: Some(CheckRemediation::UpgradeBinary),
+            remediation: CheckRemediation::UpgradeBinary,
         }
     }
 
     pub(in crate::commands::check) fn migrations_table_missing() -> Self {
         Self::Fail {
             detail: CheckDetail::MigrationsTableMissing,
-            remediation: Some(CheckRemediation::RunTribalSetup),
+            remediation: CheckRemediation::RunTribalSetup,
         }
     }
 
     pub(in crate::commands::check) fn migrations_query_failed(error: String) -> Self {
         Self::Fail {
             detail: CheckDetail::MigrationsQueryFailed { error },
-            remediation: Some(CheckRemediation::CheckPgIsready),
+            remediation: CheckRemediation::CheckPgIsready,
         }
     }
 }
@@ -96,7 +96,7 @@ mod tests {
                     expected: 42,
                     found: 30,
                 },
-                remediation: Some(CheckRemediation::RunTribalSetup),
+                remediation: CheckRemediation::RunTribalSetup,
             },
         ));
     }
@@ -110,7 +110,7 @@ mod tests {
                     expected: 30,
                     found: 42,
                 },
-                remediation: Some(CheckRemediation::UpgradeBinary),
+                remediation: CheckRemediation::UpgradeBinary,
             },
         ));
     }
@@ -121,7 +121,7 @@ mod tests {
             &CheckOutcome::migrations_table_missing(),
             CheckOutcome::Fail {
                 detail: CheckDetail::MigrationsTableMissing,
-                remediation: Some(CheckRemediation::RunTribalSetup),
+                remediation: CheckRemediation::RunTribalSetup,
             },
         ));
     }
@@ -133,7 +133,7 @@ mod tests {
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::MigrationsQueryFailed { error },
-                remediation: Some(CheckRemediation::CheckPgIsready),
+                remediation: CheckRemediation::CheckPgIsready,
             } if error == "connection lost",
         ));
     }

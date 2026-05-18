@@ -26,14 +26,14 @@ impl CheckOutcome {
             detail: CheckDetail::BinaryDuplicate {
                 paths: paths.clone(),
             },
-            remediation: Some(CheckRemediation::PruneDuplicateBinaries { paths }),
+            remediation: CheckRemediation::PruneDuplicateBinaries { paths },
         }
     }
 
     pub(in crate::commands::check) fn binary_absent() -> Self {
         Self::Warn {
             detail: CheckDetail::BinaryAbsent,
-            remediation: None,
+            remediation: CheckRemediation::EnsureTribalOnPath,
         }
     }
 }
@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn test_binary_duplicate_is_warn_with_remediation() {
+    fn test_binary_duplicate_is_warn_with_prune_remediation() {
         let paths = vec![
             PathBuf::from(format!("/usr/local/bin/{BINARY_FILENAME}")),
             PathBuf::from(format!("/opt/bin/{BINARY_FILENAME}")),
@@ -125,20 +125,20 @@ mod tests {
             &CheckOutcome::binary_duplicate(paths.clone()),
             CheckOutcome::Warn {
                 detail: CheckDetail::BinaryDuplicate { paths: detail_paths },
-                remediation: Some(CheckRemediation::PruneDuplicateBinaries {
+                remediation: CheckRemediation::PruneDuplicateBinaries {
                     paths: rec_paths,
-                }),
+                },
             } if detail_paths == &paths && rec_paths == &paths,
         ));
     }
 
     #[test]
-    fn test_binary_absent_is_warn_without_remediation() {
+    fn test_binary_absent_is_warn_with_ensure_on_path_remediation() {
         assert!(matches!(
             &CheckOutcome::binary_absent(),
             CheckOutcome::Warn {
                 detail: CheckDetail::BinaryAbsent,
-                remediation: None,
+                remediation: CheckRemediation::EnsureTribalOnPath,
             },
         ));
     }

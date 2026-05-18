@@ -18,21 +18,21 @@ impl CheckOutcome {
     pub(in crate::commands::check) fn project_cascade_missing() -> Self {
         Self::Warn {
             detail: CheckDetail::ProjectCascadeMissing,
-            remediation: Some(CheckRemediation::RegisterProjectOrSetEnv),
+            remediation: CheckRemediation::RegisterProjectOrSetEnv,
         }
     }
 
     pub(in crate::commands::check) fn project_not_found(error: String) -> Self {
         Self::Fail {
             detail: CheckDetail::ProjectNotFound { error },
-            remediation: None,
+            remediation: CheckRemediation::VerifyProjectIdOrRegister,
         }
     }
 
     pub(in crate::commands::check) fn project_query_failed(error: String) -> Self {
         Self::Fail {
             detail: CheckDetail::ProjectQueryFailed { error },
-            remediation: Some(CheckRemediation::CheckPgIsready),
+            remediation: CheckRemediation::CheckPgIsready,
         }
     }
 }
@@ -76,19 +76,19 @@ mod tests {
             &CheckOutcome::project_cascade_missing(),
             CheckOutcome::Warn {
                 detail: CheckDetail::ProjectCascadeMissing,
-                remediation: Some(CheckRemediation::RegisterProjectOrSetEnv),
+                remediation: CheckRemediation::RegisterProjectOrSetEnv,
             },
         ));
     }
 
     #[test]
-    fn test_project_not_found_is_fail_without_remediation() {
+    fn test_project_not_found_recommends_verify_or_register() {
         let outcome = CheckOutcome::project_not_found("project proj_xxx not found".into());
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::ProjectNotFound { error },
-                remediation: None,
+                remediation: CheckRemediation::VerifyProjectIdOrRegister,
             } if error == "project proj_xxx not found",
         ));
     }
@@ -100,7 +100,7 @@ mod tests {
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::ProjectQueryFailed { error },
-                remediation: Some(CheckRemediation::CheckPgIsready),
+                remediation: CheckRemediation::CheckPgIsready,
             } if error == "pool exhausted",
         ));
     }

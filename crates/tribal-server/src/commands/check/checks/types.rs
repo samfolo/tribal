@@ -48,11 +48,11 @@ pub(in crate::commands::check) enum CheckOutcome {
     },
     Warn {
         detail: CheckDetail,
-        remediation: Option<CheckRemediation>,
+        remediation: CheckRemediation,
     },
     Fail {
         detail: CheckDetail,
-        remediation: Option<CheckRemediation>,
+        remediation: CheckRemediation,
     },
     Skip {
         detail: CheckDetail,
@@ -349,6 +349,12 @@ pub(in crate::commands::check) enum CheckRemediation {
     /// Remove the duplicate `tribal` binaries from PATH or reorder so
     /// the intended one wins.
     PruneDuplicateBinaries { paths: Vec<PathBuf> },
+    /// Ensure `tribal`'s install directory is on PATH so other tooling
+    /// can discover it.
+    EnsureTribalOnPath,
+    /// Verify the supplied project ID or register a new project with
+    /// `tribal project register`.
+    VerifyProjectIdOrRegister,
 }
 
 impl CheckRemediation {
@@ -388,6 +394,15 @@ impl CheckRemediation {
                     "remove or reorder the duplicate `tribal` entries on PATH: {}",
                     rendered.join(", "),
                 )
+            }
+            Self::EnsureTribalOnPath => {
+                "ensure `tribal`'s install directory is on PATH so other tooling can discover it"
+                    .into()
+            }
+            Self::VerifyProjectIdOrRegister => {
+                "verify the supplied project ID or register a new project with \
+                 `tribal project register`"
+                    .into()
             }
         }
     }

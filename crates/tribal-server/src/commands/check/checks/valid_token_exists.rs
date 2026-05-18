@@ -37,28 +37,28 @@ impl CheckOutcome {
     ) -> Self {
         Self::Fail {
             detail: CheckDetail::TokenVerificationFailed { transport, reason },
-            remediation: Some(CheckRemediation::RunTribalTokenCreate),
+            remediation: CheckRemediation::RunTribalTokenCreate,
         }
     }
 
     pub(in crate::commands::check) fn token_aggregate_warn() -> Self {
         Self::Warn {
             detail: CheckDetail::TokenAggregateWarn,
-            remediation: Some(CheckRemediation::RunTribalTokenCreate),
+            remediation: CheckRemediation::RunTribalTokenCreate,
         }
     }
 
     pub(in crate::commands::check) fn no_active_tokens() -> Self {
         Self::Fail {
             detail: CheckDetail::NoActiveTokens,
-            remediation: Some(CheckRemediation::RunTribalTokenCreate),
+            remediation: CheckRemediation::RunTribalTokenCreate,
         }
     }
 
     pub(in crate::commands::check) fn token_aggregate_query_failed(error: String) -> Self {
         Self::Fail {
             detail: CheckDetail::TokenAggregateQueryFailed { error },
-            remediation: Some(CheckRemediation::CheckPgIsready),
+            remediation: CheckRemediation::CheckPgIsready,
         }
     }
 }
@@ -196,7 +196,7 @@ mod tests {
                     transport: TokenTransport::Http,
                     reason: TokenFailureReason::Revoked,
                 },
-                remediation: Some(CheckRemediation::RunTribalTokenCreate),
+                remediation: CheckRemediation::RunTribalTokenCreate,
             },
         ));
     }
@@ -207,7 +207,7 @@ mod tests {
             &CheckOutcome::token_aggregate_warn(),
             CheckOutcome::Warn {
                 detail: CheckDetail::TokenAggregateWarn,
-                remediation: Some(CheckRemediation::RunTribalTokenCreate),
+                remediation: CheckRemediation::RunTribalTokenCreate,
             },
         ));
     }
@@ -218,7 +218,7 @@ mod tests {
             &CheckOutcome::no_active_tokens(),
             CheckOutcome::Fail {
                 detail: CheckDetail::NoActiveTokens,
-                remediation: Some(CheckRemediation::RunTribalTokenCreate),
+                remediation: CheckRemediation::RunTribalTokenCreate,
             },
         ));
     }
@@ -230,7 +230,7 @@ mod tests {
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::TokenAggregateQueryFailed { error },
-                remediation: Some(CheckRemediation::CheckPgIsready),
+                remediation: CheckRemediation::CheckPgIsready,
             } if error == "pool exhausted",
         ));
     }
