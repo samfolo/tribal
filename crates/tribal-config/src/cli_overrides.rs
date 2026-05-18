@@ -5,9 +5,7 @@
 //! not masked.
 //!
 //! The same shape doubles as the on-disk projection that
-//! [`crate::render_persisted_config`] writes during `tribal bootstrap` —
-//! see the [`crate::Persisted`] trait for the conversion that pins
-//! resolved values into each populated slot.
+//! [`crate::render_persisted_config`] writes during `tribal bootstrap`.
 
 use serde::Serialize;
 
