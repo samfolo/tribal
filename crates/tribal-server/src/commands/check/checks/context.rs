@@ -8,4 +8,7 @@ use sqlx::PgPool;
 /// the run exits.
 pub(in crate::commands::check) struct CheckContext {
     pub pool: PgPool,
+    /// Project ID supplied via `--project`; takes precedence over the
+    /// `TRIBAL_PROJECT_ID` env var and git-remote heuristic.
+    pub project_override: Option<String>,
 }

@@ -25,6 +25,11 @@ pub enum CheckResult {
         name: CheckName,
         detail: String,
     },
+    Warn {
+        name: CheckName,
+        detail: String,
+        remediation: Option<String>,
+    },
     Fail {
         name: CheckName,
         detail: String,
@@ -55,6 +60,15 @@ impl From<&CheckOutcome> for CheckResult {
             CheckOutcome::Pass { name, detail } => Self::Pass {
                 name: *name,
                 detail: detail.render(),
+            },
+            CheckOutcome::Warn {
+                name,
+                detail,
+                remediation,
+            } => Self::Warn {
+                name: *name,
+                detail: detail.render(),
+                remediation: remediation.as_ref().map(CheckRemediation::render),
             },
             CheckOutcome::Fail {
                 name,
@@ -168,6 +182,25 @@ mod tests {
         assert_eq!(pass["name"], "config_parse");
         assert_eq!(pass["detail"], "config loaded from /etc/tribal/config.yaml");
         assert!(pass.get("remediation").is_none());
+    }
+
+    #[test]
+    fn test_warn_wire_shape_carries_status_warn_and_keeps_ok_true() {
+        let output = CheckOutput {
+            ok: true,
+            checks: vec![CheckResult::Warn {
+                name: CheckName::ProjectResolution,
+                detail: "no project resolved".into(),
+                remediation: Some("set TRIBAL_PROJECT_ID".into()),
+            }],
+        };
+        let json = serde_json::to_value(&output).expect("serialise");
+        assert_eq!(json["ok"], serde_json::Value::Bool(true));
+        let warn = &json["checks"][0];
+        assert_eq!(warn["status"], "warn");
+        assert_eq!(warn["name"], "project_resolution");
+        assert_eq!(warn["detail"], "no project resolved");
+        assert_eq!(warn["remediation"], "set TRIBAL_PROJECT_ID");
     }
 
     #[test]
