@@ -1,24 +1,17 @@
-//! Entry point and async core for `tribal check`.
+//! Entry point and step-pipeline driver for `tribal check`.
 
 use std::{
     io::{self, Write},
     path::Path,
 };
 
-use tribal_config::{ConfigError, load_config, validate};
+use strum::IntoEnumIterator;
 
 use super::{
-    checks::{
-        CheckContext, CheckOutcome, CheckOutcomes, advertised_url_reachable, binary_uniqueness,
-        database_reachable, migrations_current, project_resolution, valid_token_exists,
-    },
+    checks::{CheckOutcome, CheckOutcomes, CheckState, CheckStep, Preflight, SkipMask},
     output::CheckOutput,
 };
-use crate::{
-    cli::CheckArgs,
-    commands::common::{DATABASE_COMMAND_DEFAULTS, resolve_absolute_config_path},
-    error::AppError,
-};
+use crate::{cli::CheckArgs, commands::common::resolve_absolute_config_path, error::AppError};
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -76,12 +69,15 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
 
 /// Async core for [`run`].
 ///
-/// Renders the diagnostic output.  When `--json` is set, the wire
-/// format is written to stdout.
+/// Iterates [`CheckStep`] in declared order.  Each step's preflight
+/// classifies its applicability against shared [`CheckState`]; the
+/// orchestrator then either runs the action, emits a `Skip` row, or
+/// omits the row entirely.
 ///
 /// # Errors
 ///
-/// Returns an [`AppError`] if writing the output fails.
+/// Returns an [`AppError`] if building the shared HTTP client or
+/// writing JSON output fails.
 ///
 /// # Panics
 ///
@@ -89,59 +85,54 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
 /// derive `Serialize` from primitive types, so this is unreachable in
 /// practice.
 pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
-    let config_path_str = opts
-        .config_path
-        .to_str()
-        .expect("CheckOptions::config_path is resolved from a &str input path");
-
-    let parse_result = load_config(config_path_str, None, Some(&DATABASE_COMMAND_DEFAULTS));
+    let mut state = build_state(&opts)?;
     let mut outcomes = CheckOutcomes::new();
 
-    outcomes.push(if let Err(error) = &parse_result {
-        CheckOutcome::config_parse_failed(error, opts.config_path)
-    } else {
-        CheckOutcome::config_parse_loaded(opts.config_path.to_path_buf())
-    });
-
-    if let Ok(config) = parse_result {
-        outcomes.push(match validate(&config) {
-            Ok(()) => CheckOutcome::config_validate_satisfied(),
-            Err(ConfigError::ValidationFailed { errors }) => {
-                CheckOutcome::config_validate_failed(errors)
+    for step in CheckStep::iter() {
+        match step.preflight(&state) {
+            Preflight::Run => outcomes.push(step.act(&mut state).await),
+            Preflight::Skip(reason) => {
+                outcomes.push(CheckOutcome::dependency_skipped(step.name(), reason));
             }
-            Err(other) => CheckOutcome::config_validate_failed(vec![other.to_string()]),
-        });
-
-        let (db_outcome, pool) = database_reachable(&config.database).await;
-        outcomes.push(db_outcome);
-        if let Some(pool) = pool {
-            let http_client =
-                reqwest::Client::builder()
-                    .build()
-                    .map_err(|source| AppError::HttpClient {
-                        context: "tribal check probe client".into(),
-                        source,
-                    })?;
-            let ctx = CheckContext {
-                pool,
-                config,
-                http_client,
-                project_override: opts.project.map(str::to_owned),
-                token_override: opts.token.map(str::to_owned),
-            };
-            outcomes.push(migrations_current(&ctx).await);
-            outcomes.push(project_resolution(&ctx).await);
-            outcomes.push(valid_token_exists(&ctx).await);
-            outcomes.push(advertised_url_reachable(&ctx).await);
+            Preflight::Omit => {}
         }
-
-        let path_var = std::env::var("PATH").unwrap_or_default();
-        outcomes.push(binary_uniqueness(&path_var));
     }
 
-    let output = CheckOutput::from(&outcomes);
+    emit(opts.json, &outcomes)
+}
 
-    if opts.json {
+// ---------------------------------------------------------------------------
+// State construction
+// ---------------------------------------------------------------------------
+
+fn build_state(opts: &CheckOptions<'_>) -> Result<CheckState, AppError> {
+    let http_client =
+        reqwest::Client::builder()
+            .build()
+            .map_err(|source| AppError::HttpClient {
+                context: "tribal check probe client".into(),
+                source,
+            })?;
+    Ok(CheckState {
+        config_path: opts.config_path.to_path_buf(),
+        providers: opts.providers,
+        project_override: opts.project.map(str::to_owned),
+        token_override: opts.token.map(str::to_owned),
+        path_var: std::env::var("PATH").unwrap_or_default(),
+        http_client,
+        config: None,
+        skip_mask: SkipMask::default(),
+        pool: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+fn emit(json: bool, outcomes: &CheckOutcomes) -> Result<(), AppError> {
+    let output = CheckOutput::from(outcomes);
+    if json {
         let rendered =
             serde_json::to_string_pretty(&output).expect("CheckOutput is always serialisable");
         let mut stdout = io::stdout().lock();
@@ -154,8 +145,5 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
             source,
         })?;
     }
-
-    let _ = opts.providers;
-
     Ok(())
 }

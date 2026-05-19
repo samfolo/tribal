@@ -1,10 +1,14 @@
-//! Outcome constructors for the `config_parse` check.
+//! Outcome constructors and action for the `config_parse` check.
 
 use std::path::{Path, PathBuf};
 
-use tribal_config::ConfigError;
+use tribal_config::{ConfigError, load_config};
 
-use super::types::{CheckDetail, CheckOutcome, CheckRemediation};
+use super::{
+    state::CheckState,
+    types::{CheckDetail, CheckOutcome, CheckRemediation},
+};
+use crate::commands::common::DATABASE_COMMAND_DEFAULTS;
 
 impl CheckOutcome {
     /// Constructs the outcome for a successful config load from `path`.
@@ -28,6 +32,26 @@ impl CheckOutcome {
                 path: path.to_path_buf(),
             },
         }
+    }
+}
+
+/// Loads the config file referenced by `state` and, on success, stores
+/// the parsed config back on state so downstream steps can consume it.
+// `load_config` is sync, but the step dispatcher requires every action
+// to share the `async fn act` signature.
+#[allow(clippy::unused_async)]
+pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
+    let path_str = state
+        .config_path
+        .to_str()
+        .expect("CheckOptions::config_path is resolved from a &str input path");
+    match load_config(path_str, None, Some(&DATABASE_COMMAND_DEFAULTS)) {
+        Ok(config) => {
+            let path = state.config_path.clone();
+            state.config = Some(config);
+            CheckOutcome::config_parse_loaded(path)
+        }
+        Err(error) => CheckOutcome::config_parse_failed(&error, &state.config_path),
     }
 }
 

@@ -9,12 +9,13 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use sqlx::PgPool;
 use tribal_config::{Auth, ENV_AUTH_TOKEN, TransportKind, read_credentials};
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{AuthError, Authenticator};
 
 use super::{
-    context::CheckContext,
+    state::CheckState,
     types::{CheckDetail, CheckOutcome, CheckRemediation, TokenFailureReason, TokenTransport},
 };
 
@@ -63,46 +64,53 @@ impl CheckOutcome {
     }
 }
 
-/// Runs the transport-aware token check.
-pub(in crate::commands::check) async fn run(ctx: &CheckContext) -> CheckOutcome {
-    match ctx.config.server.transport {
-        TransportKind::Stdio => stdio_path(ctx).await,
-        TransportKind::Http | TransportKind::Sse => network_path(ctx).await,
+/// Runs the transport-aware token check against the parsed config and
+/// pool on `state`.
+pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
+    let config = state
+        .config
+        .as_ref()
+        .expect("preflight ensures state.config is populated");
+    let pool = state
+        .pool
+        .as_ref()
+        .expect("preflight ensures state.pool is populated");
+    match config.server.transport {
+        TransportKind::Stdio => stdio_path(pool, state.token_override.as_deref()).await,
+        TransportKind::Http | TransportKind::Sse => {
+            network_path(pool, state.token_override.as_deref()).await
+        }
     }
 }
 
-async fn stdio_path(ctx: &CheckContext) -> CheckOutcome {
-    let Some(token) = ctx.token_override.as_deref() else {
+async fn stdio_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutcome {
+    let Some(token) = token_override else {
         return CheckOutcome::token_skipped_stdio();
     };
-    verify_against(ctx, token, TokenTransport::Stdio).await
+    verify_against(pool, token, TokenTransport::Stdio).await
 }
 
-async fn network_path(ctx: &CheckContext) -> CheckOutcome {
-    if let Some(token) = ctx.token_override.as_deref() {
-        return verify_against(ctx, token, TokenTransport::Http).await;
+async fn network_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutcome {
+    if let Some(token) = token_override {
+        return verify_against(pool, token, TokenTransport::Http).await;
     }
     if let Ok(token) = std::env::var(ENV_AUTH_TOKEN)
         && !token.is_empty()
     {
-        return verify_against(ctx, &token, TokenTransport::Http).await;
+        return verify_against(pool, &token, TokenTransport::Http).await;
     }
     if let Ok(loaded) = read_credentials() {
         match loaded.credentials.auth {
             Auth::Bearer { token } => {
-                return verify_against(ctx, token.as_str(), TokenTransport::Http).await;
+                return verify_against(pool, token.as_str(), TokenTransport::Http).await;
             }
         }
     }
-    check_aggregate(ctx).await
+    check_aggregate(pool).await
 }
 
-async fn verify_against(
-    ctx: &CheckContext,
-    token: &str,
-    transport: TokenTransport,
-) -> CheckOutcome {
-    let mut conn = match ctx.pool.acquire().await {
+async fn verify_against(pool: &PgPool, token: &str, transport: TokenTransport) -> CheckOutcome {
+    let mut conn = match pool.acquire().await {
         Ok(c) => c,
         Err(err) => {
             return CheckOutcome::token_verification_failed(
@@ -123,8 +131,8 @@ async fn verify_against(
     CheckOutcome::token_verification_failed(transport, err.into())
 }
 
-async fn check_aggregate(ctx: &CheckContext) -> CheckOutcome {
-    let mut conn = match ctx.pool.acquire().await {
+async fn check_aggregate(pool: &PgPool) -> CheckOutcome {
+    let mut conn = match pool.acquire().await {
         Ok(c) => c,
         Err(err) => return CheckOutcome::token_aggregate_query_failed(err.to_string()),
     };

@@ -5,11 +5,15 @@
 //! action.  Errors without a known hint render with no remediation.
 
 use tribal_config::{
-    EMBEDDING_API_KEY_REQUIRED_PREFIX, EXTRACTION_API_KEY_REQUIRED_PREFIX,
-    RELATION_API_KEY_REQUIRED_PREFIX, TRIAGE_API_KEY_REQUIRED_PREFIX, env_var_for_path,
+    ConfigError, EMBEDDING_API_KEY_REQUIRED_PREFIX, EXTRACTION_API_KEY_REQUIRED_PREFIX,
+    RELATION_API_KEY_REQUIRED_PREFIX, TRIAGE_API_KEY_REQUIRED_PREFIX, env_var_for_path, validate,
 };
 
-use super::types::{CheckDetail, CheckOutcome, CheckRemediation};
+use super::{
+    skip_rules::SkipMask,
+    state::CheckState,
+    types::{CheckDetail, CheckOutcome, CheckRemediation},
+};
 
 /// Configuration paths whose API-key prefix triggers a targeted hint.
 ///
@@ -59,6 +63,26 @@ fn hint_for_error(error: &str) -> Option<String> {
         .iter()
         .find(|(prefix, _)| error.starts_with(prefix))
         .map(|(_, path)| format!("set `{path}` or export `{}`", env_var_for_path(path)))
+}
+
+/// Validates the parsed config currently on `state` and, on failure,
+/// classifies the errors into a [`SkipMask`] stored back on state.
+// `validate` is sync, but the step dispatcher requires every action
+// to share the `async fn act` signature.
+#[allow(clippy::unused_async)]
+pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
+    let config = state
+        .config
+        .as_ref()
+        .expect("preflight ensures state.config is populated");
+    match validate(config) {
+        Ok(()) => CheckOutcome::config_validate_satisfied(),
+        Err(ConfigError::ValidationFailed { errors }) => {
+            state.skip_mask = SkipMask::from_validation_errors(&errors);
+            CheckOutcome::config_validate_failed(errors)
+        }
+        Err(other) => CheckOutcome::config_validate_failed(vec![other.to_string()]),
+    }
 }
 
 #[cfg(test)]

@@ -153,6 +153,53 @@ pub(in crate::commands::check) enum CheckDetail {
     /// No `tribal` binary resolved on PATH — the binary running this
     /// check is not discoverable through PATH lookup.
     BinaryAbsent,
+    /// A check did not run because a prior phase or invariant precludes
+    /// it.  `name` is the skipped check; `reason` carries the cause.
+    DependencySkipped { name: CheckName, reason: SkipReason },
+}
+
+// ---------------------------------------------------------------------------
+// ProviderProbeTarget / SkipReason
+// ---------------------------------------------------------------------------
+
+/// Which provider-backed configuration block a probe is targeting.
+///
+/// The three inference variants are pipeline stages; embedding is not a
+/// stage (it runs both at query time and within triage) but shares the
+/// config-shape (`provider` + `api_key`) and so groups with them here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::commands::check) enum ProviderProbeTarget {
+    Embedding,
+    Extraction,
+    Triage,
+    Relation,
+}
+
+impl ProviderProbeTarget {
+    pub(in crate::commands::check) fn config_path(self) -> &'static str {
+        match self {
+            Self::Embedding => "embedding",
+            Self::Extraction => "inference.extraction",
+            Self::Triage => "inference.triage",
+            Self::Relation => "inference.relation",
+        }
+    }
+}
+
+/// Why a downstream check did not run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::commands::check) enum SkipReason {
+    /// The config file could not be loaded; nothing downstream can run.
+    ConfigParseFailed,
+    /// A `server.bind_address` validation error blocks advertised-URL
+    /// resolution, so the probe is skipped.
+    ConfigValidateFailedTransportBind,
+    /// The named target has a missing `api_key` validation error, so
+    /// its provider probe is skipped.
+    ConfigValidateFailedApiKey { target: ProviderProbeTarget },
+    /// The database was not reachable, so checks that require a
+    /// connection are skipped.
+    DatabaseUnreachable,
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +266,7 @@ impl CheckDetail {
             Self::BinaryUnique { .. } | Self::BinaryDuplicate { .. } | Self::BinaryAbsent => {
                 CheckName::BinaryUniqueness
             }
+            Self::DependencySkipped { name, .. } => *name,
         }
     }
 
@@ -309,6 +357,21 @@ impl CheckDetail {
                  path bypasses PATH lookup)"
                     .into()
             }
+            Self::DependencySkipped { name: _, reason } => match reason {
+                SkipReason::ConfigParseFailed => {
+                    "skipped because the configuration file could not be loaded".into()
+                }
+                SkipReason::ConfigValidateFailedTransportBind => {
+                    "skipped because `server.bind_address` validation failed".into()
+                }
+                SkipReason::ConfigValidateFailedApiKey { target } => format!(
+                    "skipped because `{}.api_key` validation failed",
+                    target.config_path()
+                ),
+                SkipReason::DatabaseUnreachable => {
+                    "skipped because the database is unreachable".into()
+                }
+            },
         }
     }
 }

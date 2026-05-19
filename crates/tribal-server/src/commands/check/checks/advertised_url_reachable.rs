@@ -1,4 +1,4 @@
-//! Outcome constructors and probe for the `advertised_url_reachable`
+//! Outcome constructors and action for the `advertised_url_reachable`
 //! check.
 
 use std::time::Duration;
@@ -6,7 +6,7 @@ use std::time::Duration;
 use tribal_config::TransportKind;
 
 use super::{
-    context::CheckContext,
+    state::CheckState,
     types::{CheckDetail, CheckOutcome, CheckRemediation},
 };
 use crate::output::resolved_advertised_url;
@@ -45,13 +45,17 @@ impl CheckOutcome {
 /// Probes the advertised URL with a HEAD request.  Any HTTP response
 /// (including 4xx and 5xx) is treated as `Pass` — the server is up.
 /// Connection refused, DNS failures, and timeouts produce `Fail`.
-pub(in crate::commands::check) async fn run(ctx: &CheckContext) -> CheckOutcome {
-    if matches!(ctx.config.server.transport, TransportKind::Stdio) {
+pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
+    let config = state
+        .config
+        .as_ref()
+        .expect("preflight ensures state.config is populated");
+    if matches!(config.server.transport, TransportKind::Stdio) {
         return CheckOutcome::advertised_url_skipped_stdio();
     }
 
-    let url = resolved_advertised_url(&ctx.config);
-    match ctx
+    let url = resolved_advertised_url(config);
+    match state
         .http_client
         .head(&url)
         .timeout(PROBE_TIMEOUT)

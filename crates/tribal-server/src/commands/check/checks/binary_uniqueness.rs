@@ -1,4 +1,4 @@
-//! Outcome constructors and probe for the `binary_uniqueness` check.
+//! Outcome constructors and action for the `binary_uniqueness` check.
 //!
 //! Walks the PATH variable looking for `tribal` (or `tribal.exe` on
 //! Windows) binaries.  Multiple resolutions indicate a shadowing risk;
@@ -6,7 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::types::{CheckDetail, CheckOutcome, CheckRemediation};
+use super::{
+    state::CheckState,
+    types::{CheckDetail, CheckOutcome, CheckRemediation},
+};
 
 /// Binary filename to search for on each PATH entry.
 #[cfg(windows)]
@@ -54,9 +57,12 @@ where
     found
 }
 
-/// Reads the live PATH variable and reports the outcome.
-pub(in crate::commands::check) fn run(path_var: &str) -> CheckOutcome {
-    let binaries = find_tribal_binaries(path_var, Path::is_file);
+/// Reads `state.path_var` and reports the outcome.
+// PATH lookup is sync, but the step dispatcher requires every action
+// to share the `async fn act` signature.
+#[allow(clippy::unused_async)]
+pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
+    let binaries = find_tribal_binaries(&state.path_var, Path::is_file);
     match binaries.len() {
         0 => CheckOutcome::binary_absent(),
         1 => CheckOutcome::binary_unique(
