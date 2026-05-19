@@ -73,28 +73,37 @@ impl CheckOutcome {
 
 /// Runs the transport-aware token check against the parsed config and
 /// pool on `state`.
+///
+/// Stdio without `--token` resolves without touching the pool — mirrors
+/// `require_token_resolution`'s preflight, which is why that branch
+/// returns `Run` even when the pool is absent.  Every other path
+/// guarantees `state.pool` is populated by the time it runs.
 pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
     let config = state
         .config
         .as_ref()
         .expect("preflight ensures state.config is populated");
-    let pool = state
-        .pool
-        .as_ref()
-        .expect("preflight ensures state.pool is populated");
+    let token_override = state.token_override.as_deref();
+
     match config.server.transport {
-        TransportKind::Stdio => stdio_path(pool, state.token_override.as_deref()).await,
+        TransportKind::Stdio => match token_override {
+            None => CheckOutcome::token_skipped_stdio(),
+            Some(token) => {
+                let pool = state
+                    .pool
+                    .as_ref()
+                    .expect("preflight ensures state.pool is populated under stdio + --token");
+                verify_against(pool, token, TokenTransport::Stdio).await
+            }
+        },
         TransportKind::Http | TransportKind::Sse => {
-            network_path(pool, state.token_override.as_deref()).await
+            let pool = state
+                .pool
+                .as_ref()
+                .expect("preflight ensures state.pool is populated under network transport");
+            network_path(pool, token_override).await
         }
     }
-}
-
-async fn stdio_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutcome {
-    let Some(token) = token_override else {
-        return CheckOutcome::token_skipped_stdio();
-    };
-    verify_against(pool, token, TokenTransport::Stdio).await
 }
 
 async fn network_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutcome {
