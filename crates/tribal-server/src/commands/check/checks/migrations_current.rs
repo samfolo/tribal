@@ -38,7 +38,7 @@ impl CheckOutcome {
     pub(in crate::commands::check) fn migrations_query_failed(error: String) -> Self {
         Self::Fail {
             detail: CheckDetail::MigrationsQueryFailed { error },
-            remediation: CheckRemediation::CheckPgIsready,
+            remediation: CheckRemediation::ConsultUnderlyingError,
         }
     }
 }
@@ -131,14 +131,14 @@ mod tests {
     }
 
     #[test]
-    fn test_migrations_query_failed_carries_error_and_pg_isready_remediation() {
-        let outcome = CheckOutcome::migrations_query_failed("connection lost".into());
+    fn test_migrations_query_failed_routes_to_consult_underlying_error() {
+        let outcome = CheckOutcome::migrations_query_failed("permission denied".into());
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::MigrationsQueryFailed { error },
-                remediation: CheckRemediation::CheckPgIsready,
-            } if error == "connection lost",
+                remediation: CheckRemediation::ConsultUnderlyingError,
+            } if error == "permission denied",
         ));
     }
 }

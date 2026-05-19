@@ -476,6 +476,9 @@ pub(in crate::commands::check) enum CheckRemediation {
     RunTribalTokenCreate,
     /// Re-run `tribal bootstrap` to regenerate `credentials.json`.
     RerunBootstrap,
+    /// A query failed after connectivity was confirmed; distinct from
+    /// [`Self::CheckPgIsready`] which would mislead the operator here.
+    ConsultUnderlyingError,
     /// Start `tribal serve` so it binds the advertised URL.
     StartServeOnAdvertisedUrl,
     /// Remove the duplicate `tribal` binaries from PATH or reorder so
@@ -527,6 +530,9 @@ impl CheckRemediation {
             }
             Self::RerunBootstrap => {
                 "re-run `tribal bootstrap` to regenerate `credentials.json`".into()
+            }
+            Self::ConsultUnderlyingError => {
+                "inspect the underlying error above; the database itself is reachable".into()
             }
             Self::StartServeOnAdvertisedUrl => {
                 "start `tribal serve` so it binds the advertised URL".into()

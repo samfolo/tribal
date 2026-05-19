@@ -66,7 +66,7 @@ impl CheckOutcome {
     pub(in crate::commands::check) fn token_aggregate_query_failed(error: String) -> Self {
         Self::Fail {
             detail: CheckDetail::TokenAggregateQueryFailed { error },
-            remediation: CheckRemediation::CheckPgIsready,
+            remediation: CheckRemediation::ConsultUnderlyingError,
         }
     }
 
@@ -314,14 +314,14 @@ mod tests {
     }
 
     #[test]
-    fn test_token_aggregate_query_failed_is_fail_with_pg_isready() {
-        let outcome = CheckOutcome::token_aggregate_query_failed("pool exhausted".into());
+    fn test_token_aggregate_query_failed_routes_to_consult_underlying_error() {
+        let outcome = CheckOutcome::token_aggregate_query_failed("permission denied".into());
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::TokenAggregateQueryFailed { error },
-                remediation: CheckRemediation::CheckPgIsready,
-            } if error == "pool exhausted",
+                remediation: CheckRemediation::ConsultUnderlyingError,
+            } if error == "permission denied",
         ));
     }
 
