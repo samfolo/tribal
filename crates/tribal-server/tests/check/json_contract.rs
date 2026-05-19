@@ -14,7 +14,7 @@ async fn test_root_envelope_has_ok_and_checks_fields() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -46,7 +46,7 @@ async fn test_every_row_has_status_name_detail() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -73,7 +73,7 @@ async fn test_status_strings_are_lowercase_pass_warn_fail_skip() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -102,7 +102,7 @@ async fn test_pass_and_skip_rows_omit_remediation() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -138,7 +138,7 @@ async fn test_ok_is_true_when_no_row_is_fail() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -169,7 +169,7 @@ async fn test_ok_is_false_when_any_row_is_fail() {
     let config = TribalConfig::minimum_valid("postgres://no-such-host.invalid:5432/db");
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -192,7 +192,7 @@ async fn test_human_output_goes_to_stderr_and_stdout_is_empty() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, stderr) = run_check(CheckRun {
+    let (stdout, stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: false,
         providers: false,

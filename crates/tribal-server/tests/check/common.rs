@@ -7,7 +7,7 @@ use std::{
 
 use sqlx::PgPool;
 use tempfile::TempDir;
-use tribal::{AppError, CheckOptions, check_async};
+use tribal::{AppError, CheckOptions, CheckOutput, check_async};
 use tribal_config::TribalConfig;
 use tribal_test_utils::{TestContext, truncate_all_tables};
 use tribal_ui::Theme;
@@ -137,12 +137,16 @@ pub(crate) struct CheckRun<'a> {
 }
 
 /// Drives `check_async` with captured stdout and stderr.  Returns the
-/// captured streams so callers can assert on either form independently.
-pub(crate) async fn run_check(run: CheckRun<'_>) -> Result<(Vec<u8>, Vec<u8>), AppError> {
+/// captured streams plus the assembled [`CheckOutput`] so callers can
+/// assert on either form independently (and on `output.ok` without
+/// re-parsing the JSON payload).
+pub(crate) async fn run_check(
+    run: CheckRun<'_>,
+) -> Result<(Vec<u8>, Vec<u8>, CheckOutput), AppError> {
     let theme = Theme::default_dark();
     let mut stdout = Vec::<u8>::new();
     let mut stderr = Vec::<u8>::new();
-    check_async(
+    let output = check_async(
         CheckOptions {
             config_path: run.config_path,
             json: run.json,
@@ -155,7 +159,7 @@ pub(crate) async fn run_check(run: CheckRun<'_>) -> Result<(Vec<u8>, Vec<u8>), A
         &mut stderr,
     )
     .await?;
-    Ok((stdout, stderr))
+    Ok((stdout, stderr, output))
 }
 
 // ---------------------------------------------------------------------------
