@@ -10,7 +10,7 @@ use strum::EnumIter;
 
 use super::{
     advertised_url_reachable, binary_uniqueness, config_parse, config_validate, database_reachable,
-    migrations_current, project_resolution,
+    migrations_current, project_resolution, provider_probes,
     state::CheckState,
     types::{CheckName, CheckOutcome, ProviderProbeTarget, SkipReason},
     valid_token_exists,
@@ -91,10 +91,16 @@ impl CheckStep {
             Self::ValidTokenExists => valid_token_exists::act(state).await,
             Self::AdvertisedUrlReachable => advertised_url_reachable::act(state).await,
             Self::BinaryUniqueness => binary_uniqueness::act(state).await,
-            Self::ProviderEmbedding
-            | Self::ProviderExtraction
-            | Self::ProviderTriage
-            | Self::ProviderRelation => provider_act_placeholder(self),
+            Self::ProviderEmbedding => {
+                provider_probes::act(state, ProviderProbeTarget::Embedding).await
+            }
+            Self::ProviderExtraction => {
+                provider_probes::act(state, ProviderProbeTarget::Extraction).await
+            }
+            Self::ProviderTriage => provider_probes::act(state, ProviderProbeTarget::Triage).await,
+            Self::ProviderRelation => {
+                provider_probes::act(state, ProviderProbeTarget::Relation).await
+            }
         }
     }
 }
@@ -138,12 +144,4 @@ fn require_provider(state: &CheckState, target: ProviderProbeTarget) -> Prefligh
         return Preflight::Skip(SkipReason::ConfigValidateFailedApiKey { target });
     }
     Preflight::Run
-}
-
-/// Step 8 fills in the actual provider probes.  Until then, a
-/// non-skipped provider step that reaches `act` is a wiring bug —
-/// preflight is the only Run path, and Run currently has no production
-/// caller until Step 8 lands.
-fn provider_act_placeholder(step: CheckStep) -> CheckOutcome {
-    panic!("provider probe {step:?} reached act before Step 8 wired it");
 }

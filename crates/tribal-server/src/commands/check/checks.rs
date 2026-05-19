@@ -12,6 +12,7 @@ mod config_validate;
 mod database_reachable;
 mod migrations_current;
 mod project_resolution;
+mod provider_probes;
 mod skip_rules;
 mod state;
 mod step;
