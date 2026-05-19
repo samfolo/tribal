@@ -266,7 +266,7 @@ mod tests {
                          inference.triage.api_key is required when inference.triage.provider is \
                          openai"
                     .into(),
-                remediation: "server.bind_address cannot be set when server.transport is stdio\n\
+                remediation: "remove `server.bind_address` for stdio transport\n\
                               set `embedding.api_key` or export `TRIBAL_EMBEDDING__API_KEY`\n\
                               set `inference.triage.api_key` or export \
                               `TRIBAL_INFERENCE__TRIAGE__API_KEY`"

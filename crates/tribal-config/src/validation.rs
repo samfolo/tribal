@@ -57,6 +57,19 @@ pub const RELATION_API_KEY_REQUIRED_PREFIX: &str =
 /// resolved.
 pub const SERVER_BIND_ADDRESS_ERROR_PREFIX: &str = "server.bind_address";
 
+/// Prefix of the validation error raised when `server.bind_address` is
+/// set under `transport: stdio`.  Consumers wanting to distinguish the
+/// stdio-conflict case from the malformed-address case (e.g. for a
+/// targeted remediation hint) match against this longer prefix.
+pub const SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX: &str =
+    "server.bind_address cannot be set when server.transport is stdio";
+
+/// Prefix of the validation error raised when `server.bind_address`
+/// does not parse as `<host>:<port>`.  See
+/// [`SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX`] for the contract.
+pub const SERVER_BIND_ADDRESS_MALFORMED_PREFIX: &str =
+    "server.bind_address is not a valid socket address";
+
 /// Additional connections the worker pool requires beyond the concurrent task
 /// count (heartbeat, reclaim, poll, and one spare).
 const POOL_CONNECTION_OVERHEAD: usize = 4;
@@ -115,17 +128,13 @@ fn validate_database(config: &TribalConfig, errors: &mut Vec<String>) {
 
 fn validate_server(config: &TribalConfig, errors: &mut Vec<String>) {
     if config.server.transport == TransportKind::Stdio && config.server.bind_address.is_some() {
-        errors.push(format!(
-            "{SERVER_BIND_ADDRESS_ERROR_PREFIX} cannot be set when server.transport is stdio"
-        ));
+        errors.push(SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX.into());
     }
 
     if let Some(ref addr) = config.server.bind_address
         && addr.parse::<SocketAddr>().is_err()
     {
-        errors.push(format!(
-            "{SERVER_BIND_ADDRESS_ERROR_PREFIX} is not a valid socket address: {addr}"
-        ));
+        errors.push(format!("{SERVER_BIND_ADDRESS_MALFORMED_PREFIX}: {addr}"));
     }
 
     if config.server.shutdown_deadline_ms == 0 {
@@ -483,11 +492,6 @@ mod tests {
         }
     }
 
-    /// Verifies both `server.bind_address` error strings begin with
-    /// [`SERVER_BIND_ADDRESS_ERROR_PREFIX`].  The prefix is the
-    /// source-of-truth that orchestrator skip rules match against; this
-    /// test would fail if a future edit drifted either producer away
-    /// from the constant.
     #[test]
     fn test_server_bind_address_errors_share_prefix() {
         let mut stdio_conflict = valid_config();
@@ -499,9 +503,12 @@ mod tests {
                 &stdio_err,
                 ConfigError::ValidationFailed { errors }
                     if errors.iter().any(|e| e.starts_with(SERVER_BIND_ADDRESS_ERROR_PREFIX))
+                        && errors
+                            .iter()
+                            .any(|e| e.starts_with(SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX))
             ),
-            "stdio + bind_address: expected ValidationFailed with prefix-matching \
-             error, got {stdio_err:?}"
+            "stdio + bind_address: expected ValidationFailed with both umbrella \
+             and stdio-conflict prefixes, got {stdio_err:?}"
         );
 
         let mut malformed = valid_config();
@@ -513,9 +520,12 @@ mod tests {
                 &malformed_err,
                 ConfigError::ValidationFailed { errors }
                     if errors.iter().any(|e| e.starts_with(SERVER_BIND_ADDRESS_ERROR_PREFIX))
+                        && errors
+                            .iter()
+                            .any(|e| e.starts_with(SERVER_BIND_ADDRESS_MALFORMED_PREFIX))
             ),
-            "malformed bind_address: expected ValidationFailed with \
-             prefix-matching error, got {malformed_err:?}"
+            "malformed bind_address: expected ValidationFailed with both umbrella \
+             and malformed prefixes, got {malformed_err:?}"
         );
     }
 
