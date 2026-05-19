@@ -57,12 +57,32 @@ where
     found
 }
 
+/// On Unix, a non-executable regular file named `tribal` on PATH would
+/// never be invoked by a shell — counting it as a duplicate (or as a
+/// resolution at all) misleads the operator.  Require at least one
+/// execute bit so the count matches what `command -v` would observe.
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = path.metadata() else {
+        return false;
+    };
+    meta.is_file() && meta.permissions().mode() & 0o111 != 0
+}
+
+/// On Windows the filename match against `tribal.exe` already implies
+/// executability — `is_file` is sufficient.
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
 /// Reads `state.path_var` and reports the outcome.
 // PATH lookup is sync, but the step dispatcher requires every action
 // to share the `async fn act` signature.
 #[allow(clippy::unused_async)]
 pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
-    let binaries = find_tribal_binaries(&state.path_var, Path::is_file);
+    let binaries = find_tribal_binaries(&state.path_var, is_executable_file);
     match binaries.len() {
         0 => CheckOutcome::binary_absent(),
         1 => CheckOutcome::binary_unique(
@@ -147,5 +167,38 @@ mod tests {
                 remediation: CheckRemediation::EnsureTribalOnPath,
             },
         ));
+    }
+
+    #[cfg(unix)]
+    mod unix_tests {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        use tempfile::tempdir;
+
+        use super::*;
+
+        #[test]
+        fn test_is_executable_file_rejects_non_executable_regular_file() {
+            let dir = tempdir().expect("tempdir");
+            let path = dir.path().join(BINARY_FILENAME);
+            fs::write(&path, b"#!/bin/sh\n").expect("write");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("chmod 0644");
+            assert!(!is_executable_file(&path));
+        }
+
+        #[test]
+        fn test_is_executable_file_accepts_owner_executable_regular_file() {
+            let dir = tempdir().expect("tempdir");
+            let path = dir.path().join(BINARY_FILENAME);
+            fs::write(&path, b"#!/bin/sh\n").expect("write");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod 0755");
+            assert!(is_executable_file(&path));
+        }
+
+        #[test]
+        fn test_is_executable_file_rejects_missing_path() {
+            let dir = tempdir().expect("tempdir");
+            assert!(!is_executable_file(&dir.path().join("nonexistent")));
+        }
     }
 }
