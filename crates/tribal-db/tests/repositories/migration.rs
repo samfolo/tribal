@@ -86,6 +86,30 @@ async fn test_current_head_matches_returns_ahead_when_db_newer_than_expected() {
 }
 
 #[tokio::test]
+async fn test_current_head_matches_returns_behind_with_found_zero_when_table_empty() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    PgMigrationRepository
+        .truncate_migrations_table_for_test(&mut txn)
+        .await
+        .expect("truncate _sqlx_migrations");
+
+    let status = PgMigrationRepository
+        .current_head_matches(&mut txn, binary_head())
+        .await
+        .expect("current_head_matches");
+
+    assert_eq!(
+        status,
+        MigrationHeadStatus::Behind {
+            expected: binary_head(),
+            found: 0,
+        },
+    );
+}
+
+#[tokio::test]
 async fn test_current_head_matches_returns_missing_table_when_table_absent() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");

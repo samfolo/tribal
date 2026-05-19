@@ -19,7 +19,11 @@ pub enum MigrationHeadStatus {
     /// The recorded head matches the expected head — no action needed.
     Matches,
     /// The database is older than the binary expects.  The binary
-    /// includes migrations the database has not yet applied.
+    /// includes migrations the database has not yet applied.  An empty
+    /// `_sqlx_migrations` table folds here with `found: 0` — the
+    /// remediation (`tribal setup`) is the same as for any other
+    /// Behind, and a separate "empty" arm would add no actionable
+    /// information.
     Behind { expected: i64, found: i64 },
     /// The database is newer than the binary expects.  Another binary
     /// version has applied migrations this binary does not know about.
@@ -213,6 +217,28 @@ impl PgMigrationRepository {
             .await
             .map_err(|source| DbError::QueryFailed {
                 context: "drop _sqlx_migrations table".into(),
+                source,
+            })?;
+
+        Ok(())
+    }
+
+    /// Deletes every row from `_sqlx_migrations` while leaving the
+    /// table in place.  Intended for tests that pin the empty-table
+    /// fold into [`MigrationHeadStatus::Behind`] `{ found: 0 }`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn truncate_migrations_table_for_test(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM _sqlx_migrations")
+            .execute(&mut *conn)
+            .await
+            .map_err(|source| DbError::QueryFailed {
+                context: "truncate _sqlx_migrations table".into(),
                 source,
             })?;
 
