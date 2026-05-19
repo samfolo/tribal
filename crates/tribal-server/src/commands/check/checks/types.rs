@@ -162,6 +162,9 @@ pub(in crate::commands::check) enum CheckDetail {
     NoActiveTokens,
     /// The aggregate any-active query failed at the infrastructure layer.
     TokenAggregateQueryFailed { error: String },
+    /// `credentials.json` exists but is unreadable; absent files fall
+    /// through to the aggregate fallback instead.
+    CredentialsUnreadable { error: String },
     /// Stdio transport has no advertised URL — nothing to probe.
     AdvertisedUrlSkippedStdio,
     /// Advertised URL responded; `status` is the HTTP response code.
@@ -302,7 +305,8 @@ impl CheckDetail {
             | Self::TokenVerificationFailed { .. }
             | Self::TokenAggregateWarn
             | Self::NoActiveTokens
-            | Self::TokenAggregateQueryFailed { .. } => CheckName::ValidTokenExists,
+            | Self::TokenAggregateQueryFailed { .. }
+            | Self::CredentialsUnreadable { .. } => CheckName::ValidTokenExists,
             Self::AdvertisedUrlSkippedStdio
             | Self::AdvertisedUrlReachable { .. }
             | Self::AdvertisedUrlUnreachable { .. } => CheckName::AdvertisedUrlReachable,
@@ -382,6 +386,9 @@ impl CheckDetail {
             }
             Self::TokenAggregateQueryFailed { error } => {
                 format!("token aggregate check failed: {error}")
+            }
+            Self::CredentialsUnreadable { error } => {
+                format!("credentials.json is present but unreadable: {error}")
             }
             Self::AdvertisedUrlSkippedStdio => "stdio transport: no advertised URL to probe".into(),
             Self::AdvertisedUrlReachable { url, status } => {
@@ -465,6 +472,8 @@ pub(in crate::commands::check) enum CheckRemediation {
     RegisterProjectOrSetEnv,
     /// Mint a new bearer token with `tribal token create`.
     RunTribalTokenCreate,
+    /// Re-run `tribal bootstrap` to regenerate `credentials.json`.
+    RerunBootstrap,
     /// Start `tribal serve` so it binds the advertised URL.
     StartServeOnAdvertisedUrl,
     /// Remove the duplicate `tribal` binaries from PATH or reorder so
@@ -513,6 +522,9 @@ impl CheckRemediation {
             }
             Self::RunTribalTokenCreate => {
                 "mint a new bearer token with `tribal token create`".into()
+            }
+            Self::RerunBootstrap => {
+                "re-run `tribal bootstrap` to regenerate `credentials.json`".into()
             }
             Self::StartServeOnAdvertisedUrl => {
                 "start `tribal serve` so it binds the advertised URL".into()
