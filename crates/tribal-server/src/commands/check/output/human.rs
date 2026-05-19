@@ -4,11 +4,16 @@
 //! [`Paragraph`] for the detail.  Rows that carry a remediation render
 //! a second indented [`Paragraph`] prefixed with `fix: `.  Both
 //! paragraphs wrap at the same width so long error strings stay
-//! readable.
+//! readable.  A summary footer closes the block: `Badge` glyph + label
+//! mirroring the wire `ok` flag, then a tally of non-zero categories
+//! in priority order (failed, warned, passed, skipped).
 
 use std::io::{self, Write};
 
-use tribal_ui::{Component, Paragraph, RenderCtx, Status, StatusLine, Theme};
+use tribal_ui::{
+    Badge, Component, HStack, InlineComponent, Paragraph, RenderCtx, Status, StatusLine, Text,
+    Theme,
+};
 
 use super::{CheckOutput, CheckResult};
 
@@ -55,7 +60,68 @@ impl Component for CheckOutputView<'_> {
             }
             render_row(ctx, result)?;
         }
+        if !self.output.checks.is_empty() {
+            writeln!(ctx)?;
+            writeln!(ctx)?;
+            render_footer(ctx, self.output)?;
+        }
         Ok(())
+    }
+}
+
+fn render_footer(ctx: &mut RenderCtx, output: &CheckOutput) -> io::Result<()> {
+    let counts = StatusCounts::from(&output.checks[..]);
+    let badge_status = if output.ok {
+        Status::Pass
+    } else {
+        Status::Fail
+    };
+    let items: Vec<Box<dyn InlineComponent>> = vec![
+        Box::new(Badge::new(badge_status)),
+        Box::new(Text::new(counts.tally())),
+    ];
+    HStack::new(items).with_separator('—').render(ctx)
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct StatusCounts {
+    passed: usize,
+    warned: usize,
+    failed: usize,
+    skipped: usize,
+}
+
+impl StatusCounts {
+    fn from(rows: &[CheckResult]) -> Self {
+        let mut counts = Self::default();
+        for row in rows {
+            match row {
+                CheckResult::Pass { .. } => counts.passed += 1,
+                CheckResult::Warn { .. } => counts.warned += 1,
+                CheckResult::Fail { .. } => counts.failed += 1,
+                CheckResult::Skip { .. } => counts.skipped += 1,
+            }
+        }
+        counts
+    }
+
+    /// Comma-separated non-zero categories in priority order: failed,
+    /// warned, passed, skipped.
+    fn tally(self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.failed > 0 {
+            parts.push(format!("{} failed", self.failed));
+        }
+        if self.warned > 0 {
+            parts.push(format!("{} warned", self.warned));
+        }
+        if self.passed > 0 {
+            parts.push(format!("{} passed", self.passed));
+        }
+        if self.skipped > 0 {
+            parts.push(format!("{} skipped", self.skipped));
+        }
+        parts.join(", ")
     }
 }
 
