@@ -121,9 +121,9 @@ async fn network_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutco
         return verify_against(pool, token, TokenTransport::Http).await;
     }
     if let Ok(token) = std::env::var(ENV_AUTH_TOKEN)
-        && !token.is_empty()
+        && !token.trim().is_empty()
     {
-        return verify_against(pool, &token, TokenTransport::Http).await;
+        return verify_against(pool, token.trim(), TokenTransport::Http).await;
     }
     match read_credentials() {
         Ok(loaded) => match loaded.credentials.auth {
