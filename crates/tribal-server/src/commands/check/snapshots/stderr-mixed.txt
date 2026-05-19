@@ -2,9 +2,13 @@
     config loaded from /etc/tribal/config.yaml
 ◬ project_resolution            
     no project resolved from CLI flag, environment, or git remote
-    fix: register a project with `tribal project register` or set `TRIBAL_PROJECT_ID`
+    fix: register a project with `tribal project register` or set
+    `TRIBAL_PROJECT_ID`
 × database_reachable            
-    database unreachable: connection refused
-    fix: run `pg_isready` against the configured database URL and verify the host, port, and credentials
+    database unreachable: query failed (connecting to pool 'check'): error
+    communicating with database: failed to lookup address information: nodename
+    nor servname provided, or not known
+    fix: run `pg_isready` against the configured database URL and verify the
+    host, port, and credentials
 ⊝ migrations_current            
     skipped because the database is unreachable
