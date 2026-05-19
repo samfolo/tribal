@@ -22,6 +22,12 @@ const EXIT_CODE_MIGRATION_LOCK: i32 = 75;
 /// Exit code for worker runtime failure or unexpected death (`EX_SOFTWARE`).
 const EXIT_CODE_WORKER_DEATH: i32 = 70;
 
+/// User-facing literal for an uninitialised database.  Shared between
+/// [`AppError::FirstRunRequired`]'s `Display` impl and
+/// `CheckDetail::MigrationsTableMissing` so the two render paths can
+/// never drift.
+pub const FIRST_RUN_REQUIRED: &str = "database is uninitialised; run `tribal setup` first";
+
 // ---------------------------------------------------------------------------
 // AppError
 // ---------------------------------------------------------------------------
@@ -77,7 +83,7 @@ pub enum AppError {
     },
 
     /// Database has no migrations table — `tribal setup` required.
-    #[error("database is uninitialised; run `tribal setup` first")]
+    #[error("{FIRST_RUN_REQUIRED}")]
     FirstRunRequired,
 
     /// `tribal check` produced one or more failing rows; the diagnostic
@@ -436,7 +442,7 @@ mod tests {
     #[test]
     fn test_display_first_run_required() {
         let err = AppError::FirstRunRequired;
-        assert!(err.to_string().contains("tribal setup"));
+        assert_eq!(err.to_string(), FIRST_RUN_REQUIRED);
     }
 
     #[test]
