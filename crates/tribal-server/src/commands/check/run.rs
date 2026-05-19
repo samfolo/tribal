@@ -3,6 +3,7 @@
 use std::{
     io::{self, IsTerminal, Write},
     path::Path,
+    time::Duration,
 };
 
 use anstream::AutoStream;
@@ -147,14 +148,18 @@ pub async fn run_async(
 // State construction
 // ---------------------------------------------------------------------------
 
+/// 10s bounds blackholed providers without choking slow cloud probes;
+/// per-request timeouts (e.g. advertised-url's 2s) override.
+const PROBE_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn build_state(opts: &CheckOptions<'_>) -> Result<CheckState, AppError> {
-    let http_client =
-        reqwest::Client::builder()
-            .build()
-            .map_err(|source| AppError::HttpClient {
-                context: "tribal check probe client".into(),
-                source,
-            })?;
+    let http_client = reqwest::Client::builder()
+        .timeout(PROBE_CLIENT_TIMEOUT)
+        .build()
+        .map_err(|source| AppError::HttpClient {
+            context: "tribal check probe client".into(),
+            source,
+        })?;
     Ok(CheckState {
         config_path: opts.config_path.to_path_buf(),
         providers: opts.providers,
