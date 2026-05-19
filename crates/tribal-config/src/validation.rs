@@ -50,6 +50,13 @@ pub const TRIAGE_API_KEY_REQUIRED_PREFIX: &str =
 pub const RELATION_API_KEY_REQUIRED_PREFIX: &str =
     "inference.relation.api_key is required when inference.relation.provider is";
 
+/// Leading token used by every `server.bind_address` validation error
+/// (the stdio/transport conflict and the malformed-socket-address case).
+/// Cross-module consumers (e.g. orchestrator skip-rule predicates) match
+/// against this prefix to detect that the advertised URL cannot be
+/// resolved.
+pub const SERVER_BIND_ADDRESS_ERROR_PREFIX: &str = "server.bind_address";
+
 /// Additional connections the worker pool requires beyond the concurrent task
 /// count (heartbeat, reclaim, poll, and one spare).
 const POOL_CONNECTION_OVERHEAD: usize = 4;
@@ -108,14 +115,16 @@ fn validate_database(config: &TribalConfig, errors: &mut Vec<String>) {
 
 fn validate_server(config: &TribalConfig, errors: &mut Vec<String>) {
     if config.server.transport == TransportKind::Stdio && config.server.bind_address.is_some() {
-        errors.push("server.bind_address cannot be set when server.transport is stdio".into());
+        errors.push(format!(
+            "{SERVER_BIND_ADDRESS_ERROR_PREFIX} cannot be set when server.transport is stdio"
+        ));
     }
 
     if let Some(ref addr) = config.server.bind_address
         && addr.parse::<SocketAddr>().is_err()
     {
         errors.push(format!(
-            "server.bind_address is not a valid socket address: {addr}"
+            "{SERVER_BIND_ADDRESS_ERROR_PREFIX} is not a valid socket address: {addr}"
         ));
     }
 
@@ -472,6 +481,42 @@ mod tests {
                 "no validation error starts with prefix {prefix:?}; errors: {errors:?}"
             );
         }
+    }
+
+    /// Verifies both `server.bind_address` error strings begin with
+    /// [`SERVER_BIND_ADDRESS_ERROR_PREFIX`].  The prefix is the
+    /// source-of-truth that orchestrator skip rules match against; this
+    /// test would fail if a future edit drifted either producer away
+    /// from the constant.
+    #[test]
+    fn test_server_bind_address_errors_share_prefix() {
+        let mut stdio_conflict = valid_config();
+        stdio_conflict.server.transport = TransportKind::Stdio;
+        stdio_conflict.server.bind_address = Some(DEFAULT_BIND_ADDRESS.into());
+        let stdio_err = validate(&stdio_conflict).unwrap_err();
+        assert!(
+            matches!(
+                &stdio_err,
+                ConfigError::ValidationFailed { errors }
+                    if errors.iter().any(|e| e.starts_with(SERVER_BIND_ADDRESS_ERROR_PREFIX))
+            ),
+            "stdio + bind_address: expected ValidationFailed with prefix-matching \
+             error, got {stdio_err:?}"
+        );
+
+        let mut malformed = valid_config();
+        malformed.server.transport = TransportKind::Http;
+        malformed.server.bind_address = Some("not-an-address".into());
+        let malformed_err = validate(&malformed).unwrap_err();
+        assert!(
+            matches!(
+                &malformed_err,
+                ConfigError::ValidationFailed { errors }
+                    if errors.iter().any(|e| e.starts_with(SERVER_BIND_ADDRESS_ERROR_PREFIX))
+            ),
+            "malformed bind_address: expected ValidationFailed with \
+             prefix-matching error, got {malformed_err:?}"
+        );
     }
 
     #[test]

@@ -53,7 +53,8 @@ pub use sections::{
 };
 pub use validation::{
     EMBEDDING_API_KEY_REQUIRED_PREFIX, ERR_TTL_ZERO, EXTRACTION_API_KEY_REQUIRED_PREFIX,
-    RELATION_API_KEY_REQUIRED_PREFIX, TRIAGE_API_KEY_REQUIRED_PREFIX, validate,
+    RELATION_API_KEY_REQUIRED_PREFIX, SERVER_BIND_ADDRESS_ERROR_PREFIX,
+    TRIAGE_API_KEY_REQUIRED_PREFIX, validate,
 };
 
 // ---------------------------------------------------------------------------
