@@ -7,6 +7,7 @@
 //! downstream steps to consume.
 
 use strum::EnumIter;
+use tribal_config::TransportKind;
 
 use super::{
     advertised_url_reachable, binary_uniqueness, config_parse, config_validate, database_reachable,
@@ -70,9 +71,8 @@ impl CheckStep {
             Self::ConfigValidate | Self::DatabaseReachable | Self::BinaryUniqueness => {
                 require_config(state)
             }
-            Self::MigrationsCurrent | Self::ProjectResolution | Self::ValidTokenExists => {
-                require_pool(state)
-            }
+            Self::MigrationsCurrent | Self::ProjectResolution => require_pool(state),
+            Self::ValidTokenExists => require_token_resolution(state),
             Self::AdvertisedUrlReachable => require_advertised_url(state),
             Self::ProviderEmbedding => require_provider(state, ProviderProbeTarget::Embedding),
             Self::ProviderExtraction => require_provider(state, ProviderProbeTarget::Extraction),
@@ -121,6 +121,21 @@ fn require_pool(state: &CheckState) -> Preflight {
         return Preflight::Skip(SkipReason::DatabaseUnreachable);
     }
     Preflight::Run
+}
+
+/// Token resolution under stdio without `--token` always lands on a
+/// clean `TokenSkippedStdio` outcome, which consults neither the pool
+/// nor the database.  Letting the step run in that case surfaces the
+/// stdio rationale instead of the less informative
+/// `DatabaseUnreachable` skip the pool gate would emit.
+fn require_token_resolution(state: &CheckState) -> Preflight {
+    let Some(config) = state.config.as_ref() else {
+        return Preflight::Skip(SkipReason::ConfigParseFailed);
+    };
+    if config.server.transport == TransportKind::Stdio && state.token_override.is_none() {
+        return Preflight::Run;
+    }
+    require_pool(state)
 }
 
 fn require_advertised_url(state: &CheckState) -> Preflight {
