@@ -128,7 +128,7 @@ async fn verify_against(pool: &PgPool, token: &str, transport: TokenTransport) -
     let Err(err) = authenticator.verify_token(&mut conn, token).await else {
         return CheckOutcome::token_verified(transport);
     };
-    CheckOutcome::token_verification_failed(transport, err.into())
+    outcome_for_auth_error(err, transport)
 }
 
 async fn check_aggregate(pool: &PgPool) -> CheckOutcome {
@@ -146,26 +146,42 @@ async fn check_aggregate(pool: &PgPool) -> CheckOutcome {
     }
 }
 
-/// Variants `verify_token` cannot produce (`LocalPrincipalMissing`,
-/// `InsufficientScope`) collapse into `DatabaseUnavailable` with their
-/// rendered message — defensive arms, unreachable in practice.
-impl From<AuthError> for TokenFailureReason {
-    fn from(err: AuthError) -> Self {
-        match err {
-            AuthError::InvalidToken { .. } => Self::Invalid,
-            AuthError::TokenRevoked { .. } => Self::Revoked,
-            AuthError::TokenExpired { .. } => Self::Expired,
-            AuthError::PrincipalNotFound { .. } => Self::PrincipalMissing,
-            AuthError::DatabaseUnavailable { context, .. } => Self::DatabaseUnavailable { context },
-            other => Self::DatabaseUnavailable {
-                context: format!("unexpected AuthError variant: {other}"),
-            },
+/// Maps an [`AuthError`] from [`Authenticator::verify_token`] to the
+/// matching [`CheckOutcome`] under `transport`.
+///
+/// The match is exhaustive over every `AuthError` variant; adding a
+/// new variant is a compile-time obligation here, never a silent
+/// reclassification.  `InsufficientScope` is the one variant that
+/// resolves to a *successful* outcome — scope checks belong to per-tool
+/// calls, not to the existence check this row enforces.
+/// `LocalPrincipalMissing` folds into `PrincipalMissing` so both
+/// "valid token, principal vanished" cases render the same way.
+fn outcome_for_auth_error(err: AuthError, transport: TokenTransport) -> CheckOutcome {
+    match err {
+        AuthError::InvalidToken { .. } => {
+            CheckOutcome::token_verification_failed(transport, TokenFailureReason::Invalid)
         }
+        AuthError::TokenRevoked { .. } => {
+            CheckOutcome::token_verification_failed(transport, TokenFailureReason::Revoked)
+        }
+        AuthError::TokenExpired { .. } => {
+            CheckOutcome::token_verification_failed(transport, TokenFailureReason::Expired)
+        }
+        AuthError::PrincipalNotFound { .. } | AuthError::LocalPrincipalMissing { .. } => {
+            CheckOutcome::token_verification_failed(transport, TokenFailureReason::PrincipalMissing)
+        }
+        AuthError::DatabaseUnavailable { context, .. } => CheckOutcome::token_verification_failed(
+            transport,
+            TokenFailureReason::DatabaseUnavailable { context },
+        ),
+        AuthError::InsufficientScope { .. } => CheckOutcome::token_verified(transport),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use tribal_domain::{PrincipalId, Scope};
+
     use super::*;
 
     #[test]
@@ -244,45 +260,143 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_error_converts_to_token_failure_reason() {
-        use tribal_domain::PrincipalId;
+    fn test_outcome_for_auth_error_invalid_token_is_fail_invalid() {
+        let outcome = outcome_for_auth_error(
+            AuthError::InvalidToken {
+                token_hash: "h".into(),
+            },
+            TokenTransport::Http,
+        );
+        assert!(matches!(
+            outcome,
+            CheckOutcome::Fail {
+                detail: CheckDetail::TokenVerificationFailed {
+                    reason: TokenFailureReason::Invalid,
+                    ..
+                },
+                ..
+            },
+        ));
+    }
 
-        let invalid: TokenFailureReason = AuthError::InvalidToken {
-            token_hash: "h".into(),
-        }
-        .into();
-        assert!(matches!(invalid, TokenFailureReason::Invalid));
+    #[test]
+    fn test_outcome_for_auth_error_token_revoked_is_fail_revoked() {
+        let outcome = outcome_for_auth_error(
+            AuthError::TokenRevoked {
+                token_hash: "h".into(),
+            },
+            TokenTransport::Http,
+        );
+        assert!(matches!(
+            outcome,
+            CheckOutcome::Fail {
+                detail: CheckDetail::TokenVerificationFailed {
+                    reason: TokenFailureReason::Revoked,
+                    ..
+                },
+                ..
+            },
+        ));
+    }
 
-        let revoked: TokenFailureReason = AuthError::TokenRevoked {
-            token_hash: "h".into(),
-        }
-        .into();
-        assert!(matches!(revoked, TokenFailureReason::Revoked));
+    #[test]
+    fn test_outcome_for_auth_error_token_expired_is_fail_expired() {
+        let outcome = outcome_for_auth_error(
+            AuthError::TokenExpired {
+                token_hash: "h".into(),
+            },
+            TokenTransport::Http,
+        );
+        assert!(matches!(
+            outcome,
+            CheckOutcome::Fail {
+                detail: CheckDetail::TokenVerificationFailed {
+                    reason: TokenFailureReason::Expired,
+                    ..
+                },
+                ..
+            },
+        ));
+    }
 
-        let expired: TokenFailureReason = AuthError::TokenExpired {
-            token_hash: "h".into(),
-        }
-        .into();
-        assert!(matches!(expired, TokenFailureReason::Expired));
-
+    #[test]
+    fn test_outcome_for_auth_error_principal_not_found_is_fail_principal_missing() {
         let pid: PrincipalId = "prin_550e8400-e29b-41d4-a716-446655440000"
             .parse()
             .expect("valid prin");
-        let principal_missing: TokenFailureReason =
-            AuthError::PrincipalNotFound { principal_id: pid }.into();
+        let outcome = outcome_for_auth_error(
+            AuthError::PrincipalNotFound { principal_id: pid },
+            TokenTransport::Http,
+        );
         assert!(matches!(
-            principal_missing,
-            TokenFailureReason::PrincipalMissing,
+            outcome,
+            CheckOutcome::Fail {
+                detail: CheckDetail::TokenVerificationFailed {
+                    reason: TokenFailureReason::PrincipalMissing,
+                    ..
+                },
+                ..
+            },
         ));
+    }
 
-        let db: TokenFailureReason = AuthError::DatabaseUnavailable {
-            context: "boom".into(),
-            source: Box::new(std::io::Error::other("io")),
-        }
-        .into();
+    #[test]
+    fn test_outcome_for_auth_error_local_principal_missing_folds_into_principal_missing() {
+        let outcome = outcome_for_auth_error(
+            AuthError::LocalPrincipalMissing {
+                principal_key: "principal:local".into(),
+            },
+            TokenTransport::Stdio,
+        );
         assert!(matches!(
-            db,
-            TokenFailureReason::DatabaseUnavailable { context } if context == "boom",
+            outcome,
+            CheckOutcome::Fail {
+                detail: CheckDetail::TokenVerificationFailed {
+                    reason: TokenFailureReason::PrincipalMissing,
+                    transport: TokenTransport::Stdio,
+                },
+                ..
+            },
+        ));
+    }
+
+    #[test]
+    fn test_outcome_for_auth_error_database_unavailable_preserves_context() {
+        let outcome = outcome_for_auth_error(
+            AuthError::DatabaseUnavailable {
+                context: "boom".into(),
+                source: Box::new(std::io::Error::other("io")),
+            },
+            TokenTransport::Http,
+        );
+        assert!(matches!(
+            outcome,
+            CheckOutcome::Fail {
+                detail: CheckDetail::TokenVerificationFailed {
+                    reason: TokenFailureReason::DatabaseUnavailable { context },
+                    ..
+                },
+                ..
+            } if context == "boom",
+        ));
+    }
+
+    #[test]
+    fn test_outcome_for_auth_error_insufficient_scope_is_pass() {
+        let outcome = outcome_for_auth_error(
+            AuthError::InsufficientScope {
+                required_scope: Scope::parse(Scope::FULL_ACCESS_WRITE).expect("valid scope"),
+                granted_scopes: vec![],
+            },
+            TokenTransport::Http,
+        );
+        assert!(matches!(
+            outcome,
+            CheckOutcome::Pass {
+                detail: CheckDetail::TokenVerified {
+                    transport: TokenTransport::Http,
+                },
+            },
         ));
     }
 }
