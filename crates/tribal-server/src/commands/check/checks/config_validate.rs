@@ -144,7 +144,9 @@ mod tests {
 
     #[test]
     fn test_config_validate_failed_malformed_address_yields_set_valid_address_hint() {
-        let errors = vec![format!("{SERVER_BIND_ADDRESS_MALFORMED_PREFIX}: not-an-address")];
+        let errors = vec![format!(
+            "{SERVER_BIND_ADDRESS_MALFORMED_PREFIX}: not-an-address"
+        )];
         let outcome = CheckOutcome::config_validate_failed(errors);
 
         assert!(matches!(
