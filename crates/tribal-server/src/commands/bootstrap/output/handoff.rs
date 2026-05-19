@@ -174,13 +174,14 @@ pub(in crate::commands::bootstrap) fn write_human(
 mod tests {
     use std::path::PathBuf;
 
-    use anstream::{AutoStream, ColorChoice};
     use tribal_config::{
         Auth, CliOverrides, DEFAULT_BIND_ADDRESS, EmbeddingCliOverrides, InferenceCliOverrides,
         InferenceStageCliOverrides, ProviderKind, TelemetryCliOverrides,
     };
     use tribal_domain::Project;
-    use tribal_test_utils::{a_project, assert_json_snapshot, assert_text_snapshot};
+    use tribal_test_utils::{
+        a_project, assert_json_snapshot, assert_text_snapshot, render_to_string,
+    };
     use uuid::Uuid;
 
     use super::*;
@@ -306,12 +307,7 @@ mod tests {
             advertised_url: &advertised_url,
         };
         let theme = Theme::default_dark();
-        let mut buf: Vec<u8> = Vec::new();
-        {
-            let mut writer = AutoStream::new(&mut buf, ColorChoice::Never);
-            write_human(&mut writer, &theme, &handoff).expect("write_human succeeds");
-        }
-        String::from_utf8(buf).expect("utf8")
+        render_to_string(|w| write_human(w, &theme, &handoff))
     }
 
     fn render_json(transport: TransportKind) -> serde_json::Value {
@@ -338,9 +334,7 @@ mod tests {
             persistence: ConfigPersistence::Minimal,
             advertised_url: &advertised_url,
         };
-        let mut buf: Vec<u8> = Vec::new();
-        write_json(&mut buf, &handoff).expect("write_json succeeds");
-        let captured = String::from_utf8(buf).expect("utf8");
+        let captured = render_to_string(|w| write_json(w, &handoff));
         serde_json::from_str(&captured).expect("output is valid JSON")
     }
 
@@ -485,12 +479,7 @@ mod tests {
             advertised_url: &advertised_url,
         };
         let theme = Theme::default_dark();
-        let mut buf: Vec<u8> = Vec::new();
-        {
-            let mut writer = AutoStream::new(&mut buf, ColorChoice::Never);
-            write_human(&mut writer, &theme, &handoff).expect("write_human succeeds");
-        }
-        String::from_utf8(buf).expect("utf8")
+        render_to_string(|w| write_human(w, &theme, &handoff))
     }
 
     #[test]

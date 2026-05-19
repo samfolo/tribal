@@ -5295,6 +5295,7 @@ dependencies = [
 name = "tribal-test-utils"
 version = "0.1.1"
 dependencies = [
+ "anstream 1.0.0",
  "async-trait",
  "chrono",
  "fnv",

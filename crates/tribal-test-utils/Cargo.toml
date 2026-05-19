@@ -7,6 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+anstream.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 fnv.workspace = true
