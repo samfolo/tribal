@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use sqlx::PgPool;
-use tribal_config::{Auth, ENV_AUTH_TOKEN, TransportKind, read_credentials};
+use tribal_config::{
+    Auth, CredentialsReadError, ENV_AUTH_TOKEN, TransportKind, read_credentials,
+};
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{AuthError, Authenticator};
 
@@ -62,6 +64,13 @@ impl CheckOutcome {
             remediation: CheckRemediation::CheckPgIsready,
         }
     }
+
+    pub(in crate::commands::check) fn credentials_unreadable(error: String) -> Self {
+        Self::Fail {
+            detail: CheckDetail::CredentialsUnreadable { error },
+            remediation: CheckRemediation::RerunBootstrap,
+        }
+    }
 }
 
 /// Runs the transport-aware token check against the parsed config and
@@ -99,14 +108,20 @@ async fn network_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutco
     {
         return verify_against(pool, &token, TokenTransport::Http).await;
     }
-    if let Ok(loaded) = read_credentials() {
-        match loaded.credentials.auth {
+    match read_credentials() {
+        Ok(loaded) => match loaded.credentials.auth {
             Auth::Bearer { token } => {
-                return verify_against(pool, token.as_str(), TokenTransport::Http).await;
+                verify_against(pool, token.as_str(), TokenTransport::Http).await
             }
-        }
+        },
+        Err(CredentialsReadError::NotFound) => check_aggregate(pool).await,
+        Err(
+            err @ (CredentialsReadError::Path(_)
+            | CredentialsReadError::Read { .. }
+            | CredentialsReadError::Malformed { .. }
+            | CredentialsReadError::UnsupportedSchema { .. }),
+        ) => CheckOutcome::credentials_unreadable(err.to_string()),
     }
-    check_aggregate(pool).await
 }
 
 async fn verify_against(pool: &PgPool, token: &str, transport: TokenTransport) -> CheckOutcome {
@@ -244,6 +259,18 @@ mod tests {
                 detail: CheckDetail::NoActiveTokens,
                 remediation: CheckRemediation::RunTribalTokenCreate,
             },
+        ));
+    }
+
+    #[test]
+    fn test_credentials_unreadable_is_fail_with_rerun_bootstrap() {
+        let outcome = CheckOutcome::credentials_unreadable("malformed JSON".into());
+        assert!(matches!(
+            &outcome,
+            CheckOutcome::Fail {
+                detail: CheckDetail::CredentialsUnreadable { error },
+                remediation: CheckRemediation::RerunBootstrap,
+            } if error == "malformed JSON",
         ));
     }
 
