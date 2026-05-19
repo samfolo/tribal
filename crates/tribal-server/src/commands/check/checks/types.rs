@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use tribal_config::ProviderKind;
 use tribal_domain::ProjectId;
 
+use crate::error::FIRST_RUN_REQUIRED;
+
 // ---------------------------------------------------------------------------
 // CheckName
 // ---------------------------------------------------------------------------
@@ -338,9 +340,7 @@ impl CheckDetail {
             Self::MigrationsAhead { expected, found } => {
                 format!("database is at migration {found}; binary expects {expected}")
             }
-            Self::MigrationsTableMissing => {
-                "database is uninitialised; run `tribal setup` first".into()
-            }
+            Self::MigrationsTableMissing => FIRST_RUN_REQUIRED.into(),
             Self::MigrationsQueryFailed { error } => {
                 format!("migration check query failed: {error}")
             }
