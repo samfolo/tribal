@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tribal_config::ProviderKind;
 use tribal_domain::ProjectId;
 
 // ---------------------------------------------------------------------------
@@ -156,6 +157,18 @@ pub(in crate::commands::check) enum CheckDetail {
     /// A check did not run because a prior phase or invariant precludes
     /// it.  `name` is the skipped check; `reason` carries the cause.
     DependencySkipped { name: CheckName, reason: SkipReason },
+    /// Provider probe against the named target succeeded.
+    ProviderProbePassed {
+        target: ProviderProbeTarget,
+        provider: ProviderKind,
+    },
+    /// Provider probe against the named target failed; `error` is the
+    /// underlying [`tribal_inference::InferenceError`] rendered.
+    ProviderProbeFailed {
+        target: ProviderProbeTarget,
+        provider: ProviderKind,
+        error: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +195,15 @@ impl ProviderProbeTarget {
             Self::Extraction => "inference.extraction",
             Self::Triage => "inference.triage",
             Self::Relation => "inference.relation",
+        }
+    }
+
+    pub(in crate::commands::check) fn check_name(self) -> CheckName {
+        match self {
+            Self::Embedding => CheckName::ProviderEmbedding,
+            Self::Extraction => CheckName::ProviderExtraction,
+            Self::Triage => CheckName::ProviderTriage,
+            Self::Relation => CheckName::ProviderRelation,
         }
     }
 }
@@ -267,6 +289,9 @@ impl CheckDetail {
                 CheckName::BinaryUniqueness
             }
             Self::DependencySkipped { name, .. } => *name,
+            Self::ProviderProbePassed { target, .. } | Self::ProviderProbeFailed { target, .. } => {
+                target.check_name()
+            }
         }
     }
 
@@ -372,6 +397,18 @@ impl CheckDetail {
                     "skipped because the database is unreachable".into()
                 }
             },
+            Self::ProviderProbePassed { target, provider } => format!(
+                "{} provider ({provider}) probe passed",
+                target.config_path()
+            ),
+            Self::ProviderProbeFailed {
+                target,
+                provider,
+                error,
+            } => format!(
+                "{} provider ({provider}) probe failed: {error}",
+                target.config_path()
+            ),
         }
     }
 }
@@ -418,6 +455,14 @@ pub(in crate::commands::check) enum CheckRemediation {
     /// Verify the supplied project ID or register a new project with
     /// `tribal project register`.
     VerifyProjectIdOrRegister,
+    /// Inspect the provider configuration for the named target — the
+    /// `api_key` (for cloud providers), the `base_url`, and the
+    /// upstream env-var conventions — or run `tribal serve` to see the
+    /// underlying startup probe warning.
+    FixProviderConfig {
+        target: ProviderProbeTarget,
+        provider: ProviderKind,
+    },
 }
 
 impl CheckRemediation {
@@ -466,6 +511,17 @@ impl CheckRemediation {
                 "verify the supplied project ID or register a new project with \
                  `tribal project register`"
                     .into()
+            }
+            Self::FixProviderConfig { target, provider } => {
+                let path = target.config_path();
+                match provider.standard_env_var_name() {
+                    Some(env) => {
+                        format!("check `{path}.api_key` (or export `{env}`) and `{path}.base_url`")
+                    }
+                    None => {
+                        format!("check `{path}.base_url` and confirm the provider is reachable")
+                    }
+                }
             }
         }
     }
