@@ -70,10 +70,13 @@ impl CheckOutcome {
         }
     }
 
-    pub(in crate::commands::check) fn credentials_unreadable(error: String) -> Self {
+    pub(in crate::commands::check) fn credentials_unreadable(
+        error: String,
+        remediation: CheckRemediation,
+    ) -> Self {
         Self::Fail {
             detail: CheckDetail::CredentialsUnreadable { error },
-            remediation: CheckRemediation::RerunBootstrap,
+            remediation,
         }
     }
 }
@@ -130,11 +133,15 @@ async fn network_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutco
         },
         Err(CredentialsReadError::NotFound) => check_aggregate(pool).await,
         Err(
-            err @ (CredentialsReadError::Path(_)
-            | CredentialsReadError::Read { .. }
-            | CredentialsReadError::Malformed { .. }
+            err @ (CredentialsReadError::Malformed { .. }
             | CredentialsReadError::UnsupportedSchema { .. }),
-        ) => CheckOutcome::credentials_unreadable(err.to_string()),
+        ) => CheckOutcome::credentials_unreadable(err.to_string(), CheckRemediation::RerunBootstrap),
+        Err(err @ (CredentialsReadError::Path(_) | CredentialsReadError::Read { .. })) => {
+            CheckOutcome::credentials_unreadable(
+                err.to_string(),
+                CheckRemediation::ConsultUnderlyingError,
+            )
+        }
     }
 }
 
@@ -302,15 +309,24 @@ mod tests {
     }
 
     #[test]
-    fn test_credentials_unreadable_is_fail_with_rerun_bootstrap() {
-        let outcome = CheckOutcome::credentials_unreadable("malformed JSON".into());
-        assert!(matches!(
-            &outcome,
-            CheckOutcome::Fail {
-                detail: CheckDetail::CredentialsUnreadable { error },
-                remediation: CheckRemediation::RerunBootstrap,
-            } if error == "malformed JSON",
-        ));
+    fn test_credentials_unreadable_threads_supplied_remediation() {
+        for remediation in [
+            CheckRemediation::RerunBootstrap,
+            CheckRemediation::ConsultUnderlyingError,
+        ] {
+            let outcome =
+                CheckOutcome::credentials_unreadable("malformed JSON".into(), remediation.clone());
+            assert!(
+                matches!(
+                    &outcome,
+                    CheckOutcome::Fail {
+                        detail: CheckDetail::CredentialsUnreadable { error },
+                        remediation: r,
+                    } if error == "malformed JSON" && *r == remediation,
+                ),
+                "expected {remediation:?} to be threaded through, got {outcome:?}",
+            );
+        }
     }
 
     #[test]
