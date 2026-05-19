@@ -1,7 +1,7 @@
 ✓ config_parse                  
     config loaded from /etc/tribal/config.yaml
 ◬ project_resolution            
-    no project resolved from CLI flag, environment, or git remote
+    no project resolved from --project, TRIBAL_PROJECT_ID, or the git remote
     fix: register a project with `tribal project register` or set
     `TRIBAL_PROJECT_ID`
 × database_reachable            
