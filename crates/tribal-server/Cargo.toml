@@ -21,6 +21,11 @@ name = "bootstrap"
 path = "tests/bootstrap.rs"
 required-features = ["test-helpers"]
 
+[[test]]
+name = "check"
+path = "tests/check.rs"
+required-features = ["test-helpers"]
+
 [dependencies]
 anstream.workspace = true
 axum.workspace = true
