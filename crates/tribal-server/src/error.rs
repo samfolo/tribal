@@ -80,6 +80,12 @@ pub enum AppError {
     #[error("database is uninitialised; run `tribal setup` first")]
     FirstRunRequired,
 
+    /// `tribal check` produced one or more failing rows; the diagnostic
+    /// output has already been written to the selected stream, so this
+    /// variant exists purely to flip the process exit code.
+    #[error("")]
+    CheckFailed,
+
     /// Migration advisory lock could not be acquired.
     #[error("could not acquire migration lock after {attempts} attempts")]
     MigrationLockFailed {
@@ -310,6 +316,16 @@ impl AppError {
             | Self::ShutdownDeadlineExceeded { .. } => EXIT_CODE_WORKER_DEATH,
             _ => 1,
         }
+    }
+
+    /// Whether `main` should suppress the default `eprintln!("{err}")`.
+    ///
+    /// `tribal check` writes its own diagnostic output to stdout or
+    /// stderr before returning [`Self::CheckFailed`]; printing the
+    /// variant's empty Display would only add a stray blank line.
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        matches!(self, Self::CheckFailed)
     }
 
     /// Wraps a pool-acquire failure as the appropriate `AppError` variant.
@@ -726,6 +742,19 @@ mod tests {
     #[test]
     fn test_exit_code_default() {
         let err = AppError::FirstRunRequired;
+        assert_eq!(err.exit_code(), 1);
+    }
+
+    #[test]
+    fn test_check_failed_has_empty_display() {
+        let err = AppError::CheckFailed;
+        assert_eq!(err.to_string(), "");
+    }
+
+    #[test]
+    fn test_check_failed_is_silent_with_exit_code_1() {
+        let err = AppError::CheckFailed;
+        assert!(err.is_silent());
         assert_eq!(err.exit_code(), 1);
     }
 

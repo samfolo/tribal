@@ -68,7 +68,7 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
     let mut wrapped_stderr = AutoStream::new(stderr_lock, stream_ctx.color_choice);
     let mut stdout = io::stdout().lock();
 
-    rt.block_on(run_async(
+    let output = rt.block_on(run_async(
         CheckOptions {
             config_path: &absolute_config_path,
             json,
@@ -79,7 +79,12 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
         },
         &mut stdout,
         &mut wrapped_stderr,
-    ))
+    ))?;
+    if output.ok {
+        Ok(())
+    } else {
+        Err(AppError::CheckFailed)
+    }
 }
 
 /// Async core for [`run`].
@@ -89,6 +94,11 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
 /// orchestrator then either runs the action, emits a `Skip` row, or
 /// omits the row entirely.  `out_stdout` carries the `--json` payload;
 /// `out_stderr` carries the themed human-readable output.
+///
+/// Returns the assembled [`CheckOutput`] so callers can inspect the
+/// overall `ok` flag and per-row statuses without re-parsing the wire
+/// payload.  [`run`] uses this to translate `!output.ok` into the
+/// silent [`AppError::CheckFailed`] exit signal.
 ///
 /// # Errors
 ///
@@ -104,7 +114,7 @@ pub async fn run_async(
     opts: CheckOptions<'_>,
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
-) -> Result<(), AppError> {
+) -> Result<CheckOutput, AppError> {
     let mut state = build_state(&opts)?;
     let mut outcomes = CheckOutcomes::new();
 
@@ -130,7 +140,7 @@ pub async fn run_async(
             source,
         })?;
     }
-    Ok(())
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------

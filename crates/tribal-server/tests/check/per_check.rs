@@ -17,7 +17,7 @@ async fn test_happy_path_all_phases_green_against_fresh_db() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -44,7 +44,7 @@ async fn test_project_cascade_missing_is_warn_without_override() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -67,7 +67,7 @@ async fn test_valid_token_is_skip_under_stdio_without_token_override() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -90,7 +90,7 @@ async fn test_advertised_url_is_skip_under_stdio_transport() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -118,7 +118,7 @@ async fn test_advertised_url_attempts_probe_under_http_transport() {
     config.server.bind_address = Some("127.0.0.1:0".into());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,

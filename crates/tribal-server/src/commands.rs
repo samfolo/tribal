@@ -24,7 +24,7 @@ pub(crate) use self::{
 #[cfg(feature = "test-helpers")]
 pub use self::{
     bootstrap::{BootstrapOptions, run_async as bootstrap_async},
-    check::{CheckOptions, run_async as check_async},
+    check::{CheckOptions, CheckOutput, run_async as check_async},
     mcp_config::{McpConfigOptions, run_async as mcp_config_async},
     setup::{SetupOutcome, run_async as setup_async},
     token::create_async as token_create_async,

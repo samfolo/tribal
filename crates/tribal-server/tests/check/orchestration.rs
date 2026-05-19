@@ -15,7 +15,7 @@ async fn test_parse_failure_cascades_skip_to_every_other_check() {
     // Malformed YAML — the loader fails before any field is read.
     std::fs::write(&env.config_path, "not: : valid: yaml: :").expect("write");
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -49,7 +49,7 @@ async fn test_validate_failure_targeted_skip_for_advertised_url() {
     config.server.bind_address = Some("127.0.0.1:8080".into());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -80,7 +80,7 @@ async fn test_validate_failure_targeted_skip_for_provider_under_providers_flag()
     config.embedding.api_key = None;
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: true,
@@ -105,7 +105,7 @@ async fn test_database_unreachable_cascades_skip_to_db_dependent_checks() {
     let config = TribalConfig::minimum_valid("postgres://no-such-host.invalid:5432/db");
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -146,7 +146,7 @@ async fn test_providers_flag_off_omits_provider_rows() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: false,
@@ -181,7 +181,7 @@ async fn test_providers_flag_on_emits_four_provider_rows() {
     let config = TribalConfig::minimum_valid(ctx.database_url());
     write_config(&env.config_path, &config);
 
-    let (stdout, _stderr) = run_check(CheckRun {
+    let (stdout, _stderr, _output) = run_check(CheckRun {
         config_path: &env.config_path,
         json: true,
         providers: true,
