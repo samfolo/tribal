@@ -12,3 +12,5 @@
     host, port, and credentials
 ⊝ migrations_current            
     skipped because the database is unreachable
+
+× fail  —  1 failed, 1 warned, 1 passed, 1 skipped

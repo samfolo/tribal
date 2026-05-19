@@ -6,3 +6,5 @@
     fix: server.bind_address cannot be set when server.transport is stdio
     set `embedding.api_key` or export `TRIBAL_EMBEDDING__API_KEY`
     set `inference.triage.api_key` or export `TRIBAL_INFERENCE__TRIAGE__API_KEY`
+
+× fail  —  1 failed
