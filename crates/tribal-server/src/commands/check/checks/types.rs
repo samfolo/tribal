@@ -332,12 +332,12 @@ impl CheckDetail {
             Self::DatabaseReachable => "database connection succeeded".into(),
             Self::DatabaseUnreachable { error } => format!("database unreachable: {error}"),
             Self::MigrationsMatch => "migrations are current".into(),
-            Self::MigrationsBehind { expected, found } => format!(
-                "database is at migration {found}; binary expects {expected}; database is behind"
-            ),
-            Self::MigrationsAhead { expected, found } => format!(
-                "database is at migration {found}; binary expects {expected}; database is ahead"
-            ),
+            Self::MigrationsBehind { expected, found } => {
+                format!("binary expects migration {expected}, database is at {found}")
+            }
+            Self::MigrationsAhead { expected, found } => {
+                format!("database is at migration {found}; binary expects {expected}")
+            }
             Self::MigrationsTableMissing => {
                 "database is uninitialised; run `tribal setup` first".into()
             }
