@@ -5114,6 +5114,7 @@ dependencies = [
  "shellexpand",
  "shlex 2.0.1",
  "sqlx",
+ "strum",
  "tempfile",
  "tera",
  "thiserror 2.0.18",

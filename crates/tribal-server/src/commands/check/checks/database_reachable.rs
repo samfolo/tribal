@@ -1,17 +1,18 @@
-//! Outcome constructors and probe for the `database_reachable` check.
+//! Outcome constructors and action for the `database_reachable` check.
 //!
-//! Builds the shared pool the rest of the database-dependent checks
-//! reuse.  The pool is returned alongside the outcome so the
-//! orchestrator can thread it into [`CheckContext`].  No URL crosses
-//! the wire — the configured URL lives in the user's config file and
-//! the sqlx error provides diagnostic context without leaking
-//! credentials.
+//! Builds the shared pool the database-dependent steps later read off
+//! [`CheckState`].  No URL crosses the wire — the configured URL lives
+//! in the user's config file and the sqlx error provides diagnostic
+//! context without leaking credentials.
 
 use sqlx::PgPool;
 use tribal_config::DatabaseConfig;
 use tribal_db::create_pool;
 
-use super::types::{CheckDetail, CheckOutcome, CheckRemediation};
+use super::{
+    state::CheckState,
+    types::{CheckDetail, CheckOutcome, CheckRemediation},
+};
 use crate::commands::common::{COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS};
 
 /// Pool-name tag passed to [`create_pool`] for tracing.
@@ -32,12 +33,19 @@ impl CheckOutcome {
     }
 }
 
-/// Builds the shared `tribal check` pool and reports the outcome.  On
-/// success returns the pool for downstream database-dependent checks;
-/// on failure returns `None`.
-pub(in crate::commands::check) async fn run(
-    database_config: &DatabaseConfig,
-) -> (CheckOutcome, Option<PgPool>) {
+/// Attempts to build the shared pool against `state.config.database` and
+/// stores it on `state` on success.
+pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
+    let config = state
+        .config
+        .as_ref()
+        .expect("preflight ensures state.config is populated");
+    let (outcome, pool) = probe(&config.database).await;
+    state.pool = pool;
+    outcome
+}
+
+async fn probe(database_config: &DatabaseConfig) -> (CheckOutcome, Option<PgPool>) {
     match create_pool(
         database_config,
         POOL_NAME,

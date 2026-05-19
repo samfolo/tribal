@@ -1,9 +1,9 @@
-//! Outcome constructors and probe for the `migrations_current` check.
+//! Outcome constructors and action for the `migrations_current` check.
 
 use tribal_db::{MIGRATOR, MigrationHeadStatus, MigrationRepository, PgMigrationRepository};
 
 use super::{
-    context::CheckContext,
+    state::CheckState,
     types::{CheckDetail, CheckOutcome, CheckRemediation},
 };
 
@@ -45,14 +45,18 @@ impl CheckOutcome {
 
 /// Compares the database's recorded head migration version against the
 /// binary's compile-time head.
-pub(in crate::commands::check) async fn run(ctx: &CheckContext) -> CheckOutcome {
+pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
+    let pool = state
+        .pool
+        .as_ref()
+        .expect("preflight ensures state.pool is populated");
     let expected = MIGRATOR
         .iter()
         .last()
         .expect("MIGRATOR contains at least one migration")
         .version;
 
-    let mut conn = match ctx.pool.acquire().await {
+    let mut conn = match pool.acquire().await {
         Ok(conn) => conn,
         Err(err) => return CheckOutcome::migrations_query_failed(err.to_string()),
     };

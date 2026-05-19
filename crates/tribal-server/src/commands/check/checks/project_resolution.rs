@@ -1,9 +1,9 @@
-//! Outcome constructors and probe for the `project_resolution` check.
+//! Outcome constructors and action for the `project_resolution` check.
 
 use tribal_domain::ProjectId;
 
 use super::{
-    context::CheckContext,
+    state::CheckState,
     types::{CheckDetail, CheckOutcome, CheckRemediation},
 };
 use crate::{error::AppError, startup::resolve_project};
@@ -39,8 +39,12 @@ impl CheckOutcome {
 
 /// Runs the project-resolution cascade: CLI override → env var → git
 /// remote → `None`.
-pub(in crate::commands::check) async fn run(ctx: &CheckContext) -> CheckOutcome {
-    match resolve_project(&ctx.pool, ctx.project_override.clone()).await {
+pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
+    let pool = state
+        .pool
+        .as_ref()
+        .expect("preflight ensures state.pool is populated");
+    match resolve_project(pool, state.project_override.clone()).await {
         Ok(Some(project)) => CheckOutcome::project_found(project.id(), project.name().to_owned()),
         Ok(None) => CheckOutcome::project_cascade_missing(),
         Err(AppError::ProjectResolution { context }) => CheckOutcome::project_not_found(context),
