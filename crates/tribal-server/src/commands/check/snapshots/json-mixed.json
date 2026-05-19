@@ -6,7 +6,7 @@
       "status": "pass"
     },
     {
-      "detail": "no project resolved from CLI flag, environment, or git remote",
+      "detail": "no project resolved from --project, TRIBAL_PROJECT_ID, or the git remote",
       "name": "project_resolution",
       "remediation": "register a project with `tribal project register` or set `TRIBAL_PROJECT_ID`",
       "status": "warn"
