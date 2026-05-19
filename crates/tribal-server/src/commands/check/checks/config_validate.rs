@@ -1,12 +1,15 @@
 //! Outcome constructors for the `config_validate` check.
 //!
-//! Targeted hints map known validation-error prefixes (the API-key
-//! invariants exposed by `tribal_config::validation`) to a concrete
-//! action.  Errors without a known hint render with no remediation.
+//! Targeted hints map known validation-error prefixes (API-key and
+//! transport invariants exposed by `tribal_config::validation`) to a
+//! concrete remediation.  Errors without a known hint render with no
+//! remediation.
 
 use tribal_config::{
     ConfigError, EMBEDDING_API_KEY_REQUIRED_PREFIX, EXTRACTION_API_KEY_REQUIRED_PREFIX,
-    RELATION_API_KEY_REQUIRED_PREFIX, TRIAGE_API_KEY_REQUIRED_PREFIX, env_var_for_path, validate,
+    RELATION_API_KEY_REQUIRED_PREFIX, SERVER_BIND_ADDRESS_MALFORMED_PREFIX,
+    SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX, TRIAGE_API_KEY_REQUIRED_PREFIX, env_var_for_path,
+    validate,
 };
 
 use super::{
@@ -31,6 +34,9 @@ const API_KEY_HINT_PATHS: &[(&str, &str)] = &[
         "inference.relation.api_key",
     ),
 ];
+
+const STDIO_CONFLICT_HINT: &str = "remove `server.bind_address` for stdio transport";
+const MALFORMED_ADDRESS_HINT: &str = "set `server.bind_address` to a valid `<host>:<port>`";
 
 impl CheckOutcome {
     /// Constructs the outcome for a configuration that passes every
@@ -59,6 +65,12 @@ impl CheckOutcome {
 
 /// Returns a targeted hint for `error` if it matches a known prefix.
 fn hint_for_error(error: &str) -> Option<String> {
+    if error.starts_with(SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX) {
+        return Some(STDIO_CONFLICT_HINT.into());
+    }
+    if error.starts_with(SERVER_BIND_ADDRESS_MALFORMED_PREFIX) {
+        return Some(MALFORMED_ADDRESS_HINT.into());
+    }
     API_KEY_HINT_PATHS
         .iter()
         .find(|(prefix, _)| error.starts_with(prefix))
@@ -113,6 +125,34 @@ mod tests {
                 && hints.len() == 1
                 && hints[0].contains("embedding.api_key")
                 && hints[0].contains("TRIBAL_EMBEDDING__API_KEY"),
+        ));
+    }
+
+    #[test]
+    fn test_config_validate_failed_stdio_conflict_yields_remove_bind_address_hint() {
+        let errors = vec![SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX.into()];
+        let outcome = CheckOutcome::config_validate_failed(errors);
+
+        assert!(matches!(
+            &outcome,
+            CheckOutcome::Fail {
+                remediation: CheckRemediation::FixConfigInvariant { hints },
+                ..
+            } if hints.as_slice() == [STDIO_CONFLICT_HINT.to_owned()],
+        ));
+    }
+
+    #[test]
+    fn test_config_validate_failed_malformed_address_yields_set_valid_address_hint() {
+        let errors = vec![format!("{SERVER_BIND_ADDRESS_MALFORMED_PREFIX}: not-an-address")];
+        let outcome = CheckOutcome::config_validate_failed(errors);
+
+        assert!(matches!(
+            &outcome,
+            CheckOutcome::Fail {
+                remediation: CheckRemediation::FixConfigInvariant { hints },
+                ..
+            } if hints.as_slice() == [MALFORMED_ADDRESS_HINT.to_owned()],
         ));
     }
 
