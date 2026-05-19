@@ -233,7 +233,9 @@ mod tests {
                 },
                 CheckResult::Warn {
                     name: CheckName::ProjectResolution,
-                    detail: "no project resolved from --project, TRIBAL_PROJECT_ID, or the git remote".into(),
+                    detail:
+                        "no project resolved from --project, TRIBAL_PROJECT_ID, or the git remote"
+                            .into(),
                     remediation: "register a project with `tribal project register` or set \
                                   `TRIBAL_PROJECT_ID`"
                         .into(),
