@@ -1,5 +1,4 @@
-//! Wire types for `tribal check` and the conversion from the internal
-//! [`CheckOutcome`] data layer.
+//! Wire types and writers for `tribal check`.
 //!
 //! [`CheckOutput`] is the JSON shape consumed by downstream tooling.
 //! The status is the variant tag: `Pass` and `Skip` cannot carry a
@@ -8,6 +7,12 @@
 use serde::{Deserialize, Serialize};
 
 use super::checks::{CheckName, CheckOutcome, CheckOutcomes};
+
+mod human;
+mod json;
+
+pub(in crate::commands::check) use human::write_human;
+pub(in crate::commands::check) use json::write_json;
 
 // ---------------------------------------------------------------------------
 // CheckResult

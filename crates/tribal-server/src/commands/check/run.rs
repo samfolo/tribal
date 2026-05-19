@@ -1,15 +1,17 @@
 //! Entry point and step-pipeline driver for `tribal check`.
 
 use std::{
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::Path,
 };
 
+use anstream::AutoStream;
 use strum::IntoEnumIterator;
+use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
 
 use super::{
     checks::{CheckOutcome, CheckOutcomes, CheckState, CheckStep, Preflight, SkipMask},
-    output::CheckOutput,
+    output::{CheckOutput, write_human, write_json},
 };
 use crate::{cli::CheckArgs, commands::common::resolve_absolute_config_path, error::AppError};
 
@@ -31,6 +33,8 @@ pub struct CheckOptions<'a> {
     pub project: Option<&'a str>,
     /// Bearer token override.
     pub token: Option<&'a str>,
+    /// Theme used for the human-readable writer.
+    pub theme: &'a Theme,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,13 +62,24 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
         .build()
         .map_err(|source| AppError::Runtime { source })?;
 
-    rt.block_on(run_async(CheckOptions {
-        config_path: &absolute_config_path,
-        json,
-        providers,
-        project: project.as_deref(),
-        token: token.as_deref(),
-    }))
+    let stderr_lock = io::stderr().lock();
+    let is_tty = stderr_lock.is_terminal();
+    let stream_ctx = StreamThemeContext::probe_stderr(is_tty, resolve_mode(Mode::Auto));
+    let mut wrapped_stderr = AutoStream::new(stderr_lock, stream_ctx.color_choice);
+    let mut stdout = io::stdout().lock();
+
+    rt.block_on(run_async(
+        CheckOptions {
+            config_path: &absolute_config_path,
+            json,
+            providers,
+            project: project.as_deref(),
+            token: token.as_deref(),
+            theme: &stream_ctx.theme,
+        },
+        &mut stdout,
+        &mut wrapped_stderr,
+    ))
 }
 
 /// Async core for [`run`].
@@ -72,19 +87,24 @@ pub(crate) fn run(config_path: &str, args: CheckArgs) -> Result<(), AppError> {
 /// Iterates [`CheckStep`] in declared order.  Each step's preflight
 /// classifies its applicability against shared [`CheckState`]; the
 /// orchestrator then either runs the action, emits a `Skip` row, or
-/// omits the row entirely.
+/// omits the row entirely.  `out_stdout` carries the `--json` payload;
+/// `out_stderr` carries the themed human-readable output.
 ///
 /// # Errors
 ///
 /// Returns an [`AppError`] if building the shared HTTP client or
-/// writing JSON output fails.
+/// writing output fails.
 ///
 /// # Panics
 ///
 /// Panics if JSON serialisation of [`CheckOutput`] fails.  All fields
 /// derive `Serialize` from primitive types, so this is unreachable in
 /// practice.
-pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
+pub async fn run_async(
+    opts: CheckOptions<'_>,
+    out_stdout: &mut dyn Write,
+    out_stderr: &mut dyn Write,
+) -> Result<(), AppError> {
     let mut state = build_state(&opts)?;
     let mut outcomes = CheckOutcomes::new();
 
@@ -98,7 +118,19 @@ pub async fn run_async(opts: CheckOptions<'_>) -> Result<(), AppError> {
         }
     }
 
-    emit(opts.json, &outcomes)
+    let output = CheckOutput::from(&outcomes);
+    if opts.json {
+        write_json(out_stdout, &output).map_err(|source| AppError::Io {
+            context: "writing tribal check output to stdout".to_owned(),
+            source,
+        })?;
+    } else {
+        write_human(out_stderr, opts.theme, &output).map_err(|source| AppError::Io {
+            context: "writing tribal check output to stderr".to_owned(),
+            source,
+        })?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -124,26 +156,4 @@ fn build_state(opts: &CheckOptions<'_>) -> Result<CheckState, AppError> {
         skip_mask: SkipMask::default(),
         pool: None,
     })
-}
-
-// ---------------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------------
-
-fn emit(json: bool, outcomes: &CheckOutcomes) -> Result<(), AppError> {
-    let output = CheckOutput::from(outcomes);
-    if json {
-        let rendered =
-            serde_json::to_string_pretty(&output).expect("CheckOutput is always serialisable");
-        let mut stdout = io::stdout().lock();
-        writeln!(stdout, "{rendered}").map_err(|source| AppError::Io {
-            context: "writing tribal check output to stdout".to_owned(),
-            source,
-        })?;
-        stdout.flush().map_err(|source| AppError::Io {
-            context: "flushing tribal check output to stdout".to_owned(),
-            source,
-        })?;
-    }
-    Ok(())
 }
