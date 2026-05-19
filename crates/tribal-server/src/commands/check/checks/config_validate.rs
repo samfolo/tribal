@@ -48,7 +48,7 @@ impl CheckOutcome {
     pub(in crate::commands::check) fn config_validate_failed(errors: Vec<String>) -> Self {
         let hints: Vec<String> = errors
             .iter()
-            .map(|e| hint_for_error(e).unwrap_or_else(|| format!("fix: {e}")))
+            .map(|e| hint_for_error(e).unwrap_or_else(|| e.clone()))
             .collect();
         Self::Fail {
             detail: CheckDetail::ValidationFailed { errors },
@@ -128,7 +128,7 @@ mod tests {
                 remediation: CheckRemediation::FixConfigInvariant { hints },
             } if stored == &errors
                 && hints.len() == 1
-                && hints[0] == "fix: database.url must not be empty",
+                && hints[0] == "database.url must not be empty",
         ));
     }
 
@@ -147,9 +147,9 @@ mod tests {
                 remediation: CheckRemediation::FixConfigInvariant { hints },
                 ..
             } if hints.len() == 3
-                && hints[0] == "fix: database.url must not be empty"
+                && hints[0] == "database.url must not be empty"
                 && hints[1].contains("inference.triage.api_key")
-                && hints[2] == "fix: auth.token_ttl_hours must be greater than zero",
+                && hints[2] == "auth.token_ttl_hours must be greater than zero",
         ));
     }
 }

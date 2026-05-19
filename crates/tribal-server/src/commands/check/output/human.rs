@@ -1,21 +1,23 @@
 //! Themed human-readable writer for `tribal check`.
 //!
-//! Each check row is a [`StatusLine`] (glyph + name + detail).  Rows
-//! that carry remediation render the remediation on a follow-up indented
-//! line so the user reads cause and fix together.
+//! Each row is `StatusLine` (glyph + name) followed by an indented
+//! [`Paragraph`] for the detail.  Rows that carry a remediation render
+//! a second indented [`Paragraph`] prefixed with `fix: `.  Both
+//! paragraphs wrap at the same width so long error strings stay
+//! readable.
 
 use std::io::{self, Write};
 
-use tribal_ui::{Component, RenderCtx, Status, StatusLine, Text, Theme};
+use tribal_ui::{Component, Paragraph, RenderCtx, Status, StatusLine, Theme};
 
 use super::{CheckOutput, CheckResult};
-use crate::commands::check::checks::CheckName;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Prefix that introduces the remediation line under a Warn or Fail row.
+/// Prefix that introduces the remediation paragraph under a Warn or
+/// Fail row.
 const REMEDIATION_PREFIX: &str = "fix: ";
 
 // ---------------------------------------------------------------------------
@@ -59,25 +61,22 @@ impl Component for CheckOutputView<'_> {
 
 fn render_row(ctx: &mut RenderCtx, result: &CheckResult) -> io::Result<()> {
     let view = RowView::from(result);
-    StatusLine::new(view.status, view.name)
-        .with_detail(view.detail)
-        .render(ctx)?;
-    if let Some(remediation) = view.remediation {
+    StatusLine::new(view.status, view.name).render(ctx)?;
+
+    let dim = ctx.theme().typography.dim_label;
+    ctx.indented(|ctx| -> io::Result<()> {
         writeln!(ctx)?;
-        let indent_prefix = ctx
-            .theme()
-            .indentation
-            .prefix(ctx.indent().saturating_next());
-        let style = ctx.theme().typography.dim_label;
-        write!(ctx, "{indent_prefix}")?;
-        Text::new(format!("{REMEDIATION_PREFIX}{remediation}"))
-            .with_style(style)
-            .render(ctx)?;
-    }
-    Ok(())
+        Paragraph::new(view.detail).with_style(dim).render(ctx)?;
+        if let Some(remediation) = view.remediation {
+            writeln!(ctx)?;
+            let block = format!("{REMEDIATION_PREFIX}{remediation}");
+            Paragraph::new(&block).with_style(dim).render(ctx)?;
+        }
+        Ok(())
+    })
 }
 
-/// Flattened view over [`CheckResult`] so [`StatusLine`] sees the same
+/// Flattened view over [`CheckResult`] so the renderer sees the same
 /// shape regardless of which wire variant produced the row.
 struct RowView<'a> {
     status: Status,
@@ -91,7 +90,7 @@ impl<'a> From<&'a CheckResult> for RowView<'a> {
         match result {
             CheckResult::Pass { name, detail } => Self {
                 status: Status::Pass,
-                name: check_name_str(*name),
+                name: name.as_str(),
                 detail,
                 remediation: None,
             },
@@ -101,7 +100,7 @@ impl<'a> From<&'a CheckResult> for RowView<'a> {
                 remediation,
             } => Self {
                 status: Status::Warning,
-                name: check_name_str(*name),
+                name: name.as_str(),
                 detail,
                 remediation: Some(remediation),
             },
@@ -111,22 +110,18 @@ impl<'a> From<&'a CheckResult> for RowView<'a> {
                 remediation,
             } => Self {
                 status: Status::Fail,
-                name: check_name_str(*name),
+                name: name.as_str(),
                 detail,
                 remediation: Some(remediation),
             },
             CheckResult::Skip { name, detail } => Self {
                 status: Status::Skipped,
-                name: check_name_str(*name),
+                name: name.as_str(),
                 detail,
                 remediation: None,
             },
         }
     }
-}
-
-fn check_name_str(name: CheckName) -> &'static str {
-    name.as_str()
 }
 
 #[cfg(test)]
@@ -135,7 +130,7 @@ mod tests {
     use tribal_ui::Theme;
 
     use super::*;
-    use crate::commands::check::output::CheckResult;
+    use crate::commands::check::{checks::CheckName, output::CheckResult};
 
     fn render(output: &CheckOutput) -> String {
         let theme = Theme::default_dark();
@@ -179,7 +174,10 @@ mod tests {
                 },
                 CheckResult::Fail {
                     name: CheckName::DatabaseReachable,
-                    detail: "database unreachable: connection refused".into(),
+                    detail: "database unreachable: query failed (connecting to pool 'check'): \
+                             error communicating with database: failed to lookup address \
+                             information: nodename nor servname provided, or not known"
+                        .into(),
                     remediation: "run `pg_isready` against the configured database URL and \
                                   verify the host, port, and credentials"
                         .into(),
@@ -189,6 +187,25 @@ mod tests {
                     detail: "skipped because the database is unreachable".into(),
                 },
             ],
+        }
+    }
+
+    fn fixture_validate_multi_hint() -> CheckOutput {
+        CheckOutput {
+            ok: false,
+            checks: vec![CheckResult::Fail {
+                name: CheckName::ConfigValidate,
+                detail: "server.bind_address cannot be set when server.transport is stdio\n\
+                         embedding.api_key is required when embedding.provider is openai\n\
+                         inference.triage.api_key is required when inference.triage.provider is \
+                         openai"
+                    .into(),
+                remediation: "server.bind_address cannot be set when server.transport is stdio\n\
+                              set `embedding.api_key` or export `TRIBAL_EMBEDDING__API_KEY`\n\
+                              set `inference.triage.api_key` or export \
+                              `TRIBAL_INFERENCE__TRIAGE__API_KEY`"
+                    .into(),
+            }],
         }
     }
 
@@ -205,5 +222,14 @@ mod tests {
     fn test_write_human_mixed_matches_snapshot() {
         let captured = render(&fixture_mixed());
         assert_text_snapshot!(&captured, "src/commands/check/snapshots/stderr-mixed.txt");
+    }
+
+    #[test]
+    fn test_write_human_validate_multi_hint_matches_snapshot() {
+        let captured = render(&fixture_validate_multi_hint());
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/check/snapshots/stderr-validate-multi-hint.txt"
+        );
     }
 }
