@@ -349,13 +349,15 @@ impl CheckDetail {
             }
             Self::ProjectNotFound { error } => format!("project not found: {error}"),
             Self::ProjectCascadeMissing => {
-                "no project resolved from CLI flag, environment, or git remote".into()
+                "no project resolved from --project, TRIBAL_PROJECT_ID, or the git remote".into()
             }
             Self::ProjectQueryFailed { error } => {
                 format!("project lookup failed: {error}")
             }
             Self::TokenSkippedStdio => {
-                "stdio transport: no `--token` supplied; verification skipped".into()
+                "stdio transport authenticates as `principal:local`; bearer tokens are not used \
+                 at runtime"
+                    .into()
             }
             Self::TokenVerified { transport } => match transport {
                 TokenTransport::Stdio => format!("token verified {STDIO_QUALIFIER}"),
