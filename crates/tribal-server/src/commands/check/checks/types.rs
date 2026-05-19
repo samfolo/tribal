@@ -549,14 +549,15 @@ impl CheckRemediation {
             }
             Self::FixProviderConfig { target, provider } => {
                 let path = target.config_path();
-                match provider.standard_env_var_name() {
+                let head = match provider.standard_env_var_name() {
                     Some(env) => {
                         format!("check `{path}.api_key` (or export `{env}`) and `{path}.base_url`")
                     }
                     None => {
                         format!("check `{path}.base_url` and confirm the provider is reachable")
                     }
-                }
+                };
+                format!("{head}, or run `tribal serve` to see the underlying startup probe warning")
             }
         }
     }
