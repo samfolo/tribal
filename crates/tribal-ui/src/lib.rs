@@ -22,8 +22,8 @@ mod test_support;
 
 pub use component::{Component, InlineComponent, ThemedComponent};
 pub use components::{
-    Badge, Decimal, Header, KeyValueGrid, OrderedList, OrderedListMarker, Paragraph, SectionRule,
-    Status, StatusLine, Text,
+    Badge, Decimal, HStack, Header, KeyValueGrid, OrderedList, OrderedListMarker, Paragraph,
+    SectionRule, Status, StatusLine, Text,
 };
 pub use format::time::{Precision, format_absolute, format_elapsed};
 pub use probe::{StreamThemeContext, resolve_mode};
