@@ -36,9 +36,16 @@ impl CheckOutcome {
         transport: TokenTransport,
         reason: TokenFailureReason,
     ) -> Self {
+        let remediation = match &reason {
+            TokenFailureReason::DatabaseUnavailable { .. } => CheckRemediation::CheckPgIsready,
+            TokenFailureReason::Invalid
+            | TokenFailureReason::Revoked
+            | TokenFailureReason::Expired
+            | TokenFailureReason::PrincipalMissing => CheckRemediation::RunTribalTokenCreate,
+        };
         Self::Fail {
             detail: CheckDetail::TokenVerificationFailed { transport, reason },
-            remediation: CheckRemediation::RunTribalTokenCreate,
+            remediation,
         }
     }
 
@@ -230,20 +237,45 @@ mod tests {
     }
 
     #[test]
-    fn test_token_verification_failed_is_fail_with_remediation() {
+    fn test_token_verification_failed_token_shape_routes_to_run_token_create() {
+        for reason in [
+            TokenFailureReason::Invalid,
+            TokenFailureReason::Revoked,
+            TokenFailureReason::Expired,
+            TokenFailureReason::PrincipalMissing,
+        ] {
+            let outcome =
+                CheckOutcome::token_verification_failed(TokenTransport::Http, reason.clone());
+            assert!(
+                matches!(
+                    &outcome,
+                    CheckOutcome::Fail {
+                        remediation: CheckRemediation::RunTribalTokenCreate,
+                        ..
+                    },
+                ),
+                "reason {reason:?} should route to RunTribalTokenCreate, got {outcome:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_token_verification_failed_database_unavailable_routes_to_pg_isready() {
         let outcome = CheckOutcome::token_verification_failed(
             TokenTransport::Http,
-            TokenFailureReason::Revoked,
+            TokenFailureReason::DatabaseUnavailable {
+                context: "pool exhausted".into(),
+            },
         );
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::TokenVerificationFailed {
-                    transport: TokenTransport::Http,
-                    reason: TokenFailureReason::Revoked,
+                    reason: TokenFailureReason::DatabaseUnavailable { context },
+                    ..
                 },
-                remediation: CheckRemediation::RunTribalTokenCreate,
-            },
+                remediation: CheckRemediation::CheckPgIsready,
+            } if context == "pool exhausted",
         ));
     }
 
