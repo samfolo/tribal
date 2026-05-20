@@ -48,6 +48,14 @@ impl Diagnostics {
         self.0.iter()
     }
 
+    /// Borrows the collection as a slice.  Lets callers reach for the
+    /// standard `&[T]` API (`first`, `split_at`, `chunks`, …) without
+    /// the wrapper widening its own surface to mirror every accessor.
+    #[must_use]
+    pub fn as_slice(&self) -> &[ValidationError] {
+        &self.0
+    }
+
     /// Consumes the collection into its inner vector.
     #[must_use]
     pub fn into_inner(self) -> Vec<ValidationError> {
@@ -160,6 +168,21 @@ mod tests {
             collected[1],
             ValidationError::Empty { field } if field.as_str() == "c.d",
         ));
+    }
+
+    #[test]
+    fn test_as_slice_borrows_underlying_view() {
+        let mut d = Diagnostics::default();
+        d.push(empty_diagnostic("a"));
+        d.push(empty_diagnostic("b"));
+        let s = d.as_slice();
+        assert_eq!(s.len(), 2);
+        assert!(matches!(
+            &s[0],
+            ValidationError::Empty { field } if field.as_str() == "a",
+        ));
+        // The collection is unchanged after borrowing.
+        assert_eq!(d.len(), 2);
     }
 
     #[test]
