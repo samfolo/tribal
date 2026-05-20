@@ -1,6 +1,7 @@
 //! Three-phase orchestration: parse cascade, validate-targeted skip,
 //! database-unreachable cascade.
 
+use tribal::{App, AppError};
 use tribal_config::{ProviderKind, TribalConfig};
 use tribal_test_utils::{serial_lock, test_context};
 
@@ -205,4 +206,26 @@ async fn test_providers_flag_on_emits_four_provider_rows() {
         );
     }
     assert_eq!(names.len(), 12, "expected 12 rows with --providers");
+}
+
+#[test]
+fn test_app_run_returns_check_failed_when_any_row_fails() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config_path = dir.path().join("tribal.yaml");
+    std::fs::write(&config_path, "not: : valid: yaml: :").expect("write malformed yaml");
+
+    let app = App::try_from_args([
+        "tribal",
+        "--config",
+        config_path.to_str().expect("utf8 path"),
+        "check",
+        "--json",
+    ])
+    .expect("parse args");
+
+    let result = app.run();
+    assert!(
+        matches!(result, Err(AppError::CheckFailed)),
+        "expected CheckFailed, got: {result:?}",
+    );
 }
