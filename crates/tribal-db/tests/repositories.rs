@@ -23,6 +23,9 @@ mod job;
 #[path = "repositories/knowledge_item.rs"]
 mod knowledge_item;
 
+#[path = "repositories/migration.rs"]
+mod migration;
+
 #[path = "repositories/principal.rs"]
 mod principal;
 

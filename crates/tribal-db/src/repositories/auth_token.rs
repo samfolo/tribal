@@ -151,6 +151,23 @@ pub trait AuthTokenRepository {
         principal_id: Option<PrincipalId>,
         revoked_at: DateTime<Utc>,
     ) -> Result<u64, DbError>;
+
+    /// Returns `true` when at least one auth token row is non-revoked
+    /// and not yet expired at `now`.
+    ///
+    /// Uses `SELECT EXISTS (...)` so the planner short-circuits at the
+    /// first matching row — the predicate form is the right cost profile
+    /// for a "is there any?" question, and stays distinct from any
+    /// future count-shaped endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn any_active(
+        &self,
+        conn: &mut PgConnection,
+        now: DateTime<Utc>,
+    ) -> Result<bool, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +375,28 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         };
 
         Ok(result.rows_affected())
+    }
+
+    async fn any_active(
+        &self,
+        conn: &mut PgConnection,
+        now: DateTime<Utc>,
+    ) -> Result<bool, DbError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS ( \
+                SELECT 1 FROM auth_tokens \
+                WHERE revoked_at IS NULL AND expires_at >= $1 \
+             )",
+        )
+        .bind(now)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|source| DbError::QueryFailed {
+            context: "check for any active auth token".to_owned(),
+            source,
+        })?;
+
+        Ok(exists)
     }
 }
 

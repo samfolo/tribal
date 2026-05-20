@@ -1,0 +1,20 @@
+{
+  "checks": [
+    {
+      "detail": "config loaded from /etc/tribal/config.yaml",
+      "name": "config_parse",
+      "status": "pass"
+    },
+    {
+      "detail": "all configuration invariants satisfied",
+      "name": "config_validate",
+      "status": "pass"
+    },
+    {
+      "detail": "`tribal` resolves to /usr/local/bin/tribal",
+      "name": "binary_uniqueness",
+      "status": "pass"
+    }
+  ],
+  "ok": true
+}

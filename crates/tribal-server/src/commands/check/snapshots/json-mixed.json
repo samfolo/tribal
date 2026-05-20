@@ -1,0 +1,27 @@
+{
+  "checks": [
+    {
+      "detail": "config loaded from /etc/tribal/config.yaml",
+      "name": "config_parse",
+      "status": "pass"
+    },
+    {
+      "detail": "no project resolved from --project, TRIBAL_PROJECT_ID, or the git remote",
+      "name": "project_resolution",
+      "remediation": "register a project with `tribal project register` or set `TRIBAL_PROJECT_ID`",
+      "status": "warn"
+    },
+    {
+      "detail": "database unreachable: connection refused",
+      "name": "database_reachable",
+      "remediation": "run `pg_isready` against the configured database URL and verify the host, port, and credentials",
+      "status": "fail"
+    },
+    {
+      "detail": "skipped because the database is unreachable",
+      "name": "migrations_current",
+      "status": "skip"
+    }
+  ],
+  "ok": false
+}

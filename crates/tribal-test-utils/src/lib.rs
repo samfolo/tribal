@@ -12,6 +12,7 @@ mod factories;
 mod lifecycle;
 mod mock;
 pub mod polling;
+mod render;
 mod seeding;
 mod setup;
 // `snapshot` must be `pub mod` (not `mod` + `pub use`) because the
@@ -25,5 +26,6 @@ pub use error::TestDbError;
 pub use factories::*;
 pub use lifecycle::*;
 pub use mock::async_dispatch::*;
+pub use render::render_to_string;
 pub use seeding::*;
 pub use setup::*;

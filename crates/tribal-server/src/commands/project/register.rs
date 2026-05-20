@@ -252,11 +252,9 @@ pub(crate) async fn run_async(
     let project = outcome.project();
 
     if opts.json {
-        output::json_snippet(out_stdout, &project.mcp_config).map_err(|source| {
-            AppError::SetupIo {
-                context: "writing project register --json snippet".into(),
-                source,
-            }
+        output::json_snippet(out_stdout, &project.mcp_config).map_err(|source| AppError::Io {
+            context: "writing project register --json snippet".into(),
+            source,
         })?;
     } else {
         match &outcome {
@@ -267,12 +265,12 @@ pub(crate) async fn run_async(
                 output::already_exists(out_stderr, p.project_name.as_str(), p.project_id);
             }
         }
-        output::project_id(out_stdout, project.project_id).map_err(|source| AppError::SetupIo {
+        output::project_id(out_stdout, project.project_id).map_err(|source| AppError::Io {
             context: "writing project id".into(),
             source,
         })?;
         output::mcp_snippet(out_stdout, &project.git_remote, &project.mcp_config).map_err(
-            |source| AppError::SetupIo {
+            |source| AppError::Io {
                 context: "writing project register mcp snippet".into(),
                 source,
             },

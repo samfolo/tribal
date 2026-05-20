@@ -51,7 +51,12 @@ pub use sections::{
     ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig,
     TransportKind, TribalConfig, VERSION, WorkerConfig, read_credentials, write_credentials,
 };
-pub use validation::{ERR_TTL_ZERO, validate};
+pub use validation::{
+    EMBEDDING_API_KEY_REQUIRED_PREFIX, ERR_TTL_ZERO, EXTRACTION_API_KEY_REQUIRED_PREFIX,
+    RELATION_API_KEY_REQUIRED_PREFIX, SERVER_BIND_ADDRESS_ERROR_PREFIX,
+    SERVER_BIND_ADDRESS_MALFORMED_PREFIX, SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX,
+    TRIAGE_API_KEY_REQUIRED_PREFIX, validate,
+};
 
 // ---------------------------------------------------------------------------
 // Test utilities

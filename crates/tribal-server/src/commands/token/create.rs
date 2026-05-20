@@ -138,7 +138,7 @@ pub async fn run_async(
         let _ = writeln!(out_stderr, "{warning}");
     }
 
-    raw_token_result.map_err(|source| AppError::SetupIo {
+    raw_token_result.map_err(|source| AppError::Io {
         context: "writing raw bearer token".into(),
         source,
     })?;

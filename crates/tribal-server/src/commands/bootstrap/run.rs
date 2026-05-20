@@ -213,12 +213,12 @@ pub async fn run_async(
     };
 
     if opts.json {
-        write_json(out_stdout, &handoff).map_err(|source| AppError::SetupIo {
+        write_json(out_stdout, &handoff).map_err(|source| AppError::Io {
             context: "writing bootstrap --json output".into(),
             source,
         })?;
     } else {
-        write_human(recovery.dest(), opts.theme, &handoff).map_err(|source| AppError::SetupIo {
+        write_human(recovery.dest(), opts.theme, &handoff).map_err(|source| AppError::Io {
             context: "writing bootstrap stderr output".into(),
             source,
         })?;

@@ -9,6 +9,7 @@ mod auth_token;
 mod error_factories;
 mod job;
 mod knowledge_item;
+mod migration;
 mod principal;
 mod project;
 mod prompt_version;
@@ -26,6 +27,7 @@ pub use error_factories::{
 };
 pub use job::MockJobRepository;
 pub use knowledge_item::MockKnowledgeItemRepository;
+pub use migration::MockMigrationRepository;
 pub use principal::MockPrincipalRepository;
 pub use project::MockProjectRepository;
 pub use prompt_version::MockPromptVersionRepository;

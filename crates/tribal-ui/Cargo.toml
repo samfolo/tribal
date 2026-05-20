@@ -16,5 +16,6 @@ chrono.workspace = true
 chrono-humanize.workspace = true
 supports-color.workspace = true
 termbg.workspace = true
+textwrap.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true

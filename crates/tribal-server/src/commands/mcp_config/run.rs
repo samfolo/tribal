@@ -239,7 +239,7 @@ fn resolve_network_auth(
 /// stdout is the structured channel callers pipe into wire-up tooling.
 fn write_snippet(out: &mut dyn Write, entry: &serde_json::Value) -> Result<(), AppError> {
     let rendered = serde_json::to_string_pretty(entry).expect("JSON serialisation cannot fail");
-    writeln!(out, "{rendered}").map_err(|source| AppError::SetupIo {
+    writeln!(out, "{rendered}").map_err(|source| AppError::Io {
         context: "writing mcp-config snippet".into(),
         source,
     })

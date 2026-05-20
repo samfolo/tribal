@@ -1,0 +1,12 @@
+× config_validate               
+    server.bind_address cannot be set when server.transport is stdio
+    embedding.api_key is required when embedding.provider is openai
+    inference.triage.api_key is required when inference.triage.provider is
+    openai
+    fix: remove `server.bind_address` for stdio transport
+    set `embedding.api_key` or export `TRIBAL_EMBEDDING__API_KEY` /
+    `OPENAI_API_KEY`
+    set `inference.triage.api_key` or export
+    `TRIBAL_INFERENCE__TRIAGE__API_KEY` / `OPENAI_API_KEY`
+
+× fail  —  1 failed
