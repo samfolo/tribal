@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tribal_config::ProviderKind;
+use tribal_config::{ProviderKind, env_var_for_path};
 use tribal_domain::ProjectId;
 
 use crate::error::FIRST_RUN_REQUIRED;
@@ -556,8 +556,12 @@ impl CheckRemediation {
             Self::FixProviderConfig { target, provider } => {
                 let path = target.config_path();
                 let head = match provider.standard_env_var_name() {
-                    Some(env) => {
-                        format!("check `{path}.api_key` (or export `{env}`) and `{path}.base_url`")
+                    Some(standard) => {
+                        let figment = env_var_for_path(&format!("{path}.api_key"));
+                        format!(
+                            "check `{path}.api_key` (or export `{figment}` / `{standard}`) \
+                             and `{path}.base_url`"
+                        )
                     }
                     None => {
                         format!("check `{path}.base_url` and confirm the provider is reachable")
