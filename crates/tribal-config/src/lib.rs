@@ -47,9 +47,10 @@ pub use sections::{
     DEFAULT_OPENAI_BASE_URL, DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD,
     DatabaseConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation,
     InferenceConfig, LimitsConfig, LoadedCredentials, LogFormat, LogOutput, LoggingConfig,
-    MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, PromptSource, PromptsConfig, ProviderKind,
-    ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig,
-    TransportKind, TribalConfig, VERSION, WorkerConfig, read_credentials, write_credentials,
+    MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS, PromptSource,
+    PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
+    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
+    read_credentials, write_credentials,
 };
 pub use validation::{
     ApiKeyStage, ComputedFloor, ConfigPath, Diagnostics, EMBEDDING_API_KEY_REQUIRED_PREFIX,
