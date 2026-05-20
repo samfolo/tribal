@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::validation::{ConfigPath, EnumerateFields};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -166,6 +168,38 @@ impl Default for WorkerConfig {
             tag_similarity_threshold: DEFAULT_TAG_SIMILARITY_THRESHOLD,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+impl EnumerateFields for WorkerConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "max_concurrent_tasks"));
+        out.push(ConfigPath::child(prefix, "poll_interval_ms"));
+        out.push(ConfigPath::child(prefix, "task_timeout_ms"));
+        out.push(ConfigPath::child(prefix, "task_max_retries"));
+        out.push(ConfigPath::child(prefix, "heartbeat_interval_ms"));
+        out.push(ConfigPath::child(prefix, "reclaim_interval_ms"));
+        out.push(ConfigPath::child(prefix, "max_candidates_per_job"));
+        out.push(ConfigPath::child(prefix, "triage_search_limit"));
+        out.push(ConfigPath::child(prefix, "tag_similarity_threshold"));
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_worker_config_fields(c: &WorkerConfig) {
+    let _ = &c.max_concurrent_tasks;
+    let _ = &c.poll_interval_ms;
+    let _ = &c.task_timeout_ms;
+    let _ = &c.task_max_retries;
+    let _ = &c.heartbeat_interval_ms;
+    let _ = &c.reclaim_interval_ms;
+    let _ = &c.max_candidates_per_job;
+    let _ = &c.triage_search_limit;
+    let _ = &c.tag_similarity_threshold;
 }
 
 // ---------------------------------------------------------------------------

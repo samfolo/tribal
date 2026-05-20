@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::validation::{ConfigPath, EnumerateFields};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -61,6 +63,28 @@ impl Default for DiscoveryConfig {
             similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+impl EnumerateFields for DiscoveryConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "default_limit"));
+        out.push(ConfigPath::child(prefix, "max_limit"));
+        out.push(ConfigPath::child(prefix, "overfetch_multiplier"));
+        out.push(ConfigPath::child(prefix, "similarity_threshold"));
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_discovery_config_fields(c: &DiscoveryConfig) {
+    let _ = &c.default_limit;
+    let _ = &c.max_limit;
+    let _ = &c.overfetch_multiplier;
+    let _ = &c.similarity_threshold;
 }
 
 const fn default_limit() -> u32 {

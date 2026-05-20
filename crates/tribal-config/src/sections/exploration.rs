@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::validation::{ConfigPath, EnumerateFields};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -54,6 +56,28 @@ impl Default for ExplorationConfig {
             max_limit: DEFAULT_MAX_LIMIT,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+impl EnumerateFields for ExplorationConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "max_depth"));
+        out.push(ConfigPath::child(prefix, "default_depth"));
+        out.push(ConfigPath::child(prefix, "default_limit"));
+        out.push(ConfigPath::child(prefix, "max_limit"));
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_exploration_config_fields(c: &ExplorationConfig) {
+    let _ = &c.max_depth;
+    let _ = &c.default_depth;
+    let _ = &c.default_limit;
+    let _ = &c.max_limit;
 }
 
 const fn default_max_depth() -> u32 {

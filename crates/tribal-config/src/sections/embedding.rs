@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use tribal_domain::ApiKey;
 
 use super::provider_kind::ProviderKind;
+use crate::validation::{ConfigPath, EnumerateFields};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,6 +73,30 @@ impl Default for EmbeddingConfig {
             api_key: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+impl EnumerateFields for EmbeddingConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "provider"));
+        out.push(ConfigPath::child(prefix, "model"));
+        out.push(ConfigPath::child(prefix, "dimensions"));
+        out.push(ConfigPath::child(prefix, "base_url"));
+        out.push(ConfigPath::child(prefix, "api_key"));
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_embedding_config_fields(c: &EmbeddingConfig) {
+    let _ = &c.provider;
+    let _ = &c.model;
+    let _ = &c.dimensions;
+    let _ = &c.base_url;
+    let _ = &c.api_key;
 }
 
 #[cfg(test)]

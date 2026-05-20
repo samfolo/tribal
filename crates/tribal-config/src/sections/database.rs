@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::validation::{ConfigPath, EnumerateFields};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -137,6 +139,37 @@ impl Default for DatabaseConfig {
             max_connect_attempts: DEFAULT_MAX_CONNECT_ATTEMPTS,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+impl EnumerateFields for DatabaseConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "url"));
+        out.push(ConfigPath::child(prefix, "pool_mcp_max_connections"));
+        out.push(ConfigPath::child(prefix, "pool_worker_max_connections"));
+        out.push(ConfigPath::child(prefix, "acquire_timeout_ms"));
+        out.push(ConfigPath::child(prefix, "statement_timeout_mcp_ms"));
+        out.push(ConfigPath::child(prefix, "statement_timeout_worker_ms"));
+        out.push(ConfigPath::child(prefix, "max_connect_attempts"));
+    }
+}
+
+/// Field-access companion to [`DatabaseConfig::enumerate`].  Adding or
+/// renaming a struct field requires updating both the impl above and
+/// this check.
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_database_config_fields(c: &DatabaseConfig) {
+    let _ = &c.url;
+    let _ = &c.pool_mcp_max_connections;
+    let _ = &c.pool_worker_max_connections;
+    let _ = &c.acquire_timeout_ms;
+    let _ = &c.statement_timeout_mcp_ms;
+    let _ = &c.statement_timeout_worker_ms;
+    let _ = &c.max_connect_attempts;
 }
 
 // ---------------------------------------------------------------------------

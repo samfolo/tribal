@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::validation::{ConfigPath, EnumerateFields};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -36,6 +38,22 @@ impl Default for AuthConfig {
             token_ttl_hours: default_token_ttl_hours(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+impl EnumerateFields for AuthConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "token_ttl_hours"));
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_auth_config_fields(c: &AuthConfig) {
+    let _ = &c.token_ttl_hours;
 }
 
 #[cfg(test)]

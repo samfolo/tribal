@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::transport_kind::TransportKind;
+use crate::validation::{ConfigPath, EnumerateFields};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -151,6 +152,48 @@ impl Default for SseConfig {
             keepalive_interval_ms: default_keepalive_interval_ms(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+impl EnumerateFields for ServerConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "transport"));
+        out.push(ConfigPath::child(prefix, "bind_address"));
+        out.push(ConfigPath::child(prefix, "shutdown_deadline_ms"));
+        out.push(ConfigPath::child(prefix, "job_state_ttl_seconds"));
+        out.push(ConfigPath::child(prefix, "job_state_hard_ttl_seconds"));
+        SseConfig::enumerate(&format!("{prefix}.sse"), out);
+    }
+}
+
+impl EnumerateFields for SseConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "max_connection_age_ms"));
+        out.push(ConfigPath::child(prefix, "idle_timeout_ms"));
+        out.push(ConfigPath::child(prefix, "keepalive_interval_ms"));
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_server_config_fields(c: &ServerConfig) {
+    let _ = &c.transport;
+    let _ = &c.bind_address;
+    let _ = &c.shutdown_deadline_ms;
+    let _ = &c.job_state_ttl_seconds;
+    let _ = &c.job_state_hard_ttl_seconds;
+    let _ = &c.sse;
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_sse_config_fields(c: &SseConfig) {
+    let _ = &c.max_connection_age_ms;
+    let _ = &c.idle_timeout_ms;
+    let _ = &c.keepalive_interval_ms;
 }
 
 // ---------------------------------------------------------------------------

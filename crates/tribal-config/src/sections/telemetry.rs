@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths::resolve_directory;
+use crate::{
+    paths::resolve_directory,
+    validation::{ConfigPath, EnumerateFields},
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -101,6 +104,39 @@ impl Default for TelemetryConfig {
             file_rotation: FileRotation::default(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+/// `used_temp_dir_fallback` is `#[serde(skip)]` — internal runtime
+/// state, not part of the YAML surface — so it's intentionally absent
+/// from both [`TelemetryConfig::enumerate`] and the check below.
+impl EnumerateFields for TelemetryConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "enabled"));
+        out.push(ConfigPath::child(prefix, "otlp_endpoint"));
+        out.push(ConfigPath::child(prefix, "otlp_protocol"));
+        out.push(ConfigPath::child(prefix, "service_name"));
+        out.push(ConfigPath::child(prefix, "console_export"));
+        out.push(ConfigPath::child(prefix, "file_export"));
+        out.push(ConfigPath::child(prefix, "file_directory"));
+        out.push(ConfigPath::child(prefix, "file_rotation"));
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_telemetry_config_fields(c: &TelemetryConfig) {
+    let _ = &c.enabled;
+    let _ = &c.otlp_endpoint;
+    let _ = &c.otlp_protocol;
+    let _ = &c.service_name;
+    let _ = &c.console_export;
+    let _ = &c.file_export;
+    let _ = &c.file_directory;
+    let _ = &c.file_rotation;
 }
 
 const fn default_enabled() -> bool {

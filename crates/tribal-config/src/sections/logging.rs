@@ -6,7 +6,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::telemetry::FileRotation;
-use crate::paths::resolve_directory;
+use crate::{
+    paths::resolve_directory,
+    validation::{ConfigPath, EnumerateFields},
+};
 
 // ---------------------------------------------------------------------------
 // LoggingConfig
@@ -96,6 +99,35 @@ impl Default for LoggingConfig {
             include_llm_content: false,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+/// `used_temp_dir_fallback` is `#[serde(skip)]` — internal runtime
+/// state, not part of the YAML surface — so it's intentionally absent
+/// from both [`LoggingConfig::enumerate`] and the check below.
+impl EnumerateFields for LoggingConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "level"));
+        out.push(ConfigPath::child(prefix, "format"));
+        out.push(ConfigPath::child(prefix, "output"));
+        out.push(ConfigPath::child(prefix, "file_directory"));
+        out.push(ConfigPath::child(prefix, "file_rotation"));
+        out.push(ConfigPath::child(prefix, "include_llm_content"));
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_logging_config_fields(c: &LoggingConfig) {
+    let _ = &c.level;
+    let _ = &c.format;
+    let _ = &c.output;
+    let _ = &c.file_directory;
+    let _ = &c.file_rotation;
+    let _ = &c.include_llm_content;
 }
 
 // ---------------------------------------------------------------------------

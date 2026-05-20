@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::provider_kind::ProviderKind;
+use crate::validation::{ConfigPath, EnumerateFields};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -84,6 +85,25 @@ fn default_providers() -> HashMap<ProviderKind, ProviderLimitsConfig> {
         },
     );
     map
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+/// `providers` is `HashMap<ProviderKind, ProviderLimitsConfig>` —
+/// runtime-keyed by provider name.  This section therefore contributes
+/// no static paths to enumeration; the validator constructs paths like
+/// `limits.providers.<provider>.<field>` at the call site via
+/// [`ConfigPath::child`].
+impl EnumerateFields for LimitsConfig {
+    fn enumerate(_prefix: &str, _out: &mut Vec<ConfigPath>) {}
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_limits_config_fields(c: &LimitsConfig) {
+    let _ = &c.providers;
 }
 
 // ---------------------------------------------------------------------------
