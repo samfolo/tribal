@@ -32,7 +32,7 @@ impl CheckOutcome {
     pub(in crate::commands::check) fn project_query_failed(error: String) -> Self {
         Self::Fail {
             detail: CheckDetail::ProjectQueryFailed { error },
-            remediation: CheckRemediation::CheckPgIsready,
+            remediation: CheckRemediation::ConsultUnderlyingError,
         }
     }
 }
@@ -98,14 +98,14 @@ mod tests {
     }
 
     #[test]
-    fn test_project_query_failed_is_fail_with_pg_isready_remediation() {
-        let outcome = CheckOutcome::project_query_failed("pool exhausted".into());
+    fn test_project_query_failed_routes_to_consult_underlying_error() {
+        let outcome = CheckOutcome::project_query_failed("permission denied".into());
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
                 detail: CheckDetail::ProjectQueryFailed { error },
-                remediation: CheckRemediation::CheckPgIsready,
-            } if error == "pool exhausted",
+                remediation: CheckRemediation::ConsultUnderlyingError,
+            } if error == "permission denied",
         ));
     }
 }
