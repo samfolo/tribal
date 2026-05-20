@@ -52,10 +52,12 @@ pub use sections::{
     TransportKind, TribalConfig, VERSION, WorkerConfig, read_credentials, write_credentials,
 };
 pub use validation::{
-    EMBEDDING_API_KEY_REQUIRED_PREFIX, ERR_TTL_ZERO, EXTRACTION_API_KEY_REQUIRED_PREFIX,
-    RELATION_API_KEY_REQUIRED_PREFIX, SERVER_BIND_ADDRESS_ERROR_PREFIX,
-    SERVER_BIND_ADDRESS_MALFORMED_PREFIX, SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX,
-    TRIAGE_API_KEY_REQUIRED_PREFIX, validate,
+    ApiKeyStage, ComputedFloor, ConfigPath, Diagnostics, EMBEDDING_API_KEY_REQUIRED_PREFIX,
+    ERR_TTL_ZERO, EXTRACTION_API_KEY_REQUIRED_PREFIX, Endpoint, EnumerateFields, FieldValue,
+    Inclusion, NumericRange, OrderRelation, RELATION_API_KEY_REQUIRED_PREFIX,
+    SERVER_BIND_ADDRESS_ERROR_PREFIX, SERVER_BIND_ADDRESS_MALFORMED_PREFIX,
+    SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX, TRIAGE_API_KEY_REQUIRED_PREFIX, ValidationError,
+    validate,
 };
 
 // ---------------------------------------------------------------------------

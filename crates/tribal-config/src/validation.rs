@@ -11,6 +11,15 @@ use crate::{
     sections::{ProviderKind, TransportKind, TribalConfig},
 };
 
+mod diagnostics;
+mod error;
+
+pub use diagnostics::Diagnostics;
+pub use error::{
+    ApiKeyStage, ComputedFloor, ConfigPath, Endpoint, EnumerateFields, FieldValue, Inclusion,
+    NumericRange, OrderRelation, ValidationError,
+};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------

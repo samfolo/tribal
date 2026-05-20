@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tribal_domain::ApiKey;
 
 use super::provider_kind::ProviderKind;
+use crate::validation::{ConfigPath, EnumerateFields};
 
 // ---------------------------------------------------------------------------
 // Constants — extraction
@@ -124,6 +125,48 @@ impl Default for InferenceConfig {
             relation: default_relation(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+impl EnumerateFields for StageInferenceConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "provider"));
+        out.push(ConfigPath::child(prefix, "model"));
+        out.push(ConfigPath::child(prefix, "base_url"));
+        out.push(ConfigPath::child(prefix, "api_key"));
+        out.push(ConfigPath::child(prefix, "temperature"));
+        out.push(ConfigPath::child(prefix, "max_tokens"));
+    }
+}
+
+impl EnumerateFields for InferenceConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        StageInferenceConfig::enumerate(&format!("{prefix}.extraction"), out);
+        StageInferenceConfig::enumerate(&format!("{prefix}.triage"), out);
+        StageInferenceConfig::enumerate(&format!("{prefix}.relation"), out);
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_stage_inference_config_fields(c: &StageInferenceConfig) {
+    let _ = &c.provider;
+    let _ = &c.model;
+    let _ = &c.base_url;
+    let _ = &c.api_key;
+    let _ = &c.temperature;
+    let _ = &c.max_tokens;
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_inference_config_fields(c: &InferenceConfig) {
+    let _ = &c.extraction;
+    let _ = &c.triage;
+    let _ = &c.relation;
 }
 
 // ---------------------------------------------------------------------------

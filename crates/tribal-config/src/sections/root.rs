@@ -8,6 +8,7 @@ use super::{
     limits::LimitsConfig, logging::LoggingConfig, prompts::PromptsConfig, server::ServerConfig,
     telemetry::TelemetryConfig, worker::WorkerConfig,
 };
+use crate::validation::{ConfigPath, EnumerateFields};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -131,6 +132,48 @@ impl Default for TribalConfig {
             telemetry: TelemetryConfig::default(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+/// Top-level depth-first walker.  `prefix` is ignored — `TribalConfig`
+/// is the root, so each section's prefix is its own absolute name.
+impl EnumerateFields for TribalConfig {
+    fn enumerate(_prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::from_static("version"));
+        ServerConfig::enumerate("server", out);
+        DatabaseConfig::enumerate("database", out);
+        AuthConfig::enumerate("auth", out);
+        WorkerConfig::enumerate("worker", out);
+        EmbeddingConfig::enumerate("embedding", out);
+        InferenceConfig::enumerate("inference", out);
+        LimitsConfig::enumerate("limits", out);
+        PromptsConfig::enumerate("prompts", out);
+        DiscoveryConfig::enumerate("discovery", out);
+        ExplorationConfig::enumerate("exploration", out);
+        LoggingConfig::enumerate("logging", out);
+        TelemetryConfig::enumerate("telemetry", out);
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_tribal_config_fields(c: &TribalConfig) {
+    let _ = &c.version;
+    let _ = &c.server;
+    let _ = &c.database;
+    let _ = &c.auth;
+    let _ = &c.worker;
+    let _ = &c.embedding;
+    let _ = &c.inference;
+    let _ = &c.limits;
+    let _ = &c.prompts;
+    let _ = &c.discovery;
+    let _ = &c.exploration;
+    let _ = &c.logging;
+    let _ = &c.telemetry;
 }
 
 // ---------------------------------------------------------------------------

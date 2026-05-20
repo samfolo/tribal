@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths::default_prompts_directory;
+use crate::{
+    paths::default_prompts_directory,
+    validation::{ConfigPath, EnumerateFields},
+};
 
 fn default_directory() -> String {
     default_prompts_directory()
@@ -64,6 +67,26 @@ pub struct PromptsConfig {
     /// Where the active prompts are loaded from.
     #[serde(default)]
     pub source: PromptSource,
+}
+
+// ---------------------------------------------------------------------------
+// EnumerateFields
+// ---------------------------------------------------------------------------
+
+/// `source` is an internally-tagged enum whose YAML shape varies by
+/// variant; treated as one opaque leaf here.  If the validator ever
+/// needs to address `source.kind` or variant-specific fields directly,
+/// recurse into the enum at that point.
+impl EnumerateFields for PromptsConfig {
+    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
+        out.push(ConfigPath::child(prefix, "source"));
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code, clippy::let_underscore_untyped)]
+fn _check_prompts_config_fields(c: &PromptsConfig) {
+    let _ = &c.source;
 }
 
 #[cfg(test)]
