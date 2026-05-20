@@ -113,6 +113,8 @@ impl From<&CheckOutcomes> for CheckOutput {
 mod tests {
     use std::path::PathBuf;
 
+    use tribal_config::{ConfigPath, Diagnostics, ValidationError};
+
     use super::*;
 
     #[test]
@@ -147,9 +149,11 @@ mod tests {
         outcomes.push(CheckOutcome::config_parse_loaded(PathBuf::from(
             "/cfg.yaml",
         )));
-        outcomes.push(CheckOutcome::config_validate_failed(vec![
-            "database.url must not be empty".into(),
-        ]));
+        outcomes.push(CheckOutcome::config_validate_failed(Diagnostics::from(
+            vec![ValidationError::Empty {
+                field: ConfigPath::from_static("database.url"),
+            }],
+        )));
 
         let output = CheckOutput::from(&outcomes);
         assert!(!output.ok);
