@@ -1,9 +1,9 @@
 //! Internal data layer for `tribal check`.
 //!
 //! Each check returns a [`CheckOutcome`] carrying a typed [`CheckDetail`]
-//! and an optional [`CheckRemediation`].  Variants own their data so
-//! rendering — to the wire format or the human form — is a single match
-//! per enum.
+//! and an optional [`CheckRemediation`].  Detail describes the state;
+//! remediation carries the action — neither duplicates the other.
+//! Variants own their data so rendering is a single match per enum.
 
 use std::path::PathBuf;
 
