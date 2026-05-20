@@ -32,7 +32,14 @@ async fn test_happy_path_all_phases_green_against_fresh_db() {
     assert_eq!(row_status(&output, "config_validate"), Some("pass"));
     assert_eq!(row_status(&output, "database_reachable"), Some("pass"));
     assert_eq!(row_status(&output, "migrations_current"), Some("pass"));
-    assert_eq!(row_status(&output, "binary_uniqueness"), Some("pass"));
+    // binary_uniqueness depends on whether `tribal` is on the runner's
+    // PATH; CI invocations via `cargo test` may not have it installed,
+    // so pass-or-warn is the contract — never fail, never skip.
+    let binary = row_status(&output, "binary_uniqueness");
+    assert!(
+        matches!(binary, Some("pass") | Some("warn")),
+        "binary_uniqueness should run (pass or warn), got {binary:?}",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

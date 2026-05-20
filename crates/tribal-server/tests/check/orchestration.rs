@@ -130,12 +130,18 @@ async fn test_database_unreachable_cascades_skip_to_db_dependent_checks() {
         );
     }
     // advertised_url and binary_uniqueness are orthogonal to the pool;
-    // they run regardless of database availability.
+    // they run regardless of database availability.  The binary check's
+    // specific outcome depends on whether `tribal` is on PATH (CI may
+    // not have it installed), so pass-or-warn proves the row ran.
     assert_eq!(
         row_status(&output, "advertised_url_reachable"),
         Some("skip")
     );
-    assert_eq!(row_status(&output, "binary_uniqueness"), Some("pass"));
+    let binary = row_status(&output, "binary_uniqueness");
+    assert!(
+        matches!(binary, Some("pass") | Some("warn")),
+        "binary_uniqueness should run (pass or warn), got {binary:?}",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
