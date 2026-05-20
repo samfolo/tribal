@@ -104,8 +104,17 @@ pub enum Command {
         args: BootstrapArgs,
     },
 
-    /// Start the MCP server.
+    /// Run readiness diagnostics across config, database, project,
+    /// token, advertised URL, and binary uniqueness.
     #[command(display_order = 1)]
+    Check {
+        /// Arguments for the check subcommand.
+        #[command(flatten)]
+        args: CheckArgs,
+    },
+
+    /// Start the MCP server.
+    #[command(display_order = 2)]
     Serve {
         /// Arguments for the serve subcommand.
         #[command(flatten)]
@@ -113,7 +122,7 @@ pub enum Command {
     },
 
     /// Run first-time database setup and migrations.
-    #[command(display_order = 2)]
+    #[command(display_order = 3)]
     Setup {
         /// Arguments for the setup subcommand.
         #[command(flatten)]
@@ -121,20 +130,20 @@ pub enum Command {
     },
 
     /// Manage projects.
-    #[command(subcommand, display_order = 3)]
+    #[command(subcommand, display_order = 4)]
     Project(ProjectCommand),
 
     /// Manage authentication tokens.
-    #[command(subcommand, display_order = 4)]
+    #[command(subcommand, display_order = 5)]
     Token(TokenCommand),
 
     /// Interact with the resolved configuration.
-    #[command(subcommand, display_order = 5)]
+    #[command(subcommand, display_order = 6)]
     Config(ConfigCommand),
 
     /// Print an MCP server-config entry for the active project to
     /// stdout.
-    #[command(name = "mcp-config", display_order = 6)]
+    #[command(name = "mcp-config", display_order = 7)]
     McpConfig {
         /// Arguments for the mcp-config subcommand.
         #[command(flatten)]
@@ -488,6 +497,34 @@ impl BootstrapArgs {
             telemetry: telemetry.telemetry,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Check
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `check` subcommand.
+#[derive(Debug, Default, Args)]
+pub struct CheckArgs {
+    /// Run fatal probes against the configured embedding and
+    /// inference providers.
+    #[arg(long, help_heading = "Check")]
+    pub providers: bool,
+
+    /// Project ID to verify directly, bypassing the
+    /// `TRIBAL_PROJECT_ID` / git-remote cascade.
+    #[arg(long, help_heading = "Check")]
+    pub project: Option<String>,
+
+    /// Bearer token to verify, overriding the
+    /// `TRIBAL_AUTH_TOKEN` / `credentials.json` resolution order.
+    #[arg(long, help_heading = "Check")]
+    pub token: Option<String>,
+
+    /// Emit a single JSON object on stdout instead of the human
+    /// form on stderr.
+    #[arg(long, help_heading = "Output")]
+    pub json: bool,
 }
 
 // ---------------------------------------------------------------------------

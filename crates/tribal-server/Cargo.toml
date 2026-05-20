@@ -21,6 +21,11 @@ name = "bootstrap"
 path = "tests/bootstrap.rs"
 required-features = ["test-helpers"]
 
+[[test]]
+name = "check"
+path = "tests/check.rs"
+required-features = ["test-helpers"]
+
 [dependencies]
 anstream.workspace = true
 axum.workspace = true
@@ -40,10 +45,12 @@ pin-project-lite.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 shellexpand.workspace = true
 shlex.workspace = true
 sqlx.workspace = true
+strum.workspace = true
 tera.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -63,11 +70,13 @@ tribal-ui.workspace = true
 tribal-worker.workspace = true
 
 [features]
-test-helpers = []
+test-helpers = ["tribal-inference/test-helpers"]
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
 
+tribal-inference = { workspace = true, features = ["test-helpers"] }
 tribal-test-utils.workspace = true

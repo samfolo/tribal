@@ -21,7 +21,9 @@ mock_repository! {
         find_by_hash_prefix(String => Vec<AuthToken>)
             (prefix: &str) { prefix.to_owned() };
         revoke_all((Option<PrincipalId>, DateTime<Utc>) => u64)
-            (principal_id: Option<PrincipalId>, revoked_at: DateTime<Utc>) { (principal_id, revoked_at) }
+            (principal_id: Option<PrincipalId>, revoked_at: DateTime<Utc>) { (principal_id, revoked_at) };
+        any_active(DateTime<Utc> => bool)
+            (now: DateTime<Utc>) { now }
     }
 }
 

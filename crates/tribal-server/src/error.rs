@@ -22,6 +22,12 @@ const EXIT_CODE_MIGRATION_LOCK: i32 = 75;
 /// Exit code for worker runtime failure or unexpected death (`EX_SOFTWARE`).
 const EXIT_CODE_WORKER_DEATH: i32 = 70;
 
+/// User-facing literal for an uninitialised database.  Shared between
+/// [`AppError::FirstRunRequired`]'s `Display` impl and
+/// `CheckDetail::MigrationsTableMissing` so the two render paths can
+/// never drift.
+pub const FIRST_RUN_REQUIRED: &str = "database is uninitialised; run `tribal setup` first";
+
 // ---------------------------------------------------------------------------
 // AppError
 // ---------------------------------------------------------------------------
@@ -77,8 +83,14 @@ pub enum AppError {
     },
 
     /// Database has no migrations table — `tribal setup` required.
-    #[error("database is uninitialised; run `tribal setup` first")]
+    #[error("{FIRST_RUN_REQUIRED}")]
     FirstRunRequired,
+
+    /// `tribal check` produced one or more failing rows; the diagnostic
+    /// output has already been written to the selected stream, so this
+    /// variant exists purely to flip the process exit code.
+    #[error("")]
+    CheckFailed,
 
     /// Migration advisory lock could not be acquired.
     #[error("could not acquire migration lock after {attempts} attempts")]
@@ -230,14 +242,26 @@ pub enum AppError {
         source: io::Error,
     },
 
-    /// Setup I/O operation failed (directory creation, config file write).
-    #[error("setup I/O failed ({context}): {source}")]
-    SetupIo {
+    /// I/O operation failed (file write, stdout/stderr flush, directory
+    /// creation, etc.).
+    #[error("I/O failed ({context}): {source}")]
+    Io {
         /// Description of the failed operation.
         context: String,
         /// The underlying I/O error.
         #[source]
         source: io::Error,
+    },
+
+    /// Constructing the shared HTTP client failed (TLS init, DNS
+    /// resolver setup, or similar).
+    #[error("could not build HTTP client ({context}): {source}")]
+    HttpClient {
+        /// Description of which client construction failed.
+        context: String,
+        /// The underlying reqwest error.
+        #[source]
+        source: reqwest::Error,
     },
 
     /// Git remote detection failed.
@@ -298,6 +322,16 @@ impl AppError {
             | Self::ShutdownDeadlineExceeded { .. } => EXIT_CODE_WORKER_DEATH,
             _ => 1,
         }
+    }
+
+    /// Whether `main` should suppress the default `eprintln!("{err}")`.
+    ///
+    /// `tribal check` writes its own diagnostic output to stdout or
+    /// stderr before returning [`Self::CheckFailed`]; printing the
+    /// variant's empty Display would only add a stray blank line.
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        matches!(self, Self::CheckFailed)
     }
 
     /// Wraps a pool-acquire failure as the appropriate `AppError` variant.
@@ -408,7 +442,7 @@ mod tests {
     #[test]
     fn test_display_first_run_required() {
         let err = AppError::FirstRunRequired;
-        assert!(err.to_string().contains("tribal setup"));
+        assert_eq!(err.to_string(), FIRST_RUN_REQUIRED);
     }
 
     #[test]
@@ -638,8 +672,8 @@ mod tests {
     }
 
     #[test]
-    fn test_display_setup_io() {
-        let err = AppError::SetupIo {
+    fn test_display_io() {
+        let err = AppError::Io {
             context: "create config directory /tmp/tribal".into(),
             source: io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"),
         };
@@ -714,6 +748,19 @@ mod tests {
     #[test]
     fn test_exit_code_default() {
         let err = AppError::FirstRunRequired;
+        assert_eq!(err.exit_code(), 1);
+    }
+
+    #[test]
+    fn test_check_failed_has_empty_display() {
+        let err = AppError::CheckFailed;
+        assert_eq!(err.to_string(), "");
+    }
+
+    #[test]
+    fn test_check_failed_is_silent_with_exit_code_1() {
+        let err = AppError::CheckFailed;
+        assert!(err.is_silent());
         assert_eq!(err.exit_code(), 1);
     }
 

@@ -44,7 +44,7 @@ pub use knowledge_item::{
     KnowledgeItemRepository, NewKnowledgeItem, PgKnowledgeItemRepository, SemanticSearchParams,
     SemanticSearchResponse, SemanticSearchResult,
 };
-pub use migration::{MigrationRepository, PgMigrationRepository};
+pub use migration::{MigrationHeadStatus, MigrationRepository, PgMigrationRepository};
 pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
 pub use project::{NewProject, PgProjectRepository, ProjectRepository};
 pub use prompt_version::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};

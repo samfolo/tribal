@@ -1,0 +1,8 @@
+✓ config_parse                  
+    config loaded from /etc/tribal/config.yaml
+✓ config_validate               
+    all configuration invariants satisfied
+✓ binary_uniqueness             
+    `tribal` resolves to /usr/local/bin/tribal
+
+✓ pass  —  3 passed

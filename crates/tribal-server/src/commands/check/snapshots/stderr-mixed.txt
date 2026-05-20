@@ -1,0 +1,16 @@
+✓ config_parse                  
+    config loaded from /etc/tribal/config.yaml
+◬ project_resolution            
+    no project resolved from --project, TRIBAL_PROJECT_ID, or the git remote
+    fix: register a project with `tribal project register` or set
+    `TRIBAL_PROJECT_ID`
+× database_reachable            
+    database unreachable: query failed (connecting to pool 'check'): error
+    communicating with database: failed to lookup address information: nodename
+    nor servname provided, or not known
+    fix: run `pg_isready` against the configured database URL and verify the
+    host, port, and credentials
+⊝ migrations_current            
+    skipped because the database is unreachable
+
+× fail  —  1 failed, 1 warned, 1 passed, 1 skipped

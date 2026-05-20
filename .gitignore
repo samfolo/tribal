@@ -11,5 +11,8 @@
 # Reviews (local only — archive is Read-denied in settings)
 .reviews/
 
+# Local smoke scripts and other working artefacts
+.scratch/
+
 # OS-specific
 .DS_Store
