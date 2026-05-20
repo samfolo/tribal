@@ -136,8 +136,7 @@ mod tests {
     fn test_find_tribal_binaries_dedupes_repeated_path_entries() {
         let candidate = format!("/usr/local/bin/{BINARY_FILENAME}");
         let exists = predicate_from(&[&candidate]);
-        let binaries =
-            find_tribal_binaries("/usr/local/bin:/usr/local/bin:/usr/local/bin", exists);
+        let binaries = find_tribal_binaries("/usr/local/bin:/usr/local/bin:/usr/local/bin", exists);
         assert_eq!(binaries, vec![PathBuf::from(candidate)]);
     }
 
