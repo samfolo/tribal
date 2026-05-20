@@ -66,6 +66,8 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
 
 #[cfg(test)]
 mod tests {
+    use tribal_config::{ConfigPath, Diagnostics, ValidationError};
+
     use super::*;
 
     #[test]
@@ -84,7 +86,9 @@ mod tests {
     fn test_config_parse_failed_carries_error_and_remediation() {
         let path = PathBuf::from("/etc/tribal/config.yaml");
         let error = ConfigError::ValidationFailed {
-            errors: vec!["database.url must not be empty".into()],
+            diagnostics: Diagnostics::from(vec![ValidationError::Empty {
+                field: ConfigPath::from_static("database.url"),
+            }]),
         };
         let outcome = CheckOutcome::config_parse_failed(&error, &path);
 

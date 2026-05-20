@@ -7,8 +7,8 @@ use chrono::TimeDelta;
 use rand::RngExt;
 use sqlx::{Postgres, pool::PoolConnection};
 use tribal_config::{
-    CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, ConfigError, Credentials,
-    ERR_TTL_ZERO, write_credentials,
+    CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, ConfigError, ConfigPath,
+    Credentials, Diagnostics, MAX_TTL_HOURS, ValidationError, write_credentials,
 };
 use tribal_db::{DbError, NewPrincipal, PgPrincipalRepository, PrincipalRepository};
 use tribal_domain::{BearerToken, Principal};
@@ -82,10 +82,6 @@ pub(crate) fn generate_raw_token() -> String {
 // TTL conversion
 // ---------------------------------------------------------------------------
 
-/// Error message for an `auth.token_ttl_hours` config value that exceeds
-/// the representable range.
-pub(crate) const TTL_OUT_OF_RANGE: &str = "auth.token_ttl_hours value is too large";
-
 /// Error message when a CLI `--ttl` flag is zero.
 pub(crate) const TTL_FLAG_MUST_BE_POSITIVE: &str = "--ttl must be greater than zero";
 
@@ -147,12 +143,20 @@ pub(crate) fn resolve_ttl(cli_ttl: Option<u64>, config_ttl: u64) -> Result<TimeD
         },
         (TtlError::Zero, false) => AppError::Config {
             source: ConfigError::ValidationFailed {
-                errors: vec![ERR_TTL_ZERO.into()],
+                diagnostics: Diagnostics::from(vec![ValidationError::BelowMin {
+                    field: ConfigPath::from_static("auth.token_ttl_hours"),
+                    value: 0,
+                    min: 1,
+                }]),
             },
         },
         (TtlError::OutOfRange, false) => AppError::Config {
             source: ConfigError::ValidationFailed {
-                errors: vec![TTL_OUT_OF_RANGE.into()],
+                diagnostics: Diagnostics::from(vec![ValidationError::AboveMax {
+                    field: ConfigPath::from_static("auth.token_ttl_hours"),
+                    value: hours,
+                    limit: MAX_TTL_HOURS,
+                }]),
             },
         },
     })
@@ -360,19 +364,33 @@ mod tests {
     #[test]
     fn test_resolve_ttl_config_zero_returns_config_error() {
         let err = resolve_ttl(None, 0).unwrap_err();
-        assert!(
-            err.to_string().contains(ERR_TTL_ZERO),
-            "unexpected error: {err}",
-        );
+        assert!(matches!(
+            &err,
+            AppError::Config {
+                source: ConfigError::ValidationFailed { diagnostics },
+            } if diagnostics.iter().any(|d| matches!(
+                d,
+                ValidationError::BelowMin { field, min: 1, .. }
+                    if field.as_str() == "auth.token_ttl_hours",
+            )),
+        ));
     }
 
     #[test]
     fn test_resolve_ttl_config_overflow_returns_config_error() {
         let err = resolve_ttl(None, u64::MAX).unwrap_err();
-        assert!(
-            err.to_string().contains(TTL_OUT_OF_RANGE),
-            "unexpected error: {err}",
-        );
+        assert!(matches!(
+            &err,
+            AppError::Config {
+                source: ConfigError::ValidationFailed { diagnostics },
+            } if diagnostics.iter().any(|d| matches!(
+                d,
+                ValidationError::AboveMax { field, value, limit }
+                    if field.as_str() == "auth.token_ttl_hours"
+                        && *value == u64::MAX
+                        && *limit == MAX_TTL_HOURS,
+            )),
+        ));
     }
 
     // -- Path resolution ----------------------------------------------------

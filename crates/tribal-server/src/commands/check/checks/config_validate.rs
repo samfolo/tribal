@@ -1,15 +1,10 @@
 //! Outcome constructors for the `config_validate` check.
 //!
-//! Targeted hints map known validation-error prefixes (API-key and
-//! transport invariants exposed by `tribal_config::validation`) to a
-//! concrete remediation.  Errors without a known hint render with no
-//! remediation.
+//! Each [`ValidationError`] variant maps to either a targeted hint or
+//! its own [`Display`](std::fmt::Display) text (the catch-all echo).
 
 use tribal_config::{
-    ConfigError, EMBEDDING_API_KEY_REQUIRED_PREFIX, EXTRACTION_API_KEY_REQUIRED_PREFIX,
-    ProviderKind, RELATION_API_KEY_REQUIRED_PREFIX, SERVER_BIND_ADDRESS_MALFORMED_PREFIX,
-    SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX, TRIAGE_API_KEY_REQUIRED_PREFIX, env_var_for_path,
-    validate,
+    ApiKeyStage, ConfigError, Diagnostics, ProviderKind, ValidationError, validate,
 };
 
 use super::{
@@ -17,23 +12,6 @@ use super::{
     state::CheckState,
     types::{CheckDetail, CheckOutcome, CheckRemediation},
 };
-
-/// Configuration paths whose API-key prefix triggers a targeted hint.
-///
-/// Each row is `(prefix, config_path)`.  The config path doubles as the
-/// YAML field a hint mentions and the input to [`env_var_for_path`].
-const API_KEY_HINT_PATHS: &[(&str, &str)] = &[
-    (EMBEDDING_API_KEY_REQUIRED_PREFIX, "embedding.api_key"),
-    (
-        EXTRACTION_API_KEY_REQUIRED_PREFIX,
-        "inference.extraction.api_key",
-    ),
-    (TRIAGE_API_KEY_REQUIRED_PREFIX, "inference.triage.api_key"),
-    (
-        RELATION_API_KEY_REQUIRED_PREFIX,
-        "inference.relation.api_key",
-    ),
-];
 
 const STDIO_CONFLICT_HINT: &str = "remove `server.bind_address` for stdio transport";
 const MALFORMED_ADDRESS_HINT: &str = "set `server.bind_address` to a valid `<host>:<port>`";
@@ -48,46 +26,54 @@ impl CheckOutcome {
     }
 
     /// Constructs the outcome for one or more configuration invariant
-    /// violations.  Each error string is matched against known prefixes
-    /// for a targeted hint; unmatched errors are echoed verbatim so the
-    /// remediation always carries one hint per error.
-    pub(in crate::commands::check) fn config_validate_failed(errors: Vec<String>) -> Self {
-        let hints: Vec<String> = errors
+    /// violations.  Each diagnostic produces one hint — either a
+    /// targeted hint from [`hint_for_error`] or the diagnostic's own
+    /// rendered text — so the remediation always carries one entry
+    /// per diagnostic.
+    pub(in crate::commands::check) fn config_validate_failed(diagnostics: Diagnostics) -> Self {
+        let hints: Vec<String> = diagnostics
             .iter()
-            .map(|e| hint_for_error(e).unwrap_or_else(|| e.clone()))
+            .map(|d| hint_for_error(d).unwrap_or_else(|| d.to_string()))
             .collect();
         Self::Fail {
-            detail: CheckDetail::ValidationFailed { errors },
+            detail: CheckDetail::ValidationFailed { diagnostics },
             remediation: CheckRemediation::FixConfigInvariant { hints },
         }
     }
 }
 
-/// Returns a targeted hint for `error` if it matches a known prefix.
-fn hint_for_error(error: &str) -> Option<String> {
-    if error.starts_with(SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX) {
-        return Some(STDIO_CONFLICT_HINT.into());
+/// Returns a targeted hint for `error` if its variant has one.  Other
+/// variants render via [`Display`](std::fmt::Display) at the caller.
+fn hint_for_error(error: &ValidationError) -> Option<String> {
+    match error {
+        ValidationError::BindAddressStdioConflict => Some(STDIO_CONFLICT_HINT.into()),
+        ValidationError::BindAddressMalformed { .. } => Some(MALFORMED_ADDRESS_HINT.into()),
+        ValidationError::MissingApiKey { stage, provider } => Some(api_key_hint(*stage, *provider)),
+        ValidationError::Empty { .. }
+        | ValidationError::BelowMin { .. }
+        | ValidationError::AboveMax { .. }
+        | ValidationError::OutOfRange { .. }
+        | ValidationError::FieldOrdering { .. }
+        | ValidationError::DerivedFloor { .. }
+        | ValidationError::Malformed { .. }
+        | ValidationError::EmbeddingProviderUnsupported { .. }
+        | ValidationError::TelemetryFileExportRequiresEnabled => None,
     }
-    if error.starts_with(SERVER_BIND_ADDRESS_MALFORMED_PREFIX) {
-        return Some(MALFORMED_ADDRESS_HINT.into());
-    }
-    let (prefix, path) = API_KEY_HINT_PATHS
-        .iter()
-        .find(|(prefix, _)| error.starts_with(prefix))?;
-    let figment = env_var_for_path(path);
-    let standard = error[prefix.len()..]
-        .trim()
-        .parse::<ProviderKind>()
-        .ok()
-        .and_then(ProviderKind::standard_env_var_name);
-    Some(match standard {
-        Some(env) => format!("set `{path}` or export `{figment}` / `{env}`"),
+}
+
+/// Renders the hint for a [`ValidationError::MissingApiKey`], naming
+/// the field path and every env var that satisfies it.
+fn api_key_hint(stage: ApiKeyStage, provider: ProviderKind) -> String {
+    let path = stage.api_key_path();
+    let figment = path.env_var();
+    match provider.standard_env_var_name() {
+        Some(standard) => format!("set `{path}` or export `{figment}` / `{standard}`"),
         None => format!("set `{path}` or export `{figment}`"),
-    })
+    }
 }
 
 /// Validates the parsed config currently on `state` and, on failure,
-/// classifies the errors into a [`SkipMask`] stored back on state.
+/// classifies the diagnostics into a [`SkipMask`] stored back on state.
 // `validate` is sync, but the step dispatcher requires every action
 // to share the `async fn act` signature.
 #[allow(clippy::unused_async)]
@@ -98,16 +84,24 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
         .expect("preflight ensures state.config is populated");
     match validate(config) {
         Ok(()) => CheckOutcome::config_validate_satisfied(),
-        Err(ConfigError::ValidationFailed { errors }) => {
-            state.skip_mask = SkipMask::from_validation_errors(&errors);
-            CheckOutcome::config_validate_failed(errors)
+        Err(ConfigError::ValidationFailed { diagnostics }) => {
+            state.skip_mask = SkipMask::from_validation_errors(diagnostics.as_slice());
+            CheckOutcome::config_validate_failed(diagnostics)
         }
-        Err(other) => CheckOutcome::config_validate_failed(vec![other.to_string()]),
+        Err(ConfigError::Load { .. } | ConfigError::Render { .. }) => {
+            // Defensive: validate() only emits ValidationFailed.  Load
+            // and Render originate from load_config (already run in
+            // config_parse) and surface here only via implementation
+            // bug.  Report as a hint-less Fail.
+            CheckOutcome::config_validate_failed(Diagnostics::default())
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use tribal_config::{ApiKeyStage, ConfigPath, Diagnostics, ProviderKind, ValidationError};
+
     use super::*;
 
     #[test]
@@ -122,25 +116,30 @@ mod tests {
 
     #[test]
     fn test_config_validate_failed_with_api_key_error_has_targeted_hint() {
-        let errors = vec![format!("{EMBEDDING_API_KEY_REQUIRED_PREFIX} openai")];
-        let outcome = CheckOutcome::config_validate_failed(errors.clone());
+        let diagnostics = Diagnostics::from(vec![ValidationError::MissingApiKey {
+            stage: ApiKeyStage::Embedding,
+            provider: ProviderKind::OpenAi,
+        }]);
+        let outcome = CheckOutcome::config_validate_failed(diagnostics);
 
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                detail: CheckDetail::ValidationFailed { errors: stored },
+                detail: CheckDetail::ValidationFailed { diagnostics: stored },
                 remediation: CheckRemediation::FixConfigInvariant { hints },
-            } if stored == &errors
+            } if stored.len() == 1
                 && hints.len() == 1
                 && hints[0].contains("embedding.api_key")
-                && hints[0].contains("TRIBAL_EMBEDDING__API_KEY"),
+                && hints[0].contains("TRIBAL_EMBEDDING__API_KEY")
+                && hints[0].contains("OPENAI_API_KEY"),
         ));
     }
 
     #[test]
     fn test_config_validate_failed_stdio_conflict_yields_remove_bind_address_hint() {
-        let errors = vec![SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX.into()];
-        let outcome = CheckOutcome::config_validate_failed(errors);
+        let outcome = CheckOutcome::config_validate_failed(Diagnostics::from(vec![
+            ValidationError::BindAddressStdioConflict,
+        ]));
 
         assert!(matches!(
             &outcome,
@@ -153,10 +152,11 @@ mod tests {
 
     #[test]
     fn test_config_validate_failed_malformed_address_yields_set_valid_address_hint() {
-        let errors = vec![format!(
-            "{SERVER_BIND_ADDRESS_MALFORMED_PREFIX}: not-an-address"
-        )];
-        let outcome = CheckOutcome::config_validate_failed(errors);
+        let outcome = CheckOutcome::config_validate_failed(Diagnostics::from(vec![
+            ValidationError::BindAddressMalformed {
+                value: "not-an-address".into(),
+            },
+        ]));
 
         assert!(matches!(
             &outcome,
@@ -169,28 +169,39 @@ mod tests {
 
     #[test]
     fn test_config_validate_failed_with_unknown_error_falls_back_to_verbatim_hint() {
-        let errors = vec!["database.url must not be empty".into()];
-        let outcome = CheckOutcome::config_validate_failed(errors.clone());
+        let diagnostics = Diagnostics::from(vec![ValidationError::Empty {
+            field: ConfigPath::from_static("database.url"),
+        }]);
+        let outcome = CheckOutcome::config_validate_failed(diagnostics);
 
         assert!(matches!(
             &outcome,
             CheckOutcome::Fail {
-                detail: CheckDetail::ValidationFailed { errors: stored },
+                detail: CheckDetail::ValidationFailed { diagnostics: stored },
                 remediation: CheckRemediation::FixConfigInvariant { hints },
-            } if stored == &errors
+            } if stored.len() == 1
                 && hints.len() == 1
                 && hints[0] == "database.url must not be empty",
         ));
     }
 
     #[test]
-    fn test_config_validate_failed_emits_one_hint_per_error() {
-        let errors = vec![
-            "database.url must not be empty".into(),
-            format!("{TRIAGE_API_KEY_REQUIRED_PREFIX} openai"),
-            "auth.token_ttl_hours must be greater than zero".into(),
-        ];
-        let outcome = CheckOutcome::config_validate_failed(errors);
+    fn test_config_validate_failed_emits_one_hint_per_diagnostic() {
+        let diagnostics = Diagnostics::from(vec![
+            ValidationError::Empty {
+                field: ConfigPath::from_static("database.url"),
+            },
+            ValidationError::MissingApiKey {
+                stage: ApiKeyStage::Triage,
+                provider: ProviderKind::OpenAi,
+            },
+            ValidationError::BelowMin {
+                field: ConfigPath::from_static("auth.token_ttl_hours"),
+                value: 0,
+                min: 1,
+            },
+        ]);
+        let outcome = CheckOutcome::config_validate_failed(diagnostics);
 
         assert!(matches!(
             &outcome,

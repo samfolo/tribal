@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tribal_config::{ProviderKind, env_var_for_path};
+use tribal_config::{Diagnostics, ProviderKind, ValidationError, env_var_for_path};
 use tribal_domain::ProjectId;
 
 use crate::error::FIRST_RUN_REQUIRED;
@@ -65,7 +65,7 @@ impl CheckName {
 /// The check name is derived from the carried [`CheckDetail`] via
 /// [`CheckDetail::name`], so a pairing of `(Pass, DatabaseReachable)`
 /// is impossible to build with a `ConfigLoaded` detail.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::commands::check) enum CheckOutcome {
     Pass {
         detail: CheckDetail,
@@ -92,7 +92,7 @@ pub(in crate::commands::check) enum CheckOutcome {
 /// Centralises the discipline of "what counts as ok" and the projection
 /// to the wire format — both are facts about the collection, not about
 /// any single outcome.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub(in crate::commands::check) struct CheckOutcomes(Vec<CheckOutcome>);
 
 impl CheckOutcomes {
@@ -114,7 +114,7 @@ impl CheckOutcomes {
 // ---------------------------------------------------------------------------
 
 /// Typed description of what a check observed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::commands::check) enum CheckDetail {
     /// Config file parsed successfully from `path`.
     ConfigLoaded { path: PathBuf },
@@ -123,7 +123,7 @@ pub(in crate::commands::check) enum CheckDetail {
     /// All configuration invariants passed.
     AllInvariantsSatisfied,
     /// One or more configuration invariants failed.
-    ValidationFailed { errors: Vec<String> },
+    ValidationFailed { diagnostics: Diagnostics },
     /// Database connection succeeded.
     DatabaseReachable,
     /// Database connection failed; `error` is the underlying sqlx error.
@@ -330,7 +330,11 @@ impl CheckDetail {
                 format!("config at {} failed to load: {error}", path.display())
             }
             Self::AllInvariantsSatisfied => "all configuration invariants satisfied".into(),
-            Self::ValidationFailed { errors } => errors.join("\n"),
+            Self::ValidationFailed { diagnostics } => diagnostics
+                .iter()
+                .map(ValidationError::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
             Self::DatabaseReachable => "database connection succeeded".into(),
             Self::DatabaseUnreachable { error } => format!("database unreachable: {error}"),
             Self::MigrationsMatch => "migrations are current".into(),

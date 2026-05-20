@@ -392,7 +392,7 @@ impl From<ProviderRegistryError> for AppError {
 #[cfg(test)]
 mod tests {
     use clap::error::ErrorKind;
-    use tribal_config::DEFAULT_BIND_ADDRESS;
+    use tribal_config::{ConfigPath, DEFAULT_BIND_ADDRESS, Diagnostics, ValidationError};
 
     use super::*;
 
@@ -414,7 +414,9 @@ mod tests {
     fn test_display_config_error() {
         let err = AppError::Config {
             source: ConfigError::ValidationFailed {
-                errors: vec!["database.url must not be empty".into()],
+                diagnostics: Diagnostics::from(vec![ValidationError::Empty {
+                    field: ConfigPath::from_static("database.url"),
+                }]),
             },
         };
         assert!(
