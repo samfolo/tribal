@@ -153,8 +153,12 @@ pub async fn run_async(
 const PROBE_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn build_state(opts: &CheckOptions<'_>) -> Result<CheckState, AppError> {
+    // advertised_url's "something is bound" semantics treat any HTTP
+    // response — including 3xx — as proof.  Following redirects would
+    // turn a redirect to a broken target into a false unreachable.
     let http_client = reqwest::Client::builder()
         .timeout(PROBE_CLIENT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|source| AppError::HttpClient {
             context: "tribal check probe client".into(),
