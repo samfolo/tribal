@@ -164,11 +164,18 @@ fn build_state(opts: &CheckOptions<'_>) -> Result<CheckState, AppError> {
         config_path: opts.config_path.to_path_buf(),
         providers: opts.providers,
         project_override: opts.project.map(str::to_owned),
-        token_override: opts.token.map(str::to_owned),
+        token_override: opts.token.and_then(canonical_token),
         path_var: std::env::var("PATH").unwrap_or_default(),
         http_client,
         config: None,
         skip_mask: SkipMask::default(),
         pool: None,
     })
+}
+
+/// Trims and discards whitespace-only inputs so downstream callers see
+/// the canonical token form.
+fn canonical_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
