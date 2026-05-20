@@ -6,7 +6,7 @@
 use std::net::SocketAddr;
 
 use crate::{
-    MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER,
+    MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
     sections::{ProviderKind, TransportKind, TribalConfig},
 };
@@ -203,8 +203,13 @@ fn validate_server(config: &TribalConfig, errors: &mut Vec<String>) {
 }
 
 fn validate_auth(config: &TribalConfig, errors: &mut Vec<String>) {
-    if config.auth.token_ttl_hours == 0 {
+    let ttl = config.auth.token_ttl_hours;
+    if ttl == 0 {
         errors.push(ERR_TTL_ZERO.into());
+    } else if ttl > MAX_TTL_HOURS {
+        errors.push(format!(
+            "auth.token_ttl_hours ({ttl}) must be at most {MAX_TTL_HOURS}"
+        ));
     }
 }
 
@@ -597,6 +602,25 @@ mod tests {
         let err = validate(&config).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains(ERR_TTL_ZERO));
+    }
+
+    #[test]
+    fn test_validate_rejects_excessive_token_ttl_hours() {
+        let mut config = valid_config();
+        config.auth.token_ttl_hours = u64::MAX;
+        let err = validate(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("auth.token_ttl_hours") && msg.contains("must be at most"),
+            "expected AboveMax wording, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn test_validate_accepts_token_ttl_at_max() {
+        let mut config = valid_config();
+        config.auth.token_ttl_hours = MAX_TTL_HOURS;
+        assert!(validate(&config).is_ok());
     }
 
     #[test]
