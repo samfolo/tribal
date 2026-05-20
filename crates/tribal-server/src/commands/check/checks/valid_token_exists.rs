@@ -135,7 +135,9 @@ async fn network_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutco
         Err(
             err @ (CredentialsReadError::Malformed { .. }
             | CredentialsReadError::UnsupportedSchema { .. }),
-        ) => CheckOutcome::credentials_unreadable(err.to_string(), CheckRemediation::RerunBootstrap),
+        ) => {
+            CheckOutcome::credentials_unreadable(err.to_string(), CheckRemediation::RerunBootstrap)
+        }
         Err(err @ (CredentialsReadError::Path(_) | CredentialsReadError::Read { .. })) => {
             CheckOutcome::credentials_unreadable(
                 err.to_string(),

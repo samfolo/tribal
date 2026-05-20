@@ -7,7 +7,7 @@
 
 use tribal_config::{
     ConfigError, EMBEDDING_API_KEY_REQUIRED_PREFIX, EXTRACTION_API_KEY_REQUIRED_PREFIX,
-    RELATION_API_KEY_REQUIRED_PREFIX, SERVER_BIND_ADDRESS_MALFORMED_PREFIX,
+    ProviderKind, RELATION_API_KEY_REQUIRED_PREFIX, SERVER_BIND_ADDRESS_MALFORMED_PREFIX,
     SERVER_BIND_ADDRESS_STDIO_CONFLICT_PREFIX, TRIAGE_API_KEY_REQUIRED_PREFIX, env_var_for_path,
     validate,
 };
@@ -71,10 +71,19 @@ fn hint_for_error(error: &str) -> Option<String> {
     if error.starts_with(SERVER_BIND_ADDRESS_MALFORMED_PREFIX) {
         return Some(MALFORMED_ADDRESS_HINT.into());
     }
-    API_KEY_HINT_PATHS
+    let (prefix, path) = API_KEY_HINT_PATHS
         .iter()
-        .find(|(prefix, _)| error.starts_with(prefix))
-        .map(|(_, path)| format!("set `{path}` or export `{}`", env_var_for_path(path)))
+        .find(|(prefix, _)| error.starts_with(prefix))?;
+    let figment = env_var_for_path(path);
+    let standard = error[prefix.len()..]
+        .trim()
+        .parse::<ProviderKind>()
+        .ok()
+        .and_then(ProviderKind::standard_env_var_name);
+    Some(match standard {
+        Some(env) => format!("set `{path}` or export `{figment}` / `{env}`"),
+        None => format!("set `{path}` or export `{figment}`"),
+    })
 }
 
 /// Validates the parsed config currently on `state` and, on failure,
