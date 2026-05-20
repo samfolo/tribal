@@ -43,14 +43,16 @@ impl CheckOutcome {
 
 /// Walks PATH for [`BINARY_FILENAME`].  `exists` decouples filesystem
 /// I/O from the search logic so tests can supply a synthetic predicate.
+/// Duplicate PATH entries are common (`PATH=/usr/local/bin:/usr/local/bin:...`)
+/// and would otherwise produce a false duplicate warning.
 pub(in crate::commands::check) fn find_tribal_binaries<F>(path_var: &str, exists: F) -> Vec<PathBuf>
 where
     F: Fn(&Path) -> bool,
 {
-    let mut found = Vec::new();
+    let mut found: Vec<PathBuf> = Vec::new();
     for entry in std::env::split_paths(path_var) {
         let candidate = entry.join(BINARY_FILENAME);
-        if exists(&candidate) {
+        if exists(&candidate) && !found.contains(&candidate) {
             found.push(candidate);
         }
     }
@@ -128,6 +130,15 @@ mod tests {
         let exists = predicate_from(&[&first, &second]);
         let binaries = find_tribal_binaries("/usr/local/bin:/opt/bin", exists);
         assert_eq!(binaries, vec![PathBuf::from(first), PathBuf::from(second)],);
+    }
+
+    #[test]
+    fn test_find_tribal_binaries_dedupes_repeated_path_entries() {
+        let candidate = format!("/usr/local/bin/{BINARY_FILENAME}");
+        let exists = predicate_from(&[&candidate]);
+        let binaries =
+            find_tribal_binaries("/usr/local/bin:/usr/local/bin:/usr/local/bin", exists);
+        assert_eq!(binaries, vec![PathBuf::from(candidate)]);
     }
 
     #[test]
