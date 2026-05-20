@@ -381,7 +381,7 @@ impl CheckDetail {
                 }
             }
             Self::TokenAggregateWarn => {
-                "no token resolvable, but at least one active token exists in the database".into()
+                "no specific token resolved; database contains at least one active token".into()
             }
             Self::NoActiveTokens => {
                 "no token resolvable and no active tokens exist in the database".into()

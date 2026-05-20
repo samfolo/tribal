@@ -269,9 +269,10 @@ mod tests {
                          openai"
                     .into(),
                 remediation: "remove `server.bind_address` for stdio transport\n\
-                              set `embedding.api_key` or export `TRIBAL_EMBEDDING__API_KEY`\n\
+                              set `embedding.api_key` or export \
+                              `TRIBAL_EMBEDDING__API_KEY` / `OPENAI_API_KEY`\n\
                               set `inference.triage.api_key` or export \
-                              `TRIBAL_INFERENCE__TRIAGE__API_KEY`"
+                              `TRIBAL_INFERENCE__TRIAGE__API_KEY` / `OPENAI_API_KEY`"
                     .into(),
             }],
         }
