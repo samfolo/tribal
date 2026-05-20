@@ -41,10 +41,19 @@ impl CheckOutcome {
 // to share the `async fn act` signature.
 #[allow(clippy::unused_async)]
 pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutcome {
-    let path_str = state
-        .config_path
-        .to_str()
-        .expect("CheckOptions::config_path is resolved from a &str input path");
+    // `canonicalize` can resolve symlinks into non-UTF-8 byte sequences;
+    // when that happens the parse never gets a chance to run.
+    let Some(path_str) = state.config_path.to_str() else {
+        return CheckOutcome::Fail {
+            detail: CheckDetail::ConfigParseFailed {
+                error: "config path is not valid UTF-8".to_owned(),
+                path: state.config_path.clone(),
+            },
+            remediation: CheckRemediation::InspectConfigFile {
+                path: state.config_path.clone(),
+            },
+        };
+    };
     match load_config(path_str, None, Some(&DATABASE_COMMAND_DEFAULTS)) {
         Ok(config) => {
             let path = state.config_path.clone();
