@@ -16,8 +16,8 @@ use crate::{
     cli::SetupArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS,
-        TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, persist_credentials,
-        prepare_config, resolve_absolute_config_path, resolve_ttl,
+        TIMESTAMP_FORMAT, TtlInput, compute_expires_at, find_or_create_principal,
+        generate_raw_token, persist_credentials, prepare_config, resolve_absolute_config_path,
     },
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
@@ -51,7 +51,7 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
     let cli_overrides = args.into_cli_overrides();
     let config = prepare_config(config_path, cli_overrides, &DATABASE_COMMAND_DEFAULTS)?;
 
-    let expires_at = Utc::now() + resolve_ttl(ttl, config.auth.token_ttl_hours)?;
+    let expires_at = compute_expires_at(TtlInput::from_pair(ttl, config.auth.token_ttl_hours))?;
     let absolute_config_path = resolve_absolute_config_path(config_path)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
