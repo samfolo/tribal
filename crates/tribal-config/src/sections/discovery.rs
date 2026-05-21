@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::validation::{ConfigPath, EnumerateFields};
+use crate::config_section;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -27,31 +27,33 @@ pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.3;
 // DiscoveryConfig
 // ---------------------------------------------------------------------------
 
-/// Configuration for the discovery (semantic search) handler.
-///
-/// Controls result limits, overfetch behaviour, and similarity
-/// thresholds.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DiscoveryConfig {
-    /// Default number of results when the caller does not specify a limit.
-    #[serde(default = "default_limit")]
-    pub default_limit: u32,
-
-    /// Maximum number of results a caller may request.
-    #[serde(default = "default_max_limit")]
-    pub max_limit: u32,
-
-    /// Multiplier applied to the limit for the initial semantic search.
+config_section! {
+    /// Configuration for the discovery (semantic search) handler.
     ///
-    /// `K = limit * overfetch_multiplier` rows are fetched, then filtered
-    /// by similarity threshold.
-    #[serde(default = "default_overfetch_multiplier")]
-    pub overfetch_multiplier: u32,
+    /// Controls result limits, overfetch behaviour, and similarity
+    /// thresholds.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct DiscoveryConfig {
+        /// Default number of results when the caller does not specify a limit.
+        #[serde(default = "default_limit")]
+        pub default_limit: u32,
 
-    /// Minimum cosine similarity to include a result.
-    #[serde(default = "default_similarity_threshold")]
-    pub similarity_threshold: f64,
+        /// Maximum number of results a caller may request.
+        #[serde(default = "default_max_limit")]
+        pub max_limit: u32,
+
+        /// Multiplier applied to the limit for the initial semantic search.
+        ///
+        /// `K = limit * overfetch_multiplier` rows are fetched, then filtered
+        /// by similarity threshold.
+        #[serde(default = "default_overfetch_multiplier")]
+        pub overfetch_multiplier: u32,
+
+        /// Minimum cosine similarity to include a result.
+        #[serde(default = "default_similarity_threshold")]
+        pub similarity_threshold: f64,
+    }
 }
 
 impl Default for DiscoveryConfig {
@@ -63,28 +65,6 @@ impl Default for DiscoveryConfig {
             similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// EnumerateFields
-// ---------------------------------------------------------------------------
-
-impl EnumerateFields for DiscoveryConfig {
-    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
-        out.push(ConfigPath::child(prefix, "default_limit"));
-        out.push(ConfigPath::child(prefix, "max_limit"));
-        out.push(ConfigPath::child(prefix, "overfetch_multiplier"));
-        out.push(ConfigPath::child(prefix, "similarity_threshold"));
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_discovery_config_fields(c: &DiscoveryConfig) {
-    let _ = &c.default_limit;
-    let _ = &c.max_limit;
-    let _ = &c.overfetch_multiplier;
-    let _ = &c.similarity_threshold;
 }
 
 const fn default_limit() -> u32 {

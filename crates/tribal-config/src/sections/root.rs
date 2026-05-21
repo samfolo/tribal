@@ -8,7 +8,7 @@ use super::{
     limits::LimitsConfig, logging::LoggingConfig, prompts::PromptsConfig, server::ServerConfig,
     telemetry::TelemetryConfig, worker::WorkerConfig,
 };
-use crate::validation::{ConfigPath, EnumerateFields};
+use crate::config_section;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -25,65 +25,67 @@ fn default_version() -> String {
 // TribalConfig
 // ---------------------------------------------------------------------------
 
-/// Top-level configuration for the Tribal server.
-///
-/// All fields default to sensible values for local development.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TribalConfig {
-    /// Schema version, set automatically to the crate version.
+config_section! {
+    /// Top-level configuration for the Tribal server.
     ///
-    /// Used to detect stale configuration files that may need migration.
-    #[serde(default = "default_version")]
-    pub version: String,
+    /// All fields default to sensible values for local development.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct TribalConfig {
+        /// Schema version, set automatically to the crate version.
+        ///
+        /// Used to detect stale configuration files that may need migration.
+        #[serde(default = "default_version")]
+        pub version: String,
 
-    /// Server transport and connection settings.
-    #[serde(default)]
-    pub server: ServerConfig,
+        /// Server transport and connection settings.
+        #[serde(default)]
+        @nested pub server: ServerConfig,
 
-    /// Database connection pool settings.
-    #[serde(default)]
-    pub database: DatabaseConfig,
+        /// Database connection pool settings.
+        #[serde(default)]
+        @nested pub database: DatabaseConfig,
 
-    /// Authentication settings.
-    #[serde(default)]
-    pub auth: AuthConfig,
+        /// Authentication settings.
+        #[serde(default)]
+        @nested pub auth: AuthConfig,
 
-    /// Worker loop settings.
-    #[serde(default)]
-    pub worker: WorkerConfig,
+        /// Worker loop settings.
+        #[serde(default)]
+        @nested pub worker: WorkerConfig,
 
-    /// Embedding provider settings.
-    #[serde(default)]
-    pub embedding: EmbeddingConfig,
+        /// Embedding provider settings.
+        #[serde(default)]
+        @nested pub embedding: EmbeddingConfig,
 
-    /// Per-stage inference settings.
-    #[serde(default)]
-    pub inference: InferenceConfig,
+        /// Per-stage inference settings.
+        #[serde(default)]
+        @nested pub inference: InferenceConfig,
 
-    /// Per-provider concurrency limits.
-    #[serde(default)]
-    pub limits: LimitsConfig,
+        /// Per-provider concurrency limits.
+        #[serde(default)]
+        @nested pub limits: LimitsConfig,
 
-    /// Prompt file settings.
-    #[serde(default)]
-    pub prompts: PromptsConfig,
+        /// Prompt file settings.
+        #[serde(default)]
+        @nested pub prompts: PromptsConfig,
 
-    /// Discovery (semantic search) settings.
-    #[serde(default)]
-    pub discovery: DiscoveryConfig,
+        /// Discovery (semantic search) settings.
+        #[serde(default)]
+        @nested pub discovery: DiscoveryConfig,
 
-    /// Exploration (graph traversal) settings.
-    #[serde(default)]
-    pub exploration: ExplorationConfig,
+        /// Exploration (graph traversal) settings.
+        #[serde(default)]
+        @nested pub exploration: ExplorationConfig,
 
-    /// Logging settings.
-    #[serde(default)]
-    pub logging: LoggingConfig,
+        /// Logging settings.
+        #[serde(default)]
+        @nested pub logging: LoggingConfig,
 
-    /// OpenTelemetry and trace export settings.
-    #[serde(default)]
-    pub telemetry: TelemetryConfig,
+        /// OpenTelemetry and trace export settings.
+        #[serde(default)]
+        @nested pub telemetry: TelemetryConfig,
+    }
 }
 
 impl TribalConfig {
@@ -132,48 +134,6 @@ impl Default for TribalConfig {
             telemetry: TelemetryConfig::default(),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// EnumerateFields
-// ---------------------------------------------------------------------------
-
-/// Top-level depth-first walker.  `prefix` is ignored — `TribalConfig`
-/// is the root, so each section's prefix is its own absolute name.
-impl EnumerateFields for TribalConfig {
-    fn enumerate(_prefix: &str, out: &mut Vec<ConfigPath>) {
-        out.push(ConfigPath::from_static("version"));
-        ServerConfig::enumerate("server", out);
-        DatabaseConfig::enumerate("database", out);
-        AuthConfig::enumerate("auth", out);
-        WorkerConfig::enumerate("worker", out);
-        EmbeddingConfig::enumerate("embedding", out);
-        InferenceConfig::enumerate("inference", out);
-        LimitsConfig::enumerate("limits", out);
-        PromptsConfig::enumerate("prompts", out);
-        DiscoveryConfig::enumerate("discovery", out);
-        ExplorationConfig::enumerate("exploration", out);
-        LoggingConfig::enumerate("logging", out);
-        TelemetryConfig::enumerate("telemetry", out);
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_tribal_config_fields(c: &TribalConfig) {
-    let _ = &c.version;
-    let _ = &c.server;
-    let _ = &c.database;
-    let _ = &c.auth;
-    let _ = &c.worker;
-    let _ = &c.embedding;
-    let _ = &c.inference;
-    let _ = &c.limits;
-    let _ = &c.prompts;
-    let _ = &c.discovery;
-    let _ = &c.exploration;
-    let _ = &c.logging;
-    let _ = &c.telemetry;
 }
 
 // ---------------------------------------------------------------------------
