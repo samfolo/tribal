@@ -54,6 +54,7 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
         Some(cli_overrides),
         Some(&DATABASE_COMMAND_DEFAULTS),
     )?;
+    validate(&config)?;
 
     let expires_at = Utc::now() + resolve_ttl(ttl, config.auth.token_ttl_hours)?;
     let absolute_config_path = resolve_absolute_config_path(config_path)?;
@@ -88,9 +89,9 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
 ///
 /// # Errors
 ///
-/// Returns an [`AppError`] if validation, database connection,
-/// migrations, principal resolution, config-file writing, or token
-/// insertion fails.
+/// Returns an [`AppError`] if database connection, migrations,
+/// principal resolution, config-file writing, or token insertion
+/// fails.
 pub async fn run_async(
     config: &TribalConfig,
     config_path: &Path,
@@ -99,8 +100,6 @@ pub async fn run_async(
     persistence: ConfigPersistence<'_>,
     out: &mut dyn Write,
 ) -> Result<SetupOutcome, AppError> {
-    validate(config)?;
-
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     tokio::fs::create_dir_all(config_dir)
         .await
