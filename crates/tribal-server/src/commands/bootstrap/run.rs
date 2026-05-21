@@ -9,7 +9,7 @@ use std::{
 use anstream::AutoStream;
 use chrono::{DateTime, Utc};
 use tribal_config::{
-    Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config,
+    Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config, validate,
 };
 use tribal_domain::GitRemote;
 use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
@@ -95,6 +95,7 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
         Some(cli_overrides),
         Some(&DATABASE_COMMAND_DEFAULTS),
     )?;
+    validate(&config)?;
 
     let expires_at = Utc::now() + resolve_ttl(ttl, config.auth.token_ttl_hours)?;
     let absolute_config_path = resolve_absolute_config_path(config_path)?;

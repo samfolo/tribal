@@ -4,7 +4,7 @@ use std::io::{self, Write};
 
 use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
-use tribal_config::{DatabaseConfig, load_config};
+use tribal_config::{DatabaseConfig, load_config, validate};
 use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, full_access_scopes};
 
@@ -45,6 +45,7 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
         Some(cli_overrides),
         Some(&DATABASE_COMMAND_DEFAULTS),
     )?;
+    validate(&config)?;
 
     let ttl_delta = resolve_ttl(ttl, config.auth.token_ttl_hours)?;
     let expires_at = Utc::now() + ttl_delta;
