@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tribal_config::{Diagnostics, ProviderKind, ValidationError, env_var_for_path};
+use tribal_config::{Diagnostics, ProviderKind, ProviderStage, ValidationError};
 use tribal_domain::ProjectId;
 
 use crate::error::FIRST_RUN_REQUIRED;
@@ -185,54 +185,36 @@ pub(in crate::commands::check) enum CheckDetail {
     DependencySkipped { name: CheckName, reason: SkipReason },
     /// Provider probe against the named target succeeded.
     ProviderProbePassed {
-        target: ProviderProbeTarget,
+        target: ProviderStage,
         provider: ProviderKind,
     },
     /// Provider probe against the named target failed; `error` is the
     /// underlying [`tribal_inference::InferenceError`] rendered.
     ProviderProbeFailed {
-        target: ProviderProbeTarget,
+        target: ProviderStage,
         provider: ProviderKind,
         error: String,
     },
 }
 
 // ---------------------------------------------------------------------------
-// ProviderProbeTarget / SkipReason
+// CheckName ← ProviderStage
 // ---------------------------------------------------------------------------
 
-/// Which provider-backed configuration block a probe is targeting.
-///
-/// The three inference variants are pipeline stages; embedding is not a
-/// stage (it runs both at query time and within triage) but shares the
-/// config-shape (`provider` + `api_key`) and so groups with them here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::commands::check) enum ProviderProbeTarget {
-    Embedding,
-    Extraction,
-    Triage,
-    Relation,
-}
-
-impl ProviderProbeTarget {
-    pub(in crate::commands::check) fn config_path(self) -> &'static str {
-        match self {
-            Self::Embedding => "embedding",
-            Self::Extraction => "inference.extraction",
-            Self::Triage => "inference.triage",
-            Self::Relation => "inference.relation",
-        }
-    }
-
-    pub(in crate::commands::check) fn check_name(self) -> CheckName {
-        match self {
-            Self::Embedding => CheckName::ProviderEmbedding,
-            Self::Extraction => CheckName::ProviderExtraction,
-            Self::Triage => CheckName::ProviderTriage,
-            Self::Relation => CheckName::ProviderRelation,
+impl From<ProviderStage> for CheckName {
+    fn from(stage: ProviderStage) -> Self {
+        match stage {
+            ProviderStage::Embedding => Self::ProviderEmbedding,
+            ProviderStage::Extraction => Self::ProviderExtraction,
+            ProviderStage::Triage => Self::ProviderTriage,
+            ProviderStage::Relation => Self::ProviderRelation,
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// SkipReason
+// ---------------------------------------------------------------------------
 
 /// Why a downstream check did not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,7 +226,7 @@ pub(in crate::commands::check) enum SkipReason {
     ConfigValidateFailedTransportBind,
     /// The named target has a missing `api_key` validation error, so
     /// its provider probe is skipped.
-    ConfigValidateFailedApiKey { target: ProviderProbeTarget },
+    ConfigValidateFailedApiKey { target: ProviderStage },
     /// The database was not reachable, so checks that require a
     /// connection are skipped.
     DatabaseUnreachable,
@@ -317,7 +299,7 @@ impl CheckDetail {
             }
             Self::DependencySkipped { name, .. } => *name,
             Self::ProviderProbePassed { target, .. } | Self::ProviderProbeFailed { target, .. } => {
-                target.check_name()
+                CheckName::from(*target)
             }
         }
     }
@@ -424,8 +406,8 @@ impl CheckDetail {
                     "skipped because `server.bind_address` validation failed".into()
                 }
                 SkipReason::ConfigValidateFailedApiKey { target } => format!(
-                    "skipped because `{}.api_key` validation failed",
-                    target.config_path()
+                    "skipped because `{}` validation failed",
+                    target.api_key_path()
                 ),
                 SkipReason::DatabaseUnreachable => {
                     "skipped because the database is unreachable".into()
@@ -433,7 +415,7 @@ impl CheckDetail {
             },
             Self::ProviderProbePassed { target, provider } => format!(
                 "{} provider ({provider}) probe passed",
-                target.config_path()
+                target.section_path()
             ),
             Self::ProviderProbeFailed {
                 target,
@@ -441,7 +423,7 @@ impl CheckDetail {
                 error,
             } => format!(
                 "{} provider ({provider}) probe failed: {error}",
-                target.config_path()
+                target.section_path()
             ),
         }
     }
@@ -499,7 +481,7 @@ pub(in crate::commands::check) enum CheckRemediation {
     /// upstream env-var conventions — or run `tribal serve` to see the
     /// underlying startup probe warning.
     FixProviderConfig {
-        target: ProviderProbeTarget,
+        target: ProviderStage,
         provider: ProviderKind,
     },
 }
@@ -558,17 +540,18 @@ impl CheckRemediation {
                     .into()
             }
             Self::FixProviderConfig { target, provider } => {
-                let path = target.config_path();
+                let api_key_path = target.api_key_path();
+                let base_url_path = target.section_path().extend("base_url");
                 let head = match provider.standard_env_var_name() {
                     Some(standard) => {
-                        let figment = env_var_for_path(&format!("{path}.api_key"));
+                        let figment = api_key_path.env_var();
                         format!(
-                            "check `{path}.api_key` (or export `{figment}` / `{standard}`) \
-                             and `{path}.base_url`"
+                            "check `{api_key_path}` (or export `{figment}` / `{standard}`) \
+                             and `{base_url_path}`"
                         )
                     }
                     None => {
-                        format!("check `{path}.base_url` and confirm the provider is reachable")
+                        format!("check `{base_url_path}` and confirm the provider is reachable")
                     }
                 };
                 format!("{head}, or run `tribal serve` to see the underlying startup probe warning")

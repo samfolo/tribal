@@ -172,11 +172,9 @@ pub(crate) fn resolve_ttl(cli_ttl: Option<u64>, config_ttl: u64) -> Result<TimeD
         },
         (TtlError::Zero, false) => AppError::Config {
             source: ConfigError::ValidationFailed {
-                diagnostics: Diagnostics::from(vec![ValidationError::BelowMin {
-                    field: ConfigPath::from_static("auth.token_ttl_hours"),
-                    value: 0,
-                    min: 1,
-                }]),
+                diagnostics: Diagnostics::from(vec![ValidationError::must_be_positive(
+                    ConfigPath::from_static("auth.token_ttl_hours"),
+                )]),
             },
         },
         (TtlError::OutOfRange, false) => AppError::Config {

@@ -17,8 +17,8 @@ mod error;
 
 pub use diagnostics::Diagnostics;
 pub use error::{
-    ApiKeyStage, ComputedFloor, ConfigPath, Endpoint, EnumerateFields, FieldValue, Inclusion,
-    NumericRange, OrderRelation, ValidationError,
+    ComputedFloor, ConfigPath, Endpoint, EnumerateFields, FieldValue, Inclusion, NumericRange,
+    OrderRelation, ProviderStage, ValidationError,
 };
 
 // ---------------------------------------------------------------------------
@@ -83,19 +83,15 @@ fn validate_database(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     if config.database.pool_mcp_max_connections == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("database.pool_mcp_max_connections"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "database.pool_mcp_max_connections",
+        )));
     }
 
     if config.database.pool_worker_max_connections == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("database.pool_worker_max_connections"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "database.pool_worker_max_connections",
+        )));
     }
 }
 
@@ -113,27 +109,21 @@ fn validate_server(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     if config.server.shutdown_deadline_ms == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("server.shutdown_deadline_ms"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "server.shutdown_deadline_ms",
+        )));
     }
 
     if config.server.job_state_ttl_seconds == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("server.job_state_ttl_seconds"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "server.job_state_ttl_seconds",
+        )));
     }
 
     if config.server.job_state_hard_ttl_seconds == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("server.job_state_hard_ttl_seconds"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "server.job_state_hard_ttl_seconds",
+        )));
     } else if config.server.job_state_ttl_seconds > 0
         && config.server.job_state_hard_ttl_seconds < config.server.job_state_ttl_seconds
     {
@@ -153,11 +143,9 @@ fn validate_server(config: &TribalConfig, diags: &mut Diagnostics) {
     let sse = &config.server.sse;
 
     if sse.max_connection_age_ms == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("server.sse.max_connection_age_ms"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "server.sse.max_connection_age_ms",
+        )));
     } else if sse.max_connection_age_ms > MAX_LIFECYCLE_DURATION_MS {
         diags.push(ValidationError::AboveMax {
             field: ConfigPath::from_static("server.sse.max_connection_age_ms"),
@@ -167,11 +155,9 @@ fn validate_server(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     if sse.idle_timeout_ms == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("server.sse.idle_timeout_ms"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "server.sse.idle_timeout_ms",
+        )));
     } else if sse.idle_timeout_ms > MAX_LIFECYCLE_DURATION_MS {
         diags.push(ValidationError::AboveMax {
             field: ConfigPath::from_static("server.sse.idle_timeout_ms"),
@@ -181,11 +167,9 @@ fn validate_server(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     if sse.keepalive_interval_ms == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("server.sse.keepalive_interval_ms"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "server.sse.keepalive_interval_ms",
+        )));
     } else if sse.keepalive_interval_ms > MAX_LIFECYCLE_DURATION_MS {
         diags.push(ValidationError::AboveMax {
             field: ConfigPath::from_static("server.sse.keepalive_interval_ms"),
@@ -210,11 +194,9 @@ fn validate_server(config: &TribalConfig, diags: &mut Diagnostics) {
 fn validate_auth(config: &TribalConfig, diags: &mut Diagnostics) {
     let ttl = config.auth.token_ttl_hours;
     if ttl == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("auth.token_ttl_hours"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "auth.token_ttl_hours",
+        )));
     } else if ttl > MAX_TTL_HOURS {
         diags.push(ValidationError::AboveMax {
             field: ConfigPath::from_static("auth.token_ttl_hours"),
@@ -226,11 +208,9 @@ fn validate_auth(config: &TribalConfig, diags: &mut Diagnostics) {
 
 fn validate_embedding(config: &TribalConfig, diags: &mut Diagnostics) {
     if config.embedding.dimensions == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("embedding.dimensions"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "embedding.dimensions",
+        )));
     }
 
     if config.embedding.provider == ProviderKind::Anthropic {
@@ -273,21 +253,19 @@ fn validate_provider_limits(config: &TribalConfig, diags: &mut Diagnostics) {
         let provider_prefix = format!("limits.providers.{provider}");
 
         if limits.max_in_flight == 0 {
-            diags.push(ValidationError::BelowMin {
-                field: ConfigPath::child(&provider_prefix, "max_in_flight"),
-                value: 0,
-                min: 1,
-            });
+            diags.push(ValidationError::must_be_positive(ConfigPath::child(
+                &provider_prefix,
+                "max_in_flight",
+            )));
         }
 
         let request_timeout = limits.request_timeout_ms;
 
         if request_timeout == 0 {
-            diags.push(ValidationError::BelowMin {
-                field: ConfigPath::child(&provider_prefix, "request_timeout_ms"),
-                value: 0,
-                min: 1,
-            });
+            diags.push(ValidationError::must_be_positive(ConfigPath::child(
+                &provider_prefix,
+                "request_timeout_ms",
+            )));
         } else if request_timeout >= task_timeout {
             diags.push(ValidationError::FieldOrdering {
                 subject: FieldValue {
@@ -307,15 +285,15 @@ fn validate_provider_limits(config: &TribalConfig, diags: &mut Diagnostics) {
 fn validate_api_key_presence(config: &TribalConfig, diags: &mut Diagnostics) {
     if config.embedding.provider.requires_api_key() && config.embedding.api_key.is_none() {
         diags.push(ValidationError::MissingApiKey {
-            stage: ApiKeyStage::Embedding,
+            stage: ProviderStage::Embedding,
             provider: config.embedding.provider,
         });
     }
 
     let stages = [
-        (ApiKeyStage::Extraction, &config.inference.extraction),
-        (ApiKeyStage::Triage, &config.inference.triage),
-        (ApiKeyStage::Relation, &config.inference.relation),
+        (ProviderStage::Extraction, &config.inference.extraction),
+        (ProviderStage::Triage, &config.inference.triage),
+        (ProviderStage::Relation, &config.inference.relation),
     ];
     for (stage, cfg) in stages {
         if cfg.provider.requires_api_key() && cfg.api_key.is_none() {
@@ -329,19 +307,15 @@ fn validate_api_key_presence(config: &TribalConfig, diags: &mut Diagnostics) {
 
 fn validate_discovery(config: &TribalConfig, diags: &mut Diagnostics) {
     if config.discovery.default_limit == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("discovery.default_limit"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "discovery.default_limit",
+        )));
     }
 
     if config.discovery.max_limit == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("discovery.max_limit"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "discovery.max_limit",
+        )));
     }
 
     if config.discovery.default_limit > config.discovery.max_limit {
@@ -359,11 +333,9 @@ fn validate_discovery(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     if config.discovery.overfetch_multiplier == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("discovery.overfetch_multiplier"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "discovery.overfetch_multiplier",
+        )));
     } else if config.discovery.overfetch_multiplier > MAX_OVERFETCH_MULTIPLIER {
         diags.push(ValidationError::AboveMax {
             field: ConfigPath::from_static("discovery.overfetch_multiplier"),
@@ -384,19 +356,15 @@ fn validate_discovery(config: &TribalConfig, diags: &mut Diagnostics) {
 
 fn validate_exploration(config: &TribalConfig, diags: &mut Diagnostics) {
     if config.exploration.default_depth == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("exploration.default_depth"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "exploration.default_depth",
+        )));
     }
 
     if config.exploration.max_depth == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("exploration.max_depth"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "exploration.max_depth",
+        )));
     }
 
     if config.exploration.default_depth > config.exploration.max_depth {
@@ -414,19 +382,15 @@ fn validate_exploration(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     if config.exploration.default_limit == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("exploration.default_limit"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "exploration.default_limit",
+        )));
     }
 
     if config.exploration.max_limit == 0 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("exploration.max_limit"),
-            value: 0,
-            min: 1,
-        });
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "exploration.max_limit",
+        )));
     }
 
     if config.exploration.default_limit > config.exploration.max_limit {
@@ -837,7 +801,7 @@ mod tests {
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::MissingApiKey {
-                stage: ApiKeyStage::Embedding,
+                stage: ProviderStage::Embedding,
                 provider: ProviderKind::Anthropic,
             },
         )));
@@ -857,10 +821,10 @@ mod tests {
 
         let diags = diagnostics_for(&config);
         for stage in [
-            ApiKeyStage::Embedding,
-            ApiKeyStage::Extraction,
-            ApiKeyStage::Triage,
-            ApiKeyStage::Relation,
+            ProviderStage::Embedding,
+            ProviderStage::Extraction,
+            ProviderStage::Triage,
+            ProviderStage::Relation,
         ] {
             assert!(
                 any(&diags, |d| matches!(
