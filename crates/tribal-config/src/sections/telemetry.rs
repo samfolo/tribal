@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{config_section, paths::resolve_directory};
+use crate::paths::resolve_directory;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -37,53 +37,51 @@ pub enum FileRotation {
 // TelemetryConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// OpenTelemetry and trace export configuration.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct TelemetryConfig {
-        /// Master switch for telemetry.
-        #[serde(default = "default_enabled")]
-        pub enabled: bool,
+/// OpenTelemetry and trace export configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TelemetryConfig {
+    /// Master switch for telemetry.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
 
-        /// OTLP exporter endpoint (e.g. `http://localhost:4317`).
-        #[serde(default)]
-        pub otlp_endpoint: Option<String>,
+    /// OTLP exporter endpoint (e.g. `http://localhost:4317`).
+    #[serde(default)]
+    pub otlp_endpoint: Option<String>,
 
-        /// OTLP protocol (`grpc` or `http`).
-        #[serde(default = "default_otlp_protocol")]
-        pub otlp_protocol: String,
+    /// OTLP protocol (`grpc` or `http`).
+    #[serde(default = "default_otlp_protocol")]
+    pub otlp_protocol: String,
 
-        /// Service name reported in spans.
-        #[serde(default = "default_service_name")]
-        pub service_name: String,
+    /// Service name reported in spans.
+    #[serde(default = "default_service_name")]
+    pub service_name: String,
 
-        /// Print spans to stderr (development).
-        #[serde(default = "default_console_export")]
-        pub console_export: bool,
+    /// Print spans to stderr (development).
+    #[serde(default = "default_console_export")]
+    pub console_export: bool,
 
-        /// Write spans to file.
-        #[serde(default)]
-        pub file_export: bool,
+    /// Write spans to file.
+    #[serde(default)]
+    pub file_export: bool,
 
-        /// Directory for trace file output.
-        ///
-        /// Resolved at startup via platform-aware defaults:
-        /// `dirs::data_local_dir` → `std::env::temp_dir`,
-        /// each joined with `tribal/traces`.
-        #[serde(default = "default_file_directory")]
-        pub file_directory: String,
+    /// Directory for trace file output.
+    ///
+    /// Resolved at startup via platform-aware defaults:
+    /// `dirs::data_local_dir` → `std::env::temp_dir`,
+    /// each joined with `tribal/traces`.
+    #[serde(default = "default_file_directory")]
+    pub file_directory: String,
 
-        /// Trace file rotation policy.
-        #[serde(default)]
-        pub file_rotation: FileRotation,
+    /// Trace file rotation policy.
+    #[serde(default)]
+    pub file_rotation: FileRotation,
 
-        /// Whether `std::env::temp_dir` was used as a last-resort fallback
-        /// for `file_directory`.  Internal runtime state, not part of the
-        /// YAML surface.
-        #[serde(skip)]
-        @skip pub used_temp_dir_fallback: bool,
-    }
+    /// Whether `std::env::temp_dir` was used as a last-resort fallback
+    /// for `file_directory`.  Internal runtime state, not part of the
+    /// YAML surface.
+    #[serde(skip)]
+    pub used_temp_dir_fallback: bool,
 }
 
 impl Default for TelemetryConfig {

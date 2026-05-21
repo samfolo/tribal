@@ -8,7 +8,6 @@ use super::{
     limits::LimitsConfig, logging::LoggingConfig, prompts::PromptsConfig, server::ServerConfig,
     telemetry::TelemetryConfig, worker::WorkerConfig,
 };
-use crate::config_section;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -25,67 +24,65 @@ fn default_version() -> String {
 // TribalConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// Top-level configuration for the Tribal server.
+/// Top-level configuration for the Tribal server.
+///
+/// All fields default to sensible values for local development.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TribalConfig {
+    /// Schema version, set automatically to the crate version.
     ///
-    /// All fields default to sensible values for local development.
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct TribalConfig {
-        /// Schema version, set automatically to the crate version.
-        ///
-        /// Used to detect stale configuration files that may need migration.
-        #[serde(default = "default_version")]
-        pub version: String,
+    /// Used to detect stale configuration files that may need migration.
+    #[serde(default = "default_version")]
+    pub version: String,
 
-        /// Server transport and connection settings.
-        #[serde(default)]
-        @nested pub server: ServerConfig,
+    /// Server transport and connection settings.
+    #[serde(default)]
+    pub server: ServerConfig,
 
-        /// Database connection pool settings.
-        #[serde(default)]
-        @nested pub database: DatabaseConfig,
+    /// Database connection pool settings.
+    #[serde(default)]
+    pub database: DatabaseConfig,
 
-        /// Authentication settings.
-        #[serde(default)]
-        @nested pub auth: AuthConfig,
+    /// Authentication settings.
+    #[serde(default)]
+    pub auth: AuthConfig,
 
-        /// Worker loop settings.
-        #[serde(default)]
-        @nested pub worker: WorkerConfig,
+    /// Worker loop settings.
+    #[serde(default)]
+    pub worker: WorkerConfig,
 
-        /// Embedding provider settings.
-        #[serde(default)]
-        @nested pub embedding: EmbeddingConfig,
+    /// Embedding provider settings.
+    #[serde(default)]
+    pub embedding: EmbeddingConfig,
 
-        /// Per-stage inference settings.
-        #[serde(default)]
-        @nested pub inference: InferenceConfig,
+    /// Per-stage inference settings.
+    #[serde(default)]
+    pub inference: InferenceConfig,
 
-        /// Per-provider concurrency limits.
-        #[serde(default)]
-        @nested pub limits: LimitsConfig,
+    /// Per-provider concurrency limits.
+    #[serde(default)]
+    pub limits: LimitsConfig,
 
-        /// Prompt file settings.
-        #[serde(default)]
-        @nested pub prompts: PromptsConfig,
+    /// Prompt file settings.
+    #[serde(default)]
+    pub prompts: PromptsConfig,
 
-        /// Discovery (semantic search) settings.
-        #[serde(default)]
-        @nested pub discovery: DiscoveryConfig,
+    /// Discovery (semantic search) settings.
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
 
-        /// Exploration (graph traversal) settings.
-        #[serde(default)]
-        @nested pub exploration: ExplorationConfig,
+    /// Exploration (graph traversal) settings.
+    #[serde(default)]
+    pub exploration: ExplorationConfig,
 
-        /// Logging settings.
-        #[serde(default)]
-        @nested pub logging: LoggingConfig,
+    /// Logging settings.
+    #[serde(default)]
+    pub logging: LoggingConfig,
 
-        /// OpenTelemetry and trace export settings.
-        #[serde(default)]
-        @nested pub telemetry: TelemetryConfig,
-    }
+    /// OpenTelemetry and trace export settings.
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 impl TribalConfig {

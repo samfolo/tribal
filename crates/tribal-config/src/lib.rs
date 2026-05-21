@@ -53,85 +53,9 @@ pub use sections::{
     read_credentials, write_credentials,
 };
 pub use validation::{
-    ComputedFloor, ConfigPath, Diagnostics, Endpoint, EnumerateFields, FieldValue, Inclusion,
-    NumericRange, OrderRelation, ProviderStage, ValidationError, validate,
+    ComputedFloor, ConfigPath, Diagnostics, Endpoint, FieldValue, Inclusion, NumericRange,
+    OrderRelation, ProviderStage, ValidationError, validate,
 };
-
-// ---------------------------------------------------------------------------
-// Section declaration
-// ---------------------------------------------------------------------------
-
-/// Declares a configuration section struct alongside its
-/// [`validation::EnumerateFields`] impl from a single field list.  Both
-/// the struct definition and the path-enumeration impl derive from the
-/// same source of truth, so a field rename or addition can never drift
-/// the two out of sync.
-///
-/// Per-field markers control enumeration behaviour:
-/// - `@nested` — the field's type implements
-///   [`validation::EnumerateFields`]; the impl recurses into it under
-///   the field name as a prefix.
-/// - `@skip` — the field is excluded from enumeration entirely (use
-///   for `#[serde(skip)]` fields and for runtime-keyed maps).
-/// - no marker — the field is a leaf; its path is `{prefix}.{field}`.
-macro_rules! config_section {
-    // Entry: capture struct attrs, visibility, name, and a flat list of
-    // fields (each optionally prefixed with `@nested` or `@skip`).
-    // Emits the struct exactly as declared plus the `EnumerateFields`
-    // impl, deferring per-field push logic to the `@push` helper so
-    // identifiers stay in one hygiene context.
-    (
-        $(#[$sattr:meta])*
-        $vis:vis struct $Name:ident {
-            $(
-                $(#[$fattr:meta])*
-                $( @ $marker:ident )?
-                $fv:vis $fname:ident : $fty:ty
-            ),* $(,)?
-        }
-    ) => {
-        $(#[$sattr])*
-        $vis struct $Name {
-            $(
-                $(#[$fattr])*
-                $fv $fname : $fty,
-            )*
-        }
-
-        impl $crate::validation::EnumerateFields for $Name {
-            fn enumerate(
-                prefix: &str,
-                out: &mut Vec<$crate::validation::ConfigPath>,
-            ) {
-                let _ = prefix;
-                let _ = out;
-                $(
-                    $crate::config_section!(@push $($marker)? prefix, out, $fname, $fty);
-                )*
-            }
-        }
-    };
-
-    // Default — no marker — push the field name as a leaf path.
-    (@push $p:ident, $o:ident, $f:ident, $t:ty) => {
-        $o.push($crate::validation::ConfigPath::child($p, stringify!($f)));
-    };
-
-    // `@nested` — recurse into the field's own `EnumerateFields` impl,
-    // joining the field name to the parent prefix.  Path composition
-    // routes through [`ConfigPath::child`] so the empty-prefix rule
-    // lives in one place.
-    (@push nested $p:ident, $o:ident, $f:ident, $t:ty) => {{
-        let child_path = $crate::validation::ConfigPath::child($p, stringify!($f));
-        <$t as $crate::validation::EnumerateFields>::enumerate(child_path.as_str(), $o);
-    }};
-
-    // `@skip` — emit no path (use for `#[serde(skip)]` fields and
-    // runtime-keyed maps).
-    (@push skip $p:ident, $o:ident, $f:ident, $t:ty) => {};
-}
-
-pub(crate) use config_section;
 
 // ---------------------------------------------------------------------------
 // Test utilities

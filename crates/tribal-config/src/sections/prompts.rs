@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{config_section, paths::default_prompts_directory};
+use crate::paths::default_prompts_directory;
 
 fn default_directory() -> String {
     default_prompts_directory()
@@ -54,21 +54,16 @@ impl Default for PromptSource {
 // PromptsConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// Wrapper around [`PromptSource`].
-    ///
-    /// A struct rather than an inline enum so future prompt-wide knobs (e.g.
-    /// global cache settings) can land without breaking the YAML schema.
-    /// `source` is an internally-tagged enum whose YAML shape varies by
-    /// variant; treated here as one opaque leaf, with variant-specific
-    /// paths handled at the validator call site if needed.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-    #[serde(deny_unknown_fields)]
-    pub struct PromptsConfig {
-        /// Where the active prompts are loaded from.
-        #[serde(default)]
-        pub source: PromptSource,
-    }
+/// Wrapper around [`PromptSource`].
+///
+/// A struct rather than an inline enum so future prompt-wide knobs (e.g.
+/// global cache settings) can land without breaking the YAML schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PromptsConfig {
+    /// Where the active prompts are loaded from.
+    #[serde(default)]
+    pub source: PromptSource,
 }
 
 #[cfg(test)]

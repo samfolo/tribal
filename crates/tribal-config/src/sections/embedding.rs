@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use tribal_domain::ApiKey;
 
 use super::provider_kind::ProviderKind;
-use crate::config_section;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,41 +27,39 @@ const fn default_dimensions() -> u32 {
 // EmbeddingConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// Configuration for the embedding provider.
+/// Configuration for the embedding provider.
+///
+/// Controls which model and provider are used for vector embeddings.
+/// When `base_url` is `None`, the provider implementation supplies its
+/// own default URL.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingConfig {
+    /// Embedding provider.
+    #[serde(default)]
+    pub provider: ProviderKind,
+
+    /// Embedding model name.
+    #[serde(default = "default_model")]
+    pub model: String,
+
+    /// Vector dimensions (must match the model).
+    #[serde(default = "default_dimensions")]
+    pub dimensions: u32,
+
+    /// Base URL for the provider API.
     ///
-    /// Controls which model and provider are used for vector embeddings.
-    /// When `base_url` is `None`, the provider implementation supplies its
-    /// own default URL.
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct EmbeddingConfig {
-        /// Embedding provider.
-        #[serde(default)]
-        pub provider: ProviderKind,
+    /// When `None`, the provider supplies its own default.
+    #[serde(default)]
+    pub base_url: Option<String>,
 
-        /// Embedding model name.
-        #[serde(default = "default_model")]
-        pub model: String,
-
-        /// Vector dimensions (must match the model).
-        #[serde(default = "default_dimensions")]
-        pub dimensions: u32,
-
-        /// Base URL for the provider API.
-        ///
-        /// When `None`, the provider supplies its own default.
-        #[serde(default)]
-        pub base_url: Option<String>,
-
-        /// API key for cloud providers.
-        ///
-        /// Required when `provider` is `anthropic` or `openai`. Prefer
-        /// setting via environment variable to avoid plaintext secrets in
-        /// configuration files.
-        #[serde(default)]
-        pub api_key: Option<ApiKey>,
-    }
+    /// API key for cloud providers.
+    ///
+    /// Required when `provider` is `anthropic` or `openai`. Prefer
+    /// setting via environment variable to avoid plaintext secrets in
+    /// configuration files.
+    #[serde(default)]
+    pub api_key: Option<ApiKey>,
 }
 
 impl Default for EmbeddingConfig {

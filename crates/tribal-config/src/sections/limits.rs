@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::provider_kind::ProviderKind;
-use crate::config_section;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,24 +35,21 @@ pub struct ProviderLimitsConfig {
 // LimitsConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// Per-provider concurrency limits.
+/// Per-provider concurrency limits.
+///
+/// Bounds in-flight requests to any single external service, preventing
+/// worker tasks from starving MCP read-path queries that share the same
+/// provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LimitsConfig {
+    /// Per-provider limits, keyed by provider kind.
     ///
-    /// Bounds in-flight requests to any single external service, preventing
-    /// worker tasks from starving MCP read-path queries that share the same
-    /// provider.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct LimitsConfig {
-        /// Per-provider limits, keyed by provider kind.
-        ///
-        /// Pre-populated with defaults for all three providers.  Typed keys
-        /// mean a YAML typo fails at parse time rather than silently creating
-        /// an unreferenced entry.  Runtime-keyed: the validator constructs
-        /// paths like `limits.providers.<provider>.<field>` at the call site.
-        #[serde(default = "default_providers")]
-        @skip pub providers: HashMap<ProviderKind, ProviderLimitsConfig>,
-    }
+    /// Pre-populated with defaults for all three providers.  Typed keys
+    /// mean a YAML typo fails at parse time rather than silently creating
+    /// an unreferenced entry.
+    #[serde(default = "default_providers")]
+    pub providers: HashMap<ProviderKind, ProviderLimitsConfig>,
 }
 
 impl Default for LimitsConfig {

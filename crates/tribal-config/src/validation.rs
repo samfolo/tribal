@@ -17,8 +17,8 @@ mod error;
 
 pub use diagnostics::Diagnostics;
 pub use error::{
-    ComputedFloor, ConfigPath, Endpoint, EnumerateFields, FieldValue, Inclusion, NumericRange,
-    OrderRelation, ProviderStage, ValidationError,
+    ComputedFloor, ConfigPath, Endpoint, FieldValue, Inclusion, NumericRange, OrderRelation,
+    ProviderStage, ValidationError,
 };
 
 // ---------------------------------------------------------------------------

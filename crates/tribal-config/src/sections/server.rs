@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::transport_kind::TransportKind;
-use crate::config_section;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,44 +65,42 @@ const fn default_job_state_hard_ttl_seconds() -> u64 {
 // ServerConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// Top-level server configuration.
+/// Top-level server configuration.
+///
+/// Controls the transport protocol, bind address, shutdown behaviour,
+/// and SSE-specific tuning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerConfig {
+    /// Transport protocol for the MCP server.
+    #[serde(default)]
+    pub transport: TransportKind,
+
+    /// Socket address to bind the HTTP/SSE listener to.
     ///
-    /// Controls the transport protocol, bind address, shutdown behaviour,
-    /// and SSE-specific tuning.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct ServerConfig {
-        /// Transport protocol for the MCP server.
-        #[serde(default)]
-        pub transport: TransportKind,
+    /// `None` when using stdio transport.  When transport is HTTP or SSE
+    /// and this is `None`, the startup sequence supplies
+    /// [`DEFAULT_BIND_ADDRESS`] (`127.0.0.1:8725`) as a fallback.
+    #[serde(default)]
+    pub bind_address: Option<String>,
 
-        /// Socket address to bind the HTTP/SSE listener to.
-        ///
-        /// `None` when using stdio transport.  When transport is HTTP or SSE
-        /// and this is `None`, the startup sequence supplies
-        /// [`DEFAULT_BIND_ADDRESS`] (`127.0.0.1:8725`) as a fallback.
-        #[serde(default)]
-        pub bind_address: Option<String>,
+    /// Graceful shutdown deadline in milliseconds.
+    #[serde(default = "default_shutdown_deadline_ms")]
+    pub shutdown_deadline_ms: u64,
 
-        /// Graceful shutdown deadline in milliseconds.
-        #[serde(default = "default_shutdown_deadline_ms")]
-        pub shutdown_deadline_ms: u64,
+    /// How long to retain a watch-channel entry after the job reaches a
+    /// terminal state, in seconds.
+    #[serde(default = "default_job_state_ttl_seconds")]
+    pub job_state_ttl_seconds: u64,
 
-        /// How long to retain a watch-channel entry after the job reaches a
-        /// terminal state, in seconds.
-        #[serde(default = "default_job_state_ttl_seconds")]
-        pub job_state_ttl_seconds: u64,
+    /// Hard upper bound on watch-channel entry lifetime regardless of
+    /// terminal state, in seconds.
+    #[serde(default = "default_job_state_hard_ttl_seconds")]
+    pub job_state_hard_ttl_seconds: u64,
 
-        /// Hard upper bound on watch-channel entry lifetime regardless of
-        /// terminal state, in seconds.
-        #[serde(default = "default_job_state_hard_ttl_seconds")]
-        pub job_state_hard_ttl_seconds: u64,
-
-        /// SSE-specific connection settings.
-        #[serde(default)]
-        @nested pub sse: SseConfig,
-    }
+    /// SSE-specific connection settings.
+    #[serde(default)]
+    pub sse: SseConfig,
 }
 
 impl Default for ServerConfig {
@@ -123,29 +120,27 @@ impl Default for ServerConfig {
 // SseConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// SSE-specific connection settings.
+/// SSE-specific connection settings.
+///
+/// Nested under `server.sse` in the configuration file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SseConfig {
+    /// Maximum SSE connection lifetime in milliseconds.
     ///
-    /// Nested under `server.sse` in the configuration file.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct SseConfig {
-        /// Maximum SSE connection lifetime in milliseconds.
-        ///
-        /// Forces re-authentication after this period.
-        #[serde(default = "default_max_connection_age_ms")]
-        pub max_connection_age_ms: u64,
+    /// Forces re-authentication after this period.
+    #[serde(default = "default_max_connection_age_ms")]
+    pub max_connection_age_ms: u64,
 
-        /// Close SSE connection if no real events for this many milliseconds.
-        #[serde(default = "default_idle_timeout_ms")]
-        pub idle_timeout_ms: u64,
+    /// Close SSE connection if no real events for this many milliseconds.
+    #[serde(default = "default_idle_timeout_ms")]
+    pub idle_timeout_ms: u64,
 
-        /// SSE comment keepalive interval in milliseconds.
-        ///
-        /// Prevents proxy timeouts on idle connections.
-        #[serde(default = "default_keepalive_interval_ms")]
-        pub keepalive_interval_ms: u64,
-    }
+    /// SSE comment keepalive interval in milliseconds.
+    ///
+    /// Prevents proxy timeouts on idle connections.
+    #[serde(default = "default_keepalive_interval_ms")]
+    pub keepalive_interval_ms: u64,
 }
 
 impl Default for SseConfig {
