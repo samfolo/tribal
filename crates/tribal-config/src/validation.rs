@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use crate::{
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
-    sections::{ProviderKind, TransportKind, TribalConfig},
+    sections::{TransportKind, TribalConfig},
 };
 
 mod diagnostics;
@@ -213,7 +213,7 @@ fn validate_embedding(config: &TribalConfig, diags: &mut Diagnostics) {
         )));
     }
 
-    if config.embedding.provider == ProviderKind::Anthropic {
+    if !config.embedding.provider.supports_embedding() {
         diags.push(ValidationError::EmbeddingProviderUnsupported {
             provider: config.embedding.provider,
         });
@@ -236,10 +236,7 @@ fn validate_pool_sizing(config: &TribalConfig, diags: &mut Diagnostics) {
             value: available,
             floor: ComputedFloor {
                 value: required,
-                addend: FieldValue {
-                    field: ConfigPath::from_static("worker.max_concurrent_tasks"),
-                    value: max_concurrent_tasks,
-                },
+                addend: ConfigPath::from_static("worker.max_concurrent_tasks"),
                 overhead: POOL_CONNECTION_OVERHEAD,
             },
         });
@@ -283,10 +280,18 @@ fn validate_provider_limits(config: &TribalConfig, diags: &mut Diagnostics) {
 }
 
 fn validate_api_key_presence(config: &TribalConfig, diags: &mut Diagnostics) {
-    if config.embedding.provider.requires_api_key() && config.embedding.api_key.is_none() {
+    let embedding_provider = config.embedding.provider;
+    // Skip the api-key check for embedding providers that are
+    // unsupported anyway — `validate_embedding` already emits
+    // `EmbeddingProviderUnsupported`, so a parallel "set the api key"
+    // remediation would only mislead the operator.
+    if embedding_provider.supports_embedding()
+        && embedding_provider.requires_api_key()
+        && config.embedding.api_key.is_none()
+    {
         diags.push(ValidationError::MissingApiKey {
             stage: ProviderStage::Embedding,
-            provider: config.embedding.provider,
+            provider: embedding_provider,
         });
     }
 
@@ -719,12 +724,23 @@ mod tests {
     fn test_validate_rejects_anthropic_embedding_provider() {
         let mut config = valid_config();
         config.embedding.provider = ProviderKind::Anthropic;
-        config.embedding.api_key = Some("sk-test".parse().expect("test fixture is valid"));
+        config.embedding.api_key = None;
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::EmbeddingProviderUnsupported {
                 provider: ProviderKind::Anthropic
+            },
+        )));
+        // `Anthropic` is unsupported for embedding, so a parallel
+        // "set the api key" remediation would mislead the operator.
+        // `validate_api_key_presence` must skip the embedding stage
+        // when the chosen provider is unsupported.
+        assert!(!any(&diags, |d| matches!(
+            d,
+            ValidationError::MissingApiKey {
+                stage: ProviderStage::Embedding,
+                ..
             },
         )));
     }
@@ -743,8 +759,7 @@ mod tests {
                 if field.as_str() == "database.pool_worker_max_connections"
                     && *value == 10
                     && floor.value == 14
-                    && floor.addend.field.as_str() == "worker.max_concurrent_tasks"
-                    && floor.addend.value == 10
+                    && floor.addend.as_str() == "worker.max_concurrent_tasks"
                     && floor.overhead == POOL_CONNECTION_OVERHEAD,
         )));
     }
@@ -795,14 +810,14 @@ mod tests {
     #[test]
     fn test_validate_rejects_missing_api_key_for_cloud_provider() {
         let mut config = valid_config();
-        config.embedding.provider = ProviderKind::Anthropic;
+        config.embedding.provider = ProviderKind::OpenAi;
         config.embedding.api_key = None;
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::MissingApiKey {
                 stage: ProviderStage::Embedding,
-                provider: ProviderKind::Anthropic,
+                provider: ProviderKind::OpenAi,
             },
         )));
     }
