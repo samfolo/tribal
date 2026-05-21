@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::provider_kind::ProviderKind;
-use crate::validation::{ConfigPath, EnumerateFields};
+use crate::config_section;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,21 +36,24 @@ pub struct ProviderLimitsConfig {
 // LimitsConfig
 // ---------------------------------------------------------------------------
 
-/// Per-provider concurrency limits.
-///
-/// Bounds in-flight requests to any single external service, preventing
-/// worker tasks from starving MCP read-path queries that share the same
-/// provider.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LimitsConfig {
-    /// Per-provider limits, keyed by provider kind.
+config_section! {
+    /// Per-provider concurrency limits.
     ///
-    /// Pre-populated with defaults for all three providers.  Typed keys
-    /// mean a YAML typo fails at parse time rather than silently creating
-    /// an unreferenced entry.
-    #[serde(default = "default_providers")]
-    pub providers: HashMap<ProviderKind, ProviderLimitsConfig>,
+    /// Bounds in-flight requests to any single external service, preventing
+    /// worker tasks from starving MCP read-path queries that share the same
+    /// provider.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct LimitsConfig {
+        /// Per-provider limits, keyed by provider kind.
+        ///
+        /// Pre-populated with defaults for all three providers.  Typed keys
+        /// mean a YAML typo fails at parse time rather than silently creating
+        /// an unreferenced entry.  Runtime-keyed: the validator constructs
+        /// paths like `limits.providers.<provider>.<field>` at the call site.
+        #[serde(default = "default_providers")]
+        @skip pub providers: HashMap<ProviderKind, ProviderLimitsConfig>,
+    }
 }
 
 impl Default for LimitsConfig {
@@ -85,25 +88,6 @@ fn default_providers() -> HashMap<ProviderKind, ProviderLimitsConfig> {
         },
     );
     map
-}
-
-// ---------------------------------------------------------------------------
-// EnumerateFields
-// ---------------------------------------------------------------------------
-
-/// `providers` is `HashMap<ProviderKind, ProviderLimitsConfig>` —
-/// runtime-keyed by provider name.  This section therefore contributes
-/// no static paths to enumeration; the validator constructs paths like
-/// `limits.providers.<provider>.<field>` at the call site via
-/// [`ConfigPath::child`].
-impl EnumerateFields for LimitsConfig {
-    fn enumerate(_prefix: &str, _out: &mut Vec<ConfigPath>) {}
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_limits_config_fields(c: &LimitsConfig) {
-    let _ = &c.providers;
 }
 
 // ---------------------------------------------------------------------------

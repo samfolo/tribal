@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::transport_kind::TransportKind;
-use crate::validation::{ConfigPath, EnumerateFields};
+use crate::config_section;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,42 +66,44 @@ const fn default_job_state_hard_ttl_seconds() -> u64 {
 // ServerConfig
 // ---------------------------------------------------------------------------
 
-/// Top-level server configuration.
-///
-/// Controls the transport protocol, bind address, shutdown behaviour,
-/// and SSE-specific tuning.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    /// Transport protocol for the MCP server.
-    #[serde(default)]
-    pub transport: TransportKind,
-
-    /// Socket address to bind the HTTP/SSE listener to.
+config_section! {
+    /// Top-level server configuration.
     ///
-    /// `None` when using stdio transport.  When transport is HTTP or SSE
-    /// and this is `None`, the startup sequence supplies
-    /// [`DEFAULT_BIND_ADDRESS`] (`127.0.0.1:8725`) as a fallback.
-    #[serde(default)]
-    pub bind_address: Option<String>,
+    /// Controls the transport protocol, bind address, shutdown behaviour,
+    /// and SSE-specific tuning.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ServerConfig {
+        /// Transport protocol for the MCP server.
+        #[serde(default)]
+        pub transport: TransportKind,
 
-    /// Graceful shutdown deadline in milliseconds.
-    #[serde(default = "default_shutdown_deadline_ms")]
-    pub shutdown_deadline_ms: u64,
+        /// Socket address to bind the HTTP/SSE listener to.
+        ///
+        /// `None` when using stdio transport.  When transport is HTTP or SSE
+        /// and this is `None`, the startup sequence supplies
+        /// [`DEFAULT_BIND_ADDRESS`] (`127.0.0.1:8725`) as a fallback.
+        #[serde(default)]
+        pub bind_address: Option<String>,
 
-    /// How long to retain a watch-channel entry after the job reaches a
-    /// terminal state, in seconds.
-    #[serde(default = "default_job_state_ttl_seconds")]
-    pub job_state_ttl_seconds: u64,
+        /// Graceful shutdown deadline in milliseconds.
+        #[serde(default = "default_shutdown_deadline_ms")]
+        pub shutdown_deadline_ms: u64,
 
-    /// Hard upper bound on watch-channel entry lifetime regardless of
-    /// terminal state, in seconds.
-    #[serde(default = "default_job_state_hard_ttl_seconds")]
-    pub job_state_hard_ttl_seconds: u64,
+        /// How long to retain a watch-channel entry after the job reaches a
+        /// terminal state, in seconds.
+        #[serde(default = "default_job_state_ttl_seconds")]
+        pub job_state_ttl_seconds: u64,
 
-    /// SSE-specific connection settings.
-    #[serde(default)]
-    pub sse: SseConfig,
+        /// Hard upper bound on watch-channel entry lifetime regardless of
+        /// terminal state, in seconds.
+        #[serde(default = "default_job_state_hard_ttl_seconds")]
+        pub job_state_hard_ttl_seconds: u64,
+
+        /// SSE-specific connection settings.
+        #[serde(default)]
+        @nested pub sse: SseConfig,
+    }
 }
 
 impl Default for ServerConfig {
@@ -121,27 +123,29 @@ impl Default for ServerConfig {
 // SseConfig
 // ---------------------------------------------------------------------------
 
-/// SSE-specific connection settings.
-///
-/// Nested under `server.sse` in the configuration file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SseConfig {
-    /// Maximum SSE connection lifetime in milliseconds.
+config_section! {
+    /// SSE-specific connection settings.
     ///
-    /// Forces re-authentication after this period.
-    #[serde(default = "default_max_connection_age_ms")]
-    pub max_connection_age_ms: u64,
+    /// Nested under `server.sse` in the configuration file.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct SseConfig {
+        /// Maximum SSE connection lifetime in milliseconds.
+        ///
+        /// Forces re-authentication after this period.
+        #[serde(default = "default_max_connection_age_ms")]
+        pub max_connection_age_ms: u64,
 
-    /// Close SSE connection if no real events for this many milliseconds.
-    #[serde(default = "default_idle_timeout_ms")]
-    pub idle_timeout_ms: u64,
+        /// Close SSE connection if no real events for this many milliseconds.
+        #[serde(default = "default_idle_timeout_ms")]
+        pub idle_timeout_ms: u64,
 
-    /// SSE comment keepalive interval in milliseconds.
-    ///
-    /// Prevents proxy timeouts on idle connections.
-    #[serde(default = "default_keepalive_interval_ms")]
-    pub keepalive_interval_ms: u64,
+        /// SSE comment keepalive interval in milliseconds.
+        ///
+        /// Prevents proxy timeouts on idle connections.
+        #[serde(default = "default_keepalive_interval_ms")]
+        pub keepalive_interval_ms: u64,
+    }
 }
 
 impl Default for SseConfig {
@@ -152,48 +156,6 @@ impl Default for SseConfig {
             keepalive_interval_ms: default_keepalive_interval_ms(),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// EnumerateFields
-// ---------------------------------------------------------------------------
-
-impl EnumerateFields for ServerConfig {
-    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
-        out.push(ConfigPath::child(prefix, "transport"));
-        out.push(ConfigPath::child(prefix, "bind_address"));
-        out.push(ConfigPath::child(prefix, "shutdown_deadline_ms"));
-        out.push(ConfigPath::child(prefix, "job_state_ttl_seconds"));
-        out.push(ConfigPath::child(prefix, "job_state_hard_ttl_seconds"));
-        SseConfig::enumerate(&format!("{prefix}.sse"), out);
-    }
-}
-
-impl EnumerateFields for SseConfig {
-    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
-        out.push(ConfigPath::child(prefix, "max_connection_age_ms"));
-        out.push(ConfigPath::child(prefix, "idle_timeout_ms"));
-        out.push(ConfigPath::child(prefix, "keepalive_interval_ms"));
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_server_config_fields(c: &ServerConfig) {
-    let _ = &c.transport;
-    let _ = &c.bind_address;
-    let _ = &c.shutdown_deadline_ms;
-    let _ = &c.job_state_ttl_seconds;
-    let _ = &c.job_state_hard_ttl_seconds;
-    let _ = &c.sse;
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_sse_config_fields(c: &SseConfig) {
-    let _ = &c.max_connection_age_ms;
-    let _ = &c.idle_timeout_ms;
-    let _ = &c.keepalive_interval_ms;
 }
 
 // ---------------------------------------------------------------------------

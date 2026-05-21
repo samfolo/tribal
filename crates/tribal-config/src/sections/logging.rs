@@ -6,74 +6,72 @@
 use serde::{Deserialize, Serialize};
 
 use super::telemetry::FileRotation;
-use crate::{
-    paths::resolve_directory,
-    validation::{ConfigPath, EnumerateFields},
-};
+use crate::{config_section, paths::resolve_directory};
 
 // ---------------------------------------------------------------------------
 // LoggingConfig
 // ---------------------------------------------------------------------------
 
-/// Configuration for the tracing subscriber.
-///
-/// Loaded from the application configuration file.  All fields have
-/// sensible defaults for local development (info level, JSON format,
-/// stderr output).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LoggingConfig {
-    /// Tracing filter directive string.
+config_section! {
+    /// Configuration for the tracing subscriber.
     ///
-    /// Supports per-module granularity, e.g. `"info,tribal_db=debug"`.
-    /// Defaults to `"info"`.  The `TRIBAL_LOG` environment variable,
-    /// mapped by the configuration loader, takes precedence over a
-    /// YAML-supplied value for this field.
-    #[serde(default = "default_level")]
-    pub level: String,
+    /// Loaded from the application configuration file.  All fields have
+    /// sensible defaults for local development (info level, JSON format,
+    /// stderr output).
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct LoggingConfig {
+        /// Tracing filter directive string.
+        ///
+        /// Supports per-module granularity, e.g. `"info,tribal_db=debug"`.
+        /// Defaults to `"info"`.  The `TRIBAL_LOG` environment variable,
+        /// mapped by the configuration loader, takes precedence over a
+        /// YAML-supplied value for this field.
+        #[serde(default = "default_level")]
+        pub level: String,
 
-    /// Output format for log lines.
-    ///
-    /// Defaults to [`LogFormat::Json`] for structured output suitable
-    /// for log aggregation.
-    #[serde(default)]
-    pub format: LogFormat,
+        /// Output format for log lines.
+        ///
+        /// Defaults to [`LogFormat::Json`] for structured output suitable
+        /// for log aggregation.
+        #[serde(default)]
+        pub format: LogFormat,
 
-    /// Output destination for log lines.
-    ///
-    /// Defaults to [`LogOutput::Stderr`].
-    #[serde(default)]
-    pub output: LogOutput,
+        /// Output destination for log lines.
+        ///
+        /// Defaults to [`LogOutput::Stderr`].
+        #[serde(default)]
+        pub output: LogOutput,
 
-    /// Directory for log file output when [`output`](LoggingConfig::output)
-    /// is [`LogOutput::File`].
-    ///
-    /// Resolved at startup via platform-aware defaults:
-    /// `dirs::state_dir` → `dirs::data_local_dir` → `std::env::temp_dir`,
-    /// each joined with `tribal/logs`.
-    #[serde(default = "default_file_directory")]
-    pub file_directory: String,
+        /// Directory for log file output when [`output`](LoggingConfig::output)
+        /// is [`LogOutput::File`].
+        ///
+        /// Resolved at startup via platform-aware defaults:
+        /// `dirs::state_dir` → `dirs::data_local_dir` → `std::env::temp_dir`,
+        /// each joined with `tribal/logs`.
+        #[serde(default = "default_file_directory")]
+        pub file_directory: String,
 
-    /// Log file rotation policy.
-    ///
-    /// Defaults to [`FileRotation::Daily`].
-    #[serde(default)]
-    pub file_rotation: FileRotation,
+        /// Log file rotation policy.
+        ///
+        /// Defaults to [`FileRotation::Daily`].
+        #[serde(default)]
+        pub file_rotation: FileRotation,
 
-    /// Whether `std::env::temp_dir` was used as a last-resort fallback
-    /// for `file_directory`.
-    ///
-    /// Set automatically during default construction; not serialised.
-    #[serde(skip)]
-    pub used_temp_dir_fallback: bool,
+        /// Whether `std::env::temp_dir` was used as a last-resort fallback
+        /// for `file_directory`.  Internal runtime state, not part of the
+        /// YAML surface.
+        #[serde(skip)]
+        @skip pub used_temp_dir_fallback: bool,
 
-    /// Whether to include raw LLM request/response content in log output.
-    ///
-    /// Defaults to `false`.  When `true`, inference-related spans and
-    /// events may include prompt text and model responses, which can be
-    /// large and contain sensitive information.
-    #[serde(default)]
-    pub include_llm_content: bool,
+        /// Whether to include raw LLM request/response content in log output.
+        ///
+        /// Defaults to `false`.  When `true`, inference-related spans and
+        /// events may include prompt text and model responses, which can be
+        /// large and contain sensitive information.
+        #[serde(default)]
+        pub include_llm_content: bool,
+    }
 }
 
 fn default_level() -> String {
@@ -99,35 +97,6 @@ impl Default for LoggingConfig {
             include_llm_content: false,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// EnumerateFields
-// ---------------------------------------------------------------------------
-
-/// `used_temp_dir_fallback` is `#[serde(skip)]` — internal runtime
-/// state, not part of the YAML surface — so it's intentionally absent
-/// from both [`LoggingConfig::enumerate`] and the check below.
-impl EnumerateFields for LoggingConfig {
-    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
-        out.push(ConfigPath::child(prefix, "level"));
-        out.push(ConfigPath::child(prefix, "format"));
-        out.push(ConfigPath::child(prefix, "output"));
-        out.push(ConfigPath::child(prefix, "file_directory"));
-        out.push(ConfigPath::child(prefix, "file_rotation"));
-        out.push(ConfigPath::child(prefix, "include_llm_content"));
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_logging_config_fields(c: &LoggingConfig) {
-    let _ = &c.level;
-    let _ = &c.format;
-    let _ = &c.output;
-    let _ = &c.file_directory;
-    let _ = &c.file_rotation;
-    let _ = &c.include_llm_content;
 }
 
 // ---------------------------------------------------------------------------

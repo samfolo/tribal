@@ -2,10 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    paths::resolve_directory,
-    validation::{ConfigPath, EnumerateFields},
-};
+use crate::{config_section, paths::resolve_directory};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -40,52 +37,53 @@ pub enum FileRotation {
 // TelemetryConfig
 // ---------------------------------------------------------------------------
 
-/// OpenTelemetry and trace export configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TelemetryConfig {
-    /// Master switch for telemetry.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
+config_section! {
+    /// OpenTelemetry and trace export configuration.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct TelemetryConfig {
+        /// Master switch for telemetry.
+        #[serde(default = "default_enabled")]
+        pub enabled: bool,
 
-    /// OTLP exporter endpoint (e.g. `http://localhost:4317`).
-    #[serde(default)]
-    pub otlp_endpoint: Option<String>,
+        /// OTLP exporter endpoint (e.g. `http://localhost:4317`).
+        #[serde(default)]
+        pub otlp_endpoint: Option<String>,
 
-    /// OTLP protocol (`grpc` or `http`).
-    #[serde(default = "default_otlp_protocol")]
-    pub otlp_protocol: String,
+        /// OTLP protocol (`grpc` or `http`).
+        #[serde(default = "default_otlp_protocol")]
+        pub otlp_protocol: String,
 
-    /// Service name reported in spans.
-    #[serde(default = "default_service_name")]
-    pub service_name: String,
+        /// Service name reported in spans.
+        #[serde(default = "default_service_name")]
+        pub service_name: String,
 
-    /// Print spans to stderr (development).
-    #[serde(default = "default_console_export")]
-    pub console_export: bool,
+        /// Print spans to stderr (development).
+        #[serde(default = "default_console_export")]
+        pub console_export: bool,
 
-    /// Write spans to file.
-    #[serde(default)]
-    pub file_export: bool,
+        /// Write spans to file.
+        #[serde(default)]
+        pub file_export: bool,
 
-    /// Directory for trace file output.
-    ///
-    /// Resolved at startup via platform-aware defaults:
-    /// `dirs::data_local_dir` → `std::env::temp_dir`,
-    /// each joined with `tribal/traces`.
-    #[serde(default = "default_file_directory")]
-    pub file_directory: String,
+        /// Directory for trace file output.
+        ///
+        /// Resolved at startup via platform-aware defaults:
+        /// `dirs::data_local_dir` → `std::env::temp_dir`,
+        /// each joined with `tribal/traces`.
+        #[serde(default = "default_file_directory")]
+        pub file_directory: String,
 
-    /// Trace file rotation policy.
-    #[serde(default)]
-    pub file_rotation: FileRotation,
+        /// Trace file rotation policy.
+        #[serde(default)]
+        pub file_rotation: FileRotation,
 
-    /// Whether `std::env::temp_dir` was used as a last-resort fallback
-    /// for `file_directory`.
-    ///
-    /// Set automatically during default construction; not serialised.
-    #[serde(skip)]
-    pub used_temp_dir_fallback: bool,
+        /// Whether `std::env::temp_dir` was used as a last-resort fallback
+        /// for `file_directory`.  Internal runtime state, not part of the
+        /// YAML surface.
+        #[serde(skip)]
+        @skip pub used_temp_dir_fallback: bool,
+    }
 }
 
 impl Default for TelemetryConfig {
@@ -104,39 +102,6 @@ impl Default for TelemetryConfig {
             file_rotation: FileRotation::default(),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// EnumerateFields
-// ---------------------------------------------------------------------------
-
-/// `used_temp_dir_fallback` is `#[serde(skip)]` — internal runtime
-/// state, not part of the YAML surface — so it's intentionally absent
-/// from both [`TelemetryConfig::enumerate`] and the check below.
-impl EnumerateFields for TelemetryConfig {
-    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
-        out.push(ConfigPath::child(prefix, "enabled"));
-        out.push(ConfigPath::child(prefix, "otlp_endpoint"));
-        out.push(ConfigPath::child(prefix, "otlp_protocol"));
-        out.push(ConfigPath::child(prefix, "service_name"));
-        out.push(ConfigPath::child(prefix, "console_export"));
-        out.push(ConfigPath::child(prefix, "file_export"));
-        out.push(ConfigPath::child(prefix, "file_directory"));
-        out.push(ConfigPath::child(prefix, "file_rotation"));
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_telemetry_config_fields(c: &TelemetryConfig) {
-    let _ = &c.enabled;
-    let _ = &c.otlp_endpoint;
-    let _ = &c.otlp_protocol;
-    let _ = &c.service_name;
-    let _ = &c.console_export;
-    let _ = &c.file_export;
-    let _ = &c.file_directory;
-    let _ = &c.file_rotation;
 }
 
 const fn default_enabled() -> bool {

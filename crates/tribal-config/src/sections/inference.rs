@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tribal_domain::ApiKey;
 
 use super::provider_kind::ProviderKind;
-use crate::validation::{ConfigPath, EnumerateFields};
+use crate::config_section;
 
 // ---------------------------------------------------------------------------
 // Constants — extraction
@@ -63,58 +63,62 @@ const fn default_small_max_tokens() -> u32 {
 // StageInferenceConfig
 // ---------------------------------------------------------------------------
 
-/// Configuration for a single inference stage.
-///
-/// When `base_url` is `None`, the provider implementation supplies its
-/// own default URL.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StageInferenceConfig {
-    /// LLM provider.
-    #[serde(default)]
-    pub provider: ProviderKind,
+config_section! {
+    /// Configuration for a single inference stage.
+    ///
+    /// When `base_url` is `None`, the provider implementation supplies its
+    /// own default URL.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct StageInferenceConfig {
+        /// LLM provider.
+        #[serde(default)]
+        pub provider: ProviderKind,
 
-    /// Model name.
-    pub model: String,
+        /// Model name.
+        pub model: String,
 
-    /// Base URL for the provider API.
-    #[serde(default)]
-    pub base_url: Option<String>,
+        /// Base URL for the provider API.
+        #[serde(default)]
+        pub base_url: Option<String>,
 
-    /// API key for cloud providers.
-    #[serde(default)]
-    pub api_key: Option<ApiKey>,
+        /// API key for cloud providers.
+        #[serde(default)]
+        pub api_key: Option<ApiKey>,
 
-    /// Sampling temperature.
-    pub temperature: f64,
+        /// Sampling temperature.
+        pub temperature: f64,
 
-    /// Maximum output tokens.
-    pub max_tokens: u32,
+        /// Maximum output tokens.
+        pub max_tokens: u32,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // InferenceConfig
 // ---------------------------------------------------------------------------
 
-/// Per-stage inference configuration.
-///
-/// Each stage is independently configurable to allow cost/quality tuning
-/// — e.g. a capable model for extraction and a fast/cheap model for
-/// classification stages.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InferenceConfig {
-    /// Extraction stage configuration.
-    #[serde(default = "default_extraction")]
-    pub extraction: StageInferenceConfig,
+config_section! {
+    /// Per-stage inference configuration.
+    ///
+    /// Each stage is independently configurable to allow cost/quality tuning
+    /// — e.g. a capable model for extraction and a fast/cheap model for
+    /// classification stages.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct InferenceConfig {
+        /// Extraction stage configuration.
+        #[serde(default = "default_extraction")]
+        @nested pub extraction: StageInferenceConfig,
 
-    /// Triage stage configuration.
-    #[serde(default = "default_triage")]
-    pub triage: StageInferenceConfig,
+        /// Triage stage configuration.
+        #[serde(default = "default_triage")]
+        @nested pub triage: StageInferenceConfig,
 
-    /// Relation classification stage configuration.
-    #[serde(default = "default_relation")]
-    pub relation: StageInferenceConfig,
+        /// Relation classification stage configuration.
+        #[serde(default = "default_relation")]
+        @nested pub relation: StageInferenceConfig,
+    }
 }
 
 impl Default for InferenceConfig {
@@ -125,48 +129,6 @@ impl Default for InferenceConfig {
             relation: default_relation(),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// EnumerateFields
-// ---------------------------------------------------------------------------
-
-impl EnumerateFields for StageInferenceConfig {
-    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
-        out.push(ConfigPath::child(prefix, "provider"));
-        out.push(ConfigPath::child(prefix, "model"));
-        out.push(ConfigPath::child(prefix, "base_url"));
-        out.push(ConfigPath::child(prefix, "api_key"));
-        out.push(ConfigPath::child(prefix, "temperature"));
-        out.push(ConfigPath::child(prefix, "max_tokens"));
-    }
-}
-
-impl EnumerateFields for InferenceConfig {
-    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
-        StageInferenceConfig::enumerate(&format!("{prefix}.extraction"), out);
-        StageInferenceConfig::enumerate(&format!("{prefix}.triage"), out);
-        StageInferenceConfig::enumerate(&format!("{prefix}.relation"), out);
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_stage_inference_config_fields(c: &StageInferenceConfig) {
-    let _ = &c.provider;
-    let _ = &c.model;
-    let _ = &c.base_url;
-    let _ = &c.api_key;
-    let _ = &c.temperature;
-    let _ = &c.max_tokens;
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_inference_config_fields(c: &InferenceConfig) {
-    let _ = &c.extraction;
-    let _ = &c.triage;
-    let _ = &c.relation;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,10 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    paths::default_prompts_directory,
-    validation::{ConfigPath, EnumerateFields},
-};
+use crate::{config_section, paths::default_prompts_directory};
 
 fn default_directory() -> String {
     default_prompts_directory()
@@ -57,36 +54,21 @@ impl Default for PromptSource {
 // PromptsConfig
 // ---------------------------------------------------------------------------
 
-/// Wrapper around [`PromptSource`].
-///
-/// A struct rather than an inline enum so future prompt-wide knobs (e.g.
-/// global cache settings) can land without breaking the YAML schema.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct PromptsConfig {
-    /// Where the active prompts are loaded from.
-    #[serde(default)]
-    pub source: PromptSource,
-}
-
-// ---------------------------------------------------------------------------
-// EnumerateFields
-// ---------------------------------------------------------------------------
-
-/// `source` is an internally-tagged enum whose YAML shape varies by
-/// variant; treated as one opaque leaf here.  If the validator ever
-/// needs to address `source.kind` or variant-specific fields directly,
-/// recurse into the enum at that point.
-impl EnumerateFields for PromptsConfig {
-    fn enumerate(prefix: &str, out: &mut Vec<ConfigPath>) {
-        out.push(ConfigPath::child(prefix, "source"));
+config_section! {
+    /// Wrapper around [`PromptSource`].
+    ///
+    /// A struct rather than an inline enum so future prompt-wide knobs (e.g.
+    /// global cache settings) can land without breaking the YAML schema.
+    /// `source` is an internally-tagged enum whose YAML shape varies by
+    /// variant; treated here as one opaque leaf, with variant-specific
+    /// paths handled at the validator call site if needed.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+    #[serde(deny_unknown_fields)]
+    pub struct PromptsConfig {
+        /// Where the active prompts are loaded from.
+        #[serde(default)]
+        pub source: PromptSource,
     }
-}
-
-#[cfg(test)]
-#[allow(dead_code, clippy::let_underscore_untyped)]
-fn _check_prompts_config_fields(c: &PromptsConfig) {
-    let _ = &c.source;
 }
 
 #[cfg(test)]
