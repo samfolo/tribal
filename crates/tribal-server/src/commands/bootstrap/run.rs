@@ -8,9 +8,7 @@ use std::{
 
 use anstream::AutoStream;
 use chrono::{DateTime, Utc};
-use tribal_config::{
-    Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config, validate,
-};
+use tribal_config::{Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig};
 use tribal_domain::GitRemote;
 use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
 
@@ -19,8 +17,8 @@ use crate::{
     cli::BootstrapArgs,
     commands::{
         common::{
-            CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS, resolve_absolute_config_path,
-            resolve_ttl,
+            CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS, prepare_config,
+            resolve_absolute_config_path, resolve_ttl,
         },
         project::register::{self, DEFAULT_BRANCH, OutputOptions},
         setup,
@@ -90,12 +88,7 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
     let cli_overrides = args.into_cli_overrides();
     let persisted_overrides = cli_overrides.clone();
 
-    let config = load_config(
-        config_path,
-        Some(cli_overrides),
-        Some(&DATABASE_COMMAND_DEFAULTS),
-    )?;
-    validate(&config)?;
+    let config = prepare_config(config_path, cli_overrides, &DATABASE_COMMAND_DEFAULTS)?;
 
     let expires_at = Utc::now() + resolve_ttl(ttl, config.auth.token_ttl_hours)?;
     let absolute_config_path = resolve_absolute_config_path(config_path)?;

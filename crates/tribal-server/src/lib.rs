@@ -16,8 +16,9 @@ pub use app::App;
 #[cfg(feature = "test-helpers")]
 pub use commands::{
     BootstrapOptions, CheckOptions, CheckOutput, McpConfigOptions, SetupOutcome, bootstrap_async,
-    check_async, common::CredentialsPersistOutcome, mcp_config_async, setup_async,
-    token_create_async,
+    check_async,
+    common::{CredentialsPersistOutcome, prepare_config},
+    mcp_config_async, setup_async, token_create_async,
 };
 pub use error::AppError;
 pub use orchestration::{ServerHandle, start_server};
