@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config_section;
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -27,33 +25,31 @@ pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.3;
 // DiscoveryConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// Configuration for the discovery (semantic search) handler.
+/// Configuration for the discovery (semantic search) handler.
+///
+/// Controls result limits, overfetch behaviour, and similarity
+/// thresholds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryConfig {
+    /// Default number of results when the caller does not specify a limit.
+    #[serde(default = "default_limit")]
+    pub default_limit: u32,
+
+    /// Maximum number of results a caller may request.
+    #[serde(default = "default_max_limit")]
+    pub max_limit: u32,
+
+    /// Multiplier applied to the limit for the initial semantic search.
     ///
-    /// Controls result limits, overfetch behaviour, and similarity
-    /// thresholds.
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct DiscoveryConfig {
-        /// Default number of results when the caller does not specify a limit.
-        #[serde(default = "default_limit")]
-        pub default_limit: u32,
+    /// `K = limit * overfetch_multiplier` rows are fetched, then filtered
+    /// by similarity threshold.
+    #[serde(default = "default_overfetch_multiplier")]
+    pub overfetch_multiplier: u32,
 
-        /// Maximum number of results a caller may request.
-        #[serde(default = "default_max_limit")]
-        pub max_limit: u32,
-
-        /// Multiplier applied to the limit for the initial semantic search.
-        ///
-        /// `K = limit * overfetch_multiplier` rows are fetched, then filtered
-        /// by similarity threshold.
-        #[serde(default = "default_overfetch_multiplier")]
-        pub overfetch_multiplier: u32,
-
-        /// Minimum cosine similarity to include a result.
-        #[serde(default = "default_similarity_threshold")]
-        pub similarity_threshold: f64,
-    }
+    /// Minimum cosine similarity to include a result.
+    #[serde(default = "default_similarity_threshold")]
+    pub similarity_threshold: f64,
 }
 
 impl Default for DiscoveryConfig {

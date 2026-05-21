@@ -8,8 +8,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config_section;
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -36,49 +34,47 @@ pub const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 5;
 // DatabaseConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// Configuration for the database connection pools.
-    ///
-    /// Loaded from the application YAML configuration file.  The `url` field is
-    /// required; all other fields have sensible defaults for local development.
-    ///
-    /// Two pools are created from this configuration: one for MCP read-path
-    /// queries and one for worker write-path transactions.  Pool-specific
-    /// settings (max connections, statement timeout) are selected by the startup
-    /// sequence based on the pool name.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct DatabaseConfig {
-        /// `PostgreSQL` connection URL (e.g.
-        /// `postgres://user:pass@localhost:5432/tribal`).  Required; no default.
-        pub url: String,
+/// Configuration for the database connection pools.
+///
+/// Loaded from the application YAML configuration file.  The `url` field is
+/// required; all other fields have sensible defaults for local development.
+///
+/// Two pools are created from this configuration: one for MCP read-path
+/// queries and one for worker write-path transactions.  Pool-specific
+/// settings (max connections, statement timeout) are selected by the startup
+/// sequence based on the pool name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DatabaseConfig {
+    /// `PostgreSQL` connection URL (e.g.
+    /// `postgres://user:pass@localhost:5432/tribal`).  Required; no default.
+    pub url: String,
 
-        /// Maximum connections in the MCP (read-path) pool.
-        #[serde(default = "default_pool_mcp_max_connections")]
-        pub pool_mcp_max_connections: u32,
+    /// Maximum connections in the MCP (read-path) pool.
+    #[serde(default = "default_pool_mcp_max_connections")]
+    pub pool_mcp_max_connections: u32,
 
-        /// Maximum connections in the worker (write-path) pool.
-        #[serde(default = "default_pool_worker_max_connections")]
-        pub pool_worker_max_connections: u32,
+    /// Maximum connections in the worker (write-path) pool.
+    #[serde(default = "default_pool_worker_max_connections")]
+    pub pool_worker_max_connections: u32,
 
-        /// Milliseconds to wait when acquiring a connection before returning an
-        /// error.
-        #[serde(default = "default_acquire_timeout_ms")]
-        pub acquire_timeout_ms: u64,
+    /// Milliseconds to wait when acquiring a connection before returning an
+    /// error.
+    #[serde(default = "default_acquire_timeout_ms")]
+    pub acquire_timeout_ms: u64,
 
-        /// Statement timeout in milliseconds for MCP pool connections.
-        #[serde(default = "default_statement_timeout_mcp_ms")]
-        pub statement_timeout_mcp_ms: u64,
+    /// Statement timeout in milliseconds for MCP pool connections.
+    #[serde(default = "default_statement_timeout_mcp_ms")]
+    pub statement_timeout_mcp_ms: u64,
 
-        /// Statement timeout in milliseconds for worker pool connections.
-        #[serde(default = "default_statement_timeout_worker_ms")]
-        pub statement_timeout_worker_ms: u64,
+    /// Statement timeout in milliseconds for worker pool connections.
+    #[serde(default = "default_statement_timeout_worker_ms")]
+    pub statement_timeout_worker_ms: u64,
 
-        /// Maximum connection attempts during startup (used by the startup
-        /// sequence, not by this module directly).
-        #[serde(default = "default_max_connect_attempts")]
-        pub max_connect_attempts: u32,
-    }
+    /// Maximum connection attempts during startup (used by the startup
+    /// sequence, not by this module directly).
+    #[serde(default = "default_max_connect_attempts")]
+    pub max_connect_attempts: u32,
 }
 
 impl DatabaseConfig {

@@ -4,11 +4,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    config_section,
-    validation::{
-        ConfigPath, Diagnostics, FieldValue, OrderRelation, SIMILARITY_RANGE, ValidationError,
-    },
+use crate::validation::{
+    ConfigPath, Diagnostics, FieldValue, OrderRelation, SIMILARITY_RANGE, ValidationError,
 };
 
 // ---------------------------------------------------------------------------
@@ -46,52 +43,50 @@ pub const DEFAULT_TAG_SIMILARITY_THRESHOLD: f64 = 0.85;
 // WorkerConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// Configuration for the worker loop.
-    ///
-    /// All duration fields are expressed as integer milliseconds and converted
-    /// to [`Duration`] via convenience methods.  Defaults are applied via
-    /// `serde(default)` so that an empty YAML object deserialises to a valid
-    /// configuration.
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-    #[serde(deny_unknown_fields)]
-    pub struct WorkerConfig {
-        /// Maximum number of concurrently executing tasks.
-        #[serde(default = "default_max_concurrent_tasks")]
-        pub max_concurrent_tasks: usize,
+/// Configuration for the worker loop.
+///
+/// All duration fields are expressed as integer milliseconds and converted
+/// to [`Duration`] via convenience methods.  Defaults are applied via
+/// `serde(default)` so that an empty YAML object deserialises to a valid
+/// configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerConfig {
+    /// Maximum number of concurrently executing tasks.
+    #[serde(default = "default_max_concurrent_tasks")]
+    pub max_concurrent_tasks: usize,
 
-        /// Milliseconds between poll cycles.
-        #[serde(default = "default_poll_interval_ms")]
-        pub poll_interval_ms: u64,
+    /// Milliseconds between poll cycles.
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
 
-        /// Per-task timeout in milliseconds.
-        #[serde(default = "default_task_timeout_ms")]
-        pub task_timeout_ms: u64,
+    /// Per-task timeout in milliseconds.
+    #[serde(default = "default_task_timeout_ms")]
+    pub task_timeout_ms: u64,
 
-        /// Maximum retries before a task is dead-lettered.
-        #[serde(default = "default_task_max_retries")]
-        pub task_max_retries: u32,
+    /// Maximum retries before a task is dead-lettered.
+    #[serde(default = "default_task_max_retries")]
+    pub task_max_retries: u32,
 
-        /// Milliseconds between heartbeat updates for claimed tasks.
-        #[serde(default = "default_heartbeat_interval_ms")]
-        pub heartbeat_interval_ms: u64,
+    /// Milliseconds between heartbeat updates for claimed tasks.
+    #[serde(default = "default_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u64,
 
-        /// Milliseconds between stale-task reclaim sweeps.
-        #[serde(default = "default_reclaim_interval_ms")]
-        pub reclaim_interval_ms: u64,
+    /// Milliseconds between stale-task reclaim sweeps.
+    #[serde(default = "default_reclaim_interval_ms")]
+    pub reclaim_interval_ms: u64,
 
-        /// Maximum candidate count per job (cap applied during extraction).
-        #[serde(default = "default_max_candidates_per_job")]
-        pub max_candidates_per_job: u32,
+    /// Maximum candidate count per job (cap applied during extraction).
+    #[serde(default = "default_max_candidates_per_job")]
+    pub max_candidates_per_job: u32,
 
-        /// Number of similar items returned during triage search.
-        #[serde(default = "default_triage_search_limit")]
-        pub triage_search_limit: u32,
+    /// Number of similar items returned during triage search.
+    #[serde(default = "default_triage_search_limit")]
+    pub triage_search_limit: u32,
 
-        /// Minimum cosine similarity for semantic tag matching (0.0, 1.0].
-        #[serde(default = "default_tag_similarity_threshold")]
-        pub tag_similarity_threshold: f64,
-    }
+    /// Minimum cosine similarity for semantic tag matching (0.0, 1.0].
+    #[serde(default = "default_tag_similarity_threshold")]
+    pub tag_similarity_threshold: f64,
 }
 
 impl WorkerConfig {

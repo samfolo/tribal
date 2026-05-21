@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config_section;
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -24,29 +22,27 @@ pub const DEFAULT_MAX_LIMIT: u32 = 100;
 // ExplorationConfig
 // ---------------------------------------------------------------------------
 
-config_section! {
-    /// Configuration for the exploration (graph traversal) handler.
-    ///
-    /// Controls depth and result limits.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct ExplorationConfig {
-        /// Maximum traversal depth (hard cap).
-        #[serde(default = "default_max_depth")]
-        pub max_depth: u32,
+/// Configuration for the exploration (graph traversal) handler.
+///
+/// Controls depth and result limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExplorationConfig {
+    /// Maximum traversal depth (hard cap).
+    #[serde(default = "default_max_depth")]
+    pub max_depth: u32,
 
-        /// Default traversal depth when not specified by the caller.
-        #[serde(default = "default_depth")]
-        pub default_depth: u32,
+    /// Default traversal depth when not specified by the caller.
+    #[serde(default = "default_depth")]
+    pub default_depth: u32,
 
-        /// Default number of results when the caller does not specify a limit.
-        #[serde(default = "default_limit")]
-        pub default_limit: u32,
+    /// Default number of results when the caller does not specify a limit.
+    #[serde(default = "default_limit")]
+    pub default_limit: u32,
 
-        /// Maximum number of results a caller may request.
-        #[serde(default = "default_max_limit")]
-        pub max_limit: u32,
-    }
+    /// Maximum number of results a caller may request.
+    #[serde(default = "default_max_limit")]
+    pub max_limit: u32,
 }
 
 impl Default for ExplorationConfig {
