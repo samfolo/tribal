@@ -118,14 +118,12 @@ macro_rules! config_section {
     };
 
     // `@nested` — recurse into the field's own `EnumerateFields` impl,
-    // joining the field name to the parent prefix.
+    // joining the field name to the parent prefix.  Path composition
+    // routes through [`ConfigPath::child`] so the empty-prefix rule
+    // lives in one place.
     (@push nested $p:ident, $o:ident, $f:ident, $t:ty) => {{
-        let child_prefix = if $p.is_empty() {
-            stringify!($f).to_string()
-        } else {
-            format!("{}.{}", $p, stringify!($f))
-        };
-        <$t as $crate::validation::EnumerateFields>::enumerate(&child_prefix, $o);
+        let child_path = $crate::validation::ConfigPath::child($p, stringify!($f));
+        <$t as $crate::validation::EnumerateFields>::enumerate(child_path.as_str(), $o);
     }};
 
     // `@skip` — emit no path (use for `#[serde(skip)]` fields and

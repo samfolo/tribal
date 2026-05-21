@@ -17,6 +17,8 @@ pub const DEFAULT_TOKEN_TTL_HOURS: u64 = 8760;
 /// returning `None` (`i64::MAX / 3_600_000`, where 3.6e6 is
 /// milliseconds-per-hour).  Values above this cap cannot represent a
 /// valid `TimeDelta` regardless of subsequent arithmetic.
+// `i64::MAX` is positive and `3_600_000` is positive, so the quotient
+// is non-negative and the `as u64` cast is lossless.
 #[allow(clippy::cast_sign_loss)]
 pub const MAX_TTL_HOURS: u64 = (i64::MAX / 3_600_000) as u64;
 
