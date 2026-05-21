@@ -205,13 +205,13 @@ impl fmt::Display for NumericRange {
     }
 }
 
-/// A floor computed as `addend.value + overhead`, referenced in
-/// [`ValidationError::DerivedFloor`].  Operator-visible: the addend is
-/// a config path; the overhead is the rendered integer.
+/// A floor computed as `<addend's value> + overhead`, referenced in
+/// [`ValidationError::DerivedFloor`].  The addend's value is folded
+/// into `value`; only the path appears in the rendered message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComputedFloor {
     pub value: u64,
-    pub addend: FieldValue,
+    pub addend: ConfigPath,
     pub overhead: u64,
 }
 
@@ -338,7 +338,11 @@ impl fmt::Display for ValidationError {
             // -- Structural -------------------------------------------------
             Self::Empty { field } => write!(f, "{field} must not be empty"),
 
-            Self::BelowMin { field, min, .. } if *min == 1 => {
+            Self::BelowMin {
+                field,
+                value: 0,
+                min: 1,
+            } => {
                 write!(f, "{field} must be greater than zero")
             }
             Self::BelowMin { field, value, min } => {
@@ -381,7 +385,7 @@ impl fmt::Display for ValidationError {
             } => write!(
                 f,
                 "{field} ({value}) must be at least {} ({} + {})",
-                floor.value, floor.addend.field, floor.overhead,
+                floor.value, floor.addend, floor.overhead,
             ),
 
             // -- Semantic ---------------------------------------------------
@@ -620,6 +624,16 @@ mod tests {
     }
 
     #[test]
+    fn test_display_below_min_one_with_nonzero_value_renders_value() {
+        let err = ValidationError::BelowMin {
+            field: ConfigPath::from_static("some.field"),
+            value: 3,
+            min: 1,
+        };
+        assert_eq!(err.to_string(), "some.field (3) must be at least 1");
+    }
+
+    #[test]
     fn test_display_above_max_renders_value_and_limit_only() {
         let err = ValidationError::AboveMax {
             field: ConfigPath::from_static("server.sse.idle_timeout_ms"),
@@ -714,10 +728,7 @@ mod tests {
             value: 5,
             floor: ComputedFloor {
                 value: 12,
-                addend: FieldValue {
-                    field: ConfigPath::from_static("worker.max_concurrent_tasks"),
-                    value: 8,
-                },
+                addend: ConfigPath::from_static("worker.max_concurrent_tasks"),
                 overhead: 4,
             },
         };
