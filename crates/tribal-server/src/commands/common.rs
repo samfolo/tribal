@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::TimeDelta;
+use chrono::{DateTime, TimeDelta, Utc};
 use rand::RngExt;
 use sqlx::{Postgres, pool::PoolConnection};
 use tribal_config::{
@@ -117,6 +117,16 @@ pub(crate) const TTL_FLAG_MUST_BE_POSITIVE: &str = "--ttl must be greater than z
 /// Error message when a CLI `--ttl` flag exceeds the representable range.
 pub(crate) const TTL_FLAG_OUT_OF_RANGE: &str = "--ttl value is too large";
 
+/// Error message when a CLI `--ttl` flag fits a [`TimeDelta`] but cannot be
+/// added to the current instant without overflowing [`DateTime<Utc>`].
+pub(crate) const TTL_FLAG_OVERFLOWS_EXPIRY: &str =
+    "--ttl too large to construct an expiry date from now";
+
+/// Error message when `auth.token_ttl_hours` fits a [`TimeDelta`] but cannot
+/// be added to the current instant without overflowing [`DateTime<Utc>`].
+pub(crate) const TTL_CONFIG_OVERFLOWS_EXPIRY: &str =
+    "auth.token_ttl_hours too large to construct an expiry date from now";
+
 /// Failure modes for [`ttl_to_delta`].
 ///
 /// Typed (rather than wrapped in [`AppError`]) so that callers can
@@ -129,6 +139,39 @@ pub(crate) enum TtlError {
     Zero,
     /// The TTL value exceeded the representable range.
     OutOfRange,
+}
+
+/// A TTL value paired with its input source.
+///
+/// Constructed once at the CLI/config boundary via [`Self::from_pair`];
+/// the variant identity then drives every downstream error-attribution
+/// decision (`resolve_ttl`, `compute_expires_at`) through exhaustive
+/// `match` rather than a re-derived `cli_ttl.is_some()` boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TtlInput {
+    /// Value supplied by the `--ttl` CLI flag.
+    CliFlag { hours: u64 },
+    /// Value supplied by `auth.token_ttl_hours` in the config.
+    Config { hours: u64 },
+}
+
+impl TtlInput {
+    /// Selects between the CLI flag and the config fallback, preserving
+    /// the source attribution.
+    pub(crate) fn from_pair(cli_ttl: Option<u64>, config_ttl: u64) -> Self {
+        if let Some(hours) = cli_ttl {
+            Self::CliFlag { hours }
+        } else {
+            Self::Config { hours: config_ttl }
+        }
+    }
+
+    /// The selected TTL value in hours.
+    fn hours(self) -> u64 {
+        match self {
+            Self::CliFlag { hours } | Self::Config { hours } => hours,
+        }
+    }
 }
 
 /// Converts a token TTL in hours to a [`TimeDelta`], validating that the
@@ -147,37 +190,35 @@ pub(crate) fn ttl_to_delta(ttl_hours: u64) -> Result<TimeDelta, TtlError> {
     TimeDelta::try_hours(hours).ok_or(TtlError::OutOfRange)
 }
 
-/// Resolves the effective TTL from a CLI flag and config default,
-/// dispatching the typed [`TtlError`] from [`ttl_to_delta`] to the right
-/// [`AppError`] and message depending on which input supplied the value.
+/// Resolves a [`TtlInput`] to a [`TimeDelta`], dispatching the typed
+/// [`TtlError`] from [`ttl_to_delta`] to the right [`AppError`] and
+/// message based on which input supplied the value.
 ///
 /// The mapping is exhaustive over (variant, source) so adding a new
-/// [`TtlError`] variant forces an update at this single site rather
-/// than silently falling through to one of the existing messages.
+/// [`TtlError`] variant or [`TtlInput`] variant forces an update at
+/// this single site rather than silently falling through to one of the
+/// existing messages.
 ///
 /// # Errors
 ///
 /// Returns [`AppError::TokenOperation`] for invalid CLI flag values and
 /// [`AppError::Config`] for invalid config values.
-pub(crate) fn resolve_ttl(cli_ttl: Option<u64>, config_ttl: u64) -> Result<TimeDelta, AppError> {
-    let hours = cli_ttl.unwrap_or(config_ttl);
-    let from_flag = cli_ttl.is_some();
-
-    ttl_to_delta(hours).map_err(|err| match (err, from_flag) {
-        (TtlError::Zero, true) => AppError::TokenOperation {
+fn resolve_ttl(input: TtlInput) -> Result<TimeDelta, AppError> {
+    ttl_to_delta(input.hours()).map_err(|err| match (err, input) {
+        (TtlError::Zero, TtlInput::CliFlag { .. }) => AppError::TokenOperation {
             reason: TTL_FLAG_MUST_BE_POSITIVE.into(),
         },
-        (TtlError::OutOfRange, true) => AppError::TokenOperation {
+        (TtlError::OutOfRange, TtlInput::CliFlag { .. }) => AppError::TokenOperation {
             reason: TTL_FLAG_OUT_OF_RANGE.into(),
         },
-        (TtlError::Zero, false) => AppError::Config {
+        (TtlError::Zero, TtlInput::Config { .. }) => AppError::Config {
             source: ConfigError::ValidationFailed {
                 diagnostics: Diagnostics::from(vec![ValidationError::must_be_positive(
                     ConfigPath::from_static("auth.token_ttl_hours"),
                 )]),
             },
         },
-        (TtlError::OutOfRange, false) => AppError::Config {
+        (TtlError::OutOfRange, TtlInput::Config { hours }) => AppError::Config {
             source: ConfigError::ValidationFailed {
                 diagnostics: Diagnostics::from(vec![ValidationError::AboveMax {
                     field: ConfigPath::from_static("auth.token_ttl_hours"),
@@ -187,6 +228,31 @@ pub(crate) fn resolve_ttl(cli_ttl: Option<u64>, config_ttl: u64) -> Result<TimeD
             },
         },
     })
+}
+
+/// Resolves a TTL into an absolute expiry instant.
+///
+/// Wraps [`resolve_ttl`] with a checked `DateTime + TimeDelta` addition
+/// so that a TTL which is representable as a [`TimeDelta`] but too far
+/// from now to fit in [`DateTime<Utc>`] surfaces as a typed error
+/// instead of panicking inside `chrono::Add`.
+///
+/// # Errors
+///
+/// Returns whatever [`resolve_ttl`] returns when the TTL fails its own
+/// invariants, or [`AppError::TokenOperation`] when the addition
+/// overflows.  The overflow message names whichever input supplied the
+/// value (CLI flag vs config field).
+pub(crate) fn compute_expires_at(input: TtlInput) -> Result<DateTime<Utc>, AppError> {
+    let delta = resolve_ttl(input)?;
+    Utc::now()
+        .checked_add_signed(delta)
+        .ok_or_else(|| AppError::TokenOperation {
+            reason: match input {
+                TtlInput::CliFlag { .. } => TTL_FLAG_OVERFLOWS_EXPIRY.into(),
+                TtlInput::Config { .. } => TTL_CONFIG_OVERFLOWS_EXPIRY.into(),
+            },
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -356,23 +422,41 @@ mod tests {
         assert_eq!(ttl_to_delta(u64::MAX).unwrap_err(), TtlError::OutOfRange);
     }
 
+    // -- TtlInput selection -------------------------------------------------
+
+    #[test]
+    fn test_ttl_input_from_pair_prefers_cli_flag() {
+        assert_eq!(
+            TtlInput::from_pair(Some(24), 8760),
+            TtlInput::CliFlag { hours: 24 },
+        );
+    }
+
+    #[test]
+    fn test_ttl_input_from_pair_falls_back_to_config() {
+        assert_eq!(
+            TtlInput::from_pair(None, 8760),
+            TtlInput::Config { hours: 8760 },
+        );
+    }
+
     // -- TTL resolution -----------------------------------------------------
 
     #[test]
     fn test_resolve_ttl_uses_cli_value() {
-        let delta = resolve_ttl(Some(24), 8760).unwrap();
+        let delta = resolve_ttl(TtlInput::CliFlag { hours: 24 }).unwrap();
         assert_eq!(delta, TimeDelta::try_hours(24).unwrap());
     }
 
     #[test]
-    fn test_resolve_ttl_falls_back_to_config() {
-        let delta = resolve_ttl(None, 8760).unwrap();
+    fn test_resolve_ttl_uses_config_value() {
+        let delta = resolve_ttl(TtlInput::Config { hours: 8760 }).unwrap();
         assert_eq!(delta, TimeDelta::try_hours(8760).unwrap());
     }
 
     #[test]
     fn test_resolve_ttl_cli_zero_returns_token_error() {
-        let err = resolve_ttl(Some(0), 8760).unwrap_err();
+        let err = resolve_ttl(TtlInput::CliFlag { hours: 0 }).unwrap_err();
         assert!(
             err.to_string().contains(TTL_FLAG_MUST_BE_POSITIVE),
             "unexpected error: {err}",
@@ -381,7 +465,7 @@ mod tests {
 
     #[test]
     fn test_resolve_ttl_cli_overflow_returns_token_error() {
-        let err = resolve_ttl(Some(u64::MAX), 8760).unwrap_err();
+        let err = resolve_ttl(TtlInput::CliFlag { hours: u64::MAX }).unwrap_err();
         assert!(
             err.to_string().contains(TTL_FLAG_OUT_OF_RANGE),
             "unexpected error: {err}",
@@ -390,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_resolve_ttl_config_zero_returns_config_error() {
-        let err = resolve_ttl(None, 0).unwrap_err();
+        let err = resolve_ttl(TtlInput::Config { hours: 0 }).unwrap_err();
         assert!(matches!(
             &err,
             AppError::Config {
@@ -405,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_resolve_ttl_config_overflow_returns_config_error() {
-        let err = resolve_ttl(None, u64::MAX).unwrap_err();
+        let err = resolve_ttl(TtlInput::Config { hours: u64::MAX }).unwrap_err();
         assert!(matches!(
             &err,
             AppError::Config {
@@ -418,6 +502,46 @@ mod tests {
                         && *limit == MAX_TTL_HOURS,
             )),
         ));
+    }
+
+    // -- Expiry-instant construction ----------------------------------------
+
+    #[test]
+    fn test_compute_expires_at_happy_path() {
+        let before = Utc::now();
+        let expires_at = compute_expires_at(TtlInput::CliFlag { hours: 1 }).unwrap();
+        let elapsed = expires_at - before;
+        let one_hour = TimeDelta::try_hours(1).unwrap();
+        // Allow a small fudge for the wall-clock advance between the
+        // `before` snapshot and `compute_expires_at`'s internal `Utc::now`.
+        assert!(
+            elapsed >= one_hour && elapsed < one_hour + TimeDelta::try_seconds(5).unwrap(),
+            "expected ~1h elapsed, got {elapsed}",
+        );
+    }
+
+    #[test]
+    fn test_compute_expires_at_cli_overflow_returns_token_error() {
+        let err = compute_expires_at(TtlInput::CliFlag {
+            hours: MAX_TTL_HOURS,
+        })
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::TokenOperation { reason } if reason == TTL_FLAG_OVERFLOWS_EXPIRY),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn test_compute_expires_at_config_overflow_returns_token_error() {
+        let err = compute_expires_at(TtlInput::Config {
+            hours: MAX_TTL_HOURS,
+        })
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::TokenOperation { reason } if reason == TTL_CONFIG_OVERFLOWS_EXPIRY),
+            "unexpected error: {err}",
+        );
     }
 
     // -- Path resolution ----------------------------------------------------

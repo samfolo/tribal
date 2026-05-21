@@ -17,8 +17,8 @@ use crate::{
     cli::BootstrapArgs,
     commands::{
         common::{
-            CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS, prepare_config,
-            resolve_absolute_config_path, resolve_ttl,
+            CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS, TtlInput, compute_expires_at,
+            prepare_config, resolve_absolute_config_path,
         },
         project::register::{self, DEFAULT_BRANCH, OutputOptions},
         setup,
@@ -90,7 +90,7 @@ pub(crate) fn run(config_path: &str, mut args: BootstrapArgs) -> Result<(), AppE
 
     let config = prepare_config(config_path, cli_overrides, &DATABASE_COMMAND_DEFAULTS)?;
 
-    let expires_at = Utc::now() + resolve_ttl(ttl, config.auth.token_ttl_hours)?;
+    let expires_at = compute_expires_at(TtlInput::from_pair(ttl, config.auth.token_ttl_hours))?;
     let absolute_config_path = resolve_absolute_config_path(config_path)?;
     let git_remote = resolve_git_remote(remote.as_deref())?;
     let project_name = name.unwrap_or_else(|| git_remote.path().to_owned());

@@ -13,8 +13,8 @@ use crate::{
     cli::TokenCreateArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, CredentialsPersistOutcome,
-        DATABASE_COMMAND_DEFAULTS, TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token,
-        persist_credentials, prepare_config, resolve_ttl,
+        DATABASE_COMMAND_DEFAULTS, TIMESTAMP_FORMAT, TtlInput, compute_expires_at,
+        find_or_create_principal, generate_raw_token, persist_credentials, prepare_config,
     },
     error::AppError,
 };
@@ -42,8 +42,7 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
     let cli_overrides = args.into_cli_overrides();
     let config = prepare_config(config_path, cli_overrides, &DATABASE_COMMAND_DEFAULTS)?;
 
-    let ttl_delta = resolve_ttl(ttl, config.auth.token_ttl_hours)?;
-    let expires_at = Utc::now() + ttl_delta;
+    let expires_at = compute_expires_at(TtlInput::from_pair(ttl, config.auth.token_ttl_hours))?;
     let principal_key = principal.unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
 
     let rt = tokio::runtime::Builder::new_current_thread()
