@@ -7,7 +7,7 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
-use tribal_config::{ConfigPersistence, PromptSource, TribalConfig, load_config, validate};
+use tribal_config::{ConfigPersistence, PromptSource, TribalConfig};
 use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, full_access_scopes};
 
@@ -17,7 +17,7 @@ use crate::{
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS,
         TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, persist_credentials,
-        resolve_absolute_config_path, resolve_ttl,
+        prepare_config, resolve_absolute_config_path, resolve_ttl,
     },
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
@@ -49,12 +49,7 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
     let principal = args.principal.take();
     let ttl = args.ttl;
     let cli_overrides = args.into_cli_overrides();
-    let config = load_config(
-        config_path,
-        Some(cli_overrides),
-        Some(&DATABASE_COMMAND_DEFAULTS),
-    )?;
-    validate(&config)?;
+    let config = prepare_config(config_path, cli_overrides, &DATABASE_COMMAND_DEFAULTS)?;
 
     let expires_at = Utc::now() + resolve_ttl(ttl, config.auth.token_ttl_hours)?;
     let absolute_config_path = resolve_absolute_config_path(config_path)?;

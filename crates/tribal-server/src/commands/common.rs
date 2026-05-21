@@ -7,8 +7,9 @@ use chrono::TimeDelta;
 use rand::RngExt;
 use sqlx::{Postgres, pool::PoolConnection};
 use tribal_config::{
-    CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, ConfigError, ConfigPath,
-    Credentials, Diagnostics, MAX_TTL_HOURS, ValidationError, write_credentials,
+    CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, CliOverrides, ConfigError,
+    ConfigPath, Credentials, Diagnostics, MAX_TTL_HOURS, TribalConfig, ValidationError,
+    load_config, validate, write_credentials,
 };
 use tribal_db::{DbError, NewPrincipal, PgPrincipalRepository, PrincipalRepository};
 use tribal_domain::{BearerToken, Principal};
@@ -30,6 +31,34 @@ pub(crate) const DEFAULT_DATABASE_URL: &str = "postgresql://tribal:tribal@localh
 /// Pass to `load_config` as the `command_defaults` parameter.
 pub(crate) const DATABASE_COMMAND_DEFAULTS: [(&str, &str); 1] =
     [("database.url", DEFAULT_DATABASE_URL)];
+
+// ---------------------------------------------------------------------------
+// Config preparation
+// ---------------------------------------------------------------------------
+
+/// Loads and validates configuration.
+///
+/// Production sync wrappers and integration-test helpers both reach for
+/// the same load-then-validate sequence before invoking `*_async`.
+/// Centralising it here means a future addition to the prep phase lands
+/// for both call paths at once.
+///
+/// Callers that intentionally skip validation call [`load_config`]
+/// directly.
+///
+/// # Errors
+///
+/// Returns [`AppError::Config`] when figment merging or validation
+/// fails.
+pub fn prepare_config(
+    config_path: &str,
+    overrides: CliOverrides,
+    database_defaults: &[(&str, &str)],
+) -> Result<TribalConfig, AppError> {
+    let config = load_config(config_path, Some(overrides), Some(database_defaults))?;
+    validate(&config)?;
+    Ok(config)
+}
 
 // ---------------------------------------------------------------------------
 // Pool configuration

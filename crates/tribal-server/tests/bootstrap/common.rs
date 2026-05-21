@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use tempfile::TempDir;
 use tribal::{
     AppError, BootstrapOptions, McpConfigOptions, SetupOutcome, bootstrap_async, mcp_config_async,
-    setup_async, token_create_async,
+    prepare_config, setup_async, token_create_async,
 };
 use tribal_config::{CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config};
 use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY};
@@ -200,7 +200,7 @@ pub(crate) async fn run_bootstrap(
     transport: TransportKind,
     json: bool,
 ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
-    let merged = load_test_config(ctx, config_path, overrides.clone())?;
+    let merged = prepare_test_config(ctx, config_path, overrides.clone())?;
     let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
     let git_remote = fixture_git_remote();
     let theme = Theme::default_dark();
@@ -257,8 +257,10 @@ pub(crate) async fn run_mcp_config(
 }
 
 /// Feeds `overrides` through `load_config` with the testcontainer URL
-/// injected as a command-defaults layer. The merged config matches what
-/// the production wrappers compute before entering `*_async`.
+/// injected as a command-defaults layer. Mirrors the production
+/// `load_config` call site for commands that do not validate
+/// (currently only mcp-config); validating callers go through
+/// [`prepare_test_config`].
 fn load_test_config(
     ctx: &TestContext,
     config_path: &Path,
@@ -267,6 +269,20 @@ fn load_test_config(
     let db_defaults: [(&str, &str); 1] = [("database.url", ctx.database_url())];
     let path = config_path.to_str().expect("utf8 config path");
     Ok(load_config(path, Some(overrides), Some(&db_defaults))?)
+}
+
+/// Test-side projection of [`prepare_config`] — same load-then-validate
+/// pipeline, with the testcontainer URL injected as the command
+/// defaults.  Centralising it means a future addition to the prep phase
+/// lands for production and tests at once.
+fn prepare_test_config(
+    ctx: &TestContext,
+    config_path: &Path,
+    overrides: CliOverrides,
+) -> Result<TribalConfig, AppError> {
+    let db_defaults: [(&str, &str); 1] = [("database.url", ctx.database_url())];
+    let path = config_path.to_str().expect("utf8 config path");
+    prepare_config(path, overrides, &db_defaults)
 }
 
 /// Drives the full setup pipeline — `load_config` → `setup_async` —
@@ -278,7 +294,7 @@ pub(crate) async fn run_setup(
     overrides: CliOverrides,
     principal_key: Option<&str>,
 ) -> Result<(SetupOutcome, Vec<u8>), AppError> {
-    let merged = load_test_config(ctx, config_path, overrides)?;
+    let merged = prepare_test_config(ctx, config_path, overrides)?;
     let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
     let mut stderr = Vec::<u8>::new();
     let outcome = setup_async(
