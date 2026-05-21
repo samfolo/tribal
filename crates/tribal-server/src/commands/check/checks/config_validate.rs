@@ -4,7 +4,7 @@
 //! its own [`Display`](std::fmt::Display) text (the catch-all echo).
 
 use tribal_config::{
-    ApiKeyStage, ConfigError, Diagnostics, ProviderKind, ValidationError, validate,
+    ConfigError, Diagnostics, ProviderKind, ProviderStage, ValidationError, validate,
 };
 
 use super::{
@@ -55,7 +55,6 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         | ValidationError::OutOfRange { .. }
         | ValidationError::FieldOrdering { .. }
         | ValidationError::DerivedFloor { .. }
-        | ValidationError::Malformed { .. }
         | ValidationError::EmbeddingProviderUnsupported { .. }
         | ValidationError::TelemetryFileExportRequiresEnabled => None,
     }
@@ -63,7 +62,7 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
 
 /// Renders the hint for a [`ValidationError::MissingApiKey`], naming
 /// the field path and every env var that satisfies it.
-fn api_key_hint(stage: ApiKeyStage, provider: ProviderKind) -> String {
+fn api_key_hint(stage: ProviderStage, provider: ProviderKind) -> String {
     let path = stage.api_key_path();
     let figment = path.env_var();
     match provider.standard_env_var_name() {
@@ -100,7 +99,7 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
 
 #[cfg(test)]
 mod tests {
-    use tribal_config::{ApiKeyStage, ConfigPath, Diagnostics, ProviderKind, ValidationError};
+    use tribal_config::{ConfigPath, Diagnostics, ProviderKind, ProviderStage, ValidationError};
 
     use super::*;
 
@@ -117,7 +116,7 @@ mod tests {
     #[test]
     fn test_config_validate_failed_with_api_key_error_has_targeted_hint() {
         let diagnostics = Diagnostics::from(vec![ValidationError::MissingApiKey {
-            stage: ApiKeyStage::Embedding,
+            stage: ProviderStage::Embedding,
             provider: ProviderKind::OpenAi,
         }]);
         let outcome = CheckOutcome::config_validate_failed(diagnostics);
@@ -192,7 +191,7 @@ mod tests {
                 field: ConfigPath::from_static("database.url"),
             },
             ValidationError::MissingApiKey {
-                stage: ApiKeyStage::Triage,
+                stage: ProviderStage::Triage,
                 provider: ProviderKind::OpenAi,
             },
             ValidationError::BelowMin {

@@ -1,22 +1,13 @@
 //! Typed validation errors and supporting types.
 //!
-//! Variants split into structural classes (positivity, bounds,
-//! ordering, ranges, malformed values) and semantic invariants whose
-//! identity drives downstream classification (api-key presence,
-//! transport conflict, telemetry coupling).  Producer pushes typed
-//! variants into a [`Diagnostics`](super::Diagnostics) collector;
-//! consumers match exhaustively, no string-prefix dispatch.
-//!
-//! [`ConfigPath`] is the operator-visible identity of a config field.
-//! Each section type implements [`EnumerateFields`] in its own file,
-//! contributing its leaf paths under a parent-supplied prefix.
-//! [`TribalConfig::enumerate`](crate::sections::TribalConfig) walks
-//! the whole tree depth-first.
+//! The producer pushes typed variants into a
+//! [`Diagnostics`](super::Diagnostics) collector; consumers dispatch
+//! through exhaustive `match`, never through string-prefix lookups.
 
 use std::{borrow::Cow, fmt};
 
 use crate::{
-    env::{ENV_NESTED_SEPARATOR, ENV_PREFIX},
+    env::env_var_for_path,
     sections::{ProviderKind, TribalConfig},
 };
 
@@ -26,19 +17,16 @@ use crate::{
 
 /// Dot-separated YAML config path (e.g. `embedding.api_key`).
 ///
-/// Wraps `Cow<'static, str>` so both literal static paths (from
-/// validator call sites and the [`ApiKeyStage`] accessors) and
-/// runtime-composed paths (from [`EnumerateFields`] recursion) share
-/// one type.
+/// Wraps `Cow<'static, str>` so static literals and runtime-composed
+/// paths share one type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConfigPath {
     path: Cow<'static, str>,
 }
 
 impl ConfigPath {
-    /// Wraps a static path literal.  Used by validator call sites
-    /// where the path is known at compile time, and by
-    /// [`ApiKeyStage`]'s const path accessors.
+    /// Wraps a `&'static str` path literal as a borrowed-Cow path.
+    /// No allocation; valid in `const` contexts.
     #[must_use]
     pub const fn from_static(path: &'static str) -> Self {
         Self {
@@ -47,14 +35,21 @@ impl ConfigPath {
     }
 
     /// Composes a path by joining `prefix` and `field` with a `.`.
-    ///
-    /// Used inside [`EnumerateFields`] impls when the prefix is
-    /// supplied by the parent section at runtime.
+    /// Allocates; for compile-time literals use [`Self::from_static`].
     #[must_use]
     pub fn child(prefix: &str, field: &str) -> Self {
         Self {
             path: Cow::Owned(format!("{prefix}.{field}")),
         }
+    }
+
+    /// Returns a new path with `field` joined to this one by a `.`.
+    /// Equivalent to [`Self::child`] but reads as composition from an
+    /// existing typed path — `parent.extend("child")` — without an
+    /// intermediate `as_str()`.
+    #[must_use]
+    pub fn extend(&self, field: &str) -> Self {
+        Self::child(&self.path, field)
     }
 
     /// Returns the underlying dot-separated path.
@@ -64,18 +59,13 @@ impl ConfigPath {
     }
 
     /// Returns the `TRIBAL_*` env var name a figment loader would
-    /// honour for this path.
-    ///
-    /// `embedding.api_key` → `TRIBAL_EMBEDDING__API_KEY`.  Single
-    /// source of truth for the dot-to-`__` + uppercase transform;
-    /// the free-function [`env_var_for_path`](crate::env::env_var_for_path)
-    /// delegates here.
+    /// honour for this path — e.g. `embedding.api_key` →
+    /// `TRIBAL_EMBEDDING__API_KEY`.  Forwards to
+    /// [`env_var_for_path`](crate::env::env_var_for_path), which owns
+    /// the dot-to-`__` + uppercase transform.
     #[must_use]
     pub fn env_var(&self) -> String {
-        format!(
-            "{ENV_PREFIX}{}",
-            self.path.to_uppercase().replace('.', ENV_NESTED_SEPARATOR),
-        )
+        env_var_for_path(&self.path)
     }
 
     /// Returns every `ConfigPath` reachable from [`TribalConfig`], in
@@ -203,9 +193,12 @@ impl fmt::Display for NumericRange {
             Inclusion::Open => ')',
             Inclusion::Closed => ']',
         };
+        // `{:?}` for f64 always preserves a decimal point (so `0.0`
+        // stays "0.0", not "0") and renders non-trivial fractions
+        // faithfully (so `0.42` stays "0.42").
         write!(
             f,
-            "{left}{:.1}, {:.1}{right}",
+            "{left}{:?}, {:?}{right}",
             self.low.value, self.high.value,
         )
     }
@@ -221,43 +214,42 @@ pub struct ComputedFloor {
     pub overhead: u64,
 }
 
-/// Which inference stage the missing-api-key invariant fired for.
-///
-/// Four variants enumerate every api-key-bearing config slot:
-/// embedding plus the three inference stages.  Each carries
-/// accessors that return the canonical [`ConfigPath`] for the
-/// stage's api-key and provider fields.
+/// One of the four config sites that hosts an AI-provider block —
+/// a `(provider, api_key, model, base_url)` quartet.  The three
+/// inference variants are pipeline stages; `Embedding` is not a
+/// pipeline stage but shares the config shape and groups here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApiKeyStage {
+pub enum ProviderStage {
     Embedding,
     Extraction,
     Triage,
     Relation,
 }
 
-impl ApiKeyStage {
+impl ProviderStage {
+    /// Config path of the section under [`TribalConfig`] —
+    /// e.g. `"inference.extraction"`.  Single source of truth that
+    /// the other path-bearing methods derive from.
+    #[must_use]
+    pub fn section_path(self) -> ConfigPath {
+        ConfigPath::from_static(match self {
+            Self::Embedding => "embedding",
+            Self::Extraction => "inference.extraction",
+            Self::Triage => "inference.triage",
+            Self::Relation => "inference.relation",
+        })
+    }
+
     /// Config path of the api-key field for this stage.
     #[must_use]
     pub fn api_key_path(self) -> ConfigPath {
-        let literal = match self {
-            Self::Embedding => "embedding.api_key",
-            Self::Extraction => "inference.extraction.api_key",
-            Self::Triage => "inference.triage.api_key",
-            Self::Relation => "inference.relation.api_key",
-        };
-        ConfigPath::from_static(literal)
+        self.section_path().extend("api_key")
     }
 
     /// Config path of the provider field for this stage.
     #[must_use]
     pub fn provider_path(self) -> ConfigPath {
-        let literal = match self {
-            Self::Embedding => "embedding.provider",
-            Self::Extraction => "inference.extraction.provider",
-            Self::Triage => "inference.triage.provider",
-            Self::Relation => "inference.relation.provider",
-        };
-        ConfigPath::from_static(literal)
+        self.section_path().extend("provider")
     }
 }
 
@@ -308,18 +300,10 @@ pub enum ValidationError {
         value: u64,
         floor: ComputedFloor,
     },
-    /// Field's value failed to parse as `expected`; the offending
-    /// string is preserved.
-    Malformed {
-        field: ConfigPath,
-        value: String,
-        expected: &'static str,
-    },
-
     // -- Semantic -------------------------------------------------------
     /// Cloud-provider stage is missing its api-key.
     MissingApiKey {
-        stage: ApiKeyStage,
+        stage: ProviderStage,
         provider: ProviderKind,
     },
     /// `server.bind_address` is set while `server.transport` is stdio.
@@ -331,6 +315,20 @@ pub enum ValidationError {
     EmbeddingProviderUnsupported { provider: ProviderKind },
     /// `telemetry.file_export` requires `telemetry.enabled = true`.
     TelemetryFileExportRequiresEnabled,
+}
+
+impl ValidationError {
+    /// Constructs the [`Self::BelowMin`] envelope for the
+    /// "must be greater than zero" case (value `0`, minimum `1`).
+    /// The single canonical spelling of the most common invariant.
+    #[must_use]
+    pub fn must_be_positive(field: ConfigPath) -> Self {
+        Self::BelowMin {
+            field,
+            value: 0,
+            min: 1,
+        }
+    }
 }
 
 impl fmt::Display for ValidationError {
@@ -384,12 +382,6 @@ impl fmt::Display for ValidationError {
                 "{field} ({value}) must be at least {} ({} + {})",
                 floor.value, floor.addend.field, floor.overhead,
             ),
-
-            Self::Malformed {
-                field,
-                value,
-                expected,
-            } => write!(f, "{field} is not a valid {expected}: {value}"),
 
             // -- Semantic ---------------------------------------------------
             Self::MissingApiKey { stage, provider } => write!(
@@ -476,45 +468,65 @@ mod tests {
         assert!(strs.iter().any(|p| p == "telemetry.file_export"));
     }
 
-    // -- ApiKeyStage --------------------------------------------------------
+    // -- ProviderStage --------------------------------------------------------
 
     #[test]
-    fn test_api_key_stage_api_key_paths() {
+    fn test_provider_stage_api_key_paths() {
         assert_eq!(
-            ApiKeyStage::Embedding.api_key_path().as_str(),
+            ProviderStage::Embedding.api_key_path().as_str(),
             "embedding.api_key",
         );
         assert_eq!(
-            ApiKeyStage::Extraction.api_key_path().as_str(),
+            ProviderStage::Extraction.api_key_path().as_str(),
             "inference.extraction.api_key",
         );
         assert_eq!(
-            ApiKeyStage::Triage.api_key_path().as_str(),
+            ProviderStage::Triage.api_key_path().as_str(),
             "inference.triage.api_key",
         );
         assert_eq!(
-            ApiKeyStage::Relation.api_key_path().as_str(),
+            ProviderStage::Relation.api_key_path().as_str(),
             "inference.relation.api_key",
         );
     }
 
     #[test]
-    fn test_api_key_stage_provider_paths() {
+    fn test_provider_stage_provider_paths() {
         assert_eq!(
-            ApiKeyStage::Embedding.provider_path().as_str(),
+            ProviderStage::Embedding.provider_path().as_str(),
             "embedding.provider",
         );
         assert_eq!(
-            ApiKeyStage::Extraction.provider_path().as_str(),
+            ProviderStage::Extraction.provider_path().as_str(),
             "inference.extraction.provider",
         );
         assert_eq!(
-            ApiKeyStage::Triage.provider_path().as_str(),
+            ProviderStage::Triage.provider_path().as_str(),
             "inference.triage.provider",
         );
         assert_eq!(
-            ApiKeyStage::Relation.provider_path().as_str(),
+            ProviderStage::Relation.provider_path().as_str(),
             "inference.relation.provider",
+        );
+    }
+
+    #[test]
+    fn test_provider_stage_section_paths() {
+        assert_eq!(
+            ProviderStage::Embedding.section_path().as_str(),
+            "embedding"
+        );
+        assert_eq!(
+            ProviderStage::Extraction.section_path().as_str(),
+            "inference.extraction",
+        );
+        assert_eq!(
+            ProviderStage::Triage.section_path().as_str(),
+            "inference.triage",
+        );
+        assert_eq!(
+            ProviderStage::Relation.section_path().as_str(),
+            "inference.relation",
         );
     }
 
@@ -554,6 +566,15 @@ mod tests {
             high: Endpoint::closed(1.0),
         };
         assert_eq!(r.to_string(), "[0.0, 1.0]");
+    }
+
+    #[test]
+    fn test_numeric_range_preserves_non_trivial_fractional_endpoints() {
+        let r = NumericRange {
+            low: Endpoint::open(0.25),
+            high: Endpoint::closed(0.75),
+        };
+        assert_eq!(r.to_string(), "(0.25, 0.75]");
     }
 
     // -- ValidationError Display: structural --------------------------------
@@ -698,40 +719,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_display_malformed() {
-        let err = ValidationError::Malformed {
-            field: ConfigPath::from_static("server.bind_address"),
-            value: "not-an-address".into(),
-            expected: "socket address",
-        };
-        assert_eq!(
-            err.to_string(),
-            "server.bind_address is not a valid socket address: not-an-address",
-        );
-    }
-
     // -- ValidationError Display: semantic ----------------------------------
 
     #[test]
     fn test_display_missing_api_key_per_stage() {
         for (stage, expected) in [
             (
-                ApiKeyStage::Embedding,
+                ProviderStage::Embedding,
                 "embedding.api_key is required when embedding.provider is openai",
             ),
             (
-                ApiKeyStage::Extraction,
+                ProviderStage::Extraction,
                 "inference.extraction.api_key is required when \
                  inference.extraction.provider is openai",
             ),
             (
-                ApiKeyStage::Triage,
+                ProviderStage::Triage,
                 "inference.triage.api_key is required when \
                  inference.triage.provider is openai",
             ),
             (
-                ApiKeyStage::Relation,
+                ProviderStage::Relation,
                 "inference.relation.api_key is required when \
                  inference.relation.provider is openai",
             ),

@@ -182,7 +182,7 @@ pub(crate) async fn fresh_db(ctx: &TestContext) -> PgPool {
 // Bootstrap / mcp-config drivers
 // ---------------------------------------------------------------------------
 
-/// Drives the full bootstrap pipeline — `load_config` →
+/// Drives the full bootstrap pipeline — `prepare_config` →
 /// `bootstrap_async` — mirroring the synchronous CLI wrapper. The
 /// `overrides` argument is what `BootstrapArgs::into_cli_overrides`
 /// would produce in production; the helper threads it through both
@@ -190,8 +190,7 @@ pub(crate) async fn fresh_db(ctx: &TestContext) -> PgPool {
 /// and the persistence renderer (so the YAML reflects user-supplied
 /// flags). The testcontainer URL is injected via the command-defaults
 /// layer so `cli_overrides.database` stays untouched and tests can
-/// model `--database-url` independently. Validation runs inside
-/// `setup::run_async`, so the helper does not call it here.
+/// model `--database-url` independently.
 pub(crate) async fn run_bootstrap(
     ctx: &TestContext,
     config_path: &Path,
@@ -285,8 +284,8 @@ fn prepare_test_config(
     prepare_config(path, overrides, &db_defaults)
 }
 
-/// Drives the full setup pipeline — `load_config` → `setup_async` —
-/// mirroring the synchronous CLI wrapper. `setup_async` emits the
+/// Drives the full setup pipeline — `prepare_config` → `setup_async`
+/// — mirroring the synchronous CLI wrapper. `setup_async` emits the
 /// warn-and-success literal internally on its provided stderr.
 pub(crate) async fn run_setup(
     ctx: &TestContext,
@@ -309,17 +308,16 @@ pub(crate) async fn run_setup(
     Ok((outcome, stderr))
 }
 
-/// Drives the full token-create pipeline — `load_config` →
+/// Drives the full token-create pipeline — `prepare_config` →
 /// `token_create_async` — mirroring the synchronous CLI wrapper.
-/// token-create does not call `validate` in production, so the helper
-/// skips it too. `token_create_async` emits the warn-and-success literal
-/// internally on its provided stderr.
+/// `token_create_async` emits the warn-and-success literal internally
+/// on its provided stderr.
 pub(crate) async fn run_token_create(
     ctx: &TestContext,
     config_path: &Path,
     principal_key: Option<&str>,
 ) -> Result<(BearerToken, Vec<u8>), AppError> {
-    let merged = load_test_config(ctx, config_path, CliOverrides::default())?;
+    let merged = prepare_test_config(ctx, config_path, CliOverrides::default())?;
     let expires_at = Utc::now() + Duration::hours(TEST_TTL_HOURS);
     let mut stdout = Vec::<u8>::new();
     let mut stderr = Vec::<u8>::new();

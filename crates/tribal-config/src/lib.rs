@@ -53,8 +53,8 @@ pub use sections::{
     read_credentials, write_credentials,
 };
 pub use validation::{
-    ApiKeyStage, ComputedFloor, ConfigPath, Diagnostics, Endpoint, EnumerateFields, FieldValue,
-    Inclusion, NumericRange, OrderRelation, ValidationError, validate,
+    ComputedFloor, ConfigPath, Diagnostics, Endpoint, EnumerateFields, FieldValue, Inclusion,
+    NumericRange, OrderRelation, ProviderStage, ValidationError, validate,
 };
 
 // ---------------------------------------------------------------------------

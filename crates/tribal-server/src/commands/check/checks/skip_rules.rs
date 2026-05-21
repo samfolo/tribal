@@ -2,9 +2,9 @@
 //! phase-3 skip decisions they imply, plus the cascade-skip constructor
 //! used by phase-1 fan-out.
 
-use tribal_config::{ApiKeyStage, ValidationError};
+use tribal_config::{ProviderStage, ValidationError};
 
-use super::types::{CheckDetail, CheckName, CheckOutcome, ProviderProbeTarget, SkipReason};
+use super::types::{CheckDetail, CheckName, CheckOutcome, SkipReason};
 
 impl CheckOutcome {
     /// Constructs a `Skip` outcome for `name`, attributing the skip to
@@ -58,10 +58,10 @@ impl SkipMask {
                 self.bits |= flag::ADVERTISED_URL;
             }
             ValidationError::MissingApiKey { stage, .. } => match stage {
-                ApiKeyStage::Embedding => self.bits |= flag::PROVIDER_EMBEDDING,
-                ApiKeyStage::Extraction => self.bits |= flag::PROVIDER_EXTRACTION,
-                ApiKeyStage::Triage => self.bits |= flag::PROVIDER_TRIAGE,
-                ApiKeyStage::Relation => self.bits |= flag::PROVIDER_RELATION,
+                ProviderStage::Embedding => self.bits |= flag::PROVIDER_EMBEDDING,
+                ProviderStage::Extraction => self.bits |= flag::PROVIDER_EXTRACTION,
+                ProviderStage::Triage => self.bits |= flag::PROVIDER_TRIAGE,
+                ProviderStage::Relation => self.bits |= flag::PROVIDER_RELATION,
             },
             ValidationError::Empty { .. }
             | ValidationError::BelowMin { .. }
@@ -69,7 +69,6 @@ impl SkipMask {
             | ValidationError::OutOfRange { .. }
             | ValidationError::FieldOrdering { .. }
             | ValidationError::DerivedFloor { .. }
-            | ValidationError::Malformed { .. }
             | ValidationError::EmbeddingProviderUnsupported { .. }
             | ValidationError::TelemetryFileExportRequiresEnabled => {
                 // No downstream skip implied.
@@ -81,15 +80,12 @@ impl SkipMask {
         self.bits & flag::ADVERTISED_URL != 0
     }
 
-    pub(in crate::commands::check) fn skip_provider_probe(
-        self,
-        target: ProviderProbeTarget,
-    ) -> bool {
+    pub(in crate::commands::check) fn skip_provider_probe(self, target: ProviderStage) -> bool {
         let bit = match target {
-            ProviderProbeTarget::Embedding => flag::PROVIDER_EMBEDDING,
-            ProviderProbeTarget::Extraction => flag::PROVIDER_EXTRACTION,
-            ProviderProbeTarget::Triage => flag::PROVIDER_TRIAGE,
-            ProviderProbeTarget::Relation => flag::PROVIDER_RELATION,
+            ProviderStage::Embedding => flag::PROVIDER_EMBEDDING,
+            ProviderStage::Extraction => flag::PROVIDER_EXTRACTION,
+            ProviderStage::Triage => flag::PROVIDER_TRIAGE,
+            ProviderStage::Relation => flag::PROVIDER_RELATION,
         };
         self.bits & bit != 0
     }
@@ -123,10 +119,10 @@ mod tests {
         let mask = SkipMask::from_validation_errors(&[]);
         assert!(!mask.skip_advertised_url());
         for target in [
-            ProviderProbeTarget::Embedding,
-            ProviderProbeTarget::Extraction,
-            ProviderProbeTarget::Triage,
-            ProviderProbeTarget::Relation,
+            ProviderStage::Embedding,
+            ProviderStage::Extraction,
+            ProviderStage::Triage,
+            ProviderStage::Relation,
         ] {
             assert!(!mask.skip_provider_probe(target));
         }
@@ -162,28 +158,24 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_mask_classifies_each_target_to_its_stage() {
-        for (target, stage) in [
-            (ProviderProbeTarget::Embedding, ApiKeyStage::Embedding),
-            (ProviderProbeTarget::Extraction, ApiKeyStage::Extraction),
-            (ProviderProbeTarget::Triage, ApiKeyStage::Triage),
-            (ProviderProbeTarget::Relation, ApiKeyStage::Relation),
-        ] {
+    fn test_skip_mask_classifies_each_stage_to_its_own_flag() {
+        let all = [
+            ProviderStage::Embedding,
+            ProviderStage::Extraction,
+            ProviderStage::Triage,
+            ProviderStage::Relation,
+        ];
+        for stage in all {
             let mask = SkipMask::from_validation_errors(&[ValidationError::MissingApiKey {
                 stage,
                 provider: ProviderKind::OpenAi,
             }]);
             assert!(
-                mask.skip_provider_probe(target),
-                "{target:?} did not match {stage:?}",
+                mask.skip_provider_probe(stage),
+                "{stage:?} did not match its own diagnostic",
             );
-            for other in [
-                ProviderProbeTarget::Embedding,
-                ProviderProbeTarget::Extraction,
-                ProviderProbeTarget::Triage,
-                ProviderProbeTarget::Relation,
-            ] {
-                if other != target {
+            for other in all {
+                if other != stage {
                     assert!(
                         !mask.skip_provider_probe(other),
                         "{other:?} matched a {stage:?}-specific diagnostic",
@@ -201,18 +193,18 @@ mod tests {
             },
             ValidationError::BindAddressStdioConflict,
             ValidationError::MissingApiKey {
-                stage: ApiKeyStage::Embedding,
+                stage: ProviderStage::Embedding,
                 provider: ProviderKind::OpenAi,
             },
             ValidationError::MissingApiKey {
-                stage: ApiKeyStage::Triage,
+                stage: ProviderStage::Triage,
                 provider: ProviderKind::OpenAi,
             },
         ]);
         assert!(mask.skip_advertised_url());
-        assert!(mask.skip_provider_probe(ProviderProbeTarget::Embedding));
-        assert!(mask.skip_provider_probe(ProviderProbeTarget::Triage));
-        assert!(!mask.skip_provider_probe(ProviderProbeTarget::Extraction));
-        assert!(!mask.skip_provider_probe(ProviderProbeTarget::Relation));
+        assert!(mask.skip_provider_probe(ProviderStage::Embedding));
+        assert!(mask.skip_provider_probe(ProviderStage::Triage));
+        assert!(!mask.skip_provider_probe(ProviderStage::Extraction));
+        assert!(!mask.skip_provider_probe(ProviderStage::Relation));
     }
 }

@@ -122,32 +122,24 @@ impl WorkerConfig {
         let max_concurrent_tasks = u64::try_from(self.max_concurrent_tasks).unwrap_or(u64::MAX);
 
         if max_concurrent_tasks == 0 {
-            diags.push(ValidationError::BelowMin {
-                field: ConfigPath::from_static("worker.max_concurrent_tasks"),
-                value: 0,
-                min: 1,
-            });
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.max_concurrent_tasks",
+            )));
         }
         if self.poll_interval_ms == 0 {
-            diags.push(ValidationError::BelowMin {
-                field: ConfigPath::from_static("worker.poll_interval_ms"),
-                value: 0,
-                min: 1,
-            });
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.poll_interval_ms",
+            )));
         }
         if self.task_timeout_ms == 0 {
-            diags.push(ValidationError::BelowMin {
-                field: ConfigPath::from_static("worker.task_timeout_ms"),
-                value: 0,
-                min: 1,
-            });
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.task_timeout_ms",
+            )));
         }
         if self.heartbeat_interval_ms == 0 {
-            diags.push(ValidationError::BelowMin {
-                field: ConfigPath::from_static("worker.heartbeat_interval_ms"),
-                value: 0,
-                min: 1,
-            });
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.heartbeat_interval_ms",
+            )));
         }
         if self.heartbeat_interval_ms >= self.task_timeout_ms {
             diags.push(ValidationError::FieldOrdering {
@@ -176,18 +168,14 @@ impl WorkerConfig {
             });
         }
         if self.triage_search_limit == 0 {
-            diags.push(ValidationError::BelowMin {
-                field: ConfigPath::from_static("worker.triage_search_limit"),
-                value: 0,
-                min: 1,
-            });
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.triage_search_limit",
+            )));
         }
         if self.max_candidates_per_job == 0 {
-            diags.push(ValidationError::BelowMin {
-                field: ConfigPath::from_static("worker.max_candidates_per_job"),
-                value: 0,
-                min: 1,
-            });
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.max_candidates_per_job",
+            )));
         }
         if self.tag_similarity_threshold <= 0.0 || self.tag_similarity_threshold > 1.0 {
             diags.push(ValidationError::OutOfRange {
