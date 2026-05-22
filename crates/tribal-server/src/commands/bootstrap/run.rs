@@ -8,7 +8,10 @@ use std::{
 
 use anstream::AutoStream;
 use chrono::{DateTime, Utc};
-use tribal_config::{Auth, CliOverrides, ConfigPersistence, TransportKind, TribalConfig};
+use tribal_config::{
+    Auth, CREDENTIALS_FILENAME, CliOverrides, ConfigPersistence, TRIBAL_DIRECTORY_NAME,
+    TransportKind, TribalConfig,
+};
 use tribal_domain::GitRemote;
 use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
 
@@ -156,14 +159,23 @@ pub async fn run_async(
     )
     .await
     .inspect_err(|_| {
-        // Replay any progress captured before setup failed.
-        let _ = out_stderr.write_all(&setup_buf);
+        // Replay captured progress for human consumers. In `--json` mode
+        // the captured buffer carries the raw bearer token in
+        // human-readable form, so stderr stays silent — the `AppError`
+        // returned via `?` is the only signal a machine consumer needs.
+        if !opts.json {
+            let _ = out_stderr.write_all(&setup_buf);
+        }
     })?;
 
-    // From here on, any error path replays the captured setup output
-    // via the guard's `Drop` rather than peppering each bail-out with
-    // a manual replay.
-    let mut recovery = RecoveryGuard::arm(out_stderr, &setup_buf);
+    // From here on, any error path replays the recovery buffer via the
+    // guard's `Drop` rather than peppering each bail-out with a manual
+    // replay. `recovery_buf_for` strips the bearer-token-bearing setup
+    // output when `--json` is set (machine consumers must never see the
+    // token on stderr, most prominently container logs in the Docker
+    // install path).
+    let recovery_buf = recovery_buf_for(opts.json, setup_buf);
+    let mut recovery = RecoveryGuard::arm(out_stderr, &recovery_buf);
 
     // -- Register -----------------------------------------------------------
 
@@ -277,6 +289,33 @@ impl Drop for RecoveryGuard<'_> {
     }
 }
 
+/// Composes the non-secret message replayed to stderr on `--json`-mode
+/// bootstrap failures. The path segments are sourced from
+/// [`tribal_config::TRIBAL_DIRECTORY_NAME`] and
+/// [`tribal_config::CREDENTIALS_FILENAME`] so the message tracks the
+/// canonical credentials path without a second source of truth.
+fn json_recovery_message() -> Vec<u8> {
+    format!(
+        "bootstrap failed after setup; the bearer token (if persisted) lives in $XDG_CONFIG_HOME/{TRIBAL_DIRECTORY_NAME}/{CREDENTIALS_FILENAME}\n"
+    )
+    .into_bytes()
+}
+
+/// Returns the buffer the `RecoveryGuard` should replay on a
+/// post-setup failure. In `--json` mode, the captured `setup_buf` is
+/// discarded wholesale and a non-secret message is substituted —
+/// there is no string inspection, no extraction, no parsing of
+/// `setup_buf`. In human mode the original buffer is returned
+/// unchanged, since the terminal is the intended audience for the
+/// human-readable token block.
+fn recovery_buf_for(json_mode: bool, setup_buf: Vec<u8>) -> Vec<u8> {
+    if json_mode {
+        json_recovery_message()
+    } else {
+        setup_buf
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -289,5 +328,60 @@ fn resolve_git_remote(explicit: Option<&str>) -> Result<GitRemote, AppError> {
             reason: e.to_string(),
         }),
         None => detect_git_remote(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET_TOKEN: &str = "tk_super_secret_bearer_value";
+
+    fn fixture_setup_buf() -> Vec<u8> {
+        format!(
+            "Setup complete. Your bearer token:\n  {SECRET_TOKEN}\nNext steps:\n  1. Export the token:  export TRIBAL_AUTH_TOKEN=\"{SECRET_TOKEN}\"\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn test_json_recovery_message_references_canonical_path_segments() {
+        let bytes = json_recovery_message();
+        let message = std::str::from_utf8(&bytes).expect("recovery message is valid UTF-8");
+        assert!(
+            message.contains(TRIBAL_DIRECTORY_NAME),
+            "recovery message must reference TRIBAL_DIRECTORY_NAME ({TRIBAL_DIRECTORY_NAME}); got: {message}",
+        );
+        assert!(
+            message.contains(CREDENTIALS_FILENAME),
+            "recovery message must reference CREDENTIALS_FILENAME ({CREDENTIALS_FILENAME}); got: {message}",
+        );
+    }
+
+    #[test]
+    fn test_recovery_buf_for_json_mode_discards_setup_buffer() {
+        let setup_buf = fixture_setup_buf();
+        let result = recovery_buf_for(true, setup_buf);
+        let result_str = std::str::from_utf8(&result).expect("recovery buffer is valid UTF-8");
+        assert!(
+            !result_str.contains(SECRET_TOKEN),
+            "json-mode recovery buffer must not echo the captured setup output's token; got: {result_str}",
+        );
+        assert_eq!(result, json_recovery_message());
+    }
+
+    #[test]
+    fn test_recovery_buf_for_human_mode_preserves_setup_buffer() {
+        let setup_buf = fixture_setup_buf();
+        let expected = setup_buf.clone();
+        let result = recovery_buf_for(false, setup_buf);
+        assert_eq!(
+            result, expected,
+            "human-mode recovery buffer must preserve the captured setup output verbatim for terminal replay",
+        );
     }
 }
