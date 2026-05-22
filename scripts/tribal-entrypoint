@@ -13,8 +13,11 @@
 #      into the first-run flow. Bootstrap is idempotent against the existing
 #      Postgres project row (UniqueViolation -> find_by_git_remote).
 #
-# XDG_CONFIG_HOME=/var/lib/tribal makes Tribal nest under /var/lib/tribal/tribal/,
-# so credentials.json, tribal.yaml, and project_id all live in that directory.
+# XDG_CONFIG_HOME is the parent directory; Tribal then nests its own files
+# under a `tribal/` subdirectory (the binary's credential resolver, not a
+# Docker-specific choice). With XDG_CONFIG_HOME=/var/lib/tribal, the
+# resolved paths become /var/lib/tribal/tribal/{tribal.yaml,credentials.json},
+# which is why every state path below carries the inner `tribal/` segment.
 
 set -euo pipefail
 
@@ -78,7 +81,24 @@ first_run() {
     --remote "$TRIBAL_PROJECT_REMOTE" \
     --name "$TRIBAL_PROJECT_NAME" \
     --json)"
-  project_id="$(jq -e -r '.project_id' <<<"$bootstrap_json")"
+
+  if ! project_id="$(jq -e -r '.project_id | select(type == "string" and length > 0)' <<<"$bootstrap_json")"; then
+    echo "tribal bootstrap returned JSON without a non-empty string .project_id; refusing to continue" >&2
+    exit 1
+  fi
+
+  # `tribal bootstrap` is warn-and-success on credentials-file persistence:
+  # a write failure leaves the JSON payload intact but no credentials.json
+  # on disk. The Docker handoff is the credentials file itself (the token
+  # never appears in container logs or onboarding text), so a missing or
+  # malformed file means the host-shell wire-up one-liner has nothing to
+  # read. Fail fast and surface a non-secret error instead of starting
+  # serve under a silently-broken handoff.
+  if [[ ! -s "$CREDENTIALS_FILE" ]] || ! jq -e '.auth.token | type == "string" and length > 0' "$CREDENTIALS_FILE" >/dev/null 2>&1; then
+    echo "tribal bootstrap succeeded but $CREDENTIALS_FILE is missing or has no .auth.token; cannot hand off credentials" >&2
+    exit 1
+  fi
+
   install -m 0644 /dev/stdin "$PROJECT_ID_FILE" <<<"$project_id"
   print_full_onboarding
   exec tribal serve --transport http --project "$project_id"
@@ -96,13 +116,9 @@ subsequent_run() {
 if [[ $# -eq 1 && "${1:-}" == "--reset" ]]; then
   rm -f "$CREDENTIALS_FILE" "$PROJECT_ID_FILE"
   first_run
-fi
-
-if [[ $# -gt 0 ]]; then
+elif [[ $# -gt 0 ]]; then
   exec "$@"
-fi
-
-if [[ -f "$PROJECT_ID_FILE" ]]; then
+elif [[ -f "$PROJECT_ID_FILE" ]]; then
   subsequent_run
 else
   first_run
