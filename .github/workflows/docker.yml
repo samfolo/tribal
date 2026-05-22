@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: [main]
 
+# Default-deny at the workflow level so every future job must opt in to
+# any capability beyond the implicit `metadata: read` grant — keeps a
+# new job from silently inheriting the repo's default permissive token
+# permissions if added without a job-level `permissions:` block.
+permissions: {}
+
 env:
   IMAGE_NAME: ghcr.io/samfolo/tribal
 
@@ -51,8 +57,41 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
 
+  validate-tag:
+    name: Validate tag matches workspace version
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Parse tag with metadata-action
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+      - name: Cross-check parsed version against workspace.package.version
+        env:
+          PARSED_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          if [[ -z "$PARSED_VERSION" ]]; then
+            echo "::error::tag '${GITHUB_REF#refs/tags/}' did not parse as SemVer via docker/metadata-action"
+            exit 1
+          fi
+          expected=$(cargo metadata --no-deps --format-version=1 \
+            | jq -r '.packages[] | select(.name=="tribal") | .version')
+          if [[ "$PARSED_VERSION" != "$expected" ]]; then
+            echo "::error::tag SemVer '${PARSED_VERSION}' does not match workspace.package.version '${expected}'; bump Cargo.toml or retag"
+            exit 1
+          fi
+
   publish:
     name: Build and push - ${{ matrix.platform }}
+    needs: validate-tag
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ${{ matrix.runs-on }}
     permissions:
@@ -104,12 +143,14 @@ jobs:
 
   merge:
     name: Merge multi-arch manifest
-    needs: publish
+    needs: [validate-tag, publish]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env:
+      VERSION: ${{ needs.validate-tag.outputs.version }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -122,18 +163,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Determine version tag
-        id: version
-        run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          version="${tag#v}"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - name: Create manifest list
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
-            -t ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} \
-            $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
+            -t "${IMAGE_NAME}:${VERSION}" \
+            $(printf "${IMAGE_NAME}@sha256:%s " *)
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"
