@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  IMAGE_NAME: ghcr.io/samfolo/tribal
+
 jobs:
   shellcheck:
     name: Shellcheck entrypoint
@@ -18,44 +21,119 @@ jobs:
       - run: shellcheck scripts/tribal-entrypoint
 
   build-verify:
-    name: Build image (verify)
+    name: Build image (verify) - ${{ matrix.platform }}
     if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs-on }}
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runs-on: ubuntu-latest
+          - platform: linux/arm64
+            runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
       - uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           push: false
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
 
   publish:
-    name: Build and push image to GHCR
+    name: Build and push - ${{ matrix.platform }}
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ${{ matrix.runs-on }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runs-on: ubuntu-latest
+          - platform: linux/arm64
+            runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - name: Upload digest artefact
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge multi-arch manifest
+    needs: publish
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
       - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Determine version tag
         id: version
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           version="${tag#v}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ghcr.io/samfolo/tribal:${{ steps.version.outputs.version }}
+      - name: Create manifest list
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} \
+            $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
