@@ -12,6 +12,11 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   tribal:
     image: ghcr.io/samfolo/tribal:0.1.1
@@ -46,6 +51,11 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   tribal_pgdata:
