@@ -1,0 +1,759 @@
+//! Typed validation errors and supporting types.
+//!
+//! The producer pushes typed variants into a
+//! [`Diagnostics`](super::Diagnostics) collector; consumers dispatch
+//! through exhaustive `match`, never through string-prefix lookups.
+
+use std::{borrow::Cow, fmt};
+
+use crate::{env::env_var_for_path, sections::ProviderKind};
+
+// ---------------------------------------------------------------------------
+// ConfigPath
+// ---------------------------------------------------------------------------
+
+/// Dot-separated YAML config path (e.g. `embedding.api_key`).
+///
+/// Wraps `Cow<'static, str>` so static literals and runtime-composed
+/// paths share one type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConfigPath {
+    path: Cow<'static, str>,
+}
+
+impl ConfigPath {
+    /// Wraps a `&'static str` path literal as a borrowed-Cow path.
+    /// No allocation; valid in `const` contexts.
+    #[must_use]
+    pub const fn from_static(path: &'static str) -> Self {
+        Self {
+            path: Cow::Borrowed(path),
+        }
+    }
+
+    /// Composes a path by joining `prefix` and `field` with a `.`.
+    /// An empty `prefix` yields the field name on its own.  Allocates;
+    /// for compile-time literals use [`Self::from_static`].
+    #[must_use]
+    pub fn child(prefix: &str, field: &str) -> Self {
+        Self {
+            path: Cow::Owned(if prefix.is_empty() {
+                field.to_string()
+            } else {
+                format!("{prefix}.{field}")
+            }),
+        }
+    }
+
+    /// Returns a new path with `field` joined to this one by a `.`.
+    /// Equivalent to [`Self::child`] but reads as composition from an
+    /// existing typed path — `parent.extend("child")` — without an
+    /// intermediate `as_str()`.
+    #[must_use]
+    pub fn extend(&self, field: &str) -> Self {
+        Self::child(&self.path, field)
+    }
+
+    /// Returns the underlying dot-separated path.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.path
+    }
+
+    /// Returns the `TRIBAL_*` env var name a figment loader would
+    /// honour for this path — e.g. `embedding.api_key` →
+    /// `TRIBAL_EMBEDDING__API_KEY`.  Forwards to
+    /// [`env_var_for_path`](crate::env::env_var_for_path), which owns
+    /// the dot-to-`__` + uppercase transform.
+    #[must_use]
+    pub fn env_var(&self) -> String {
+        env_var_for_path(&self.path)
+    }
+}
+
+impl fmt::Display for ConfigPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.path)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Supporting structures
+// ---------------------------------------------------------------------------
+
+/// A config field paired with its offending value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldValue {
+    pub field: ConfigPath,
+    pub value: u64,
+}
+
+/// Ordering relation between two fields in
+/// [`ValidationError::FieldOrdering`].  The subject is the field whose
+/// invariant was violated; the bound is the other side of the
+/// comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderRelation {
+    /// subject ≤ bound — rendered as "at most".
+    AtMost,
+    /// subject < bound — rendered as "less than".
+    LessThan,
+    /// subject ≥ bound — rendered as "at least".
+    AtLeast,
+}
+
+/// One endpoint of a [`NumericRange`].  Independent inclusion lets the
+/// range express all four open/closed combinations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Endpoint {
+    pub value: f64,
+    pub inclusion: Inclusion,
+}
+
+impl Endpoint {
+    /// An open (exclusive) endpoint.
+    #[must_use]
+    pub const fn open(value: f64) -> Self {
+        Self {
+            value,
+            inclusion: Inclusion::Open,
+        }
+    }
+
+    /// A closed (inclusive) endpoint.
+    #[must_use]
+    pub const fn closed(value: f64) -> Self {
+        Self {
+            value,
+            inclusion: Inclusion::Closed,
+        }
+    }
+}
+
+/// Whether an [`Endpoint`] includes its boundary value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inclusion {
+    Open,
+    Closed,
+}
+
+/// A numeric range for [`ValidationError::OutOfRange`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumericRange {
+    pub low: Endpoint,
+    pub high: Endpoint,
+}
+
+impl fmt::Display for NumericRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let left = match self.low.inclusion {
+            Inclusion::Open => '(',
+            Inclusion::Closed => '[',
+        };
+        let right = match self.high.inclusion {
+            Inclusion::Open => ')',
+            Inclusion::Closed => ']',
+        };
+        // `{:?}` for f64 always preserves a decimal point (so `0.0`
+        // stays "0.0", not "0") and renders non-trivial fractions
+        // faithfully (so `0.42` stays "0.42").
+        write!(
+            f,
+            "{left}{:?}, {:?}{right}",
+            self.low.value, self.high.value,
+        )
+    }
+}
+
+/// A floor computed as `<addend's value> + overhead`, referenced in
+/// [`ValidationError::DerivedFloor`].  The addend's value is folded
+/// into `value`; only the path appears in the rendered message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComputedFloor {
+    pub value: u64,
+    pub addend: ConfigPath,
+    pub overhead: u64,
+}
+
+/// One of the four config sites that hosts an AI-provider block —
+/// a `(provider, api_key, model, base_url)` quartet.  The three
+/// inference variants are pipeline stages; `Embedding` is not a
+/// pipeline stage but shares the config shape and groups here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderStage {
+    Embedding,
+    Extraction,
+    Triage,
+    Relation,
+}
+
+impl ProviderStage {
+    /// Config path of the section under [`TribalConfig`] —
+    /// e.g. `"inference.extraction"`.  Single source of truth that
+    /// the other path-bearing methods derive from.
+    #[must_use]
+    pub fn section_path(self) -> ConfigPath {
+        ConfigPath::from_static(match self {
+            Self::Embedding => "embedding",
+            Self::Extraction => "inference.extraction",
+            Self::Triage => "inference.triage",
+            Self::Relation => "inference.relation",
+        })
+    }
+
+    /// Config path of the api-key field for this stage.
+    #[must_use]
+    pub fn api_key_path(self) -> ConfigPath {
+        self.section_path().extend("api_key")
+    }
+
+    /// Config path of the provider field for this stage.
+    #[must_use]
+    pub fn provider_path(self) -> ConfigPath {
+        self.section_path().extend("provider")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ValidationError
+// ---------------------------------------------------------------------------
+
+/// A single configuration-invariant violation.
+///
+/// Structural variants describe value-shape failures.  Semantic
+/// variants describe invariant identities that downstream consumers
+/// classify on.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidationError {
+    // -- Structural -----------------------------------------------------
+    /// Field must not be empty (e.g. `database.url`).
+    Empty { field: ConfigPath },
+    /// Field's integer value is below the minimum.  `min == 1` renders
+    /// as "must be greater than zero".
+    BelowMin {
+        field: ConfigPath,
+        value: u64,
+        min: u64,
+    },
+    /// Field's integer value exceeds a system limit.
+    AboveMax {
+        field: ConfigPath,
+        value: u64,
+        limit: u64,
+    },
+    /// Field's float value is outside the permitted range.
+    OutOfRange {
+        field: ConfigPath,
+        value: f64,
+        range: NumericRange,
+    },
+    /// Two fields are in the wrong order.  `subject` is the field
+    /// whose invariant was violated; `bound` is the other side.
+    FieldOrdering {
+        subject: FieldValue,
+        bound: FieldValue,
+        relation: OrderRelation,
+    },
+    /// Field's value is below a floor derived from another field plus
+    /// a constant overhead.
+    DerivedFloor {
+        field: ConfigPath,
+        value: u64,
+        floor: ComputedFloor,
+    },
+    // -- Semantic -------------------------------------------------------
+    /// Cloud-provider stage is missing its api-key.
+    MissingApiKey {
+        stage: ProviderStage,
+        provider: ProviderKind,
+    },
+    /// `server.bind_address` is set while `server.transport` is stdio.
+    BindAddressStdioConflict,
+    /// `server.bind_address` failed to parse as `<host>:<port>`.
+    BindAddressMalformed { value: String },
+    /// `embedding.provider` is a provider that does not support
+    /// embedding.  Renders the provider name in both clauses for clarity.
+    EmbeddingProviderUnsupported { provider: ProviderKind },
+    /// `telemetry.file_export` requires `telemetry.enabled = true`.
+    TelemetryFileExportRequiresEnabled,
+}
+
+impl ValidationError {
+    /// Constructs the [`Self::BelowMin`] envelope for the
+    /// "must be greater than zero" case (value `0`, minimum `1`).
+    /// The single canonical spelling of the most common invariant.
+    #[must_use]
+    pub fn must_be_positive(field: ConfigPath) -> Self {
+        Self::BelowMin {
+            field,
+            value: 0,
+            min: 1,
+        }
+    }
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            // -- Structural -------------------------------------------------
+            Self::Empty { field } => write!(f, "{field} must not be empty"),
+
+            Self::BelowMin {
+                field,
+                value: 0,
+                min: 1,
+            } => {
+                write!(f, "{field} must be greater than zero")
+            }
+            Self::BelowMin { field, value, min } => {
+                write!(f, "{field} ({value}) must be at least {min}")
+            }
+
+            Self::AboveMax {
+                field,
+                value,
+                limit,
+            } => write!(f, "{field} ({value}) must be at most {limit}"),
+
+            Self::OutOfRange {
+                field,
+                value,
+                range,
+            } => write!(f, "{field} ({value}) must be in {range}"),
+
+            Self::FieldOrdering {
+                subject,
+                bound,
+                relation,
+            } => {
+                let phrase = match relation {
+                    OrderRelation::AtMost => "at most",
+                    OrderRelation::LessThan => "less than",
+                    OrderRelation::AtLeast => "at least",
+                };
+                write!(
+                    f,
+                    "{} ({}) must be {phrase} {} ({})",
+                    subject.field, subject.value, bound.field, bound.value,
+                )
+            }
+
+            Self::DerivedFloor {
+                field,
+                value,
+                floor,
+            } => write!(
+                f,
+                "{field} ({value}) must be at least {} ({} + {})",
+                floor.value, floor.addend, floor.overhead,
+            ),
+
+            // -- Semantic ---------------------------------------------------
+            Self::MissingApiKey { stage, provider } => write!(
+                f,
+                "{} is required when {} is {provider}",
+                stage.api_key_path(),
+                stage.provider_path(),
+            ),
+
+            Self::BindAddressStdioConflict => {
+                f.write_str("server.bind_address cannot be set when server.transport is stdio")
+            }
+
+            Self::BindAddressMalformed { value } => write!(
+                f,
+                "server.bind_address is not a valid socket address: {value}"
+            ),
+
+            Self::EmbeddingProviderUnsupported { provider } => write!(
+                f,
+                "embedding.provider cannot be {provider}: \
+                 {provider} does not provide an embedding API",
+            ),
+
+            Self::TelemetryFileExportRequiresEnabled => {
+                f.write_str("telemetry.file_export requires telemetry.enabled to be true")
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- ConfigPath ---------------------------------------------------------
+
+    #[test]
+    fn test_config_path_from_static_renders_inner_path() {
+        let p = ConfigPath::from_static("database.url");
+        assert_eq!(p.to_string(), "database.url");
+        assert_eq!(p.as_str(), "database.url");
+    }
+
+    #[test]
+    fn test_config_path_child_joins_prefix_and_field() {
+        let p = ConfigPath::child("database", "url");
+        assert_eq!(p.as_str(), "database.url");
+    }
+
+    #[test]
+    fn test_config_path_child_supports_multi_segment_prefix() {
+        let p = ConfigPath::child("inference.extraction", "api_key");
+        assert_eq!(p.as_str(), "inference.extraction.api_key");
+    }
+
+    #[test]
+    fn test_config_path_env_var_uppercases_and_substitutes_separator() {
+        assert_eq!(
+            ConfigPath::from_static("database.url").env_var(),
+            "TRIBAL_DATABASE__URL",
+        );
+        assert_eq!(
+            ConfigPath::child("inference.triage", "provider").env_var(),
+            "TRIBAL_INFERENCE__TRIAGE__PROVIDER",
+        );
+    }
+
+    #[test]
+    fn test_config_path_child_with_empty_prefix_omits_leading_dot() {
+        let p = ConfigPath::child("", "version");
+        assert_eq!(p.as_str(), "version");
+    }
+
+    // -- ProviderStage --------------------------------------------------------
+
+    #[test]
+    fn test_provider_stage_api_key_paths() {
+        assert_eq!(
+            ProviderStage::Embedding.api_key_path().as_str(),
+            "embedding.api_key",
+        );
+        assert_eq!(
+            ProviderStage::Extraction.api_key_path().as_str(),
+            "inference.extraction.api_key",
+        );
+        assert_eq!(
+            ProviderStage::Triage.api_key_path().as_str(),
+            "inference.triage.api_key",
+        );
+        assert_eq!(
+            ProviderStage::Relation.api_key_path().as_str(),
+            "inference.relation.api_key",
+        );
+    }
+
+    #[test]
+    fn test_provider_stage_provider_paths() {
+        assert_eq!(
+            ProviderStage::Embedding.provider_path().as_str(),
+            "embedding.provider",
+        );
+        assert_eq!(
+            ProviderStage::Extraction.provider_path().as_str(),
+            "inference.extraction.provider",
+        );
+        assert_eq!(
+            ProviderStage::Triage.provider_path().as_str(),
+            "inference.triage.provider",
+        );
+        assert_eq!(
+            ProviderStage::Relation.provider_path().as_str(),
+            "inference.relation.provider",
+        );
+    }
+
+    #[test]
+    fn test_provider_stage_section_paths() {
+        assert_eq!(
+            ProviderStage::Embedding.section_path().as_str(),
+            "embedding"
+        );
+        assert_eq!(
+            ProviderStage::Extraction.section_path().as_str(),
+            "inference.extraction",
+        );
+        assert_eq!(
+            ProviderStage::Triage.section_path().as_str(),
+            "inference.triage",
+        );
+        assert_eq!(
+            ProviderStage::Relation.section_path().as_str(),
+            "inference.relation",
+        );
+    }
+
+    // -- NumericRange Display ----------------------------------------------
+
+    #[test]
+    fn test_numeric_range_open_closed_renders_paren_bracket() {
+        let r = NumericRange {
+            low: Endpoint::open(0.0),
+            high: Endpoint::closed(1.0),
+        };
+        assert_eq!(r.to_string(), "(0.0, 1.0]");
+    }
+
+    #[test]
+    fn test_numeric_range_closed_open_renders_bracket_paren() {
+        let r = NumericRange {
+            low: Endpoint::closed(0.0),
+            high: Endpoint::open(1.0),
+        };
+        assert_eq!(r.to_string(), "[0.0, 1.0)");
+    }
+
+    #[test]
+    fn test_numeric_range_open_open_renders_paren_paren() {
+        let r = NumericRange {
+            low: Endpoint::open(0.0),
+            high: Endpoint::open(1.0),
+        };
+        assert_eq!(r.to_string(), "(0.0, 1.0)");
+    }
+
+    #[test]
+    fn test_numeric_range_closed_closed_renders_bracket_bracket() {
+        let r = NumericRange {
+            low: Endpoint::closed(0.0),
+            high: Endpoint::closed(1.0),
+        };
+        assert_eq!(r.to_string(), "[0.0, 1.0]");
+    }
+
+    #[test]
+    fn test_numeric_range_preserves_non_trivial_fractional_endpoints() {
+        let r = NumericRange {
+            low: Endpoint::open(0.25),
+            high: Endpoint::closed(0.75),
+        };
+        assert_eq!(r.to_string(), "(0.25, 0.75]");
+    }
+
+    // -- ValidationError Display: structural --------------------------------
+
+    #[test]
+    fn test_display_empty() {
+        let err = ValidationError::Empty {
+            field: ConfigPath::from_static("database.url"),
+        };
+        assert_eq!(err.to_string(), "database.url must not be empty");
+    }
+
+    #[test]
+    fn test_display_below_min_one_renders_as_positivity() {
+        let err = ValidationError::BelowMin {
+            field: ConfigPath::from_static("embedding.dimensions"),
+            value: 0,
+            min: 1,
+        };
+        assert_eq!(
+            err.to_string(),
+            "embedding.dimensions must be greater than zero",
+        );
+    }
+
+    #[test]
+    fn test_display_below_min_higher_threshold_includes_value_and_min() {
+        let err = ValidationError::BelowMin {
+            field: ConfigPath::from_static("some.field"),
+            value: 1,
+            min: 5,
+        };
+        assert_eq!(err.to_string(), "some.field (1) must be at least 5");
+    }
+
+    #[test]
+    fn test_display_below_min_one_with_nonzero_value_renders_value() {
+        let err = ValidationError::BelowMin {
+            field: ConfigPath::from_static("some.field"),
+            value: 3,
+            min: 1,
+        };
+        assert_eq!(err.to_string(), "some.field (3) must be at least 1");
+    }
+
+    #[test]
+    fn test_display_above_max_renders_value_and_limit_only() {
+        let err = ValidationError::AboveMax {
+            field: ConfigPath::from_static("server.sse.idle_timeout_ms"),
+            value: 300_001,
+            limit: 300_000,
+        };
+        assert_eq!(
+            err.to_string(),
+            "server.sse.idle_timeout_ms (300001) must be at most 300000",
+        );
+    }
+
+    #[test]
+    fn test_display_out_of_range_open_closed() {
+        let err = ValidationError::OutOfRange {
+            field: ConfigPath::from_static("discovery.similarity_threshold"),
+            value: 1.5,
+            range: NumericRange {
+                low: Endpoint::open(0.0),
+                high: Endpoint::closed(1.0),
+            },
+        };
+        assert_eq!(
+            err.to_string(),
+            "discovery.similarity_threshold (1.5) must be in (0.0, 1.0]",
+        );
+    }
+
+    #[test]
+    fn test_display_field_ordering_at_most() {
+        let err = ValidationError::FieldOrdering {
+            subject: FieldValue {
+                field: ConfigPath::from_static("discovery.default_limit"),
+                value: 20,
+            },
+            bound: FieldValue {
+                field: ConfigPath::from_static("discovery.max_limit"),
+                value: 10,
+            },
+            relation: OrderRelation::AtMost,
+        };
+        assert_eq!(
+            err.to_string(),
+            "discovery.default_limit (20) must be at most discovery.max_limit (10)",
+        );
+    }
+
+    #[test]
+    fn test_display_field_ordering_less_than() {
+        let err = ValidationError::FieldOrdering {
+            subject: FieldValue {
+                field: ConfigPath::from_static("server.sse.keepalive_interval_ms"),
+                value: 30_000,
+            },
+            bound: FieldValue {
+                field: ConfigPath::from_static("server.sse.idle_timeout_ms"),
+                value: 30_000,
+            },
+            relation: OrderRelation::LessThan,
+        };
+        assert_eq!(
+            err.to_string(),
+            "server.sse.keepalive_interval_ms (30000) must be less than \
+             server.sse.idle_timeout_ms (30000)",
+        );
+    }
+
+    #[test]
+    fn test_display_field_ordering_at_least() {
+        let err = ValidationError::FieldOrdering {
+            subject: FieldValue {
+                field: ConfigPath::from_static("server.job_state_hard_ttl_seconds"),
+                value: 300,
+            },
+            bound: FieldValue {
+                field: ConfigPath::from_static("server.job_state_ttl_seconds"),
+                value: 600,
+            },
+            relation: OrderRelation::AtLeast,
+        };
+        assert_eq!(
+            err.to_string(),
+            "server.job_state_hard_ttl_seconds (300) must be at least \
+             server.job_state_ttl_seconds (600)",
+        );
+    }
+
+    #[test]
+    fn test_display_derived_floor() {
+        let err = ValidationError::DerivedFloor {
+            field: ConfigPath::from_static("database.pool_worker_max_connections"),
+            value: 5,
+            floor: ComputedFloor {
+                value: 12,
+                addend: ConfigPath::from_static("worker.max_concurrent_tasks"),
+                overhead: 4,
+            },
+        };
+        assert_eq!(
+            err.to_string(),
+            "database.pool_worker_max_connections (5) must be at least 12 \
+             (worker.max_concurrent_tasks + 4)",
+        );
+    }
+
+    // -- ValidationError Display: semantic ----------------------------------
+
+    #[test]
+    fn test_display_missing_api_key_per_stage() {
+        for (stage, expected) in [
+            (
+                ProviderStage::Embedding,
+                "embedding.api_key is required when embedding.provider is openai",
+            ),
+            (
+                ProviderStage::Extraction,
+                "inference.extraction.api_key is required when \
+                 inference.extraction.provider is openai",
+            ),
+            (
+                ProviderStage::Triage,
+                "inference.triage.api_key is required when \
+                 inference.triage.provider is openai",
+            ),
+            (
+                ProviderStage::Relation,
+                "inference.relation.api_key is required when \
+                 inference.relation.provider is openai",
+            ),
+        ] {
+            let err = ValidationError::MissingApiKey {
+                stage,
+                provider: ProviderKind::OpenAi,
+            };
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_display_bind_address_stdio_conflict() {
+        let err = ValidationError::BindAddressStdioConflict;
+        assert_eq!(
+            err.to_string(),
+            "server.bind_address cannot be set when server.transport is stdio",
+        );
+    }
+
+    #[test]
+    fn test_display_bind_address_malformed() {
+        let err = ValidationError::BindAddressMalformed {
+            value: "not-an-address".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "server.bind_address is not a valid socket address: not-an-address",
+        );
+    }
+
+    #[test]
+    fn test_display_embedding_provider_unsupported() {
+        let err = ValidationError::EmbeddingProviderUnsupported {
+            provider: ProviderKind::Anthropic,
+        };
+        assert_eq!(
+            err.to_string(),
+            "embedding.provider cannot be anthropic: \
+             anthropic does not provide an embedding API",
+        );
+    }
+
+    #[test]
+    fn test_display_telemetry_file_export_requires_enabled() {
+        let err = ValidationError::TelemetryFileExportRequiresEnabled;
+        assert_eq!(
+            err.to_string(),
+            "telemetry.file_export requires telemetry.enabled to be true",
+        );
+    }
+}

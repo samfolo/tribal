@@ -7,7 +7,7 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use tribal_common::sha256_hex;
-use tribal_config::{ConfigPersistence, PromptSource, TribalConfig, load_config, validate};
+use tribal_config::{ConfigPersistence, PromptSource, TribalConfig};
 use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, full_access_scopes};
 
@@ -16,8 +16,8 @@ use crate::{
     cli::SetupArgs,
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS,
-        TIMESTAMP_FORMAT, find_or_create_principal, generate_raw_token, persist_credentials,
-        resolve_absolute_config_path, resolve_ttl,
+        TIMESTAMP_FORMAT, TtlInput, compute_expires_at, find_or_create_principal,
+        generate_raw_token, persist_credentials, prepare_config, resolve_absolute_config_path,
     },
     error::AppError,
     startup::{ensure_prompt_files, run_migrations},
@@ -49,13 +49,9 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
     let principal = args.principal.take();
     let ttl = args.ttl;
     let cli_overrides = args.into_cli_overrides();
-    let config = load_config(
-        config_path,
-        Some(cli_overrides),
-        Some(&DATABASE_COMMAND_DEFAULTS),
-    )?;
+    let config = prepare_config(config_path, cli_overrides, &DATABASE_COMMAND_DEFAULTS)?;
 
-    let expires_at = Utc::now() + resolve_ttl(ttl, config.auth.token_ttl_hours)?;
+    let expires_at = compute_expires_at(TtlInput::from_pair(ttl, config.auth.token_ttl_hours))?;
     let absolute_config_path = resolve_absolute_config_path(config_path)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -88,9 +84,9 @@ pub(crate) fn run(config_path: &str, mut args: SetupArgs) -> Result<(), AppError
 ///
 /// # Errors
 ///
-/// Returns an [`AppError`] if validation, database connection,
-/// migrations, principal resolution, config-file writing, or token
-/// insertion fails.
+/// Returns an [`AppError`] if database connection, migrations,
+/// principal resolution, config-file writing, or token insertion
+/// fails.
 pub async fn run_async(
     config: &TribalConfig,
     config_path: &Path,
@@ -99,8 +95,6 @@ pub async fn run_async(
     persistence: ConfigPersistence<'_>,
     out: &mut dyn Write,
 ) -> Result<SetupOutcome, AppError> {
-    validate(config)?;
-
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     tokio::fs::create_dir_all(config_dir)
         .await

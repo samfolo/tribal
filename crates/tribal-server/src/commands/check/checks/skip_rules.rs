@@ -1,14 +1,10 @@
-//! One-pass classification of phase-2 validation errors into the
+//! One-pass classification of phase-2 validation diagnostics into the
 //! phase-3 skip decisions they imply, plus the cascade-skip constructor
 //! used by phase-1 fan-out.
 
-use tribal_config::{
-    EMBEDDING_API_KEY_REQUIRED_PREFIX, EXTRACTION_API_KEY_REQUIRED_PREFIX,
-    RELATION_API_KEY_REQUIRED_PREFIX, SERVER_BIND_ADDRESS_ERROR_PREFIX,
-    TRIAGE_API_KEY_REQUIRED_PREFIX,
-};
+use tribal_config::{ProviderStage, ValidationError};
 
-use super::types::{CheckDetail, CheckName, CheckOutcome, ProviderProbeTarget, SkipReason};
+use super::types::{CheckDetail, CheckName, CheckOutcome, SkipReason};
 
 impl CheckOutcome {
     /// Constructs a `Skip` outcome for `name`, attributing the skip to
@@ -24,8 +20,8 @@ impl CheckOutcome {
 }
 
 /// Decisions about which phase-3 checks must be skipped because of a
-/// phase-2 validation failure.  Built in a single pass over the error
-/// list; queried per call site at orchestration time.
+/// phase-2 validation failure.  Built in a single pass over the
+/// diagnostics; queried per call site at orchestration time.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(in crate::commands::check) struct SkipMask {
     bits: u8,
@@ -42,38 +38,54 @@ mod flag {
 }
 
 impl SkipMask {
-    pub(in crate::commands::check) fn from_validation_errors(errors: &[String]) -> Self {
+    pub(in crate::commands::check) fn from_validation_errors(
+        diagnostics: &[ValidationError],
+    ) -> Self {
         let mut mask = Self::default();
-        for error in errors {
-            // Each error matches at most one prefix; first hit wins.
-            if error.starts_with(SERVER_BIND_ADDRESS_ERROR_PREFIX) {
-                mask.bits |= flag::ADVERTISED_URL;
-            } else if error.starts_with(EMBEDDING_API_KEY_REQUIRED_PREFIX) {
-                mask.bits |= flag::PROVIDER_EMBEDDING;
-            } else if error.starts_with(EXTRACTION_API_KEY_REQUIRED_PREFIX) {
-                mask.bits |= flag::PROVIDER_EXTRACTION;
-            } else if error.starts_with(TRIAGE_API_KEY_REQUIRED_PREFIX) {
-                mask.bits |= flag::PROVIDER_TRIAGE;
-            } else if error.starts_with(RELATION_API_KEY_REQUIRED_PREFIX) {
-                mask.bits |= flag::PROVIDER_RELATION;
-            }
+        for diagnostic in diagnostics {
+            mask.classify(diagnostic);
         }
         mask
+    }
+
+    /// Sets the bit(s) implied by a single diagnostic.  The match is
+    /// exhaustive: a new [`ValidationError`] variant fails the build
+    /// here until its skip semantics are decided.
+    fn classify(&mut self, diagnostic: &ValidationError) {
+        match diagnostic {
+            ValidationError::BindAddressStdioConflict
+            | ValidationError::BindAddressMalformed { .. } => {
+                self.bits |= flag::ADVERTISED_URL;
+            }
+            ValidationError::MissingApiKey { stage, .. } => match stage {
+                ProviderStage::Embedding => self.bits |= flag::PROVIDER_EMBEDDING,
+                ProviderStage::Extraction => self.bits |= flag::PROVIDER_EXTRACTION,
+                ProviderStage::Triage => self.bits |= flag::PROVIDER_TRIAGE,
+                ProviderStage::Relation => self.bits |= flag::PROVIDER_RELATION,
+            },
+            ValidationError::Empty { .. }
+            | ValidationError::BelowMin { .. }
+            | ValidationError::AboveMax { .. }
+            | ValidationError::OutOfRange { .. }
+            | ValidationError::FieldOrdering { .. }
+            | ValidationError::DerivedFloor { .. }
+            | ValidationError::EmbeddingProviderUnsupported { .. }
+            | ValidationError::TelemetryFileExportRequiresEnabled => {
+                // No downstream skip implied.
+            }
+        }
     }
 
     pub(in crate::commands::check) fn skip_advertised_url(self) -> bool {
         self.bits & flag::ADVERTISED_URL != 0
     }
 
-    pub(in crate::commands::check) fn skip_provider_probe(
-        self,
-        target: ProviderProbeTarget,
-    ) -> bool {
+    pub(in crate::commands::check) fn skip_provider_probe(self, target: ProviderStage) -> bool {
         let bit = match target {
-            ProviderProbeTarget::Embedding => flag::PROVIDER_EMBEDDING,
-            ProviderProbeTarget::Extraction => flag::PROVIDER_EXTRACTION,
-            ProviderProbeTarget::Triage => flag::PROVIDER_TRIAGE,
-            ProviderProbeTarget::Relation => flag::PROVIDER_RELATION,
+            ProviderStage::Embedding => flag::PROVIDER_EMBEDDING,
+            ProviderStage::Extraction => flag::PROVIDER_EXTRACTION,
+            ProviderStage::Triage => flag::PROVIDER_TRIAGE,
+            ProviderStage::Relation => flag::PROVIDER_RELATION,
         };
         self.bits & bit != 0
     }
@@ -81,6 +93,8 @@ impl SkipMask {
 
 #[cfg(test)]
 mod tests {
+    use tribal_config::{ConfigPath, ProviderKind};
+
     use super::*;
 
     #[test]
@@ -101,14 +115,14 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_mask_empty_errors_yields_no_skips() {
+    fn test_skip_mask_empty_diagnostics_yields_no_skips() {
         let mask = SkipMask::from_validation_errors(&[]);
         assert!(!mask.skip_advertised_url());
         for target in [
-            ProviderProbeTarget::Embedding,
-            ProviderProbeTarget::Extraction,
-            ProviderProbeTarget::Triage,
-            ProviderProbeTarget::Relation,
+            ProviderStage::Embedding,
+            ProviderStage::Extraction,
+            ProviderStage::Triage,
+            ProviderStage::Relation,
         ] {
             assert!(!mask.skip_provider_probe(target));
         }
@@ -116,67 +130,55 @@ mod tests {
 
     #[test]
     fn test_skip_mask_sets_advertised_url_for_stdio_bind_conflict() {
-        let errors =
-            vec!["server.bind_address cannot be set when server.transport is stdio".to_owned()];
-        let mask = SkipMask::from_validation_errors(&errors);
+        let mask = SkipMask::from_validation_errors(&[ValidationError::BindAddressStdioConflict]);
         assert!(mask.skip_advertised_url());
     }
 
     #[test]
     fn test_skip_mask_sets_advertised_url_for_malformed_bind_address() {
-        let errors =
-            vec!["server.bind_address is not a valid socket address: not-an-address".to_owned()];
-        let mask = SkipMask::from_validation_errors(&errors);
+        let mask = SkipMask::from_validation_errors(&[ValidationError::BindAddressMalformed {
+            value: "not-an-address".into(),
+        }]);
         assert!(mask.skip_advertised_url());
     }
 
     #[test]
-    fn test_skip_mask_unrelated_errors_set_nothing() {
-        let errors = vec![
-            "database.url must not be empty".to_owned(),
-            "auth.token_ttl_hours must be greater than zero".to_owned(),
-        ];
-        let mask = SkipMask::from_validation_errors(&errors);
+    fn test_skip_mask_structural_errors_set_nothing() {
+        let mask = SkipMask::from_validation_errors(&[
+            ValidationError::Empty {
+                field: ConfigPath::from_static("database.url"),
+            },
+            ValidationError::BelowMin {
+                field: ConfigPath::from_static("auth.token_ttl_hours"),
+                value: 0,
+                min: 1,
+            },
+        ]);
         assert_eq!(mask, SkipMask::default());
     }
 
     #[test]
-    fn test_skip_mask_classifies_each_target_to_its_prefix() {
-        for (target, error) in [
-            (
-                ProviderProbeTarget::Embedding,
-                "embedding.api_key is required when embedding.provider is openai",
-            ),
-            (
-                ProviderProbeTarget::Extraction,
-                "inference.extraction.api_key is required when \
-                 inference.extraction.provider is openai",
-            ),
-            (
-                ProviderProbeTarget::Triage,
-                "inference.triage.api_key is required when inference.triage.provider is openai",
-            ),
-            (
-                ProviderProbeTarget::Relation,
-                "inference.relation.api_key is required when \
-                 inference.relation.provider is openai",
-            ),
-        ] {
-            let mask = SkipMask::from_validation_errors(&[error.to_owned()]);
+    fn test_skip_mask_classifies_each_stage_to_its_own_flag() {
+        let all = [
+            ProviderStage::Embedding,
+            ProviderStage::Extraction,
+            ProviderStage::Triage,
+            ProviderStage::Relation,
+        ];
+        for stage in all {
+            let mask = SkipMask::from_validation_errors(&[ValidationError::MissingApiKey {
+                stage,
+                provider: ProviderKind::OpenAi,
+            }]);
             assert!(
-                mask.skip_provider_probe(target),
-                "{target:?} did not match {error:?}"
+                mask.skip_provider_probe(stage),
+                "{stage:?} did not match its own diagnostic",
             );
-            for other in [
-                ProviderProbeTarget::Embedding,
-                ProviderProbeTarget::Extraction,
-                ProviderProbeTarget::Triage,
-                ProviderProbeTarget::Relation,
-            ] {
-                if other != target {
+            for other in all {
+                if other != stage {
                     assert!(
                         !mask.skip_provider_probe(other),
-                        "{other:?} matched a {target:?}-specific error"
+                        "{other:?} matched a {stage:?}-specific diagnostic",
                     );
                 }
             }
@@ -184,19 +186,25 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_mask_aggregates_mixed_errors_into_one_pass() {
-        let errors = vec![
-            "database.url must not be empty".to_owned(),
-            "server.bind_address cannot be set when server.transport is stdio".to_owned(),
-            "embedding.api_key is required when embedding.provider is openai".to_owned(),
-            "inference.triage.api_key is required when inference.triage.provider is openai"
-                .to_owned(),
-        ];
-        let mask = SkipMask::from_validation_errors(&errors);
+    fn test_skip_mask_aggregates_mixed_diagnostics_into_one_pass() {
+        let mask = SkipMask::from_validation_errors(&[
+            ValidationError::Empty {
+                field: ConfigPath::from_static("database.url"),
+            },
+            ValidationError::BindAddressStdioConflict,
+            ValidationError::MissingApiKey {
+                stage: ProviderStage::Embedding,
+                provider: ProviderKind::OpenAi,
+            },
+            ValidationError::MissingApiKey {
+                stage: ProviderStage::Triage,
+                provider: ProviderKind::OpenAi,
+            },
+        ]);
         assert!(mask.skip_advertised_url());
-        assert!(mask.skip_provider_probe(ProviderProbeTarget::Embedding));
-        assert!(mask.skip_provider_probe(ProviderProbeTarget::Triage));
-        assert!(!mask.skip_provider_probe(ProviderProbeTarget::Extraction));
-        assert!(!mask.skip_provider_probe(ProviderProbeTarget::Relation));
+        assert!(mask.skip_provider_probe(ProviderStage::Embedding));
+        assert!(mask.skip_provider_probe(ProviderStage::Triage));
+        assert!(!mask.skip_provider_probe(ProviderStage::Extraction));
+        assert!(!mask.skip_provider_probe(ProviderStage::Relation));
     }
 }

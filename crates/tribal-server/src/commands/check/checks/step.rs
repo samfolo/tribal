@@ -7,13 +7,13 @@
 //! downstream steps to consume.
 
 use strum::EnumIter;
-use tribal_config::TransportKind;
+use tribal_config::{ProviderStage, TransportKind};
 
 use super::{
     advertised_url_reachable, binary_uniqueness, config_parse, config_validate, database_reachable,
     migrations_current, project_resolution, provider_probes,
     state::CheckState,
-    types::{CheckName, CheckOutcome, ProviderProbeTarget, SkipReason},
+    types::{CheckName, CheckOutcome, SkipReason},
     valid_token_exists,
 };
 
@@ -74,10 +74,10 @@ impl CheckStep {
             Self::MigrationsCurrent | Self::ProjectResolution => require_pool(state),
             Self::ValidTokenExists => require_token_resolution(state),
             Self::AdvertisedUrlReachable => require_advertised_url(state),
-            Self::ProviderEmbedding => require_provider(state, ProviderProbeTarget::Embedding),
-            Self::ProviderExtraction => require_provider(state, ProviderProbeTarget::Extraction),
-            Self::ProviderTriage => require_provider(state, ProviderProbeTarget::Triage),
-            Self::ProviderRelation => require_provider(state, ProviderProbeTarget::Relation),
+            Self::ProviderEmbedding => require_provider(state, ProviderStage::Embedding),
+            Self::ProviderExtraction => require_provider(state, ProviderStage::Extraction),
+            Self::ProviderTriage => require_provider(state, ProviderStage::Triage),
+            Self::ProviderRelation => require_provider(state, ProviderStage::Relation),
         }
     }
 
@@ -91,16 +91,12 @@ impl CheckStep {
             Self::ValidTokenExists => valid_token_exists::act(state).await,
             Self::AdvertisedUrlReachable => advertised_url_reachable::act(state).await,
             Self::BinaryUniqueness => binary_uniqueness::act(state).await,
-            Self::ProviderEmbedding => {
-                provider_probes::act(state, ProviderProbeTarget::Embedding).await
-            }
+            Self::ProviderEmbedding => provider_probes::act(state, ProviderStage::Embedding).await,
             Self::ProviderExtraction => {
-                provider_probes::act(state, ProviderProbeTarget::Extraction).await
+                provider_probes::act(state, ProviderStage::Extraction).await
             }
-            Self::ProviderTriage => provider_probes::act(state, ProviderProbeTarget::Triage).await,
-            Self::ProviderRelation => {
-                provider_probes::act(state, ProviderProbeTarget::Relation).await
-            }
+            Self::ProviderTriage => provider_probes::act(state, ProviderStage::Triage).await,
+            Self::ProviderRelation => provider_probes::act(state, ProviderStage::Relation).await,
         }
     }
 }
@@ -148,7 +144,7 @@ fn require_advertised_url(state: &CheckState) -> Preflight {
     Preflight::Run
 }
 
-fn require_provider(state: &CheckState, target: ProviderProbeTarget) -> Preflight {
+fn require_provider(state: &CheckState, target: ProviderStage) -> Preflight {
     if !state.providers {
         return Preflight::Omit;
     }

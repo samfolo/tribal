@@ -4,6 +4,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::validation::{
+    ConfigPath, Diagnostics, FieldValue, OrderRelation, SIMILARITY_RANGE, ValidationError,
+};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -110,44 +114,74 @@ impl WorkerConfig {
         Duration::from_millis(self.reclaim_interval_ms)
     }
 
-    /// Validates the configuration, pushing error messages for every invalid
-    /// field.
-    ///
-    /// This follows the same exhaustive-collection pattern used by the other
+    /// Validates the configuration, pushing one [`ValidationError`] per
+    /// invariant violation.  Same exhaustive-collection pattern as the
     /// section validators in `validation.rs`.
-    pub(crate) fn validate(&self, errors: &mut Vec<String>) {
-        if self.max_concurrent_tasks == 0 {
-            errors.push("worker.max_concurrent_tasks must be greater than zero".into());
+    pub(crate) fn validate(&self, diags: &mut Diagnostics) {
+        let max_concurrent_tasks = u64::try_from(self.max_concurrent_tasks).unwrap_or(u64::MAX);
+
+        if max_concurrent_tasks == 0 {
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.max_concurrent_tasks",
+            )));
         }
         if self.poll_interval_ms == 0 {
-            errors.push("worker.poll_interval_ms must be greater than zero".into());
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.poll_interval_ms",
+            )));
         }
         if self.task_timeout_ms == 0 {
-            errors.push("worker.task_timeout_ms must be greater than zero".into());
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.task_timeout_ms",
+            )));
         }
         if self.heartbeat_interval_ms == 0 {
-            errors.push("worker.heartbeat_interval_ms must be greater than zero".into());
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.heartbeat_interval_ms",
+            )));
         }
         if self.heartbeat_interval_ms >= self.task_timeout_ms {
-            errors.push(
-                "worker.heartbeat_interval_ms must be less than worker.task_timeout_ms".into(),
-            );
+            diags.push(ValidationError::FieldOrdering {
+                subject: FieldValue {
+                    field: ConfigPath::from_static("worker.heartbeat_interval_ms"),
+                    value: self.heartbeat_interval_ms,
+                },
+                bound: FieldValue {
+                    field: ConfigPath::from_static("worker.task_timeout_ms"),
+                    value: self.task_timeout_ms,
+                },
+                relation: OrderRelation::LessThan,
+            });
         }
         if self.reclaim_interval_ms < self.poll_interval_ms {
-            errors.push(
-                "worker.reclaim_interval_ms must be greater than or equal to \
-                 worker.poll_interval_ms"
-                    .into(),
-            );
+            diags.push(ValidationError::FieldOrdering {
+                subject: FieldValue {
+                    field: ConfigPath::from_static("worker.reclaim_interval_ms"),
+                    value: self.reclaim_interval_ms,
+                },
+                bound: FieldValue {
+                    field: ConfigPath::from_static("worker.poll_interval_ms"),
+                    value: self.poll_interval_ms,
+                },
+                relation: OrderRelation::AtLeast,
+            });
         }
         if self.triage_search_limit == 0 {
-            errors.push("worker.triage_search_limit must be greater than zero".into());
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.triage_search_limit",
+            )));
         }
         if self.max_candidates_per_job == 0 {
-            errors.push("worker.max_candidates_per_job must be greater than zero".into());
+            diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+                "worker.max_candidates_per_job",
+            )));
         }
         if self.tag_similarity_threshold <= 0.0 || self.tag_similarity_threshold > 1.0 {
-            errors.push("worker.tag_similarity_threshold must be in the range (0.0, 1.0]".into());
+            diags.push(ValidationError::OutOfRange {
+                field: ConfigPath::from_static("worker.tag_similarity_threshold"),
+                value: self.tag_similarity_threshold,
+                range: SIMILARITY_RANGE,
+            });
         }
     }
 }
@@ -269,10 +303,16 @@ mod tests {
         assert_eq!(config, parsed);
     }
 
-    fn validate_errors(config: &WorkerConfig) -> Vec<String> {
-        let mut errors = Vec::new();
-        config.validate(&mut errors);
-        errors
+    fn validate_diagnostics(config: &WorkerConfig) -> Diagnostics {
+        let mut diags = Diagnostics::default();
+        config.validate(&mut diags);
+        diags
+    }
+
+    /// Returns true if `diags` contains a [`ValidationError`] matching
+    /// `pred`.
+    fn any<P: Fn(&ValidationError) -> bool>(diags: &Diagnostics, pred: P) -> bool {
+        diags.iter().any(pred)
     }
 
     #[test]
@@ -281,8 +321,12 @@ mod tests {
             max_concurrent_tasks: 0,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("max_concurrent_tasks")));
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "worker.max_concurrent_tasks",
+        )));
     }
 
     #[test]
@@ -291,8 +335,12 @@ mod tests {
             poll_interval_ms: 0,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("poll_interval_ms")));
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "worker.poll_interval_ms",
+        )));
     }
 
     #[test]
@@ -301,8 +349,12 @@ mod tests {
             task_timeout_ms: 0,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("task_timeout_ms")));
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "worker.task_timeout_ms",
+        )));
     }
 
     #[test]
@@ -311,8 +363,12 @@ mod tests {
             heartbeat_interval_ms: 0,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("heartbeat_interval_ms")));
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "worker.heartbeat_interval_ms",
+        )));
     }
 
     #[test]
@@ -322,8 +378,16 @@ mod tests {
             task_timeout_ms: 300_000,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("heartbeat_interval_ms")));
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::FieldOrdering {
+                subject,
+                bound,
+                relation: OrderRelation::LessThan,
+            } if subject.field.as_str() == "worker.heartbeat_interval_ms"
+                && bound.field.as_str() == "worker.task_timeout_ms",
+        )));
     }
 
     #[test]
@@ -333,8 +397,16 @@ mod tests {
             poll_interval_ms: 2_000,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("reclaim_interval_ms")));
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::FieldOrdering {
+                subject,
+                bound,
+                relation: OrderRelation::AtLeast,
+            } if subject.field.as_str() == "worker.reclaim_interval_ms"
+                && bound.field.as_str() == "worker.poll_interval_ms",
+        )));
     }
 
     #[test]
@@ -343,8 +415,12 @@ mod tests {
             triage_search_limit: 0,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("triage_search_limit")));
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "worker.triage_search_limit",
+        )));
     }
 
     #[test]
@@ -353,8 +429,12 @@ mod tests {
             max_candidates_per_job: 0,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(errors.iter().any(|e| e.contains("max_candidates_per_job")));
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "worker.max_candidates_per_job",
+        )));
     }
 
     #[test]
@@ -363,12 +443,12 @@ mod tests {
             tag_similarity_threshold: 0.0,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("tag_similarity_threshold"))
-        );
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::OutOfRange { field, .. }
+                if field.as_str() == "worker.tag_similarity_threshold",
+        )));
     }
 
     #[test]
@@ -377,12 +457,12 @@ mod tests {
             tag_similarity_threshold: -0.1,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("tag_similarity_threshold"))
-        );
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::OutOfRange { field, .. }
+                if field.as_str() == "worker.tag_similarity_threshold",
+        )));
     }
 
     #[test]
@@ -391,12 +471,12 @@ mod tests {
             tag_similarity_threshold: 1.01,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("tag_similarity_threshold"))
-        );
+        let diags = validate_diagnostics(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::OutOfRange { field, .. }
+                if field.as_str() == "worker.tag_similarity_threshold",
+        )));
     }
 
     #[test]
@@ -405,21 +485,23 @@ mod tests {
             tag_similarity_threshold: 1.0,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
+        let diags = validate_diagnostics(&config);
         assert!(
-            !errors
-                .iter()
-                .any(|e| e.contains("tag_similarity_threshold")),
-            "threshold of 1.0 should be accepted"
+            !any(&diags, |d| matches!(
+                d,
+                ValidationError::OutOfRange { field, .. }
+                    if field.as_str() == "worker.tag_similarity_threshold",
+            )),
+            "threshold of 1.0 should be accepted",
         );
     }
 
     #[test]
     fn test_validate_accepts_valid_config() {
-        let errors = validate_errors(&WorkerConfig::default());
+        let diags = validate_diagnostics(&WorkerConfig::default());
         assert!(
-            errors.is_empty(),
-            "default config should be valid: {errors:?}"
+            diags.is_empty(),
+            "default config should be valid: {diags:?}",
         );
     }
 
@@ -431,11 +513,11 @@ mod tests {
             task_timeout_ms: 0,
             ..WorkerConfig::default()
         };
-        let errors = validate_errors(&config);
+        let diags = validate_diagnostics(&config);
         assert!(
-            errors.len() >= 3,
-            "expected at least 3 errors, got {}: {errors:?}",
-            errors.len()
+            diags.len() >= 3,
+            "expected at least 3 diagnostics, got {}: {diags:?}",
+            diags.len(),
         );
     }
 }

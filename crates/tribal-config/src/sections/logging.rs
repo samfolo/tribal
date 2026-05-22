@@ -58,9 +58,8 @@ pub struct LoggingConfig {
     pub file_rotation: FileRotation,
 
     /// Whether `std::env::temp_dir` was used as a last-resort fallback
-    /// for `file_directory`.
-    ///
-    /// Set automatically during default construction; not serialised.
+    /// for `file_directory`.  Internal runtime state, not part of the
+    /// YAML surface.
     #[serde(skip)]
     pub used_temp_dir_fallback: bool,
 

@@ -9,6 +9,17 @@ use serde::{Deserialize, Serialize};
 /// Default token lifetime in hours (~1 year).
 pub const DEFAULT_TOKEN_TTL_HOURS: u64 = 8760;
 
+/// Maximum `auth.token_ttl_hours` accepted by `validate()`.
+///
+/// Set to the boundary where `chrono::TimeDelta::try_hours` starts
+/// returning `None` (`i64::MAX / 3_600_000`, where 3.6e6 is
+/// milliseconds-per-hour).  Values above this cap cannot represent a
+/// valid `TimeDelta` regardless of subsequent arithmetic.
+// `i64::MAX` is positive and `3_600_000` is positive, so the quotient
+// is non-negative and the `as u64` cast is lossless.
+#[allow(clippy::cast_sign_loss)]
+pub const MAX_TTL_HOURS: u64 = (i64::MAX / 3_600_000) as u64;
+
 const fn default_token_ttl_hours() -> u64 {
     DEFAULT_TOKEN_TTL_HOURS
 }

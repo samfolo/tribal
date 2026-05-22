@@ -73,6 +73,15 @@ impl ProviderKind {
         matches!(self, Self::Anthropic | Self::OpenAi)
     }
 
+    /// Returns `true` if this provider exposes an embedding API.
+    #[must_use]
+    pub fn supports_embedding(self) -> bool {
+        match self {
+            Self::Ollama | Self::OpenAi => true,
+            Self::Anthropic => false,
+        }
+    }
+
     /// Returns the default base URL for this provider kind.
     ///
     /// Used when the configuration does not specify a `base_url` override.
@@ -153,6 +162,13 @@ mod tests {
         assert!(!ProviderKind::Ollama.requires_api_key());
         assert!(ProviderKind::Anthropic.requires_api_key());
         assert!(ProviderKind::OpenAi.requires_api_key());
+    }
+
+    #[test]
+    fn test_supports_embedding() {
+        assert!(ProviderKind::Ollama.supports_embedding());
+        assert!(!ProviderKind::Anthropic.supports_embedding());
+        assert!(ProviderKind::OpenAi.supports_embedding());
     }
 
     #[test]

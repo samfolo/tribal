@@ -17,7 +17,7 @@ mod telemetry;
 mod transport_kind;
 mod worker;
 
-pub use auth::AuthConfig;
+pub use auth::{AuthConfig, MAX_TTL_HOURS};
 pub use credentials::{
     Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
     CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials,
