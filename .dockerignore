@@ -1,0 +1,11 @@
+target/
+.git/
+.github/
+node_modules/
+.claude/
+.scratch/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+docs/
