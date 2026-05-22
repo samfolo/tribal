@@ -3,7 +3,8 @@
 use std::{sync::Arc, time::Duration};
 
 use tribal_config::{
-    ConfigError, EmbeddingConfig, ProviderKind, StageInferenceConfig, TribalConfig,
+    ConfigError, Diagnostics, EmbeddingConfig, ProviderKind, StageInferenceConfig, TribalConfig,
+    ValidationError,
 };
 use tribal_inference::{
     AnthropicInferenceProvider, EmbeddingProvider, InferenceError, InferenceProvider,
@@ -97,7 +98,11 @@ pub(crate) async fn build_embedding_provider(
         ProviderKind::Anthropic => {
             return Err(AppError::Config {
                 source: ConfigError::ValidationFailed {
-                    errors: vec![ANTHROPIC_EMBEDDING_UNSUPPORTED.into()],
+                    diagnostics: Diagnostics::from(vec![
+                        ValidationError::EmbeddingProviderUnsupported {
+                            provider: ProviderKind::Anthropic,
+                        },
+                    ]),
                 },
             });
         }
