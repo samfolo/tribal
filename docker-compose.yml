@@ -54,7 +54,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - tribal_state:/var/lib/tribal
-    entrypoint: /usr/local/bin/tribal-entrypoint
+    entrypoint: ["/usr/local/bin/tribal-entrypoint"]
     ports:
       - "127.0.0.1:8725:8725"
     extra_hosts:
