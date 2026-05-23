@@ -158,15 +158,7 @@ pub async fn run_async(
         &mut setup_buf,
     )
     .await
-    .inspect_err(|_| {
-        // Replay captured progress for human consumers. In `--json` mode
-        // the captured buffer carries the raw bearer token in
-        // human-readable form, so stderr stays silent — the `AppError`
-        // returned via `?` is the only signal a machine consumer needs.
-        if !opts.json {
-            let _ = out_stderr.write_all(&setup_buf);
-        }
-    })?;
+    .inspect_err(|_| replay_setup_on_failure(opts.json, out_stderr, &setup_buf))?;
 
     // From here on, any error path replays the recovery buffer via the
     // guard's `Drop` rather than peppering each bail-out with a manual
@@ -247,7 +239,7 @@ pub async fn run_async(
 }
 
 // ---------------------------------------------------------------------------
-// Recovery guard
+// Recovery
 // ---------------------------------------------------------------------------
 
 /// Replays a captured stderr buffer on drop when armed.
@@ -313,6 +305,17 @@ fn recovery_buf_for(json_mode: bool, setup_buf: Vec<u8>) -> Vec<u8> {
         json_recovery_message()
     } else {
         setup_buf
+    }
+}
+
+/// Replays the captured setup buffer to `dest` when setup itself
+/// fails. Gated symmetrically with [`recovery_buf_for`]: in `--json`
+/// mode the buffer carries the raw bearer token, so stderr stays
+/// silent and the `AppError` returned via `?` is the only signal a
+/// machine consumer needs.
+fn replay_setup_on_failure(json_mode: bool, dest: &mut dyn Write, setup_buf: &[u8]) {
+    if !json_mode {
+        let _ = dest.write_all(setup_buf);
     }
 }
 
@@ -382,6 +385,52 @@ mod tests {
         assert_eq!(
             result, expected,
             "human-mode recovery buffer must preserve the captured setup output verbatim for terminal replay",
+        );
+    }
+
+    #[test]
+    fn test_recovery_guard_replays_buffer_on_drop_when_armed() {
+        let buf = b"replay-payload".to_vec();
+        let mut dest: Vec<u8> = Vec::new();
+        {
+            let _guard = RecoveryGuard::arm(&mut dest, &buf);
+        }
+        assert_eq!(dest, buf);
+    }
+
+    #[test]
+    fn test_recovery_guard_suppresses_replay_after_disarm() {
+        let buf = b"replay-payload".to_vec();
+        let mut dest: Vec<u8> = Vec::new();
+        {
+            let mut guard = RecoveryGuard::arm(&mut dest, &buf);
+            guard.disarm();
+        }
+        assert!(
+            dest.is_empty(),
+            "disarmed guard must not replay on drop; got: {dest:?}",
+        );
+    }
+
+    #[test]
+    fn test_replay_setup_on_failure_writes_buffer_in_human_mode() {
+        let setup_buf = fixture_setup_buf();
+        let mut dest: Vec<u8> = Vec::new();
+        replay_setup_on_failure(false, &mut dest, &setup_buf);
+        assert_eq!(
+            dest, setup_buf,
+            "human-mode setup-failure replay must write the captured buffer to stderr",
+        );
+    }
+
+    #[test]
+    fn test_replay_setup_on_failure_is_silent_in_json_mode() {
+        let setup_buf = fixture_setup_buf();
+        let mut dest: Vec<u8> = Vec::new();
+        replay_setup_on_failure(true, &mut dest, &setup_buf);
+        assert!(
+            dest.is_empty(),
+            "json-mode setup-failure replay must not write the token-bearing setup buffer; got: {dest:?}",
         );
     }
 }
