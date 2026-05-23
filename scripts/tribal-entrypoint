@@ -18,6 +18,17 @@
 # Docker-specific choice). With XDG_CONFIG_HOME=/var/lib/tribal, the
 # resolved paths become /var/lib/tribal/tribal/{tribal.yaml,credentials.json},
 # which is why every state path below carries the inner `tribal/` segment.
+#
+# Env-var plumbing differs by purpose:
+#   - TRIBAL_PROJECT_REMOTE, TRIBAL_PROJECT_NAME: script-side variables,
+#     read here and forwarded to `tribal bootstrap --remote / --name`.
+#     One-shot inputs that identify the project to register; not part
+#     of the binary's persisted config and not loaded by figment.
+#   - TRIBAL_SERVER__TRANSPORT, TRIBAL_SERVER__BIND_ADDRESS, TRIBAL_*__*:
+#     figment-loaded config fields (the double underscore is figment's
+#     nested-path separator). The binary reads these directly. We do
+#     NOT pass `--transport` here so a compose user can swap http/sse
+#     by changing TRIBAL_SERVER__TRANSPORT alone.
 
 set -euo pipefail
 
@@ -75,9 +86,11 @@ first_run() {
   mkdir -p "$STATE_DIR"
   : "${TRIBAL_PROJECT_REMOTE:?TRIBAL_PROJECT_REMOTE must be set (compose provides a default; see docker-compose.yml)}"
   : "${TRIBAL_PROJECT_NAME:?TRIBAL_PROJECT_NAME must be set (compose provides a default; see docker-compose.yml)}"
+  # Transport selection flows through TRIBAL_SERVER__TRANSPORT (env →
+  # figment → config); deliberately not passed as `--transport` so a
+  # compose user can swap to sse via env without editing the script.
   local bootstrap_json project_id
   bootstrap_json="$(tribal bootstrap \
-    --transport http \
     --remote "$TRIBAL_PROJECT_REMOTE" \
     --name "$TRIBAL_PROJECT_NAME" \
     --json)"
@@ -99,16 +112,24 @@ first_run() {
     exit 1
   fi
 
+  # `install -m 0644` is not a tempfile+rename atomic write, but project_id
+  # is a single short line and a mid-write interrupt is extraordinarily
+  # unlikely; the subsequent-run flow's content validation catches a
+  # corrupt file on the next start regardless.
   install -m 0644 /dev/stdin "$PROJECT_ID_FILE" <<<"$project_id"
   print_full_onboarding
-  exec tribal serve --transport http --project "$project_id"
+  exec tribal serve --project "$project_id"
 }
 
 subsequent_run() {
   local project_id
   project_id="$(cat "$PROJECT_ID_FILE")"
+  if [[ -z "$project_id" || "$project_id" == *$'\n'* ]]; then
+    echo "$PROJECT_ID_FILE is empty or multi-line; recreate it with 'docker compose run --rm tribal --reset'" >&2
+    exit 1
+  fi
   print_brief_status
-  exec tribal serve --transport http --project "$project_id"
+  exec tribal serve --project "$project_id"
 }
 
 # -- Dispatch --
