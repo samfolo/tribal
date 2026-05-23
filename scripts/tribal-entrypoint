@@ -101,12 +101,9 @@ first_run() {
   fi
 
   # `tribal bootstrap` is warn-and-success on credentials-file persistence:
-  # a write failure leaves the JSON payload intact but no credentials.json
-  # on disk. The Docker handoff is the credentials file itself (the token
-  # never appears in container logs or onboarding text), so a missing or
-  # malformed file means the host-shell wire-up one-liner has nothing to
-  # read. Fail fast and surface a non-secret error instead of starting
-  # serve under a silently-broken handoff.
+  # the JSON payload survives a write failure, leaving the container with
+  # no token to hand off. Fail loudly here so the host-shell wire-up
+  # one-liner never sees a "ready" container without a usable file.
   if [[ ! -s "$CREDENTIALS_FILE" ]] || ! jq -e '.auth.token | type == "string" and length > 0' "$CREDENTIALS_FILE" >/dev/null 2>&1; then
     echo "tribal bootstrap succeeded but $CREDENTIALS_FILE is missing or has no .auth.token; cannot hand off credentials" >&2
     exit 1
@@ -124,15 +121,13 @@ first_run() {
 subsequent_run() {
   local project_id
   project_id="$(cat "$PROJECT_ID_FILE")"
-  if [[ -z "$project_id" || "$project_id" == *$'\n'* ]]; then
-    echo "$PROJECT_ID_FILE is empty or multi-line; recreate it with 'docker compose run --rm tribal --reset'" >&2
+  if [[ -z "$project_id" || "$project_id" =~ [[:space:]] ]]; then
+    echo "$PROJECT_ID_FILE is empty or contains whitespace; recreate it with 'docker compose run --rm tribal --reset'" >&2
     exit 1
   fi
-  # Mirror the credentials-file validity check from first_run: the host
-  # shell's wire-up one-liner depends on credentials.json carrying a
-  # readable bearer token, and tribal check's healthcheck downgrades a
-  # missing file to a warning (not a failure), so the container would
-  # otherwise come up "healthy" while the handoff is silently broken.
+  # `tribal check` downgrades a missing credentials.json to a warning,
+  # so without this guard the container reaches healthy while the
+  # host-shell wire-up has no token to surface.
   if [[ ! -s "$CREDENTIALS_FILE" ]] || ! jq -e '.auth.token | type == "string" and length > 0' "$CREDENTIALS_FILE" >/dev/null 2>&1; then
     echo "$CREDENTIALS_FILE is missing or has no .auth.token; recreate it with 'docker compose run --rm tribal --reset'" >&2
     exit 1
