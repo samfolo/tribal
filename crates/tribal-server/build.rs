@@ -1,26 +1,21 @@
 //! Build script for `tribal-server`.
 //!
-//! Embeds a build-version string into the binary so that `tribal --version`,
-//! the MCP system fingerprint (`crates/tribal-mcp/src/fingerprint.rs`), and the
-//! `system_fingerprints` table can distinguish releases.
-//!
-//! The value is resolved in three tiers, in order:
-//!
-//! 1. `TRIBAL_GIT_DESCRIBE` from the environment. Builders without access to
-//!    `.git/` (notably the Docker image build, which excludes `.git/` via
-//!    `.dockerignore`) inject the host's `git describe` output via a build
-//!    argument so the embedded value reflects the release commit.
-//! 2. `git describe --always --dirty --tags` run against the current checkout.
-//!    Standard path for `cargo build` inside a git working tree.
-//! 3. `CARGO_PKG_VERSION` (the workspace package version). Last-resort
-//!    fallback that still produces a meaningful, fingerprint-distinct value
-//!    rather than a literal `"unknown"` — a binary built in a non-git context
-//!    without an explicit env override at least carries its workspace version.
+//! Embeds `TRIBAL_GIT_DESCRIBE` into the binary for `tribal --version` and
+//! the MCP system fingerprint (`crates/tribal-mcp/src/fingerprint.rs`).
+//! Cascade: env var (set by Docker builds, which strip `.git/`) →
+//! `git describe --always --tags` → `CARGO_PKG_VERSION`. `--dirty` is
+//! omitted because tracking working-tree state via `rerun-if-changed`
+//! would mean declaring every workspace source as an input; the embedded
+//! value reflects the last commit regardless of dirtiness.
 
 fn main() {
     println!("cargo:rerun-if-env-changed=TRIBAL_GIT_DESCRIBE");
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/");
+    // `rerun-if-changed` paths are interpreted relative to the package
+    // manifest directory (`crates/tribal-server/`), so the workspace's
+    // `.git/` is two levels up.
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/refs");
+    println!("cargo:rerun-if-changed=../../.git/packed-refs");
 
     let build_version = std::env::var("TRIBAL_GIT_DESCRIBE")
         .ok()
@@ -36,7 +31,7 @@ fn main() {
 
 fn git_describe() -> Option<String> {
     std::process::Command::new("git")
-        .args(["describe", "--always", "--dirty", "--tags"])
+        .args(["describe", "--always", "--tags"])
         .output()
         .ok()
         .filter(|output| output.status.success())
