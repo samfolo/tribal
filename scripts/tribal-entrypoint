@@ -128,6 +128,15 @@ subsequent_run() {
     echo "$PROJECT_ID_FILE is empty or multi-line; recreate it with 'docker compose run --rm tribal --reset'" >&2
     exit 1
   fi
+  # Mirror the credentials-file validity check from first_run: the host
+  # shell's wire-up one-liner depends on credentials.json carrying a
+  # readable bearer token, and tribal check's healthcheck downgrades a
+  # missing file to a warning (not a failure), so the container would
+  # otherwise come up "healthy" while the handoff is silently broken.
+  if [[ ! -s "$CREDENTIALS_FILE" ]] || ! jq -e '.auth.token | type == "string" and length > 0' "$CREDENTIALS_FILE" >/dev/null 2>&1; then
+    echo "$CREDENTIALS_FILE is missing or has no .auth.token; recreate it with 'docker compose run --rm tribal --reset'" >&2
+    exit 1
+  fi
   print_brief_status
   exec tribal serve --project "$project_id"
 }
