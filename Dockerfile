@@ -8,7 +8,16 @@ COPY crates/ ./crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
-ENV SQLX_OFFLINE=true
+# `.git/` is excluded from the build context (see `.dockerignore`), so
+# `build.rs` cannot derive the build version from `git describe` here.
+# Callers inject the host's `git describe` output via this build arg;
+# `build.rs` reads `TRIBAL_GIT_DESCRIBE` and embeds it into the binary
+# (with a `CARGO_PKG_VERSION` fallback if the arg is empty). Without
+# this plumbing every Docker image would share the same fingerprint
+# `build_version`, collapsing eval/feedback rows across releases.
+ARG TRIBAL_GIT_DESCRIBE=""
+ENV SQLX_OFFLINE=true \
+    TRIBAL_GIT_DESCRIBE=${TRIBAL_GIT_DESCRIBE}
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
@@ -28,4 +37,5 @@ RUN apt-get update \
 COPY --from=builder /app/target/release/tribal /usr/local/bin/tribal
 COPY --chmod=0755 scripts/tribal-entrypoint /usr/local/bin/tribal-entrypoint
 USER tribal:tribal
+EXPOSE 8725
 ENTRYPOINT ["/usr/local/bin/tribal-entrypoint"]
