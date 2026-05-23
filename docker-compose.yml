@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: tribal
+      POSTGRES_PASSWORD: tribal
+      POSTGRES_DB: tribal
+    volumes:
+      - tribal_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "tribal"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  tribal:
+    image: ghcr.io/samfolo/tribal:0.1.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TRIBAL_DATABASE__URL: postgres://tribal:tribal@postgres:5432/tribal
+      # http or sse — both accept a bind_address; stdio rejects it via
+      # validate_server. Swap to sse here if you prefer the legacy transport.
+      TRIBAL_SERVER__TRANSPORT: "http"
+      TRIBAL_SERVER__BIND_ADDRESS: "0.0.0.0:8725"
+      TRIBAL_PUBLIC_MCP_URL: "http://127.0.0.1:8725/mcp"
+      # Redirect tribal.yaml and credentials.json into the state volume so
+      # they survive container restart. Resolves to
+      # /var/lib/tribal/tribal/{tribal.yaml,credentials.json} (the inner
+      # `tribal/` segment is the binary's own subdirectory under any
+      # XDG_CONFIG_HOME parent).
+      XDG_CONFIG_HOME: "/var/lib/tribal"
+      TRIBAL_CONFIG_PATH: "/var/lib/tribal/tribal/tribal.yaml"
+      # Ollama base URL — the binary default resolves to the container's
+      # own loopback (no Ollama there). Redirect to host.docker.internal
+      # so the container reaches Ollama on the host. extra_hosts (below)
+      # makes the name resolvable on Linux Docker (macOS / Windows Docker
+      # Desktop resolve it natively).
+      TRIBAL_EMBEDDING__BASE_URL: "http://host.docker.internal:11434"
+      TRIBAL_INFERENCE__EXTRACTION__BASE_URL: "http://host.docker.internal:11434"
+      TRIBAL_INFERENCE__TRIAGE__BASE_URL: "http://host.docker.internal:11434"
+      TRIBAL_INFERENCE__RELATION__BASE_URL: "http://host.docker.internal:11434"
+      TRIBAL_PROJECT_NAME: ${TRIBAL_PROJECT_NAME:-tribal-docker-local}
+      TRIBAL_PROJECT_REMOTE: ${TRIBAL_PROJECT_REMOTE:-https://example.com/local/tribal-docker.git}
+      # Provider env vars passed through from the host shell. Optional;
+      # required only for real ingest against the listed cloud providers.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - tribal_state:/var/lib/tribal
+    entrypoint: ["/usr/local/bin/tribal-entrypoint"]
+    ports:
+      - "127.0.0.1:8725:8725"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "tribal", "check", "--json"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tribal_pgdata:
+  tribal_state:

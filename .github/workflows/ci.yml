@@ -15,7 +15,7 @@ jobs:
     name: Lint & Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
@@ -27,12 +27,31 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo install sqlx-cli --version ^0.8 --locked --no-default-features --features postgres
       - run: cargo sqlx prepare --check --workspace
+      - name: Install yq
+        run: |
+          # --fail aborts on 4xx/5xx so a transient error response is not
+          # written as the executable; --silent --show-error keeps output
+          # quiet on success but surfaces real failures.
+          sudo curl --fail --silent --show-error --location \
+            https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
+            -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+      - name: Compose image pin matches workspace version
+        run: |
+          version=$(cargo metadata --no-deps --format-version=1 \
+            | jq -r '.packages[] | select(.name=="tribal") | .version')
+          expected="ghcr.io/samfolo/tribal:${version}"
+          actual=$(yq -r '.services.tribal.image' docker-compose.yml)
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::docker-compose.yml image tag drift: expected '${expected}', found '${actual}'"
+            exit 1
+          fi
 
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --exclude tribal-e2e --features tribal/test-helpers
@@ -41,7 +60,7 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p tribal-e2e
@@ -50,7 +69,7 @@ jobs:
     name: Security & Licence Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-deny
