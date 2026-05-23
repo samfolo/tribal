@@ -29,7 +29,10 @@ jobs:
       - run: cargo sqlx prepare --check --workspace
       - name: Install yq
         run: |
-          sudo curl -L \
+          # --fail aborts on 4xx/5xx so a transient error response is not
+          # written as the executable; --silent --show-error keeps output
+          # quiet on success but surfaces real failures.
+          sudo curl --fail --silent --show-error --location \
             https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
             -o /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
