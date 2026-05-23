@@ -1,0 +1,17 @@
+target/
+.git/
+.github/
+.claude/
+.codex/
+.reviews/
+.scratch/
+*.swp
+.DS_Store
+docs/
+
+# Environment files may carry real API keys; keep them out of the
+# build context. `.env.example` is the documented template and is safe
+# to ship.
+.env
+.env.*
+!.env.example
