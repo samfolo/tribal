@@ -1,5 +1,8 @@
 FROM rust:bookworm AS chef
-RUN cargo install cargo-chef --locked
+# Pinned so future cargo-chef releases cannot change recipe semantics
+# without an intentional bump here; Dependabot (or a manual sweep) can
+# advance the version when needed.
+RUN cargo install cargo-chef --version 0.1.77 --locked
 WORKDIR /app
 
 FROM chef AS planner
