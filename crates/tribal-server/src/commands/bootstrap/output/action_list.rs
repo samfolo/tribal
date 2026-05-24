@@ -276,7 +276,7 @@ fn push_wire_up_step(steps: &mut Vec<ActionStep>) {
         vec![
             BodyLine::new("claude mcp add-json tribal \"$(tribal mcp-config)\"")
                 .indented_by(DEEPER),
-            BodyLine::new("For Codex / Gemini CLI / OpenCode, see the installation skill."),
+            BodyLine::new("For other harnesses, see the installation skill."),
         ],
     ));
 }

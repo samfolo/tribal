@@ -37,7 +37,7 @@ Next steps:
 
 6. Wire Tribal into your agent harness. For Claude Code:
      claude mcp add-json tribal "$(tribal mcp-config)"
-   For Codex / Gemini CLI / OpenCode, see the installation skill.
+   For other harnesses, see the installation skill.
 
 7. (Optional) Install Tribal skills into your agent:
    npx skills add samfolo/tribal-skills
