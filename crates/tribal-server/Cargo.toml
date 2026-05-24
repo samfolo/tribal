@@ -5,8 +5,8 @@ version.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-repository = "https://github.com/samfolo/tribal"
-homepage = "https://github.com/samfolo/tribal"
+repository = "https://github.com/tribal-memory/tribal"
+homepage = "https://github.com/tribal-memory/tribal"
 description = "Capture tribal knowledge. Give it to your agents."
 
 [package.metadata.dist]
