@@ -284,6 +284,6 @@ fn push_wire_up_step(steps: &mut Vec<ActionStep>) {
 fn push_skills_step(steps: &mut Vec<ActionStep>) {
     steps.push(ActionStep::new(
         "(Optional) Install Tribal skills into your agent:",
-        vec![BodyLine::new("npx skills add samfolo/tribal-skills")],
+        vec![BodyLine::new("npx skills add tribal-memory/skills")],
     ));
 }

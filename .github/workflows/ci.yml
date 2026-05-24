@@ -40,7 +40,7 @@ jobs:
         run: |
           version=$(cargo metadata --no-deps --format-version=1 \
             | jq -r '.packages[] | select(.name=="tribal") | .version')
-          expected="ghcr.io/samfolo/tribal:${version}"
+          expected="ghcr.io/tribal-memory/tribal:${version}"
           actual=$(yq -r '.services.tribal.image' docker-compose.yml)
           if [[ "$actual" != "$expected" ]]; then
             echo "::error::docker-compose.yml image tag drift: expected '${expected}', found '${actual}'"
