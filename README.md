@@ -2,11 +2,11 @@
 
 Semantic compression for project knowledge.
 
-[![Release](https://img.shields.io/github/v/release/samfolo/tribal?label=release)](https://github.com/samfolo/tribal/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/samfolo/tribal/ci.yml?branch=main&label=build)](https://github.com/samfolo/tribal/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tribal-memory/tribal?label=release)](https://github.com/tribal-memory/tribal/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/tribal-memory/tribal/ci.yml?branch=main&label=build)](https://github.com/tribal-memory/tribal/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Elastic--2.0-blue)](LICENSE)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fsamfolo%2Ftribal-blue)](https://github.com/samfolo/tribal/pkgs/container/tribal)
-[![Homebrew](https://img.shields.io/badge/homebrew-samfolo%2Fhomebrew--tap-blue)](https://github.com/samfolo/homebrew-tap)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Ftribal--memory%2Ftribal-blue)](https://github.com/tribal-memory/tribal/pkgs/container/tribal)
+[![Homebrew](https://img.shields.io/badge/homebrew-tribal--memory%2Fhomebrew--tap-blue)](https://github.com/tribal-memory/homebrew-tap)
 
 Tribal captures the engineering knowledge that does not get written down in code or tickets. The reasoning behind a load-bearing decision, the heuristic someone keeps reaching for, the breakthrough that closed a gnarly bug. It runs as a Model Context Protocol server, ingests text on demand, and exposes a graph of items connected by what they support, contradict, or refine. Your agent harness talks to it the same way it talks to any other MCP tool.
 
@@ -18,14 +18,14 @@ Install the binary using whichever path fits your environment:
 
 ```bash
 # macOS via Homebrew
-brew install samfolo/homebrew-tap/tribal
+brew install tribal-memory/homebrew-tap/tribal
 
 # macOS or Linux via shell installer
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/samfolo/tribal/releases/latest/download/tribal-installer.sh | sh
+  https://github.com/tribal-memory/tribal/releases/latest/download/tribal-installer.sh | sh
 
 # Containerised via Docker Compose
-git clone https://github.com/samfolo/tribal && cd tribal && docker compose up
+git clone https://github.com/tribal-memory/tribal && cd tribal && docker compose up
 ```
 
 Bootstrap from inside a git repository. This runs setup, registers the repository as a project, mints a bearer token, and prints the MCP config snippet your harness will need:
@@ -37,7 +37,7 @@ tribal bootstrap
 Install the skills that teach your agent harness how to use Tribal:
 
 ```bash
-npx skills add samfolo/tribal-skills
+npx skills add tribal-memory/skills
 ```
 
 ## Prerequisites
