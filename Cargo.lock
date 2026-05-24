@@ -5105,7 +5105,7 @@ dependencies = [
 
 [[package]]
 name = "tribal"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anstream 1.0.0",
  "axum",
