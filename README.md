@@ -14,17 +14,24 @@ Tribal is not trying to remember everything. It preserves what remains useful af
 
 ## Quick start
 
-Install the binary using whichever path fits your environment:
+Install the binary using whichever path fits your environment. Pick one:
+
+**Homebrew (macOS)**
 
 ```bash
-# macOS via Homebrew
 brew install tribal-memory/homebrew-tap/tribal
+```
 
-# macOS or Linux via shell installer
+**Shell installer (macOS or Linux)**
+
+```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/tribal-memory/tribal/releases/latest/download/tribal-installer.sh | sh
+```
 
-# Containerised via Docker Compose
+**Docker Compose (containerised)**
+
+```bash
 git clone https://github.com/tribal-memory/tribal && cd tribal && docker compose up
 ```
 
