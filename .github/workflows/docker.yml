@@ -14,7 +14,7 @@ on:
 permissions: {}
 
 env:
-  IMAGE_NAME: ghcr.io/samfolo/tribal
+  IMAGE_NAME: ghcr.io/tribal-memory/tribal
 
 jobs:
   shellcheck:
