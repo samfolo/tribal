@@ -64,11 +64,11 @@ Provider configuration is your responsibility:
     (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...).
 
 To install Tribal's skills into your agent:
-  npx skills add samfolo/tribal-skills
+  npx skills add tribal-memory/skills
 
 To remove Tribal entirely:
   docker compose down -v
-  npx skills remove samfolo/tribal-skills
+  npx skills remove installing-tribal using-tribal
 ================================================================
 EOF
 }
