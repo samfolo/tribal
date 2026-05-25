@@ -57,11 +57,12 @@ This compose flow uses a placeholder git remote
 against your real repo, ask your agent (after wiring) to run:
   tribal project register --remote <your-repo-url>
 
-Provider configuration is your responsibility:
-  - Ollama: ensure it's running and reachable (default
-    http://host.docker.internal:11434 from the container).
-  - Cloud providers: pass your API keys via the compose env
-    (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...).
+Provider configuration is your responsibility. The defaults
+target a local Ollama on the host
+(http://host.docker.internal:11434); ensure it is running with
+the required models pulled. To use a cloud provider instead, set
+its provider, model, and base_url (plus API key) in .env before
+'docker compose up'. See .env.example for a ready-to-paste block.
 
 To install Tribal's skills into your agent:
   npx skills add tribal-memory/skills
