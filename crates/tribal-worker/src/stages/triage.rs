@@ -770,6 +770,33 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_triage_outcome_resolves_in_range_duplicate() {
+        // A duplicate referencing an in-range, non-zero index resolves to that
+        // entry's item id.
+        let item_a = a_knowledge_item().build();
+        let item_b = a_knowledge_item().build();
+        let id_b = item_b.id();
+        let search_results = vec![
+            SemanticSearchResult {
+                item: item_a,
+                similarity: 0.9,
+            },
+            SemanticSearchResult {
+                item: item_b,
+                similarity: 0.5,
+            },
+        ];
+        let outcome = TriageDecision::Duplicate {
+            matched_item: TriageItemReference::ContextIndex { context_index: 1 },
+        };
+        let resolved = resolve_triage_outcome(&outcome, &search_results, JobId::new(), 0);
+        assert!(matches!(
+            resolved,
+            ResolvedTriageOutcome::Duplicate { matched_item_id } if matched_item_id == id_b
+        ));
+    }
+
+    #[test]
     fn test_build_similar_item_decisions_resolves_by_index_and_drops_out_of_range() {
         // Indices deliberately diverge from classification order, and one is
         // out of range. This fails for any implementation that maps by

@@ -222,6 +222,37 @@ mod tests {
     }
 
     #[test]
+    fn test_triage_schema_references_items_by_index_not_identifier() {
+        let request = assemble_triage_prompt(
+            "system",
+            "{{ candidate.content }}",
+            &test_candidate(),
+            &[],
+            &[],
+            &StageParameters::default(),
+        )
+        .expect("assemble triage prompt");
+
+        // The model-facing schema references similar items by typed context
+        // index (context_index / matched_item) and exposes no real
+        // knowledge-item identifier (matched_item_id / item_id / ki_).
+        assert!(
+            matches!(
+                request.response_format,
+                Some(ResponseFormat::JsonSchema { schema }) if {
+                    let s = schema.to_string();
+                    s.contains("context_index")
+                        && s.contains("matched_item")
+                        && !s.contains("matched_item_id")
+                        && !s.contains("item_id")
+                        && !s.contains("ki_")
+                }
+            ),
+            "triage schema must reference items by context index, not identifier",
+        );
+    }
+
+    #[test]
     fn test_candidate_content_rendered_in_user_message() {
         let result = assemble_triage_prompt(
             "system",
