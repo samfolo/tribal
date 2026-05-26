@@ -604,6 +604,8 @@ fn build_similar_item_decisions(
                 return None;
             };
 
+            // Similarity scores persist as REAL (f32), so narrowing here
+            // matches the storage precision and loses nothing.
             #[allow(clippy::cast_possible_truncation)]
             let similarity_score = similarity as f32;
 
