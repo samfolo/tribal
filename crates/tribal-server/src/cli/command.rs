@@ -3,9 +3,10 @@
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use tribal_config::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
-    InferenceStageCliOverrides, ProviderKind, ServerCliOverrides, TelemetryCliOverrides,
-    TransportKind, default_config_file_path,
+    InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides, TransportKind,
+    default_config_file_path,
 };
+use tribal_domain::ProviderKind;
 
 use super::{flags::PersistableFlag, styles::STYLES};
 

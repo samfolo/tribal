@@ -6,7 +6,9 @@
 
 use std::{borrow::Cow, fmt};
 
-use crate::{env::env_var_for_path, sections::ProviderKind};
+use tribal_domain::ProviderKind;
+
+use crate::env::env_var_for_path;
 
 // ---------------------------------------------------------------------------
 // ConfigPath

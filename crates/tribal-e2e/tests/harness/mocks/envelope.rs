@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use tribal_config::ProviderKind;
+use tribal_domain::ProviderKind;
 
 // ---------------------------------------------------------------------------
 // Completion envelope

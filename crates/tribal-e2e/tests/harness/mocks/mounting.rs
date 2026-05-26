@@ -1,5 +1,5 @@
 use serde_json::Value;
-use tribal_config::ProviderKind;
+use tribal_domain::ProviderKind;
 use wiremock::{
     Mock, MockBuilder, MockServer, ResponseTemplate,
     matchers::{body_string_contains, method, path},

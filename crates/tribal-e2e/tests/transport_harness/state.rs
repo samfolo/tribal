@@ -7,12 +7,12 @@ use dashmap::DashMap;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_common::sha256_hex;
-use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ProviderKind, ServerConfig, WorkerConfig};
+use tribal_config::{ServerConfig, WorkerConfig};
 use tribal_db::{
     AuthTokenRepository, NewAuthToken, NewPrincipal, PgAuthTokenRepository, PgPrincipalRepository,
     PrincipalRepository,
 };
-use tribal_domain::{PromptVersionId, Scope, full_access_scopes};
+use tribal_domain::{PromptVersionId, ProviderKind, Scope, full_access_scopes};
 use tribal_inference::{ProviderRegistry, RequestClass};
 use tribal_mcp::{ActivePromptVersions, AppState};
 use tribal_telemetry::noop_recorder;
@@ -54,14 +54,14 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
 
     let embedding_key = tribal_inference::ProviderKey::new(
         &provider_kind,
-        DEFAULT_OLLAMA_BASE_URL,
+        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
         RequestClass::Embedding,
     )
     .expect("test embedding key");
 
     let inference_key = tribal_inference::ProviderKey::new(
         &provider_kind,
-        DEFAULT_OLLAMA_BASE_URL,
+        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
         RequestClass::Inference,
     )
     .expect("test inference key");

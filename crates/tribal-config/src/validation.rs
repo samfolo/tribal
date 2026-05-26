@@ -432,7 +432,9 @@ fn validate_telemetry(config: &TribalConfig, diags: &mut Diagnostics) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DEFAULT_BIND_ADDRESS, ProviderKind};
+    use tribal_domain::ProviderKind;
+
+    use crate::DEFAULT_BIND_ADDRESS;
 
     fn valid_config() -> TribalConfig {
         TribalConfig::minimum_valid("postgres://localhost/tribal")
