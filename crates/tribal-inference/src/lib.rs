@@ -4,6 +4,7 @@
 //! client, cloud API clients, and embedding generation.
 
 mod anthropic;
+mod capabilities;
 mod error;
 mod http;
 mod ollama;
@@ -18,6 +19,7 @@ mod validation;
 pub use anthropic::AnthropicInferenceProvider;
 #[cfg(feature = "test-helpers")]
 pub use anthropic::MESSAGES_PATH as ANTHROPIC_MESSAGES_PATH;
+pub use capabilities::{MaxOutputTokensParam, ModelCapabilities, SamplingControl, resolve};
 pub use error::InferenceError;
 #[cfg(feature = "test-helpers")]
 pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
