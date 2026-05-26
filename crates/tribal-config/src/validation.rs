@@ -263,7 +263,7 @@ fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
     ];
     for (prefix, cfg) in stages {
         if let Some(temperature) = cfg.temperature
-            && !(0.0..=2.0).contains(&temperature)
+            && !TEMPERATURE_RANGE.contains(temperature)
         {
             diags.push(ValidationError::OutOfRange {
                 field: ConfigPath::child(prefix, "temperature"),
@@ -388,7 +388,7 @@ fn validate_discovery(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     let threshold = config.discovery.similarity_threshold;
-    if !(threshold > 0.0 && threshold <= 1.0) {
+    if !SIMILARITY_RANGE.contains(threshold) {
         diags.push(ValidationError::OutOfRange {
             field: ConfigPath::from_static("discovery.similarity_threshold"),
             value: threshold,
