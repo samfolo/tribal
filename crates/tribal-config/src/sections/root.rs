@@ -152,4 +152,24 @@ mod tests {
         let config = TribalConfig::default();
         assert_eq!(config.version, VERSION);
     }
+
+    #[test]
+    fn test_to_yaml_renders_unset_sampling_as_null_and_set_as_value() {
+        // `tribal config show` serialises the resolved config via to_yaml,
+        // so an unset sampling field must render as `null` and a set one as
+        // its value.
+        let mut config = TribalConfig::default();
+        let yaml = config.to_yaml().unwrap();
+        assert!(
+            yaml.contains("temperature: null"),
+            "unset temperature should render as null:\n{yaml}",
+        );
+
+        config.inference.extraction.temperature = Some(0.5);
+        let yaml = config.to_yaml().unwrap();
+        assert!(
+            yaml.contains("temperature: 0.5"),
+            "set temperature should render as its value:\n{yaml}",
+        );
+    }
 }
