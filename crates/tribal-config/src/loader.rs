@@ -486,7 +486,7 @@ prompts:
             assert_eq!(config.auth.token_ttl_hours, 24);
             assert_eq!(config.worker.max_concurrent_tasks, 8);
             assert_eq!(config.embedding.dimensions, 1024);
-            assert!((config.inference.extraction.temperature - 0.5).abs() < f64::EPSILON);
+            assert_eq!(config.inference.extraction.temperature, Some(0.5));
             assert_eq!(
                 config.limits.providers[&ProviderKind::Ollama].max_in_flight,
                 4

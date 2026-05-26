@@ -37,6 +37,15 @@ pub(crate) const SIMILARITY_RANGE: NumericRange = NumericRange {
     high: Endpoint::closed(1.0),
 };
 
+/// Permitted range for per-stage sampling temperature. A gross-error guard
+/// covering the widest provider maximum; per-model field admissibility is the
+/// capability layer's concern, and a provider rejects a value above its own
+/// tighter limit at request time.
+pub(crate) const TEMPERATURE_RANGE: NumericRange = NumericRange {
+    low: Endpoint::closed(0.0),
+    high: Endpoint::closed(2.0),
+};
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -58,6 +67,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_worker(config, &mut diags);
     validate_pool_sizing(config, &mut diags);
     validate_embedding(config, &mut diags);
+    validate_inference(config, &mut diags);
     validate_provider_limits(config, &mut diags);
     validate_api_key_presence(config, &mut diags);
     validate_discovery(config, &mut diags);
@@ -240,6 +250,34 @@ fn validate_pool_sizing(config: &TribalConfig, diags: &mut Diagnostics) {
                 overhead: POOL_CONNECTION_OVERHEAD,
             },
         });
+    }
+}
+
+fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
+    // Range checks apply only to set values; `None` means provider default
+    // and is always admissible.
+    let stages = [
+        ("inference.extraction", &config.inference.extraction),
+        ("inference.triage", &config.inference.triage),
+        ("inference.relation", &config.inference.relation),
+    ];
+    for (prefix, cfg) in stages {
+        if let Some(temperature) = cfg.temperature
+            && !(0.0..=2.0).contains(&temperature)
+        {
+            diags.push(ValidationError::OutOfRange {
+                field: ConfigPath::child(prefix, "temperature"),
+                value: temperature,
+                range: TEMPERATURE_RANGE,
+            });
+        }
+
+        if cfg.max_tokens == Some(0) {
+            diags.push(ValidationError::must_be_positive(ConfigPath::child(
+                prefix,
+                "max_tokens",
+            )));
+        }
     }
 }
 
@@ -917,6 +955,58 @@ mod tests {
         let mut config = valid_config();
         config.discovery.similarity_threshold = 1.0;
         assert!(validate(&config).is_ok());
+    }
+
+    // -- inference ---------------------------------------------------------
+
+    #[test]
+    fn test_validate_accepts_unset_inference_sampling() {
+        // The default config leaves temperature and max_tokens unset.
+        assert!(validate(&valid_config()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_temperature_above_range() {
+        let mut config = valid_config();
+        config.inference.extraction.temperature = Some(2.5);
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::OutOfRange { field, .. }
+                if field.as_str() == "inference.extraction.temperature",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_negative_temperature() {
+        let mut config = valid_config();
+        config.inference.triage.temperature = Some(-0.1);
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::OutOfRange { field, .. }
+                if field.as_str() == "inference.triage.temperature",
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_temperature_at_bounds() {
+        let mut config = valid_config();
+        config.inference.extraction.temperature = Some(0.0);
+        config.inference.triage.temperature = Some(2.0);
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_max_tokens() {
+        let mut config = valid_config();
+        config.inference.relation.max_tokens = Some(0);
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "inference.relation.max_tokens",
+        )));
     }
 
     // -- telemetry ---------------------------------------------------------
