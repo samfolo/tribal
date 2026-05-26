@@ -11,8 +11,8 @@ use tribal_common::sha256_hex;
 use tribal_config::{StageInferenceConfig, TribalConfig};
 use tribal_db::{DbError, NewSystemFingerprint};
 use tribal_domain::{
-    EmbeddingParameters, InferenceParameters, McpErrorCode, PipelineParameters, PromptVersion,
-    PromptVersionId, StageParameters,
+    EmbeddingParameters, InferenceParameters, McpErrorCode, PipelineParameters, PromptStage,
+    PromptVersion, PromptVersionId, StageParameters,
 };
 use tribal_inference::{ProviderIdentity, resolve};
 
@@ -27,6 +27,11 @@ use crate::{
 
 pub(crate) const MISSING_PROMPT_VERSIONS: &str =
     "one or more active prompt versions could not be found in the database";
+
+/// Logged when a stage's configured `temperature` is ignored because its model
+/// samples adaptively. The drop happens here (config projection) rather than at
+/// the wire, so this is where the operator is told their value took no effect.
+const CONFIGURED_TEMPERATURE_IGNORED: &str = "ignoring configured temperature: stage model samples adaptively and rejects sampling parameters";
 
 // ---------------------------------------------------------------------------
 // PromptContentHashes
@@ -124,9 +129,9 @@ pub(crate) struct PipelineProviderIdentities {
 #[must_use]
 pub fn build_inference_parameters(config: &TribalConfig) -> InferenceParameters {
     InferenceParameters {
-        extraction: stage_parameters(&config.inference.extraction),
-        triage: stage_parameters(&config.inference.triage),
-        relation: stage_parameters(&config.inference.relation),
+        extraction: stage_parameters(PromptStage::Extraction, &config.inference.extraction),
+        triage: stage_parameters(PromptStage::Triage, &config.inference.triage),
+        relation: stage_parameters(PromptStage::Relation, &config.inference.relation),
         embedding: EmbeddingParameters {
             dimensions: config.embedding.dimensions,
         },
@@ -142,21 +147,31 @@ pub fn build_inference_parameters(config: &TribalConfig) -> InferenceParameters 
 /// `(provider, model)` through the capability layer.
 ///
 /// `temperature` is recorded as unset when the resolved target samples
-/// adaptively; the `max_tokens` value is unaffected (only its wire field name
-/// varies, which does not change the recorded value).
-fn stage_parameters(stage: &StageInferenceConfig) -> StageParameters {
-    let temperature = if resolve(stage.provider, &stage.model)
+/// adaptively; a configured value that is thereby ignored is logged once
+/// (naming the stage), since this projection — not the wire layer — is where
+/// it is actually dropped. The `max_tokens` value is unaffected (only its wire
+/// field name varies, which does not change the recorded value).
+fn stage_parameters(stage: PromptStage, config: &StageInferenceConfig) -> StageParameters {
+    let temperature = if resolve(config.provider, &config.model)
         .sampling
         .accepts_overrides()
     {
-        stage.temperature
+        config.temperature
     } else {
+        if let Some(temperature) = config.temperature {
+            tracing::warn!(
+                stage = %stage,
+                model = %config.model,
+                temperature,
+                "{CONFIGURED_TEMPERATURE_IGNORED}"
+            );
+        }
         None
     };
 
     StageParameters {
         temperature,
-        max_tokens: stage.max_tokens,
+        max_tokens: config.max_tokens,
     }
 }
 
