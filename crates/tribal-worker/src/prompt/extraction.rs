@@ -1,14 +1,17 @@
 //! Extraction prompt assembly: template rendering and request construction.
 
 use schemars::schema_for;
-use tribal_domain::TagRegistryEntry;
+use tribal_domain::{StageParameters, TagRegistryEntry};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
 use super::renderer::PromptRenderer;
 use crate::{
     error::StageError,
     parsing::ExtractionOutput,
-    prompt::variables::{VAR_RAW_INPUT, VAR_TAGS, extraction_system_context},
+    prompt::{
+        narrow_temperature,
+        variables::{VAR_RAW_INPUT, VAR_TAGS, extraction_system_context},
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -41,6 +44,7 @@ pub(crate) fn assemble_extraction_prompt(
     user_template: &str,
     raw_input: &str,
     tag_registry: &[TagRegistryEntry],
+    params: &StageParameters,
 ) -> Result<CompletionRequest, StageError> {
     let schema = schema_for!(ExtractionOutput);
     let schema_value =
@@ -66,8 +70,8 @@ pub(crate) fn assemble_extraction_prompt(
             role: Role::User,
             content: rendered_user,
         }],
-        temperature: None,
-        max_tokens: None,
+        temperature: narrow_temperature(params.temperature),
+        max_tokens: params.max_tokens,
         response_format: Some(ResponseFormat::JsonSchema {
             schema: schema_value,
         }),
@@ -92,6 +96,7 @@ mod tests {
             "{{ raw_input }}",
             "some input",
             &[],
+            &StageParameters::default(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -105,6 +110,7 @@ mod tests {
             "{{ invalid | nonexistent_filter }}",
             "some input",
             &[],
+            &StageParameters::default(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -122,6 +128,7 @@ mod tests {
             "Tags: {% for tag in tags %}{{ tag }} {% endfor %}",
             "input text",
             &tags,
+            &StageParameters::default(),
         );
         assert!(result.is_ok());
         let request = result.unwrap();
@@ -135,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_response_format_is_json_schema() {
-        let result = assemble_extraction_prompt("system", "{{ raw_input }}", "input", &[]);
+        let result = assemble_extraction_prompt("system", "{{ raw_input }}", "input", &[], &StageParameters::default());
         assert!(result.is_ok());
         let request = result.unwrap();
         assert!(
@@ -149,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_raw_input_rendered_in_user_message() {
-        let result = assemble_extraction_prompt("system", "{{ raw_input }}", "the raw input", &[]);
+        let result = assemble_extraction_prompt("system", "{{ raw_input }}", "the raw input", &[], &StageParameters::default());
         assert!(result.is_ok());
         let request = result.unwrap();
         assert_eq!(request.messages.len(), 1);
@@ -159,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_nonce_available_in_user_prompt() {
-        let result = assemble_extraction_prompt("system", "fence:{{ nonce }}", "input", &[]);
+        let result = assemble_extraction_prompt("system", "fence:{{ nonce }}", "input", &[], &StageParameters::default());
         let request = result.unwrap();
         let content = &request.messages[0].content;
         assert!(
