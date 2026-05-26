@@ -19,16 +19,20 @@ use tribal_domain::ProviderKind;
 // ---------------------------------------------------------------------------
 
 /// `OpenAI` model IDs served as reasoning models over the Chat Completions
-/// API, carrying the [`ModelCapabilities::OPENAI_REASONING`] profile.
+/// API — rejecting the caller sampling family and requiring
+/// `max_completion_tokens` — carrying the [`ModelCapabilities::OPENAI_REASONING`]
+/// profile.
 ///
-/// Exact-match, never prefix matching: an unlisted ID resolves to
-/// [`ModelCapabilities::SEND_ALL`], so a brand-new or ambiguous model
-/// default-sends and a cloud probe surfaces any mismatch, whereas a prefix
-/// rule would over-claim and silently mis-shape a request that would
-/// otherwise work. Models the Chat Completions client cannot address, and
-/// variants whose sampling support differs across vendor surfaces, are
-/// therefore simply absent. Curated against the provider contract; extend
-/// (including dated snapshots) as the supported lineup changes.
+/// Exact-match, never prefix matching, and verified-only: confirm each ID
+/// against the provider contract before adding it, and never extrapolate from
+/// the version pattern. The failure modes are asymmetric — a *missing*
+/// reasoning model default-sends and fails visibly at the cloud probe (the
+/// rejected `temperature` returns an error), whereas a *wrongly included* chat
+/// model silently drops a parameter it would have honoured and the probe still
+/// passes. Absence is therefore the safe default: chat/general variants and
+/// Responses-API-only models (the `-pro` and `-codex` lines) are simply not
+/// listed, and gaps in the version sequence are intentional, not omissions to
+/// fill in.
 const OPENAI_REASONING_MODELS: &[&str] = &[
     "o1",
     "o1-mini",
