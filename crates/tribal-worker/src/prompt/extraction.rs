@@ -142,7 +142,13 @@ mod tests {
 
     #[test]
     fn test_response_format_is_json_schema() {
-        let result = assemble_extraction_prompt("system", "{{ raw_input }}", "input", &[], &StageParameters::default());
+        let result = assemble_extraction_prompt(
+            "system",
+            "{{ raw_input }}",
+            "input",
+            &[],
+            &StageParameters::default(),
+        );
         assert!(result.is_ok());
         let request = result.unwrap();
         assert!(
@@ -156,7 +162,13 @@ mod tests {
 
     #[test]
     fn test_raw_input_rendered_in_user_message() {
-        let result = assemble_extraction_prompt("system", "{{ raw_input }}", "the raw input", &[], &StageParameters::default());
+        let result = assemble_extraction_prompt(
+            "system",
+            "{{ raw_input }}",
+            "the raw input",
+            &[],
+            &StageParameters::default(),
+        );
         assert!(result.is_ok());
         let request = result.unwrap();
         assert_eq!(request.messages.len(), 1);
@@ -166,7 +178,13 @@ mod tests {
 
     #[test]
     fn test_nonce_available_in_user_prompt() {
-        let result = assemble_extraction_prompt("system", "fence:{{ nonce }}", "input", &[], &StageParameters::default());
+        let result = assemble_extraction_prompt(
+            "system",
+            "fence:{{ nonce }}",
+            "input",
+            &[],
+            &StageParameters::default(),
+        );
         let request = result.unwrap();
         let content = &request.messages[0].content;
         assert!(

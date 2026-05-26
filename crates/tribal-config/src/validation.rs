@@ -469,9 +469,9 @@ fn validate_telemetry(config: &TribalConfig, diags: &mut Diagnostics) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tribal_domain::ProviderKind;
 
+    use super::*;
     use crate::DEFAULT_BIND_ADDRESS;
 
     fn valid_config() -> TribalConfig {

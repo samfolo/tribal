@@ -2,7 +2,9 @@
 
 use schemars::schema_for;
 use serde::Serialize;
-use tribal_domain::{Candidate, KnowledgeItemId, RelationHint, RelationSuggestion, StageParameters};
+use tribal_domain::{
+    Candidate, KnowledgeItemId, RelationHint, RelationSuggestion, StageParameters,
+};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
 use super::renderer::PromptRenderer;
@@ -251,7 +253,12 @@ mod tests {
     fn test_invalid_user_template_returns_template_render_error() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let result = assemble_relation_prompt("system", "{{ invalid | nonexistent_filter }}", &ctx, &StageParameters::default());
+        let result = assemble_relation_prompt(
+            "system",
+            "{{ invalid | nonexistent_filter }}",
+            &ctx,
+            &StageParameters::default(),
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.to_error_kind(), TaskErrorKind::InternalError);
@@ -269,7 +276,13 @@ mod tests {
             " — {{ c.candidate.content }}\n",
             "{% endfor %}",
         );
-        let request = assemble_relation_prompt(system_template, user_template, &ctx, &StageParameters::default()).unwrap();
+        let request = assemble_relation_prompt(
+            system_template,
+            user_template,
+            &ctx,
+            &StageParameters::default(),
+        )
+        .unwrap();
         let user_content = &request.messages[0].content;
 
         assert!(
@@ -303,7 +316,9 @@ mod tests {
             "{{ h.source_index }} -> {{ h.target_index }}: {{ h.hint_type }}\n",
             "{% endfor %}",
         );
-        let request = assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default()).unwrap();
+        let request =
+            assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
+                .unwrap();
         let user_content = &request.messages[0].content;
 
         assert!(
@@ -322,7 +337,9 @@ mod tests {
             "({{ d.similarity_score }}) {{ d.suggested_relation }} — {{ d.justification }}\n",
             "{% endfor %}",
         );
-        let request = assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default()).unwrap();
+        let request =
+            assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
+                .unwrap();
         let user_content = &request.messages[0].content;
 
         assert!(
@@ -351,7 +368,8 @@ mod tests {
     fn test_response_format_is_json_schema() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let request = assemble_relation_prompt("system", "user", &ctx, &StageParameters::default()).unwrap();
+        let request =
+            assemble_relation_prompt("system", "user", &ctx, &StageParameters::default()).unwrap();
         assert!(
             matches!(
                 request.response_format,
@@ -365,8 +383,13 @@ mod tests {
     fn test_system_prompt_contains_similarity_legend() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let request =
-            assemble_relation_prompt("{{ similarity_score_legend }}", "user", &ctx, &StageParameters::default()).unwrap();
+        let request = assemble_relation_prompt(
+            "{{ similarity_score_legend }}",
+            "user",
+            &ctx,
+            &StageParameters::default(),
+        )
+        .unwrap();
         let system = request.system.unwrap();
         assert!(
             system.contains("low"),
@@ -387,7 +410,9 @@ mod tests {
             "{% for h in relation_hints %}{{ h.hint_type }}\n{% endfor %}",
             "{% for d in similar_item_decisions %}{{ d.justification }}\n{% endfor %}",
         );
-        let request = assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default()).unwrap();
+        let request =
+            assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
+                .unwrap();
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0].role, Role::User);
 
