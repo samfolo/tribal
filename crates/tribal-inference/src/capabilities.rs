@@ -178,19 +178,20 @@ pub fn resolve(provider: ProviderKind, model: &str) -> ModelCapabilities {
 // Reconciliation
 // ---------------------------------------------------------------------------
 
-/// Logged when a configured `temperature` is dropped because the resolved
-/// target samples adaptively. Names the field so the dropped value (attached
-/// as a structured field) is actionable in the logs.
-const TEMPERATURE_DROPPED: &str = "dropping configured temperature: target model samples adaptively and rejects caller sampling parameters";
+/// Logged when a `temperature` is dropped because the resolved target samples
+/// adaptively. Names the field so the dropped value (attached as a structured
+/// field) is actionable in the logs.
+const TEMPERATURE_DROPPED: &str =
+    "dropping temperature: target model samples adaptively and rejects caller sampling parameters";
 
 /// Reconciles a requested `temperature` against the target's sampling control,
 /// dropping it (with a warning naming the discarded value) when the target
 /// samples adaptively.
 ///
-/// `None` in yields `None` out, so the default (unset) path is silent — only
-/// a configured value that the target rejects triggers the warning. Shared by
-/// the cloud providers' request builders; Ollama accepts sampling parameters
-/// and does not call this.
+/// `None` in yields `None` out, so the unset path is silent — only a present
+/// value that the target rejects triggers the warning. Shared by the cloud
+/// providers' request builders; Ollama accepts sampling parameters and does
+/// not call this.
 pub(crate) fn reconcile_temperature(
     sampling: SamplingControl,
     requested: Option<f32>,

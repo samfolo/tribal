@@ -29,7 +29,7 @@ pub const CHAT_PATH: &str = "/v1/chat/completions";
 /// Logged when the output-token cap is sent as `max_completion_tokens`
 /// instead of `max_tokens`, which the resolved reasoning model rejects.
 const TOKEN_CAP_RENAMED: &str =
-    "sending configured output-token cap as max_completion_tokens: target model rejects max_tokens";
+    "sending output-token cap as max_completion_tokens: target model rejects max_tokens";
 
 // ---------------------------------------------------------------------------
 // Private serde types
@@ -308,8 +308,8 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OpenAiCh
     let (max_tokens, max_completion_tokens) = match caps.max_output_tokens_param {
         MaxOutputTokensParam::MaxTokens => (request.max_tokens, None),
         MaxOutputTokensParam::MaxCompletionTokens => {
-            if request.max_tokens.is_some() {
-                tracing::warn!(model, "{TOKEN_CAP_RENAMED}");
+            if let Some(max_completion_tokens) = request.max_tokens {
+                tracing::warn!(model, max_completion_tokens, "{TOKEN_CAP_RENAMED}");
             }
             (None, request.max_tokens)
         }
