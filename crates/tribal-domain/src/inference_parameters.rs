@@ -13,13 +13,15 @@ use serde::{Deserialize, Serialize};
 /// Inference parameters for a single LLM stage.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct StageParameters {
-    /// Sampling temperature.
+    /// Sampling temperature. `None` (serialised as `null`) records that the
+    /// effective request used the provider default.
     #[serde(default)]
-    pub temperature: f64,
+    pub temperature: Option<f64>,
 
-    /// Maximum output tokens.
+    /// Maximum output tokens. `None` (serialised as `null`) records that the
+    /// effective request used the provider default.
     #[serde(default)]
-    pub max_tokens: u32,
+    pub max_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -110,10 +112,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_produces_zeroed_values() {
+    fn test_default_values() {
         let params = InferenceParameters::default();
-        assert!((params.extraction.temperature - 0.0).abs() < f64::EPSILON);
-        assert_eq!(params.extraction.max_tokens, 0);
+        assert_eq!(params.extraction.temperature, None);
+        assert_eq!(params.extraction.max_tokens, None);
         assert_eq!(params.embedding.dimensions, 0);
         assert_eq!(params.pipeline.max_candidates_per_job, 0);
     }
@@ -122,16 +124,16 @@ mod tests {
     fn test_canonical_json_field_order() {
         let params = InferenceParameters {
             extraction: StageParameters {
-                temperature: 0.2,
-                max_tokens: 4096,
+                temperature: Some(0.2),
+                max_tokens: Some(4096),
             },
             triage: StageParameters {
-                temperature: 0.1,
-                max_tokens: 2048,
+                temperature: Some(0.1),
+                max_tokens: Some(2048),
             },
             relation: StageParameters {
-                temperature: 0.1,
-                max_tokens: 2048,
+                temperature: Some(0.1),
+                max_tokens: Some(2048),
             },
             embedding: EmbeddingParameters { dimensions: 768 },
             pipeline: PipelineParameters {
@@ -156,11 +158,22 @@ mod tests {
     }
 
     #[test]
+    fn test_canonical_json_serialises_unset_as_null() {
+        // An unset sampling parameter must serialise to a stable `null` so the
+        // canonical form (and the fingerprint hash derived from it) is stable.
+        let params = InferenceParameters::default();
+        let value: serde_json::Value = serde_json::from_str(&params.to_canonical_json()).unwrap();
+
+        assert!(value["extraction"]["temperature"].is_null());
+        assert!(value["extraction"]["max_tokens"].is_null());
+    }
+
+    #[test]
     fn test_canonical_json_is_deterministic() {
         let params = InferenceParameters {
             extraction: StageParameters {
-                temperature: 0.2,
-                max_tokens: 4096,
+                temperature: Some(0.2),
+                max_tokens: Some(4096),
             },
             ..InferenceParameters::default()
         };
@@ -173,8 +186,9 @@ mod tests {
         let json = r#"{"extraction":{"temperature":0.2,"max_tokens":4096}}"#;
         let params: InferenceParameters = serde_json::from_str(json).unwrap();
 
-        assert!((params.extraction.temperature - 0.2).abs() < f64::EPSILON);
-        assert_eq!(params.extraction.max_tokens, 4096);
+        assert_eq!(params.extraction.temperature, Some(0.2));
+        assert_eq!(params.extraction.max_tokens, Some(4096));
+        assert_eq!(params.triage.temperature, None);
         assert_eq!(params.embedding.dimensions, 0);
         assert_eq!(params.pipeline.max_candidates_per_job, 0);
     }

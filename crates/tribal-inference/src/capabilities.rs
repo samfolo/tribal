@@ -76,6 +76,22 @@ pub enum SamplingControl {
     Adaptive,
 }
 
+impl SamplingControl {
+    /// Whether the endpoint honours caller-supplied sampling parameters.
+    ///
+    /// `false` means such parameters must be dropped before the request is
+    /// sent and recorded as unset in the fingerprint. The single source for
+    /// this mapping, so request reconciliation and fingerprint derivation
+    /// agree without re-deriving it.
+    #[must_use]
+    pub fn accepts_overrides(self) -> bool {
+        match self {
+            Self::Configurable => true,
+            Self::Adaptive => false,
+        }
+    }
+}
+
 /// Which request field carries the maximum-output-token cap.
 ///
 /// Models on the same provider can differ here. `#[non_exhaustive]` leaves
@@ -181,14 +197,13 @@ pub(crate) fn reconcile_temperature(
     requested: Option<f32>,
     model: &str,
 ) -> Option<f32> {
-    match sampling {
-        SamplingControl::Configurable => requested,
-        SamplingControl::Adaptive => {
-            if let Some(temperature) = requested {
-                tracing::warn!(model, temperature, "{TEMPERATURE_DROPPED}");
-            }
-            None
+    if sampling.accepts_overrides() {
+        requested
+    } else {
+        if let Some(temperature) = requested {
+            tracing::warn!(model, temperature, "{TEMPERATURE_DROPPED}");
         }
+        None
     }
 }
 
@@ -276,6 +291,12 @@ mod tests {
             resolve(ProviderKind::Anthropic, "o3"),
             ModelCapabilities::SEND_ALL,
         );
+    }
+
+    #[test]
+    fn test_sampling_control_accepts_overrides() {
+        assert!(SamplingControl::Configurable.accepts_overrides());
+        assert!(!SamplingControl::Adaptive.accepts_overrides());
     }
 
     #[test]

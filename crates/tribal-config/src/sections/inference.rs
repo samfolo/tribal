@@ -13,22 +13,8 @@ use tribal_domain::{ApiKey, ProviderKind};
 /// Default extraction model name.
 pub const DEFAULT_EXTRACTION_MODEL: &str = "llama3.1:70b";
 
-/// Default extraction sampling temperature.
-pub const DEFAULT_EXTRACTION_TEMPERATURE: f64 = 0.2;
-
-/// Default extraction maximum output tokens.
-pub const DEFAULT_EXTRACTION_MAX_TOKENS: u32 = 4096;
-
 fn default_extraction_model() -> String {
     String::from(DEFAULT_EXTRACTION_MODEL)
-}
-
-const fn default_extraction_temperature() -> f64 {
-    DEFAULT_EXTRACTION_TEMPERATURE
-}
-
-const fn default_extraction_max_tokens() -> u32 {
-    DEFAULT_EXTRACTION_MAX_TOKENS
 }
 
 // ---------------------------------------------------------------------------
@@ -38,22 +24,8 @@ const fn default_extraction_max_tokens() -> u32 {
 /// Default triage/relation model name.
 pub const DEFAULT_SMALL_MODEL: &str = "llama3.1:8b";
 
-/// Default triage/relation sampling temperature.
-pub const DEFAULT_SMALL_TEMPERATURE: f64 = 0.1;
-
-/// Default triage/relation maximum output tokens.
-pub const DEFAULT_SMALL_MAX_TOKENS: u32 = 2048;
-
 fn default_small_model() -> String {
     String::from(DEFAULT_SMALL_MODEL)
-}
-
-const fn default_small_temperature() -> f64 {
-    DEFAULT_SMALL_TEMPERATURE
-}
-
-const fn default_small_max_tokens() -> u32 {
-    DEFAULT_SMALL_MAX_TOKENS
 }
 
 // ---------------------------------------------------------------------------
@@ -82,11 +54,13 @@ pub struct StageInferenceConfig {
     #[serde(default)]
     pub api_key: Option<ApiKey>,
 
-    /// Sampling temperature.
-    pub temperature: f64,
+    /// Sampling temperature. `None` uses the provider default.
+    #[serde(default)]
+    pub temperature: Option<f64>,
 
-    /// Maximum output tokens.
-    pub max_tokens: u32,
+    /// Maximum output tokens. `None` uses the provider default.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -134,8 +108,8 @@ fn default_extraction() -> StageInferenceConfig {
         model: default_extraction_model(),
         base_url: None,
         api_key: None,
-        temperature: default_extraction_temperature(),
-        max_tokens: default_extraction_max_tokens(),
+        temperature: None,
+        max_tokens: None,
     }
 }
 
@@ -145,8 +119,8 @@ fn default_triage() -> StageInferenceConfig {
         model: default_small_model(),
         base_url: None,
         api_key: None,
-        temperature: default_small_temperature(),
-        max_tokens: default_small_max_tokens(),
+        temperature: None,
+        max_tokens: None,
     }
 }
 
@@ -156,8 +130,8 @@ fn default_relation() -> StageInferenceConfig {
         model: default_small_model(),
         base_url: None,
         api_key: None,
-        temperature: default_small_temperature(),
-        max_tokens: default_small_max_tokens(),
+        temperature: None,
+        max_tokens: None,
     }
 }
 
@@ -174,23 +148,23 @@ mod tests {
         let config = default_extraction();
         assert_eq!(config.provider, ProviderKind::Ollama);
         assert_eq!(config.model, DEFAULT_EXTRACTION_MODEL);
-        assert!((config.temperature - DEFAULT_EXTRACTION_TEMPERATURE).abs() < f64::EPSILON);
-        assert_eq!(config.max_tokens, DEFAULT_EXTRACTION_MAX_TOKENS);
+        assert_eq!(config.temperature, None);
+        assert_eq!(config.max_tokens, None);
     }
 
     #[test]
     fn test_triage_defaults() {
         let config = default_triage();
         assert_eq!(config.model, DEFAULT_SMALL_MODEL);
-        assert!((config.temperature - DEFAULT_SMALL_TEMPERATURE).abs() < f64::EPSILON);
-        assert_eq!(config.max_tokens, DEFAULT_SMALL_MAX_TOKENS);
+        assert_eq!(config.temperature, None);
+        assert_eq!(config.max_tokens, None);
     }
 
     #[test]
     fn test_relation_defaults() {
         let config = default_relation();
         assert_eq!(config.model, DEFAULT_SMALL_MODEL);
-        assert!((config.temperature - DEFAULT_SMALL_TEMPERATURE).abs() < f64::EPSILON);
-        assert_eq!(config.max_tokens, DEFAULT_SMALL_MAX_TOKENS);
+        assert_eq!(config.temperature, None);
+        assert_eq!(config.max_tokens, None);
     }
 }
