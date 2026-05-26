@@ -9,11 +9,12 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::span_attrs;
+use tribal_domain::{ProviderKind, span_attrs};
 
 use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
     Message, ProviderIdentity, ResponseFormat, Role,
+    capabilities::{reconcile_temperature, resolve},
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
     http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
@@ -201,12 +202,14 @@ impl InferenceProvider for AnthropicInferenceProvider {
         );
 
         async {
-            if let Some(temp) = request.temperature {
-                tracing::Span::current().record(span_attrs::LLM_TEMPERATURE, f64::from(temp));
-            }
-
             let started = Instant::now();
             let body = build_request(&self.identity.model, &request);
+            // Record the effective (post-reconcile) temperature, which the
+            // capability layer may have dropped, so the span matches the wire.
+            if let Some(temperature) = body.temperature {
+                tracing::Span::current()
+                    .record(span_attrs::LLM_TEMPERATURE, f64::from(temperature));
+            }
             let url = format!("{}{MESSAGES_PATH}", self.base_url);
             let http_response = self
                 .client
@@ -292,7 +295,13 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> Anthropi
         })
         .collect();
 
+    // `max_tokens` is always required by the Anthropic protocol, so it is
+    // defaulted here rather than being capability-driven; only the sampling
+    // axis is reconciled.
     let max_tokens = request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
+
+    let caps = resolve(ProviderKind::Anthropic, model);
+    let temperature = reconcile_temperature(caps.sampling, request.temperature, model);
 
     let output_config = request
         .response_format
@@ -304,7 +313,7 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> Anthropi
         max_tokens,
         system: request.system.as_deref(),
         messages,
-        temperature: request.temperature,
+        temperature,
         output_config,
     }
 }
@@ -354,7 +363,7 @@ fn extract_text_content(content: &[AnthropicContentBlock]) -> Result<String, Inf
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{collections::BTreeSet, time::Duration};
 
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -471,6 +480,112 @@ mod tests {
 
         let provider = setup(&server);
         let _ = provider.complete(a_request("hello world")).await.unwrap();
+    }
+
+    // -- Capability reconciliation -------------------------------------------
+
+    #[tokio::test]
+    async fn test_chat_adaptive_model_drops_temperature_keeps_max_tokens() {
+        let server = MockServer::start().await;
+
+        // body_json matches the full body; the omission of `temperature`
+        // from the expected object asserts it was dropped, while `max_tokens`
+        // (protocol-required) is retained.
+        Mock::given(method("POST"))
+            .and(path(MESSAGES_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "claude-opus-4-7",
+                "max_tokens": DEFAULT_MAX_TOKENS,
+                "messages": [{"role": "user", "content": "test"}],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicInferenceProvider::new(
+            reqwest::Client::new(),
+            server.uri(),
+            "claude-opus-4-7",
+            "test-key",
+        );
+        let request = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: "test".to_owned(),
+            }],
+            temperature: Some(0.5),
+            max_tokens: None,
+            response_format: None,
+        };
+        let _ = provider.complete(request).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_chat_ordinary_model_sends_temperature() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(MESSAGES_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": DEFAULT_MAX_TOKENS,
+                "messages": [{"role": "user", "content": "test"}],
+                "temperature": 0.5,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let request = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: "test".to_owned(),
+            }],
+            temperature: Some(0.5),
+            max_tokens: None,
+            response_format: None,
+        };
+        let _ = provider.complete(request).await.unwrap();
+    }
+
+    #[test]
+    fn test_probe_and_ingest_agree_on_admissible_fields_for_adaptive_model() {
+        // Probe and ingest share `build_request`, so an adaptive identity
+        // yields the same admissible field set regardless of caller.
+        let probe = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: INFERENCE_PROBE_INPUT.to_owned(),
+            }],
+            temperature: Some(0.0),
+            max_tokens: Some(PROBE_MAX_TOKENS),
+            response_format: None,
+        };
+        let ingest = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: "real input".to_owned(),
+            }],
+            temperature: Some(0.5),
+            max_tokens: Some(512),
+            response_format: None,
+        };
+
+        let probe_body = serde_json::to_value(build_request("claude-opus-4-7", &probe)).unwrap();
+        let ingest_body = serde_json::to_value(build_request("claude-opus-4-7", &ingest)).unwrap();
+        let probe_keys: BTreeSet<&String> = probe_body.as_object().unwrap().keys().collect();
+        let ingest_keys: BTreeSet<&String> = ingest_body.as_object().unwrap().keys().collect();
+
+        assert_eq!(probe_keys, ingest_keys);
+        assert!(!probe_keys.contains(&"temperature".to_owned()));
+        assert!(probe_keys.contains(&"max_tokens".to_owned()));
     }
 
     // -- Auth headers --------------------------------------------------------

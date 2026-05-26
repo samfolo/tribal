@@ -2,9 +2,8 @@ use std::{fmt::Write, str::FromStr};
 
 use serde_json::Value;
 use sqlx::PgPool;
-use tribal_config::ProviderKind;
 use tribal_db::{PgTaskRepository, TaskRepository};
-use tribal_domain::{JobId, Task};
+use tribal_domain::{JobId, ProviderKind, Task};
 use tribal_inference::RequestClass;
 use tribal_test_utils::text::truncate;
 use wiremock::MockServer;

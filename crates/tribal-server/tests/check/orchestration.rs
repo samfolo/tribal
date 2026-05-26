@@ -2,7 +2,8 @@
 //! database-unreachable cascade.
 
 use tribal::{App, AppError};
-use tribal_config::{ProviderKind, TribalConfig};
+use tribal_config::TribalConfig;
+use tribal_domain::ProviderKind;
 use tribal_test_utils::{serial_lock, test_context};
 
 use super::common::{

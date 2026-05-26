@@ -4,11 +4,13 @@ use std::sync::Arc;
 
 use tribal_db::{
     NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
-    NewTriageSimilarItemDecision, PgPromptVersionRepository, PgTagRegistryRepository,
-    PromptVersionRepository, TagRegistryRepository,
+    NewTriageSimilarItemDecision, PgPromptVersionRepository, PgSystemFingerprintRepository,
+    PgTagRegistryRepository, PromptVersionRepository, SystemFingerprintRepository,
+    TagRegistryRepository,
 };
 use tribal_domain::{
-    ProjectId, PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry, span_attrs,
+    ProjectId, PromptVersion, PromptVersionId, SuggestedReference, SystemFingerprint,
+    TagRegistryEntry, span_attrs,
 };
 use tribal_inference::{EmbeddingProvider, Usage};
 
@@ -190,6 +192,57 @@ impl Worker {
                 stage: stage.into(),
                 context: "loading prompt version".into(),
                 source: e,
+            })
+    }
+
+    /// Loads the system fingerprint a job was created under, by content hash.
+    ///
+    /// The fingerprint records the effective sampling parameters the stage
+    /// threads into its request, so they match what the job was fingerprinted
+    /// under rather than the worker's current live config. Only the reconciled
+    /// sampling parameters are sourced here: they carry a post-reconcile shape
+    /// that must match the hash, whereas pass-through pipeline parameters
+    /// (search limits, candidate caps) need no reconciliation and are read from
+    /// live config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StageError::Database`] on pool or query failure, or when no
+    /// fingerprint matches the hash. The fingerprint is written before a job
+    /// is enqueued, so its absence is a consistency fault, not an expected
+    /// outcome.
+    pub(crate) async fn load_system_fingerprint(
+        &self,
+        stage: &str,
+        hash: &str,
+    ) -> Result<SystemFingerprint, StageError> {
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: stage.into(),
+                context: "acquiring connection for system fingerprint".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
+        PgSystemFingerprintRepository
+            .find_by_hash(&mut conn, hash)
+            .await
+            .map_err(|e| StageError::Database {
+                stage: stage.into(),
+                context: "loading system fingerprint".into(),
+                source: e,
+            })?
+            .ok_or_else(|| StageError::Database {
+                stage: stage.into(),
+                context: "system fingerprint not found".into(),
+                source: tribal_db::DbError::NotFound {
+                    entity: "system_fingerprint",
+                    id: hash.to_owned(),
+                },
             })
     }
 }

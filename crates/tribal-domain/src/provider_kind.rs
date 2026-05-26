@@ -7,29 +7,11 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::env::{ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY};
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Default base URL for local `Ollama` instances.
-pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
-
-/// Default base URL for the `Anthropic` cloud API.
-pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
-
-/// Default base URL for the `OpenAI` cloud API.
-pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
-
-// ---------------------------------------------------------------------------
-// ProviderKind
-// ---------------------------------------------------------------------------
-
 /// LLM provider.
 ///
 /// Used as the type for embedding and per-stage inference configuration,
-/// and as the key type for per-provider limits.
+/// as the key type for per-provider limits, and as the capability-resolution
+/// key (with the model string) for request-field admissibility.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
@@ -53,6 +35,15 @@ impl ProviderKind {
     /// will fail the build until it is added to [`Self::as_str`].
     pub const ALL: [Self; 3] = [Self::Ollama, Self::Anthropic, Self::OpenAi];
 
+    /// Default base URL for local `Ollama` instances.
+    pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
+
+    /// Default base URL for the `Anthropic` cloud API.
+    pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+
+    /// Default base URL for the `OpenAI` cloud API.
+    pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
+
     /// Canonical lowercase name.
     ///
     /// Matches the serde `rename_all = "lowercase"` form and is the single
@@ -70,7 +61,10 @@ impl ProviderKind {
     /// Returns `true` for cloud providers that require an API key.
     #[must_use]
     pub fn requires_api_key(self) -> bool {
-        matches!(self, Self::Anthropic | Self::OpenAi)
+        match self {
+            Self::Anthropic | Self::OpenAi => true,
+            Self::Ollama => false,
+        }
     }
 
     /// Returns `true` if this provider exposes an embedding API.
@@ -88,24 +82,9 @@ impl ProviderKind {
     #[must_use]
     pub fn default_base_url(self) -> &'static str {
         match self {
-            Self::Ollama => DEFAULT_OLLAMA_BASE_URL,
-            Self::Anthropic => DEFAULT_ANTHROPIC_BASE_URL,
-            Self::OpenAi => DEFAULT_OPENAI_BASE_URL,
-        }
-    }
-
-    /// Returns the standard environment variable name carrying this
-    /// provider's API key, if one applies.
-    ///
-    /// Consulted as a final fallback by the config loader when no
-    /// config-file `api_key` or `TRIBAL_*__API_KEY` env var is supplied.
-    /// Returns `None` for providers that do not require an API key.
-    #[must_use]
-    pub fn standard_env_var_name(self) -> Option<&'static str> {
-        match self {
-            Self::Ollama => None,
-            Self::Anthropic => Some(ENV_ANTHROPIC_API_KEY),
-            Self::OpenAi => Some(ENV_OPENAI_API_KEY),
+            Self::Ollama => Self::DEFAULT_OLLAMA_BASE_URL,
+            Self::Anthropic => Self::DEFAULT_ANTHROPIC_BASE_URL,
+            Self::OpenAi => Self::DEFAULT_OPENAI_BASE_URL,
         }
     }
 }
@@ -175,28 +154,15 @@ mod tests {
     fn test_default_base_url() {
         assert_eq!(
             ProviderKind::Ollama.default_base_url(),
-            DEFAULT_OLLAMA_BASE_URL,
+            ProviderKind::DEFAULT_OLLAMA_BASE_URL,
         );
         assert_eq!(
             ProviderKind::Anthropic.default_base_url(),
-            DEFAULT_ANTHROPIC_BASE_URL,
+            ProviderKind::DEFAULT_ANTHROPIC_BASE_URL,
         );
         assert_eq!(
             ProviderKind::OpenAi.default_base_url(),
-            DEFAULT_OPENAI_BASE_URL,
-        );
-    }
-
-    #[test]
-    fn test_standard_env_var_name() {
-        assert_eq!(ProviderKind::Ollama.standard_env_var_name(), None);
-        assert_eq!(
-            ProviderKind::Anthropic.standard_env_var_name(),
-            Some(ENV_ANTHROPIC_API_KEY),
-        );
-        assert_eq!(
-            ProviderKind::OpenAi.standard_env_var_name(),
-            Some(ENV_OPENAI_API_KEY),
+            ProviderKind::DEFAULT_OPENAI_BASE_URL,
         );
     }
 

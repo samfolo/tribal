@@ -8,13 +8,13 @@ use std::collections::HashMap;
 
 use sqlx::PgConnection;
 use tribal_common::sha256_hex;
-use tribal_config::TribalConfig;
+use tribal_config::{StageInferenceConfig, TribalConfig};
 use tribal_db::{DbError, NewSystemFingerprint};
 use tribal_domain::{
-    EmbeddingParameters, InferenceParameters, McpErrorCode, PipelineParameters, PromptVersion,
-    PromptVersionId, StageParameters,
+    EmbeddingParameters, InferenceParameters, McpErrorCode, PipelineParameters, PromptStage,
+    PromptVersion, PromptVersionId, StageParameters,
 };
-use tribal_inference::ProviderIdentity;
+use tribal_inference::{ProviderIdentity, resolve};
 
 use crate::{
     error::{IntoMcpError, McpToolError},
@@ -27,6 +27,11 @@ use crate::{
 
 pub(crate) const MISSING_PROMPT_VERSIONS: &str =
     "one or more active prompt versions could not be found in the database";
+
+/// Logged when a stage's configured `temperature` is ignored because its model
+/// samples adaptively. The drop happens here (config projection) rather than at
+/// the wire, so this is where the operator is told their value took no effect.
+const CONFIGURED_TEMPERATURE_IGNORED: &str = "ignoring configured temperature: stage model samples adaptively and rejects sampling parameters";
 
 // ---------------------------------------------------------------------------
 // PromptContentHashes
@@ -116,21 +121,17 @@ pub(crate) struct PipelineProviderIdentities {
 // ---------------------------------------------------------------------------
 
 /// Builds [`InferenceParameters`] from the resolved configuration.
+///
+/// Each stage's sampling parameters are resolved through the capability layer
+/// so the fingerprint records the effective post-reconcile shape — a stage
+/// whose model samples adaptively records `temperature` as unset, matching
+/// what the wire layer sends — rather than the raw configured value.
 #[must_use]
 pub fn build_inference_parameters(config: &TribalConfig) -> InferenceParameters {
     InferenceParameters {
-        extraction: StageParameters {
-            temperature: config.inference.extraction.temperature,
-            max_tokens: config.inference.extraction.max_tokens,
-        },
-        triage: StageParameters {
-            temperature: config.inference.triage.temperature,
-            max_tokens: config.inference.triage.max_tokens,
-        },
-        relation: StageParameters {
-            temperature: config.inference.relation.temperature,
-            max_tokens: config.inference.relation.max_tokens,
-        },
+        extraction: stage_parameters(PromptStage::Extraction, &config.inference.extraction),
+        triage: stage_parameters(PromptStage::Triage, &config.inference.triage),
+        relation: stage_parameters(PromptStage::Relation, &config.inference.relation),
         embedding: EmbeddingParameters {
             dimensions: config.embedding.dimensions,
         },
@@ -139,6 +140,38 @@ pub fn build_inference_parameters(config: &TribalConfig) -> InferenceParameters 
             triage_search_limit: config.worker.triage_search_limit,
             tag_similarity_threshold: config.worker.tag_similarity_threshold,
         },
+    }
+}
+
+/// Derives a stage's effective [`StageParameters`] by resolving its
+/// `(provider, model)` through the capability layer.
+///
+/// `temperature` is recorded as unset when the resolved target samples
+/// adaptively; a configured value that is thereby ignored is logged once
+/// (naming the stage), since this projection — not the wire layer — is where
+/// it is actually dropped. The `max_tokens` value is unaffected (only its wire
+/// field name varies, which does not change the recorded value).
+fn stage_parameters(stage: PromptStage, config: &StageInferenceConfig) -> StageParameters {
+    let temperature = if resolve(config.provider, &config.model)
+        .sampling
+        .accepts_overrides()
+    {
+        config.temperature
+    } else {
+        if let Some(temperature) = config.temperature {
+            tracing::warn!(
+                stage = %stage,
+                model = %config.model,
+                temperature,
+                "{CONFIGURED_TEMPERATURE_IGNORED}"
+            );
+        }
+        None
+    };
+
+    StageParameters {
+        temperature,
+        max_tokens: config.max_tokens,
     }
 }
 
@@ -317,6 +350,7 @@ pub(crate) async fn compute_and_upsert_fingerprint(
 #[cfg(test)]
 mod tests {
     use tribal_common::SHA256_HEX_LENGTH;
+    use tribal_domain::ProviderKind;
 
     use super::*;
 
@@ -355,16 +389,16 @@ mod tests {
     fn test_params() -> InferenceParameters {
         InferenceParameters {
             extraction: StageParameters {
-                temperature: 0.2,
-                max_tokens: 4096,
+                temperature: Some(0.2),
+                max_tokens: Some(4096),
             },
             triage: StageParameters {
-                temperature: 0.1,
-                max_tokens: 2048,
+                temperature: Some(0.1),
+                max_tokens: Some(2048),
             },
             relation: StageParameters {
-                temperature: 0.1,
-                max_tokens: 2048,
+                temperature: Some(0.1),
+                max_tokens: Some(2048),
             },
             embedding: EmbeddingParameters { dimensions: 768 },
             pipeline: PipelineParameters {
@@ -466,7 +500,7 @@ mod tests {
             &params,
         );
 
-        params.extraction.temperature = 0.9;
+        params.extraction.temperature = Some(0.9);
         let b = compute_fingerprint_hash(
             &test_hashes(),
             &test_provider_identities(),
@@ -479,12 +513,14 @@ mod tests {
 
     #[test]
     fn test_build_inference_parameters_from_config() {
+        // The default config uses an Ollama (sampling-configurable) model, so
+        // the configured sampling values pass through unchanged.
         let config = TribalConfig::default();
         let params = build_inference_parameters(&config);
 
-        assert!(
-            (params.extraction.temperature - config.inference.extraction.temperature).abs()
-                < f64::EPSILON
+        assert_eq!(
+            params.extraction.temperature,
+            config.inference.extraction.temperature
         );
         assert_eq!(
             params.extraction.max_tokens,
@@ -495,5 +531,23 @@ mod tests {
             params.pipeline.max_candidates_per_job,
             config.worker.max_candidates_per_job
         );
+    }
+
+    #[test]
+    fn test_build_inference_parameters_nulls_temperature_for_adaptive_model() {
+        // A configured temperature on an adaptive-sampling model is recorded
+        // as unset (the effective post-reconcile shape); the max_tokens value
+        // is retained.
+        let mut config = TribalConfig::default();
+        config.inference.extraction.provider = ProviderKind::OpenAi;
+        config.inference.extraction.model = "o3".into();
+        config.inference.extraction.api_key = Some("test-key".parse().unwrap());
+        config.inference.extraction.temperature = Some(0.7);
+        config.inference.extraction.max_tokens = Some(512);
+
+        let params = build_inference_parameters(&config);
+
+        assert_eq!(params.extraction.temperature, None);
+        assert_eq!(params.extraction.max_tokens, Some(512));
     }
 }

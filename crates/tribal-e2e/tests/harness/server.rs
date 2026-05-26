@@ -19,12 +19,12 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use tribal::{ServerHandle, start_server};
 use tribal_config::{
-    DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL, ProviderKind, TribalConfig, validate,
+    DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL, TribalConfig, validate,
 };
 use tribal_db::{
     NewProject, PgPrincipalRepository, PgProjectRepository, PrincipalRepository, ProjectRepository,
 };
-use tribal_domain::{JobOutcome, PrincipalId, Project};
+use tribal_domain::{JobOutcome, PrincipalId, Project, ProviderKind};
 use tribal_inference::RequestClass;
 use tribal_mcp::{
     AppState, AuthContext, AuthenticatedPrincipal, ConnectionRepositories, HandlerConfig,

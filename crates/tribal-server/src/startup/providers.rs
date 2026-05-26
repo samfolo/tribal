@@ -3,9 +3,9 @@
 use std::{sync::Arc, time::Duration};
 
 use tribal_config::{
-    ConfigError, Diagnostics, EmbeddingConfig, ProviderKind, StageInferenceConfig, TribalConfig,
-    ValidationError,
+    ConfigError, Diagnostics, EmbeddingConfig, StageInferenceConfig, TribalConfig, ValidationError,
 };
+use tribal_domain::ProviderKind;
 use tribal_inference::{
     AnthropicInferenceProvider, EmbeddingProvider, InferenceError, InferenceProvider,
     OllamaEmbeddingProvider, OllamaInferenceProvider, OpenAiEmbeddingProvider,
@@ -295,10 +295,7 @@ fn api_key_str(key: Option<&tribal_domain::ApiKey>) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use tribal_config::{
-        DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL,
-        InferenceConfig, StageInferenceConfig,
-    };
+    use tribal_config::{InferenceConfig, StageInferenceConfig};
     use tribal_inference::{OLLAMA_EMBED_PATH, OLLAMA_TAGS_PATH, OPENAI_CHAT_PATH};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -313,15 +310,15 @@ mod tests {
     fn test_resolve_base_url_uses_default_when_none() {
         assert_eq!(
             resolve_base_url(ProviderKind::Ollama, None),
-            DEFAULT_OLLAMA_BASE_URL,
+            ProviderKind::DEFAULT_OLLAMA_BASE_URL,
         );
         assert_eq!(
             resolve_base_url(ProviderKind::Anthropic, None),
-            DEFAULT_ANTHROPIC_BASE_URL,
+            ProviderKind::DEFAULT_ANTHROPIC_BASE_URL,
         );
         assert_eq!(
             resolve_base_url(ProviderKind::OpenAi, None),
-            DEFAULT_OPENAI_BASE_URL,
+            ProviderKind::DEFAULT_OPENAI_BASE_URL,
         );
     }
 

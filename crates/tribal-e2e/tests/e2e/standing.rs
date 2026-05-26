@@ -1,6 +1,5 @@
 use serde_json::json;
-use tribal_config::ProviderKind;
-use tribal_domain::{KnowledgeKind, RelationKind};
+use tribal_domain::{KnowledgeKind, ProviderKind, RelationKind};
 use tribal_test_utils::item;
 
 use crate::harness::{
