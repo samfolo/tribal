@@ -183,6 +183,9 @@ impl InferenceProvider for OllamaInferenceProvider {
         );
 
         async {
+            // Ollama does not reconcile sampling parameters, so the requested
+            // temperature is exactly what is sent — unlike the cloud providers,
+            // which record the post-reconcile value.
             if let Some(temp) = request.temperature {
                 tracing::Span::current().record(span_attrs::LLM_TEMPERATURE, f64::from(temp));
             }

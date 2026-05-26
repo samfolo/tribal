@@ -202,12 +202,14 @@ impl InferenceProvider for AnthropicInferenceProvider {
         );
 
         async {
-            if let Some(temp) = request.temperature {
-                tracing::Span::current().record(span_attrs::LLM_TEMPERATURE, f64::from(temp));
-            }
-
             let started = Instant::now();
             let body = build_request(&self.identity.model, &request);
+            // Record the effective (post-reconcile) temperature, which the
+            // capability layer may have dropped, so the span matches the wire.
+            if let Some(temperature) = body.temperature {
+                tracing::Span::current()
+                    .record(span_attrs::LLM_TEMPERATURE, f64::from(temperature));
+            }
             let url = format!("{}{MESSAGES_PATH}", self.base_url);
             let http_response = self
                 .client
@@ -361,7 +363,7 @@ fn extract_text_content(content: &[AnthropicContentBlock]) -> Result<String, Inf
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{collections::BTreeSet, time::Duration};
 
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -549,6 +551,41 @@ mod tests {
             response_format: None,
         };
         let _ = provider.complete(request).await.unwrap();
+    }
+
+    #[test]
+    fn test_probe_and_ingest_agree_on_admissible_fields_for_adaptive_model() {
+        // Probe and ingest share `build_request`, so an adaptive identity
+        // yields the same admissible field set regardless of caller.
+        let probe = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: INFERENCE_PROBE_INPUT.to_owned(),
+            }],
+            temperature: Some(0.0),
+            max_tokens: Some(PROBE_MAX_TOKENS),
+            response_format: None,
+        };
+        let ingest = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: "real input".to_owned(),
+            }],
+            temperature: Some(0.5),
+            max_tokens: Some(512),
+            response_format: None,
+        };
+
+        let probe_body = serde_json::to_value(build_request("claude-opus-4-7", &probe)).unwrap();
+        let ingest_body = serde_json::to_value(build_request("claude-opus-4-7", &ingest)).unwrap();
+        let probe_keys: BTreeSet<&String> = probe_body.as_object().unwrap().keys().collect();
+        let ingest_keys: BTreeSet<&String> = ingest_body.as_object().unwrap().keys().collect();
+
+        assert_eq!(probe_keys, ingest_keys);
+        assert!(!probe_keys.contains(&"temperature".to_owned()));
+        assert!(probe_keys.contains(&"max_tokens".to_owned()));
     }
 
     // -- Auth headers --------------------------------------------------------
