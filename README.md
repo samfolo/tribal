@@ -14,7 +14,7 @@ Tribal is not trying to remember everything. It preserves what remains useful af
 
 ## Quick start
 
-Install the binary using whichever path fits your environment. Pick one:
+Install Tribal using whichever path fits your environment. Pick one:
 
 **Homebrew (macOS)**
 
@@ -29,19 +29,24 @@ curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/tribal-memory/tribal/releases/latest/download/tribal-installer.sh | sh
 ```
 
-**Docker Compose (containerised)**
+**Docker Compose (bundled Postgres)**
 
 ```bash
-git clone https://github.com/tribal-memory/tribal && cd tribal && docker compose up
+tag=$(curl -fsSL https://api.github.com/repos/tribal-memory/tribal/releases/latest | jq -r .tag_name)
+mkdir tribal-docker && cd tribal-docker
+curl -fsSL "https://raw.githubusercontent.com/tribal-memory/tribal/$tag/docker-compose.yml" -o docker-compose.yml
+docker compose up
 ```
 
-Bootstrap from inside a git repository. This runs setup, registers the repository as a project, mints a bearer token, and prints the MCP config snippet your harness will need:
+The compose file pins the image to a specific release, so fetch it from a release tag rather than reusing an old checkout. The stack bundles its own Postgres and bootstraps itself on first start. To point a stage at a cloud provider instead of a local Ollama, configure `.env` before the first `docker compose up`; the [`installing-tribal` skill](https://github.com/tribal-memory/skills/tree/main/skills/installing-tribal) walks through it.
+
+For the Homebrew and shell-installer paths, bootstrap from inside a git repository. This runs setup, registers the repository as a project, mints a bearer token, and prints the MCP config snippet your harness will need:
 
 ```bash
 tribal bootstrap
 ```
 
-Install the skills that teach your agent harness how to use Tribal:
+Install the [skills](https://github.com/tribal-memory/skills) that teach your agent harness how to use Tribal:
 
 ```bash
 npx skills add tribal-memory/skills
@@ -93,13 +98,13 @@ tribal check --json
 
 The canonical MCP config for any compatible harness comes from `tribal mcp-config --json`. The shape stays consistent across transports, with the right discriminator and credentials for whichever transport you chose during bootstrap.
 
-For per-harness translations, ask your agent to invoke the [`installing-tribal` skill](#quick-start). It walks through wiring Tribal into your harness and produces the exact command to run.
+For per-harness translations, ask your agent to invoke the [`installing-tribal` skill](https://github.com/tribal-memory/skills/tree/main/skills/installing-tribal). It walks through wiring Tribal into your harness and produces the exact command to run.
 
 ## Using Tribal
 
 Day-to-day use happens through your harness. Once the MCP server is wired up, the harness can ingest knowledge, query it, traverse the graph, and rate retrieval quality.
 
-The `using-tribal` skill teaches your harness when and how to call each tool, and how to phrase ingests so they survive in the graph long after the work is done. It activates whenever the harness sees a signal that prior context might be relevant, or that something worth preserving has just happened.
+The [`using-tribal` skill](https://github.com/tribal-memory/skills/tree/main/skills/using-tribal) teaches your harness when and how to call each tool, and how to phrase ingests so they survive in the graph long after the work is done. It activates whenever the harness sees a signal that prior context might be relevant, or that something worth preserving has just happened.
 
 ## Recovery
 
@@ -121,7 +126,7 @@ To re-bootstrap cleanly without losing your knowledge graph, run `tribal bootstr
 
 When `tribal check` reports `ok: true` and a problem is still visible, the issue is usually network-level rather than Tribal itself. The most common pattern is a VPN or firewall sitting between the binary and the database; MCP errors look like Tribal is down even though the database is what's broken. Confirm connectivity to the configured database before assuming Tribal is at fault.
 
-For runtime failure modes that fall outside the check suite (worker death, transport-layer errors, prompt loading failures), the `using-tribal` skill bundles a reference covering each pattern. Install it via [the Quick start one-liner](#quick-start) if you haven't already.
+For runtime failure modes that fall outside the check suite (worker death, transport-layer errors, prompt loading failures), the [`using-tribal` skill](https://github.com/tribal-memory/skills/tree/main/skills/using-tribal) bundles a reference covering each pattern. Install it via [the Quick start one-liner](#quick-start) if you haven't already.
 
 ## Removing Tribal
 
