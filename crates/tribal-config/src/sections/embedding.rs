@@ -1,9 +1,7 @@
 //! Embedding provider configuration.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::ApiKey;
-
-use super::provider_kind::ProviderKind;
+use tribal_domain::{ApiKey, ProviderKind};
 
 // ---------------------------------------------------------------------------
 // Constants

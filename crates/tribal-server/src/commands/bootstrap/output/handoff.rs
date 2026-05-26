@@ -176,9 +176,9 @@ mod tests {
 
     use tribal_config::{
         Auth, CliOverrides, DEFAULT_BIND_ADDRESS, EmbeddingCliOverrides, InferenceCliOverrides,
-        InferenceStageCliOverrides, ProviderKind, TelemetryCliOverrides,
+        InferenceStageCliOverrides, TelemetryCliOverrides,
     };
-    use tribal_domain::Project;
+    use tribal_domain::{Project, ProviderKind};
     use tribal_test_utils::{
         a_project, assert_json_snapshot, assert_text_snapshot, render_to_string,
     };

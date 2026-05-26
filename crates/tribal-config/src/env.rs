@@ -5,6 +5,8 @@
 //! requires a string literal, so each constant has a companion test in
 //! the binary crate verifying it matches the attribute.
 
+use tribal_domain::ProviderKind;
+
 /// Prefix stripped from environment variables before mapping to config paths.
 pub const ENV_PREFIX: &str = "TRIBAL_";
 
@@ -59,9 +61,37 @@ pub fn env_var_for_path(config_path: &str) -> String {
     )
 }
 
+/// Returns the standard environment variable name carrying the given
+/// provider's API key, if one applies.
+///
+/// Consulted as a final fallback by the config loader when no
+/// config-file `api_key` or `TRIBAL_*__API_KEY` env var is supplied.
+/// Returns `None` for providers that do not require an API key.
+#[must_use]
+pub fn standard_env_var_name(kind: ProviderKind) -> Option<&'static str> {
+    match kind {
+        ProviderKind::Ollama => None,
+        ProviderKind::Anthropic => Some(ENV_ANTHROPIC_API_KEY),
+        ProviderKind::OpenAi => Some(ENV_OPENAI_API_KEY),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_standard_env_var_name() {
+        assert_eq!(standard_env_var_name(ProviderKind::Ollama), None);
+        assert_eq!(
+            standard_env_var_name(ProviderKind::Anthropic),
+            Some(ENV_ANTHROPIC_API_KEY),
+        );
+        assert_eq!(
+            standard_env_var_name(ProviderKind::OpenAi),
+            Some(ENV_OPENAI_API_KEY),
+        );
+    }
 
     #[test]
     fn test_env_var_for_path_uppercases_and_substitutes_separator() {

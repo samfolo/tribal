@@ -138,8 +138,9 @@ impl PersistableFlag {
 mod tests {
     use tribal_config::{
         CliOverrides, EmbeddingCliOverrides, InferenceCliOverrides, InferenceStageCliOverrides,
-        ProviderKind, TelemetryCliOverrides,
+        TelemetryCliOverrides,
     };
+    use tribal_domain::ProviderKind;
 
     use super::*;
 

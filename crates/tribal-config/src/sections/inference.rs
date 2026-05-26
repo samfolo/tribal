@@ -4,9 +4,7 @@
 //! configurable with its own provider, model, and parameters.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::ApiKey;
-
-use super::provider_kind::ProviderKind;
+use tribal_domain::{ApiKey, ProviderKind};
 
 // ---------------------------------------------------------------------------
 // Constants — extraction

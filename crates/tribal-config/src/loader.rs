@@ -8,13 +8,13 @@ use figment::{
     providers::{Env, Format, Serialized, Yaml},
 };
 use serde_json::Value as JsonValue;
-use tribal_domain::ApiKey;
+use tribal_domain::{ApiKey, ProviderKind};
 
 use crate::{
     CliOverrides, LoggingConfig, TelemetryConfig, TribalConfig,
-    env::{ENV_NESTED_SEPARATOR, ENV_PREFIX},
+    env::{ENV_NESTED_SEPARATOR, ENV_PREFIX, standard_env_var_name},
     error::ConfigError,
-    sections::{PromptSource, ProviderKind},
+    sections::PromptSource,
 };
 
 // ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ fn restore_temp_dir_fallback_flags(config: &mut TribalConfig) {
 
 /// Populates `api_key` for any cloud-provider stage where prior cascade
 /// layers left it `None`, using the env var returned by
-/// [`ProviderKind::standard_env_var_name`].
+/// [`standard_env_var_name`](crate::env::standard_env_var_name).
 ///
 /// The OS env lookup is opportunistic: a missing, non-Unicode, or
 /// malformed value (empty, whitespace-bearing) leaves `api_key` as
@@ -214,7 +214,7 @@ fn apply_standard_env_var_fallback(config: &mut TribalConfig) {
 fn apply_stage_fallback(api_key: &mut Option<ApiKey>, provider: ProviderKind) {
     if api_key.is_none()
         && provider.requires_api_key()
-        && let Some(name) = provider.standard_env_var_name()
+        && let Some(name) = standard_env_var_name(provider)
         && let Some(parsed) = std::env::var(name).ok().and_then(|v| v.parse().ok())
     {
         *api_key = Some(parsed);
@@ -243,7 +243,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ProviderKind, TransportKind,
+        ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, TransportKind,
         cli_overrides::{
             DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
             InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
@@ -748,7 +748,7 @@ inference:
             // Set every standard env var that any provider exposes, so the
             // sweep below covers each `ProviderKind` against the full set.
             for kind in ProviderKind::ALL {
-                if let Some(name) = kind.standard_env_var_name() {
+                if let Some(name) = standard_env_var_name(kind) {
                     jail.set_env(name, "should-be-ignored");
                 }
             }

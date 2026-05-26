@@ -28,6 +28,7 @@ pub use divergence::{
 pub use env::{
     ENV_ANTHROPIC_API_KEY, ENV_AUTH_TOKEN, ENV_CONFIG_PATH, ENV_NESTED_SEPARATOR,
     ENV_OPENAI_API_KEY, ENV_PREFIX, ENV_PROJECT_ID, ENV_PUBLIC_MCP_URL, env_var_for_path,
+    standard_env_var_name,
 };
 pub use error::ConfigError;
 pub use loader::load_config;
@@ -40,17 +41,16 @@ pub use sections::{
     Auth, AuthConfig, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX,
     CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX, CREDENTIALS_WRITE_FAILED_PREFIX,
     CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials, CredentialsPermissions, CredentialsReadError,
-    CredentialsWriteError, DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_BIND_ADDRESS,
-    DEFAULT_DISCOVERY_LIMIT, DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS,
-    DEFAULT_EMBEDDING_MODEL, DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT,
-    DEFAULT_EXPLORATION_MAX_DEPTH, DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OLLAMA_BASE_URL,
-    DEFAULT_OPENAI_BASE_URL, DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD,
+    CredentialsWriteError, DEFAULT_BIND_ADDRESS, DEFAULT_DISCOVERY_LIMIT,
+    DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT, DEFAULT_EXPLORATION_MAX_DEPTH,
+    DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD,
     DatabaseConfig, DiscoveryConfig, EmbeddingConfig, ExplorationConfig, FileRotation,
     InferenceConfig, LimitsConfig, LoadedCredentials, LogFormat, LogOutput, LoggingConfig,
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS, PromptSource,
-    PromptsConfig, ProviderKind, ProviderLimitsConfig, ServerConfig, SseConfig,
-    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
-    read_credentials, write_credentials,
+    PromptsConfig, ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig,
+    TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig, read_credentials,
+    write_credentials,
 };
 pub use validation::{
     ComputedFloor, ConfigPath, Diagnostics, Endpoint, FieldValue, Inclusion, NumericRange,

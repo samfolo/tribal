@@ -8,8 +8,9 @@
 //! [`crate::render_persisted_config`] writes during `tribal bootstrap`.
 
 use serde::Serialize;
+use tribal_domain::ProviderKind;
 
-use crate::sections::{ProviderKind, TransportKind};
+use crate::sections::TransportKind;
 
 // ---------------------------------------------------------------------------
 // Top-level overrides

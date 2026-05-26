@@ -93,7 +93,8 @@ impl SkipMask {
 
 #[cfg(test)]
 mod tests {
-    use tribal_config::{ConfigPath, ProviderKind};
+    use tribal_config::ConfigPath;
+    use tribal_domain::ProviderKind;
 
     use super::*;
 
