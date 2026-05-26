@@ -26,8 +26,10 @@ use crate::{
 const PROVIDER_NAME: &str = "openai";
 pub const CHAT_PATH: &str = "/v1/chat/completions";
 
-/// Logged when the output-token cap is sent as `max_completion_tokens`
-/// instead of `max_tokens`, which the resolved reasoning model rejects.
+/// Logged at debug when the output-token cap is sent as `max_completion_tokens`
+/// instead of `max_tokens`, which the resolved reasoning model rejects. A
+/// lossless, expected translation, so it is a debug detail rather than a
+/// warning.
 const TOKEN_CAP_RENAMED: &str =
     "sending output-token cap as max_completion_tokens: target model rejects max_tokens";
 
@@ -192,12 +194,14 @@ impl InferenceProvider for OpenAiInferenceProvider {
         );
 
         async {
-            if let Some(temp) = request.temperature {
-                tracing::Span::current().record(span_attrs::LLM_TEMPERATURE, f64::from(temp));
-            }
-
             let started = Instant::now();
             let body = build_request(&self.identity.model, &request);
+            // Record the effective (post-reconcile) temperature, which the
+            // capability layer may have dropped, so the span matches the wire.
+            if let Some(temperature) = body.temperature {
+                tracing::Span::current()
+                    .record(span_attrs::LLM_TEMPERATURE, f64::from(temperature));
+            }
             let url = format!("{}{CHAT_PATH}", self.base_url);
             let http_response = self
                 .client
@@ -309,7 +313,7 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OpenAiCh
         MaxOutputTokensParam::MaxTokens => (request.max_tokens, None),
         MaxOutputTokensParam::MaxCompletionTokens => {
             if let Some(max_completion_tokens) = request.max_tokens {
-                tracing::warn!(model, max_completion_tokens, "{TOKEN_CAP_RENAMED}");
+                tracing::debug!(model, max_completion_tokens, "{TOKEN_CAP_RENAMED}");
             }
             (None, request.max_tokens)
         }
@@ -344,7 +348,7 @@ fn map_response_format(format: &ResponseFormat) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{collections::BTreeSet, time::Duration};
 
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -694,8 +698,6 @@ mod tests {
 
     #[test]
     fn test_probe_and_ingest_agree_on_admissible_fields_for_reasoning_model() {
-        use std::collections::BTreeSet;
-
         // Probe and ingest share `build_request`, so a reasoning identity
         // yields the same admissible field set regardless of caller.
         let probe = CompletionRequest {

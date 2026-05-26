@@ -4,11 +4,9 @@
 //! [`ModelCapabilities`] describing how the endpoint handles two request
 //! axes that vary by model: whether it honours caller-supplied sampling
 //! parameters, and which field carries the maximum-output-token cap. It is
-//! the single source of capability truth: each provider's request builder
-//! consults it at the wire boundary (covering both ingest and the readiness
-//! probe, which share that path), and the system fingerprint derives its
-//! effective sampling parameters from it, so probe and ingest stay
-//! consistent by construction.
+//! the single source of capability truth — every site that shapes a request
+//! for the wire or records its effective shape reads this one resolver, so
+//! they agree by construction (ingest and the readiness probe included).
 //!
 //! The layer governs only what varies by model class. Provider-protocol-fixed
 //! shaping (a provider's always-required or fixed-name fields) stays in each
@@ -80,9 +78,8 @@ impl SamplingControl {
     /// Whether the endpoint honours caller-supplied sampling parameters.
     ///
     /// `false` means such parameters must be dropped before the request is
-    /// sent and recorded as unset in the fingerprint. The single source for
-    /// this mapping, so request reconciliation and fingerprint derivation
-    /// agree without re-deriving it.
+    /// sent and recorded as unset. The single source for the adaptive→drop
+    /// mapping, so every site that applies it agrees without re-deriving it.
     #[must_use]
     pub fn accepts_overrides(self) -> bool {
         match self {
@@ -178,18 +175,19 @@ pub fn resolve(provider: ProviderKind, model: &str) -> ModelCapabilities {
 // Reconciliation
 // ---------------------------------------------------------------------------
 
-/// Logged when a `temperature` is dropped because the resolved target samples
-/// adaptively. Names the field so the dropped value (attached as a structured
-/// field) is actionable in the logs.
+/// Logged at debug when a `temperature` is dropped because the resolved target
+/// samples adaptively. This is a mechanical wire-boundary step; the operator
+/// notice that a configured value will not take effect is surfaced separately,
+/// before the request is built.
 const TEMPERATURE_DROPPED: &str =
     "dropping temperature: target model samples adaptively and rejects caller sampling parameters";
 
 /// Reconciles a requested `temperature` against the target's sampling control,
-/// dropping it (with a warning naming the discarded value) when the target
-/// samples adaptively.
+/// dropping it (logging the discarded value at debug) when the target samples
+/// adaptively.
 ///
 /// `None` in yields `None` out, so the unset path is silent — only a present
-/// value that the target rejects triggers the warning. Shared by the cloud
+/// value that the target rejects emits a log line. Shared by the cloud
 /// providers' request builders; Ollama accepts sampling parameters and does
 /// not call this.
 pub(crate) fn reconcile_temperature(
@@ -201,7 +199,7 @@ pub(crate) fn reconcile_temperature(
         requested
     } else {
         if let Some(temperature) = requested {
-            tracing::warn!(model, temperature, "{TEMPERATURE_DROPPED}");
+            tracing::debug!(model, temperature, "{TEMPERATURE_DROPPED}");
         }
         None
     }
