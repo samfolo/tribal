@@ -9,11 +9,12 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::span_attrs;
+use tribal_domain::{ProviderKind, span_attrs};
 
 use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
     Message, ProviderIdentity, ResponseFormat, Role,
+    capabilities::{MaxOutputTokensParam, reconcile_temperature, resolve},
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
     http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
@@ -24,6 +25,13 @@ use crate::{
 
 const PROVIDER_NAME: &str = "openai";
 pub const CHAT_PATH: &str = "/v1/chat/completions";
+
+/// Logged at debug when the output-token cap is sent as `max_completion_tokens`
+/// instead of `max_tokens`, which the resolved reasoning model rejects. A
+/// lossless, expected translation, so it is a debug detail rather than a
+/// warning.
+const TOKEN_CAP_RENAMED: &str =
+    "sending output-token cap as max_completion_tokens: target model rejects max_tokens";
 
 // ---------------------------------------------------------------------------
 // Private serde types
@@ -39,6 +47,8 @@ struct OpenAiChatRequest<'a> {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<serde_json::Value>,
 }
@@ -184,12 +194,14 @@ impl InferenceProvider for OpenAiInferenceProvider {
         );
 
         async {
-            if let Some(temp) = request.temperature {
-                tracing::Span::current().record(span_attrs::LLM_TEMPERATURE, f64::from(temp));
-            }
-
             let started = Instant::now();
             let body = build_request(&self.identity.model, &request);
+            // Record the effective (post-reconcile) temperature, which the
+            // capability layer may have dropped, so the span matches the wire.
+            if let Some(temperature) = body.temperature {
+                tracing::Span::current()
+                    .record(span_attrs::LLM_TEMPERATURE, f64::from(temperature));
+            }
             let url = format!("{}{CHAT_PATH}", self.base_url);
             let http_response = self
                 .client
@@ -294,11 +306,25 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OpenAiCh
 
     let response_format = request.response_format.as_ref().map(map_response_format);
 
+    // -- Capability reconciliation --
+    let caps = resolve(ProviderKind::OpenAi, model);
+    let temperature = reconcile_temperature(caps.sampling, request.temperature, model);
+    let (max_tokens, max_completion_tokens) = match caps.max_output_tokens_param {
+        MaxOutputTokensParam::MaxTokens => (request.max_tokens, None),
+        MaxOutputTokensParam::MaxCompletionTokens => {
+            if let Some(max_completion_tokens) = request.max_tokens {
+                tracing::debug!(model, max_completion_tokens, "{TOKEN_CAP_RENAMED}");
+            }
+            (None, request.max_tokens)
+        }
+    };
+
     OpenAiChatRequest {
         model,
         messages,
-        temperature: request.temperature,
-        max_tokens: request.max_tokens,
+        temperature,
+        max_tokens,
+        max_completion_tokens,
         response_format,
     }
 }
@@ -322,7 +348,7 @@ fn map_response_format(format: &ResponseFormat) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{collections::BTreeSet, time::Duration};
 
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -611,6 +637,99 @@ mod tests {
             response_format: None,
         };
         let _ = provider.complete(request).await.unwrap();
+    }
+
+    // -- Capability reconciliation -------------------------------------------
+
+    #[tokio::test]
+    async fn test_chat_reasoning_model_drops_temperature_and_renames_cap() {
+        let server = MockServer::start().await;
+
+        // body_json matches the full body, so the absence of `temperature`
+        // and `max_tokens` is asserted by their omission from the expected
+        // object.
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "o3",
+                "messages": [{"role": "user", "content": "test"}],
+                "max_completion_tokens": 100,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider =
+            OpenAiInferenceProvider::new(reqwest::Client::new(), server.uri(), "o3", "test-key");
+        let request = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: "test".to_owned(),
+            }],
+            temperature: Some(0.7),
+            max_tokens: Some(100),
+            response_format: None,
+        };
+        let _ = provider.complete(request).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_probe_reasoning_model_drops_temperature_and_renames_cap() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "o3",
+                "messages": [{"role": "user", "content": INFERENCE_PROBE_INPUT}],
+                "max_completion_tokens": PROBE_MAX_TOKENS,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider =
+            OpenAiInferenceProvider::new(reqwest::Client::new(), server.uri(), "o3", "test-key");
+        provider.probe_model().await.unwrap();
+    }
+
+    #[test]
+    fn test_probe_and_ingest_agree_on_admissible_fields_for_reasoning_model() {
+        // Probe and ingest share `build_request`, so a reasoning identity
+        // yields the same admissible field set regardless of caller.
+        let probe = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: INFERENCE_PROBE_INPUT.to_owned(),
+            }],
+            temperature: Some(0.0),
+            max_tokens: Some(PROBE_MAX_TOKENS),
+            response_format: None,
+        };
+        let ingest = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: "real input".to_owned(),
+            }],
+            temperature: Some(0.5),
+            max_tokens: Some(512),
+            response_format: None,
+        };
+
+        let probe_body = serde_json::to_value(build_request("o3", &probe)).unwrap();
+        let ingest_body = serde_json::to_value(build_request("o3", &ingest)).unwrap();
+        let probe_keys: BTreeSet<&String> = probe_body.as_object().unwrap().keys().collect();
+        let ingest_keys: BTreeSet<&String> = ingest_body.as_object().unwrap().keys().collect();
+
+        assert_eq!(probe_keys, ingest_keys);
+        assert!(!probe_keys.contains(&"temperature".to_owned()));
+        assert!(!probe_keys.contains(&"max_tokens".to_owned()));
+        assert!(probe_keys.contains(&"max_completion_tokens".to_owned()));
     }
 
     // -- Input validation ----------------------------------------------------

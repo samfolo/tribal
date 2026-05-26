@@ -37,6 +37,15 @@ pub(crate) const SIMILARITY_RANGE: NumericRange = NumericRange {
     high: Endpoint::closed(1.0),
 };
 
+/// Permitted range for per-stage sampling temperature. A gross-error guard
+/// covering the widest provider maximum; per-model field admissibility is the
+/// capability layer's concern, and a provider rejects a value above its own
+/// tighter limit at request time.
+pub(crate) const TEMPERATURE_RANGE: NumericRange = NumericRange {
+    low: Endpoint::closed(0.0),
+    high: Endpoint::closed(2.0),
+};
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -58,6 +67,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_worker(config, &mut diags);
     validate_pool_sizing(config, &mut diags);
     validate_embedding(config, &mut diags);
+    validate_inference(config, &mut diags);
     validate_provider_limits(config, &mut diags);
     validate_api_key_presence(config, &mut diags);
     validate_discovery(config, &mut diags);
@@ -206,7 +216,22 @@ fn validate_auth(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 }
 
+/// Validates a model-ID field: it must be a non-empty token with no whitespace.
+fn validate_model_id(field: ConfigPath, model: &str, diags: &mut Diagnostics) {
+    if model.is_empty() {
+        diags.push(ValidationError::Empty { field });
+    } else if model.chars().any(char::is_whitespace) {
+        diags.push(ValidationError::ContainsWhitespace { field });
+    }
+}
+
 fn validate_embedding(config: &TribalConfig, diags: &mut Diagnostics) {
+    validate_model_id(
+        ConfigPath::from_static("embedding.model"),
+        &config.embedding.model,
+        diags,
+    );
+
     if config.embedding.dimensions == 0 {
         diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
             "embedding.dimensions",
@@ -240,6 +265,36 @@ fn validate_pool_sizing(config: &TribalConfig, diags: &mut Diagnostics) {
                 overhead: POOL_CONNECTION_OVERHEAD,
             },
         });
+    }
+}
+
+fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
+    // Range checks apply only to set values; `None` means provider default
+    // and is always admissible.
+    let stages = [
+        ("inference.extraction", &config.inference.extraction),
+        ("inference.triage", &config.inference.triage),
+        ("inference.relation", &config.inference.relation),
+    ];
+    for (prefix, cfg) in stages {
+        validate_model_id(ConfigPath::child(prefix, "model"), &cfg.model, diags);
+
+        if let Some(temperature) = cfg.temperature
+            && !TEMPERATURE_RANGE.contains(temperature)
+        {
+            diags.push(ValidationError::OutOfRange {
+                field: ConfigPath::child(prefix, "temperature"),
+                value: temperature,
+                range: TEMPERATURE_RANGE,
+            });
+        }
+
+        if cfg.max_tokens == Some(0) {
+            diags.push(ValidationError::must_be_positive(ConfigPath::child(
+                prefix,
+                "max_tokens",
+            )));
+        }
     }
 }
 
@@ -350,7 +405,7 @@ fn validate_discovery(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     let threshold = config.discovery.similarity_threshold;
-    if !(threshold > 0.0 && threshold <= 1.0) {
+    if !SIMILARITY_RANGE.contains(threshold) {
         diags.push(ValidationError::OutOfRange {
             field: ConfigPath::from_static("discovery.similarity_threshold"),
             value: threshold,
@@ -431,8 +486,10 @@ fn validate_telemetry(config: &TribalConfig, diags: &mut Diagnostics) {
 
 #[cfg(test)]
 mod tests {
+    use tribal_domain::ProviderKind;
+
     use super::*;
-    use crate::{DEFAULT_BIND_ADDRESS, ProviderKind};
+    use crate::DEFAULT_BIND_ADDRESS;
 
     fn valid_config() -> TribalConfig {
         TribalConfig::minimum_valid("postgres://localhost/tribal")
@@ -915,6 +972,92 @@ mod tests {
         let mut config = valid_config();
         config.discovery.similarity_threshold = 1.0;
         assert!(validate(&config).is_ok());
+    }
+
+    // -- inference ---------------------------------------------------------
+
+    #[test]
+    fn test_validate_accepts_unset_inference_sampling() {
+        // The default config leaves temperature and max_tokens unset.
+        assert!(validate(&valid_config()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_temperature_above_range() {
+        let mut config = valid_config();
+        config.inference.extraction.temperature = Some(2.5);
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::OutOfRange { field, .. }
+                if field.as_str() == "inference.extraction.temperature",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_negative_temperature() {
+        let mut config = valid_config();
+        config.inference.triage.temperature = Some(-0.1);
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::OutOfRange { field, .. }
+                if field.as_str() == "inference.triage.temperature",
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_temperature_at_bounds() {
+        let mut config = valid_config();
+        config.inference.extraction.temperature = Some(0.0);
+        config.inference.triage.temperature = Some(2.0);
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_max_tokens() {
+        let mut config = valid_config();
+        config.inference.relation.max_tokens = Some(0);
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "inference.relation.max_tokens",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_model() {
+        let mut config = valid_config();
+        config.inference.extraction.model = String::new();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::Empty { field } if field.as_str() == "inference.extraction.model",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_whitespace_model() {
+        let mut config = valid_config();
+        config.inference.triage.model = "gpt 4o".to_owned();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::ContainsWhitespace { field }
+                if field.as_str() == "inference.triage.model",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_embedding_model() {
+        let mut config = valid_config();
+        config.embedding.model = String::new();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::Empty { field } if field.as_str() == "embedding.model",
+        )));
     }
 
     // -- telemetry ---------------------------------------------------------

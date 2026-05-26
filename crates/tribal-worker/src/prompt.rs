@@ -1,5 +1,6 @@
 //! Prompt assembly for pipeline stages.
 
+mod common;
 mod extraction;
 mod legends;
 mod relation;
@@ -9,6 +10,7 @@ mod triage;
 mod validation;
 pub(crate) mod variables;
 
+pub(crate) use common::narrow_temperature;
 pub(crate) use extraction::{assemble_extraction_prompt, extraction_user_context};
 pub(crate) use legends::SimilarityBand;
 pub(crate) use relation::{

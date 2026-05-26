@@ -4,8 +4,9 @@
 //! its own [`Display`](std::fmt::Display) text (the catch-all echo).
 
 use tribal_config::{
-    ConfigError, Diagnostics, ProviderKind, ProviderStage, ValidationError, validate,
+    ConfigError, Diagnostics, ProviderStage, ValidationError, standard_env_var_name, validate,
 };
+use tribal_domain::ProviderKind;
 
 use super::{
     skip_rules::SkipMask,
@@ -50,6 +51,7 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         ValidationError::BindAddressMalformed { .. } => Some(MALFORMED_ADDRESS_HINT.into()),
         ValidationError::MissingApiKey { stage, provider } => Some(api_key_hint(*stage, *provider)),
         ValidationError::Empty { .. }
+        | ValidationError::ContainsWhitespace { .. }
         | ValidationError::BelowMin { .. }
         | ValidationError::AboveMax { .. }
         | ValidationError::OutOfRange { .. }
@@ -65,7 +67,7 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
 fn api_key_hint(stage: ProviderStage, provider: ProviderKind) -> String {
     let path = stage.api_key_path();
     let figment = path.env_var();
-    match provider.standard_env_var_name() {
+    match standard_env_var_name(provider) {
         Some(standard) => format!("set `{path}` or export `{figment}` / `{standard}`"),
         None => format!("set `{path}` or export `{figment}`"),
     }
@@ -104,7 +106,7 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
 
 #[cfg(test)]
 mod tests {
-    use tribal_config::{ConfigPath, Diagnostics, ProviderKind, ProviderStage, ValidationError};
+    use tribal_config::{ConfigPath, Diagnostics, ProviderStage, ValidationError};
 
     use super::*;
 

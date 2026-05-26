@@ -6,7 +6,8 @@
 //! the configured slice on [`CheckState::config`], identified by the
 //! [`ProviderStage`] dispatched in by the step pipeline.
 
-use tribal_config::{ProviderKind, ProviderStage, TribalConfig};
+use tribal_config::{ProviderStage, TribalConfig};
+use tribal_domain::ProviderKind;
 
 use super::{
     state::CheckState,

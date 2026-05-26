@@ -64,6 +64,7 @@ impl SkipMask {
                 ProviderStage::Relation => self.bits |= flag::PROVIDER_RELATION,
             },
             ValidationError::Empty { .. }
+            | ValidationError::ContainsWhitespace { .. }
             | ValidationError::BelowMin { .. }
             | ValidationError::AboveMax { .. }
             | ValidationError::OutOfRange { .. }
@@ -93,7 +94,8 @@ impl SkipMask {
 
 #[cfg(test)]
 mod tests {
-    use tribal_config::{ConfigPath, ProviderKind};
+    use tribal_config::ConfigPath;
+    use tribal_domain::ProviderKind;
 
     use super::*;
 

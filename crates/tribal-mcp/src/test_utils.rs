@@ -9,8 +9,8 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
-use tribal_config::{DEFAULT_OLLAMA_BASE_URL, ServerConfig, WorkerConfig};
-use tribal_domain::{PrincipalId, ProjectId, PromptVersionId};
+use tribal_config::{ServerConfig, WorkerConfig};
+use tribal_domain::{PrincipalId, ProjectId, PromptVersionId, ProviderKind};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderIdentity, ProviderRegistry};
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
@@ -284,7 +284,7 @@ fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
 fn test_embedding_key() -> tribal_inference::ProviderKey {
     tribal_inference::ProviderKey::new(
         TEST_PROVIDER_KIND,
-        DEFAULT_OLLAMA_BASE_URL,
+        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
         tribal_inference::RequestClass::Embedding,
     )
     .expect("test embedding key construction must not fail")
@@ -293,7 +293,7 @@ fn test_embedding_key() -> tribal_inference::ProviderKey {
 fn test_inference_key() -> tribal_inference::ProviderKey {
     tribal_inference::ProviderKey::new(
         TEST_PROVIDER_KIND,
-        DEFAULT_OLLAMA_BASE_URL,
+        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
         tribal_inference::RequestClass::Inference,
     )
     .expect("test inference key construction must not fail")

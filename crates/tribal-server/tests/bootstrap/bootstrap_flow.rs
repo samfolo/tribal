@@ -2,13 +2,12 @@
 
 use tribal_common::sha256_hex;
 use tribal_config::{
-    CliOverrides, ENV_OPENAI_API_KEY, EmbeddingCliOverrides, ProviderKind, TelemetryCliOverrides,
-    TransportKind,
+    CliOverrides, ENV_OPENAI_API_KEY, EmbeddingCliOverrides, TelemetryCliOverrides, TransportKind,
 };
 use tribal_db::{
     AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
 };
-use tribal_domain::LOCAL_PRINCIPAL_KEY;
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, ProviderKind};
 use tribal_test_utils::{serial_lock, test_context};
 
 use super::common::{

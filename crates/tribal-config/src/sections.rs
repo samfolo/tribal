@@ -10,7 +10,6 @@ mod inference;
 mod limits;
 mod logging;
 mod prompts;
-mod provider_kind;
 mod root;
 mod server;
 mod telemetry;
@@ -43,9 +42,6 @@ pub use inference::{InferenceConfig, StageInferenceConfig};
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
 pub use prompts::{PromptSource, PromptsConfig};
-pub use provider_kind::{
-    DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENAI_BASE_URL, ProviderKind,
-};
 pub use root::{TribalConfig, VERSION};
 pub use server::{DEFAULT_BIND_ADDRESS, MAX_LIFECYCLE_DURATION_MS, ServerConfig, SseConfig};
 pub use telemetry::{FileRotation, TelemetryConfig};

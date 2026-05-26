@@ -8,8 +8,8 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tribal_config::{Diagnostics, ProviderKind, ProviderStage, ValidationError};
-use tribal_domain::ProjectId;
+use tribal_config::{Diagnostics, ProviderStage, ValidationError, standard_env_var_name};
+use tribal_domain::{ProjectId, ProviderKind};
 
 use crate::error::FIRST_RUN_REQUIRED;
 
@@ -542,7 +542,7 @@ impl CheckRemediation {
             Self::FixProviderConfig { target, provider } => {
                 let api_key_path = target.api_key_path();
                 let base_url_path = target.section_path().extend("base_url");
-                let head = match provider.standard_env_var_name() {
+                let head = match standard_env_var_name(*provider) {
                     Some(standard) => {
                         let figment = api_key_path.env_var();
                         format!(

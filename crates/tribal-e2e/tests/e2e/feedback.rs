@@ -1,5 +1,5 @@
 use serde_json::json;
-use tribal_config::ProviderKind;
+use tribal_domain::ProviderKind;
 
 use crate::harness::{
     assertions::assert_success,

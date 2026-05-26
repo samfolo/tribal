@@ -230,8 +230,10 @@ fn render<T: Serialize>(view: &T) -> Result<String, ConfigError> {
 
 #[cfg(test)]
 mod tests {
+    use tribal_domain::ProviderKind;
+
     use super::*;
-    use crate::{ProviderKind, ServerCliOverrides, sections::TransportKind};
+    use crate::{ServerCliOverrides, sections::TransportKind};
 
     /// Parses the YAML body following the header.
     fn parse_yaml(content: &str) -> serde_yaml::Value {

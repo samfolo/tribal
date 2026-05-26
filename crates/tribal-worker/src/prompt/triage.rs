@@ -3,14 +3,17 @@
 use schemars::schema_for;
 use serde::Serialize;
 use tribal_db::SemanticSearchResult;
-use tribal_domain::{Candidate, KnowledgeItemId, KnowledgeKind, TagRegistryEntry};
+use tribal_domain::{Candidate, KnowledgeItemId, KnowledgeKind, StageParameters, TagRegistryEntry};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
 use super::{legends::SimilarityBand, renderer::PromptRenderer};
 use crate::{
     error::StageError,
     parsing::TriageClassification,
-    prompt::variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS, triage_system_context},
+    prompt::{
+        narrow_temperature,
+        variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS, triage_system_context},
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -86,6 +89,7 @@ pub(crate) fn assemble_triage_prompt(
     candidate: &Candidate,
     similar_items: &[SimilarItemContext],
     tag_registry: &[TagRegistryEntry],
+    params: &StageParameters,
 ) -> Result<CompletionRequest, StageError> {
     let schema = schema_for!(TriageClassification);
     let schema_value =
@@ -110,8 +114,8 @@ pub(crate) fn assemble_triage_prompt(
             role: Role::User,
             content: rendered_user,
         }],
-        temperature: None,
-        max_tokens: None,
+        temperature: narrow_temperature(params.temperature),
+        max_tokens: params.max_tokens,
         response_format: Some(ResponseFormat::JsonSchema {
             schema: schema_value,
         }),
@@ -146,6 +150,7 @@ mod tests {
             &test_candidate(),
             &[],
             &[],
+            &StageParameters::default(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -160,6 +165,7 @@ mod tests {
             &test_candidate(),
             &[],
             &[],
+            &StageParameters::default(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -178,6 +184,7 @@ mod tests {
             &test_candidate(),
             &[],
             &tags,
+            &StageParameters::default(),
         );
         assert!(result.is_ok());
         let request = result.unwrap();
@@ -197,6 +204,7 @@ mod tests {
             &test_candidate(),
             &[],
             &[],
+            &StageParameters::default(),
         );
         assert!(result.is_ok());
         let request = result.unwrap();
@@ -217,6 +225,7 @@ mod tests {
             &test_candidate(),
             &[],
             &[],
+            &StageParameters::default(),
         );
         assert!(result.is_ok());
         let request = result.unwrap();
@@ -245,6 +254,7 @@ mod tests {
             &test_candidate(),
             &[similar],
             &[],
+            &StageParameters::default(),
         );
         let request = result.unwrap();
         assert!(
@@ -262,6 +272,7 @@ mod tests {
             &test_candidate(),
             &[],
             &[],
+            &StageParameters::default(),
         );
         let request = result.unwrap();
         let system = request.system.unwrap();
@@ -273,5 +284,24 @@ mod tests {
             system.contains("very high"),
             "legend should contain bands: {system}",
         );
+    }
+
+    #[test]
+    fn test_stage_parameters_reach_request() {
+        let params = StageParameters {
+            temperature: Some(0.5),
+            max_tokens: Some(256),
+        };
+        let request = assemble_triage_prompt(
+            "system",
+            "{{ candidate.content }}",
+            &test_candidate(),
+            &[],
+            &[],
+            &params,
+        )
+        .unwrap();
+        assert_eq!(request.temperature, Some(0.5));
+        assert_eq!(request.max_tokens, Some(256));
     }
 }

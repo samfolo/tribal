@@ -2,15 +2,20 @@
 
 use schemars::schema_for;
 use serde::Serialize;
-use tribal_domain::{Candidate, KnowledgeItemId, RelationHint, RelationSuggestion};
+use tribal_domain::{
+    Candidate, KnowledgeItemId, RelationHint, RelationSuggestion, StageParameters,
+};
 use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
 
 use super::renderer::PromptRenderer;
 use crate::{
     error::StageError,
     parsing::RelationOutput,
-    prompt::variables::{
-        VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS, relation_system_context,
+    prompt::{
+        narrow_temperature,
+        variables::{
+            VAR_CANDIDATES, VAR_RELATION_HINTS, VAR_SIMILAR_ITEM_DECISIONS, relation_system_context,
+        },
     },
 };
 
@@ -106,6 +111,7 @@ pub(crate) fn assemble_relation_prompt(
     system_template: &str,
     user_template: &str,
     context: &RelationPromptContext<'_>,
+    params: &StageParameters,
 ) -> Result<CompletionRequest, StageError> {
     let schema = schema_for!(RelationOutput);
     let schema_value =
@@ -130,8 +136,8 @@ pub(crate) fn assemble_relation_prompt(
             role: Role::User,
             content: rendered_user,
         }],
-        temperature: None,
-        max_tokens: None,
+        temperature: narrow_temperature(params.temperature),
+        max_tokens: params.max_tokens,
         response_format: Some(ResponseFormat::JsonSchema {
             schema: schema_value,
         }),
@@ -236,6 +242,7 @@ mod tests {
             "{{ invalid | nonexistent_filter }}",
             "{{ candidates }}",
             &ctx,
+            &StageParameters::default(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -246,7 +253,12 @@ mod tests {
     fn test_invalid_user_template_returns_template_render_error() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let result = assemble_relation_prompt("system", "{{ invalid | nonexistent_filter }}", &ctx);
+        let result = assemble_relation_prompt(
+            "system",
+            "{{ invalid | nonexistent_filter }}",
+            &ctx,
+            &StageParameters::default(),
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.to_error_kind(), TaskErrorKind::InternalError);
@@ -264,7 +276,13 @@ mod tests {
             " — {{ c.candidate.content }}\n",
             "{% endfor %}",
         );
-        let request = assemble_relation_prompt(system_template, user_template, &ctx).unwrap();
+        let request = assemble_relation_prompt(
+            system_template,
+            user_template,
+            &ctx,
+            &StageParameters::default(),
+        )
+        .unwrap();
         let user_content = &request.messages[0].content;
 
         assert!(
@@ -298,7 +316,9 @@ mod tests {
             "{{ h.source_index }} -> {{ h.target_index }}: {{ h.hint_type }}\n",
             "{% endfor %}",
         );
-        let request = assemble_relation_prompt("system", user_template, &ctx).unwrap();
+        let request =
+            assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
+                .unwrap();
         let user_content = &request.messages[0].content;
 
         assert!(
@@ -317,7 +337,9 @@ mod tests {
             "({{ d.similarity_score }}) {{ d.suggested_relation }} — {{ d.justification }}\n",
             "{% endfor %}",
         );
-        let request = assemble_relation_prompt("system", user_template, &ctx).unwrap();
+        let request =
+            assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
+                .unwrap();
         let user_content = &request.messages[0].content;
 
         assert!(
@@ -346,7 +368,8 @@ mod tests {
     fn test_response_format_is_json_schema() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let request = assemble_relation_prompt("system", "user", &ctx).unwrap();
+        let request =
+            assemble_relation_prompt("system", "user", &ctx, &StageParameters::default()).unwrap();
         assert!(
             matches!(
                 request.response_format,
@@ -360,8 +383,13 @@ mod tests {
     fn test_system_prompt_contains_similarity_legend() {
         let data = rich_test_data();
         let ctx = rich_context(&data);
-        let request =
-            assemble_relation_prompt("{{ similarity_score_legend }}", "user", &ctx).unwrap();
+        let request = assemble_relation_prompt(
+            "{{ similarity_score_legend }}",
+            "user",
+            &ctx,
+            &StageParameters::default(),
+        )
+        .unwrap();
         let system = request.system.unwrap();
         assert!(
             system.contains("low"),
@@ -382,7 +410,9 @@ mod tests {
             "{% for h in relation_hints %}{{ h.hint_type }}\n{% endfor %}",
             "{% for d in similar_item_decisions %}{{ d.justification }}\n{% endfor %}",
         );
-        let request = assemble_relation_prompt("system", user_template, &ctx).unwrap();
+        let request =
+            assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
+                .unwrap();
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0].role, Role::User);
 
@@ -399,5 +429,18 @@ mod tests {
             content.contains("Both discuss Rust memory guarantees"),
             "should contain decision justification: {content}",
         );
+    }
+
+    #[test]
+    fn test_stage_parameters_reach_request() {
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
+        let params = StageParameters {
+            temperature: Some(0.5),
+            max_tokens: Some(256),
+        };
+        let request = assemble_relation_prompt("system", "user", &ctx, &params).unwrap();
+        assert_eq!(request.temperature, Some(0.5));
+        assert_eq!(request.max_tokens, Some(256));
     }
 }

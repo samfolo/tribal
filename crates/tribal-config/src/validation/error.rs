@@ -6,7 +6,9 @@
 
 use std::{borrow::Cow, fmt};
 
-use crate::{env::env_var_for_path, sections::ProviderKind};
+use tribal_domain::ProviderKind;
+
+use crate::env::env_var_for_path;
 
 // ---------------------------------------------------------------------------
 // ConfigPath
@@ -128,6 +130,26 @@ impl Endpoint {
             inclusion: Inclusion::Closed,
         }
     }
+
+    /// Whether `value` satisfies this endpoint acting as a lower bound —
+    /// strictly above when open, at-or-above when closed.
+    #[must_use]
+    pub fn admits_above(self, value: f64) -> bool {
+        match self.inclusion {
+            Inclusion::Open => value > self.value,
+            Inclusion::Closed => value >= self.value,
+        }
+    }
+
+    /// Whether `value` satisfies this endpoint acting as an upper bound —
+    /// strictly below when open, at-or-below when closed.
+    #[must_use]
+    pub fn admits_below(self, value: f64) -> bool {
+        match self.inclusion {
+            Inclusion::Open => value < self.value,
+            Inclusion::Closed => value <= self.value,
+        }
+    }
 }
 
 /// Whether an [`Endpoint`] includes its boundary value.
@@ -142,6 +164,19 @@ pub enum Inclusion {
 pub struct NumericRange {
     pub low: Endpoint,
     pub high: Endpoint,
+}
+
+impl NumericRange {
+    /// Returns whether `value` lies within the range, honouring each
+    /// endpoint's inclusivity independently.
+    ///
+    /// Lets a validator share a single source of truth for both the bound
+    /// values and their open/closed semantics, rather than restating them as
+    /// a literal comparison alongside the rendered range.
+    #[must_use]
+    pub fn contains(self, value: f64) -> bool {
+        self.low.admits_above(value) && self.high.admits_below(value)
+    }
 }
 
 impl fmt::Display for NumericRange {
@@ -228,6 +263,8 @@ pub enum ValidationError {
     // -- Structural -----------------------------------------------------
     /// Field must not be empty (e.g. `database.url`).
     Empty { field: ConfigPath },
+    /// Field must be a single token but contains whitespace (e.g. a model ID).
+    ContainsWhitespace { field: ConfigPath },
     /// Field's integer value is below the minimum.  `min == 1` renders
     /// as "must be greater than zero".
     BelowMin {
@@ -297,6 +334,9 @@ impl fmt::Display for ValidationError {
         match self {
             // -- Structural -------------------------------------------------
             Self::Empty { field } => write!(f, "{field} must not be empty"),
+            Self::ContainsWhitespace { field } => {
+                write!(f, "{field} must not contain whitespace")
+            }
 
             Self::BelowMin {
                 field,
@@ -385,6 +425,55 @@ impl fmt::Display for ValidationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- NumericRange::contains ---------------------------------------------
+
+    #[test]
+    fn test_contains_closed_closed() {
+        let range = NumericRange {
+            low: Endpoint::closed(0.0),
+            high: Endpoint::closed(2.0),
+        };
+        assert!(range.contains(0.0), "closed low admits its boundary");
+        assert!(range.contains(2.0), "closed high admits its boundary");
+        assert!(range.contains(1.0));
+        assert!(!range.contains(-0.1));
+        assert!(!range.contains(2.1));
+    }
+
+    #[test]
+    fn test_contains_open_closed() {
+        let range = NumericRange {
+            low: Endpoint::open(0.0),
+            high: Endpoint::closed(1.0),
+        };
+        assert!(!range.contains(0.0), "open low excludes its boundary");
+        assert!(range.contains(1.0), "closed high admits its boundary");
+        assert!(range.contains(0.5));
+        assert!(!range.contains(1.1));
+    }
+
+    #[test]
+    fn test_contains_closed_open() {
+        let range = NumericRange {
+            low: Endpoint::closed(0.0),
+            high: Endpoint::open(1.0),
+        };
+        assert!(range.contains(0.0), "closed low admits its boundary");
+        assert!(!range.contains(1.0), "open high excludes its boundary");
+        assert!(range.contains(0.5));
+    }
+
+    #[test]
+    fn test_contains_open_open() {
+        let range = NumericRange {
+            low: Endpoint::open(0.0),
+            high: Endpoint::open(2.0),
+        };
+        assert!(!range.contains(0.0));
+        assert!(!range.contains(2.0));
+        assert!(range.contains(1.0));
+    }
 
     // -- ConfigPath ---------------------------------------------------------
 
@@ -542,6 +631,17 @@ mod tests {
             field: ConfigPath::from_static("database.url"),
         };
         assert_eq!(err.to_string(), "database.url must not be empty");
+    }
+
+    #[test]
+    fn test_display_contains_whitespace() {
+        let err = ValidationError::ContainsWhitespace {
+            field: ConfigPath::from_static("inference.extraction.model"),
+        };
+        assert_eq!(
+            err.to_string(),
+            "inference.extraction.model must not contain whitespace"
+        );
     }
 
     #[test]
