@@ -181,8 +181,7 @@ pub fn resolve(provider: ProviderKind, model: &str) -> ModelCapabilities {
 /// Logged when a configured `temperature` is dropped because the resolved
 /// target samples adaptively. Names the field so the dropped value (attached
 /// as a structured field) is actionable in the logs.
-const TEMPERATURE_DROPPED: &str =
-    "dropping configured temperature: target model samples adaptively and rejects caller sampling parameters";
+const TEMPERATURE_DROPPED: &str = "dropping configured temperature: target model samples adaptively and rejects caller sampling parameters";
 
 /// Reconciles a requested `temperature` against the target's sampling control,
 /// dropping it (with a warning naming the discarded value) when the target

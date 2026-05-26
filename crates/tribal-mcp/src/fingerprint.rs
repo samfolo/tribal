@@ -145,7 +145,10 @@ pub fn build_inference_parameters(config: &TribalConfig) -> InferenceParameters 
 /// adaptively; the `max_tokens` value is unaffected (only its wire field name
 /// varies, which does not change the recorded value).
 fn stage_parameters(stage: &StageInferenceConfig) -> StageParameters {
-    let temperature = if resolve(stage.provider, &stage.model).sampling.accepts_overrides() {
+    let temperature = if resolve(stage.provider, &stage.model)
+        .sampling
+        .accepts_overrides()
+    {
         stage.temperature
     } else {
         None
