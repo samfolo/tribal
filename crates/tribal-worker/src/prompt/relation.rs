@@ -430,4 +430,17 @@ mod tests {
             "should contain decision justification: {content}",
         );
     }
+
+    #[test]
+    fn test_stage_parameters_reach_request() {
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
+        let params = StageParameters {
+            temperature: Some(0.5),
+            max_tokens: Some(256),
+        };
+        let request = assemble_relation_prompt("system", "user", &ctx, &params).unwrap();
+        assert_eq!(request.temperature, Some(0.5));
+        assert_eq!(request.max_tokens, Some(256));
+    }
 }

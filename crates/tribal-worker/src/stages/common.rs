@@ -199,7 +199,11 @@ impl Worker {
     ///
     /// The fingerprint records the effective sampling parameters the stage
     /// threads into its request, so they match what the job was fingerprinted
-    /// under rather than the worker's current live config.
+    /// under rather than the worker's current live config. Only the reconciled
+    /// sampling parameters are sourced here: they carry a post-reconcile shape
+    /// that must match the hash, whereas pass-through pipeline parameters
+    /// (search limits, candidate caps) need no reconciliation and are read from
+    /// live config.
     ///
     /// # Errors
     ///

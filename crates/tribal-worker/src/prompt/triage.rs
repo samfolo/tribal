@@ -285,4 +285,23 @@ mod tests {
             "legend should contain bands: {system}",
         );
     }
+
+    #[test]
+    fn test_stage_parameters_reach_request() {
+        let params = StageParameters {
+            temperature: Some(0.5),
+            max_tokens: Some(256),
+        };
+        let request = assemble_triage_prompt(
+            "system",
+            "{{ candidate.content }}",
+            &test_candidate(),
+            &[],
+            &[],
+            &params,
+        )
+        .unwrap();
+        assert_eq!(request.temperature, Some(0.5));
+        assert_eq!(request.max_tokens, Some(256));
+    }
 }
