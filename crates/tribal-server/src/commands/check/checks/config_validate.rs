@@ -51,6 +51,7 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         ValidationError::BindAddressMalformed { .. } => Some(MALFORMED_ADDRESS_HINT.into()),
         ValidationError::MissingApiKey { stage, provider } => Some(api_key_hint(*stage, *provider)),
         ValidationError::Empty { .. }
+        | ValidationError::ContainsWhitespace { .. }
         | ValidationError::BelowMin { .. }
         | ValidationError::AboveMax { .. }
         | ValidationError::OutOfRange { .. }

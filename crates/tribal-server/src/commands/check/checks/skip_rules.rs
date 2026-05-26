@@ -64,6 +64,7 @@ impl SkipMask {
                 ProviderStage::Relation => self.bits |= flag::PROVIDER_RELATION,
             },
             ValidationError::Empty { .. }
+            | ValidationError::ContainsWhitespace { .. }
             | ValidationError::BelowMin { .. }
             | ValidationError::AboveMax { .. }
             | ValidationError::OutOfRange { .. }
