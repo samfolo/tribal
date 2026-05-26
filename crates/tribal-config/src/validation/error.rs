@@ -263,6 +263,8 @@ pub enum ValidationError {
     // -- Structural -----------------------------------------------------
     /// Field must not be empty (e.g. `database.url`).
     Empty { field: ConfigPath },
+    /// Field must be a single token but contains whitespace (e.g. a model ID).
+    ContainsWhitespace { field: ConfigPath },
     /// Field's integer value is below the minimum.  `min == 1` renders
     /// as "must be greater than zero".
     BelowMin {
@@ -332,6 +334,9 @@ impl fmt::Display for ValidationError {
         match self {
             // -- Structural -------------------------------------------------
             Self::Empty { field } => write!(f, "{field} must not be empty"),
+            Self::ContainsWhitespace { field } => {
+                write!(f, "{field} must not contain whitespace")
+            }
 
             Self::BelowMin {
                 field,
@@ -626,6 +631,17 @@ mod tests {
             field: ConfigPath::from_static("database.url"),
         };
         assert_eq!(err.to_string(), "database.url must not be empty");
+    }
+
+    #[test]
+    fn test_display_contains_whitespace() {
+        let err = ValidationError::ContainsWhitespace {
+            field: ConfigPath::from_static("inference.extraction.model"),
+        };
+        assert_eq!(
+            err.to_string(),
+            "inference.extraction.model must not contain whitespace"
+        );
     }
 
     #[test]

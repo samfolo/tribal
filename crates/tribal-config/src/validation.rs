@@ -216,7 +216,22 @@ fn validate_auth(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 }
 
+/// Validates a model-ID field: it must be a non-empty token with no whitespace.
+fn validate_model_id(field: ConfigPath, model: &str, diags: &mut Diagnostics) {
+    if model.is_empty() {
+        diags.push(ValidationError::Empty { field });
+    } else if model.chars().any(char::is_whitespace) {
+        diags.push(ValidationError::ContainsWhitespace { field });
+    }
+}
+
 fn validate_embedding(config: &TribalConfig, diags: &mut Diagnostics) {
+    validate_model_id(
+        ConfigPath::from_static("embedding.model"),
+        &config.embedding.model,
+        diags,
+    );
+
     if config.embedding.dimensions == 0 {
         diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
             "embedding.dimensions",
@@ -262,6 +277,8 @@ fn validate_inference(config: &TribalConfig, diags: &mut Diagnostics) {
         ("inference.relation", &config.inference.relation),
     ];
     for (prefix, cfg) in stages {
+        validate_model_id(ConfigPath::child(prefix, "model"), &cfg.model, diags);
+
         if let Some(temperature) = cfg.temperature
             && !TEMPERATURE_RANGE.contains(temperature)
         {
@@ -1006,6 +1023,40 @@ mod tests {
             d,
             ValidationError::BelowMin { field, min: 1, .. }
                 if field.as_str() == "inference.relation.max_tokens",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_model() {
+        let mut config = valid_config();
+        config.inference.extraction.model = String::new();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::Empty { field } if field.as_str() == "inference.extraction.model",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_whitespace_model() {
+        let mut config = valid_config();
+        config.inference.triage.model = "gpt 4o".to_owned();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::ContainsWhitespace { field }
+                if field.as_str() == "inference.triage.model",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_embedding_model() {
+        let mut config = valid_config();
+        config.embedding.model = String::new();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::Empty { field } if field.as_str() == "embedding.model",
         )));
     }
 
