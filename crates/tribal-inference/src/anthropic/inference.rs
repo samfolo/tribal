@@ -9,11 +9,12 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::span_attrs;
+use tribal_domain::{ProviderKind, span_attrs};
 
 use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
     Message, ProviderIdentity, ResponseFormat, Role,
+    capabilities::{reconcile_temperature, resolve},
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
     http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
@@ -292,7 +293,13 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> Anthropi
         })
         .collect();
 
+    // `max_tokens` is always required by the Anthropic protocol, so it is
+    // defaulted here rather than being capability-driven; only the sampling
+    // axis is reconciled.
     let max_tokens = request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
+
+    let caps = resolve(ProviderKind::Anthropic, model);
+    let temperature = reconcile_temperature(caps.sampling, request.temperature, model);
 
     let output_config = request
         .response_format
@@ -304,7 +311,7 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> Anthropi
         max_tokens,
         system: request.system.as_deref(),
         messages,
-        temperature: request.temperature,
+        temperature,
         output_config,
     }
 }
@@ -471,6 +478,77 @@ mod tests {
 
         let provider = setup(&server);
         let _ = provider.complete(a_request("hello world")).await.unwrap();
+    }
+
+    // -- Capability reconciliation -------------------------------------------
+
+    #[tokio::test]
+    async fn test_chat_adaptive_model_drops_temperature_keeps_max_tokens() {
+        let server = MockServer::start().await;
+
+        // body_json matches the full body; the omission of `temperature`
+        // from the expected object asserts it was dropped, while `max_tokens`
+        // (protocol-required) is retained.
+        Mock::given(method("POST"))
+            .and(path(MESSAGES_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "claude-opus-4-7",
+                "max_tokens": DEFAULT_MAX_TOKENS,
+                "messages": [{"role": "user", "content": "test"}],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicInferenceProvider::new(
+            reqwest::Client::new(),
+            server.uri(),
+            "claude-opus-4-7",
+            "test-key",
+        );
+        let request = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: "test".to_owned(),
+            }],
+            temperature: Some(0.5),
+            max_tokens: None,
+            response_format: None,
+        };
+        let _ = provider.complete(request).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_chat_ordinary_model_sends_temperature() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(MESSAGES_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": DEFAULT_MAX_TOKENS,
+                "messages": [{"role": "user", "content": "test"}],
+                "temperature": 0.5,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let request = CompletionRequest {
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: "test".to_owned(),
+            }],
+            temperature: Some(0.5),
+            max_tokens: None,
+            response_format: None,
+        };
+        let _ = provider.complete(request).await.unwrap();
     }
 
     // -- Auth headers --------------------------------------------------------

@@ -158,6 +158,40 @@ pub fn resolve(provider: ProviderKind, model: &str) -> ModelCapabilities {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reconciliation
+// ---------------------------------------------------------------------------
+
+/// Logged when a configured `temperature` is dropped because the resolved
+/// target samples adaptively. Names the field so the dropped value (attached
+/// as a structured field) is actionable in the logs.
+const TEMPERATURE_DROPPED: &str =
+    "dropping configured temperature: target model samples adaptively and rejects caller sampling parameters";
+
+/// Reconciles a requested `temperature` against the target's sampling control,
+/// dropping it (with a warning naming the discarded value) when the target
+/// samples adaptively.
+///
+/// `None` in yields `None` out, so the default (unset) path is silent — only
+/// a configured value that the target rejects triggers the warning. Shared by
+/// the cloud providers' request builders; Ollama accepts sampling parameters
+/// and does not call this.
+pub(crate) fn reconcile_temperature(
+    sampling: SamplingControl,
+    requested: Option<f32>,
+    model: &str,
+) -> Option<f32> {
+    match sampling {
+        SamplingControl::Configurable => requested,
+        SamplingControl::Adaptive => {
+            if let Some(temperature) = requested {
+                tracing::warn!(model, temperature, "{TEMPERATURE_DROPPED}");
+            }
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +275,30 @@ mod tests {
         assert_eq!(
             resolve(ProviderKind::Anthropic, "o3"),
             ModelCapabilities::SEND_ALL,
+        );
+    }
+
+    #[test]
+    fn test_reconcile_temperature_passes_through_when_configurable() {
+        assert_eq!(
+            reconcile_temperature(SamplingControl::Configurable, Some(0.7), "m"),
+            Some(0.7),
+        );
+        assert_eq!(
+            reconcile_temperature(SamplingControl::Configurable, None, "m"),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_reconcile_temperature_drops_when_adaptive() {
+        assert_eq!(
+            reconcile_temperature(SamplingControl::Adaptive, Some(0.7), "m"),
+            None,
+        );
+        assert_eq!(
+            reconcile_temperature(SamplingControl::Adaptive, None, "m"),
+            None,
         );
     }
 }
