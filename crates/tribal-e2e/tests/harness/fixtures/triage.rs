@@ -4,9 +4,10 @@ use serde_json::{Value, json};
 // Spec types
 // ---------------------------------------------------------------------------
 
-/// Specifies a similar item classification in a triage response.
+/// Specifies a similar item classification in a triage response, referencing
+/// the similar item by its zero-based index in the prompt's numbered list.
 pub struct SimilarItemSpec<'a> {
-    pub item_id: &'a str,
+    pub context_index: u32,
     pub suggested_relation: &'a str,
     pub justification: &'a str,
 }
@@ -20,17 +21,18 @@ pub struct SimilarItemSpec<'a> {
 pub fn novel() -> TriageFixtureBuilder {
     TriageFixtureBuilder {
         decision: "created".to_owned(),
-        matched_item_id: None,
+        matched_index: None,
         similar_items: Vec::new(),
     }
 }
 
-/// Creates a Duplicate triage fixture builder referencing an existing item.
+/// Creates a Duplicate triage fixture builder referencing the similar item
+/// at the given zero-based context index.
 #[must_use]
-pub fn duplicate(matched_item_id: &str) -> TriageFixtureBuilder {
+pub fn duplicate(matched_index: u32) -> TriageFixtureBuilder {
     TriageFixtureBuilder {
         decision: "duplicate".to_owned(),
-        matched_item_id: Some(matched_item_id.to_owned()),
+        matched_index: Some(matched_index),
         similar_items: Vec::new(),
     }
 }
@@ -43,7 +45,7 @@ pub fn duplicate(matched_item_id: &str) -> TriageFixtureBuilder {
 /// `crates/tribal-worker/src/parsing/triage.rs`.
 pub struct TriageFixtureBuilder {
     decision: String,
-    matched_item_id: Option<String>,
+    matched_index: Option<u32>,
     similar_items: Vec<Value>,
 }
 
@@ -52,7 +54,7 @@ impl TriageFixtureBuilder {
     #[must_use]
     pub fn similar_item(mut self, item: SimilarItemSpec<'_>) -> Self {
         self.similar_items.push(json!({
-            "item_id": item.item_id,
+            "item": { "kind": "context_index", "context_index": item.context_index },
             "suggested_relation": item.suggested_relation,
             "justification": item.justification,
         }));
@@ -63,8 +65,8 @@ impl TriageFixtureBuilder {
     #[must_use]
     pub fn build(self) -> Value {
         let mut outcome = json!({ "decision": self.decision });
-        if let Some(id) = &self.matched_item_id {
-            outcome["matched_item_id"] = json!(id);
+        if let Some(index) = self.matched_index {
+            outcome["matched_item"] = json!({ "kind": "context_index", "context_index": index });
         }
 
         json!({

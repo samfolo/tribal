@@ -1,6 +1,6 @@
 //! Triage stage: similarity search and LLM-based relevance scoring.
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use tokio::sync::Semaphore;
 use tracing::Instrument;
@@ -10,8 +10,8 @@ use tribal_db::{
     PgTriageResultRepository, SemanticSearchParams, SemanticSearchResult, TriageResultRepository,
 };
 use tribal_domain::{
-    Candidate, Confidence, EmbeddingPurpose, Job, JobId, SourceType, StageParameters,
-    TagRegistryEntry, Task, span_attrs,
+    Candidate, Confidence, EmbeddingPurpose, Job, JobId, KnowledgeItemId, SourceType,
+    StageParameters, TagRegistryEntry, Task, span_attrs,
 };
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
@@ -22,7 +22,8 @@ use crate::{
     common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
     error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError},
     parsing::{
-        SimilarItemClassification, TriageClassification, TriageDecision, parse_triage_response,
+        SimilarItemClassification, TriageClassification, TriageDecision, TriageItemReference,
+        parse_triage_response,
     },
     prompt::{SimilarItemContext, assemble_triage_prompt},
     tag_resolution::{self, ResolvedTags},
@@ -189,6 +190,23 @@ impl Worker {
                 .map(SimilarItemContext::from)
                 .collect();
 
+            // The model addresses similar items by position; the rendered
+            // list and the search results it resolves against must agree
+            // index-for-index. Length first, since zip would otherwise hide a
+            // divergence where one list is a prefix of the other.
+            debug_assert_eq!(
+                similar_items.len(),
+                search_results.len(),
+                "similar_items and search_results differ in length",
+            );
+            for (i, (rendered, result)) in similar_items.iter().zip(&search_results).enumerate() {
+                debug_assert_eq!(
+                    rendered.item_id,
+                    result.item.id(),
+                    "similar_items[{i}] diverged from search_results — positional alignment broken",
+                );
+            }
+
             let (mut classification, completion_response) = self
                 .classify_candidate(
                     &ctx,
@@ -202,11 +220,22 @@ impl Worker {
 
             classification.reconcile();
 
+            // Resolve the duplicate's context index to a concrete item once,
+            // before tag resolution: an out-of-range index downgrades to Novel
+            // here so the candidate still resolves its tags below and commits
+            // as a novel item, rather than panicking at commit time.
+            let resolved_outcome = resolve_triage_outcome(
+                &classification.outcome,
+                &search_results,
+                ctx.job.id(),
+                ctx.batch_index,
+            );
+
             let embedding_usage = embedding_response.usage;
             let embedding_vector = embedding_response.vector;
 
-            let (resolved_tags, tag_usages) = match &classification.outcome {
-                TriageDecision::Novel => {
+            let (resolved_tags, tag_usages) = match &resolved_outcome {
+                ResolvedTriageOutcome::Novel => {
                     let (resolved, usages) = tag_resolution::resolve_tags(
                         self.pool(),
                         ctx.candidate.suggested_tags(),
@@ -221,12 +250,13 @@ impl Worker {
                     .await?;
                     (Some(resolved), usages)
                 }
-                TriageDecision::Duplicate { .. } => (None, vec![]),
+                ResolvedTriageOutcome::Duplicate { .. } => (None, vec![]),
             };
 
             let commit = self.build_triage_commit(
                 &ctx,
-                &classification,
+                &resolved_outcome,
+                &classification.similar_item_decisions,
                 &search_results,
                 embedding_vector,
                 resolved_tags,
@@ -500,12 +530,17 @@ impl Worker {
         Ok((classification, response))
     }
 
-    /// Builds the `StageCommit::Triage` variant from the classification
-    /// result, resolved tags, and embedding vector.
+    /// Builds the `StageCommit::Triage` variant from the resolved outcome,
+    /// the per-similar-item decisions, the resolved tags, and the embedding
+    /// vector.
+    ///
+    /// The `outcome` is already resolved: a `Duplicate` bears its concrete
+    /// `KnowledgeItemId`, so no index resolution happens here.
     fn build_triage_commit(
         &self,
         ctx: &TriageContext<'_>,
-        classification: &TriageClassification,
+        outcome: &ResolvedTriageOutcome,
+        similar_item_decisions: &[SimilarItemClassification],
         search_results: &[SemanticSearchResult],
         embedding_vector: Vec<f32>,
         resolved_tags: Option<ResolvedTags>,
@@ -513,12 +548,12 @@ impl Worker {
         let similar_item_decisions = build_similar_item_decisions(
             ctx.job.id(),
             ctx.batch_index,
-            &classification.similar_item_decisions,
+            similar_item_decisions,
             search_results,
         );
 
-        let decision = match &classification.outcome {
-            TriageDecision::Novel => {
+        let decision = match outcome {
+            ResolvedTriageOutcome::Novel => {
                 let tag_data =
                     resolved_tags.expect("resolved tags required for Novel classification");
 
@@ -555,7 +590,7 @@ impl Worker {
                     resolved_tags: tag_data.resolved,
                 }
             }
-            TriageDecision::Duplicate { matched_item_id } => {
+            ResolvedTriageOutcome::Duplicate { matched_item_id } => {
                 let observation = NewItemObservation::builder()
                     .knowledge_item_id(*matched_item_id)
                     .principal_id(ctx.job.principal_id())
@@ -578,28 +613,87 @@ impl Worker {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Builds `NewTriageSimilarItemDecision` records by joining classifications
-/// with search results to retrieve similarity scores.
+/// The triage outcome with its duplicate match resolved to a concrete
+/// knowledge item.
+///
+/// A `Duplicate` here already bears its resolved [`KnowledgeItemId`], so the
+/// id is consumed directly without re-resolving an index. A duplicate whose
+/// index matched no search result is represented as `Novel` (see
+/// [`resolve_triage_outcome`]).
+enum ResolvedTriageOutcome {
+    /// The candidate is novel — a new knowledge item will be created.
+    Novel,
+    /// The candidate duplicates an existing, already-resolved item.
+    Duplicate { matched_item_id: KnowledgeItemId },
+}
+
+/// Resolves a similar-item reference to its entry in the search results,
+/// returning `None` if the index is out of range.
+fn lookup_similar_item<'a>(
+    reference: &TriageItemReference,
+    search_results: &'a [SemanticSearchResult],
+) -> Option<&'a SemanticSearchResult> {
+    let TriageItemReference::ContextIndex { context_index } = reference;
+    search_results.get(*context_index as usize)
+}
+
+/// Resolves a parsed [`TriageDecision`] into a [`ResolvedTriageOutcome`].
+///
+/// A `Duplicate` whose context index addresses a real search result is
+/// resolved to that item's [`KnowledgeItemId`]. A `Duplicate` whose index is
+/// out of range is downgraded to `Novel` with a warning — the candidate is
+/// still ingested, just as a new item rather than an observation.
+fn resolve_triage_outcome(
+    outcome: &TriageDecision,
+    search_results: &[SemanticSearchResult],
+    job_id: JobId,
+    batch_index: u32,
+) -> ResolvedTriageOutcome {
+    match outcome {
+        TriageDecision::Novel => ResolvedTriageOutcome::Novel,
+        TriageDecision::Duplicate { matched_item } => {
+            if let Some(result) = lookup_similar_item(matched_item, search_results) {
+                ResolvedTriageOutcome::Duplicate {
+                    matched_item_id: result.item.id(),
+                }
+            } else {
+                tracing::warn!(
+                    item = ?matched_item,
+                    search_result_count = search_results.len(),
+                    %job_id,
+                    %batch_index,
+                    "downgrading duplicate to novel — matched context index out of range",
+                );
+                ResolvedTriageOutcome::Novel
+            }
+        }
+    }
+}
+
+/// Builds `NewTriageSimilarItemDecision` records by resolving each
+/// classification's context index against the positionally-aligned search
+/// results, taking the similarity score from the same entry.
+///
+/// An out-of-range index is dropped with a warning rather than failing the
+/// stage. Each index addresses a position in both the rendered similar-items
+/// list and `search_results`, an alignment guarded at the call site that
+/// builds those lists.
 fn build_similar_item_decisions(
     job_id: JobId,
     batch_index: u32,
     classifications: &[SimilarItemClassification],
     search_results: &[SemanticSearchResult],
 ) -> Vec<NewTriageSimilarItemDecision> {
-    let similarity_by_id: HashMap<_, _> = search_results
-        .iter()
-        .map(|r| (r.item.id(), r.similarity))
-        .collect();
-
     classifications
         .iter()
         .filter_map(|c| {
-            let Some(&similarity) = similarity_by_id.get(&c.item_id) else {
+            let Some(result) = lookup_similar_item(&c.item, search_results) else {
                 tracing::warn!(
-                    matched_item_id = %c.item_id,
+                    item = ?c.item,
+                    search_result_count = search_results.len(),
                     %job_id,
                     %batch_index,
-                    "dropping similar-item classification for item not in search results",
+                    "dropping similar-item classification for index not in search results",
                 );
                 return None;
             };
@@ -607,13 +701,13 @@ fn build_similar_item_decisions(
             // Similarity scores persist as REAL (f32), so narrowing here
             // matches the storage precision and loses nothing.
             #[allow(clippy::cast_possible_truncation)]
-            let similarity_score = similarity as f32;
+            let similarity_score = result.similarity as f32;
 
             Some(
                 NewTriageSimilarItemDecision::builder()
                     .job_id(job_id)
                     .batch_index(batch_index)
-                    .matched_item_id(c.item_id)
+                    .matched_item_id(result.item.id())
                     .similarity_score(similarity_score)
                     .suggested_relation(c.suggested_relation)
                     .justification_text(c.justification.clone())
@@ -642,4 +736,90 @@ fn triage_sqlx_error(context: &str, source: sqlx::Error) -> StageError {
             source,
         },
     )
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use tribal_domain::RelationSuggestion;
+    use tribal_test_utils::a_knowledge_item;
+
+    use super::*;
+
+    #[test]
+    fn test_resolve_triage_outcome_downgrades_out_of_range_duplicate() {
+        // A duplicate referencing an index with no backing search result
+        // downgrades to Novel rather than failing the stage.
+        let search_results: Vec<SemanticSearchResult> = vec![];
+        let outcome = TriageDecision::Duplicate {
+            matched_item: TriageItemReference::ContextIndex { context_index: 0 },
+        };
+        let resolved = resolve_triage_outcome(&outcome, &search_results, JobId::new(), 0);
+        assert!(matches!(resolved, ResolvedTriageOutcome::Novel));
+    }
+
+    #[test]
+    fn test_resolve_triage_outcome_passes_novel_through() {
+        let search_results: Vec<SemanticSearchResult> = vec![];
+        let resolved =
+            resolve_triage_outcome(&TriageDecision::Novel, &search_results, JobId::new(), 0);
+        assert!(matches!(resolved, ResolvedTriageOutcome::Novel));
+    }
+
+    #[test]
+    fn test_build_similar_item_decisions_resolves_by_index_and_drops_out_of_range() {
+        // Indices deliberately diverge from classification order, and one is
+        // out of range. This fails for any implementation that maps by
+        // position rather than by the context index value.
+        let item_a = a_knowledge_item().build();
+        let item_b = a_knowledge_item().build();
+        let item_c = a_knowledge_item().build();
+        let id_a = item_a.id();
+        let id_c = item_c.id();
+        let search_results = vec![
+            SemanticSearchResult {
+                item: item_a,
+                similarity: 0.5,
+            },
+            SemanticSearchResult {
+                item: item_b,
+                similarity: 0.25,
+            },
+            SemanticSearchResult {
+                item: item_c,
+                similarity: 0.75,
+            },
+        ];
+
+        let classifications = vec![
+            SimilarItemClassification {
+                item: TriageItemReference::ContextIndex { context_index: 2 },
+                suggested_relation: RelationSuggestion::Supports,
+                justification: "resolves to item_c".to_owned(),
+            },
+            SimilarItemClassification {
+                item: TriageItemReference::ContextIndex { context_index: 99 },
+                suggested_relation: RelationSuggestion::Contradicts,
+                justification: "out of range — dropped".to_owned(),
+            },
+            SimilarItemClassification {
+                item: TriageItemReference::ContextIndex { context_index: 0 },
+                suggested_relation: RelationSuggestion::Unrelated,
+                justification: "resolves to item_a".to_owned(),
+            },
+        ];
+
+        let rows = build_similar_item_decisions(JobId::new(), 0, &classifications, &search_results);
+
+        // Out-of-range dropped; survivors keep classification order and each
+        // resolves by index value to the right item and that entry's similarity.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].matched_item_id, id_c);
+        assert!((rows[0].similarity_score - 0.75).abs() < f32::EPSILON);
+        assert_eq!(rows[1].matched_item_id, id_a);
+        assert!((rows[1].similarity_score - 0.5).abs() < f32::EPSILON);
+    }
 }

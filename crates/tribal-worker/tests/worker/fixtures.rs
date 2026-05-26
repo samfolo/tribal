@@ -1,7 +1,5 @@
 //! Response JSON fixtures shared across worker integration tests.
 
-use super::common::*;
-
 /// Builds an extraction-output JSON string from candidates and hints.
 pub(super) fn extraction_response_json(
     candidates: &[tribal_domain::Candidate],
@@ -23,13 +21,13 @@ pub(super) fn triage_novel_response_json() -> String {
     .to_string()
 }
 
-/// Builds a triage Duplicate response JSON string for the given
-/// matched item.
-pub(super) fn triage_duplicate_response_json(matched_item_id: KnowledgeItemId) -> String {
+/// Builds a triage Duplicate response JSON string referencing the similar
+/// item at the given zero-based context index.
+pub(super) fn triage_duplicate_response_json(matched_index: u32) -> String {
     serde_json::json!({
         "outcome": {
             "decision": "duplicate",
-            "matched_item_id": matched_item_id.to_string(),
+            "matched_item": { "kind": "context_index", "context_index": matched_index },
         },
         "similar_item_decisions": [],
     })

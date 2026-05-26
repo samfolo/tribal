@@ -46,8 +46,6 @@ async fn test_duplicate_only_batch() {
     })
     .await;
 
-    let existing_id = harness.label("notification_item");
-
     // -- Mount mocks ----------------------------------------------------------
 
     // Extraction produces a single candidate that restates the existing knowledge.
@@ -68,10 +66,11 @@ async fn test_duplicate_only_batch() {
         })
         .await;
 
-    // Triage classifies the candidate as a duplicate of the existing item.
+    // Triage classifies the candidate as a duplicate of the existing item,
+    // the sole search hit, at index 0.
     harness
         .mount_triage(|m| {
-            m.respond(duplicate(existing_id).build());
+            m.respond(duplicate(0).build());
         })
         .await;
 
