@@ -27,6 +27,10 @@ use crate::{
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SimilarItemContext {
     /// The existing knowledge item identifier.
+    ///
+    /// Not serialised, so the model never sees a real identifier. The worker
+    /// keeps it only to check this list stays aligned with `search_results`.
+    #[serde(skip)]
     pub item_id: KnowledgeItemId,
     /// Classification of the existing item.
     pub kind: KnowledgeKind,
@@ -261,6 +265,25 @@ mod tests {
             request.messages[0].content.contains("high"),
             "should contain label: {}",
             request.messages[0].content,
+        );
+    }
+
+    #[test]
+    fn test_item_id_excluded_from_serialised_context() {
+        // The prompt context is built by serialising SimilarItemContext, so a
+        // real identifier must not appear in its serialised form.
+        let similar = SimilarItemContext {
+            item_id: KnowledgeItemId::new(),
+            kind: KnowledgeKind::Fact,
+            content: "existing item".to_owned(),
+            similarity_score: 0.72,
+            similarity_label: SimilarityBand::from(0.72).to_string(),
+            tags: vec![],
+        };
+        let json = serde_json::to_string(&similar).unwrap();
+        assert!(
+            !json.contains("item_id") && !json.contains("ki_"),
+            "item_id must not reach the prompt context: {json}",
         );
     }
 
