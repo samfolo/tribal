@@ -55,6 +55,8 @@ const TYPE_KEY: &str = "type";
 const ENUM_KEY: &str = "enum";
 const CONST_KEY: &str = "const";
 const PROPERTIES_KEY: &str = "properties";
+const DEFINITIONS_KEY: &str = "definitions";
+const ITEMS_KEY: &str = "items";
 const REQUIRED_KEY: &str = "required";
 const ADDITIONAL_PROPERTIES_KEY: &str = "additionalProperties";
 const DESCRIPTION_KEY: &str = "description";
@@ -77,6 +79,9 @@ const FORBIDDEN_VALIDATION_KEYWORDS: &[&str] = &[
     "minLength",
     "maxLength",
     "pattern",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
 ];
 
 // ---------------------------------------------------------------------------
@@ -129,7 +134,7 @@ fn apply_anthropic_subset(mut schema: Value) -> Value {
 /// decode never consumes, so stripping it removes a provider-acceptance
 /// assumption at no functional cost.
 fn strip_unsupported_keywords(root: &mut Value) {
-    walk_objects_mut(root, &mut |map| {
+    walk_schema_maps_mut(root, &mut |map| {
         map.remove(SCHEMA_KEY);
         map.remove(DEFAULT_KEY);
         for keyword in FORBIDDEN_VALIDATION_KEYWORDS {
@@ -152,7 +157,7 @@ fn strip_unsupported_keywords(root: &mut Value) {
 /// the sibling annotations, removing the single-element `allOf`-with-`$ref` that
 /// both subsets reject.
 fn unwrap_described_refs(root: &mut Value) {
-    walk_objects_mut(root, &mut |map| {
+    walk_schema_maps_mut(root, &mut |map| {
         let inner = match map.get(ALL_OF_KEY) {
             Some(Value::Array(items)) if items.len() == 1 => items[0].as_object().cloned(),
             _ => None,
@@ -171,7 +176,7 @@ fn unwrap_described_refs(root: &mut Value) {
 /// Reduces every `$ref` node to a bare reference. The strict subset rejects
 /// sibling keywords (such as `description`) alongside `$ref`.
 fn strip_ref_siblings(root: &mut Value) {
-    walk_objects_mut(root, &mut |map| {
+    walk_schema_maps_mut(root, &mut |map| {
         if let Some(reference) = map.get(REF_KEY).cloned() {
             map.clear();
             map.insert(REF_KEY.to_owned(), reference);
@@ -183,8 +188,14 @@ fn strip_ref_siblings(root: &mut Value) {
 /// accepts. String (unit-variant) enums collapse to a single `enum`; internally
 /// tagged enums become `anyOf` of branches with a `const` discriminator, or, for
 /// a single variant, the sole branch inlined.
+///
+/// `const`-based branch distinguishability is guaranteed only for internally
+/// tagged `oneOf` (object branches sharing a discriminator). An externally or
+/// adjacently tagged enum — none of the current response types produce one —
+/// would trip the debug assertion and fall back to a bare `oneOf`→`anyOf`
+/// rename, which is a known gap rather than a supported shape.
 fn rewrite_enums(root: &mut Value) {
-    walk_objects_mut_with_value(root, &mut |value| {
+    walk_schema_nodes_mut(root, &mut |value| {
         let Some(branches) = value
             .as_object()
             .and_then(|map| map.get(ONE_OF_KEY))
@@ -275,9 +286,10 @@ fn rewrite_tagged_enum(value: &mut Value, mut branches: Vec<Value>) {
     }
 }
 
-/// Expresses each single-value string `enum` property — the internally tagged
-/// discriminator — as a `const`, which a strict `anyOf` requires for its
-/// branches to be distinguishable.
+/// Rewrites every single-value `enum` property to the equivalent `const`. In an
+/// internally tagged enum branch this is the discriminator, and a strict `anyOf`
+/// requires a `const` for its branches to be distinguishable; any other
+/// single-value `enum` is identical as a `const`, so pinning it is harmless.
 fn pin_discriminator_consts(properties: &mut Map<String, Value>) {
     for property in properties.values_mut() {
         let Some(map) = property.as_object_mut() else {
@@ -298,7 +310,7 @@ fn pin_discriminator_consts(properties: &mut Map<String, Value>) {
 /// was optional (absent from the original `required`) as nullable. Arrays are
 /// required but not made nullable: an empty array satisfies the field.
 fn force_required_and_nullable(root: &mut Value) {
-    walk_objects_mut(root, &mut |map| {
+    walk_schema_maps_mut(root, &mut |map| {
         let Some(properties) = map.get(PROPERTIES_KEY).and_then(Value::as_object) else {
             return;
         };
@@ -334,9 +346,9 @@ fn force_required_and_nullable(root: &mut Value) {
 ///
 /// Arrays are left unchanged (required-but-empty satisfies the field). A `$ref`
 /// or `const` cannot carry an inline null, so it is wrapped in an `anyOf` with a
-/// null branch; an `enum` widens both its type union and its value set; a plain
-/// typed leaf gains `null` in its type union. Idempotent for an already-nullable
-/// scalar.
+/// null branch; an inline `anyOf` gains a null branch directly; an `enum` widens
+/// both its type union and its value set; a plain typed leaf gains `null` in its
+/// type union. Idempotent for an already-nullable scalar or `anyOf`.
 fn make_nullable(schema: &mut Value) {
     let Some(map) = schema.as_object() else {
         return;
@@ -355,6 +367,16 @@ fn make_nullable(schema: &mut Value) {
     let Some(map) = schema.as_object_mut() else {
         return;
     };
+    // An inline `anyOf` gains a null branch rather than a type union.
+    if let Some(Value::Array(branches)) = map.get_mut(ANY_OF_KEY) {
+        let has_null = branches
+            .iter()
+            .any(|branch| branch.get(TYPE_KEY).and_then(Value::as_str) == Some(NULL_TYPE));
+        if !has_null {
+            branches.push(null_schema());
+        }
+        return;
+    }
     // An enum constrains the value set, so `null` must join both the type union
     // and the enum.
     if let Some(Value::Array(values)) = map.get_mut(ENUM_KEY)
@@ -374,15 +396,20 @@ fn make_nullable(schema: &mut Value) {
     }
 }
 
+/// A schema matching only JSON null.
+fn null_schema() -> Value {
+    let mut map = Map::new();
+    map.insert(TYPE_KEY.to_owned(), Value::String(NULL_TYPE.to_owned()));
+    Value::Object(map)
+}
+
 /// Wraps a schema in `anyOf: [<schema>, { "type": "null" }]`, the nullable form
 /// for a node that cannot carry an inline null type (a `$ref` or a `const`).
 fn anyof_with_null(schema: Value) -> Value {
-    let mut null_branch = Map::new();
-    null_branch.insert(TYPE_KEY.to_owned(), Value::String(NULL_TYPE.to_owned()));
     let mut wrapper = Map::new();
     wrapper.insert(
         ANY_OF_KEY.to_owned(),
-        Value::Array(vec![schema, Value::Object(null_branch)]),
+        Value::Array(vec![schema, null_schema()]),
     );
     Value::Object(wrapper)
 }
@@ -390,7 +417,7 @@ fn anyof_with_null(schema: Value) -> Value {
 /// Sets `additionalProperties: false` on every object schema that does not
 /// already constrain it. Both subsets require closed objects.
 fn close_all_objects(root: &mut Value) {
-    walk_objects_mut(root, &mut |map| {
+    walk_schema_maps_mut(root, &mut |map| {
         if is_object_schema(map) && !map.contains_key(ADDITIONAL_PROPERTIES_KEY) {
             map.insert(ADDITIONAL_PROPERTIES_KEY.to_owned(), Value::Bool(false));
         }
@@ -420,52 +447,104 @@ fn is_object_branch(branch: &Value) -> bool {
     branch.get(PROPERTIES_KEY).is_some()
 }
 
-/// Visits every object node in `root`, depth-first, applying `visit` to its map.
-fn walk_objects_mut(root: &mut Value, visit: &mut impl FnMut(&mut Map<String, Value>)) {
-    walk_objects_mut_with_value(root, &mut |value| {
+/// Visits every schema node in `root`, depth-first, applying `visit` to its map.
+fn walk_schema_maps_mut(root: &mut Value, visit: &mut impl FnMut(&mut Map<String, Value>)) {
+    walk_schema_nodes_mut(root, &mut |value| {
         if let Some(map) = value.as_object_mut() {
             visit(map);
         }
     });
 }
 
-/// Visits every object node in `root`, depth-first, applying `visit` to the
+/// Visits every schema node in `root`, depth-first, applying `visit` to the
 /// owning [`Value`] so a node can be replaced wholesale.
-fn walk_objects_mut_with_value(root: &mut Value, visit: &mut impl FnMut(&mut Value)) {
-    match root {
-        Value::Object(map) => {
-            for child in map.values_mut() {
-                walk_objects_mut_with_value(child, visit);
+///
+/// Recursion follows only schema-bearing positions — `properties` and
+/// `definitions` *values*, `items`, `additionalProperties`, and the
+/// `anyOf`/`oneOf`/`allOf` branches — never the container maps that hold named
+/// properties or definitions, nor data positions such as `enum`/`const`/`default`
+/// values. A field whose name collides with a schema keyword is therefore left
+/// alone.
+fn walk_schema_nodes_mut(root: &mut Value, visit: &mut impl FnMut(&mut Value)) {
+    if let Value::Object(map) = root {
+        if let Some(Value::Object(properties)) = map.get_mut(PROPERTIES_KEY) {
+            for child in properties.values_mut() {
+                walk_schema_nodes_mut(child, visit);
             }
         }
-        Value::Array(items) => {
-            for item in items {
-                walk_objects_mut_with_value(item, visit);
+        if let Some(Value::Object(definitions)) = map.get_mut(DEFINITIONS_KEY) {
+            for child in definitions.values_mut() {
+                walk_schema_nodes_mut(child, visit);
             }
-            return;
         }
-        _ => return,
+        if let Some(items) = map.get_mut(ITEMS_KEY) {
+            match items {
+                Value::Object(_) => walk_schema_nodes_mut(items, visit),
+                Value::Array(elements) => {
+                    for element in elements.iter_mut() {
+                        walk_schema_nodes_mut(element, visit);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(additional) = map.get_mut(ADDITIONAL_PROPERTIES_KEY)
+            && additional.is_object()
+        {
+            walk_schema_nodes_mut(additional, visit);
+        }
+        for combinator in [ANY_OF_KEY, ONE_OF_KEY, ALL_OF_KEY] {
+            if let Some(Value::Array(branches)) = map.get_mut(combinator) {
+                for branch in branches.iter_mut() {
+                    walk_schema_nodes_mut(branch, visit);
+                }
+            }
+        }
     }
     visit(root);
 }
 
-/// Visits every object node in `root`, depth-first (read-only).
+/// Visits every schema node in `root`, depth-first (read-only), following the
+/// same schema-bearing positions as [`walk_schema_nodes_mut`].
 #[cfg(any(test, feature = "test-helpers"))]
-fn for_each_object(root: &Value, visit: &mut impl FnMut(&Map<String, Value>)) {
-    match root {
-        Value::Object(map) => {
-            for child in map.values() {
-                for_each_object(child, visit);
-            }
-            visit(map);
+fn for_each_schema_node(root: &Value, visit: &mut impl FnMut(&Map<String, Value>)) {
+    let Some(map) = root.as_object() else {
+        return;
+    };
+    if let Some(Value::Object(properties)) = map.get(PROPERTIES_KEY) {
+        for child in properties.values() {
+            for_each_schema_node(child, visit);
         }
-        Value::Array(items) => {
-            for item in items {
-                for_each_object(item, visit);
-            }
-        }
-        _ => {}
     }
+    if let Some(Value::Object(definitions)) = map.get(DEFINITIONS_KEY) {
+        for child in definitions.values() {
+            for_each_schema_node(child, visit);
+        }
+    }
+    if let Some(items) = map.get(ITEMS_KEY) {
+        match items {
+            Value::Object(_) => for_each_schema_node(items, visit),
+            Value::Array(elements) => {
+                for element in elements {
+                    for_each_schema_node(element, visit);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(additional) = map.get(ADDITIONAL_PROPERTIES_KEY)
+        && additional.is_object()
+    {
+        for_each_schema_node(additional, visit);
+    }
+    for combinator in [ANY_OF_KEY, ONE_OF_KEY, ALL_OF_KEY] {
+        if let Some(Value::Array(branches)) = map.get(combinator) {
+            for branch in branches {
+                for_each_schema_node(branch, visit);
+            }
+        }
+    }
+    visit(map);
 }
 
 /// Asserts that an internally tagged enum's branches are distinguishable by
@@ -505,23 +584,28 @@ fn branch_const_signature(branch: &Value) -> Vec<(String, Value)> {
 #[cfg(any(test, feature = "test-helpers"))]
 const FORBIDDEN_COMBINATORS: &[&str] = &[ONE_OF_KEY, ALL_OF_KEY, "if", "then", "else", "not"];
 
-/// Asserts a transformed schema satisfies its provider subset's invariants: no
+/// Asserts a transformed schema satisfies the dialect's output invariants: no
 /// forbidden combinator or leaf keyword survives, the meta and `default`
 /// keywords are stripped, numeric leaves carry no `format`, and every object is
-/// closed. `strict` adds the OpenAI-only requirement that every object lists all
-/// its properties as required.
+/// closed. `strict` adds the OpenAI-only requirements that every object lists
+/// all its properties as required and that the root is not an `anyOf`.
 ///
-/// This is the single source of subset-invariant truth — reused by the dialect's
-/// own tests and by cross-crate snapshot tests — and it checks against the same
-/// keyword lists the transform strips by, so the assertion cannot drift from the
-/// transform.
+/// These are the transform's *output* invariants, which are a conservative
+/// subset of what each provider accepts (for instance it forbids `allOf`, which
+/// `Anthropic` in fact permits). The leaf-keyword check shares
+/// `FORBIDDEN_VALIDATION_KEYWORDS` with the transform, keeping that portion
+/// coupled to what the transform strips.
 ///
 /// # Panics
 ///
-/// Panics if `schema` violates any invariant of the selected subset.
+/// Panics if `schema` violates any of those invariants.
 #[cfg(any(test, feature = "test-helpers"))]
 pub fn assert_dialect_invariants(schema: &Value, strict: bool) {
-    for_each_object(schema, &mut |map| {
+    assert!(
+        !(strict && schema.get(ANY_OF_KEY).is_some()),
+        "strict subset forbids an anyOf at the schema root"
+    );
+    for_each_schema_node(schema, &mut |map| {
         for combinator in FORBIDDEN_COMBINATORS {
             assert!(
                 !map.contains_key(*combinator),
@@ -823,6 +907,82 @@ mod tests {
         assert_eq!(
             result["properties"]["kind"]["enum"],
             json!(["a", "b", null])
+        );
+    }
+
+    #[test]
+    fn test_field_named_like_keyword_is_not_stripped() {
+        // The traversal visits schema nodes, not the property container, so a
+        // field whose name collides with a stripped keyword survives intact.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "default": { "type": "string" },
+                "minimum": { "type": "string" },
+            },
+            "required": ["default", "minimum"],
+        });
+        let result = apply_openai(schema);
+        assert!(
+            result["properties"].get("default").is_some(),
+            "field named `default` was stripped"
+        );
+        assert!(
+            result["properties"].get("minimum").is_some(),
+            "field named `minimum` was stripped"
+        );
+        assert_eq!(result["required"], json!(["default", "minimum"]));
+    }
+
+    #[test]
+    fn test_openai_makes_optional_inline_anyof_nullable() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "choice": { "anyOf": [{ "type": "string" }, { "type": "integer" }] },
+            },
+            "required": [],
+        });
+        let result = apply_openai(schema);
+        assert_eq!(result["required"], json!(["choice"]));
+        let branches = result["properties"]["choice"]["anyOf"]
+            .as_array()
+            .expect("inline anyOf");
+        assert!(
+            branches
+                .iter()
+                .any(|branch| branch["type"] == json!("null")),
+            "optional inline anyOf gained a null branch"
+        );
+    }
+
+    #[test]
+    fn test_strips_array_constraint_keywords() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "maxItems": 5,
+                    "uniqueItems": true,
+                },
+            },
+            "required": ["tags"],
+        });
+        let result = apply_openai(schema);
+        assert!(result["properties"]["tags"].get("maxItems").is_none());
+        assert!(result["properties"]["tags"].get("uniqueItems").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "anyOf at the schema root")]
+    fn test_strict_invariants_reject_root_anyof() {
+        assert_dialect_invariants(
+            &json!({
+                "anyOf": [{ "type": "object", "properties": {}, "additionalProperties": false }]
+            }),
+            true,
         );
     }
 
