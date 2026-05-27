@@ -13,13 +13,16 @@ mod provider;
 mod registry;
 mod request;
 mod response;
+mod schema_dialect;
 mod usage;
 mod validation;
 
 pub use anthropic::AnthropicInferenceProvider;
 #[cfg(feature = "test-helpers")]
 pub use anthropic::MESSAGES_PATH as ANTHROPIC_MESSAGES_PATH;
-pub use capabilities::{MaxOutputTokensParam, ModelCapabilities, SamplingControl, resolve};
+pub use capabilities::{
+    MaxOutputTokensParam, ModelCapabilities, SamplingControl, StructuredOutputMode, resolve,
+};
 pub use error::InferenceError;
 #[cfg(feature = "test-helpers")]
 pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
@@ -37,4 +40,7 @@ pub use registry::{
 };
 pub use request::{CompletionRequest, EmbeddingRequest, Message, ResponseFormat, Role};
 pub use response::{CompletionResponse, EmbeddingResponse};
+pub use schema_dialect::apply_dialect;
+#[cfg(feature = "test-helpers")]
+pub use schema_dialect::assert_dialect_invariants;
 pub use usage::{CompletionUsage, EmbeddingUsage, Usage};
