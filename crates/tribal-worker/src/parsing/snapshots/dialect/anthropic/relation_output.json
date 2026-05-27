@@ -15,7 +15,6 @@
       "description": "A directed relationship between two knowledge items.",
       "properties": {
         "justification": {
-          "default": null,
           "description": "Brief explanation referencing specific content from both items. Persists in the knowledge graph and informs future retrieval — write for someone encountering this relationship without the original context.",
           "type": [
             "string",

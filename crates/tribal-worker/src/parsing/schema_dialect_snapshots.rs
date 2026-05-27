@@ -1,20 +1,19 @@
 //! Coverage for the per-provider schema dialects applied to the pipeline
 //! response schemas.
 //!
-//! The canonical `schemars` schema for each response type is transformed
-//! through [`apply_dialect`] and pinned as a golden snapshot — the reviewable
-//! record of what each provider's endpoint actually receives. The dialect's own
-//! debug-time postcondition verifies the subset invariants on every transform
-//! (these tests run in debug, so they exercise it on the real schemas), so this
-//! module covers only what the dialect cannot: pinning the shape, validating a
-//! correct instance with a real validator, and the cross-crate check that the
-//! tagged response types keep their discriminator.
+//! The canonical `schemars` schema for each response type is transformed through
+//! [`apply_dialect`], pinned as a golden snapshot, and checked against its
+//! provider subset by [`assert_dialect_invariants`] — the dialect crate's own
+//! reusable assertion, so the invariant list cannot drift from the transform. A
+//! `jsonschema` validator then confirms the strict triage schema accepts a
+//! correct instance and rejects the off-shape that motivated the change, and a
+//! structural check confirms the tagged response types keep their discriminator.
 
 use jsonschema::Validator;
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 use tribal_domain::ProviderKind;
-use tribal_inference::apply_dialect;
+use tribal_inference::{apply_dialect, assert_dialect_invariants};
 use tribal_test_utils::assert_json_snapshot;
 
 use super::{ExtractionOutput, RelationOutput, TriageClassification};
@@ -36,6 +35,7 @@ fn created_triage_instance() -> Value {
 #[test]
 fn test_openai_dialect_extraction_snapshot() {
     let schema = apply_dialect(ProviderKind::OpenAi, canonical_schema::<ExtractionOutput>());
+    assert_dialect_invariants(&schema, true);
     assert_json_snapshot!(
         &schema,
         "src/parsing/snapshots/dialect/openai/extraction_output.json"
@@ -48,6 +48,7 @@ fn test_openai_dialect_triage_snapshot() {
         ProviderKind::OpenAi,
         canonical_schema::<TriageClassification>(),
     );
+    assert_dialect_invariants(&schema, true);
     assert_json_snapshot!(
         &schema,
         "src/parsing/snapshots/dialect/openai/triage_classification.json"
@@ -57,6 +58,7 @@ fn test_openai_dialect_triage_snapshot() {
 #[test]
 fn test_openai_dialect_relation_snapshot() {
     let schema = apply_dialect(ProviderKind::OpenAi, canonical_schema::<RelationOutput>());
+    assert_dialect_invariants(&schema, true);
     assert_json_snapshot!(
         &schema,
         "src/parsing/snapshots/dialect/openai/relation_output.json"
@@ -73,6 +75,7 @@ fn test_anthropic_dialect_extraction_snapshot() {
         ProviderKind::Anthropic,
         canonical_schema::<ExtractionOutput>(),
     );
+    assert_dialect_invariants(&schema, false);
     assert_json_snapshot!(
         &schema,
         "src/parsing/snapshots/dialect/anthropic/extraction_output.json"
@@ -85,6 +88,7 @@ fn test_anthropic_dialect_triage_snapshot() {
         ProviderKind::Anthropic,
         canonical_schema::<TriageClassification>(),
     );
+    assert_dialect_invariants(&schema, false);
     assert_json_snapshot!(
         &schema,
         "src/parsing/snapshots/dialect/anthropic/triage_classification.json"
@@ -97,6 +101,7 @@ fn test_anthropic_dialect_relation_snapshot() {
         ProviderKind::Anthropic,
         canonical_schema::<RelationOutput>(),
     );
+    assert_dialect_invariants(&schema, false);
     assert_json_snapshot!(
         &schema,
         "src/parsing/snapshots/dialect/anthropic/relation_output.json"
@@ -130,6 +135,22 @@ fn test_anthropic_triage_schema_validates_created_instance() {
     assert!(
         validator.is_valid(&created_triage_instance()),
         "the subset triage schema must accept a correct created instance"
+    );
+}
+
+#[test]
+fn test_openai_triage_schema_rejects_bare_string_outcome() {
+    // The off-shape that originally dead-lettered: a bare-string `outcome`
+    // instead of the internally tagged object. The strict schema must reject it.
+    let schema = apply_dialect(
+        ProviderKind::OpenAi,
+        canonical_schema::<TriageClassification>(),
+    );
+    let validator = Validator::new(&schema).expect("transformed schema compiles");
+    let off_shape = json!({ "outcome": "created", "similar_item_decisions": [] });
+    assert!(
+        !validator.is_valid(&off_shape),
+        "the strict triage schema must reject a bare-string outcome"
     );
 }
 

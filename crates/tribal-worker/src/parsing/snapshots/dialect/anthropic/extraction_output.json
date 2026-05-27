@@ -14,7 +14,6 @@
           "description": "Classification of the candidate knowledge."
         },
         "suggested_references": {
-          "default": [],
           "description": "Optional external references.",
           "items": {
             "$ref": "#/definitions/SuggestedReference"
@@ -82,7 +81,6 @@
       "description": "A suggested external reference for a candidate.\n\nThe `reference_type` is a free string — the LLM may produce values outside the expected set. Validation and mapping to [`ReferenceKind`] happens during triage, not extraction.\n\n[`ReferenceKind`]: crate::ReferenceKind",
       "properties": {
         "description": {
-          "default": null,
           "description": "Optional human-readable context.",
           "type": [
             "string",
@@ -115,7 +113,6 @@
       "type": "array"
     },
     "relation_hints": {
-      "default": [],
       "description": "Derivation relationships between candidates in this batch. Only include when one candidate is genuinely derived from another. Optional — omit or return an empty array when no intra-batch relationships exist.",
       "items": {
         "$ref": "#/definitions/RelationHint"
