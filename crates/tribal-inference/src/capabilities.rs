@@ -1,12 +1,17 @@
 //! Per-model request-field admissibility for inference providers.
 //!
 //! [`resolve`] maps a `(ProviderKind, model)` target to the
-//! [`ModelCapabilities`] describing how the endpoint handles two request
+//! [`ModelCapabilities`] describing how the endpoint handles three request
 //! axes that vary by model: whether it honours caller-supplied sampling
-//! parameters, and which field carries the maximum-output-token cap. It is
-//! the single source of capability truth — every site that shapes a request
-//! for the wire or records its effective shape reads this one resolver, so
-//! they agree by construction (ingest and the readiness probe included).
+//! parameters, which field carries the maximum-output-token cap, and how it
+//! enforces a caller-supplied JSON Schema on its output. It is the single
+//! source of capability truth — every site that shapes a request for the wire
+//! or records its effective shape reads this one resolver, so they agree by
+//! construction (ingest and the readiness probe included).
+//!
+//! The schema-dialect transform that rewrites a schema into a provider's
+//! accepted shape is a separate mechanism, keyed on the transport rather than
+//! the model class, and is not represented here.
 //!
 //! The layer governs only what varies by model class. Provider-protocol-fixed
 //! shaping (a provider's always-required or fixed-name fields) stays in each
@@ -108,6 +113,29 @@ pub enum MaxOutputTokensParam {
     MaxCompletionTokens,
 }
 
+/// How a target enforces a caller-supplied JSON Schema on its output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuredOutputMode {
+    /// Decoding is constrained to the schema; the request marks it `strict`.
+    Strict,
+    /// The schema is advisory guidance; the request does not mark it `strict`.
+    Advisory,
+}
+
+impl StructuredOutputMode {
+    /// Whether a schema sent to this target must be marked `strict`.
+    ///
+    /// The single source for the mode→strict mapping, so every site that
+    /// applies it agrees without re-deriving it.
+    #[must_use]
+    pub fn requires_strict(self) -> bool {
+        match self {
+            Self::Strict => true,
+            Self::Advisory => false,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ModelCapabilities
 // ---------------------------------------------------------------------------
@@ -123,14 +151,19 @@ pub struct ModelCapabilities {
 
     /// Which field name carries the output-token cap.
     pub max_output_tokens_param: MaxOutputTokensParam,
+
+    /// How the target enforces a caller-supplied JSON Schema on its output.
+    pub structured_output_mode: StructuredOutputMode,
 }
 
 impl ModelCapabilities {
     /// The default-send posture for an unrecognised target: honour caller
-    /// sampling parameters and use the conventional `max_tokens` field name.
+    /// sampling parameters, use the conventional `max_tokens` field name, and
+    /// request strict schema enforcement.
     pub const SEND_ALL: Self = Self {
         sampling: SamplingControl::Configurable,
         max_output_tokens_param: MaxOutputTokensParam::MaxTokens,
+        structured_output_mode: StructuredOutputMode::Strict,
     };
 
     /// Reasoning models served over the Chat Completions API: adaptive
@@ -138,6 +171,7 @@ impl ModelCapabilities {
     const OPENAI_REASONING: Self = Self {
         sampling: SamplingControl::Adaptive,
         max_output_tokens_param: MaxOutputTokensParam::MaxCompletionTokens,
+        structured_output_mode: StructuredOutputMode::Strict,
     };
 
     /// Adaptive-sampling models that retain the conventional `max_tokens`
@@ -145,6 +179,7 @@ impl ModelCapabilities {
     const ANTHROPIC_ADAPTIVE: Self = Self {
         sampling: SamplingControl::Adaptive,
         max_output_tokens_param: MaxOutputTokensParam::MaxTokens,
+        structured_output_mode: StructuredOutputMode::Strict,
     };
 }
 
@@ -227,6 +262,11 @@ mod tests {
                 MaxOutputTokensParam::MaxCompletionTokens,
                 "{model} should use max_completion_tokens",
             );
+            assert_eq!(
+                caps.structured_output_mode,
+                StructuredOutputMode::Strict,
+                "{model} should request strict schema enforcement",
+            );
         }
     }
 
@@ -234,6 +274,18 @@ mod tests {
     fn test_ordinary_openai_model_sends_all() {
         let caps = resolve(ProviderKind::OpenAi, "gpt-4o-mini");
         assert_eq!(caps, ModelCapabilities::SEND_ALL);
+    }
+
+    #[test]
+    fn test_unrecognised_openai_target_requests_strict() {
+        // An unrecognised OpenAI target resolves strict-by-default: a 400 from a
+        // surface that cannot honour it surfaces at the probe, which is
+        // preferable to silent advisory drift.
+        assert!(
+            resolve(ProviderKind::OpenAi, "gpt-4o-mini")
+                .structured_output_mode
+                .requires_strict()
+        );
     }
 
     #[test]
@@ -299,6 +351,12 @@ mod tests {
     fn test_sampling_control_accepts_overrides() {
         assert!(SamplingControl::Configurable.accepts_overrides());
         assert!(!SamplingControl::Adaptive.accepts_overrides());
+    }
+
+    #[test]
+    fn test_structured_output_mode_requires_strict() {
+        assert!(StructuredOutputMode::Strict.requires_strict());
+        assert!(!StructuredOutputMode::Advisory.requires_strict());
     }
 
     #[test]
