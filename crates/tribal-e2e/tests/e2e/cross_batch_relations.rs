@@ -90,8 +90,9 @@ async fn test_cross_batch_relations() {
             m.on_content_repeat_last(
                 "storage costs",
                 &[novel()
+                    // The seeded decision is the sole search hit, at index 0.
                     .similar_item(SimilarItemSpec {
-                        item_id: decision_id,
+                        context_index: 0,
                         suggested_relation: "supports",
                         justification: "Storage savings validate the event sourcing decision",
                     })

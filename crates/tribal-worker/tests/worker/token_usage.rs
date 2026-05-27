@@ -453,7 +453,8 @@ async fn test_triage_duplicate_records_token_usage() {
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
             .on_complete(
-                a_completion_response(triage_duplicate_response_json(ki_id)),
+                // The seeded item is the sole search hit, so it is at index 0.
+                a_completion_response(triage_duplicate_response_json(0)),
                 None,
             )
             .on_exhaust(ExhaustBehaviour::RepeatLast)
