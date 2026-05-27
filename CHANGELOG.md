@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-05-27
+
+### Fixed
+
+- Triage now references similar items by position index rather than by their identifier, resolving them server-side. This removes a failure mode in which weaker models that could not reproduce a knowledge-item identifier failed triage and exhausted retries. An unresolvable reference is handled gracefully: an out-of-range duplicate match is treated as a novel item rather than failing the job.
+
 ## [0.2.2] - 2026-05-26
 
 ### Added
@@ -30,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Docker Compose provider configuration through `.env`, letting the containerised path target a cloud provider (OpenAI, Anthropic) instead of only a local Ollama.
 
-[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/tribal-memory/tribal/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/tribal-memory/tribal/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/tribal-memory/tribal/releases/tag/v0.2.1
