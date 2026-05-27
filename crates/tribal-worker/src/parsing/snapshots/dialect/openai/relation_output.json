@@ -1,0 +1,76 @@
+{
+  "additionalProperties": false,
+  "definitions": {
+    "IngestionRelationKind": {
+      "description": "The type of relationship between two knowledge items. 'supports' = source reinforces target. 'contradicts' = source conflicts with target. 'derived_from' = source was produced using target as input.",
+      "enum": [
+        "supports",
+        "contradicts",
+        "derived_from"
+      ],
+      "type": "string"
+    },
+    "RelationEdge": {
+      "additionalProperties": false,
+      "description": "A directed relationship between two knowledge items.",
+      "properties": {
+        "justification": {
+          "description": "Brief explanation referencing specific content from both items. Persists in the knowledge graph and informs future retrieval — write for someone encountering this relationship without the original context.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "relation_type": {
+          "$ref": "#/definitions/IngestionRelationKind"
+        },
+        "source": {
+          "$ref": "#/definitions/RelationTarget"
+        },
+        "target": {
+          "$ref": "#/definitions/RelationTarget"
+        }
+      },
+      "required": [
+        "justification",
+        "relation_type",
+        "source",
+        "target"
+      ],
+      "type": "object"
+    },
+    "RelationTarget": {
+      "additionalProperties": false,
+      "description": "A reference to a knowledge item by its context index.",
+      "properties": {
+        "context_index": {
+          "type": "integer"
+        },
+        "kind": {
+          "const": "context_index",
+          "type": "string"
+        }
+      },
+      "required": [
+        "context_index",
+        "kind"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Relationship edges between knowledge items. Return an empty relations array when no genuine semantic relationships exist — forced relations degrade graph quality.",
+  "properties": {
+    "relations": {
+      "description": "Directed relationship edges. Each edge connects a source item to a target item with a typed relationship. Only include edges grounded in the actual content of both items.",
+      "items": {
+        "$ref": "#/definitions/RelationEdge"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "relations"
+  ],
+  "title": "RelationOutput",
+  "type": "object"
+}
