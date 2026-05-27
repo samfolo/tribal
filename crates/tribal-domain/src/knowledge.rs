@@ -13,7 +13,15 @@ use crate::{EpisodeId, KnowledgeItemId, PrincipalId, ProjectId};
 
 /// The classification of a knowledge item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(
+        description = "The kind of knowledge: fact (a verifiable piece of information), \
+        heuristic (a rule of thumb learned from experience), procedure (an ordered set of \
+        steps), or decision_record (a choice made and its rationale)."
+    )
+)]
 #[serde(rename_all = "snake_case")]
 pub enum KnowledgeKind {
     /// A discrete, verifiable piece of information.

@@ -36,21 +36,27 @@ enum_text_conversions!(RelationKind {
     RelationKind::DerivedFrom => "derived_from",
 });
 
-/// The triage agent's classification of a similar item before any
-/// relationship is created.
+/// The triage agent's classification of a similar item before any relationship
+/// is created.
 ///
-/// Overlaps with [`RelationKind`] but is distinct: `Supersedes` and
-/// `DerivedFrom` are never suggested by triage, and `Unrelated` is never
-/// stored as a relation row.
+/// Overlaps with [`RelationKind`] but is distinct: `Supersedes` and `DerivedFrom`
+/// are never suggested by triage, and `Unrelated` is never stored as a relation
+/// row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(
+        description = "How an existing similar item relates to the candidate, assessed during triage independently of the novel-or-duplicate decision."
+    )
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationSuggestion {
-    /// Similar item corroborates the candidate.
+    /// The existing item corroborates or reinforces the candidate.
     Supports,
-    /// Similar item conflicts with the candidate.
+    /// The existing item conflicts with or is incompatible with the candidate.
     Contradicts,
-    /// Semantic similarity is incidental; no meaningful relationship.
+    /// The similarity is incidental; no meaningful relationship holds.
     Unrelated,
 }
 
