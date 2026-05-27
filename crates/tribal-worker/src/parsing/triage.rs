@@ -1,7 +1,7 @@
 //! Triage response parsing and LLM response types.
 
 use serde::Deserialize;
-use tribal_domain::{KnowledgeItemId, RelationSuggestion};
+use tribal_domain::RelationSuggestion;
 use tribal_inference::CompletionResponse;
 
 use crate::error::StageError;
@@ -61,6 +61,36 @@ impl TriageClassification {
     }
 }
 
+/// A reference to one of the similar items provided to triage.
+///
+/// Triage's index space contains *only* the similar items returned by
+/// semantic search, numbered by their zero-based position in the prompt's
+/// numbered list. (This differs from the relation stage's unified space,
+/// which also numbers the batch's extraction candidates — hence a
+/// triage-local type.) The worker resolves the index to a knowledge item
+/// against the search results before persisting; an out-of-range index is
+/// a handled outcome, never a parse failure.
+///
+/// Modelled as a typed structure rather than a bare integer or string, so an
+/// ill-formed reference is unrepresentable at the schema boundary.
+/// `#[serde(tag = "kind")]` (internally tagged) gives explicit discrimination
+/// and room to add further reference kinds without a wire break.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind")]
+#[schemars(description = "A reference to one of the provided similar items by its context index.")]
+pub(crate) enum TriageItemReference {
+    /// A similar item, identified by its zero-based position in the
+    /// numbered similar-items list.
+    ///
+    /// Wire format: `{"kind": "context_index", "context_index": 0}`.
+    #[serde(rename = "context_index")]
+    #[schemars(
+        description = "A similar item, referenced by its zero-based index in the \
+        numbered similar-items list shown in the prompt."
+    )]
+    ContextIndex { context_index: u32 },
+}
+
 /// The triage decision for a candidate.
 ///
 /// Uses expressive Rust names (`Novel`/`Duplicate`) with serde renames
@@ -89,12 +119,12 @@ pub(crate) enum TriageDecision {
         'contradicts' — a contradiction is always novel."
     )]
     Duplicate {
-        /// The existing item the candidate matches.
+        /// The similar item the candidate duplicates, referenced by index.
         #[schemars(
-            description = "The identifier of the existing item this candidate duplicates. \
-            Must reference an item from the similar items provided."
+            description = "The similar item this candidate duplicates, referenced by its \
+            context index in the provided similar items."
         )]
-        matched_item_id: KnowledgeItemId,
+        matched_item: TriageItemReference,
     },
 }
 
@@ -105,9 +135,12 @@ pub(crate) enum TriageDecision {
     the candidate."
 )]
 pub(crate) struct SimilarItemClassification {
-    /// The existing item that was compared against.
-    #[schemars(description = "The identifier of the existing item being assessed.")]
-    pub item_id: KnowledgeItemId,
+    /// The similar item that was compared against, referenced by index.
+    #[schemars(
+        description = "The similar item being assessed, referenced by its context index \
+        in the provided similar items."
+    )]
+    pub item: TriageItemReference,
     /// The agent's suggested relation classification.
     #[schemars(
         description = "The relationship between the existing item and the candidate. \
@@ -189,13 +222,63 @@ mod tests {
         let json = r#"{
             "outcome": {
                 "decision": "duplicate",
-                "matched_item_id": "ki_550e8400-e29b-41d4-a716-446655440000"
+                "matched_item": { "kind": "context_index", "context_index": 0 }
             },
             "similar_item_decisions": []
         }"#;
         let response = mock_response(json);
         let result = parse_triage_response(&response);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_duplicate_with_context_index() {
+        let json = r#"{
+            "outcome": {
+                "decision": "duplicate",
+                "matched_item": { "kind": "context_index", "context_index": 2 }
+            },
+            "similar_item_decisions": []
+        }"#;
+        let response = mock_response(json);
+        let classification = parse_triage_response(&response).unwrap();
+        assert!(matches!(
+            classification.outcome,
+            TriageDecision::Duplicate {
+                matched_item: TriageItemReference::ContextIndex { context_index: 2 }
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_duplicate_rejects_placeholder_string() {
+        // A bare string (a UUID or a hallucinated placeholder like
+        // "existing-item-1") is not admissible: the schema accepts only the
+        // typed context-index reference.
+        let json = r#"{
+            "outcome": { "decision": "duplicate", "matched_item": "existing-item-1" },
+            "similar_item_decisions": []
+        }"#;
+        let response = mock_response(json);
+        assert!(parse_triage_response(&response).is_err());
+    }
+
+    #[test]
+    fn test_parse_rejects_placeholder_string_in_similar_item_decision() {
+        // The per-item reference is the same typed field, so a placeholder
+        // string is inadmissible there too.
+        let json = r#"{
+            "outcome": { "decision": "created" },
+            "similar_item_decisions": [
+                {
+                    "item": "existing-item-1",
+                    "suggested_relation": "supports",
+                    "justification": "placeholder reference"
+                }
+            ]
+        }"#;
+        let response = mock_response(json);
+        assert!(parse_triage_response(&response).is_err());
     }
 
     #[test]
@@ -230,7 +313,7 @@ mod tests {
             "outcome": { "decision": "created" },
             "similar_item_decisions": [
                 {
-                    "item_id": "ki_550e8400-e29b-41d4-a716-446655440000",
+                    "item": { "kind": "context_index", "context_index": 0 },
                     "suggested_relation": "supports",
                     "justification": "Both describe Rust memory safety"
                 }
@@ -241,19 +324,23 @@ mod tests {
         assert!(result.is_ok());
         let classification = result.unwrap();
         assert_eq!(classification.similar_item_decisions.len(), 1);
+        assert!(matches!(
+            classification.similar_item_decisions[0].item,
+            TriageItemReference::ContextIndex { context_index: 0 }
+        ));
     }
 
     // -- reconcile --------------------------------------------------------
 
     fn classification_with_decisions(
         decision: &str,
-        matched_item_id: Option<&str>,
+        matched_index: Option<u32>,
         relations: &[&str],
     ) -> TriageClassification {
-        let outcome_json = match (decision, matched_item_id) {
-            ("duplicate", Some(id)) => {
-                format!(r#"{{"decision": "duplicate", "matched_item_id": "{id}"}}"#)
-            }
+        let outcome_json = match (decision, matched_index) {
+            ("duplicate", Some(index)) => format!(
+                r#"{{"decision": "duplicate", "matched_item": {{"kind": "context_index", "context_index": {index}}}}}"#
+            ),
             _ => r#"{"decision": "created"}"#.to_owned(),
         };
 
@@ -261,9 +348,9 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, rel)| SimilarItemClassification {
-                item_id: format!("ki_{i:0>8}-0000-0000-0000-000000000000")
-                    .parse()
-                    .unwrap(),
+                item: TriageItemReference::ContextIndex {
+                    context_index: u32::try_from(i).unwrap(),
+                },
                 suggested_relation: rel.parse().unwrap(),
                 justification: "test".to_owned(),
             })
@@ -277,11 +364,7 @@ mod tests {
 
     #[test]
     fn test_reconcile_overrides_duplicate_with_contradiction() {
-        let mut c = classification_with_decisions(
-            "duplicate",
-            Some("ki_00000000-0000-0000-0000-000000000000"),
-            &["contradicts"],
-        );
+        let mut c = classification_with_decisions("duplicate", Some(0), &["contradicts"]);
         c.reconcile();
         assert!(matches!(c.outcome, TriageDecision::Novel));
     }
@@ -290,7 +373,7 @@ mod tests {
     fn test_reconcile_overrides_when_any_decision_contradicts() {
         let mut c = classification_with_decisions(
             "duplicate",
-            Some("ki_00000000-0000-0000-0000-000000000000"),
+            Some(0),
             &["supports", "unrelated", "contradicts"],
         );
         c.reconcile();
@@ -299,11 +382,7 @@ mod tests {
 
     #[test]
     fn test_reconcile_preserves_duplicate_without_contradiction() {
-        let mut c = classification_with_decisions(
-            "duplicate",
-            Some("ki_00000000-0000-0000-0000-000000000000"),
-            &["supports", "unrelated"],
-        );
+        let mut c = classification_with_decisions("duplicate", Some(0), &["supports", "unrelated"]);
         c.reconcile();
         assert!(matches!(c.outcome, TriageDecision::Duplicate { .. }));
     }

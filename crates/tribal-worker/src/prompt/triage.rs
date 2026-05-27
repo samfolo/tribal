@@ -27,6 +27,10 @@ use crate::{
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SimilarItemContext {
     /// The existing knowledge item identifier.
+    ///
+    /// Not serialised, so the model never sees a real identifier. The worker
+    /// keeps it only to check this list stays aligned with `search_results`.
+    #[serde(skip)]
     pub item_id: KnowledgeItemId,
     /// Classification of the existing item.
     pub kind: KnowledgeKind,
@@ -218,6 +222,37 @@ mod tests {
     }
 
     #[test]
+    fn test_triage_schema_references_items_by_index_not_identifier() {
+        let request = assemble_triage_prompt(
+            "system",
+            "{{ candidate.content }}",
+            &test_candidate(),
+            &[],
+            &[],
+            &StageParameters::default(),
+        )
+        .expect("assemble triage prompt");
+
+        // The model-facing schema references similar items by typed context
+        // index (context_index / matched_item) and exposes no real
+        // knowledge-item identifier (matched_item_id / item_id / ki_).
+        assert!(
+            matches!(
+                request.response_format,
+                Some(ResponseFormat::JsonSchema { schema }) if {
+                    let s = schema.to_string();
+                    s.contains("context_index")
+                        && s.contains("matched_item")
+                        && !s.contains("matched_item_id")
+                        && !s.contains("item_id")
+                        && !s.contains("ki_")
+                }
+            ),
+            "triage schema must reference items by context index, not identifier",
+        );
+    }
+
+    #[test]
     fn test_candidate_content_rendered_in_user_message() {
         let result = assemble_triage_prompt(
             "system",
@@ -261,6 +296,25 @@ mod tests {
             request.messages[0].content.contains("high"),
             "should contain label: {}",
             request.messages[0].content,
+        );
+    }
+
+    #[test]
+    fn test_item_id_excluded_from_serialised_context() {
+        // The prompt context is built by serialising SimilarItemContext, so a
+        // real identifier must not appear in its serialised form.
+        let similar = SimilarItemContext {
+            item_id: KnowledgeItemId::new(),
+            kind: KnowledgeKind::Fact,
+            content: "existing item".to_owned(),
+            similarity_score: 0.72,
+            similarity_label: SimilarityBand::from(0.72).to_string(),
+            tags: vec![],
+        };
+        let json = serde_json::to_string(&similar).unwrap();
+        assert!(
+            !json.contains("item_id") && !json.contains("ki_"),
+            "item_id must not reach the prompt context: {json}",
         );
     }
 

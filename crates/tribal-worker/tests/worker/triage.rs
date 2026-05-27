@@ -217,7 +217,8 @@ async fn test_triage_duplicate_path() {
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
             .on_complete(
-                a_completion_response(triage_duplicate_response_json(ki_id)),
+                // The seeded item is the sole search hit, so it is at index 0.
+                a_completion_response(triage_duplicate_response_json(0)),
                 None,
             )
             .on_exhaust(ExhaustBehaviour::RepeatLast)
@@ -266,6 +267,143 @@ async fn test_triage_duplicate_path() {
         .await
         .expect("find observations");
     assert_eq!(observations.len(), 1, "should have one observation");
+
+    teardown(ctx).await;
+}
+
+/// Verifies the downgrade path end-to-end: a duplicate whose matched index
+/// is out of range commits as a novel item with its tags resolved — no panic,
+/// parse failure, dead-letter, or observation against the seeded item. Locks
+/// the resolve-before-tag-resolution ordering in `run_triage`.
+#[tokio::test]
+async fn test_triage_duplicate_out_of_range_downgrades_to_novel() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    // Seed an existing item so semantic search returns one hit at index 0;
+    // the model references an out-of-range index instead.
+    let mut conn = raw_conn(ctx).await;
+    let seed_result = Seed::new()
+        .define_project("proj", "git@github.com:test/triage-downgrade.git")
+        .define_principal("user", "user:triage-downgrade")
+        .define_prompt_version("system-pv", a_new_prompt_version().build())
+        .define_prompt_version(
+            "user-pv",
+            a_new_prompt_version()
+                .role(tribal_domain::PromptRole::User)
+                .content_hash("c".repeat(64))
+                .content("test user prompt content".to_owned())
+                .build(),
+        )
+        .set_embedding_model("mock-model", 768)
+        .as_principal("user")
+        .for_project("proj", |store| {
+            store.add_item("existing", item(KnowledgeKind::Fact, "existing knowledge"));
+        })
+        .execute(&mut conn)
+        .await;
+
+    let principal_id = seed_result.principal_id("user");
+    let project_id = seed_result.project_id("proj");
+    let existing_id = seed_result.item_id("existing");
+    let system_pv_id = seed_result.prompt_version_id("system-pv");
+    let user_pv_id = seed_result.prompt_version_id("user-pv");
+
+    let seeded_embedding = PgEmbeddingRepository
+        .find_by_knowledge_item_id(&mut conn, existing_id, "mock-model")
+        .await
+        .expect("find seeded embedding")
+        .expect("seeded embedding should exist");
+    let embedding_vector = seeded_embedding.embedding().to_vec();
+
+    let candidates = vec![
+        a_candidate()
+            .content("novel content after downgrade".to_owned())
+            .suggested_tags(vec!["rust".to_owned()])
+            .build(),
+    ];
+
+    let (job_id, task_id) = seed_triage_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+        &candidates,
+    )
+    .await;
+    drop(conn);
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(embedding_vector), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                // Index 99 is out of range — only the seeded item (index 0)
+                // was retrieved — so the duplicate downgrades to novel.
+                a_completion_response(triage_duplicate_response_json(99)),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    // The task completes — no parse failure, dead-letter, or panic. Because
+    // the candidate carries suggested tags, completing proves the downgraded
+    // candidate ran the novel commit path (resolving tags) without hitting
+    // the `resolved_tags` panic.
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    let mut conn = raw_conn(ctx).await;
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+
+    // The outcome is Created against a new item, not the seeded one — the
+    // duplicate downgraded rather than recording an observation.
+    assert!(
+        matches!(
+            triage_result.outcome(),
+            TriageOutcome::Created { item_id } if *item_id != existing_id
+        ),
+        "expected Created with a new item, got {:?}",
+        triage_result.outcome(),
+    );
+
+    // No observation was recorded against the seeded item.
+    let observations = PgItemObservationRepository
+        .find_by_knowledge_item_id(&mut conn, existing_id)
+        .await
+        .expect("find observations");
+    assert!(
+        observations.is_empty(),
+        "downgrade must not observe the seeded item",
+    );
 
     teardown(ctx).await;
 }
