@@ -14,6 +14,14 @@ Tribal is not trying to remember everything. It preserves what remains useful af
 
 ## Quick start
 
+**Start with the skills.** Tribal runs inside your agent, and the [skills](https://github.com/tribal-memory/skills) teach it to install, verify, wire, and troubleshoot Tribal. Installing them and letting the agent drive is the most reliable path:
+
+```bash
+npx skills add tribal-memory/skills
+```
+
+Then ask your agent to set Tribal up. The steps below are what the skills walk it through, or what to run by hand. The agent can help either way.
+
 Install Tribal using whichever path fits your environment. Pick one:
 
 **Homebrew (macOS)**
@@ -44,12 +52,6 @@ For the Homebrew and shell-installer paths, bootstrap from inside a git reposito
 
 ```bash
 tribal bootstrap
-```
-
-Install the [skills](https://github.com/tribal-memory/skills) that teach your agent harness how to use Tribal:
-
-```bash
-npx skills add tribal-memory/skills
 ```
 
 ## Prerequisites
