@@ -13,7 +13,7 @@ use tribal_domain::{ProviderKind, span_attrs};
 
 use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
-    Message, ProviderIdentity, ResponseFormat, Role,
+    Message, ProviderIdentity, ResponseFormat, Role, apply_dialect,
     capabilities::{reconcile_temperature, resolve},
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
     http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
@@ -329,7 +329,7 @@ fn map_response_format(format: &ResponseFormat) -> Option<AnthropicOutputConfig>
         }
         ResponseFormat::JsonSchema { schema } => Some(AnthropicOutputConfig {
             format: AnthropicOutputFormat::JsonSchema {
-                schema: schema.clone(),
+                schema: apply_dialect(ProviderKind::Anthropic, schema.clone()),
             },
         }),
     }
@@ -697,8 +697,19 @@ mod tests {
     #[tokio::test]
     async fn test_chat_sends_output_config_for_json_schema() {
         let server = MockServer::start().await;
-        let schema =
-            serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        });
+        // The subset dialect closes objects (`additionalProperties: false`) but
+        // leaves optionals omitted from `required` and sends no strict flag.
+        let expected_schema = serde_json::json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": false,
+        });
 
         Mock::given(method("POST"))
             .and(path(MESSAGES_PATH))
@@ -709,7 +720,7 @@ mod tests {
                 "output_config": {
                     "format": {
                         "type": "json_schema",
-                        "schema": schema.clone(),
+                        "schema": expected_schema,
                     },
                 },
             })))
