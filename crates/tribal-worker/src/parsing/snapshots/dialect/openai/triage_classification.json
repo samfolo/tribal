@@ -2,7 +2,7 @@
   "additionalProperties": false,
   "definitions": {
     "RelationSuggestion": {
-      "description": "The triage agent's classification of a similar item before any relationship is created.\n\nOverlaps with [`RelationKind`] but is distinct: `Supersedes` and `DerivedFrom` are never suggested by triage, and `Unrelated` is never stored as a relation row.",
+      "description": "How an existing similar item relates to the candidate, assessed during triage independently of the novel-or-duplicate decision.",
       "enum": [
         "supports",
         "contradicts",
@@ -18,7 +18,7 @@
           "$ref": "#/definitions/TriageItemReference"
         },
         "justification": {
-          "description": "Brief explanation referencing specific content from both items. Explains why this relationship classification was chosen.",
+          "description": "Why this relationship holds, grounded in the content of both items.",
           "type": "string"
         },
         "suggested_relation": {
@@ -36,7 +36,7 @@
       "anyOf": [
         {
           "additionalProperties": false,
-          "description": "The candidate contains information not already captured. This is the default — use when the candidate adds any new context, detail, correction, or perspective beyond what existing items capture.",
+          "description": "The candidate records knowledge not already captured by an existing item.",
           "properties": {
             "decision": {
               "const": "created",
@@ -50,7 +50,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "The candidate restates an existing item with no meaningful new information. Must not be used when any similar_item_decision has suggested_relation 'contradicts' — a contradiction is always novel.",
+          "description": "The candidate restates an existing item, adding no meaningful new information. A candidate that contradicts an existing item is never a duplicate.",
           "properties": {
             "decision": {
               "const": "duplicate",
@@ -67,7 +67,7 @@
           "type": "object"
         }
       ],
-      "description": "The classification outcome. 'created' is the default — only use 'duplicate' when the candidate makes the exact same claim as an existing item. A candidate assessed as contradicting any similar item MUST be 'created'."
+      "description": "Whether the candidate records new knowledge or duplicates an existing item."
     },
     "TriageItemReference": {
       "additionalProperties": false,
@@ -94,7 +94,7 @@
       "$ref": "#/definitions/TriageDecision"
     },
     "similar_item_decisions": {
-      "description": "One entry per similar item provided. Each assessment is independent of the outcome decision and must include a justification referencing both items.",
+      "description": "One assessment per provided similar item, each made independently of the novel/duplicate outcome.",
       "items": {
         "$ref": "#/definitions/SimilarItemClassification"
       },

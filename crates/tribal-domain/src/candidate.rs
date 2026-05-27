@@ -12,22 +12,22 @@ use crate::{KnowledgeKind, RelationHintType};
 // Candidate
 // ---------------------------------------------------------------------------
 
-/// A knowledge item candidate extracted from raw input.
+/// A single knowledge item extracted from the input.
 ///
-/// Candidates are the primary output of the extraction stage. Each
-/// candidate may progress through triage to become a committed
-/// knowledge item, or be discarded as a duplicate.
+/// The primary output of the extraction stage; each candidate is triaged
+/// against existing knowledge before it is committed or discarded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Candidate {
-    /// Classification of the candidate knowledge.
+    /// The kind of knowledge this item records.
     kind: KnowledgeKind,
-    /// The knowledge content.
+    /// The captured tacit knowledge, as one self-contained claim.
     content: String,
-    /// Suggested categorisation tags. Always expected from the
-    /// extraction prompt — an absent field is a parse error.
+    /// Categorisation tags for the item. Always present; an absent field is a
+    /// parse error.
     suggested_tags: Vec<String>,
-    /// Optional external references.
+    /// External anchors the item refers to, used to connect it to related
+    /// knowledge even when wording differs.
     #[serde(default)]
     suggested_references: Vec<SuggestedReference>,
 }
@@ -58,21 +58,28 @@ impl Candidate {
 // SuggestedReference
 // ---------------------------------------------------------------------------
 
-/// A suggested external reference for a candidate.
+/// A suggested external reference for a candidate: an anchor (a URL, file path,
+/// code symbol, or concept) that connects items even when their wording differs.
 ///
-/// The `reference_type` is a free string — the LLM may produce values
-/// outside the expected set. Validation and mapping to [`ReferenceKind`]
-/// happens during triage, not extraction.
+/// The `reference_type` is a free string; the LLM may produce values outside the
+/// expected set, and mapping to [`ReferenceKind`] happens during triage, not
+/// extraction.
 ///
 /// [`ReferenceKind`]: crate::ReferenceKind
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(
+        description = "An external anchor a candidate refers to (a URL, file path, code symbol, or concept) that can connect items even when their wording differs."
+    )
+)]
 pub struct SuggestedReference {
-    /// Free-form reference type (e.g. `"url"`, `"file_path"`).
+    /// What kind of anchor this is (e.g. `"url"`, `"file_path"`); free-form.
     reference_type: String,
-    /// The reference value.
+    /// The anchor itself: the URL, path, symbol, or concept.
     value: String,
-    /// Optional human-readable context.
+    /// Optional human-readable context for the anchor.
     #[serde(default)]
     description: Option<String>,
 }

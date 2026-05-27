@@ -20,24 +20,18 @@ use crate::error::StageError;
 /// out post-hoc or constrained only via prompt instructions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-#[schemars(description = "The type of relationship between two knowledge items. \
-    'supports' = source reinforces target. 'contradicts' = source conflicts \
-    with target. 'derived_from' = source was produced using target as input.")]
+#[schemars(
+    description = "How the source item relates to the target: supports (the source \
+    corroborates the target), contradicts (the source conflicts with or corrects it), \
+    or derived_from (the source was produced using the target as input)."
+)]
 pub(crate) enum IngestionRelationKind {
     /// Source provides evidence for, reinforces, or adds supporting
     /// context to target.
-    #[schemars(description = "Source reinforces or provides evidence for target. \
-        Both items point in the same direction.")]
     Supports,
     /// Source conflicts with, corrects, or undermines target.
-    #[schemars(
-        description = "Source conflicts with or corrects target. The two items \
-        cannot both be fully accurate simultaneously."
-    )]
     Contradicts,
     /// Source was logically derived from or builds upon target.
-    #[schemars(description = "Source was produced using target as input. Tracks \
-        intellectual provenance.")]
     DerivedFrom,
 }
 
@@ -61,16 +55,14 @@ impl From<IngestionRelationKind> for RelationKind {
 /// can return extra keys without breaking parsing.
 #[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
 #[schemars(
-    description = "Relationship edges between knowledge items. Return an empty \
-    relations array when no genuine semantic relationships exist — forced \
-    relations degrade graph quality."
+    description = "The relationship edges to create. Empty when no genuine relationship \
+    holds between the items."
 )]
 pub(crate) struct RelationOutput {
     /// The complete set of relations to create for this job.
     #[schemars(
-        description = "Directed relationship edges. Each edge connects a source item \
-        to a target item with a typed relationship. Only include edges grounded in \
-        the actual content of both items."
+        description = "Directed edges, each connecting a source item to a target item. \
+        Only edges grounded in the content of both items."
     )]
     pub relations: Vec<RelationEdge>,
 }
@@ -86,13 +78,12 @@ pub(crate) struct RelationEdge {
     #[schemars(description = "The item the relationship is asserted about.")]
     pub target: RelationTarget,
     /// The relationship type.
+    #[schemars(description = "How the source relates to the target.")]
     pub relation_type: IngestionRelationKind,
     /// The agent's reasoning for this relationship.
     #[serde(default)]
     #[schemars(
-        description = "Brief explanation referencing specific content from both items. \
-        Persists in the knowledge graph and informs future retrieval — write for \
-        someone encountering this relationship without the original context."
+        description = "Why this relationship holds, grounded in the content of both items."
     )]
     pub justification: Option<String>,
 }
