@@ -100,6 +100,9 @@ tera = "1"
 # JSON Schema generation
 schemars = { version = "0.8", features = ["uuid1"] }
 
+# JSON Schema validation
+jsonschema = "0.46"
+
 # MCP server
 rmcp = { version = "1", features = ["macros", "server", "client", "transport-io", "transport-async-rw", "transport-streamable-http-server"] }
 

@@ -29,6 +29,7 @@ tribal-inference.workspace = true
 tribal-telemetry.workspace = true
 
 [dev-dependencies]
+jsonschema.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 tribal-test-utils.workspace = true

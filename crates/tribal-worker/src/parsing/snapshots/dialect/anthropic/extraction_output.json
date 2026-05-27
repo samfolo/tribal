@@ -1,0 +1,131 @@
+{
+  "additionalProperties": false,
+  "definitions": {
+    "Candidate": {
+      "additionalProperties": false,
+      "description": "A knowledge item candidate extracted from raw input.\n\nCandidates are the primary output of the extraction stage. Each candidate may progress through triage to become a committed knowledge item, or be discarded as a duplicate.",
+      "properties": {
+        "content": {
+          "description": "The knowledge content.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/KnowledgeKind",
+          "description": "Classification of the candidate knowledge."
+        },
+        "suggested_references": {
+          "default": [],
+          "description": "Optional external references.",
+          "items": {
+            "$ref": "#/definitions/SuggestedReference"
+          },
+          "type": "array"
+        },
+        "suggested_tags": {
+          "description": "Suggested categorisation tags. Always expected from the extraction prompt — an absent field is a parse error.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "content",
+        "kind",
+        "suggested_tags"
+      ],
+      "type": "object"
+    },
+    "KnowledgeKind": {
+      "description": "The classification of a knowledge item.",
+      "enum": [
+        "fact",
+        "heuristic",
+        "procedure",
+        "decision_record"
+      ],
+      "type": "string"
+    },
+    "RelationHint": {
+      "additionalProperties": false,
+      "description": "An intra-batch relation hint between two candidates by index.\n\nEmitted by the extraction agent to indicate that one candidate is derived from another within the same batch.",
+      "properties": {
+        "hint_type": {
+          "$ref": "#/definitions/RelationHintType",
+          "description": "The type of relation hinted at."
+        },
+        "source_index": {
+          "description": "Index of the source candidate in the batch.",
+          "type": "integer"
+        },
+        "target_index": {
+          "description": "Index of the target candidate in the batch.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hint_type",
+        "source_index",
+        "target_index"
+      ],
+      "type": "object"
+    },
+    "RelationHintType": {
+      "description": "The type of an intra-batch relation hint emitted by the extraction agent.\n\nCurrently a single variant; the enum exists as an extension point for future hint types.",
+      "enum": [
+        "derived_from"
+      ],
+      "type": "string"
+    },
+    "SuggestedReference": {
+      "additionalProperties": false,
+      "description": "A suggested external reference for a candidate.\n\nThe `reference_type` is a free string — the LLM may produce values outside the expected set. Validation and mapping to [`ReferenceKind`] happens during triage, not extraction.\n\n[`ReferenceKind`]: crate::ReferenceKind",
+      "properties": {
+        "description": {
+          "default": null,
+          "description": "Optional human-readable context.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reference_type": {
+          "description": "Free-form reference type (e.g. `\"url\"`, `\"file_path\"`).",
+          "type": "string"
+        },
+        "value": {
+          "description": "The reference value.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference_type",
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Extracted knowledge items and optional intra-batch relationship hints.",
+  "properties": {
+    "candidates": {
+      "description": "Knowledge items extracted from the input. Each candidate should be atomic (one claim per item) and self-contained. Return an empty array if the input contains no extractable knowledge.",
+      "items": {
+        "$ref": "#/definitions/Candidate"
+      },
+      "type": "array"
+    },
+    "relation_hints": {
+      "default": [],
+      "description": "Derivation relationships between candidates in this batch. Only include when one candidate is genuinely derived from another. Optional — omit or return an empty array when no intra-batch relationships exist.",
+      "items": {
+        "$ref": "#/definitions/RelationHint"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "candidates"
+  ],
+  "title": "ExtractionOutput",
+  "type": "object"
+}

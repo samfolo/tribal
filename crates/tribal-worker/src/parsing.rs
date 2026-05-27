@@ -4,6 +4,9 @@ mod extraction;
 mod relation;
 mod triage;
 
+#[cfg(test)]
+mod schema_dialect_snapshots;
+
 pub(crate) use extraction::{ExtractionOutput, parse_extraction_response};
 #[cfg(test)]
 pub(crate) use relation::IngestionRelationKind;
