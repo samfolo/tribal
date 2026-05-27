@@ -41,4 +41,6 @@ pub use registry::{
 pub use request::{CompletionRequest, EmbeddingRequest, Message, ResponseFormat, Role};
 pub use response::{CompletionResponse, EmbeddingResponse};
 pub use schema_dialect::apply_dialect;
+#[cfg(feature = "test-helpers")]
+pub use schema_dialect::assert_dialect_invariants;
 pub use usage::{CompletionUsage, EmbeddingUsage, Usage};

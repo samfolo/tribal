@@ -101,24 +101,22 @@ pub fn apply_dialect(provider: ProviderKind, schema: Value) -> Value {
 /// Normalises a schema into the `OpenAI` strict structured-output subset. See
 /// the module-level Provenance note for the subset reference.
 fn apply_openai_strict(mut schema: Value) -> Value {
-    strip_unsupported_keywords(&mut schema, true);
+    strip_unsupported_keywords(&mut schema);
     unwrap_described_refs(&mut schema);
     strip_ref_siblings(&mut schema);
     rewrite_enums(&mut schema);
     force_required_and_nullable(&mut schema);
     close_all_objects(&mut schema);
-    debug_assert_dialect_invariants(&schema, true);
     schema
 }
 
 /// Normalises a schema into the `Anthropic` structured-output subset. See the
 /// module-level Provenance note for the subset reference.
 fn apply_anthropic_subset(mut schema: Value) -> Value {
-    strip_unsupported_keywords(&mut schema, false);
+    strip_unsupported_keywords(&mut schema);
     unwrap_described_refs(&mut schema);
     rewrite_enums(&mut schema);
     close_all_objects(&mut schema);
-    debug_assert_dialect_invariants(&schema, false);
     schema
 }
 
@@ -126,26 +124,25 @@ fn apply_anthropic_subset(mut schema: Value) -> Value {
 // Transform passes
 // ---------------------------------------------------------------------------
 
-/// Removes the meta declaration and the validation leaf keywords the subsets
-/// reject. `remove_default` also drops `default`, which the strict subset
-/// rejects; the looser subset accepts it, so it is retained there.
-fn strip_unsupported_keywords(root: &mut Value, remove_default: bool) {
+/// Removes the meta declaration and the keywords neither subset needs. `default`
+/// is dropped for both subsets: it is advisory metadata a grammar-constrained
+/// decode never consumes, so stripping it removes a provider-acceptance
+/// assumption at no functional cost.
+fn strip_unsupported_keywords(root: &mut Value) {
     walk_objects_mut(root, &mut |map| {
         map.remove(SCHEMA_KEY);
+        map.remove(DEFAULT_KEY);
         for keyword in FORBIDDEN_VALIDATION_KEYWORDS {
             map.remove(*keyword);
         }
         // `format` is rejected on numeric leaves (e.g. `uint32`); string
-        // formats stay, so the removal is scoped by type.
+        // formats are accepted, so the removal is scoped by type.
         let is_numeric = matches!(
             map.get(TYPE_KEY).and_then(Value::as_str),
             Some("integer" | "number")
         );
         if is_numeric {
             map.remove(FORMAT_KEY);
-        }
-        if remove_default {
-            map.remove(DEFAULT_KEY);
         }
     });
 }
@@ -332,23 +329,38 @@ fn force_required_and_nullable(root: &mut Value) {
     });
 }
 
-/// Adds `null` to a property's type union. Idempotent for an already-nullable
-/// scalar; a no-op for arrays (required-but-empty satisfies the field).
+/// Widens a property schema to also accept `null`, expressing the original
+/// field's optionality under the all-required strict subset.
+///
+/// Arrays are left unchanged (required-but-empty satisfies the field). A `$ref`
+/// or `const` cannot carry an inline null, so it is wrapped in an `anyOf` with a
+/// null branch; an `enum` widens both its type union and its value set; a plain
+/// typed leaf gains `null` in its type union. Idempotent for an already-nullable
+/// scalar.
 fn make_nullable(schema: &mut Value) {
-    let Some(map) = schema.as_object_mut() else {
+    let Some(map) = schema.as_object() else {
         return;
     };
     if map.get(TYPE_KEY).and_then(Value::as_str) == Some(ARRAY_TYPE) {
         return;
     }
-    if map.contains_key(REF_KEY) {
-        // No optional `$ref` field exists in the pipeline response types; a
-        // nullable reference would need an `anyOf` with a null branch.
-        debug_assert!(
-            false,
-            "optional $ref field is not expected under the strict subset"
-        );
+    // A reference or a const value has no place for an inline null, so wrap the
+    // whole node in an `anyOf` with a null branch.
+    if map.contains_key(REF_KEY) || map.contains_key(CONST_KEY) {
+        let original = schema.take();
+        *schema = anyof_with_null(original);
         return;
+    }
+
+    let Some(map) = schema.as_object_mut() else {
+        return;
+    };
+    // An enum constrains the value set, so `null` must join both the type union
+    // and the enum.
+    if let Some(Value::Array(values)) = map.get_mut(ENUM_KEY)
+        && !values.iter().any(Value::is_null)
+    {
+        values.push(Value::Null);
     }
     match map.get(TYPE_KEY).cloned() {
         Some(Value::String(scalar)) => {
@@ -360,6 +372,19 @@ fn make_nullable(schema: &mut Value) {
         }
         _ => {}
     }
+}
+
+/// Wraps a schema in `anyOf: [<schema>, { "type": "null" }]`, the nullable form
+/// for a node that cannot carry an inline null type (a `$ref` or a `const`).
+fn anyof_with_null(schema: Value) -> Value {
+    let mut null_branch = Map::new();
+    null_branch.insert(TYPE_KEY.to_owned(), Value::String(NULL_TYPE.to_owned()));
+    let mut wrapper = Map::new();
+    wrapper.insert(
+        ANY_OF_KEY.to_owned(),
+        Value::Array(vec![schema, Value::Object(null_branch)]),
+    );
+    Value::Object(wrapper)
 }
 
 /// Sets `additionalProperties: false` on every object schema that does not
@@ -425,6 +450,7 @@ fn walk_objects_mut_with_value(root: &mut Value, visit: &mut impl FnMut(&mut Val
 }
 
 /// Visits every object node in `root`, depth-first (read-only).
+#[cfg(any(test, feature = "test-helpers"))]
 fn for_each_object(root: &Value, visit: &mut impl FnMut(&Map<String, Value>)) {
     match root {
         Value::Object(map) => {
@@ -475,41 +501,68 @@ fn branch_const_signature(branch: &Value) -> Vec<(String, Value)> {
     signature
 }
 
-/// Asserts the transformed schema satisfies the subset's structural invariants:
-/// no combinator both subsets reject survives, and every object is closed (and,
-/// under `strict`, all-required).
+/// Combinators neither provider subset accepts on a transformed schema.
+#[cfg(any(test, feature = "test-helpers"))]
+const FORBIDDEN_COMBINATORS: &[&str] = &[ONE_OF_KEY, ALL_OF_KEY, "if", "then", "else", "not"];
+
+/// Asserts a transformed schema satisfies its provider subset's invariants: no
+/// forbidden combinator or leaf keyword survives, the meta and `default`
+/// keywords are stripped, numeric leaves carry no `format`, and every object is
+/// closed. `strict` adds the OpenAI-only requirement that every object lists all
+/// its properties as required.
 ///
-/// This is the dialect's postcondition over the complex recursive rewrites,
-/// holding for every transformed schema rather than only the pipeline response
-/// types. A violation is a bug in a transform pass, not a runtime condition, so
-/// it fails loudly in debug and is inert in release. Keyword stripping is a
-/// flat removal with its own unit coverage, so it is not re-asserted here.
-fn debug_assert_dialect_invariants(root: &Value, strict: bool) {
-    for_each_object(root, &mut |map| {
-        debug_assert!(
-            !map.contains_key(ONE_OF_KEY),
-            "oneOf survived the dialect transform"
-        );
-        debug_assert!(
-            !map.contains_key(ALL_OF_KEY),
-            "allOf survived the dialect transform"
-        );
-        debug_assert!(
-            !(is_object_schema(map)
-                && map.get(ADDITIONAL_PROPERTIES_KEY) != Some(&Value::Bool(false))),
-            "object left open by the dialect transform"
-        );
-        if strict {
-            debug_assert!(
-                all_properties_required(map),
-                "object left with an optional property under the strict transform"
+/// This is the single source of subset-invariant truth — reused by the dialect's
+/// own tests and by cross-crate snapshot tests — and it checks against the same
+/// keyword lists the transform strips by, so the assertion cannot drift from the
+/// transform.
+///
+/// # Panics
+///
+/// Panics if `schema` violates any invariant of the selected subset.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn assert_dialect_invariants(schema: &Value, strict: bool) {
+    for_each_object(schema, &mut |map| {
+        for combinator in FORBIDDEN_COMBINATORS {
+            assert!(
+                !map.contains_key(*combinator),
+                "combinator `{combinator}` survived: {map:?}"
             );
         }
+        assert!(!map.contains_key(SCHEMA_KEY), "$schema survived: {map:?}");
+        assert!(!map.contains_key(DEFAULT_KEY), "default survived: {map:?}");
+        for keyword in FORBIDDEN_VALIDATION_KEYWORDS {
+            assert!(
+                !map.contains_key(*keyword),
+                "leaf keyword `{keyword}` survived: {map:?}"
+            );
+        }
+        let is_numeric = matches!(
+            map.get(TYPE_KEY).and_then(Value::as_str),
+            Some("integer" | "number")
+        );
+        assert!(
+            !(is_numeric && map.contains_key(FORMAT_KEY)),
+            "numeric format survived: {map:?}"
+        );
+
+        if !is_object_schema(map) {
+            return;
+        }
+        assert_eq!(
+            map.get(ADDITIONAL_PROPERTIES_KEY),
+            Some(&Value::Bool(false)),
+            "object not closed: {map:?}"
+        );
+        assert!(
+            !strict || all_properties_required(map),
+            "object left with an optional property under the strict subset: {map:?}"
+        );
     });
 }
 
 /// Whether every property of an object node appears in its `required` list. A
 /// node without `properties` is vacuously satisfied.
+#[cfg(any(test, feature = "test-helpers"))]
 fn all_properties_required(map: &Map<String, Value>) -> bool {
     let Some(properties) = map.get(PROPERTIES_KEY).and_then(Value::as_object) else {
         return true;
@@ -723,6 +776,57 @@ mod tests {
     }
 
     #[test]
+    fn test_openai_wraps_optional_ref_as_nullable_anyof() {
+        // A described `$ref` field is unwrapped, stripped to a bare `$ref`, then
+        // — being optional — forced required and wrapped in a nullable anyOf.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "ref_field": {
+                    "description": "an optional reference",
+                    "allOf": [{ "$ref": "#/definitions/Inner" }],
+                },
+            },
+            "required": [],
+            "definitions": {
+                "Inner": {
+                    "type": "object",
+                    "properties": { "n": { "type": "string" } },
+                    "required": ["n"],
+                },
+            },
+        });
+        let result = apply_openai(schema);
+        assert_eq!(result["required"], json!(["ref_field"]));
+        let branches = result["properties"]["ref_field"]["anyOf"]
+            .as_array()
+            .expect("optional $ref wrapped in a nullable anyOf");
+        assert!(branches.iter().any(|b| b.get("$ref").is_some()));
+        assert!(branches.iter().any(|b| b["type"] == json!("null")));
+    }
+
+    #[test]
+    fn test_openai_widens_optional_enum_with_null() {
+        // An optional inline enum is forced required and widened so `null` is
+        // accepted in both the type union and the enum set.
+        let schema = json!({
+            "type": "object",
+            "properties": { "kind": { "type": "string", "enum": ["a", "b"] } },
+            "required": [],
+        });
+        let result = apply_openai(schema);
+        assert_eq!(result["required"], json!(["kind"]));
+        assert_eq!(
+            result["properties"]["kind"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(
+            result["properties"]["kind"]["enum"],
+            json!(["a", "b", null])
+        );
+    }
+
+    #[test]
     fn test_anthropic_leaves_optionals_omitted_from_required() {
         let schema = json!({
             "type": "object",
@@ -777,7 +881,10 @@ mod tests {
     }
 
     #[test]
-    fn test_openai_strips_default_anthropic_keeps_it() {
+    fn test_both_subsets_strip_default() {
+        // `default` is advisory metadata a grammar-constrained decode never
+        // consumes, so both subsets strip it rather than risk a provider that
+        // rejects it.
         let schema = json!({
             "type": "object",
             "properties": {
@@ -790,9 +897,10 @@ mod tests {
                 .get("default")
                 .is_none()
         );
-        assert_eq!(
-            apply_anthropic(schema)["properties"]["hints"]["default"],
-            json!([])
+        assert!(
+            apply_anthropic(schema)["properties"]["hints"]
+                .get("default")
+                .is_none()
         );
     }
 
@@ -918,11 +1026,11 @@ mod tests {
     }
 
     #[test]
-    fn test_openai_leaves_no_combinators_on_composite() {
-        let result = apply_openai(representative_schema());
-        for_each_object(&result, &mut |map| {
-            assert!(!map.contains_key(ONE_OF_KEY), "oneOf survived");
-            assert!(!map.contains_key(ALL_OF_KEY), "allOf survived");
-        });
+    fn test_dialect_invariants_hold_on_composite() {
+        // The reusable assertion run over the composite covers the full subset
+        // invariant set (combinators, leaf keywords, closure, strict-required)
+        // for both dialects.
+        assert_dialect_invariants(&apply_openai(representative_schema()), true);
+        assert_dialect_invariants(&apply_anthropic(representative_schema()), false);
     }
 }
