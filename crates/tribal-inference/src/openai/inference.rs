@@ -13,8 +13,8 @@ use tribal_domain::{ProviderKind, span_attrs};
 
 use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
-    Message, ProviderIdentity, ResponseFormat, Role,
-    capabilities::{MaxOutputTokensParam, reconcile_temperature, resolve},
+    Message, ProviderIdentity, ResponseFormat, Role, apply_dialect,
+    capabilities::{MaxOutputTokensParam, StructuredOutputMode, reconcile_temperature, resolve},
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
     http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
@@ -304,10 +304,12 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OpenAiCh
         });
     }
 
-    let response_format = request.response_format.as_ref().map(map_response_format);
-
     // -- Capability reconciliation --
     let caps = resolve(ProviderKind::OpenAi, model);
+    let response_format = request
+        .response_format
+        .as_ref()
+        .map(|format| map_response_format(format, caps.structured_output_mode));
     let temperature = reconcile_temperature(caps.sampling, request.temperature, model);
     let (max_tokens, max_completion_tokens) = match caps.max_output_tokens_param {
         MaxOutputTokensParam::MaxTokens => (request.max_tokens, None),
@@ -329,14 +331,21 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OpenAiCh
     }
 }
 
-fn map_response_format(format: &ResponseFormat) -> serde_json::Value {
+/// Maps a [`ResponseFormat`] to the `OpenAI` `response_format` envelope. A
+/// schema is normalised into the strict dialect and marked `strict` per the
+/// resolved structured-output mode.
+fn map_response_format(
+    format: &ResponseFormat,
+    structured_output_mode: StructuredOutputMode,
+) -> serde_json::Value {
     match format {
         ResponseFormat::Json => serde_json::json!({"type": "json_object"}),
         ResponseFormat::JsonSchema { schema } => serde_json::json!({
             "type": "json_schema",
             "json_schema": {
                 "name": "response",
-                "schema": schema,
+                "schema": apply_dialect(ProviderKind::OpenAi, schema.clone()),
+                "strict": structured_output_mode.requires_strict(),
             },
         }),
     }
@@ -552,8 +561,19 @@ mod tests {
     #[tokio::test]
     async fn test_chat_sends_response_format_json_schema() {
         let server = MockServer::start().await;
-        let schema =
-            serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        });
+        // The wire schema is the strict-dialect normalisation: closed object,
+        // and the envelope carries `strict: true` (gpt-4o-mini resolves strict).
+        let expected_schema = serde_json::json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": false,
+        });
 
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
@@ -564,7 +584,8 @@ mod tests {
                     "type": "json_schema",
                     "json_schema": {
                         "name": "response",
-                        "schema": schema.clone(),
+                        "schema": expected_schema,
+                        "strict": true,
                     },
                 },
             })))
@@ -585,6 +606,36 @@ mod tests {
             response_format: Some(ResponseFormat::JsonSchema { schema }),
         };
         let _ = provider.complete(request).await.unwrap();
+    }
+
+    #[test]
+    fn test_map_response_format_strict_marks_schema_strict() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        });
+        let result = map_response_format(
+            &ResponseFormat::JsonSchema { schema },
+            StructuredOutputMode::Strict,
+        );
+        assert_eq!(result["json_schema"]["strict"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_map_response_format_advisory_does_not_mark_schema_strict() {
+        // The advisory branch is unreachable through `resolve` today; a
+        // constructed mode is the only coverage of the non-strict envelope.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        });
+        let result = map_response_format(
+            &ResponseFormat::JsonSchema { schema },
+            StructuredOutputMode::Advisory,
+        );
+        assert_eq!(result["json_schema"]["strict"], serde_json::json!(false));
     }
 
     #[tokio::test]

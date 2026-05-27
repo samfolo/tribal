@@ -8,11 +8,11 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::span_attrs;
+use tribal_domain::{ProviderKind, span_attrs};
 
 use crate::{
     CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
-    Message, ProviderIdentity, ResponseFormat, Role,
+    Message, ProviderIdentity, ResponseFormat, Role, apply_dialect,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
     http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
 };
@@ -312,7 +312,9 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OllamaCh
 fn map_response_format(format: &ResponseFormat) -> serde_json::Value {
     match format {
         ResponseFormat::Json => serde_json::Value::String("json".to_owned()),
-        ResponseFormat::JsonSchema { schema } => schema.clone(),
+        ResponseFormat::JsonSchema { schema } => {
+            apply_dialect(ProviderKind::Ollama, schema.clone())
+        }
     }
 }
 

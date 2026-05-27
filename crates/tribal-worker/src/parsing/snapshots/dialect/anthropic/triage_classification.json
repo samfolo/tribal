@@ -1,0 +1,114 @@
+{
+  "additionalProperties": false,
+  "definitions": {
+    "RelationSuggestion": {
+      "description": "The triage agent's classification of a similar item before any relationship is created.\n\nOverlaps with [`RelationKind`] but is distinct: `Supersedes` and `DerivedFrom` are never suggested by triage, and `Unrelated` is never stored as a relation row.",
+      "enum": [
+        "supports",
+        "contradicts",
+        "unrelated"
+      ],
+      "type": "string"
+    },
+    "SimilarItemClassification": {
+      "additionalProperties": false,
+      "description": "An independent assessment of one existing item's relationship to the candidate.",
+      "properties": {
+        "item": {
+          "$ref": "#/definitions/TriageItemReference",
+          "description": "The similar item being assessed, referenced by its context index in the provided similar items."
+        },
+        "justification": {
+          "description": "Brief explanation referencing specific content from both items. Explains why this relationship classification was chosen.",
+          "type": "string"
+        },
+        "suggested_relation": {
+          "$ref": "#/definitions/RelationSuggestion",
+          "description": "The relationship between the existing item and the candidate. If 'contradicts', the outcome decision must be 'created' — contradictory information cannot be a duplicate."
+        }
+      },
+      "required": [
+        "item",
+        "justification",
+        "suggested_relation"
+      ],
+      "type": "object"
+    },
+    "TriageDecision": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "description": "The candidate contains information not already captured. This is the default — use when the candidate adds any new context, detail, correction, or perspective beyond what existing items capture.",
+          "properties": {
+            "decision": {
+              "const": "created",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The candidate restates an existing item with no meaningful new information. Must not be used when any similar_item_decision has suggested_relation 'contradicts' — a contradiction is always novel.",
+          "properties": {
+            "decision": {
+              "const": "duplicate",
+              "type": "string"
+            },
+            "matched_item": {
+              "$ref": "#/definitions/TriageItemReference",
+              "description": "The similar item this candidate duplicates, referenced by its context index in the provided similar items."
+            }
+          },
+          "required": [
+            "decision",
+            "matched_item"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "The classification outcome. 'created' is the default — only use 'duplicate' when the candidate makes the exact same claim as an existing item. A candidate assessed as contradicting any similar item MUST be 'created'."
+    },
+    "TriageItemReference": {
+      "additionalProperties": false,
+      "description": "A reference to one of the provided similar items by its context index.",
+      "properties": {
+        "context_index": {
+          "type": "integer"
+        },
+        "kind": {
+          "const": "context_index",
+          "type": "string"
+        }
+      },
+      "required": [
+        "context_index",
+        "kind"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "The triage classification for a single candidate. Contains the novel/duplicate decision and independent per-item relationship assessments.",
+  "properties": {
+    "outcome": {
+      "$ref": "#/definitions/TriageDecision",
+      "description": "The classification decision. Default to 'created' (novel) unless the candidate makes the exact same specific claim as an existing item with no meaningful new information. When uncertain, choose 'created'."
+    },
+    "similar_item_decisions": {
+      "description": "One entry per similar item provided. Each assessment is independent of the outcome decision and must include a justification referencing both items.",
+      "items": {
+        "$ref": "#/definitions/SimilarItemClassification"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "outcome",
+    "similar_item_decisions"
+  ],
+  "title": "TriageClassification",
+  "type": "object"
+}
