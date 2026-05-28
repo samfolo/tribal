@@ -1,8 +1,7 @@
 //! OAuth client repository: trait definition and Postgres implementation.
 //!
-//! Stores the records produced by the DCR `/register` endpoint. CIMD
-//! clients are not persisted; they live at their declared metadata URL
-//! and are resolved per-request by the CIMD fetcher.
+//! Stores the records produced by the dynamic client registration
+//! `/register` endpoint.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

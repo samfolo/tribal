@@ -4,10 +4,11 @@
 //!
 //! Owns the bearer-token resource-server plane (validation, scope
 //! enforcement, middleware response shaping) and the OAuth 2.1
-//! authorisation-server endpoints (CIMD discovery, DCR, /authorize,
-//! /token, well-known metadata). Token issuance from any path
-//! produces a row in the existing `auth_tokens` store that the
-//! bearer middleware verifies identically to a CLI-minted token.
+//! authorisation-server endpoints (dynamic client registration,
+//! /authorize, /token, and the well-known metadata documents). Token
+//! issuance from any path produces a row in the existing `auth_tokens`
+//! store that the bearer middleware verifies identically to a
+//! CLI-minted token.
 
 mod authenticator;
 mod context;

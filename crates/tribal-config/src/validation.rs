@@ -10,9 +10,8 @@ use crate::{
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
     sections::{
-        MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_CIMD_FETCH_TIMEOUT_SECONDS, MAX_CIMD_MAX_ENTRIES,
-        MAX_CIMD_MAX_RESPONSE_BYTES, MIN_AUTHORIZATION_CODE_TTL_SECONDS,
-        MIN_CIMD_MAX_RESPONSE_BYTES, TransportKind, TribalConfig,
+        MAX_AUTHORIZATION_CODE_TTL_SECONDS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind,
+        TribalConfig,
     },
 };
 
@@ -247,64 +246,6 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
             field: ConfigPath::from_static("oauth.authorization_code_ttl_seconds"),
             value: code_ttl,
             limit: MAX_AUTHORIZATION_CODE_TTL_SECONDS,
-        });
-    }
-
-    let timeout = config.oauth.cimd.fetch_timeout_seconds;
-    if timeout == 0 {
-        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
-            "oauth.cimd.fetch_timeout_seconds",
-        )));
-    } else if timeout > MAX_CIMD_FETCH_TIMEOUT_SECONDS {
-        diags.push(ValidationError::AboveMax {
-            field: ConfigPath::from_static("oauth.cimd.fetch_timeout_seconds"),
-            value: timeout,
-            limit: MAX_CIMD_FETCH_TIMEOUT_SECONDS,
-        });
-    }
-
-    if config.oauth.cimd.cache_min_seconds > config.oauth.cimd.cache_max_seconds {
-        diags.push(ValidationError::FieldOrdering {
-            subject: FieldValue {
-                field: ConfigPath::from_static("oauth.cimd.cache_max_seconds"),
-                value: config.oauth.cimd.cache_max_seconds,
-            },
-            bound: FieldValue {
-                field: ConfigPath::from_static("oauth.cimd.cache_min_seconds"),
-                value: config.oauth.cimd.cache_min_seconds,
-            },
-            relation: OrderRelation::AtLeast,
-        });
-    }
-
-    let bytes_u64 = u64::try_from(config.oauth.cimd.max_response_bytes).unwrap_or(u64::MAX);
-    let min_bytes_u64 = u64::try_from(MIN_CIMD_MAX_RESPONSE_BYTES).unwrap_or(u64::MAX);
-    let max_bytes_u64 = u64::try_from(MAX_CIMD_MAX_RESPONSE_BYTES).unwrap_or(u64::MAX);
-    if bytes_u64 < min_bytes_u64 {
-        diags.push(ValidationError::BelowMin {
-            field: ConfigPath::from_static("oauth.cimd.max_response_bytes"),
-            value: bytes_u64,
-            min: min_bytes_u64,
-        });
-    } else if bytes_u64 > max_bytes_u64 {
-        diags.push(ValidationError::AboveMax {
-            field: ConfigPath::from_static("oauth.cimd.max_response_bytes"),
-            value: bytes_u64,
-            limit: max_bytes_u64,
-        });
-    }
-
-    let entries_u64 = u64::try_from(config.oauth.cimd.max_entries).unwrap_or(u64::MAX);
-    let max_entries_u64 = u64::try_from(MAX_CIMD_MAX_ENTRIES).unwrap_or(u64::MAX);
-    if entries_u64 == 0 {
-        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
-            "oauth.cimd.max_entries",
-        )));
-    } else if entries_u64 > max_entries_u64 {
-        diags.push(ValidationError::AboveMax {
-            field: ConfigPath::from_static("oauth.cimd.max_entries"),
-            value: entries_u64,
-            limit: max_entries_u64,
         });
     }
 }

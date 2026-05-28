@@ -34,7 +34,7 @@ pub const RESPONSE_TYPE_CODE: &str = "code";
 /// Sole supported grant type advertised in v1 (no refresh tokens).
 pub const GRANT_TYPE_AUTHORIZATION_CODE: &str = "authorization_code";
 
-/// Token endpoint auth method advertised for CIMD public clients.
+/// Token endpoint auth method advertised for public clients.
 pub const AUTH_METHOD_NONE: &str = "none";
 
 /// Token endpoint auth method advertised for DCR confidential clients.
@@ -90,8 +90,7 @@ pub fn protected_resource_metadata(runtime: &OAuthRuntimeConfig) -> ProtectedRes
 // AuthorizationServerMetadata
 // ---------------------------------------------------------------------------
 
-/// RFC 8414 Authorization Server Metadata document, extended with the
-/// MCP 2025-11-25 CIMD flag.
+/// RFC 8414 Authorization Server Metadata document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorizationServerMetadata {
     /// Canonical authorisation-server issuer URL.
@@ -111,8 +110,6 @@ pub struct AuthorizationServerMetadata {
     pub code_challenge_methods_supported: Vec<String>,
     /// Token endpoint auth methods supported.
     pub token_endpoint_auth_methods_supported: Vec<String>,
-    /// Whether CIMD discovery is supported.
-    pub client_id_metadata_document_supported: bool,
     /// Catalogue of supported scopes.
     pub scopes_supported: Vec<String>,
 }
@@ -140,7 +137,6 @@ pub fn authorization_server_metadata(runtime: &OAuthRuntimeConfig) -> Authorizat
         grant_types_supported: vec![GRANT_TYPE_AUTHORIZATION_CODE.to_owned()],
         code_challenge_methods_supported: vec![CODE_CHALLENGE_METHOD_S256.to_owned()],
         token_endpoint_auth_methods_supported,
-        client_id_metadata_document_supported: true,
         scopes_supported: SCOPES_CATALOGUE.iter().map(|s| (*s).to_owned()).collect(),
     }
 }
@@ -182,13 +178,12 @@ mod tests {
     }
 
     #[test]
-    fn test_authorization_server_metadata_advertises_s256_and_cimd_support() {
+    fn test_authorization_server_metadata_advertises_s256() {
         let doc = authorization_server_metadata(&runtime());
         assert_eq!(
             doc.code_challenge_methods_supported,
             vec!["S256".to_owned()]
         );
-        assert!(doc.client_id_metadata_document_supported);
         assert_eq!(doc.response_types_supported, vec!["code".to_owned()]);
         assert_eq!(
             doc.grant_types_supported,

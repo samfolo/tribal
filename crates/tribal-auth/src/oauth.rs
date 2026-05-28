@@ -1,11 +1,10 @@
 //! OAuth 2.1 authorisation-server surface.
 //!
 //! Implements the metadata documents, the authorisation and token
-//! endpoints, the CIMD fetcher with SSRF defences, the DCR
-//! registration endpoint, and PKCE S256 verification. Successful
-//! token issuance writes into the same `auth_tokens` store the
-//! bearer middleware reads from; the OAuth flow does not introduce
-//! a parallel token plane.
+//! endpoints, the dynamic client registration endpoint, and PKCE S256
+//! verification. Successful token issuance writes into the same
+//! `auth_tokens` store the bearer middleware reads from; the OAuth
+//! flow does not introduce a parallel token plane.
 
 pub mod authorize;
 pub mod challenge;
