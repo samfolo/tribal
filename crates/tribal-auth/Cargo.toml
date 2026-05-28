@@ -1,5 +1,5 @@
 [package]
-name = "tribal-mcp"
+name = "tribal-auth"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true
@@ -7,41 +7,36 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 axum.workspace = true
+base64.workspace = true
 chrono = { workspace = true, features = ["serde"] }
-dashmap.workspace = true
 http.workspace = true
-rmcp.workspace = true
+rand.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
-strum.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 tracing.workspace = true
 typed-builder.workspace = true
-uuid.workspace = true
+url.workspace = true
 
-tribal-auth.workspace = true
 tribal-common.workspace = true
 tribal-config.workspace = true
 tribal-db.workspace = true
 tribal-domain.workspace = true
-tribal-inference.workspace = true
-tribal-telemetry.workspace = true
 
 [features]
 test-helpers = []
 
 [dev-dependencies]
-opentelemetry.workspace = true
-opentelemetry_sdk.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
-tracing-opentelemetry.workspace = true
-tracing-subscriber.workspace = true
+wiremock.workspace = true
 
-tribal-auth = { workspace = true, features = ["test-helpers"] }
 tribal-common = { workspace = true, features = ["test-helpers"] }
 tribal-test-utils.workspace = true

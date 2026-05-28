@@ -6,6 +6,7 @@ members = [
     "crates/tribal-db",
     "crates/tribal-inference",
     "crates/tribal-worker",
+    "crates/tribal-auth",
     "crates/tribal-mcp",
     "crates/tribal-telemetry",
     "crates/tribal-config",
@@ -72,6 +73,9 @@ strum = { version = "0.28", features = ["derive"] }
 # Hashing
 fnv = "1"
 sha2 = "0.10"
+
+# Constant-time cryptographic comparisons
+subtle = "2"
 
 # Encoding
 base64 = "0.22"
@@ -152,6 +156,7 @@ wiremock = "0.6"
 # Internal crates
 tribal = { path = "crates/tribal-server" }
 
+tribal-auth = { path = "crates/tribal-auth" }
 tribal-common = { path = "crates/tribal-common" }
 tribal-config = { path = "crates/tribal-config" }
 tribal-db = { path = "crates/tribal-db" }

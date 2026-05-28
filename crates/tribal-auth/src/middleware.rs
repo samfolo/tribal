@@ -2,7 +2,7 @@
 //!
 //! Extracts the `Authorization: Bearer <token>` header, verifies the
 //! token via [`Authenticator`], and inserts the resolved
-//! [`AuthenticatedPrincipal`] into the request extensions.  Returns
+//! [`AuthenticatedPrincipal`] into the request extensions. Returns
 //! HTTP 401 or 503 on failure.
 
 use std::sync::Arc;
@@ -16,10 +16,13 @@ use axum::{
 use sqlx::PgPool;
 use tracing::warn;
 
-use crate::auth::{
-    AUTH_FAILURE_REASON_INVALID, AUTH_FAILURE_REASON_MISSING, AUTH_FAILURE_REASON_UNAVAILABLE,
-    AuthError, Authenticator, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED,
-    DISPLAY_TOKEN_REVOKED,
+use crate::{
+    authenticator::Authenticator,
+    error::{
+        AUTH_FAILURE_REASON_INVALID, AUTH_FAILURE_REASON_MISSING, AUTH_FAILURE_REASON_UNAVAILABLE,
+        AuthError, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED,
+        DISPLAY_TOKEN_REVOKED,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -47,7 +50,7 @@ const DATABASE_UNAVAILABLE_MESSAGE: &str = "database unavailable";
 
 /// Shared state for the authentication middleware.
 ///
-/// Cloned into every request handler.  Holds references to the MCP
+/// Cloned into every request handler. Holds references to the MCP
 /// connection pool and the authenticator.
 #[derive(Clone)]
 pub struct AuthMiddlewareState {
@@ -81,8 +84,8 @@ impl AuthMiddlewareState {
 ///
 /// * **401 Unauthorised** with `WWW-Authenticate: Bearer` for missing,
 ///   invalid, expired, or revoked tokens.
-/// * **503 Service Unavailable** when the database pool is exhausted or
-///   the database is unreachable.
+/// * **503 Service Unavailable** when the database pool is exhausted
+///   or the database is unreachable.
 pub async fn require_bearer_auth(
     State(state): State<AuthMiddlewareState>,
     mut request: axum::extract::Request,
@@ -213,9 +216,9 @@ mod tests {
     use tribal_test_utils::{MockAuthTokenRepository, MockPrincipalRepository, lazy_pool};
 
     use super::*;
-    use crate::auth::{
-        AuthError, Authenticator, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN,
-        DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED,
+    use crate::{
+        authenticator::Authenticator,
+        error::{DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED},
     };
 
     // -- Helpers ------------------------------------------------------------
@@ -251,7 +254,7 @@ mod tests {
         )
     }
 
-    // -- Full middleware tests (via oneshot) ---------------------------------
+    // -- Full middleware tests (via oneshot) --------------------------------
     // These exercise the axum layer end-to-end for paths that resolve
     // before the pool acquire step.
 

@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use rmcp::ServiceExt;
 use tokio_util::sync::CancellationToken;
+use tribal_auth::{AuthContext, Authenticator, TransportAuthStrategy};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{
-    AppState, AuthContext, Authenticator, ConnectionRepositories, HandlerConfig, SessionContext,
-    SessionProject, TransportAuthStrategy, TribalServerHandler,
+    AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
+    TribalServerHandler,
 };
 
 use crate::error::AppError;
