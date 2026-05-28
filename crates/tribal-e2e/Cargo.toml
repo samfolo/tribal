@@ -17,10 +17,12 @@ tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+url.workspace = true
 wiremock.workspace = true
 
 tribal = { workspace = true, features = ["test-helpers"] }
 
+tribal-auth.workspace = true
 tribal-common.workspace = true
 tribal-config.workspace = true
 tribal-db.workspace = true

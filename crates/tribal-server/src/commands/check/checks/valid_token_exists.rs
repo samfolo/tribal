@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use sqlx::PgPool;
+use tribal_auth::{AuthError, Authenticator};
 use tribal_config::{Auth, CredentialsReadError, ENV_AUTH_TOKEN, TransportKind, read_credentials};
 use tribal_db::{AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository};
-use tribal_auth::{AuthError, Authenticator};
 
 use super::{
     state::CheckState,

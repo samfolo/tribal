@@ -198,13 +198,19 @@ mod tests {
     #[test]
     fn test_default_values() {
         let config = OAuthConfig::default();
-        assert_eq!(config.access_token_ttl_hours, DEFAULT_ACCESS_TOKEN_TTL_HOURS);
+        assert_eq!(
+            config.access_token_ttl_hours,
+            DEFAULT_ACCESS_TOKEN_TTL_HOURS
+        );
         assert_eq!(
             config.authorization_code_ttl_seconds,
             DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,
         );
         assert!(config.dcr_enabled);
-        assert_eq!(config.cimd.max_response_bytes, DEFAULT_CIMD_MAX_RESPONSE_BYTES);
+        assert_eq!(
+            config.cimd.max_response_bytes,
+            DEFAULT_CIMD_MAX_RESPONSE_BYTES
+        );
     }
 
     #[test]

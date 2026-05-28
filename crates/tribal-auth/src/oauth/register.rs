@@ -16,9 +16,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use tribal_common::sha256_hex;
-use tribal_db::{
-    NewOauthClient, OauthClientRepository, PgOauthClientRepository,
-};
+use tribal_db::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
 use tribal_domain::{ApplicationType, OauthClient, TokenEndpointAuthMethod};
 use url::Url;
 
@@ -123,6 +121,12 @@ impl RegisterState {
 // ---------------------------------------------------------------------------
 
 /// `POST /register` handler.
+///
+/// # Panics
+///
+/// Panics if the static `Cache-Control` header value fails to parse;
+/// this is a constant literal, so the failure represents a build-time
+/// regression rather than a runtime risk.
 pub async fn handle_register(
     axum::extract::State(state): axum::extract::State<RegisterState>,
     Json(req): Json<RegisterRequest>,
@@ -137,7 +141,10 @@ pub async fn handle_register(
     }
 }
 
-async fn register(state: &RegisterState, req: RegisterRequest) -> Result<RegisterResponse, OAuthError> {
+async fn register(
+    state: &RegisterState,
+    req: RegisterRequest,
+) -> Result<RegisterResponse, OAuthError> {
     if req.redirect_uris.is_empty() {
         return Err(OAuthError::InvalidRedirectUri {
             description: "redirect_uris must contain at least one entry".to_owned(),
@@ -151,7 +158,9 @@ async fn register(state: &RegisterState, req: RegisterRequest) -> Result<Registe
     let grant_types = req
         .grant_types
         .unwrap_or_else(|| vec!["authorization_code".to_owned()]);
-    let response_types = req.response_types.unwrap_or_else(|| vec!["code".to_owned()]);
+    let response_types = req
+        .response_types
+        .unwrap_or_else(|| vec!["code".to_owned()]);
 
     validate_grant_response_consistency(&grant_types, &response_types)?;
 

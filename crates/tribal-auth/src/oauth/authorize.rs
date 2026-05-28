@@ -212,11 +212,10 @@ async fn issue_code(
     redirect_uri: &Url,
     _registered_redirect_uris: &[Url],
 ) -> Result<Response, OAuthError> {
-    let challenge = CodeChallenge::parse(&query.code_challenge).map_err(|_| {
-        OAuthError::InvalidRequest {
+    let challenge =
+        CodeChallenge::parse(&query.code_challenge).map_err(|_| OAuthError::InvalidRequest {
             description: "code_challenge is malformed".to_owned(),
-        }
-    })?;
+        })?;
 
     let resource = query.resource.as_deref().ok_or_else(|| {
         tracing::warn!(
@@ -266,9 +265,11 @@ async fn issue_code(
 
     let raw_code = generate_random_code();
     let code_hash = sha256_hex(&raw_code);
-    let expires_at = Utc::now() + chrono::Duration::from_std(state.runtime.authorization_code_ttl)
-        .map_err(|err| OAuthError::Internal {
-            description: format!("authorization_code_ttl conversion failed: {err}"),
+    let expires_at = Utc::now()
+        + chrono::Duration::from_std(state.runtime.authorization_code_ttl).map_err(|err| {
+            OAuthError::Internal {
+                description: format!("authorization_code_ttl conversion failed: {err}"),
+            }
         })?;
 
     let new = NewOauthAuthorizationCode::builder()
@@ -325,11 +326,19 @@ fn consent_redirect_response(
     let host = redirect_uri.host_str().unwrap_or("");
     let body = build_consent_html(&target, host, client_id, scope);
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, "text/html; charset=utf-8".parse().unwrap());
+    headers.insert(
+        header::CONTENT_TYPE,
+        "text/html; charset=utf-8".parse().unwrap(),
+    );
     (StatusCode::OK, headers, body).into_response()
 }
 
-fn build_consent_html(target: &str, redirect_host: &str, client_id: &str, scope: Option<&str>) -> String {
+fn build_consent_html(
+    target: &str,
+    redirect_host: &str,
+    client_id: &str,
+    scope: Option<&str>,
+) -> String {
     let scope_display = scope.unwrap_or("(no explicit scope requested)");
     let warning_html = if LOOPBACK_HOSTS.contains(&redirect_host) {
         "<p>This is a loopback redirect. Any process listening on this host can receive the code; only proceed if you started a local client expecting it.</p>"
@@ -368,8 +377,11 @@ fn is_probable_url(client_id: &str) -> bool {
     // scheme; DCR-issued ids from this server are 43-char base64url
     // with no colon, so this discriminator is unambiguous.
     matches!(
-        Url::parse(client_id).map(|u| u.scheme().to_owned()).ok().as_deref(),
-        Some("https") | Some("http"),
+        Url::parse(client_id)
+            .map(|u| u.scheme().to_owned())
+            .ok()
+            .as_deref(),
+        Some("https" | "http"),
     )
 }
 
@@ -380,6 +392,8 @@ mod tests {
     #[test]
     fn test_is_probable_url_detects_https() {
         assert!(is_probable_url("https://example.com/client.json"));
-        assert!(!is_probable_url("ZyXwVuTsRqPoNmLkJiHgFeDcBa0987654321ABCDEFG"));
+        assert!(!is_probable_url(
+            "ZyXwVuTsRqPoNmLkJiHgFeDcBa0987654321ABCDEFG"
+        ));
     }
 }

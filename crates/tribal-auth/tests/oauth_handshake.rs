@@ -11,7 +11,8 @@ use axum::{Router, body::Body, middleware, routing::get};
 use http::{HeaderValue, Method, Request, StatusCode, header};
 use tower::ServiceExt;
 use tribal_auth::{
-    AuthMiddlewareState, Authenticator, oauth::{
+    AuthMiddlewareState, Authenticator,
+    oauth::{
         OAuthRouterState, OAuthRuntimeConfig,
         challenge::{BearerChallenge, build_bearer_challenge_header},
         oauth_router,
@@ -49,17 +50,25 @@ async fn ensure_local_principal(pool: &sqlx::PgPool) {
         .find_by_key(&mut conn, LOCAL_PRINCIPAL_KEY)
         .await
         .unwrap()
-        .is_none()
+        .is_some()
     {
-        PgPrincipalRepository
-            .insert(
-                &mut conn,
-                &NewPrincipal::builder()
-                    .principal_key(LOCAL_PRINCIPAL_KEY.to_owned())
-                    .build(),
-            )
-            .await
-            .unwrap();
+        return;
+    }
+    // Concurrent tests share the testcontainers Postgres; tolerate the
+    // unique-violation race so each test gets a usable principal regardless
+    // of which one wins the insert.
+    match PgPrincipalRepository
+        .insert(
+            &mut conn,
+            &NewPrincipal::builder()
+                .principal_key(LOCAL_PRINCIPAL_KEY.to_owned())
+                .build(),
+        )
+        .await
+    {
+        Ok(_) => {}
+        Err(tribal_db::DbError::UniqueViolation { .. }) => {}
+        Err(other) => panic!("insert local principal failed: {other}"),
     }
 }
 
@@ -154,7 +163,10 @@ async fn test_handshake_dcr_full_round_trip() {
         .unwrap();
     assert_eq!(authorize_response.status(), StatusCode::OK);
     let consent_html = String::from_utf8(read_body(authorize_response).await).unwrap();
-    assert!(consent_html.contains("127.0.0.1"), "consent should display the redirect host");
+    assert!(
+        consent_html.contains("127.0.0.1"),
+        "consent should display the redirect host"
+    );
     let target_url = extract_form_action(&consent_html);
     let target_parsed = Url::parse(&target_url).unwrap();
     let code = target_parsed
@@ -236,9 +248,13 @@ async fn test_handshake_dcr_full_round_trip() {
         authenticator,
         Arc::new(bearer_challenge(&runtime)),
     );
-    let mcp_app: Router = Router::new()
-        .route("/mcp", get(|| async { "ok" }))
-        .layer(middleware::from_fn_with_state(auth_state, require_bearer_auth));
+    let mcp_app: Router =
+        Router::new()
+            .route("/mcp", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                auth_state,
+                require_bearer_auth,
+            ));
 
     let authorised = mcp_app
         .clone()
@@ -256,12 +272,7 @@ async fn test_handshake_dcr_full_round_trip() {
     // -- 401 on missing bearer carries the expected challenge ----------------
     let unauthorised = mcp_app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/mcp")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/mcp").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(unauthorised.status(), StatusCode::UNAUTHORIZED);
@@ -412,8 +423,7 @@ async fn test_token_rejects_pkce_verifier_mismatch() {
         .await
         .unwrap();
     assert_eq!(token_response.status(), StatusCode::BAD_REQUEST);
-    let body: serde_json::Value =
-        serde_json::from_slice(&read_body(token_response).await).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&read_body(token_response).await).unwrap();
     assert_eq!(body["error"], "invalid_grant");
 }
 

@@ -23,9 +23,7 @@ use crate::{
         AuthError, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED,
         DISPLAY_TOKEN_REVOKED,
     },
-    oauth::challenge::{
-        BearerChallenge, ERROR_INVALID_TOKEN, build_bearer_challenge_header,
-    },
+    oauth::challenge::{BearerChallenge, ERROR_INVALID_TOKEN, build_bearer_challenge_header},
 };
 
 // ---------------------------------------------------------------------------
@@ -105,7 +103,11 @@ pub async fn require_bearer_auth(
             auth_failure_reason = AUTH_FAILURE_REASON_MISSING,
             "auth rejected: missing bearer token",
         );
-        return unauthorised_response(DISPLAY_MISSING_TOKEN, challenge, /* with_error */ false);
+        return unauthorised_response(
+            DISPLAY_MISSING_TOKEN,
+            challenge,
+            /* with_error */ false,
+        );
     };
 
     let mut conn = match state.pool.acquire().await {
@@ -167,9 +169,6 @@ fn auth_error_response(error: &AuthError, challenge: &BearerChallenge) -> Respon
         }
 
         // Logged by Authenticator::verify_token; middleware maps to response.
-        AuthError::InvalidToken { .. } => {
-            unauthorised_response(DISPLAY_INVALID_TOKEN, challenge, /* with_error */ true)
-        }
         AuthError::TokenRevoked { .. } => {
             unauthorised_response(DISPLAY_TOKEN_REVOKED, challenge, /* with_error */ true)
         }
@@ -177,14 +176,13 @@ fn auth_error_response(error: &AuthError, challenge: &BearerChallenge) -> Respon
             unauthorised_response(DISPLAY_TOKEN_EXPIRED, challenge, /* with_error */ true)
         }
 
-        // Audience mismatch is a 401 with invalid_token; the token does
-        // exist and verify but is bound to a different resource.
-        AuthError::AudienceMismatch { .. } => {
+        // Direct token failures and the defensive branches that
+        // verify_token never returns under normal operation all map to
+        // a 401 with the same invalid_token display; the defensive
+        // arms log because the code path is unexpected.
+        AuthError::InvalidToken { .. } | AuthError::AudienceMismatch { .. } => {
             unauthorised_response(DISPLAY_INVALID_TOKEN, challenge, /* with_error */ true)
         }
-
-        // Defensive: verify_token cannot return these, but handle them
-        // to avoid leaking internal state if the code path changes.
         AuthError::PrincipalNotFound { .. }
         | AuthError::LocalPrincipalMissing { .. }
         | AuthError::InsufficientScope { .. } => {
@@ -253,7 +251,10 @@ mod tests {
     use super::*;
     use crate::{
         authenticator::Authenticator,
-        error::{DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED, DISPLAY_TOKEN_REVOKED},
+        error::{
+            DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED,
+            DISPLAY_TOKEN_REVOKED,
+        },
     };
 
     // -- Helpers ------------------------------------------------------------

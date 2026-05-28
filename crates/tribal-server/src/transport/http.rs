@@ -59,8 +59,7 @@ pub async fn run_http_transport(
 
     let (listener, local_addr) = common::bind_listener(server_config, transport, listener).await?;
     let challenge = Arc::new(common::bearer_challenge_for(&oauth_runtime));
-    let auth_state =
-        common::auth_middleware_state(state, &oauth_runtime, Arc::clone(&challenge));
+    let auth_state = common::auth_middleware_state(state, &oauth_runtime, Arc::clone(&challenge));
     let mcp_service = common::mcp_service(
         state,
         handler_config,
@@ -69,7 +68,10 @@ pub async fn run_http_transport(
         "http",
     );
 
-    let oauth = oauth_router(OAuthRouterState::new(oauth_runtime, state.mcp_pool().clone()));
+    let oauth = oauth_router(OAuthRouterState::new(
+        oauth_runtime,
+        state.mcp_pool().clone(),
+    ));
 
     let app = axum::Router::new()
         .nest_service("/mcp", mcp_service)

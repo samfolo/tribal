@@ -113,6 +113,12 @@ impl TokenState {
 // ---------------------------------------------------------------------------
 
 /// `POST /token` handler.
+///
+/// # Panics
+///
+/// Panics if the static `Cache-Control` or `Pragma` header literals
+/// fail to parse; both are constants, so the failure represents a
+/// build-time regression rather than a runtime risk.
 pub async fn handle_token(
     State(state): State<TokenState>,
     Form(req): Form<TokenRequest>,
@@ -181,10 +187,9 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
     }
 
     if let Some(presented) = req.resource.as_deref() {
-        let presented_url =
-            url::Url::parse(presented).map_err(|_| OAuthError::InvalidTarget {
-                description: format!("resource is not a valid URL: {presented:?}"),
-            })?;
+        let presented_url = url::Url::parse(presented).map_err(|_| OAuthError::InvalidTarget {
+            description: format!("resource is not a valid URL: {presented:?}"),
+        })?;
         let canonical_presented = canonicalise_resource_url(&presented_url);
         let expected = code.resource().unwrap_or("");
         if canonical_presented != expected {
@@ -197,11 +202,10 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
     // Verify the client secret for confidential clients.
     enforce_client_secret(state, &mut tx, &req).await?;
 
-    let challenge = CodeChallenge::parse(code.code_challenge()).map_err(|_| {
-        OAuthError::Internal {
+    let challenge =
+        CodeChallenge::parse(code.code_challenge()).map_err(|_| OAuthError::Internal {
             description: "stored code_challenge is malformed".to_owned(),
-        }
-    })?;
+        })?;
     if !challenge.verify_s256(&verifier) {
         return Err(OAuthError::InvalidGrant {
             description: "code_verifier does not match the issued challenge".to_owned(),
@@ -211,8 +215,7 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
     let scope = code
         .scope()
         .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| DEFAULT_GRANT_SCOPE.to_owned());
+        .map_or_else(|| DEFAULT_GRANT_SCOPE.to_owned(), str::to_owned);
 
     let scopes = parse_scope_list(&scope)?;
 
@@ -281,9 +284,7 @@ async fn enforce_client_secret(
         }),
         (Some(stored_hash), Some(presented)) => {
             let presented_hash = sha256_hex(presented);
-            let matches = bool::from(
-                presented_hash.as_bytes().ct_eq(stored_hash.as_bytes()),
-            );
+            let matches = bool::from(presented_hash.as_bytes().ct_eq(stored_hash.as_bytes()));
             if matches {
                 Ok(())
             } else {

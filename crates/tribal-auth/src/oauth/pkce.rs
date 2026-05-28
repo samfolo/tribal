@@ -225,8 +225,7 @@ mod tests {
     #[test]
     fn test_known_vector_from_rfc_7636() {
         // RFC 7636 Appendix B test vector.
-        let verifier =
-            CodeVerifier::parse("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk").unwrap();
+        let verifier = CodeVerifier::parse("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk").unwrap();
         let derived = CodeChallenge::derive_s256(&verifier);
         assert_eq!(
             derived.as_str(),

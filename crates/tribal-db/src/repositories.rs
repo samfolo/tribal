@@ -48,8 +48,7 @@ pub use knowledge_item::{
 };
 pub use migration::{MigrationHeadStatus, MigrationRepository, PgMigrationRepository};
 pub use oauth_authorization_code::{
-    NewOauthAuthorizationCode, OauthAuthorizationCodeRepository,
-    PgOauthAuthorizationCodeRepository,
+    NewOauthAuthorizationCode, OauthAuthorizationCodeRepository, PgOauthAuthorizationCodeRepository,
 };
 pub use oauth_client::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
 pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};

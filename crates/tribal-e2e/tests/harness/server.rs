@@ -18,6 +18,7 @@ use sqlx::PgPool;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use tribal::{ServerHandle, start_server};
+use tribal_auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_config::{
     DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL, TribalConfig, validate,
 };
@@ -27,8 +28,8 @@ use tribal_db::{
 use tribal_domain::{JobOutcome, PrincipalId, Project, ProviderKind};
 use tribal_inference::RequestClass;
 use tribal_mcp::{
-    AppState, AuthContext, AuthenticatedPrincipal, ConnectionRepositories, HandlerConfig,
-    SessionContext, SessionProject, TransportAuthStrategy, TribalServerHandler,
+    AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
+    TribalServerHandler,
 };
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{

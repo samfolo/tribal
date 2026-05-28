@@ -24,7 +24,11 @@ impl AuthenticatedPrincipal {
     /// Reserved for the authenticator and stdio resolution paths;
     /// construction implies the caller has performed verification.
     #[must_use]
-    pub(crate) fn new(principal_id: PrincipalId, principal_key: String, scopes: Vec<Scope>) -> Self {
+    pub(crate) fn new(
+        principal_id: PrincipalId,
+        principal_key: String,
+        scopes: Vec<Scope>,
+    ) -> Self {
         Self {
             principal_id,
             principal_key,

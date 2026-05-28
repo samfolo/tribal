@@ -4,13 +4,13 @@
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
+use tribal_auth::{AuthError, Authenticator};
 use tribal_common::sha256_hex;
 use tribal_db::{
     AuthTokenRepository, NewAuthToken, NewPrincipal, PgAuthTokenRepository, PgPrincipalRepository,
     PrincipalRepository,
 };
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, full_access_scopes};
-use tribal_auth::{AuthError, Authenticator};
 use tribal_test_utils::{
     MockAuthTokenRepository, MockPrincipalRepository, TEST_PRINCIPAL_KEY, a_not_found, a_principal,
     a_query_failed, an_auth_token, test_context,
@@ -372,6 +372,7 @@ async fn test_verify_token_integration() {
                 .token_hash(token_hash)
                 .principal_id(principal.id())
                 .scopes(full_access_scopes())
+                .audience(String::new())
                 .expires_at(Utc::now() + Duration::hours(24))
                 .build(),
         )

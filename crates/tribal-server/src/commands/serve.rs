@@ -16,9 +16,7 @@ use tribal_auth::oauth::OAuthRuntimeConfig;
 use tribal_config::{TransportKind, load_config, validate};
 use tribal_mcp::HandlerConfig;
 
-use crate::{
-    cli::ServeArgs, error::AppError, orchestration, startup::POOL_NAME_MCP, transport,
-};
+use crate::{cli::ServeArgs, error::AppError, orchestration, startup::POOL_NAME_MCP, transport};
 
 // ---------------------------------------------------------------------------
 // Public API
