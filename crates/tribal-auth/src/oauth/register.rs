@@ -20,8 +20,9 @@ use tribal_db::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
 use tribal_domain::{ApplicationType, OauthClient, TokenEndpointAuthMethod};
 use url::Url;
 
-use crate::oauth::error::{
-    ClientMetadataRejection, InternalOperation, OAuthError, RedirectUriRejection,
+use crate::oauth::{
+    common::LOOPBACK_HOSTS,
+    error::{ClientMetadataRejection, InternalOperation, OAuthError, RedirectUriRejection},
 };
 
 // ---------------------------------------------------------------------------
@@ -30,10 +31,6 @@ use crate::oauth::error::{
 
 /// Number of random bytes used for `client_id` and `client_secret`.
 const RANDOM_BYTE_LENGTH: usize = 32;
-
-/// Loopback host literals accepted in HTTP redirect URIs per RFC 8252
-/// §7.3, widened to include `localhost` for ecosystem interoperability.
-const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "::1", "localhost"];
 
 // ---------------------------------------------------------------------------
 // Request and response types
