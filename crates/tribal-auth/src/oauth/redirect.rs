@@ -8,8 +8,7 @@
 
 use url::Url;
 
-/// Loopback host literals that receive port flexibility on the HTTP scheme.
-const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "::1", "localhost"];
+use crate::oauth::common::LOOPBACK_HOSTS;
 
 /// Returns `true` when `incoming` is an acceptable match for the
 /// `registered` redirect URI.

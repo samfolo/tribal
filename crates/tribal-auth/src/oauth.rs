@@ -8,7 +8,9 @@
 
 pub mod authorize;
 pub mod challenge;
+mod common;
 pub mod config;
+pub mod consent;
 pub mod error;
 pub mod metadata;
 pub mod pkce;

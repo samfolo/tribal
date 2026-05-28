@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -26,6 +26,7 @@ use url::Url;
 
 use crate::oauth::{
     config::{OAuthRuntimeConfig, canonicalise_resource_url},
+    consent::build_consent_html,
     error::{
         InternalOperation, InvalidClientReason, InvalidRequestReason, InvalidTargetReason,
         OAuthError, RedirectUriRejection,
@@ -41,7 +42,6 @@ use crate::oauth::{
 const SUPPORTED_RESPONSE_TYPE: &str = "code";
 const SUPPORTED_CODE_CHALLENGE_METHOD: &str = "S256";
 const RANDOM_CODE_BYTE_LENGTH: usize = 32;
-const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "::1", "localhost"];
 
 // ---------------------------------------------------------------------------
 // Query parameters
@@ -302,7 +302,7 @@ async fn issue_code(
             source: Some(Box::new(err)),
         })?;
 
-    Ok(consent_redirect_response(
+    Ok(consent_page_response(
         redirect_uri,
         &raw_code,
         query.state.as_deref(),
@@ -311,7 +311,7 @@ async fn issue_code(
     ))
 }
 
-fn consent_redirect_response(
+fn consent_page_response(
     redirect_uri: &Url,
     code: &str,
     state: Option<&str>,
@@ -332,102 +332,13 @@ fn consent_redirect_response(
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
-        "text/html; charset=utf-8".parse().unwrap(),
+        HeaderValue::from_static("text/html; charset=utf-8"),
     );
     (StatusCode::OK, headers, body).into_response()
-}
-
-fn build_consent_html(
-    target: &str,
-    redirect_host: &str,
-    client_id: &str,
-    scope: Option<&str>,
-) -> String {
-    let scope_display = scope.unwrap_or("(no explicit scope requested)");
-    let warning_html = if LOOPBACK_HOSTS.contains(&redirect_host) {
-        "<p>This is a loopback redirect. Any process listening on this host can receive the code; only proceed if you started a local client expecting it.</p>"
-    } else {
-        ""
-    };
-    // The consent page navigates via an anchor click rather than a GET
-    // form submission. A GET form rebuilds its action URL's query string
-    // from the form's input fields, which strips the `code` and `state`
-    // parameters the redirect URL carries; clicking an `<a href>` follows
-    // the URL byte-for-byte instead.
-    let target_html = escape_html_attribute(target);
-    let client_id_html = escape_html_text(client_id);
-    let redirect_host_html = escape_html_text(redirect_host);
-    let scope_html = escape_html_text(scope_display);
-    format!(
-        "<!doctype html>
-<html><head><meta charset=\"utf-8\"><title>Tribal authorisation</title></head>
-<body>
-  <h1>Authorising client</h1>
-  <p><strong>client_id</strong>: <code>{client_id_html}</code></p>
-  <p><strong>redirect_uri host</strong>: <code>{redirect_host_html}</code></p>
-  <p><strong>requested scope</strong>: <code>{scope_html}</code></p>
-  {warning_html}
-  <p><a id=\"approve\" href=\"{target_html}\" autofocus>Continue</a></p>
-  <script>
-    document.getElementById('approve').click();
-  </script>
-</body></html>
-",
-    )
-}
-
-/// HTML-escapes a value for use inside a double-quoted attribute.
-fn escape_html_attribute(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-/// HTML-escapes a value for use inside element text content.
-fn escape_html_text(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 fn generate_random_code() -> String {
     let mut bytes = [0u8; RANDOM_CODE_BYTE_LENGTH];
     rand::rng().fill(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_consent_html_escapes_interpolated_values() {
-        let target = Url::parse("http://127.0.0.1:9000/cb?code=abc&state=x").unwrap();
-        let html = build_consent_html(
-            target.as_str(),
-            target.host_str().unwrap_or(""),
-            "<script>alert(1)</script>",
-            Some("\"><img src=x onerror=alert(1)>"),
-        );
-
-        // No raw angle bracket from the injected client_id or scope
-        // survives into the rendered page.
-        assert!(!html.contains("<script>alert(1)</script>"));
-        assert!(!html.contains("<img src=x"));
-        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-        // The ampersand in the redirect target is attribute-escaped.
-        assert!(html.contains("code=abc&amp;state=x"));
-    }
-
-    #[test]
-    fn test_consent_html_shows_loopback_warning_only_for_loopback() {
-        let loopback = build_consent_html("http://127.0.0.1/cb", "127.0.0.1", "cid", None);
-        assert!(loopback.contains("loopback redirect"));
-
-        let remote = build_consent_html("https://example.com/cb", "example.com", "cid", None);
-        assert!(!remote.contains("loopback redirect"));
-    }
 }
