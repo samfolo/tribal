@@ -455,11 +455,14 @@ async fn test_register_rejects_non_loopback_http_redirect() {
 }
 
 fn extract_form_action(html: &str) -> String {
+    // The consent page navigates via an anchor `click()` rather than a
+    // form submission so the redirect URI's query string survives. The
+    // anchor's href is the target URL.
     let start = html
-        .find(r#"<form id="approve" action=""#)
-        .expect("consent page form action present");
-    let after = &html[start + r#"<form id="approve" action=""#.len()..];
-    let end = after.find('"').expect("form action quoted");
+        .find(r#"<a id="approve" href=""#)
+        .expect("consent page approve anchor present");
+    let after = &html[start + r#"<a id="approve" href=""#.len()..];
+    let end = after.find('"').expect("approve href quoted");
     decode_html_attribute(&after[..end])
 }
 
