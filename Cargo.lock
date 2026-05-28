@@ -5323,6 +5323,7 @@ dependencies = [
  "reqwest 0.13.2",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sha2",
  "sqlx",
  "subtle",
