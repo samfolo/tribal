@@ -13,6 +13,8 @@ mod item_observation;
 mod job;
 mod knowledge_item;
 mod migration;
+mod oauth_authorization_code;
+mod oauth_client;
 mod principal;
 mod project;
 mod prompt_version;
@@ -45,6 +47,11 @@ pub use knowledge_item::{
     SemanticSearchResponse, SemanticSearchResult,
 };
 pub use migration::{MigrationHeadStatus, MigrationRepository, PgMigrationRepository};
+pub use oauth_authorization_code::{
+    NewOauthAuthorizationCode, OauthAuthorizationCodeRepository,
+    PgOauthAuthorizationCodeRepository,
+};
+pub use oauth_client::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
 pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
 pub use project::{NewProject, PgProjectRepository, ProjectRepository};
 pub use prompt_version::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};

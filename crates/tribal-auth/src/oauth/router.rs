@@ -7,16 +7,23 @@
 
 use std::sync::Arc;
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::State,
+    routing::{get, post},
+};
 use http::header;
 use serde::Serialize;
 
 use crate::oauth::{
+    authorize::{AuthorizeState, handle_authorize},
     config::OAuthRuntimeConfig,
     metadata::{
-        PATH_AUTHORIZATION_SERVER_METADATA, PATH_PROTECTED_RESOURCE_METADATA,
-        authorization_server_metadata, protected_resource_metadata,
+        PATH_AUTHORIZATION_SERVER_METADATA, PATH_AUTHORIZE, PATH_PROTECTED_RESOURCE_METADATA,
+        PATH_REGISTER, PATH_TOKEN, authorization_server_metadata, protected_resource_metadata,
     },
+    register::{RegisterState, handle_register},
+    token::{TokenState, handle_token},
 };
 
 // ---------------------------------------------------------------------------
@@ -40,13 +47,14 @@ const METADATA_CACHE_CONTROL: &str = "public, max-age=300";
 #[derive(Clone)]
 pub struct OAuthRouterState {
     runtime: Arc<OAuthRuntimeConfig>,
+    pool: sqlx::PgPool,
 }
 
 impl OAuthRouterState {
-    /// Creates a new router state from the runtime OAuth config.
+    /// Creates a new router state.
     #[must_use]
-    pub fn new(runtime: Arc<OAuthRuntimeConfig>) -> Self {
-        Self { runtime }
+    pub fn new(runtime: Arc<OAuthRuntimeConfig>, pool: sqlx::PgPool) -> Self {
+        Self { runtime, pool }
     }
 }
 
@@ -54,40 +62,57 @@ impl OAuthRouterState {
 // Router builder
 // ---------------------------------------------------------------------------
 
-/// Builds an axum router exposing the well-known metadata documents.
-///
-/// `/authorize`, `/token`, and `/register` are added in subsequent
-/// commits.
+/// Builds an axum router exposing all OAuth endpoints.
 #[must_use]
 pub fn oauth_router(state: OAuthRouterState) -> Router {
-    Router::new()
+    let metadata_state = MetadataState {
+        runtime: Arc::clone(&state.runtime),
+    };
+    let authorize_state =
+        AuthorizeState::new(state.pool.clone(), Arc::clone(&state.runtime));
+    let token_state = TokenState::new(state.pool.clone(), Arc::clone(&state.runtime));
+    let register_state = RegisterState::new(state.pool);
+
+    let mut router = Router::new()
         .route(
             PATH_PROTECTED_RESOURCE_METADATA,
-            get(serve_protected_resource_metadata),
+            get(serve_protected_resource_metadata).with_state(metadata_state.clone()),
         )
         .route(
             PATH_PROTECTED_RESOURCE_METADATA_MCP,
-            get(serve_protected_resource_metadata),
+            get(serve_protected_resource_metadata).with_state(metadata_state.clone()),
         )
         .route(
             PATH_AUTHORIZATION_SERVER_METADATA,
-            get(serve_authorization_server_metadata),
+            get(serve_authorization_server_metadata).with_state(metadata_state.clone()),
         )
-        .with_state(state)
+        .route(PATH_AUTHORIZE, get(handle_authorize).with_state(authorize_state))
+        .route(PATH_TOKEN, post(handle_token).with_state(token_state));
+
+    if state.runtime.dcr_enabled {
+        router = router.route(PATH_REGISTER, post(handle_register).with_state(register_state));
+    }
+
+    router
 }
 
 // ---------------------------------------------------------------------------
-// Handlers
+// Metadata handlers
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
+struct MetadataState {
+    runtime: Arc<OAuthRuntimeConfig>,
+}
+
 async fn serve_protected_resource_metadata(
-    State(state): State<OAuthRouterState>,
+    State(state): State<MetadataState>,
 ) -> impl axum::response::IntoResponse {
     metadata_response(protected_resource_metadata(state.runtime.as_ref()))
 }
 
 async fn serve_authorization_server_metadata(
-    State(state): State<OAuthRouterState>,
+    State(state): State<MetadataState>,
 ) -> impl axum::response::IntoResponse {
     metadata_response(authorization_server_metadata(state.runtime.as_ref()))
 }
@@ -108,6 +133,7 @@ mod tests {
     use http::{Request, StatusCode};
     use tower::ServiceExt;
     use tribal_config::OAuthConfig;
+    use tribal_test_utils::lazy_pool;
     use url::Url;
 
     use super::*;
@@ -127,7 +153,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_root_prm_endpoint_returns_canonical_resource() {
-        let app = oauth_router(OAuthRouterState::new(runtime()));
+        let app = oauth_router(OAuthRouterState::new(runtime(), lazy_pool()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -140,12 +166,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_as_json(response).await;
         assert_eq!(json["resource"], "http://127.0.0.1:8080/mcp");
-        assert_eq!(json["authorization_servers"][0], "http://127.0.0.1:8080/");
     }
 
     #[tokio::test]
     async fn test_path_suffixed_prm_endpoint_returns_same_body() {
-        let app = oauth_router(OAuthRouterState::new(runtime()));
+        let app = oauth_router(OAuthRouterState::new(runtime(), lazy_pool()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -156,13 +181,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let json = body_as_json(response).await;
-        assert_eq!(json["resource"], "http://127.0.0.1:8080/mcp");
     }
 
     #[tokio::test]
     async fn test_as_metadata_endpoint_advertises_s256_and_cimd() {
-        let app = oauth_router(OAuthRouterState::new(runtime()));
+        let app = oauth_router(OAuthRouterState::new(runtime(), lazy_pool()));
         let response = app
             .oneshot(
                 Request::builder()

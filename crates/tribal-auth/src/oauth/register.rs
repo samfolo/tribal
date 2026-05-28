@@ -1,0 +1,349 @@
+//! RFC 7591 Dynamic Client Registration handler.
+//!
+//! Accepts a client-supplied JSON metadata document, validates it,
+//! generates an opaque `client_id` (and optionally a `client_secret`
+//! for confidential auth methods), persists the record, and returns
+//! the full registered metadata in the 201 response.
+
+use std::sync::Arc;
+
+use axum::{
+    Json,
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rand::RngExt;
+use serde::{Deserialize, Serialize};
+use tribal_common::sha256_hex;
+use tribal_db::{
+    NewOauthClient, OauthClientRepository, PgOauthClientRepository,
+};
+use tribal_domain::{ApplicationType, OauthClient, TokenEndpointAuthMethod};
+use url::Url;
+
+use crate::oauth::error::OAuthError;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Number of random bytes used for `client_id` and `client_secret`.
+const RANDOM_BYTE_LENGTH: usize = 32;
+
+/// Loopback host literals accepted in HTTP redirect URIs per RFC 8252
+/// §7.3, widened to include `localhost` for ecosystem interoperability.
+const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "::1", "localhost"];
+
+// ---------------------------------------------------------------------------
+// Request and response types
+// ---------------------------------------------------------------------------
+
+/// RFC 7591 §2 client metadata request body.
+#[derive(Debug, Deserialize)]
+pub struct RegisterRequest {
+    /// Registered redirect URIs.
+    pub redirect_uris: Vec<String>,
+    /// Optional human-readable client name.
+    #[serde(default)]
+    pub client_name: Option<String>,
+    /// Optional declared grant types.
+    #[serde(default)]
+    pub grant_types: Option<Vec<String>>,
+    /// Optional declared response types.
+    #[serde(default)]
+    pub response_types: Option<Vec<String>>,
+    /// Optional declared token endpoint auth method.
+    #[serde(default)]
+    pub token_endpoint_auth_method: Option<String>,
+    /// Optional declared scope.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Optional declared application type.
+    #[serde(default)]
+    pub application_type: Option<String>,
+}
+
+/// RFC 7591 §3.2.1 client information response body.
+#[derive(Debug, Serialize)]
+pub struct RegisterResponse {
+    /// Opaque client identifier issued by the AS.
+    pub client_id: String,
+    /// Raw client secret. Present only for confidential clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    /// Timestamp the client was registered.
+    pub client_id_issued_at: i64,
+    /// Timestamp the client secret expires (`0` for no expiry).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret_expires_at: Option<i64>,
+    /// Echo of the human-readable client name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    /// Echo of the registered redirect URIs.
+    pub redirect_uris: Vec<String>,
+    /// Echo of the registered grant types.
+    pub grant_types: Vec<String>,
+    /// Echo of the registered response types.
+    pub response_types: Vec<String>,
+    /// Echo of the token endpoint auth method.
+    pub token_endpoint_auth_method: String,
+    /// Echo of the optional declared scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Echo of the optional declared application type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application_type: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+/// Handler state for the registration endpoint.
+#[derive(Clone)]
+pub struct RegisterState {
+    pool: sqlx::PgPool,
+    repo: Arc<dyn OauthClientRepository + Send + Sync>,
+}
+
+impl RegisterState {
+    /// Builds a registration state using the Postgres repository.
+    #[must_use]
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self {
+            pool,
+            repo: Arc::new(PgOauthClientRepository),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+/// `POST /register` handler.
+pub async fn handle_register(
+    axum::extract::State(state): axum::extract::State<RegisterState>,
+    Json(req): Json<RegisterRequest>,
+) -> Response {
+    match register(&state, req).await {
+        Ok(response) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            (StatusCode::CREATED, headers, Json(response)).into_response()
+        }
+        Err(err) => err.into_json_response(),
+    }
+}
+
+async fn register(state: &RegisterState, req: RegisterRequest) -> Result<RegisterResponse, OAuthError> {
+    if req.redirect_uris.is_empty() {
+        return Err(OAuthError::InvalidRedirectUri {
+            description: "redirect_uris must contain at least one entry".to_owned(),
+        });
+    }
+
+    for raw in &req.redirect_uris {
+        validate_redirect_uri(raw)?;
+    }
+
+    let grant_types = req
+        .grant_types
+        .unwrap_or_else(|| vec!["authorization_code".to_owned()]);
+    let response_types = req.response_types.unwrap_or_else(|| vec!["code".to_owned()]);
+
+    validate_grant_response_consistency(&grant_types, &response_types)?;
+
+    let auth_method_raw = req
+        .token_endpoint_auth_method
+        .clone()
+        .unwrap_or_else(|| "client_secret_basic".to_owned());
+    let auth_method = parse_auth_method(&auth_method_raw)?;
+    let application_type = req
+        .application_type
+        .as_deref()
+        .map(parse_application_type)
+        .transpose()?;
+
+    let client_id = generate_random_token();
+    let (client_secret, client_secret_hash) = if auth_method.requires_secret() {
+        let raw = generate_random_token();
+        let hash = sha256_hex(&raw);
+        (Some(raw), Some(hash))
+    } else {
+        (None, None)
+    };
+
+    let new = NewOauthClient::builder()
+        .client_id(client_id.clone())
+        .client_secret_hash(client_secret_hash)
+        .client_name(req.client_name.clone())
+        .redirect_uris(req.redirect_uris.clone())
+        .grant_types(grant_types.clone())
+        .response_types(response_types.clone())
+        .token_endpoint_auth_method(auth_method)
+        .scope(req.scope.clone())
+        .application_type(application_type)
+        .build();
+
+    let mut conn = state
+        .pool
+        .acquire()
+        .await
+        .map_err(|err| OAuthError::Internal {
+            description: format!("pool acquire failed: {err}"),
+        })?;
+
+    let inserted: OauthClient =
+        state
+            .repo
+            .insert(&mut conn, &new)
+            .await
+            .map_err(|err| OAuthError::Internal {
+                description: format!("insert oauth client failed: {err}"),
+            })?;
+
+    Ok(RegisterResponse {
+        client_id: inserted.client_id().to_owned(),
+        client_secret,
+        client_id_issued_at: inserted.created_at().timestamp(),
+        client_secret_expires_at: client_secret_hash_marker(&inserted).then_some(0),
+        client_name: inserted.client_name().map(str::to_owned),
+        redirect_uris: inserted.redirect_uris().to_vec(),
+        grant_types: inserted.grant_types().to_vec(),
+        response_types: inserted.response_types().to_vec(),
+        token_endpoint_auth_method: inserted.token_endpoint_auth_method().as_str().to_owned(),
+        scope: inserted.scope().map(str::to_owned),
+        application_type: inserted.application_type().map(|t| t.as_str().to_owned()),
+    })
+}
+
+fn client_secret_hash_marker(client: &OauthClient) -> bool {
+    client.client_secret_hash().is_some()
+}
+
+fn parse_auth_method(raw: &str) -> Result<TokenEndpointAuthMethod, OAuthError> {
+    match raw {
+        "none" => Ok(TokenEndpointAuthMethod::None),
+        "client_secret_basic" => Ok(TokenEndpointAuthMethod::ClientSecretBasic),
+        "client_secret_post" => Ok(TokenEndpointAuthMethod::ClientSecretPost),
+        other => Err(OAuthError::InvalidClientMetadata {
+            description: format!("unsupported token_endpoint_auth_method: {other}"),
+        }),
+    }
+}
+
+fn parse_application_type(raw: &str) -> Result<ApplicationType, OAuthError> {
+    match raw {
+        "web" => Ok(ApplicationType::Web),
+        "native" => Ok(ApplicationType::Native),
+        other => Err(OAuthError::InvalidClientMetadata {
+            description: format!("unsupported application_type: {other}"),
+        }),
+    }
+}
+
+fn validate_redirect_uri(raw: &str) -> Result<(), OAuthError> {
+    let url = Url::parse(raw).map_err(|_| OAuthError::InvalidRedirectUri {
+        description: format!("redirect_uri is not a valid URL: {raw:?}"),
+    })?;
+    if url.fragment().is_some() {
+        return Err(OAuthError::InvalidRedirectUri {
+            description: format!("redirect_uri must not contain a fragment: {raw:?}"),
+        });
+    }
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            // `Url::host_str()` brackets IPv6 literals; strip the brackets
+            // before comparing against the loopback allowlist so `[::1]`
+            // and `::1` both match.
+            let host = url
+                .host_str()
+                .unwrap_or_default()
+                .trim_start_matches('[')
+                .trim_end_matches(']');
+            if LOOPBACK_HOSTS.contains(&host) {
+                Ok(())
+            } else {
+                Err(OAuthError::InvalidRedirectUri {
+                    description: format!(
+                        "redirect_uri http scheme reserved for loopback hosts: {raw:?}"
+                    ),
+                })
+            }
+        }
+        other => Err(OAuthError::InvalidRedirectUri {
+            description: format!("redirect_uri scheme {other} is not supported"),
+        }),
+    }
+}
+
+fn validate_grant_response_consistency(
+    grant_types: &[String],
+    response_types: &[String],
+) -> Result<(), OAuthError> {
+    if response_types.iter().any(|s| s == "code")
+        && !grant_types.iter().any(|s| s == "authorization_code")
+    {
+        return Err(OAuthError::InvalidClientMetadata {
+            description: "response_type=code requires grant_type=authorization_code".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn generate_random_token() -> String {
+    let mut bytes = [0u8; RANDOM_BYTE_LENGTH];
+    rand::rng().fill(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_redirect_uri_accepts_https() {
+        assert!(validate_redirect_uri("https://example.com/cb").is_ok());
+    }
+
+    #[test]
+    fn test_validate_redirect_uri_accepts_http_loopback() {
+        assert!(validate_redirect_uri("http://127.0.0.1/cb").is_ok());
+        assert!(validate_redirect_uri("http://localhost:53076/cb").is_ok());
+        assert!(validate_redirect_uri("http://[::1]/cb").is_ok());
+    }
+
+    #[test]
+    fn test_validate_redirect_uri_rejects_http_non_loopback() {
+        let err = validate_redirect_uri("http://example.com/cb").unwrap_err();
+        assert!(matches!(err, OAuthError::InvalidRedirectUri { .. }));
+    }
+
+    #[test]
+    fn test_validate_redirect_uri_rejects_fragment() {
+        assert!(validate_redirect_uri("https://example.com/cb#frag").is_err());
+    }
+
+    #[test]
+    fn test_validate_redirect_uri_rejects_non_url() {
+        assert!(validate_redirect_uri("not a url").is_err());
+    }
+
+    #[test]
+    fn test_validate_grant_response_consistency_requires_authorization_code() {
+        assert!(
+            validate_grant_response_consistency(&["password".to_owned()], &["code".to_owned()])
+                .is_err(),
+        );
+        assert!(
+            validate_grant_response_consistency(
+                &["authorization_code".to_owned()],
+                &["code".to_owned()],
+            )
+            .is_ok(),
+        );
+    }
+}

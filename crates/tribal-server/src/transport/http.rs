@@ -69,7 +69,7 @@ pub async fn run_http_transport(
         "http",
     );
 
-    let oauth = oauth_router(OAuthRouterState::new(oauth_runtime));
+    let oauth = oauth_router(OAuthRouterState::new(oauth_runtime, state.mcp_pool().clone()));
 
     let app = axum::Router::new()
         .nest_service("/mcp", mcp_service)

@@ -83,7 +83,7 @@ pub async fn run_sse_transport(
         Duration::from_millis(server_config.sse.idle_timeout_ms),
     );
 
-    let oauth = oauth_router(OAuthRouterState::new(oauth_runtime));
+    let oauth = oauth_router(OAuthRouterState::new(oauth_runtime, state.mcp_pool().clone()));
 
     // Layer ordering on the MCP branch (outermost runs first):
     //   1. Bearer auth middleware — rejects unauthenticated requests
