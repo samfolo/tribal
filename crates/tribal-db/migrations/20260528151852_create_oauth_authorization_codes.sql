@@ -6,9 +6,10 @@
 -- consumed_at, so a second exchange of the same code returns no row
 -- and the /token endpoint surfaces invalid_grant.
 --
--- client_id is TEXT (not a foreign key) because CIMD clients are not
--- stored in oauth_clients; validation against the client allowlist
--- happens in the application layer.
+-- client_id is TEXT (not a foreign key) so it can hold any client
+-- identifier, including one that has no stored registration row in
+-- oauth_clients; validation against the registry happens in the
+-- application layer.
 --
 -- code_challenge_method is locked to S256 at the database level. OAuth
 -- 2.1 forbids plain; advertising it in the AS metadata would be a
