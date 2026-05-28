@@ -54,7 +54,11 @@ impl SkipMask {
     fn classify(&mut self, diagnostic: &ValidationError) {
         match diagnostic {
             ValidationError::BindAddressStdioConflict
-            | ValidationError::BindAddressMalformed { .. } => {
+            | ValidationError::BindAddressMalformed { .. }
+            // A malformed oauth.issuer_url / oauth.resource_url makes the
+            // derived advertised URL bogus, so its reachability probe
+            // would be meaningless — skip it like a bad bind address.
+            | ValidationError::UrlMalformed { .. } => {
                 self.bits |= flag::ADVERTISED_URL;
             }
             ValidationError::MissingApiKey { stage, .. } => match stage {
@@ -140,6 +144,15 @@ mod tests {
     fn test_skip_mask_sets_advertised_url_for_malformed_bind_address() {
         let mask = SkipMask::from_validation_errors(&[ValidationError::BindAddressMalformed {
             value: "not-an-address".into(),
+        }]);
+        assert!(mask.skip_advertised_url());
+    }
+
+    #[test]
+    fn test_skip_mask_sets_advertised_url_for_malformed_oauth_url() {
+        let mask = SkipMask::from_validation_errors(&[ValidationError::UrlMalformed {
+            field: ConfigPath::from_static("oauth.issuer_url"),
+            value: "not a url".into(),
         }]);
         assert!(mask.skip_advertised_url());
     }
