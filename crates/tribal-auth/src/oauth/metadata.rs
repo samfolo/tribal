@@ -160,8 +160,22 @@ fn join_issuer(issuer: &Url, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use tribal_config::OAuthConfig;
+    use tribal_domain::Scope;
 
     use super::*;
+
+    #[test]
+    fn test_scopes_catalogue_entries_are_valid_scopes() {
+        // The catalogue is the wire vocabulary advertised in both metadata
+        // documents. Every entry must parse as a `Scope`, so a typo or a
+        // scope that no longer exists cannot drift into what we advertise.
+        for raw in SCOPES_CATALOGUE {
+            assert!(
+                Scope::parse(raw).is_ok(),
+                "advertised scope {raw:?} is not a valid Scope",
+            );
+        }
+    }
 
     fn runtime() -> OAuthRuntimeConfig {
         let issuer = Url::parse("http://127.0.0.1:8080").unwrap();

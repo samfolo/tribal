@@ -55,9 +55,6 @@ impl SkipMask {
         match diagnostic {
             ValidationError::BindAddressStdioConflict
             | ValidationError::BindAddressMalformed { .. }
-            // A malformed oauth.issuer_url / oauth.resource_url makes the
-            // derived advertised URL bogus, so its reachability probe
-            // would be meaningless — skip it like a bad bind address.
             | ValidationError::UrlMalformed { .. } => {
                 self.bits |= flag::ADVERTISED_URL;
             }

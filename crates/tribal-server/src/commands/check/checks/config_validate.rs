@@ -58,8 +58,6 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         | ValidationError::FieldOrdering { .. }
         | ValidationError::DerivedFloor { .. }
         | ValidationError::EmbeddingProviderUnsupported { .. }
-        // `UrlMalformed`'s own Display ("... is not a valid URL: <value>")
-        // is already a clear, actionable message; no extra hint needed.
         | ValidationError::UrlMalformed { .. }
         | ValidationError::TelemetryFileExportRequiresEnabled => None,
     }

@@ -110,15 +110,14 @@ pub async fn handle_authorize(
 ) -> Response {
     // Stage 1: validate inputs that produce a JSON error if the redirect
     // URI is untrusted (RFC 6749 §3.1.2.4 forbids redirect-to-untrusted).
-    let (redirect_uri, registered_redirect_uris) = match validate_pre_redirect(&state, &query).await
-    {
-        Ok(v) => v,
+    let redirect_uri = match validate_pre_redirect(&state, &query).await {
+        Ok(uri) => uri,
         Err(err) => return err.into_json_response(),
     };
 
     // Stage 2: validate inputs whose failure mode is a 302 redirect carrying
     // the error code per RFC 6749 §4.1.2.1.
-    match issue_code(&state, &query, &redirect_uri, &registered_redirect_uris).await {
+    match issue_code(&state, &query, &redirect_uri).await {
         Ok(redirect_response) => redirect_response,
         Err(err) => err.into_redirect_response(&redirect_uri, query.state.as_deref()),
     }
@@ -127,7 +126,7 @@ pub async fn handle_authorize(
 async fn validate_pre_redirect(
     state: &AuthorizeState,
     query: &AuthorizeQuery,
-) -> Result<(Url, Vec<Url>), OAuthError> {
+) -> Result<Url, OAuthError> {
     if query.response_type != SUPPORTED_RESPONSE_TYPE {
         return Err(OAuthError::UnsupportedResponseType {
             presented: query.response_type.clone(),
@@ -158,7 +157,7 @@ async fn validate_pre_redirect(
         });
     }
 
-    Ok((redirect_uri, registered_uris))
+    Ok(redirect_uri)
 }
 
 /// Resolves the redirect URIs registered against a client identifier.
@@ -208,7 +207,6 @@ async fn issue_code(
     state: &AuthorizeState,
     query: &AuthorizeQuery,
     redirect_uri: &Url,
-    _registered_redirect_uris: &[Url],
 ) -> Result<Response, OAuthError> {
     let challenge =
         CodeChallenge::parse(&query.code_challenge).map_err(|_| OAuthError::InvalidRequest {
