@@ -2,9 +2,10 @@
 //!
 //! Both documents are served as 200 OK `application/json` bodies. The
 //! protected-resource metadata document follows RFC 9728; the
-//! authorisation-server metadata document follows RFC 8414 extended
-//! with MCP 2025-11-25's `client_id_metadata_document_supported`
-//! flag.
+//! authorisation-server metadata document follows RFC 8414, advertising
+//! the issuer, the authorisation/token/registration endpoints, the
+//! `code` response type, the `authorization_code` grant, S256 PKCE, the
+//! supported token-endpoint auth methods, and the scope catalogue.
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -31,7 +32,7 @@ pub const CODE_CHALLENGE_METHOD_S256: &str = "S256";
 /// Sole supported response type.
 pub const RESPONSE_TYPE_CODE: &str = "code";
 
-/// Sole supported grant type advertised in v1 (no refresh tokens).
+/// Sole supported grant type (no refresh tokens).
 pub const GRANT_TYPE_AUTHORIZATION_CODE: &str = "authorization_code";
 
 /// Token endpoint auth method advertised for public clients.

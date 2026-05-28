@@ -1,9 +1,10 @@
 -- DCR-registered OAuth clients per RFC 7591.
 --
 -- client_id is the opaque identifier returned to the client at
--- registration. CIMD clients (URL-shaped client_id) are NOT stored
--- here; they are resolved on every request from the URL by the CIMD
--- fetcher.
+-- registration. It is TEXT (not a foreign key target for the
+-- authorisation-code table) so the system can also accept client
+-- identifiers that have no stored registration row here; validation
+-- against the registry happens in the application layer.
 --
 -- client_secret_hash holds the SHA-256 hex digest of the raw secret;
 -- the raw secret is returned once at registration and never persisted.
