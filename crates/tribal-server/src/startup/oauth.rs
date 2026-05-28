@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn test_canonical_host_rewrites_v6_wildcard_to_loopback() {
         let addr: SocketAddr = "[::]:8080".parse().unwrap();
-        let (host, port) = canonical_host_and_port(addr);
+        let (host, _port) = canonical_host_and_port(addr);
         assert_eq!(host, "127.0.0.1");
     }
 
