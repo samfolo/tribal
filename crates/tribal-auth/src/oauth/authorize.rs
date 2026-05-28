@@ -1,8 +1,8 @@
 //! `GET /authorize` handler.
 //!
-//! Resolves the client identifier (DCR opaque or CIMD URL), validates
-//! the redirect URI and PKCE parameters, captures the principal, and
-//! issues a single-use authorisation code via redirect.
+//! Resolves the client identifier against the registered clients,
+//! validates the redirect URI and PKCE parameters, captures the
+//! principal, and issues a single-use authorisation code via redirect.
 
 use std::sync::Arc;
 
@@ -51,7 +51,7 @@ const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "::1", "localhost"];
 pub struct AuthorizeQuery {
     /// Required `response_type` value (must be `code`).
     pub response_type: String,
-    /// Client identifier; DCR opaque or CIMD URL.
+    /// Client identifier issued by dynamic client registration.
     pub client_id: String,
     /// Redirect URI to send the code to on success.
     pub redirect_uri: String,
@@ -163,19 +163,16 @@ async fn validate_pre_redirect(
     Ok((redirect_uri, registered_uris))
 }
 
+/// Resolves the redirect URIs registered against a client identifier.
+///
+/// # Errors
+///
+/// Returns [`OAuthError::InvalidClient`] when the identifier is absent
+/// from the client registry.
 async fn resolve_client_redirect_uris(
     state: &AuthorizeState,
     client_id: &str,
 ) -> Result<Vec<Url>, OAuthError> {
-    // CIMD path (URL-shaped client_id) is implemented in a follow-up
-    // commit per the spike findings; for now only DCR-issued opaque
-    // identifiers are accepted.
-    if is_probable_url(client_id) {
-        return Err(OAuthError::InvalidClient {
-            description: "CIMD client_id resolution is not yet enabled on this server".to_owned(),
-        });
-    }
-
     let mut conn = state
         .pool
         .acquire()
@@ -395,28 +392,35 @@ fn generate_random_code() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn is_probable_url(client_id: &str) -> bool {
-    // CIMD client_ids per the draft are absolute URLs with an https
-    // scheme; DCR-issued ids from this server are 43-char base64url
-    // with no colon, so this discriminator is unambiguous.
-    matches!(
-        Url::parse(client_id)
-            .map(|u| u.scheme().to_owned())
-            .ok()
-            .as_deref(),
-        Some("https" | "http"),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_is_probable_url_detects_https() {
-        assert!(is_probable_url("https://example.com/client.json"));
-        assert!(!is_probable_url(
-            "ZyXwVuTsRqPoNmLkJiHgFeDcBa0987654321ABCDEFG"
-        ));
+    fn test_consent_html_escapes_interpolated_values() {
+        let target = Url::parse("http://127.0.0.1:9000/cb?code=abc&state=x").unwrap();
+        let html = build_consent_html(
+            target.as_str(),
+            target.host_str().unwrap_or(""),
+            "<script>alert(1)</script>",
+            Some("\"><img src=x onerror=alert(1)>"),
+        );
+
+        // No raw angle bracket from the injected client_id or scope
+        // survives into the rendered page.
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(!html.contains("<img src=x"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        // The ampersand in the redirect target is attribute-escaped.
+        assert!(html.contains("code=abc&amp;state=x"));
+    }
+
+    #[test]
+    fn test_consent_html_shows_loopback_warning_only_for_loopback() {
+        let loopback = build_consent_html("http://127.0.0.1/cb", "127.0.0.1", "cid", None);
+        assert!(loopback.contains("loopback redirect"));
+
+        let remote = build_consent_html("https://example.com/cb", "example.com", "cid", None);
+        assert!(!remote.contains("loopback redirect"));
     }
 }

@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use tribal_config::{CimdConfig, OAuthConfig};
+use tribal_config::OAuthConfig;
 use url::Url;
 
 // ---------------------------------------------------------------------------
@@ -48,10 +48,9 @@ pub struct OAuthRuntimeConfig {
     pub access_token_ttl: Duration,
     /// Authorisation-code TTL for OAuth flow codes.
     pub authorization_code_ttl: Duration,
-    /// Whether the DCR `/register` endpoint is enabled.
+    /// Whether the dynamic client registration `/register` endpoint is
+    /// enabled.
     pub dcr_enabled: bool,
-    /// CIMD fetcher tuning.
-    pub cimd: CimdRuntimeConfig,
 }
 
 impl OAuthRuntimeConfig {
@@ -81,45 +80,7 @@ impl OAuthRuntimeConfig {
             access_token_ttl: Duration::from_secs(config.access_token_ttl_hours * 3_600),
             authorization_code_ttl: Duration::from_secs(config.authorization_code_ttl_seconds),
             dcr_enabled: config.dcr_enabled,
-            cimd: CimdRuntimeConfig::from(&config.cimd),
         })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CimdRuntimeConfig
-// ---------------------------------------------------------------------------
-
-/// Runtime CIMD fetcher configuration with parsed `Duration` values.
-#[derive(Debug, Clone)]
-pub struct CimdRuntimeConfig {
-    /// Maximum response body size in bytes.
-    pub max_response_bytes: usize,
-    /// Per-request fetch timeout.
-    pub fetch_timeout: Duration,
-    /// Floor for cache entry TTL.
-    pub cache_min: Duration,
-    /// Ceiling for cache entry TTL.
-    pub cache_max: Duration,
-    /// LRU cache bound.
-    pub max_entries: usize,
-    /// Whether loopback CIMD URLs are allowed.
-    pub allow_loopback_for_dev: bool,
-    /// Hosts that bypass the private-range deny list.
-    pub additional_allowlisted_hosts: Vec<String>,
-}
-
-impl From<&CimdConfig> for CimdRuntimeConfig {
-    fn from(c: &CimdConfig) -> Self {
-        Self {
-            max_response_bytes: c.max_response_bytes,
-            fetch_timeout: Duration::from_secs(c.fetch_timeout_seconds),
-            cache_min: Duration::from_secs(c.cache_min_seconds),
-            cache_max: Duration::from_secs(c.cache_max_seconds),
-            max_entries: c.max_entries,
-            allow_loopback_for_dev: c.allow_loopback_for_dev,
-            additional_allowlisted_hosts: c.additional_allowlisted_hosts.clone(),
-        }
     }
 }
 

@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_as_metadata_endpoint_advertises_s256_and_cimd() {
+    async fn test_as_metadata_endpoint_advertises_s256() {
         let app = oauth_router(OAuthRouterState::new(runtime(), lazy_pool()));
         let response = app
             .oneshot(
@@ -206,6 +206,5 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_as_json(response).await;
         assert_eq!(json["code_challenge_methods_supported"][0], "S256");
-        assert_eq!(json["client_id_metadata_document_supported"], true);
     }
 }
