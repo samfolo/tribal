@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::{
     Form, Json,
     extract::State,
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -30,7 +30,10 @@ use tribal_domain::Scope;
 
 use crate::oauth::{
     config::{OAuthRuntimeConfig, canonicalise_resource_url},
-    error::OAuthError,
+    error::{
+        InternalOperation, InvalidClientReason, InvalidGrantReason, InvalidRequestReason,
+        InvalidTargetReason, OAuthError,
+    },
     pkce::{CodeChallenge, CodeVerifier},
 };
 
@@ -113,12 +116,6 @@ impl TokenState {
 // ---------------------------------------------------------------------------
 
 /// `POST /token` handler.
-///
-/// # Panics
-///
-/// Panics if the static `Cache-Control` or `Pragma` header literals
-/// fail to parse; both are constants, so the failure represents a
-/// build-time regression rather than a runtime risk.
 pub async fn handle_token(
     State(state): State<TokenState>,
     Form(req): Form<TokenRequest>,
@@ -126,8 +123,8 @@ pub async fn handle_token(
     match exchange(&state, req).await {
         Ok(response) => {
             let mut headers = HeaderMap::new();
-            headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-            headers.insert(header::PRAGMA, "no-cache".parse().unwrap());
+            headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
             (StatusCode::OK, headers, Json(response)).into_response()
         }
         Err(err) => err.into_json_response(),
@@ -137,16 +134,15 @@ pub async fn handle_token(
 async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse, OAuthError> {
     if req.grant_type != SUPPORTED_GRANT_TYPE {
         return Err(OAuthError::InvalidRequest {
-            description: format!(
-                "grant_type must be {SUPPORTED_GRANT_TYPE:?} (got {:?})",
-                req.grant_type
-            ),
+            reason: InvalidRequestReason::UnsupportedGrantType {
+                presented: req.grant_type.clone(),
+            },
         });
     }
 
     let verifier =
         CodeVerifier::parse(&req.code_verifier).map_err(|_| OAuthError::InvalidGrant {
-            description: "code_verifier is malformed".to_owned(),
+            reason: InvalidGrantReason::MalformedCodeVerifier,
         })?;
 
     let now = Utc::now();
@@ -157,11 +153,13 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
         .acquire()
         .await
         .map_err(|err| OAuthError::Internal {
-            description: format!("pool acquire failed: {err}"),
+            operation: InternalOperation::PoolAcquire,
+            source: Some(Box::new(err)),
         })?;
 
     let mut tx = conn.begin().await.map_err(|err| OAuthError::Internal {
-        description: format!("begin transaction failed: {err}"),
+        operation: InternalOperation::BeginTransaction,
+        source: Some(Box::new(err)),
     })?;
 
     let code = state
@@ -169,32 +167,38 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
         .consume_by_hash(&mut tx, &code_hash, now)
         .await
         .map_err(|err| OAuthError::Internal {
-            description: format!("consume authorization code failed: {err}"),
+            operation: InternalOperation::ConsumeAuthorizationCode,
+            source: Some(Box::new(err)),
         })?
-        .ok_or_else(|| OAuthError::InvalidGrant {
-            description: "authorization code is unknown, expired, or already used".to_owned(),
+        .ok_or(OAuthError::InvalidGrant {
+            reason: InvalidGrantReason::UnknownOrExpiredOrUsedCode,
         })?;
 
     if code.client_id() != req.client_id {
         return Err(OAuthError::InvalidGrant {
-            description: "client_id does not match the issued code".to_owned(),
+            reason: InvalidGrantReason::ClientIdMismatch,
         });
     }
     if code.redirect_uri() != req.redirect_uri {
         return Err(OAuthError::InvalidGrant {
-            description: "redirect_uri does not match the issued code".to_owned(),
+            reason: InvalidGrantReason::RedirectUriMismatch,
         });
     }
 
     if let Some(presented) = req.resource.as_deref() {
         let presented_url = url::Url::parse(presented).map_err(|_| OAuthError::InvalidTarget {
-            description: format!("resource is not a valid URL: {presented:?}"),
+            reason: InvalidTargetReason::Malformed {
+                value: presented.to_owned(),
+            },
         })?;
         let canonical_presented = canonicalise_resource_url(&presented_url);
         let expected = code.resource().unwrap_or("");
         if canonical_presented != expected {
             return Err(OAuthError::InvalidTarget {
-                description: "resource does not match the issued authorisation request".to_owned(),
+                reason: InvalidTargetReason::Mismatch {
+                    expected: expected.to_owned(),
+                    presented: canonical_presented,
+                },
             });
         }
     }
@@ -203,12 +207,13 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
     enforce_client_secret(state, &mut tx, &req).await?;
 
     let challenge =
-        CodeChallenge::parse(code.code_challenge()).map_err(|_| OAuthError::Internal {
-            description: "stored code_challenge is malformed".to_owned(),
+        CodeChallenge::parse(code.code_challenge()).map_err(|err| OAuthError::Internal {
+            operation: InternalOperation::MalformedStoredCodeChallenge,
+            source: Some(Box::new(err)),
         })?;
     if !challenge.verify_s256(&verifier) {
         return Err(OAuthError::InvalidGrant {
-            description: "code_verifier does not match the issued challenge".to_owned(),
+            reason: InvalidGrantReason::PkceVerificationFailed,
         });
     }
 
@@ -224,7 +229,8 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
     let expires_at = now
         + chrono::Duration::from_std(state.runtime.access_token_ttl).map_err(|err| {
             OAuthError::Internal {
-                description: format!("access_token_ttl conversion failed: {err}"),
+                operation: InternalOperation::AccessTokenTtlConversion,
+                source: Some(Box::new(err)),
             }
         })?;
 
@@ -241,11 +247,13 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
         .insert(&mut tx, &new_token)
         .await
         .map_err(|err| OAuthError::Internal {
-            description: format!("insert access token failed: {err}"),
+            operation: InternalOperation::InsertAccessToken,
+            source: Some(Box::new(err)),
         })?;
 
     tx.commit().await.map_err(|err| OAuthError::Internal {
-        description: format!("commit transaction failed: {err}"),
+        operation: InternalOperation::CommitTransaction,
+        source: Some(Box::new(err)),
     })?;
 
     let expires_in = i64::try_from(state.runtime.access_token_ttl.as_secs()).unwrap_or(i64::MAX);
@@ -268,19 +276,20 @@ async fn enforce_client_secret(
         .find_by_id(conn, &req.client_id)
         .await
         .map_err(|err| OAuthError::Internal {
-            description: format!("client lookup failed: {err}"),
+            operation: InternalOperation::ClientLookup,
+            source: Some(Box::new(err)),
         })?;
 
     let Some(client) = client else {
         return Err(OAuthError::InvalidClient {
-            description: "client_id is not registered".to_owned(),
+            reason: InvalidClientReason::Unregistered,
         });
     };
 
     match (client.client_secret_hash(), req.client_secret.as_deref()) {
         (None, _) => Ok(()),
         (Some(_), None) => Err(OAuthError::InvalidClient {
-            description: "client requires a client_secret".to_owned(),
+            reason: InvalidClientReason::SecretRequired,
         }),
         (Some(stored_hash), Some(presented)) => {
             let presented_hash = sha256_hex(presented);
@@ -289,7 +298,7 @@ async fn enforce_client_secret(
                 Ok(())
             } else {
                 Err(OAuthError::InvalidClient {
-                    description: "client_secret does not match".to_owned(),
+                    reason: InvalidClientReason::SecretMismatch,
                 })
             }
         }
@@ -300,7 +309,7 @@ fn parse_scope_list(raw: &str) -> Result<Vec<Scope>, OAuthError> {
     raw.split_ascii_whitespace()
         .map(|token| {
             Scope::parse(token).map_err(|_| OAuthError::InvalidScope {
-                description: format!("unknown scope token: {token:?}"),
+                unknown_token: token.to_owned(),
             })
         })
         .collect()
