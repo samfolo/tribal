@@ -284,6 +284,13 @@ impl ProviderRegistry {
 
 /// Normalises a base URL for use as a registry key component.
 ///
+/// This answers an identity-of-endpoint question (do two base URLs name
+/// the same provider, so they should share one semaphore?), so it adds
+/// the explicit default port and drops the query and fragment to fold
+/// equivalent spellings together. It is intentionally not the same
+/// transform as an RFC 8707 audience canonicalisation, which keeps the
+/// query and omits the explicit port to match a client's bytes exactly.
+///
 /// Steps:
 /// 1. Parse with [`url::Url`]
 /// 2. Lower-case scheme and host (handled by the `url` crate)
