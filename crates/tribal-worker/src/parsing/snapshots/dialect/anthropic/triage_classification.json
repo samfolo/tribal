@@ -2,7 +2,7 @@
   "additionalProperties": false,
   "definitions": {
     "RelationSuggestion": {
-      "description": "How an existing similar item relates to the candidate, assessed during triage independently of the novel-or-duplicate decision.",
+      "description": "How the candidate relates to an existing similar item, assessed during triage independently of the novel-or-duplicate decision.",
       "enum": [
         "supports",
         "contradicts",
@@ -24,7 +24,7 @@
         },
         "suggested_relation": {
           "$ref": "#/definitions/RelationSuggestion",
-          "description": "How the existing item relates to the candidate."
+          "description": "How the candidate relates to the existing item."
         }
       },
       "required": [

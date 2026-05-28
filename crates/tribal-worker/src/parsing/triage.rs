@@ -132,7 +132,7 @@ pub(crate) struct SimilarItemClassification {
     #[schemars(description = "The existing item being assessed, referenced by its context index.")]
     pub item: TriageItemReference,
     /// The agent's suggested relation classification.
-    #[schemars(description = "How the existing item relates to the candidate.")]
+    #[schemars(description = "How the candidate relates to the existing item.")]
     pub suggested_relation: RelationSuggestion,
     /// The agent's reasoning for the classification.
     #[schemars(

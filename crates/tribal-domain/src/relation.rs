@@ -47,7 +47,7 @@ enum_text_conversions!(RelationKind {
     feature = "schema",
     derive(schemars::JsonSchema),
     schemars(
-        description = "How an existing similar item relates to the candidate, assessed during triage independently of the novel-or-duplicate decision."
+        description = "How the candidate relates to an existing similar item, assessed during triage independently of the novel-or-duplicate decision."
     )
 )]
 #[serde(rename_all = "snake_case")]

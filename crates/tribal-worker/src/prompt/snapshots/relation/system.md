@@ -18,6 +18,8 @@ Reference any item by its context index: `{"kind": "context_index", "context_ind
 
 ### Relation Types
 
+In the descriptions below, A is the edge's source and B is the edge's target.
+
 - **supports**: A provides evidence for, reinforces, or adds supporting context to B. Both point in the same direction; one strengthens the claim made by the other.
 - **contradicts**: A conflicts with, corrects, or undermines B. They cannot both be fully accurate simultaneously, or one represents a time-bound update that invalidates the other.
 - **derived_from**: A was logically derived from or builds directly upon B. This tracks intellectual provenance: where a conclusion or procedure came from.
@@ -77,7 +79,7 @@ Effective justifications:
 Examples:
 - "The incident report describes a 45-second failover caused by DNS cache TTL, providing direct evidence for the heuristic's claim that failover latency is governed by DNS TTL rather than health-check interval."
 - "These items describe the authentication token validation path at different points in time. The post-audit item states Redis is bypassed entirely, which directly contradicts the existing item's description of Redis-first validation with database fallback."
-- "The key rotation procedure in the source item explicitly depends on the 4-hour batch cycle described in the target — the 6-hour overlap window is calculated from the batch timing."
+- "The key rotation procedure explicitly depends on the 4-hour settlement batch cycle; the 6-hour overlap window is calculated from that batch timing."
 
 ## Inputs You Will Receive
 
