@@ -28,6 +28,19 @@ impl TokenEndpointAuthMethod {
         }
     }
 
+    /// Parses the canonical RFC 7591 string, the inverse of
+    /// [`Self::as_str`]. Returns `None` for an unsupported value so the
+    /// string-to-variant mapping lives in one place.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "none" => Some(Self::None),
+            "client_secret_basic" => Some(Self::ClientSecretBasic),
+            "client_secret_post" => Some(Self::ClientSecretPost),
+            _ => None,
+        }
+    }
+
     /// Returns true when the method requires a client secret to be
     /// generated and stored.
     #[must_use]
@@ -54,6 +67,17 @@ impl ApplicationType {
         match self {
             Self::Web => "web",
             Self::Native => "native",
+        }
+    }
+
+    /// Parses the canonical RFC 7591 string, the inverse of
+    /// [`Self::as_str`]. Returns `None` for an unsupported value.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "web" => Some(Self::Web),
+            "native" => Some(Self::Native),
+            _ => None,
         }
     }
 }
@@ -157,5 +181,42 @@ impl OauthClient {
     #[must_use]
     pub fn client_secret_expires_at(&self) -> Option<DateTime<Utc>> {
         self.client_secret_expires_at
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_token_endpoint_auth_method_parse_round_trips_as_str() {
+        for method in [
+            TokenEndpointAuthMethod::None,
+            TokenEndpointAuthMethod::ClientSecretBasic,
+            TokenEndpointAuthMethod::ClientSecretPost,
+        ] {
+            assert_eq!(
+                TokenEndpointAuthMethod::parse(method.as_str()),
+                Some(method)
+            );
+        }
+    }
+
+    #[test]
+    fn test_token_endpoint_auth_method_parse_rejects_unknown() {
+        assert_eq!(TokenEndpointAuthMethod::parse("private_key_jwt"), None);
+        assert_eq!(TokenEndpointAuthMethod::parse(""), None);
+    }
+
+    #[test]
+    fn test_application_type_parse_round_trips_as_str() {
+        for app_type in [ApplicationType::Web, ApplicationType::Native] {
+            assert_eq!(ApplicationType::parse(app_type.as_str()), Some(app_type));
+        }
+    }
+
+    #[test]
+    fn test_application_type_parse_rejects_unknown() {
+        assert_eq!(ApplicationType::parse("service"), None);
     }
 }

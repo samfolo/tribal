@@ -29,6 +29,7 @@ use tribal_db::{
 use tribal_domain::Scope;
 
 use crate::oauth::{
+    common::GRANT_TYPE_AUTHORIZATION_CODE,
     config::{OAuthRuntimeConfig, canonicalise_resource_url},
     error::{
         InternalOperation, InvalidClientReason, InvalidGrantReason, InvalidRequestReason,
@@ -41,7 +42,6 @@ use crate::oauth::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const SUPPORTED_GRANT_TYPE: &str = "authorization_code";
 const RANDOM_TOKEN_BYTE_LENGTH: usize = 32;
 const DEFAULT_GRANT_SCOPE: &str = "tribal:read";
 
@@ -132,7 +132,7 @@ pub async fn handle_token(
 }
 
 async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse, OAuthError> {
-    if req.grant_type != SUPPORTED_GRANT_TYPE {
+    if req.grant_type != GRANT_TYPE_AUTHORIZATION_CODE {
         return Err(OAuthError::InvalidRequest {
             reason: InvalidRequestReason::UnsupportedGrantType {
                 presented: req.grant_type.clone(),
