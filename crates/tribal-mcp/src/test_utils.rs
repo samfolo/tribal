@@ -23,9 +23,10 @@ use tribal_test_utils::{
 };
 use typed_builder::TypedBuilder;
 
+use tribal_auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy};
+
 use crate::{
     app_state::AppState,
-    auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy},
     config::HandlerConfig,
     fingerprint::PipelineProviderIdentities,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},

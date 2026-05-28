@@ -14,10 +14,11 @@ use rmcp::transport::streamable_http_server::{
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig, TransportKind};
+use tribal_auth::{AuthMiddlewareState, Authenticator, TransportAuthStrategy};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{
-    AppState, AuthMiddlewareState, Authenticator, ConnectionRepositories, HandlerConfig,
-    SessionContext, SessionProject, TransportAuthStrategy, TribalServerHandler,
+    AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
+    TribalServerHandler,
 };
 
 use crate::error::AppError;

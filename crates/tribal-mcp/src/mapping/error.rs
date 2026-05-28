@@ -6,14 +6,12 @@
 
 use std::string::ToString;
 
+use tribal_auth::AuthError;
 use tribal_db::DbError;
 use tribal_domain::{IdParseError, McpErrorCode};
 use tribal_inference::InferenceError;
 
-use crate::{
-    auth::AuthError,
-    error::{IntoMcpError, McpToolError},
-};
+use crate::error::{IntoMcpError, McpToolError};
 
 // ---------------------------------------------------------------------------
 // DbError → McpToolError

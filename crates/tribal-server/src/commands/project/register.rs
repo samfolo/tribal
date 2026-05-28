@@ -13,7 +13,7 @@ use tribal_db::{
     ProjectRepository,
 };
 use tribal_domain::{BearerToken, GitRemote};
-use tribal_mcp::Authenticator;
+use tribal_auth::Authenticator;
 
 use super::{
     outcome::{RegisterOutcome, RegisteredProject},

@@ -22,9 +22,10 @@ use tribal_db::{
 };
 use tribal_domain::{PromptRole, PromptStage, PromptVersionId, is_authorised};
 
+use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
+
 use crate::{
     app_state::AppState,
-    auth::{AuthenticatedPrincipal, TransportAuthStrategy},
     config::HandlerConfig,
     error::method_not_found,
     mapping::session_to_json,
@@ -469,9 +470,10 @@ mod tests {
     use tribal_domain::PrincipalId;
     use tribal_test_utils::TEST_PRINCIPAL_KEY;
 
+    use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
+
     use super::*;
     use crate::{
-        auth::{AuthenticatedPrincipal, TransportAuthStrategy},
         session::SESSION_RESOURCE_URI,
         test_utils::{TestHandler, session_with_project, test_request_context},
     };

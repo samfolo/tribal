@@ -10,7 +10,8 @@ use std::{sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tribal_config::{ServerConfig, TransportKind};
-use tribal_mcp::{AppState, HandlerConfig, require_bearer_auth};
+use tribal_auth::require_bearer_auth;
+use tribal_mcp::{AppState, HandlerConfig};
 
 use super::{common, sse_lifecycle::SseLifecycleLayer};
 use crate::error::AppError;

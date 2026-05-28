@@ -10,7 +10,7 @@ use tribal_db::{
     PrincipalRepository,
 };
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, full_access_scopes};
-use tribal_mcp::{AuthError, Authenticator};
+use tribal_auth::{AuthError, Authenticator};
 use tribal_test_utils::{
     MockAuthTokenRepository, MockPrincipalRepository, TEST_PRINCIPAL_KEY, a_not_found, a_principal,
     a_query_failed, an_auth_token, test_context,
