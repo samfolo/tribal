@@ -20,7 +20,7 @@ use crate::{
         generate_raw_token, persist_credentials, prepare_config, resolve_absolute_config_path,
     },
     error::AppError,
-    startup::{ensure_prompt_files, run_migrations},
+    startup::{ensure_prompt_files, resolve_oauth_runtime, run_migrations},
 };
 
 // ---------------------------------------------------------------------------
@@ -158,11 +158,16 @@ pub async fn run_async(
     let raw_token = generate_raw_token();
     let token_hash = sha256_hex(&raw_token);
 
+    // Bind the issued token to the same canonical resource the running
+    // server verifies against, derived from the shared resolver (server
+    // bind address plus any oauth.resource_url override).
+    let audience = resolve_oauth_runtime(config)?.canonical_resource;
+
     let new_token = NewAuthToken::builder()
         .token_hash(token_hash)
         .principal_id(token_principal.id())
         .scopes(full_access_scopes())
-        .audience(String::new())
+        .audience(audience)
         .expires_at(expires_at)
         .build();
 

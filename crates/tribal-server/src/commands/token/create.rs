@@ -3,12 +3,10 @@
 use std::io::{self, Write};
 
 use chrono::{DateTime, Utc};
-use tribal_auth::oauth::canonicalise_resource_url;
 use tribal_common::sha256_hex;
-use tribal_config::{DatabaseConfig, OAuthConfig};
+use tribal_config::DatabaseConfig;
 use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, full_access_scopes};
-use url::Url;
 
 use super::output;
 use crate::{
@@ -46,7 +44,11 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
 
     let expires_at = compute_expires_at(TtlInput::from_pair(ttl, config.auth.token_ttl_hours))?;
     let principal_key = principal.unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
-    let audience = audience_from_oauth_config(&config.oauth);
+    // The audience must be byte-identical to the value the running
+    // server compares against, so it is derived from the same resolver
+    // (server bind address plus any oauth.resource_url override) the
+    // serve path uses, not from oauth.resource_url alone.
+    let audience = crate::startup::resolve_oauth_runtime(&config)?.canonical_resource;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -64,17 +66,6 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
         &mut stderr,
     ))?;
     Ok(())
-}
-
-/// Derives the audience claim for a CLI-minted token from the OAuth
-/// config's resource URL, or the empty string if unset (legacy default).
-fn audience_from_oauth_config(oauth: &OAuthConfig) -> String {
-    oauth
-        .resource_url
-        .as_deref()
-        .and_then(|raw| Url::parse(raw).ok())
-        .map(|url| canonicalise_resource_url(&url))
-        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------

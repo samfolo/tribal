@@ -271,6 +271,109 @@ async fn test_verify_token_find_by_id_database_error() {
 }
 
 // ---------------------------------------------------------------------------
+// verify_token — audience binding (RFC 8707)
+// ---------------------------------------------------------------------------
+
+fn audience_authenticator(
+    auth_token: MockAuthTokenRepository,
+    principal: MockPrincipalRepository,
+    expected_audience: &str,
+) -> Authenticator {
+    Authenticator::with_audience(
+        Arc::new(auth_token),
+        Arc::new(principal),
+        Some(expected_audience.to_owned()),
+    )
+}
+
+#[tokio::test]
+async fn test_verify_token_audience_match_passes() {
+    let principal_id = PrincipalId::new();
+    let principal = a_principal()
+        .id(principal_id)
+        .principal_key(TEST_PRINCIPAL_KEY.to_owned())
+        .build();
+    let token = an_auth_token()
+        .principal_id(principal_id)
+        .audience("http://127.0.0.1:8080/mcp".to_owned())
+        .expires_at(Utc::now() + Duration::hours(1))
+        .build();
+
+    let authenticator = audience_authenticator(
+        MockAuthTokenRepository::builder()
+            .on_find_by_hash(Some(token), None)
+            .build(),
+        MockPrincipalRepository::builder()
+            .on_find_by_id(principal, None)
+            .build(),
+        "http://127.0.0.1:8080/mcp",
+    );
+
+    let ctx = test_context().await;
+    let mut tx = ctx.begin_test().await.expect("begin");
+
+    authenticator
+        .verify_token(&mut tx, "raw-token")
+        .await
+        .expect("a token whose audience matches the binding should verify");
+}
+
+#[tokio::test]
+async fn test_verify_token_audience_mismatch_rejected() {
+    let token = an_auth_token()
+        .audience("http://other.example/mcp".to_owned())
+        .expires_at(Utc::now() + Duration::hours(1))
+        .build();
+
+    let authenticator = audience_authenticator(
+        MockAuthTokenRepository::builder()
+            .on_find_by_hash(Some(token), None)
+            .build(),
+        MockPrincipalRepository::builder().build(),
+        "http://127.0.0.1:8080/mcp",
+    );
+
+    let ctx = test_context().await;
+    let mut tx = ctx.begin_test().await.expect("begin");
+
+    let err = authenticator
+        .verify_token(&mut tx, "raw-token")
+        .await
+        .expect_err("a token minted for another resource should be rejected");
+
+    assert!(matches!(err, AuthError::AudienceMismatch { .. }));
+}
+
+#[tokio::test]
+async fn test_verify_token_empty_audience_rejected_when_binding_configured() {
+    // The legacy empty-audience bypass is gone: a token carrying no
+    // audience is rejected by an audience-binding verifier rather than
+    // accepted unconditionally.
+    let token = an_auth_token()
+        .audience(String::new())
+        .expires_at(Utc::now() + Duration::hours(1))
+        .build();
+
+    let authenticator = audience_authenticator(
+        MockAuthTokenRepository::builder()
+            .on_find_by_hash(Some(token), None)
+            .build(),
+        MockPrincipalRepository::builder().build(),
+        "http://127.0.0.1:8080/mcp",
+    );
+
+    let ctx = test_context().await;
+    let mut tx = ctx.begin_test().await.expect("begin");
+
+    let err = authenticator
+        .verify_token(&mut tx, "raw-token")
+        .await
+        .expect_err("an empty audience should be rejected under a binding");
+
+    assert!(matches!(err, AuthError::AudienceMismatch { .. }));
+}
+
+// ---------------------------------------------------------------------------
 // resolve_stdio_principal — mock-based tests
 // ---------------------------------------------------------------------------
 
