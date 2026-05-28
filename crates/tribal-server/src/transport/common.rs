@@ -16,9 +16,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_auth::{
     AuthMiddlewareState, Authenticator, TransportAuthStrategy,
     oauth::{
-        OAuthRuntimeConfig,
-        challenge::BearerChallenge,
-        metadata::{PATH_PROTECTED_RESOURCE_METADATA, SCOPES_CATALOGUE},
+        BearerChallenge, OAuthRuntimeConfig, PATH_PROTECTED_RESOURCE_METADATA, SCOPES_CATALOGUE,
     },
 };
 use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig, TransportKind};
