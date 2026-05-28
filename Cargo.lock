@@ -5260,7 +5260,7 @@ dependencies = [
 
 [[package]]
 name = "tribal"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anstream 1.0.0",
  "axum",
@@ -5310,7 +5310,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-common"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "dashmap",
  "rand 0.10.1",
@@ -5321,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-config"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "dirs",
  "figment",
@@ -5336,7 +5336,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-db"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5355,7 +5355,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-domain"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "chrono",
  "schemars 0.8.22",
@@ -5369,7 +5369,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-e2e"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "chrono",
  "dashmap",
@@ -5395,7 +5395,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-inference"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "reqwest 0.13.2",
@@ -5411,7 +5411,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-mcp"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "axum",
  "chrono",
@@ -5444,7 +5444,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-telemetry"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -5465,7 +5465,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-test-utils"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anstream 1.0.0",
  "async-trait",
@@ -5489,7 +5489,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-ui"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anstream 1.0.0",
  "anstyle",
@@ -5504,7 +5504,7 @@ dependencies = [
 
 [[package]]
 name = "tribal-worker"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "chrono",
  "dashmap",

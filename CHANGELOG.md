@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-05-28
+
+### Fixed
+
+- Pipeline response schemas are now sent in each provider's accepted JSON Schema dialect with hard schema enforcement. OpenAI requests carry the strict subset (closed all-required objects, nullable optionals, internally-tagged enums emitted as `anyOf` of closed branches) with `strict: true`; Anthropic requests rewrite `oneOf` to `anyOf` and close every object so its grammar enforcement applies. The previous advisory mode allowed weaker cloud models, including the recommended `gpt-5.4-mini`, to return malformed shapes that dead-lettered ingest jobs after exhausting retries. Structured output is now guaranteed by the provider rather than hoped for.
+
+### Changed
+
+- Pipeline response-schema field descriptions are tightened across the extraction, triage, and relation stages to give the model a clearer instruction surface.
+- MCP tool descriptions are rewritten to remove implementation jargon, presenting each tool through its user-facing contract rather than its internal mechanism.
+- The triage stage's relation-direction explanation in the prompt is aligned with the legend, with explicit source/target binding, so the model classifies similar-item relations more consistently.
+
 ## [0.2.3] - 2026-05-27
 
 ### Fixed
@@ -36,7 +48,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Docker Compose provider configuration through `.env`, letting the containerised path target a cloud provider (OpenAI, Anthropic) instead of only a local Ollama.
 
-[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/tribal-memory/tribal/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/tribal-memory/tribal/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/tribal-memory/tribal/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/tribal-memory/tribal/releases/tag/v0.2.1
