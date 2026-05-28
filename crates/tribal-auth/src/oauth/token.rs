@@ -15,7 +15,10 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use chrono::Utc;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -26,7 +29,7 @@ use tribal_db::{
     AuthTokenRepository, NewAuthToken, OauthAuthorizationCodeRepository, OauthClientRepository,
     PgAuthTokenRepository, PgOauthAuthorizationCodeRepository, PgOauthClientRepository,
 };
-use tribal_domain::Scope;
+use tribal_domain::{Scope, TokenEndpointAuthMethod};
 
 use crate::oauth::{
     common::GRANT_TYPE_AUTHORIZATION_CODE,
@@ -65,7 +68,9 @@ pub struct TokenRequest {
     /// Resource indicator per RFC 8707.
     #[serde(default)]
     pub resource: Option<String>,
-    /// Client secret for confidential clients (passed in the form body).
+    /// Client secret for the `client_secret_post` method, presented in
+    /// the form body (RFC 6749 §2.3.1). A `client_secret_basic` client
+    /// presents its secret in the `Authorization: Basic` header instead.
     #[serde(default)]
     pub client_secret: Option<String>,
 }
@@ -118,20 +123,42 @@ impl TokenState {
 /// `POST /token` handler.
 pub async fn handle_token(
     State(state): State<TokenState>,
+    headers: HeaderMap,
     Form(req): Form<TokenRequest>,
 ) -> Response {
-    match exchange(&state, req).await {
+    let basic = BasicCredentials::from_headers(&headers);
+    match exchange(&state, &req, basic.as_ref()).await {
         Ok(response) => {
             let mut headers = HeaderMap::new();
             headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
             (StatusCode::OK, headers, Json(response)).into_response()
         }
-        Err(err) => err.into_json_response(),
+        Err(err) => {
+            // RFC 6749 §5.2: a client-authentication failure carries a
+            // `WWW-Authenticate` challenge advertising the supported HTTP
+            // auth scheme (required when the client used the Authorization
+            // header; permitted otherwise). Only the token endpoint
+            // authenticates clients, so the header is added here, not in
+            // the shared error renderer (which also serves the browser
+            // `/authorize` endpoint).
+            let invalid_client = matches!(err, OAuthError::InvalidClient { .. });
+            let mut response = err.into_json_response();
+            if invalid_client {
+                response
+                    .headers_mut()
+                    .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Basic"));
+            }
+            response
+        }
     }
 }
 
-async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse, OAuthError> {
+async fn exchange(
+    state: &TokenState,
+    req: &TokenRequest,
+    basic: Option<&BasicCredentials>,
+) -> Result<TokenResponse, OAuthError> {
     if req.grant_type != GRANT_TYPE_AUTHORIZATION_CODE {
         return Err(OAuthError::InvalidRequest {
             reason: InvalidRequestReason::UnsupportedGrantType {
@@ -204,7 +231,7 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
     }
 
     // Verify the client secret for confidential clients.
-    enforce_client_secret(state, &mut tx, &req).await?;
+    enforce_client_secret(state, &mut tx, req, basic).await?;
 
     let challenge =
         CodeChallenge::parse(code.code_challenge()).map_err(|err| OAuthError::Internal {
@@ -266,10 +293,52 @@ async fn exchange(state: &TokenState, req: TokenRequest) -> Result<TokenResponse
     })
 }
 
+/// Client credentials parsed from an `Authorization: Basic` header.
+struct BasicCredentials {
+    client_id: String,
+    client_secret: String,
+}
+
+impl BasicCredentials {
+    /// Extracts client credentials from an `Authorization: Basic
+    /// base64(client_id:client_secret)` header.
+    ///
+    /// Returns `None` (rather than a fallible `TryFrom`) when the header
+    /// is absent, not the Basic scheme, or not decodable: an absent
+    /// Authorization header is the normal case for a public client, not
+    /// an error the caller acts on. The scheme token is matched
+    /// case-insensitively per RFC 7235 §2.1; the issued
+    /// `client_id`/`client_secret` are URL-safe base64 tokens with no
+    /// `:`, so splitting on the first colon is unambiguous.
+    fn from_headers(headers: &HeaderMap) -> Option<Self> {
+        let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+        let (scheme, encoded) = value.split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("Basic") {
+            return None;
+        }
+        let decoded = STANDARD.decode(encoded).ok()?;
+        let decoded = String::from_utf8(decoded).ok()?;
+        let (client_id, client_secret) = decoded.split_once(':')?;
+        Some(Self {
+            client_id: client_id.to_owned(),
+            client_secret: client_secret.to_owned(),
+        })
+    }
+}
+
+/// Enforces client authentication according to the client's registered
+/// `token_endpoint_auth_method`.
+///
+/// A `none` client presents no secret; a `client_secret_basic` client
+/// presents it in the `Authorization: Basic` header; a
+/// `client_secret_post` client presents it in the form body. Presenting
+/// the secret via the wrong mechanism is treated as not presenting it,
+/// so a confidential client cannot downgrade its registered method.
 async fn enforce_client_secret(
     state: &TokenState,
     conn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     req: &TokenRequest,
+    basic: Option<&BasicCredentials>,
 ) -> Result<(), OAuthError> {
     let client = state
         .client_repo
@@ -286,7 +355,28 @@ async fn enforce_client_secret(
         });
     };
 
-    match (client.client_secret_hash(), req.client_secret.as_deref()) {
+    match client.token_endpoint_auth_method() {
+        TokenEndpointAuthMethod::None => Ok(()),
+        TokenEndpointAuthMethod::ClientSecretBasic => {
+            // The secret must arrive in the Authorization: Basic header,
+            // whose client_id must match the request's.
+            let presented = basic
+                .filter(|credentials| credentials.client_id == req.client_id)
+                .map(|credentials| credentials.client_secret.as_str());
+            verify_client_secret(client.client_secret_hash(), presented)
+        }
+        TokenEndpointAuthMethod::ClientSecretPost => {
+            verify_client_secret(client.client_secret_hash(), req.client_secret.as_deref())
+        }
+    }
+}
+
+/// Constant-time-compares a presented secret against the stored hash.
+fn verify_client_secret(
+    stored_hash: Option<&str>,
+    presented: Option<&str>,
+) -> Result<(), OAuthError> {
+    match (stored_hash, presented) {
         (None, _) => Ok(()),
         (Some(_), None) => Err(OAuthError::InvalidClient {
             reason: InvalidClientReason::SecretRequired,
