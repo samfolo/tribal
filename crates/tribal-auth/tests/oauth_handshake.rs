@@ -193,13 +193,14 @@ async fn test_handshake_dcr_full_round_trip() {
     assert!(target_parsed.query_pairs().any(|(k, _)| k == "state"));
 
     // -- Token exchange ------------------------------------------------------
+    // The client registered `client_secret_basic`, so its secret travels
+    // only in the Authorization: Basic header, never the form body.
     let basic_auth = base64_encode(&format!("{client_id}:{client_secret}"));
     let token_body = serde_urlencoded::to_string([
         ("grant_type", "authorization_code"),
         ("code", &code),
         ("redirect_uri", "http://127.0.0.1:53076/cb"),
         ("client_id", &client_id),
-        ("client_secret", &client_secret),
         ("code_verifier", verifier),
         ("resource", "http://127.0.0.1:8080/mcp"),
     ])
@@ -230,7 +231,6 @@ async fn test_handshake_dcr_full_round_trip() {
         ("code", &code),
         ("redirect_uri", "http://127.0.0.1:53076/cb"),
         ("client_id", &client_id),
-        ("client_secret", &client_secret),
         ("code_verifier", verifier),
         ("resource", "http://127.0.0.1:8080/mcp"),
     ])
@@ -558,6 +558,29 @@ async fn post_token(app: &Router, body: String) -> axum::response::Response {
         .unwrap()
 }
 
+/// Posts a form body to `/token` with an `Authorization: Basic` header
+/// carrying `client_id:secret` (the `client_secret_basic` mechanism).
+async fn post_token_basic(
+    app: &Router,
+    body: String,
+    client_id: &str,
+    secret: &str,
+) -> axum::response::Response {
+    let basic = base64_encode(&format!("{client_id}:{secret}"));
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::AUTHORIZATION, format!("Basic {basic}"))
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
 /// Walks register (public) then authorise then token, returning the
 /// issued access token.
 async fn mint_access_token(app: &Router) -> String {
@@ -632,14 +655,55 @@ async fn test_token_rejects_wrong_client_secret() {
     let (client_id, _secret) = register_client(&app, "client_secret_basic").await;
     let code = authorize_code(&app, &client_id).await;
 
-    let response = post_token(
+    // Wrong secret presented via the Basic header (its registered method).
+    let response = post_token_basic(
         &app,
-        token_form(&code, &client_id, VERIFIER, Some("not-the-real-secret")),
+        token_form(&code, &client_id, VERIFIER, None),
+        &client_id,
+        "not-the-real-secret",
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
     assert_eq!(body["error"], "invalid_client");
+}
+
+#[tokio::test]
+async fn test_token_basic_client_rejected_when_secret_only_in_form() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool));
+
+    let (client_id, secret) = register_client(&app, "client_secret_basic").await;
+    let secret = secret.expect("confidential client is issued a secret");
+    let code = authorize_code(&app, &client_id).await;
+
+    // The correct secret, but presented via the form body rather than the
+    // registered Basic header: the method is enforced, so it is rejected
+    // rather than silently downgraded to client_secret_post.
+    let response = post_token(&app, token_form(&code, &client_id, VERIFIER, Some(&secret))).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(body["error"], "invalid_client");
+}
+
+#[tokio::test]
+async fn test_token_post_client_succeeds_with_form_secret() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool));
+
+    let (client_id, secret) = register_client(&app, "client_secret_post").await;
+    let secret = secret.expect("a client_secret_post client is issued a secret");
+    let code = authorize_code(&app, &client_id).await;
+
+    // A client_secret_post client presents its secret in the form body.
+    let response = post_token(&app, token_form(&code, &client_id, VERIFIER, Some(&secret))).await;
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

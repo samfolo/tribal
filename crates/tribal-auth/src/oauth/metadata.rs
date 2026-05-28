@@ -113,6 +113,9 @@ pub fn authorization_server_metadata(runtime: &OAuthRuntimeConfig) -> Authorizat
             TokenEndpointAuthMethod::ClientSecretBasic
                 .as_str()
                 .to_owned(),
+            TokenEndpointAuthMethod::ClientSecretPost
+                .as_str()
+                .to_owned(),
         ]
     } else {
         vec![TokenEndpointAuthMethod::None.as_str().to_owned()]
