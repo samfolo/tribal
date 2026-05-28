@@ -13,6 +13,7 @@ mod authenticator;
 mod context;
 mod error;
 mod middleware;
+pub mod oauth;
 mod principal;
 mod strategy;
 

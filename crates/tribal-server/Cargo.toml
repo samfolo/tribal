@@ -57,6 +57,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 tower.workspace = true
 tracing.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 tribal-auth.workspace = true
