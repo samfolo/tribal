@@ -18,6 +18,8 @@ Reference any item by its context index: `{"kind": "context_index", "context_ind
 
 ### Relation Types
 
+In the descriptions below, A is the edge's source and B is the edge's target.
+
 {{ ingestion_relation_kind_legend }}
 
 ### When to Produce Relations
@@ -72,7 +74,7 @@ Effective justifications:
 Examples:
 - "The incident report describes a 45-second failover caused by DNS cache TTL, providing direct evidence for the heuristic's claim that failover latency is governed by DNS TTL rather than health-check interval."
 - "These items describe the authentication token validation path at different points in time. The post-audit item states Redis is bypassed entirely, which directly contradicts the existing item's description of Redis-first validation with database fallback."
-- "The key rotation procedure in the source item explicitly depends on the 4-hour batch cycle described in the target — the 6-hour overlap window is calculated from the batch timing."
+- "The key rotation procedure explicitly depends on the 4-hour settlement batch cycle; the 6-hour overlap window is calculated from that batch timing."
 
 ## Inputs You Will Receive
 

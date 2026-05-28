@@ -36,7 +36,7 @@
       "type": "object"
     },
     "KnowledgeKind": {
-      "description": "The classification of a knowledge item.",
+      "description": "The kind of knowledge captured.",
       "enum": [
         "fact",
         "heuristic",
