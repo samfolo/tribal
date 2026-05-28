@@ -5320,7 +5320,6 @@ dependencies = [
  "chrono",
  "http",
  "rand 0.10.1",
- "reqwest 0.13.2",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -5338,7 +5337,6 @@ dependencies = [
  "tribal-test-utils",
  "typed-builder",
  "url",
- "wiremock",
 ]
 
 [[package]]

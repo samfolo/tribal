@@ -23,9 +23,6 @@ const PARAM_SCOPE: &str = "scope";
 /// Parameter name for the OAuth error code on step-up responses.
 const PARAM_ERROR: &str = "error";
 
-/// Error code returned on insufficient-scope 403 responses.
-pub const ERROR_INSUFFICIENT_SCOPE: &str = "insufficient_scope";
-
 /// Error code returned on invalid-token 401 responses (per RFC 6750 §3.1).
 pub const ERROR_INVALID_TOKEN: &str = "invalid_token";
 
@@ -136,13 +133,13 @@ mod tests {
     }
 
     #[test]
-    fn test_insufficient_scope_step_up_emits_error_scope_and_resource_metadata() {
+    fn test_error_scope_and_resource_metadata_emitted_together() {
         let header = build_bearer_challenge_header(&BearerChallenge {
             resource_metadata_url: url("https://example.com/.well-known/oauth-protected-resource"),
             scope: Some("tribal:write".to_owned()),
-            error: Some(ERROR_INSUFFICIENT_SCOPE),
+            error: Some(ERROR_INVALID_TOKEN),
         });
-        assert!(header.starts_with(r#"Bearer error="insufficient_scope", scope="tribal:write""#));
+        assert!(header.starts_with(r#"Bearer error="invalid_token", scope="tribal:write""#));
         assert!(header.contains(r#"resource_metadata="https://example.com/"#));
     }
 

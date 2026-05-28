@@ -25,9 +25,9 @@ pub struct AuthToken {
     /// Permission scopes granted to this token.
     scopes: Vec<Scope>,
     /// Canonical resource URL this token's audience is bound to
-    /// (RFC 8707). An empty string represents legacy tokens migrated
-    /// from before the audience column existed.
-    #[builder(default = String::new())]
+    /// (RFC 8707). Every mint path supplies it; the bearer middleware
+    /// rejects a token whose audience does not match the running
+    /// server's canonical resource.
     audience: String,
     /// When this token expires.
     expires_at: DateTime<Utc>,
@@ -59,9 +59,7 @@ impl AuthToken {
         &self.scopes
     }
 
-    /// Returns the canonical resource URL this token is audience-bound
-    /// to. An empty string represents legacy tokens migrated from
-    /// before the audience column existed.
+    /// Returns the canonical resource URL this token is audience-bound to.
     pub fn audience(&self) -> &str {
         &self.audience
     }
