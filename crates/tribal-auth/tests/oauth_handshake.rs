@@ -14,8 +14,7 @@ use tower::ServiceExt;
 use tribal_auth::{
     AuthMiddlewareState, Authenticator,
     oauth::{
-        OAuthRouterState, OAuthRuntimeConfig,
-        challenge::{BearerChallenge, build_bearer_challenge_header},
+        BearerChallenge, OAuthRouterState, OAuthRuntimeConfig, build_bearer_challenge_header,
         oauth_router,
     },
     require_bearer_auth,

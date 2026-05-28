@@ -55,9 +55,6 @@ pub const ERROR_INVALID_SCOPE: &str = "invalid_scope";
 /// Invalid target per RFC 8707 §2.
 pub const ERROR_INVALID_TARGET: &str = "invalid_target";
 
-/// Unauthorised client per RFC 6749 §4.1.2.1.
-pub const ERROR_UNAUTHORIZED_CLIENT: &str = "unauthorized_client";
-
 /// Invalid redirect URI per RFC 7591 §3.2.2.
 pub const ERROR_INVALID_REDIRECT_URI: &str = "invalid_redirect_uri";
 

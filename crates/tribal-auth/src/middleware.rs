@@ -23,7 +23,7 @@ use crate::{
         AuthError, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED,
         DISPLAY_TOKEN_REVOKED,
     },
-    oauth::challenge::{BearerChallenge, ERROR_INVALID_TOKEN, build_bearer_challenge_header},
+    oauth::{BearerChallenge, ERROR_INVALID_TOKEN, build_bearer_challenge_header},
 };
 
 // ---------------------------------------------------------------------------
@@ -41,6 +41,24 @@ const BEARER_PREFIX: &str = "Bearer ";
 
 /// Response message when the database is unreachable.
 const DATABASE_UNAVAILABLE_MESSAGE: &str = "database unavailable";
+
+// ---------------------------------------------------------------------------
+// ChallengeError
+// ---------------------------------------------------------------------------
+
+/// Whether a 401 `WWW-Authenticate` challenge carries an `error`
+/// parameter.
+///
+/// RFC 6750 §3 emits `error="invalid_token"` only when a token was
+/// presented but could not be used; a request with no token at all omits
+/// the parameter.
+#[derive(Clone, Copy)]
+enum ChallengeError {
+    /// No `error` parameter: the request carried no bearer token.
+    Omit,
+    /// `error="invalid_token"`: a token was presented but rejected.
+    InvalidToken,
+}
 
 // ---------------------------------------------------------------------------
 // AuthMiddlewareState
@@ -103,11 +121,7 @@ pub async fn require_bearer_auth(
             auth_failure_reason = AUTH_FAILURE_REASON_MISSING,
             "auth rejected: missing bearer token",
         );
-        return unauthorised_response(
-            DISPLAY_MISSING_TOKEN,
-            challenge,
-            /* with_error */ false,
-        );
+        return unauthorised_response(DISPLAY_MISSING_TOKEN, challenge, ChallengeError::Omit);
     };
 
     let mut conn = match state.pool.acquire().await {
@@ -169,19 +183,27 @@ fn auth_error_response(error: &AuthError, challenge: &BearerChallenge) -> Respon
         }
 
         // Logged by Authenticator::verify_token; middleware maps to response.
-        AuthError::TokenRevoked { .. } => {
-            unauthorised_response(DISPLAY_TOKEN_REVOKED, challenge, /* with_error */ true)
-        }
-        AuthError::TokenExpired { .. } => {
-            unauthorised_response(DISPLAY_TOKEN_EXPIRED, challenge, /* with_error */ true)
-        }
+        AuthError::TokenRevoked { .. } => unauthorised_response(
+            DISPLAY_TOKEN_REVOKED,
+            challenge,
+            ChallengeError::InvalidToken,
+        ),
+        AuthError::TokenExpired { .. } => unauthorised_response(
+            DISPLAY_TOKEN_EXPIRED,
+            challenge,
+            ChallengeError::InvalidToken,
+        ),
 
         // Direct token failures and the defensive branches that
         // verify_token never returns under normal operation all map to
         // a 401 with the same invalid_token display; the defensive
         // arms log because the code path is unexpected.
         AuthError::InvalidToken { .. } | AuthError::AudienceMismatch { .. } => {
-            unauthorised_response(DISPLAY_INVALID_TOKEN, challenge, /* with_error */ true)
+            unauthorised_response(
+                DISPLAY_INVALID_TOKEN,
+                challenge,
+                ChallengeError::InvalidToken,
+            )
         }
         AuthError::PrincipalNotFound { .. }
         | AuthError::LocalPrincipalMissing { .. }
@@ -190,7 +212,11 @@ fn auth_error_response(error: &AuthError, challenge: &BearerChallenge) -> Respon
                 auth_failure_reason = AUTH_FAILURE_REASON_INVALID,
                 "auth rejected: {error}",
             );
-            unauthorised_response(DISPLAY_INVALID_TOKEN, challenge, /* with_error */ true)
+            unauthorised_response(
+                DISPLAY_INVALID_TOKEN,
+                challenge,
+                ChallengeError::InvalidToken,
+            )
         }
     }
 }
@@ -199,14 +225,17 @@ fn auth_error_response(error: &AuthError, challenge: &BearerChallenge) -> Respon
 /// spec-mandated `WWW-Authenticate` Bearer challenge carrying the
 /// resource-metadata URL (and an `error="invalid_token"` parameter
 /// when the failure originated from a presented but unusable token).
-fn unauthorised_response(message: &str, challenge: &BearerChallenge, with_error: bool) -> Response {
+fn unauthorised_response(
+    message: &str,
+    challenge: &BearerChallenge,
+    error: ChallengeError,
+) -> Response {
     let challenge_value = build_bearer_challenge_header(&BearerChallenge {
         resource_metadata_url: challenge.resource_metadata_url.clone(),
         scope: challenge.scope.clone(),
-        error: if with_error {
-            Some(ERROR_INVALID_TOKEN)
-        } else {
-            None
+        error: match error {
+            ChallengeError::Omit => None,
+            ChallengeError::InvalidToken => Some(ERROR_INVALID_TOKEN),
         },
     });
 

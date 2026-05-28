@@ -6,29 +6,31 @@
 //! `auth_tokens` store the bearer middleware reads from; the OAuth
 //! flow does not introduce a parallel token plane.
 
-pub mod authorize;
-pub mod challenge;
+mod authorize;
+mod challenge;
 mod common;
-pub mod config;
-pub mod consent;
-pub mod error;
-pub mod metadata;
-pub mod pkce;
-pub mod redirect;
-pub mod register;
-pub mod router;
-pub mod token;
+mod config;
+mod consent;
+mod error;
+mod metadata;
+mod pkce;
+mod redirect;
+mod register;
+mod router;
+mod token;
 
 pub use authorize::{AuthorizeQuery, AuthorizeState, handle_authorize};
-pub use challenge::{BearerChallenge, build_bearer_challenge_header};
+pub use challenge::{
+    BearerChallenge, ERROR_INSUFFICIENT_SCOPE, ERROR_INVALID_TOKEN, build_bearer_challenge_header,
+};
 pub use config::{OAuthRuntimeConfig, OAuthRuntimeConfigError, canonicalise_resource_url};
 pub use error::{
     ClientMetadataRejection, InternalOperation, InvalidClientReason, InvalidGrantReason,
     InvalidRequestReason, InvalidTargetReason, OAuthError, RedirectUriRejection,
 };
 pub use metadata::{
-    AuthorizationServerMetadata, ProtectedResourceMetadata, authorization_server_metadata,
-    protected_resource_metadata,
+    AuthorizationServerMetadata, PATH_PROTECTED_RESOURCE_METADATA, ProtectedResourceMetadata,
+    SCOPES_CATALOGUE, authorization_server_metadata, protected_resource_metadata,
 };
 pub use pkce::{CodeChallenge, CodeVerifier, PkceParseError};
 pub use redirect::matches_redirect_uri;
