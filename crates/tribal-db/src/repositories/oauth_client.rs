@@ -173,8 +173,7 @@ const EXPECT_VALID_APPLICATION_TYPE: &str = "invariant: database contains valid 
 
 fn map_oauth_client_row(r: &sqlx::postgres::PgRow) -> OauthClient {
     let auth_method_str: String = r.get("token_endpoint_auth_method");
-    let auth_method: TokenEndpointAuthMethod = auth_method_str
-        .parse_method()
+    let auth_method = TokenEndpointAuthMethod::parse(&auth_method_str)
         .unwrap_or_else(|| panic!("{EXPECT_VALID_AUTH_METHOD}: {auth_method_str:?}"));
 
     let application_type: Option<ApplicationType> = r
@@ -182,7 +181,7 @@ fn map_oauth_client_row(r: &sqlx::postgres::PgRow) -> OauthClient {
         .ok()
         .flatten()
         .map(|s| {
-            s.parse_app_type()
+            ApplicationType::parse(&s)
                 .unwrap_or_else(|| panic!("{EXPECT_VALID_APPLICATION_TYPE}: {s:?}"))
         });
 
@@ -199,33 +198,4 @@ fn map_oauth_client_row(r: &sqlx::postgres::PgRow) -> OauthClient {
         .created_at(r.get("created_at"))
         .client_secret_expires_at(r.get("client_secret_expires_at"))
         .build()
-}
-
-trait ParseAuthMethod {
-    fn parse_method(&self) -> Option<TokenEndpointAuthMethod>;
-}
-
-impl ParseAuthMethod for String {
-    fn parse_method(&self) -> Option<TokenEndpointAuthMethod> {
-        match self.as_str() {
-            "none" => Some(TokenEndpointAuthMethod::None),
-            "client_secret_basic" => Some(TokenEndpointAuthMethod::ClientSecretBasic),
-            "client_secret_post" => Some(TokenEndpointAuthMethod::ClientSecretPost),
-            _ => None,
-        }
-    }
-}
-
-trait ParseAppType {
-    fn parse_app_type(&self) -> Option<ApplicationType>;
-}
-
-impl ParseAppType for String {
-    fn parse_app_type(&self) -> Option<ApplicationType> {
-        match self.as_str() {
-            "web" => Some(ApplicationType::Web),
-            "native" => Some(ApplicationType::Native),
-            _ => None,
-        }
-    }
 }

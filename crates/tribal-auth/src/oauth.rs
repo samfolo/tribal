@@ -20,9 +20,7 @@ mod router;
 mod token;
 
 pub use authorize::{AuthorizeQuery, AuthorizeState, handle_authorize};
-pub use challenge::{
-    BearerChallenge, ERROR_INSUFFICIENT_SCOPE, ERROR_INVALID_TOKEN, build_bearer_challenge_header,
-};
+pub use challenge::{BearerChallenge, ERROR_INVALID_TOKEN, build_bearer_challenge_header};
 pub use config::{OAuthRuntimeConfig, OAuthRuntimeConfigError, canonicalise_resource_url};
 pub use error::{
     ClientMetadataRejection, InternalOperation, InvalidClientReason, InvalidGrantReason,
