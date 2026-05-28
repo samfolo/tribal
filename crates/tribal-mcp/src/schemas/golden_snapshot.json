@@ -95,11 +95,11 @@
       "additionalProperties": false,
       "properties": {
         "content": {
-          "description": "The raw text to extract knowledge from. Write naturally — describe what you learned, what went wrong, what the fix was, why a decision was made. The system handles structuring. Richer input produces better results: include context, reasoning, and specifics rather than terse summaries.",
+          "description": "The raw text to extract knowledge from. Write naturally: describe what you learned, what went wrong, what the fix was, why a decision was made. The system handles structuring. Richer input produces better results: include context, reasoning, and specifics rather than terse summaries.",
           "type": "string"
         },
         "project_id": {
-          "description": "Override the session's active project for this ingest. Optional — defaults to the project set in session context.",
+          "description": "Override the session's active project for this ingest. Optional; defaults to the project set in session context.",
           "pattern": "^proj_[0-9a-f-]{36}$",
           "type": "string"
         }
@@ -127,7 +127,7 @@
     "title": "Tribal: Ingest Knowledge"
   },
   {
-    "description": "Search Tribal's knowledge base using natural language. Returns knowledge items ranked by semantic similarity to your query, with optional structured filters to narrow results.\n\nUse this as your first step when you need context: before starting work on a feature, debugging an issue, or making a design decision. Ask questions the way you'd ask a colleague — \"What do I know about connection pooling in this project?\" or \"Have I seen this async deadlock pattern before?\"\n\nSemantic search is the primary mechanism. Filters (project, kind, tags, time) narrow the candidate set but are not required. If you need to understand an item's evidence, contradictions, or derivation chain, follow up with tribal_explore using the item's ID.\n\nSuperseded items (replaced by newer understanding) are excluded by default. Set include_superseded to true for the historical picture.\n\nResults include standing (evidential profile) when requested, which summarises each item's support count, contradiction count, observation frequency, and diversity of supporting evidence.",
+    "description": "Search Tribal's knowledge base using natural language. Returns knowledge items ranked by semantic similarity to your query, with optional structured filters to narrow results.\n\nUse this as your first step when you need context: before starting work on a feature, debugging an issue, or making a design decision. Ask questions the way you'd ask a colleague: \"What do I know about connection pooling in this project?\" or \"Have I seen this async deadlock pattern before?\"\n\nSemantic search is the primary mechanism. Filters (project, kind, tags, time) narrow the candidate set but are not required. If you need to understand an item's evidence, contradictions, or derivation chain, follow up with tribal_explore using the item's ID.\n\nSuperseded items (replaced by newer understanding) are excluded by default. Set include_superseded to true for the historical picture.\n\nResults include standing (evidential profile) when requested, which summarises each item's support count, contradiction count, observation frequency, and diversity of supporting evidence.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -151,7 +151,7 @@
           "type": "boolean"
         },
         "kinds": {
-          "description": "Filter to specific knowledge kinds. Use sparingly — semantic search naturally ranks relevant kinds higher. Most useful for explicit structural queries like 'show me all decision records for this project'.",
+          "description": "Filter to specific knowledge kinds. Use sparingly; semantic search naturally ranks relevant kinds higher. Most useful for explicit structural queries like 'show me all decision records for this project'.",
           "items": {
             "enum": [
               "fact",
@@ -183,7 +183,7 @@
           "type": "string"
         },
         "tags": {
-          "description": "Filter by tags (AND semantics — items must have ALL specified tags). Tags are lowercase. For OR semantics, make separate queries.",
+          "description": "Filter by tags (AND semantics: items must have ALL specified tags). Tags are lowercase. For OR semantics, make separate queries.",
           "items": {
             "type": "string"
           },
@@ -226,7 +226,7 @@
               "type": "array"
             },
             "similarity": {
-              "description": "Cosine similarity to query (0.0–1.0).",
+              "description": "Cosine similarity to query (0.0 to 1.0).",
               "type": "number"
             },
             "standing": {
@@ -476,7 +476,7 @@
           ]
         },
         "trace_id": {
-          "description": "OpenTelemetry trace ID for this retrieval. Pass to tribal_feedback to rate this session.",
+          "description": "Trace ID for this retrieval. Pass to tribal_feedback to rate this session.",
           "type": "string"
         }
       },
@@ -494,7 +494,7 @@
     "title": "Tribal: Discover Knowledge"
   },
   {
-    "description": "Traverse the relationship graph from a specific knowledge item. Use this after tribal_discover to understand an item's context: what supports it, what contradicts it, what it was derived from, or what it supersedes.\n\nTypical workflow:\n1. tribal_discover finds relevant items\n2. Pick an item with interesting standing (high support, or contradictions)\n3. tribal_explore to see the evidence, contradictions, or derivation chain\n\nDirection controls traversal:\n- \"inbound\": What do others assert about this item? (supports, contradictions, what supersedes it)\n- \"outbound\": What does this item assert about others? (what it's derived from, what it supports)\n- \"both\": Full neighbourhood in all directions\n\nRelation types:\n- \"supports\": Evidence that reinforces the item\n- \"contradicts\": Evidence that challenges the item\n- \"supersedes\": A newer item that replaces this one\n- \"derived_from\": Provenance — what input was used to produce this item\n\nDepth controls hops: depth 1 = direct relations, depth 2 = relations of relations. Higher depth gives more context but more results. Depth is capped at 3 to avoid mixing unrelated evidence across distant graph regions — use multiple targeted calls for deeper investigation.",
+    "description": "Traverse the relationship graph from a specific knowledge item. Use this after tribal_discover to understand an item's context: what supports it, what contradicts it, what it was derived from, or what it supersedes.\n\nTypical workflow:\n1. tribal_discover finds relevant items\n2. Pick an item with interesting standing (high support, or contradictions)\n3. tribal_explore to see the evidence, contradictions, or derivation chain\n\nDirection controls traversal:\n- \"inbound\": What do others assert about this item? (supports, contradictions, what supersedes it)\n- \"outbound\": What does this item assert about others? (what it's derived from, what it supports)\n- \"both\": Full neighbourhood in all directions\n\nRelation types:\n- \"supports\": Evidence that reinforces the item\n- \"contradicts\": Evidence that challenges the item\n- \"supersedes\": A newer item that replaces this one\n- \"derived_from\": Provenance. The input used to produce this item\n\nDepth controls hops: depth 1 = direct relations, depth 2 = relations of relations. Higher depth gives more context but more results. Depth is capped at 3 to avoid mixing unrelated evidence across distant graph regions; use multiple targeted calls for deeper investigation.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -532,7 +532,7 @@
         },
         "limit": {
           "default": 20,
-          "description": "Maximum total results across all depths. BFS order ensures closer relations are returned first.",
+          "description": "Maximum total results across all depths. Closer relations are returned first.",
           "maximum": 100,
           "minimum": 1,
           "type": "integer"
@@ -837,7 +837,7 @@
           "type": "array"
         },
         "trace_id": {
-          "description": "OpenTelemetry trace ID. Pass to tribal_feedback if rating this session.",
+          "description": "Trace ID. Pass to tribal_feedback if rating this session.",
           "type": "string"
         }
       },
@@ -854,7 +854,7 @@
     "title": "Tribal: Explore Relationships"
   },
   {
-    "description": "Retrieve one or more knowledge items by their IDs. Use this when you have a specific item ID — from a standing field (newest_supporting_id, newest_contradicting_id, superseded_by), a previous session, or a cross-reference — and need the full item.\n\nFor semantic search, use tribal_discover. For relationship traversal, use tribal_explore. This tool is for direct lookup when you already know what you want.\n\nThe response is keyed by item ID. Missing or unknown IDs map to null.",
+    "description": "Retrieve one or more knowledge items by their IDs. Use this when you have a specific item ID (from a standing field, a previous session, or a cross-reference) and need the full item.\n\nFor semantic search, use tribal_discover. For relationship traversal, use tribal_explore. This tool is for direct lookup when you already know what you want.\n\nThe response is keyed by item ID. Missing or unknown IDs map to null.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1135,7 +1135,7 @@
     "title": "Tribal: Get Knowledge Item by ID"
   },
   {
-    "description": "Record a quality signal about a retrieval session. Use this when Tribal's knowledge meaningfully helped (or failed to help) your current task.\n\nThis is NOT about rating individual items — item-level signals are captured through the Supports/Contradicts relationship system during ingest. This is about rating the *combination of items returned for a query, assembled in a particular way*.\n\nRate \"positive\" when: Tribal surfaced knowledge that directly informed your approach, saved you from a known pitfall, or provided context that improved your decision-making.\n\nRate \"negative\" when: The query should have found relevant knowledge but didn't, or the returned items were irrelevant or misleading for the task at hand.\n\nFeedback builds an organic eval dataset. Be selective — only rate when the signal is clear. If no trace_id is available from the retrieval response, do not submit feedback rather than fabricating a trace_id — incomplete feedback is noise.",
+    "description": "Record a quality signal about a retrieval session. Use this when Tribal's knowledge meaningfully helped (or failed to help) your current task.\n\nThis is NOT about rating individual items. Item-level signals are captured through the Supports/Contradicts relationship system during ingest. This is about rating the *combination of items returned for a query, assembled in a particular way*.\n\nRate \"positive\" when: Tribal surfaced knowledge that directly informed your approach, saved you from a known pitfall, or provided context that improved your decision-making.\n\nRate \"negative\" when: The query should have found relevant knowledge but didn't, or the returned items were irrelevant or misleading for the task at hand.\n\nFeedback builds an organic eval dataset. Be selective: only rate when the signal is clear. If no trace_id is available from the retrieval response, do not submit feedback rather than fabricating a trace_id. Incomplete feedback is noise.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1172,7 +1172,7 @@
           "type": "array"
         },
         "trace_id": {
-          "description": "OpenTelemetry trace ID from the tribal_discover or tribal_explore response being rated.",
+          "description": "Trace ID from the tribal_discover or tribal_explore response being rated.",
           "type": "string"
         }
       },
@@ -1202,7 +1202,7 @@
     "title": "Tribal: Rate Retrieval Quality"
   },
   {
-    "description": "Check the progress of an ingest job submitted via tribal_ingest.\n\nJob lifecycle: queued → extracting → triaging → relating → completed/failed\n\nTerminal states:\n- \"completed\": Pipeline ran to conclusion. Check outcome for details:\n  - \"success\": All candidates triaged successfully and relations committed.\n  - \"partial\": Some triage tasks dead-lettered; relation task ran on a subset.\n  - \"empty\": Relation task ran with zero items to relate (all duplicates or all triage failures). If tasks_failed > 0, the pipeline likely failed at triage — treat as degraded rather than \"nothing new\".\n- \"failed\": Pipeline could not complete. outcome = \"failure\". Check error context.\n\nSet wait_seconds to block until the job completes or the timeout expires. This collapses ingest + poll into a single round-trip for fast operations. With wait_seconds=0 (default), returns immediately with current status.",
+    "description": "Check the progress of an ingest job submitted via tribal_ingest.\n\nJob lifecycle: queued → extracting → triaging → relating → completed/failed\n\nTerminal states:\n- \"completed\": Pipeline ran to conclusion. Check outcome for details:\n  - \"success\": All candidates triaged successfully and relations committed.\n  - \"partial\": Some triage tasks failed permanently; the relation task ran on a subset.\n  - \"empty\": Relation task ran with zero items to relate (all duplicates or all triage failures). If tasks_failed > 0, the pipeline likely failed at triage; treat as degraded rather than \"nothing new\".\n- \"failed\": Pipeline could not complete. outcome = \"failure\". Check error context.\n\nSet wait_seconds to block until the job completes or the timeout expires. This collapses ingest + poll into a single round-trip for fast operations. With wait_seconds=0 (default), returns immediately with current status.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

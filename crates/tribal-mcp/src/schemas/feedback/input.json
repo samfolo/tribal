@@ -3,7 +3,7 @@
   "properties": {
     "trace_id": {
       "type": "string",
-      "description": "OpenTelemetry trace ID from the tribal_discover or tribal_explore response being rated."
+      "description": "Trace ID from the tribal_discover or tribal_explore response being rated."
     },
     "query_text": {
       "type": "string",

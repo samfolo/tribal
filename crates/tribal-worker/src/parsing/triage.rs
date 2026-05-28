@@ -18,16 +18,12 @@ use crate::error::StageError;
 )]
 pub(crate) struct TriageClassification {
     /// Whether the candidate is novel or a duplicate.
-    #[schemars(
-        description = "The classification decision. Default to 'created' (novel) unless \
-        the candidate makes the exact same specific claim as an existing item with no \
-        meaningful new information. When uncertain, choose 'created'."
-    )]
+    #[schemars(description = "Whether the candidate is novel or duplicates an existing item.")]
     pub outcome: TriageDecision,
     /// Per-similar-item decisions with justifications.
     #[schemars(
-        description = "One entry per similar item provided. Each assessment is independent \
-        of the outcome decision and must include a justification referencing both items."
+        description = "One assessment per provided similar item, each made independently \
+        of the novel/duplicate outcome."
     )]
     pub similar_item_decisions: Vec<SimilarItemClassification>,
 }
@@ -98,31 +94,28 @@ pub(crate) enum TriageItemReference {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "decision")]
 #[schemars(
-    description = "The classification outcome. 'created' is the default — only use \
-    'duplicate' when the candidate makes the exact same claim as an existing item. \
-    A candidate assessed as contradicting any similar item MUST be 'created'."
+    description = "Whether the candidate records new knowledge or duplicates an existing item."
 )]
 pub(crate) enum TriageDecision {
     /// The candidate is novel — a new knowledge item should be created.
     #[serde(rename = "created")]
     #[schemars(
-        description = "The candidate contains information not already captured. \
-        This is the default — use when the candidate adds any new context, detail, \
-        correction, or perspective beyond what existing items capture."
+        description = "The candidate records knowledge not already captured by an \
+        existing item. Default to this when the candidate adds any new context, or when \
+        uncertain."
     )]
     Novel,
     /// The candidate duplicates an existing item.
     #[serde(rename = "duplicate")]
     #[schemars(
-        description = "The candidate restates an existing item with no meaningful new \
-        information. Must not be used when any similar_item_decision has suggested_relation \
-        'contradicts' — a contradiction is always novel."
+        description = "The candidate restates an existing item, adding no meaningful new \
+        information. A candidate that contradicts an existing item is never a duplicate."
     )]
     Duplicate {
         /// The similar item the candidate duplicates, referenced by index.
         #[schemars(
-            description = "The similar item this candidate duplicates, referenced by its \
-            context index in the provided similar items."
+            description = "The existing item this candidate duplicates, referenced by its \
+            context index."
         )]
         matched_item: TriageItemReference,
     },
@@ -136,22 +129,14 @@ pub(crate) enum TriageDecision {
 )]
 pub(crate) struct SimilarItemClassification {
     /// The similar item that was compared against, referenced by index.
-    #[schemars(
-        description = "The similar item being assessed, referenced by its context index \
-        in the provided similar items."
-    )]
+    #[schemars(description = "The existing item being assessed, referenced by its context index.")]
     pub item: TriageItemReference,
     /// The agent's suggested relation classification.
-    #[schemars(
-        description = "The relationship between the existing item and the candidate. \
-        If 'contradicts', the outcome decision must be 'created' — contradictory \
-        information cannot be a duplicate."
-    )]
+    #[schemars(description = "How the candidate relates to the existing item.")]
     pub suggested_relation: RelationSuggestion,
     /// The agent's reasoning for the classification.
     #[schemars(
-        description = "Brief explanation referencing specific content from both items. \
-        Explains why this relationship classification was chosen."
+        description = "Why this assessment was chosen, grounded in the content of both items."
     )]
     pub justification: String,
 }
