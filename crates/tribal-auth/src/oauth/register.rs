@@ -21,7 +21,7 @@ use tribal_domain::{ApplicationType, OauthClient, TokenEndpointAuthMethod};
 use url::Url;
 
 use crate::oauth::{
-    common::LOOPBACK_HOSTS,
+    common::{GRANT_TYPE_AUTHORIZATION_CODE, LOOPBACK_HOSTS, RESPONSE_TYPE_CODE},
     error::{ClientMetadataRejection, InternalOperation, OAuthError, RedirectUriRejection},
 };
 
@@ -150,10 +150,10 @@ async fn register(
 
     let grant_types = req
         .grant_types
-        .unwrap_or_else(|| vec!["authorization_code".to_owned()]);
+        .unwrap_or_else(|| vec![GRANT_TYPE_AUTHORIZATION_CODE.to_owned()]);
     let response_types = req
         .response_types
-        .unwrap_or_else(|| vec!["code".to_owned()]);
+        .unwrap_or_else(|| vec![RESPONSE_TYPE_CODE.to_owned()]);
 
     validate_grant_response_consistency(&grant_types, &response_types)?;
 
@@ -235,28 +235,19 @@ fn client_secret_hash_marker(client: &OauthClient) -> bool {
 }
 
 fn parse_auth_method(raw: &str) -> Result<TokenEndpointAuthMethod, OAuthError> {
-    match raw {
-        "none" => Ok(TokenEndpointAuthMethod::None),
-        "client_secret_basic" => Ok(TokenEndpointAuthMethod::ClientSecretBasic),
-        "client_secret_post" => Ok(TokenEndpointAuthMethod::ClientSecretPost),
-        other => Err(OAuthError::InvalidClientMetadata {
-            reason: ClientMetadataRejection::UnsupportedAuthMethod {
-                presented: other.to_owned(),
-            },
-        }),
-    }
+    TokenEndpointAuthMethod::parse(raw).ok_or_else(|| OAuthError::InvalidClientMetadata {
+        reason: ClientMetadataRejection::UnsupportedAuthMethod {
+            presented: raw.to_owned(),
+        },
+    })
 }
 
 fn parse_application_type(raw: &str) -> Result<ApplicationType, OAuthError> {
-    match raw {
-        "web" => Ok(ApplicationType::Web),
-        "native" => Ok(ApplicationType::Native),
-        other => Err(OAuthError::InvalidClientMetadata {
-            reason: ClientMetadataRejection::UnsupportedApplicationType {
-                presented: other.to_owned(),
-            },
-        }),
-    }
+    ApplicationType::parse(raw).ok_or_else(|| OAuthError::InvalidClientMetadata {
+        reason: ClientMetadataRejection::UnsupportedApplicationType {
+            presented: raw.to_owned(),
+        },
+    })
 }
 
 fn validate_redirect_uri(raw: &str) -> Result<(), OAuthError> {
@@ -305,8 +296,10 @@ fn validate_grant_response_consistency(
     grant_types: &[String],
     response_types: &[String],
 ) -> Result<(), OAuthError> {
-    if response_types.iter().any(|s| s == "code")
-        && !grant_types.iter().any(|s| s == "authorization_code")
+    if response_types.iter().any(|s| s == RESPONSE_TYPE_CODE)
+        && !grant_types
+            .iter()
+            .any(|s| s == GRANT_TYPE_AUTHORIZATION_CODE)
     {
         return Err(OAuthError::InvalidClientMetadata {
             reason: ClientMetadataRejection::GrantResponseInconsistent,

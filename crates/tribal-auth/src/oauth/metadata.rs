@@ -8,9 +8,13 @@
 //! supported token-endpoint auth methods, and the scope catalogue.
 
 use serde::{Deserialize, Serialize};
+use tribal_domain::TokenEndpointAuthMethod;
 use url::Url;
 
-use crate::oauth::config::OAuthRuntimeConfig;
+use crate::oauth::{
+    common::{CODE_CHALLENGE_METHOD_S256, GRANT_TYPE_AUTHORIZATION_CODE, RESPONSE_TYPE_CODE},
+    config::OAuthRuntimeConfig,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -25,21 +29,6 @@ pub const SCOPES_CATALOGUE: &[&str] = &[
     "tribal.jobs:read",
     "tribal.jobs:write",
 ];
-
-/// Sole supported code-challenge method for OAuth 2.1.
-pub const CODE_CHALLENGE_METHOD_S256: &str = "S256";
-
-/// Sole supported response type.
-pub const RESPONSE_TYPE_CODE: &str = "code";
-
-/// Sole supported grant type (no refresh tokens).
-pub const GRANT_TYPE_AUTHORIZATION_CODE: &str = "authorization_code";
-
-/// Token endpoint auth method advertised for public clients.
-pub const AUTH_METHOD_NONE: &str = "none";
-
-/// Token endpoint auth method advertised for DCR confidential clients.
-pub const AUTH_METHOD_CLIENT_SECRET_BASIC: &str = "client_secret_basic";
 
 /// Bearer methods supported by the MCP transport.
 pub const BEARER_METHOD_HEADER: &str = "header";
@@ -120,11 +109,13 @@ pub struct AuthorizationServerMetadata {
 pub fn authorization_server_metadata(runtime: &OAuthRuntimeConfig) -> AuthorizationServerMetadata {
     let token_endpoint_auth_methods_supported = if runtime.dcr_enabled {
         vec![
-            AUTH_METHOD_NONE.to_owned(),
-            AUTH_METHOD_CLIENT_SECRET_BASIC.to_owned(),
+            TokenEndpointAuthMethod::None.as_str().to_owned(),
+            TokenEndpointAuthMethod::ClientSecretBasic
+                .as_str()
+                .to_owned(),
         ]
     } else {
-        vec![AUTH_METHOD_NONE.to_owned()]
+        vec![TokenEndpointAuthMethod::None.as_str().to_owned()]
     };
 
     AuthorizationServerMetadata {

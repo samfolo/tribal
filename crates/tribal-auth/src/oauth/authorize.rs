@@ -25,6 +25,7 @@ use tribal_domain::LOCAL_PRINCIPAL_KEY;
 use url::Url;
 
 use crate::oauth::{
+    common::{CODE_CHALLENGE_METHOD_S256, RESPONSE_TYPE_CODE},
     config::{OAuthRuntimeConfig, canonicalise_resource_url},
     consent::build_consent_html,
     error::{
@@ -39,8 +40,6 @@ use crate::oauth::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const SUPPORTED_RESPONSE_TYPE: &str = "code";
-const SUPPORTED_CODE_CHALLENGE_METHOD: &str = "S256";
 const RANDOM_CODE_BYTE_LENGTH: usize = 32;
 
 // ---------------------------------------------------------------------------
@@ -127,13 +126,13 @@ async fn validate_pre_redirect(
     state: &AuthorizeState,
     query: &AuthorizeQuery,
 ) -> Result<Url, OAuthError> {
-    if query.response_type != SUPPORTED_RESPONSE_TYPE {
+    if query.response_type != RESPONSE_TYPE_CODE {
         return Err(OAuthError::UnsupportedResponseType {
             presented: query.response_type.clone(),
         });
     }
 
-    if query.code_challenge_method != SUPPORTED_CODE_CHALLENGE_METHOD {
+    if query.code_challenge_method != CODE_CHALLENGE_METHOD_S256 {
         return Err(OAuthError::InvalidRequest {
             reason: InvalidRequestReason::UnsupportedCodeChallengeMethod {
                 presented: query.code_challenge_method.clone(),
