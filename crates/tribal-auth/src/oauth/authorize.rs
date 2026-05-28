@@ -345,25 +345,48 @@ fn build_consent_html(
     } else {
         ""
     };
+    // The consent page navigates via an anchor click rather than a GET
+    // form submission. A GET form rebuilds its action URL's query string
+    // from the form's input fields, which strips the `code` and `state`
+    // parameters the redirect URL carries; clicking an `<a href>` follows
+    // the URL byte-for-byte instead.
+    let target_html = escape_html_attribute(target);
+    let client_id_html = escape_html_text(client_id);
+    let redirect_host_html = escape_html_text(redirect_host);
+    let scope_html = escape_html_text(scope_display);
     format!(
         "<!doctype html>
 <html><head><meta charset=\"utf-8\"><title>Tribal authorisation</title></head>
 <body>
   <h1>Authorising client</h1>
-  <p><strong>client_id</strong>: <code>{client_id}</code></p>
-  <p><strong>redirect_uri host</strong>: <code>{redirect_host}</code></p>
-  <p><strong>requested scope</strong>: <code>{scope_display}</code></p>
+  <p><strong>client_id</strong>: <code>{client_id_html}</code></p>
+  <p><strong>redirect_uri host</strong>: <code>{redirect_host_html}</code></p>
+  <p><strong>requested scope</strong>: <code>{scope_html}</code></p>
   {warning_html}
-  <form id=\"approve\" action=\"{target}\" method=\"get\">
-    <button type=\"submit\" autofocus>Continue</button>
-  </form>
+  <p><a id=\"approve\" href=\"{target_html}\" autofocus>Continue</a></p>
   <script>
-    document.getElementById('approve').submit();
+    document.getElementById('approve').click();
   </script>
-  <noscript><p><a href=\"{target}\">Continue</a></p></noscript>
 </body></html>
 ",
     )
+}
+
+/// HTML-escapes a value for use inside a double-quoted attribute.
+fn escape_html_attribute(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// HTML-escapes a value for use inside element text content.
+fn escape_html_text(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn generate_random_code() -> String {
