@@ -196,7 +196,7 @@ async fn check_aggregate(pool: &PgPool) -> CheckOutcome {
 /// "valid token, principal vanished" cases render the same way.
 fn outcome_for_auth_error(err: AuthError, transport: TokenTransport) -> CheckOutcome {
     match err {
-        AuthError::InvalidToken { .. } => {
+        AuthError::InvalidToken { .. } | AuthError::AudienceMismatch { .. } => {
             CheckOutcome::token_verification_failed(transport, TokenFailureReason::Invalid)
         }
         AuthError::TokenRevoked { .. } => {

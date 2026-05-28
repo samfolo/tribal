@@ -24,6 +24,11 @@ pub struct AuthToken {
     principal_id: PrincipalId,
     /// Permission scopes granted to this token.
     scopes: Vec<Scope>,
+    /// Canonical resource URL this token's audience is bound to
+    /// (RFC 8707). An empty string represents legacy tokens migrated
+    /// from before the audience column existed.
+    #[builder(default = String::new())]
+    audience: String,
     /// When this token expires.
     expires_at: DateTime<Utc>,
     /// When this token was created.
@@ -52,6 +57,13 @@ impl AuthToken {
     /// Returns the permission scopes granted to this token.
     pub fn scopes(&self) -> &[Scope] {
         &self.scopes
+    }
+
+    /// Returns the canonical resource URL this token is audience-bound
+    /// to. An empty string represents legacy tokens migrated from
+    /// before the audience column existed.
+    pub fn audience(&self) -> &str {
+        &self.audience
     }
 
     /// Returns when this token expires.

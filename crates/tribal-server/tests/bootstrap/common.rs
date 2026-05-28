@@ -324,6 +324,7 @@ pub(crate) async fn run_token_create(
     let bearer_token = token_create_async(
         &merged.database,
         principal_key.unwrap_or(LOCAL_PRINCIPAL_KEY),
+        "",
         expires_at,
         &mut stdout,
         &mut stderr,

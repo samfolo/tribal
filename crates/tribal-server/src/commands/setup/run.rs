@@ -162,6 +162,7 @@ pub async fn run_async(
         .token_hash(token_hash)
         .principal_id(token_principal.id())
         .scopes(full_access_scopes())
+        .audience(String::new())
         .expires_at(expires_at)
         .build();
 

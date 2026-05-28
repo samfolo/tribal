@@ -23,6 +23,7 @@ const COLUMNS: Columns = Columns(&[
     "token_hash",
     "principal_id",
     "scopes",
+    "audience",
     "expires_at",
     "created_at",
     "revoked_at",
@@ -34,7 +35,7 @@ const COLUMNS: Columns = Columns(&[
 
 /// Input for creating a new auth token record.
 ///
-/// Contains only caller-provided fields.  Server-generated values
+/// Contains only caller-provided fields. Server-generated values
 /// (`id`, `created_at`) are produced by Postgres via `DEFAULT`
 /// clauses and returned via `RETURNING`.
 #[derive(Debug, Clone, TypedBuilder)]
@@ -45,6 +46,8 @@ pub struct NewAuthToken {
     pub principal_id: PrincipalId,
     /// Permission scopes granted to this token.
     pub scopes: Vec<Scope>,
+    /// Canonical resource URL this token is audience-bound to per RFC 8707.
+    pub audience: String,
     /// When this token expires.
     pub expires_at: DateTime<Utc>,
 }
@@ -187,8 +190,8 @@ impl AuthTokenRepository for PgAuthTokenRepository {
         new: &NewAuthToken,
     ) -> Result<AuthToken, DbError> {
         let sql = format!(
-            "INSERT INTO auth_tokens (token_hash, principal_id, scopes, expires_at) \
-             VALUES ($1, $2, $3, $4) \
+            "INSERT INTO auth_tokens (token_hash, principal_id, scopes, audience, expires_at) \
+             VALUES ($1, $2, $3, $4, $5) \
              RETURNING {COLUMNS}",
         );
 
@@ -198,6 +201,7 @@ impl AuthTokenRepository for PgAuthTokenRepository {
             .bind(&new.token_hash)
             .bind(new.principal_id.inner())
             .bind(&scope_strings)
+            .bind(&new.audience)
             .bind(new.expires_at)
             .fetch_one(&mut *conn)
             .await;
@@ -426,6 +430,7 @@ fn map_auth_token_row(r: &sqlx::postgres::PgRow) -> AuthToken {
         .token_hash(r.get("token_hash"))
         .principal_id(PrincipalId::from(r.get::<uuid::Uuid, _>("principal_id")))
         .scopes(scopes)
+        .audience(r.get("audience"))
         .expires_at(r.get("expires_at"))
         .created_at(r.get("created_at"))
         .revoked_at(r.get("revoked_at"))
