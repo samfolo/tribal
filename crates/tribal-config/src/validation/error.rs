@@ -308,6 +308,8 @@ pub enum ValidationError {
     BindAddressStdioConflict,
     /// `server.bind_address` failed to parse as `<host>:<port>`.
     BindAddressMalformed { value: String },
+    /// A URL-bearing config field failed to parse as a URL.
+    UrlMalformed { field: ConfigPath, value: String },
     /// `embedding.provider` is a provider that does not support
     /// embedding.  Renders the provider name in both clauses for clarity.
     EmbeddingProviderUnsupported { provider: ProviderKind },
@@ -404,6 +406,10 @@ impl fmt::Display for ValidationError {
                 f,
                 "server.bind_address is not a valid socket address: {value}"
             ),
+
+            Self::UrlMalformed { field, value } => {
+                write!(f, "{field} is not a valid URL: {value}")
+            }
 
             Self::EmbeddingProviderUnsupported { provider } => write!(
                 f,
@@ -833,6 +839,18 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "server.bind_address is not a valid socket address: not-an-address",
+        );
+    }
+
+    #[test]
+    fn test_display_url_malformed() {
+        let err = ValidationError::UrlMalformed {
+            field: ConfigPath::from_static("oauth.issuer_url"),
+            value: "not a url".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "oauth.issuer_url is not a valid URL: not a url",
         );
     }
 

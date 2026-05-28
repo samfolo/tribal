@@ -44,7 +44,8 @@ pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
 pub use oauth::{
     DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,
-    MAX_AUTHORIZATION_CODE_TTL_SECONDS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, OAuthConfig,
+    MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
+    MIN_AUTHORIZATION_CODE_TTL_SECONDS, OAuthConfig,
 };
 pub use prompts::{PromptSource, PromptsConfig};
 pub use root::{TribalConfig, VERSION};

@@ -14,6 +14,16 @@ use serde::{Deserialize, Serialize};
 /// Default access-token TTL for OAuth-issued tokens in hours.
 pub const DEFAULT_ACCESS_TOKEN_TTL_HOURS: u64 = 24;
 
+/// Upper bound on the OAuth access-token TTL accepted by `validate()`,
+/// in hours (30 days).
+///
+/// A security bound, distinct from the auth-token overflow ceiling: with
+/// no refresh tokens, the access token is the whole session, so it needs
+/// generous headroom over the 24-hour default, but a multi-year
+/// audience-bound bearer is a footgun. 30 days also keeps the
+/// `hours * 3600` seconds conversion far inside `u64`.
+pub const MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS: u64 = 720;
+
 /// Default authorisation-code TTL in seconds.
 pub const DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS: u64 = 600;
 
