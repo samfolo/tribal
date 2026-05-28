@@ -2,7 +2,7 @@
   "additionalProperties": false,
   "definitions": {
     "IngestionRelationKind": {
-      "description": "The type of relationship between two knowledge items. 'supports' = source reinforces target. 'contradicts' = source conflicts with target. 'derived_from' = source was produced using target as input.",
+      "description": "How the source item relates to the target item.",
       "enum": [
         "supports",
         "contradicts",
@@ -15,7 +15,7 @@
       "description": "A directed relationship between two knowledge items.",
       "properties": {
         "justification": {
-          "description": "Brief explanation referencing specific content from both items. Persists in the knowledge graph and informs future retrieval — write for someone encountering this relationship without the original context.",
+          "description": "Why this relationship holds, grounded in the content of both items.",
           "type": [
             "string",
             "null"
@@ -58,10 +58,10 @@
       "type": "object"
     }
   },
-  "description": "Relationship edges between knowledge items. Return an empty relations array when no genuine semantic relationships exist — forced relations degrade graph quality.",
+  "description": "The relationship edges to create. Empty when no genuine relationship holds between the items.",
   "properties": {
     "relations": {
-      "description": "Directed relationship edges. Each edge connects a source item to a target item with a typed relationship. Only include edges grounded in the actual content of both items.",
+      "description": "Directed edges, each connecting a source item to a target item. Only edges grounded in the content of both items.",
       "items": {
         "$ref": "#/definitions/RelationEdge"
       },

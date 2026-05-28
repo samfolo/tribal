@@ -3,7 +3,9 @@
 
 use strum::IntoEnumIterator;
 
-use super::legends::{relation_suggestion_legend, similarity_score_legend};
+use super::legends::{
+    ingestion_relation_kind_legend, relation_suggestion_legend, similarity_score_legend,
+};
 
 // ---------------------------------------------------------------------------
 // Variable names
@@ -38,6 +40,9 @@ pub(crate) const VAR_SIMILARITY_SCORE_LEGEND: &str = "similarity_score_legend";
 
 /// Tera context variable: formatted relation suggestion value descriptions.
 pub(crate) const VAR_RELATION_SUGGESTION_LEGEND: &str = "relation_suggestion_legend";
+
+/// Tera context variable: formatted ingestion relation kind value descriptions.
+pub(crate) const VAR_INGESTION_RELATION_KIND_LEGEND: &str = "ingestion_relation_kind_legend";
 
 // ---------------------------------------------------------------------------
 // Reserved variables
@@ -115,6 +120,10 @@ pub(crate) fn triage_system_context() -> tera::Context {
 pub(crate) fn relation_system_context() -> tera::Context {
     let mut ctx = tera::Context::new();
     ctx.insert(VAR_SIMILARITY_SCORE_LEGEND, &similarity_score_legend());
+    ctx.insert(
+        VAR_INGESTION_RELATION_KIND_LEGEND,
+        &ingestion_relation_kind_legend(),
+    );
     ctx
 }
 

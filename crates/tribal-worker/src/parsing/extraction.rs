@@ -19,17 +19,15 @@ use crate::error::StageError;
 pub(crate) struct ExtractionOutput {
     /// Extracted knowledge item candidates.
     #[schemars(
-        description = "Knowledge items extracted from the input. Each candidate should be \
-        atomic (one claim per item) and self-contained. Return an empty array if the \
-        input contains no extractable knowledge."
+        description = "Knowledge items extracted from the input, each an atomic, \
+        self-contained claim. Empty when the input contains no extractable knowledge."
     )]
     pub candidates: Vec<Candidate>,
     /// Intra-batch relation hints between candidates.
     #[serde(default)]
     #[schemars(
-        description = "Derivation relationships between candidates in this batch. Only \
-        include when one candidate is genuinely derived from another. Optional — omit \
-        or return an empty array when no intra-batch relationships exist."
+        description = "Derivation links between candidates in this batch. Empty unless \
+        one candidate is genuinely derived from another."
     )]
     pub relation_hints: Vec<RelationHint>,
 }
