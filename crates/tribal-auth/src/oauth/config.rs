@@ -190,9 +190,11 @@ mod tests {
 
     #[test]
     fn test_build_uses_fallbacks_when_unset() {
-        let mut config = OAuthConfig::default();
-        config.issuer_url = None;
-        config.resource_url = None;
+        let config = OAuthConfig {
+            issuer_url: None,
+            resource_url: None,
+            ..Default::default()
+        };
         let issuer = url("http://127.0.0.1:8080");
         let resource = url("http://127.0.0.1:8080/mcp");
         let runtime = OAuthRuntimeConfig::build(&config, &issuer, &resource).unwrap();
@@ -203,11 +205,16 @@ mod tests {
 
     #[test]
     fn test_build_rejects_malformed_issuer_url() {
-        let mut config = OAuthConfig::default();
-        config.issuer_url = Some("not a url".to_owned());
+        let config = OAuthConfig {
+            issuer_url: Some("not a url".to_owned()),
+            ..Default::default()
+        };
         let issuer = url("http://127.0.0.1:8080");
         let resource = url("http://127.0.0.1:8080/mcp");
         let err = OAuthRuntimeConfig::build(&config, &issuer, &resource).unwrap_err();
-        assert!(matches!(err, OAuthRuntimeConfigError::IssuerUrlMalformed { .. }));
+        assert!(matches!(
+            err,
+            OAuthRuntimeConfigError::IssuerUrlMalformed { .. }
+        ));
     }
 }

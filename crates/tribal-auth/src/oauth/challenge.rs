@@ -125,9 +125,7 @@ mod tests {
     #[test]
     fn test_scope_and_resource_metadata_emitted_with_quoted_values() {
         let header = build_bearer_challenge_header(&BearerChallenge {
-            resource_metadata_url: url(
-                "https://example.com/.well-known/oauth-protected-resource",
-            ),
+            resource_metadata_url: url("https://example.com/.well-known/oauth-protected-resource"),
             scope: Some("tribal:read tribal:write".to_owned()),
             error: None,
         });
@@ -140,9 +138,7 @@ mod tests {
     #[test]
     fn test_insufficient_scope_step_up_emits_error_scope_and_resource_metadata() {
         let header = build_bearer_challenge_header(&BearerChallenge {
-            resource_metadata_url: url(
-                "https://example.com/.well-known/oauth-protected-resource",
-            ),
+            resource_metadata_url: url("https://example.com/.well-known/oauth-protected-resource"),
             scope: Some("tribal:write".to_owned()),
             error: Some(ERROR_INSUFFICIENT_SCOPE),
         });

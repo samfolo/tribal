@@ -128,7 +128,7 @@ impl OauthClientRepository for PgOauthClientRepository {
             .bind(&new.response_types)
             .bind(new.token_endpoint_auth_method.as_str())
             .bind(&new.scope)
-            .bind(new.application_type.map(|t| t.as_str()))
+            .bind(new.application_type.map(ApplicationType::as_str))
             .bind(new.client_secret_expires_at)
             .fetch_one(&mut *conn)
             .await;

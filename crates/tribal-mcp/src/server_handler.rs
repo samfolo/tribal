@@ -11,6 +11,7 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use tokio::sync::RwLock;
+use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
     PgPrincipalRepository, PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository,
@@ -21,8 +22,6 @@ use tribal_db::{
     TriageResultRepository,
 };
 use tribal_domain::{PromptRole, PromptStage, PromptVersionId, is_authorised};
-
-use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
 
 use crate::{
     app_state::AppState,
@@ -467,10 +466,9 @@ mod tests {
         handler::server::ServerHandler,
         model::{ErrorCode, Extensions as RmcpExtensions, ResourceContents},
     };
+    use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
     use tribal_domain::PrincipalId;
     use tribal_test_utils::TEST_PRINCIPAL_KEY;
-
-    use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
 
     use super::*;
     use crate::{

@@ -184,10 +184,16 @@ mod tests {
     #[test]
     fn test_authorization_server_metadata_advertises_s256_and_cimd_support() {
         let doc = authorization_server_metadata(&runtime());
-        assert_eq!(doc.code_challenge_methods_supported, vec!["S256".to_owned()]);
+        assert_eq!(
+            doc.code_challenge_methods_supported,
+            vec!["S256".to_owned()]
+        );
         assert!(doc.client_id_metadata_document_supported);
         assert_eq!(doc.response_types_supported, vec!["code".to_owned()]);
-        assert_eq!(doc.grant_types_supported, vec!["authorization_code".to_owned()]);
+        assert_eq!(
+            doc.grant_types_supported,
+            vec!["authorization_code".to_owned()]
+        );
     }
 
     #[test]
@@ -205,8 +211,10 @@ mod tests {
 
     #[test]
     fn test_authorization_server_metadata_omits_registration_when_dcr_disabled() {
-        let mut config = OAuthConfig::default();
-        config.dcr_enabled = false;
+        let config = OAuthConfig {
+            dcr_enabled: false,
+            ..Default::default()
+        };
         let runtime = OAuthRuntimeConfig::build(
             &config,
             &Url::parse("http://127.0.0.1:8080").unwrap(),
@@ -224,6 +232,9 @@ mod tests {
     #[test]
     fn test_join_issuer_drops_trailing_slash_on_issuer() {
         let url = Url::parse("https://example.com/").unwrap();
-        assert_eq!(join_issuer(&url, "/authorize"), "https://example.com/authorize");
+        assert_eq!(
+            join_issuer(&url, "/authorize"),
+            "https://example.com/authorize"
+        );
     }
 }

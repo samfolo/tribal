@@ -110,9 +110,7 @@ pub use item_observation::{ItemObservation, ItemObservationBuilder};
 pub use job::{Job, JobBuilder, JobOutcome, JobState, JobStatus};
 pub use knowledge::{Confidence, KnowledgeItem, KnowledgeItemBuilder, KnowledgeKind};
 pub use oauth_authorization_code::{OauthAuthorizationCode, OauthAuthorizationCodeBuilder};
-pub use oauth_client::{
-    ApplicationType, OauthClient, OauthClientBuilder, TokenEndpointAuthMethod,
-};
+pub use oauth_client::{ApplicationType, OauthClient, OauthClientBuilder, TokenEndpointAuthMethod};
 pub use pipeline_stage::PipelineStage;
 pub use principal::{LOCAL_PRINCIPAL_KEY, Principal, PrincipalBuilder};
 pub use project::{Project, ProjectBuilder};

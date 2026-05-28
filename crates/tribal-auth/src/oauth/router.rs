@@ -63,13 +63,11 @@ impl OAuthRouterState {
 // ---------------------------------------------------------------------------
 
 /// Builds an axum router exposing all OAuth endpoints.
-#[must_use]
 pub fn oauth_router(state: OAuthRouterState) -> Router {
     let metadata_state = MetadataState {
         runtime: Arc::clone(&state.runtime),
     };
-    let authorize_state =
-        AuthorizeState::new(state.pool.clone(), Arc::clone(&state.runtime));
+    let authorize_state = AuthorizeState::new(state.pool.clone(), Arc::clone(&state.runtime));
     let token_state = TokenState::new(state.pool.clone(), Arc::clone(&state.runtime));
     let register_state = RegisterState::new(state.pool);
 
@@ -86,11 +84,17 @@ pub fn oauth_router(state: OAuthRouterState) -> Router {
             PATH_AUTHORIZATION_SERVER_METADATA,
             get(serve_authorization_server_metadata).with_state(metadata_state.clone()),
         )
-        .route(PATH_AUTHORIZE, get(handle_authorize).with_state(authorize_state))
+        .route(
+            PATH_AUTHORIZE,
+            get(handle_authorize).with_state(authorize_state),
+        )
         .route(PATH_TOKEN, post(handle_token).with_state(token_state));
 
     if state.runtime.dcr_enabled {
-        router = router.route(PATH_REGISTER, post(handle_register).with_state(register_state));
+        router = router.route(
+            PATH_REGISTER,
+            post(handle_register).with_state(register_state),
+        );
     }
 
     router
@@ -119,7 +123,11 @@ async fn serve_authorization_server_metadata(
 
 fn metadata_response<T: Serialize>(
     body: T,
-) -> (axum::http::StatusCode, [(http::HeaderName, &'static str); 1], Json<T>) {
+) -> (
+    axum::http::StatusCode,
+    [(http::HeaderName, &'static str); 1],
+    Json<T>,
+) {
     (
         axum::http::StatusCode::OK,
         [(header::CACHE_CONTROL, METADATA_CACHE_CONTROL)],

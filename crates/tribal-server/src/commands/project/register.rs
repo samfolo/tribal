@@ -7,13 +7,13 @@ use std::{
     sync::Arc,
 };
 
+use tribal_auth::Authenticator;
 use tribal_config::{Auth, ENV_AUTH_TOKEN, TransportKind, TribalConfig, load_config};
 use tribal_db::{
     DbError, NewProject, PgAuthTokenRepository, PgPrincipalRepository, PgProjectRepository,
     ProjectRepository,
 };
 use tribal_domain::{BearerToken, GitRemote};
-use tribal_auth::Authenticator;
 
 use super::{
     outcome::{RegisterOutcome, RegisteredProject},

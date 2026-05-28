@@ -150,6 +150,7 @@ pub async fn seed_scoped_auth(
                 .token_hash(sha256_hex(raw_token))
                 .principal_id(principal.id())
                 .scopes(scopes)
+                .audience(String::new())
                 .expires_at(Utc::now() + expires_in)
                 .build(),
         )

@@ -13,7 +13,6 @@ use rmcp::transport::streamable_http_server::{
 };
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig, TransportKind};
 use tribal_auth::{
     AuthMiddlewareState, Authenticator, TransportAuthStrategy,
     oauth::{
@@ -22,6 +21,7 @@ use tribal_auth::{
         metadata::{PATH_PROTECTED_RESOURCE_METADATA, SCOPES_CATALOGUE},
     },
 };
+use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig, TransportKind};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{
     AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
@@ -127,7 +127,6 @@ pub(super) fn bearer_challenge_for(runtime: &OAuthRuntimeConfig) -> BearerChalle
         error: None,
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // MCP service
