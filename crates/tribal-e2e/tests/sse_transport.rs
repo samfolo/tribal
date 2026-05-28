@@ -12,8 +12,8 @@ use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use transport_harness::{
     INITIALIZE_BODY, LIFECYCLE_FAR_FUTURE_MS, MINIMAL_INITIALIZE_BODY, McpTestClient,
-    TransportHandle, assert_tool_visibility, fresh_pool, seed_auth, seed_scoped_auth,
-    spawn_transport, test_app_state, test_client,
+    TEST_CANONICAL_RESOURCE, TransportHandle, assert_tool_visibility, fresh_pool, seed_auth,
+    seed_scoped_auth, spawn_transport, test_app_state, test_client,
 };
 use tribal::run_sse_transport;
 use tribal_auth::oauth::OAuthRuntimeConfig;
@@ -25,7 +25,7 @@ use url::Url;
 
 fn test_oauth_runtime() -> Arc<OAuthRuntimeConfig> {
     let issuer = Url::parse("http://127.0.0.1:8080").unwrap();
-    let resource = Url::parse("http://127.0.0.1:8080/mcp").unwrap();
+    let resource = Url::parse(TEST_CANONICAL_RESOURCE).unwrap();
     Arc::new(OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource).unwrap())
 }
 

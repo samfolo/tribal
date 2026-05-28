@@ -18,5 +18,5 @@ mod transport;
 pub use duration::LIFECYCLE_FAR_FUTURE_MS;
 pub use fixtures::{INITIALIZE_BODY, MINIMAL_INITIALIZE_BODY};
 pub use mcp_client::{McpTestClient, assert_tool_visibility};
-pub use state::{fresh_pool, seed_auth, seed_scoped_auth, test_app_state};
+pub use state::{TEST_CANONICAL_RESOURCE, fresh_pool, seed_auth, seed_scoped_auth, test_app_state};
 pub use transport::{TransportHandle, spawn_transport, test_client};
