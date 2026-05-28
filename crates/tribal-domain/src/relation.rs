@@ -72,11 +72,14 @@ enum_text_conversions!(RelationSuggestion {
 });
 
 /// The type of an intra-batch relation hint emitted by the extraction agent.
-///
-/// Currently a single variant; the enum exists as an extension point for
-/// future hint types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(
+        description = "How two candidates relate within this batch. Currently `derived_from`: the source candidate was produced using the target candidate as input or premise."
+    )
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationHintType {
     /// Intra-batch derivation hint from the extraction agent.

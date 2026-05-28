@@ -8,9 +8,9 @@ mod triage;
 mod schema_dialect_snapshots;
 
 pub(crate) use extraction::{ExtractionOutput, parse_extraction_response};
-#[cfg(test)]
-pub(crate) use relation::IngestionRelationKind;
-pub(crate) use relation::{RelationEdge, RelationOutput, RelationTarget, parse_relation_response};
+pub(crate) use relation::{
+    IngestionRelationKind, RelationEdge, RelationOutput, RelationTarget, parse_relation_response,
+};
 pub(crate) use triage::{
     SimilarItemClassification, TriageClassification, TriageDecision, TriageItemReference,
     parse_triage_response,

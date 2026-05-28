@@ -1,5 +1,7 @@
 //! Relation response parsing and LLM response types.
 
+use std::fmt;
+
 use serde::Deserialize;
 use tribal_domain::RelationKind;
 use tribal_inference::CompletionResponse;
@@ -20,11 +22,7 @@ use crate::error::StageError;
 /// out post-hoc or constrained only via prompt instructions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-#[schemars(
-    description = "How the source item relates to the target: supports (the source \
-    corroborates the target), contradicts (the source conflicts with or corrects it), \
-    or derived_from (the source was produced using the target as input)."
-)]
+#[schemars(description = "How the source item relates to the target item.")]
 pub(crate) enum IngestionRelationKind {
     /// Source provides evidence for, reinforces, or adds supporting
     /// context to target.
@@ -35,6 +33,11 @@ pub(crate) enum IngestionRelationKind {
     DerivedFrom,
 }
 
+impl IngestionRelationKind {
+    /// All variants in display order.
+    pub(crate) const ALL: &[Self] = &[Self::Supports, Self::Contradicts, Self::DerivedFrom];
+}
+
 impl From<IngestionRelationKind> for RelationKind {
     fn from(kind: IngestionRelationKind) -> Self {
         match kind {
@@ -42,6 +45,12 @@ impl From<IngestionRelationKind> for RelationKind {
             IngestionRelationKind::Contradicts => Self::Contradicts,
             IngestionRelationKind::DerivedFrom => Self::DerivedFrom,
         }
+    }
+}
+
+impl fmt::Display for IngestionRelationKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        RelationKind::from(*self).fmt(f)
     }
 }
 

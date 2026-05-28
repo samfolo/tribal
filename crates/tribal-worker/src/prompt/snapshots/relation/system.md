@@ -18,9 +18,9 @@ Reference any item by its context index: `{"kind": "context_index", "context_ind
 
 ### Relation Types
 
-- **supports**: Item A provides evidence for, reinforces, or adds supporting context to item B. Both items point in the same direction — one strengthens the claim made by the other.
-- **contradicts**: Item A conflicts with, corrects, or undermines item B. The two items cannot both be fully accurate simultaneously, or one represents a time-bound update that invalidates the other.
-- **derived_from**: Item A was logically derived from or builds directly upon item B. This tracks intellectual provenance — where a conclusion or procedure came from.
+- **supports**: A provides evidence for, reinforces, or adds supporting context to B. Both point in the same direction; one strengthens the claim made by the other.
+- **contradicts**: A conflicts with, corrects, or undermines B. They cannot both be fully accurate simultaneously, or one represents a time-bound update that invalidates the other.
+- **derived_from**: A was logically derived from or builds directly upon B. This tracks intellectual provenance: where a conclusion or procedure came from.
 
 ### When to Produce Relations
 
@@ -45,14 +45,14 @@ Returning an empty relations array is valid and often correct. Not every batch o
 Both directions of a relationship are valid when each carries independent semantic weight. Do not produce inverse edges mechanically — only when both directions are genuinely meaningful.
 
 Example of valid bidirectional support:
-- Item A (fact): "The March 2025 API gateway outage lasted 45 seconds instead of the expected 5-second failover window because the regional DNS cache TTL was set to 60 seconds."
-- Item B (heuristic): "Failover SLA is primarily governed by DNS cache TTLs, not health-check intervals. Always verify the DNS TTL configuration when failover latency is a hard requirement."
+- A (fact): "The March 2025 API gateway outage lasted 45 seconds instead of the expected 5-second failover window because the regional DNS cache TTL was set to 60 seconds."
+- B (heuristic): "Failover SLA is primarily governed by DNS cache TTLs, not health-check intervals. Always verify the DNS TTL configuration when failover latency is a hard requirement."
 - A supports B: The specific incident provides concrete evidence for the heuristic's claim about DNS TTL being the governing factor.
 - B supports A: The heuristic provides the analytical framework that explains why the incident occurred.
 
 Example of valid bidirectional contradiction:
-- Item A (fact): "The authentication service validates tokens by checking Redis first, falling back to the database only on cache miss."
-- Item B (fact): "Since the Q3 2025 security audit, the authentication service validates tokens directly against the database on every request. The Redis cache is deployed but no longer consulted."
+- A (fact): "The authentication service validates tokens by checking Redis first, falling back to the database only on cache miss."
+- B (fact): "Since the Q3 2025 security audit, the authentication service validates tokens directly against the database on every request. The Redis cache is deployed but no longer consulted."
 - A contradicts B and B contradicts A: Each item describes a state incompatible with the other. Both may be referenced by other items in the graph, and both directions of the contradiction are meaningful for understanding the system's evolution.
 
 ## Interpreting Similarity Scores

@@ -116,9 +116,9 @@ The following candidates should be classified as duplicate:
 
 For each existing item you receive, independently assess its relationship to the candidate regardless of your novel/duplicate decision:
 
-- **supports**: The candidate reinforces or provides additional evidence for the existing item's claim.
-- **contradicts**: The candidate conflicts with, corrects, or updates the existing item.
-- **unrelated**: Despite appearing in the search results, the items address different concerns.
+- **supports**: The new claim reinforces or provides additional evidence for the existing claim.
+- **contradicts**: The new claim conflicts with, corrects, or updates the existing claim.
+- **unrelated**: Despite appearing in the search results, the new and existing claims address different concerns.
 
 Justifications should reference the specific content of both items and explain why the relationship holds. Examples of effective justifications:
 - "Both items address checkout flow performance. The candidate identifies CartContext provider placement as the root cause of the re-rendering latency the existing item reports."

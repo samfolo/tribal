@@ -3,10 +3,10 @@
   "definitions": {
     "Candidate": {
       "additionalProperties": false,
-      "description": "A single knowledge item extracted from the input.\n\nThe primary output of the extraction stage; each candidate is triaged against existing knowledge before it is committed or discarded.",
+      "description": "A single self-contained knowledge item extracted from the input.",
       "properties": {
         "content": {
-          "description": "The captured tacit knowledge, as one self-contained claim.",
+          "description": "The captured tacit knowledge as one self-contained, atomic claim. Include the reasoning, constraints, or rejected alternatives when they are part of the knowledge being captured.",
           "type": "string"
         },
         "kind": {
@@ -20,7 +20,7 @@
           "type": "array"
         },
         "suggested_tags": {
-          "description": "Categorisation tags for the item. Always present; an absent field is a parse error.",
+          "description": "Categorisation tags for the item.",
           "items": {
             "type": "string"
           },
@@ -36,7 +36,7 @@
       "type": "object"
     },
     "KnowledgeKind": {
-      "description": "The kind of knowledge: fact (a verifiable piece of information), heuristic (a rule of thumb learned from experience), procedure (an ordered set of steps), or decision_record (a choice made and its rationale).",
+      "description": "The classification of a knowledge item.",
       "enum": [
         "fact",
         "heuristic",
@@ -47,7 +47,7 @@
     },
     "RelationHint": {
       "additionalProperties": false,
-      "description": "An intra-batch relation hint between two candidates by index.\n\nEmitted by the extraction agent to indicate that one candidate is derived from another within the same batch.",
+      "description": "A relation between two candidates in this batch, referenced by their array indices.",
       "properties": {
         "hint_type": {
           "$ref": "#/definitions/RelationHintType"
@@ -69,7 +69,7 @@
       "type": "object"
     },
     "RelationHintType": {
-      "description": "The type of an intra-batch relation hint emitted by the extraction agent.\n\nCurrently a single variant; the enum exists as an extension point for future hint types.",
+      "description": "How two candidates relate within this batch. Currently `derived_from`: the source candidate was produced using the target candidate as input or premise.",
       "enum": [
         "derived_from"
       ],
@@ -87,7 +87,7 @@
           ]
         },
         "reference_type": {
-          "description": "What kind of anchor this is (e.g. `\"url\"`, `\"file_path\"`); free-form.",
+          "description": "What kind of anchor this is. Use one of `file_path`, `url`, `symbol`, or `concept`.",
           "type": "string"
         },
         "value": {

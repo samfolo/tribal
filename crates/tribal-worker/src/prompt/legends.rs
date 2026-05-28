@@ -9,6 +9,8 @@ use std::fmt;
 
 use tribal_domain::RelationSuggestion;
 
+use crate::parsing::IngestionRelationKind;
+
 // ---------------------------------------------------------------------------
 // Similarity score bands
 // ---------------------------------------------------------------------------
@@ -127,16 +129,16 @@ pub(crate) fn similarity_score_legend() -> String {
 pub(crate) fn relation_suggestion_description(suggestion: RelationSuggestion) -> &'static str {
     match suggestion {
         RelationSuggestion::Supports => {
-            "The candidate reinforces or provides additional evidence \
-             for the existing item's claim."
+            "The new claim reinforces or provides additional evidence \
+             for the existing claim."
         }
         RelationSuggestion::Contradicts => {
-            "The candidate conflicts with, corrects, or updates \
-             the existing item."
+            "The new claim conflicts with, corrects, or updates the \
+             existing claim."
         }
         RelationSuggestion::Unrelated => {
-            "Despite appearing in the search results, the items \
-             address different concerns."
+            "Despite appearing in the search results, the new and \
+             existing claims address different concerns."
         }
     }
 }
@@ -146,6 +148,38 @@ pub(crate) fn relation_suggestion_legend() -> String {
     RelationSuggestion::ALL
         .iter()
         .map(|s| format!("- **{s}**: {}", relation_suggestion_description(*s)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Returns the prompt-facing description for an [`IngestionRelationKind`] variant.
+///
+/// Exhaustive match ensures a compile error when a new variant is added.
+pub(crate) fn ingestion_relation_kind_description(kind: IngestionRelationKind) -> &'static str {
+    match kind {
+        IngestionRelationKind::Supports => {
+            "A provides evidence for, reinforces, or adds supporting context \
+             to B. Both point in the same direction; one strengthens the claim \
+             made by the other."
+        }
+        IngestionRelationKind::Contradicts => {
+            "A conflicts with, corrects, or undermines B. They cannot both be \
+             fully accurate simultaneously, or one represents a time-bound \
+             update that invalidates the other."
+        }
+        IngestionRelationKind::DerivedFrom => {
+            "A was logically derived from or builds directly upon B. This \
+             tracks intellectual provenance: where a conclusion or procedure \
+             came from."
+        }
+    }
+}
+
+/// Renders the ingestion relation kind legend for injection into system prompts.
+pub(crate) fn ingestion_relation_kind_legend() -> String {
+    IngestionRelationKind::ALL
+        .iter()
+        .map(|k| format!("- **{k}**: {}", ingestion_relation_kind_description(*k)))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -244,6 +278,22 @@ mod tests {
             );
             assert!(
                 legend.contains(relation_suggestion_description(*suggestion)),
+                "legend should contain description for '{label}': {legend}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_ingestion_relation_kind_legend_contains_all_variants() {
+        let legend = ingestion_relation_kind_legend();
+        for kind in IngestionRelationKind::ALL {
+            let label = kind.to_string();
+            assert!(
+                legend.contains(&label),
+                "legend should contain '{label}': {legend}",
+            );
+            assert!(
+                legend.contains(ingestion_relation_kind_description(*kind)),
                 "legend should contain description for '{label}': {legend}",
             );
         }

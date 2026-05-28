@@ -101,7 +101,8 @@ pub(crate) enum TriageDecision {
     #[serde(rename = "created")]
     #[schemars(
         description = "The candidate records knowledge not already captured by an \
-        existing item."
+        existing item. Default to this when the candidate adds any new context, or when \
+        uncertain."
     )]
     Novel,
     /// The candidate duplicates an existing item.
@@ -135,7 +136,7 @@ pub(crate) struct SimilarItemClassification {
     pub suggested_relation: RelationSuggestion,
     /// The agent's reasoning for the classification.
     #[schemars(
-        description = "Why this relationship holds, grounded in the content of both items."
+        description = "Why this assessment was chosen, grounded in the content of both items."
     )]
     pub justification: String,
 }
