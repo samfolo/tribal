@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     auth::AuthConfig, database::DatabaseConfig, discovery::DiscoveryConfig,
     embedding::EmbeddingConfig, exploration::ExplorationConfig, inference::InferenceConfig,
-    limits::LimitsConfig, logging::LoggingConfig, prompts::PromptsConfig, server::ServerConfig,
-    telemetry::TelemetryConfig, worker::WorkerConfig,
+    limits::LimitsConfig, logging::LoggingConfig, oauth::OAuthConfig, prompts::PromptsConfig,
+    server::ServerConfig, telemetry::TelemetryConfig, worker::WorkerConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -47,6 +47,10 @@ pub struct TribalConfig {
     /// Authentication settings.
     #[serde(default)]
     pub auth: AuthConfig,
+
+    /// OAuth 2.1 authorisation-server settings.
+    #[serde(default)]
+    pub oauth: OAuthConfig,
 
     /// Worker loop settings.
     #[serde(default)]
@@ -120,6 +124,7 @@ impl Default for TribalConfig {
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
             auth: AuthConfig::default(),
+            oauth: OAuthConfig::default(),
             worker: WorkerConfig::default(),
             embedding: EmbeddingConfig::default(),
             inference: InferenceConfig::default(),

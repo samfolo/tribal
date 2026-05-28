@@ -14,7 +14,14 @@ use rmcp::transport::streamable_http_server::{
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig, TransportKind};
-use tribal_auth::{AuthMiddlewareState, Authenticator, TransportAuthStrategy};
+use tribal_auth::{
+    AuthMiddlewareState, Authenticator, TransportAuthStrategy,
+    oauth::{
+        OAuthRuntimeConfig,
+        challenge::BearerChallenge,
+        metadata::{PATH_PROTECTED_RESOURCE_METADATA, SCOPES_CATALOGUE},
+    },
+};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{
     AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
@@ -81,14 +88,44 @@ pub(super) async fn bind_listener(
 
 /// Creates the bearer-token auth middleware state for per-request
 /// transports.
-pub(super) fn auth_middleware_state(state: &Arc<AppState>) -> AuthMiddlewareState {
+pub(super) fn auth_middleware_state(
+    state: &Arc<AppState>,
+    challenge: Arc<BearerChallenge>,
+) -> AuthMiddlewareState {
     let authenticator = Arc::new(Authenticator::new(
         Arc::new(PgAuthTokenRepository),
         Arc::new(PgPrincipalRepository),
     ));
 
-    AuthMiddlewareState::new(state.mcp_pool().clone(), authenticator)
+    AuthMiddlewareState::new(state.mcp_pool().clone(), authenticator, challenge)
 }
+
+/// Builds the `WWW-Authenticate: Bearer` challenge template for the
+/// active OAuth runtime configuration.
+///
+/// The resource-metadata URL points at the path-suffixed PRM variant
+/// (`/.well-known/oauth-protected-resource/mcp`) so spec-compliant MCP
+/// clients hit it directly per RFC 9728 §3.
+pub(super) fn bearer_challenge_for(runtime: &OAuthRuntimeConfig) -> BearerChallenge {
+    let path_suffix = runtime.resource_url.path().trim_start_matches('/');
+    let resource_metadata_url = {
+        let mut url = runtime.issuer_url.clone();
+        let suffix = if path_suffix.is_empty() {
+            PATH_PROTECTED_RESOURCE_METADATA.to_owned()
+        } else {
+            format!("{PATH_PROTECTED_RESOURCE_METADATA}/{path_suffix}")
+        };
+        url.set_path(&suffix);
+        url
+    };
+
+    BearerChallenge {
+        resource_metadata_url,
+        scope: Some(SCOPES_CATALOGUE.join(" ")),
+        error: None,
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // MCP service

@@ -9,8 +9,11 @@ use std::{sync::Arc, time::Duration};
 
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+use tribal_auth::{
+    oauth::{OAuthRouterState, OAuthRuntimeConfig, oauth_router},
+    require_bearer_auth,
+};
 use tribal_config::{ServerConfig, TransportKind};
-use tribal_auth::require_bearer_auth;
 use tribal_mcp::{AppState, HandlerConfig};
 
 use super::{common, sse_lifecycle::SseLifecycleLayer};
@@ -56,6 +59,7 @@ use crate::error::AppError;
 pub async fn run_sse_transport(
     state: &Arc<AppState>,
     server_config: &ServerConfig,
+    oauth_runtime: Arc<OAuthRuntimeConfig>,
     handler_config: HandlerConfig,
     cancellation_token: CancellationToken,
     listener: Option<TcpListener>,
@@ -63,7 +67,8 @@ pub async fn run_sse_transport(
     let transport = TransportKind::Sse;
 
     let (listener, local_addr) = common::bind_listener(server_config, transport, listener).await?;
-    let auth_state = common::auth_middleware_state(state);
+    let challenge = Arc::new(common::bearer_challenge_for(&oauth_runtime));
+    let auth_state = common::auth_middleware_state(state, Arc::clone(&challenge));
     let mcp_service = common::mcp_service(
         state,
         handler_config,
@@ -77,17 +82,22 @@ pub async fn run_sse_transport(
         Duration::from_millis(server_config.sse.idle_timeout_ms),
     );
 
-    // Layer ordering (outermost runs first):
+    let oauth = oauth_router(OAuthRouterState::new(oauth_runtime));
+
+    // Layer ordering on the MCP branch (outermost runs first):
     //   1. Bearer auth middleware — rejects unauthenticated requests
     //   2. SSE lifecycle layer — wraps authenticated SSE response bodies
     //   3. MCP service — handles the request
+    // The OAuth router is merged at the top level so its endpoints sit
+    // outside the bearer middleware.
     let app = axum::Router::new()
         .nest_service("/mcp", mcp_service)
         .layer(lifecycle_layer)
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             require_bearer_auth,
-        ));
+        ))
+        .merge(oauth);
 
     tracing::info!(%local_addr, "SSE transport listening");
 

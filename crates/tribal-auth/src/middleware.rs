@@ -23,6 +23,9 @@ use crate::{
         AuthError, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED,
         DISPLAY_TOKEN_REVOKED,
     },
+    oauth::challenge::{
+        BearerChallenge, ERROR_INVALID_TOKEN, build_bearer_challenge_header,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -34,9 +37,6 @@ const UNAUTHORIZED_ERROR: &str = "unauthorized";
 
 /// JSON error field value for service unavailable responses.
 const SERVICE_UNAVAILABLE_ERROR: &str = "service unavailable";
-
-/// `WWW-Authenticate` header challenge value.
-const WWW_AUTHENTICATE_VALUE: &str = "Bearer";
 
 /// Bearer prefix for the `Authorization` header (with trailing space).
 const BEARER_PREFIX: &str = "Bearer ";
@@ -51,20 +51,27 @@ const DATABASE_UNAVAILABLE_MESSAGE: &str = "database unavailable";
 /// Shared state for the authentication middleware.
 ///
 /// Cloned into every request handler. Holds references to the MCP
-/// connection pool and the authenticator.
+/// connection pool, the authenticator, and the `WWW-Authenticate`
+/// challenge template advertised on 401 responses.
 #[derive(Clone)]
 pub struct AuthMiddlewareState {
     pool: PgPool,
     authenticator: Arc<Authenticator>,
+    challenge: Arc<BearerChallenge>,
 }
 
 impl AuthMiddlewareState {
     /// Creates a new middleware state.
     #[must_use]
-    pub fn new(pool: PgPool, authenticator: Arc<Authenticator>) -> Self {
+    pub fn new(
+        pool: PgPool,
+        authenticator: Arc<Authenticator>,
+        challenge: Arc<BearerChallenge>,
+    ) -> Self {
         Self {
             pool,
             authenticator,
+            challenge,
         }
     }
 }
@@ -91,12 +98,14 @@ pub async fn require_bearer_auth(
     mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
+    let challenge = state.challenge.as_ref();
+
     let Some(token) = extract_bearer_token(&request) else {
         warn!(
             auth_failure_reason = AUTH_FAILURE_REASON_MISSING,
             "auth rejected: missing bearer token",
         );
-        return unauthorised_response(DISPLAY_MISSING_TOKEN);
+        return unauthorised_response(DISPLAY_MISSING_TOKEN, challenge, /* with_error */ false);
     };
 
     let mut conn = match state.pool.acquire().await {
@@ -116,7 +125,7 @@ pub async fn require_bearer_auth(
             request.extensions_mut().insert(principal);
             next.run(request).await
         }
-        Err(ref error) => auth_error_response(error),
+        Err(ref error) => auth_error_response(error, challenge),
     }
 }
 
@@ -146,7 +155,7 @@ fn extract_bearer_token(request: &axum::extract::Request) -> Option<&str> {
 }
 
 /// Maps an [`AuthError`] to the appropriate HTTP response.
-fn auth_error_response(error: &AuthError) -> Response {
+fn auth_error_response(error: &AuthError, challenge: &BearerChallenge) -> Response {
     match error {
         AuthError::DatabaseUnavailable { .. } => {
             warn!(
@@ -158,9 +167,15 @@ fn auth_error_response(error: &AuthError) -> Response {
         }
 
         // Logged by Authenticator::verify_token; middleware maps to response.
-        AuthError::InvalidToken { .. } => unauthorised_response(DISPLAY_INVALID_TOKEN),
-        AuthError::TokenRevoked { .. } => unauthorised_response(DISPLAY_TOKEN_REVOKED),
-        AuthError::TokenExpired { .. } => unauthorised_response(DISPLAY_TOKEN_EXPIRED),
+        AuthError::InvalidToken { .. } => {
+            unauthorised_response(DISPLAY_INVALID_TOKEN, challenge, /* with_error */ true)
+        }
+        AuthError::TokenRevoked { .. } => {
+            unauthorised_response(DISPLAY_TOKEN_REVOKED, challenge, /* with_error */ true)
+        }
+        AuthError::TokenExpired { .. } => {
+            unauthorised_response(DISPLAY_TOKEN_EXPIRED, challenge, /* with_error */ true)
+        }
 
         // Defensive: verify_token cannot return these, but handle them
         // to avoid leaking internal state if the code path changes.
@@ -171,13 +186,26 @@ fn auth_error_response(error: &AuthError) -> Response {
                 auth_failure_reason = AUTH_FAILURE_REASON_INVALID,
                 "auth rejected: {error}",
             );
-            unauthorised_response(DISPLAY_INVALID_TOKEN)
+            unauthorised_response(DISPLAY_INVALID_TOKEN, challenge, /* with_error */ true)
         }
     }
 }
 
-/// Builds an HTTP 401 response with the canonical JSON body.
-fn unauthorised_response(message: &str) -> Response {
+/// Builds an HTTP 401 response with the canonical JSON body and the
+/// spec-mandated `WWW-Authenticate` Bearer challenge carrying the
+/// resource-metadata URL (and an `error="invalid_token"` parameter
+/// when the failure originated from a presented but unusable token).
+fn unauthorised_response(message: &str, challenge: &BearerChallenge, with_error: bool) -> Response {
+    let challenge_value = build_bearer_challenge_header(&BearerChallenge {
+        resource_metadata_url: challenge.resource_metadata_url.clone(),
+        scope: challenge.scope.clone(),
+        error: if with_error {
+            Some(ERROR_INVALID_TOKEN)
+        } else {
+            None
+        },
+    });
+
     let body = serde_json::json!({
         "error": UNAUTHORIZED_ERROR,
         "message": message,
@@ -185,7 +213,7 @@ fn unauthorised_response(message: &str) -> Response {
 
     (
         StatusCode::UNAUTHORIZED,
-        [(http::header::WWW_AUTHENTICATE, WWW_AUTHENTICATE_VALUE)],
+        [(http::header::WWW_AUTHENTICATE, challenge_value)],
         axum::Json(body),
     )
         .into_response()
@@ -214,6 +242,7 @@ mod tests {
     use tower::ServiceExt;
     use tribal_domain::PrincipalId;
     use tribal_test_utils::{MockAuthTokenRepository, MockPrincipalRepository, lazy_pool};
+    use url::Url;
 
     use super::*;
     use crate::{
@@ -223,6 +252,17 @@ mod tests {
 
     // -- Helpers ------------------------------------------------------------
 
+    fn test_challenge() -> Arc<BearerChallenge> {
+        Arc::new(BearerChallenge {
+            resource_metadata_url: Url::parse(
+                "http://127.0.0.1:8080/.well-known/oauth-protected-resource/mcp",
+            )
+            .expect("test url"),
+            scope: Some("tribal:read tribal:write".to_owned()),
+            error: None,
+        })
+    }
+
     fn test_state(
         auth_token_mock: MockAuthTokenRepository,
         principal_mock: MockPrincipalRepository,
@@ -231,7 +271,7 @@ mod tests {
             Arc::new(auth_token_mock),
             Arc::new(principal_mock),
         ));
-        AuthMiddlewareState::new(lazy_pool(), authenticator)
+        AuthMiddlewareState::new(lazy_pool(), authenticator, test_challenge())
     }
 
     fn test_app(state: AuthMiddlewareState) -> axum::Router {
@@ -259,17 +299,26 @@ mod tests {
     // before the pool acquire step.
 
     #[tokio::test]
-    async fn test_missing_authorisation_header_returns_401() {
+    async fn test_missing_authorisation_header_returns_401_with_bearer_challenge() {
         let app = test_app(default_state());
         let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
-            WWW_AUTHENTICATE_VALUE,
-        );
+        let header_value = response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(header_value.starts_with("Bearer "), "got: {header_value}");
+        assert!(header_value.contains(r#"resource_metadata="http://127.0.0.1:8080/"#));
+        assert!(header_value.contains(r#"scope="tribal:read tribal:write""#));
+        // Missing token MUST NOT include error=invalid_token per RFC 6750 §3
+        // (error is only emitted when a token was presented but unusable).
+        assert!(!header_value.contains("error="));
 
         let json = response_json(response).await;
         assert_eq!(json["error"], UNAUTHORIZED_ERROR);
@@ -322,7 +371,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_non_bearer_scheme_returns_401() {
+    async fn test_non_bearer_scheme_returns_401_with_bearer_challenge() {
         let app = test_app(default_state());
         let request = Request::builder()
             .uri("/test")
@@ -333,6 +382,15 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let header_value = response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(header_value.starts_with("Bearer "));
+        assert!(!header_value.contains("error="));
 
         let json = response_json(response).await;
         assert_eq!(json["error"], UNAUTHORIZED_ERROR);
@@ -346,19 +404,27 @@ mod tests {
         let error = AuthError::InvalidToken {
             token_hash: "abc".into(),
         };
-        let response = auth_error_response(&error);
+        let response = auth_error_response(&error, &test_challenge());
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn test_auth_error_expired_token_returns_401_with_display() {
+    async fn test_auth_error_expired_token_returns_401_with_display_and_invalid_token_error() {
         let error = AuthError::TokenExpired {
             token_hash: "abc".into(),
         };
-        let response = auth_error_response(&error);
+        let response = auth_error_response(&error, &test_challenge());
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let header_value = response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(header_value.contains(r#"error="invalid_token""#));
 
         let json = response_json(response).await;
         assert_eq!(json["error"], UNAUTHORIZED_ERROR);
@@ -370,7 +436,7 @@ mod tests {
         let error = AuthError::TokenRevoked {
             token_hash: "abc".into(),
         };
-        let response = auth_error_response(&error);
+        let response = auth_error_response(&error, &test_challenge());
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
@@ -384,7 +450,7 @@ mod tests {
         let error = AuthError::PrincipalNotFound {
             principal_id: PrincipalId::new(),
         };
-        let response = auth_error_response(&error);
+        let response = auth_error_response(&error, &test_challenge());
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
@@ -399,7 +465,7 @@ mod tests {
             context: "test query".into(),
             source: Box::new(std::io::Error::other("boom")),
         };
-        let response = auth_error_response(&error);
+        let response = auth_error_response(&error, &test_challenge());
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 

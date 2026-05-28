@@ -9,6 +9,7 @@ mod exploration;
 mod inference;
 mod limits;
 mod logging;
+mod oauth;
 mod prompts;
 mod root;
 mod server;
@@ -41,6 +42,14 @@ pub use exploration::{
 pub use inference::{InferenceConfig, StageInferenceConfig};
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
+pub use oauth::{
+    CimdConfig, DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,
+    DEFAULT_CIMD_CACHE_MAX_SECONDS, DEFAULT_CIMD_CACHE_MIN_SECONDS,
+    DEFAULT_CIMD_FETCH_TIMEOUT_SECONDS, DEFAULT_CIMD_MAX_ENTRIES, DEFAULT_CIMD_MAX_RESPONSE_BYTES,
+    MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_CIMD_FETCH_TIMEOUT_SECONDS, MAX_CIMD_MAX_ENTRIES,
+    MAX_CIMD_MAX_RESPONSE_BYTES, MIN_AUTHORIZATION_CODE_TTL_SECONDS, MIN_CIMD_MAX_RESPONSE_BYTES,
+    OAuthConfig,
+};
 pub use prompts::{PromptSource, PromptsConfig};
 pub use root::{TribalConfig, VERSION};
 pub use server::{DEFAULT_BIND_ADDRESS, MAX_LIFECYCLE_DURATION_MS, ServerConfig, SseConfig};
