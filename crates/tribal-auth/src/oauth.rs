@@ -20,7 +20,10 @@ pub mod token;
 pub use authorize::{AuthorizeQuery, AuthorizeState, handle_authorize};
 pub use challenge::{BearerChallenge, build_bearer_challenge_header};
 pub use config::{OAuthRuntimeConfig, OAuthRuntimeConfigError, canonicalise_resource_url};
-pub use error::OAuthError;
+pub use error::{
+    ClientMetadataRejection, InternalOperation, InvalidClientReason, InvalidGrantReason,
+    InvalidRequestReason, InvalidTargetReason, OAuthError, RedirectUriRejection,
+};
 pub use metadata::{
     AuthorizationServerMetadata, ProtectedResourceMetadata, authorization_server_metadata,
     protected_resource_metadata,

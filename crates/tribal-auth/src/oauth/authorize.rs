@@ -26,7 +26,10 @@ use url::Url;
 
 use crate::oauth::{
     config::{OAuthRuntimeConfig, canonicalise_resource_url},
-    error::OAuthError,
+    error::{
+        InternalOperation, InvalidClientReason, InvalidRequestReason, InvalidTargetReason,
+        OAuthError, RedirectUriRejection,
+    },
     pkce::CodeChallenge,
     redirect::matches_redirect_uri,
 };
@@ -35,8 +38,6 @@ use crate::oauth::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const PARAM_RESPONSE_TYPE: &str = "response_type";
-const PARAM_CODE_CHALLENGE_METHOD: &str = "code_challenge_method";
 const SUPPORTED_RESPONSE_TYPE: &str = "code";
 const SUPPORTED_CODE_CHALLENGE_METHOD: &str = "S256";
 const RANDOM_CODE_BYTE_LENGTH: usize = 32;
@@ -129,26 +130,23 @@ async fn validate_pre_redirect(
 ) -> Result<(Url, Vec<Url>), OAuthError> {
     if query.response_type != SUPPORTED_RESPONSE_TYPE {
         return Err(OAuthError::UnsupportedResponseType {
-            description: format!(
-                "{PARAM_RESPONSE_TYPE} must be \"{SUPPORTED_RESPONSE_TYPE}\" (got {:?})",
-                query.response_type
-            ),
+            presented: query.response_type.clone(),
         });
     }
 
     if query.code_challenge_method != SUPPORTED_CODE_CHALLENGE_METHOD {
         return Err(OAuthError::InvalidRequest {
-            description: format!(
-                "{PARAM_CODE_CHALLENGE_METHOD} must be \
-                 \"{SUPPORTED_CODE_CHALLENGE_METHOD}\" (got {:?})",
-                query.code_challenge_method
-            ),
+            reason: InvalidRequestReason::UnsupportedCodeChallengeMethod {
+                presented: query.code_challenge_method.clone(),
+            },
         });
     }
 
     let registered_uris = resolve_client_redirect_uris(state, &query.client_id).await?;
     let redirect_uri = Url::parse(&query.redirect_uri).map_err(|_| OAuthError::InvalidRequest {
-        description: format!("redirect_uri is not a valid URL: {:?}", query.redirect_uri),
+        reason: InvalidRequestReason::MalformedRedirectUri {
+            value: query.redirect_uri.clone(),
+        },
     })?;
 
     if !registered_uris
@@ -156,7 +154,7 @@ async fn validate_pre_redirect(
         .any(|registered| matches_redirect_uri(registered, &redirect_uri))
     {
         return Err(OAuthError::InvalidRedirectUri {
-            description: "redirect_uri does not match a registered value".to_owned(),
+            reason: RedirectUriRejection::NoRegisteredMatch,
         });
     }
 
@@ -178,7 +176,8 @@ async fn resolve_client_redirect_uris(
         .acquire()
         .await
         .map_err(|err| OAuthError::Internal {
-            description: format!("pool acquire failed: {err}"),
+            operation: InternalOperation::PoolAcquire,
+            source: Some(Box::new(err)),
         })?;
 
     let client = state
@@ -186,18 +185,20 @@ async fn resolve_client_redirect_uris(
         .find_by_id(&mut conn, client_id)
         .await
         .map_err(|err| OAuthError::Internal {
-            description: format!("client lookup failed: {err}"),
+            operation: InternalOperation::ClientLookup,
+            source: Some(Box::new(err)),
         })?
-        .ok_or_else(|| OAuthError::InvalidClient {
-            description: "client_id is not registered".to_owned(),
+        .ok_or(OAuthError::InvalidClient {
+            reason: InvalidClientReason::Unregistered,
         })?;
 
     client
         .redirect_uris()
         .iter()
         .map(|raw| {
-            Url::parse(raw).map_err(|_| OAuthError::Internal {
-                description: format!("registered redirect_uri is malformed: {raw:?}"),
+            Url::parse(raw).map_err(|err| OAuthError::Internal {
+                operation: InternalOperation::MalformedRegisteredRedirectUri,
+                source: Some(Box::new(err)),
             })
         })
         .collect()
@@ -211,7 +212,7 @@ async fn issue_code(
 ) -> Result<Response, OAuthError> {
     let challenge =
         CodeChallenge::parse(&query.code_challenge).map_err(|_| OAuthError::InvalidRequest {
-            description: "code_challenge is malformed".to_owned(),
+            reason: InvalidRequestReason::MalformedCodeChallenge,
         })?;
 
     let resource = query.resource.as_deref().ok_or_else(|| {
@@ -220,20 +221,22 @@ async fn issue_code(
             "/authorize rejected: missing resource parameter",
         );
         OAuthError::InvalidTarget {
-            description: "resource parameter is required per RFC 8707".to_owned(),
+            reason: InvalidTargetReason::Missing,
         }
     })?;
 
     let resource_url = Url::parse(resource).map_err(|_| OAuthError::InvalidTarget {
-        description: format!("resource is not a valid URL: {resource:?}"),
+        reason: InvalidTargetReason::Malformed {
+            value: resource.to_owned(),
+        },
     })?;
     let canonical = canonicalise_resource_url(&resource_url);
     if canonical != state.runtime.canonical_resource {
         return Err(OAuthError::InvalidTarget {
-            description: format!(
-                "resource does not match the running server's canonical URL: expected {:?}",
-                state.runtime.canonical_resource,
-            ),
+            reason: InvalidTargetReason::Mismatch {
+                expected: state.runtime.canonical_resource.clone(),
+                presented: canonical,
+            },
         });
     }
 
@@ -243,19 +246,20 @@ async fn issue_code(
             .acquire()
             .await
             .map_err(|err| OAuthError::Internal {
-                description: format!("pool acquire failed: {err}"),
+                operation: InternalOperation::PoolAcquire,
+                source: Some(Box::new(err)),
             })?;
         let principal = state
             .principal_repo
             .find_by_key(&mut conn, LOCAL_PRINCIPAL_KEY)
             .await
             .map_err(|err| OAuthError::Internal {
-                description: format!("principal lookup failed: {err}"),
+                operation: InternalOperation::PrincipalLookup,
+                source: Some(Box::new(err)),
             })?
-            .ok_or_else(|| OAuthError::Internal {
-                description: format!(
-                    "local principal {LOCAL_PRINCIPAL_KEY} not found; run `tribal setup`",
-                ),
+            .ok_or(OAuthError::Internal {
+                operation: InternalOperation::LocalPrincipalMissing,
+                source: None,
             })?;
         principal.id()
     };
@@ -265,7 +269,8 @@ async fn issue_code(
     let expires_at = Utc::now()
         + chrono::Duration::from_std(state.runtime.authorization_code_ttl).map_err(|err| {
             OAuthError::Internal {
-                description: format!("authorization_code_ttl conversion failed: {err}"),
+                operation: InternalOperation::AuthorizationCodeTtlConversion,
+                source: Some(Box::new(err)),
             }
         })?;
 
@@ -285,14 +290,16 @@ async fn issue_code(
         .acquire()
         .await
         .map_err(|err| OAuthError::Internal {
-            description: format!("pool acquire failed: {err}"),
+            operation: InternalOperation::PoolAcquire,
+            source: Some(Box::new(err)),
         })?;
     state
         .code_repo
         .insert(&mut conn, &new)
         .await
         .map_err(|err| OAuthError::Internal {
-            description: format!("insert authorization code failed: {err}"),
+            operation: InternalOperation::InsertAuthorizationCode,
+            source: Some(Box::new(err)),
         })?;
 
     Ok(consent_redirect_response(

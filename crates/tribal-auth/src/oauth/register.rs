@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -20,7 +20,9 @@ use tribal_db::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
 use tribal_domain::{ApplicationType, OauthClient, TokenEndpointAuthMethod};
 use url::Url;
 
-use crate::oauth::error::OAuthError;
+use crate::oauth::error::{
+    ClientMetadataRejection, InternalOperation, OAuthError, RedirectUriRejection,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -121,12 +123,6 @@ impl RegisterState {
 // ---------------------------------------------------------------------------
 
 /// `POST /register` handler.
-///
-/// # Panics
-///
-/// Panics if the static `Cache-Control` header value fails to parse;
-/// this is a constant literal, so the failure represents a build-time
-/// regression rather than a runtime risk.
 pub async fn handle_register(
     axum::extract::State(state): axum::extract::State<RegisterState>,
     Json(req): Json<RegisterRequest>,
@@ -134,7 +130,7 @@ pub async fn handle_register(
     match register(&state, req).await {
         Ok(response) => {
             let mut headers = HeaderMap::new();
-            headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             (StatusCode::CREATED, headers, Json(response)).into_response()
         }
         Err(err) => err.into_json_response(),
@@ -147,7 +143,7 @@ async fn register(
 ) -> Result<RegisterResponse, OAuthError> {
     if req.redirect_uris.is_empty() {
         return Err(OAuthError::InvalidRedirectUri {
-            description: "redirect_uris must contain at least one entry".to_owned(),
+            reason: RedirectUriRejection::NoneRegistered,
         });
     }
 
@@ -164,10 +160,17 @@ async fn register(
 
     validate_grant_response_consistency(&grant_types, &response_types)?;
 
+    // Default an omitted auth method to the public PKCE client (`none`),
+    // not the RFC 7591 §2 default of `client_secret_basic`. Tribal's
+    // clients are overwhelmingly public PKCE clients; a confidential
+    // client always declares itself explicitly. Defaulting to `none`
+    // issues no secret (one fewer credential surface), keeps PKCE
+    // mandatory, and a spec-compliant client reads the registered method
+    // back from the response and adapts.
     let auth_method_raw = req
         .token_endpoint_auth_method
         .clone()
-        .unwrap_or_else(|| "client_secret_basic".to_owned());
+        .unwrap_or_else(|| TokenEndpointAuthMethod::None.as_str().to_owned());
     let auth_method = parse_auth_method(&auth_method_raw)?;
     let application_type = req
         .application_type
@@ -201,7 +204,8 @@ async fn register(
         .acquire()
         .await
         .map_err(|err| OAuthError::Internal {
-            description: format!("pool acquire failed: {err}"),
+            operation: InternalOperation::PoolAcquire,
+            source: Some(Box::new(err)),
         })?;
 
     let inserted: OauthClient =
@@ -210,7 +214,8 @@ async fn register(
             .insert(&mut conn, &new)
             .await
             .map_err(|err| OAuthError::Internal {
-                description: format!("insert oauth client failed: {err}"),
+                operation: InternalOperation::InsertOauthClient,
+                source: Some(Box::new(err)),
             })?;
 
     Ok(RegisterResponse {
@@ -238,7 +243,9 @@ fn parse_auth_method(raw: &str) -> Result<TokenEndpointAuthMethod, OAuthError> {
         "client_secret_basic" => Ok(TokenEndpointAuthMethod::ClientSecretBasic),
         "client_secret_post" => Ok(TokenEndpointAuthMethod::ClientSecretPost),
         other => Err(OAuthError::InvalidClientMetadata {
-            description: format!("unsupported token_endpoint_auth_method: {other}"),
+            reason: ClientMetadataRejection::UnsupportedAuthMethod {
+                presented: other.to_owned(),
+            },
         }),
     }
 }
@@ -248,18 +255,24 @@ fn parse_application_type(raw: &str) -> Result<ApplicationType, OAuthError> {
         "web" => Ok(ApplicationType::Web),
         "native" => Ok(ApplicationType::Native),
         other => Err(OAuthError::InvalidClientMetadata {
-            description: format!("unsupported application_type: {other}"),
+            reason: ClientMetadataRejection::UnsupportedApplicationType {
+                presented: other.to_owned(),
+            },
         }),
     }
 }
 
 fn validate_redirect_uri(raw: &str) -> Result<(), OAuthError> {
     let url = Url::parse(raw).map_err(|_| OAuthError::InvalidRedirectUri {
-        description: format!("redirect_uri is not a valid URL: {raw:?}"),
+        reason: RedirectUriRejection::Malformed {
+            value: raw.to_owned(),
+        },
     })?;
     if url.fragment().is_some() {
         return Err(OAuthError::InvalidRedirectUri {
-            description: format!("redirect_uri must not contain a fragment: {raw:?}"),
+            reason: RedirectUriRejection::FragmentPresent {
+                value: raw.to_owned(),
+            },
         });
     }
     match url.scheme() {
@@ -277,14 +290,16 @@ fn validate_redirect_uri(raw: &str) -> Result<(), OAuthError> {
                 Ok(())
             } else {
                 Err(OAuthError::InvalidRedirectUri {
-                    description: format!(
-                        "redirect_uri http scheme reserved for loopback hosts: {raw:?}"
-                    ),
+                    reason: RedirectUriRejection::NonLoopbackHttp {
+                        value: raw.to_owned(),
+                    },
                 })
             }
         }
         other => Err(OAuthError::InvalidRedirectUri {
-            description: format!("redirect_uri scheme {other} is not supported"),
+            reason: RedirectUriRejection::UnsupportedScheme {
+                scheme: other.to_owned(),
+            },
         }),
     }
 }
@@ -297,7 +312,7 @@ fn validate_grant_response_consistency(
         && !grant_types.iter().any(|s| s == "authorization_code")
     {
         return Err(OAuthError::InvalidClientMetadata {
-            description: "response_type=code requires grant_type=authorization_code".to_owned(),
+            reason: ClientMetadataRejection::GrantResponseInconsistent,
         });
     }
     Ok(())
