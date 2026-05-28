@@ -21,11 +21,13 @@ use crate::{
 /// principal resolution.
 ///
 /// Constructed once and shared. Methods accept a `&mut PgConnection`
-/// matching the repository method convention. The optional
-/// `expected_audience` is matched against each token's audience claim
-/// to enforce RFC 8707 audience binding; an empty audience on the
-/// token (the legacy backfill sentinel) bypasses the check so existing
-/// deployments keep working until tokens cycle out naturally.
+/// matching the repository method convention. When `expected_audience`
+/// is set, every verified token's audience must equal it exactly (RFC
+/// 8707 audience binding); a token minted for a different resource is
+/// rejected. Callers with no canonical resource URL in scope (CLI
+/// subcommands that touch the token store without running the MCP
+/// transport) construct the authenticator with no expected audience and
+/// the check is skipped.
 pub struct Authenticator {
     auth_token: Arc<dyn AuthTokenRepository + Send + Sync>,
     principal: Arc<dyn PrincipalRepository + Send + Sync>,
@@ -117,12 +119,10 @@ impl Authenticator {
             return Err(AuthError::TokenExpired { token_hash });
         }
 
-        // Audience binding (RFC 8707). An empty audience on the token
-        // is the legacy backfill sentinel and is accepted unconditionally
-        // so existing deployments survive the migration; freshly minted
-        // tokens always carry a non-empty audience.
+        // Audience binding (RFC 8707). When an expected audience is
+        // configured, the token's audience must match it exactly; a token
+        // minted for a different resource is rejected.
         if let Some(expected) = &self.expected_audience
-            && !token.audience().is_empty()
             && token.audience() != expected
         {
             warn!(
