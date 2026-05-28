@@ -16,12 +16,12 @@
         "type": "string",
         "enum": ["fact", "heuristic", "procedure", "decision_record"]
       },
-      "description": "Filter to specific knowledge kinds. Use sparingly — semantic search naturally ranks relevant kinds higher. Most useful for explicit structural queries like 'show me all decision records for this project'."
+      "description": "Filter to specific knowledge kinds. Use sparingly; semantic search naturally ranks relevant kinds higher. Most useful for explicit structural queries like 'show me all decision records for this project'."
     },
     "tags": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "Filter by tags (AND semantics — items must have ALL specified tags). Tags are lowercase. For OR semantics, make separate queries."
+      "description": "Filter by tags (AND semantics: items must have ALL specified tags). Tags are lowercase. For OR semantics, make separate queries."
     },
     "time_range": {
       "type": "object",

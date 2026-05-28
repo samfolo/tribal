@@ -9,7 +9,7 @@
     },
     "trace_id": {
       "type": "string",
-      "description": "OpenTelemetry trace ID. Pass to tribal_feedback if rating this session."
+      "description": "Trace ID. Pass to tribal_feedback if rating this session."
     },
     "exact": {
       "type": "boolean",
