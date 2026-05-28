@@ -19,7 +19,7 @@
           "description": "The existing item being assessed, referenced by its context index."
         },
         "justification": {
-          "description": "Why this relationship holds, grounded in the content of both items.",
+          "description": "Why this assessment was chosen, grounded in the content of both items.",
           "type": "string"
         },
         "suggested_relation": {
@@ -38,7 +38,7 @@
       "anyOf": [
         {
           "additionalProperties": false,
-          "description": "The candidate records knowledge not already captured by an existing item.",
+          "description": "The candidate records knowledge not already captured by an existing item. Default to this when the candidate adds any new context, or when uncertain.",
           "properties": {
             "decision": {
               "const": "created",

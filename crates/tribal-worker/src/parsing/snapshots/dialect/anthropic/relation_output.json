@@ -2,7 +2,7 @@
   "additionalProperties": false,
   "definitions": {
     "IngestionRelationKind": {
-      "description": "How the source item relates to the target: supports (the source corroborates the target), contradicts (the source conflicts with or corrects it), or derived_from (the source was produced using the target as input).",
+      "description": "How the source item relates to the target item.",
       "enum": [
         "supports",
         "contradicts",
