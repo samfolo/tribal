@@ -105,7 +105,7 @@ optional structured filters to narrow results.
 
 Use this as your first step when you need context: before starting \
 work on a feature, debugging an issue, or making a design decision. \
-Ask questions the way you'd ask a colleague — \"What do I know about \
+Ask questions the way you'd ask a colleague: \"What do I know about \
 connection pooling in this project?\" or \"Have I seen this async \
 deadlock pattern before?\"
 
@@ -147,12 +147,12 @@ Relation types:
 - \"supports\": Evidence that reinforces the item
 - \"contradicts\": Evidence that challenges the item
 - \"supersedes\": A newer item that replaces this one
-- \"derived_from\": Provenance — what input was used to produce this item
+- \"derived_from\": Provenance. The input used to produce this item
 
 Depth controls hops: depth 1 = direct relations, depth 2 = relations \
 of relations. Higher depth gives more context but more results. Depth \
 is capped at 3 to avoid mixing unrelated evidence across distant \
-graph regions — use multiple targeted calls for deeper investigation.",
+graph regions; use multiple targeted calls for deeper investigation.",
         input_schema: include_str!("schemas/explore/input.json"),
         output_schema: include_str!("schemas/explore/output.json"),
         required_scope: "tribal.knowledge:read",
@@ -162,9 +162,8 @@ graph regions — use multiple targeted calls for deeper investigation.",
         title: "Tribal: Get Knowledge Item by ID",
         description: "\
 Retrieve one or more knowledge items by their IDs. Use this when you \
-have a specific item ID — from a standing field \
-(newest_supporting_id, newest_contradicting_id, superseded_by), a \
-previous session, or a cross-reference — and need the full item.
+have a specific item ID (from a standing field, a previous session, \
+or a cross-reference) and need the full item.
 
 For semantic search, use tribal_discover. For relationship traversal, \
 use tribal_explore. This tool is for direct lookup when you already \
@@ -183,7 +182,7 @@ Record a quality signal about a retrieval session. Use this when \
 Tribal's knowledge meaningfully helped (or failed to help) your \
 current task.
 
-This is NOT about rating individual items — item-level signals are \
+This is NOT about rating individual items. Item-level signals are \
 captured through the Supports/Contradicts relationship system during \
 ingest. This is about rating the *combination of items returned for a \
 query, assembled in a particular way*.
@@ -196,10 +195,10 @@ Rate \"negative\" when: The query should have found relevant knowledge \
 but didn't, or the returned items were irrelevant or misleading for \
 the task at hand.
 
-Feedback builds an organic eval dataset. Be selective — only rate \
+Feedback builds an organic eval dataset. Be selective: only rate \
 when the signal is clear. If no trace_id is available from the \
 retrieval response, do not submit feedback rather than fabricating a \
-trace_id — incomplete feedback is noise.",
+trace_id. Incomplete feedback is noise.",
         input_schema: include_str!("schemas/feedback/input.json"),
         output_schema: include_str!("schemas/feedback/output.json"),
         required_scope: "tribal.knowledge:write",
@@ -215,10 +214,10 @@ Job lifecycle: queued → extracting → triaging → relating → completed/fai
 Terminal states:
 - \"completed\": Pipeline ran to conclusion. Check outcome for details:
   - \"success\": All candidates triaged successfully and relations committed.
-  - \"partial\": Some triage tasks dead-lettered; relation task ran on a subset.
+  - \"partial\": Some triage tasks failed permanently; the relation task ran on a subset.
   - \"empty\": Relation task ran with zero items to relate (all duplicates \
 or all triage failures). If tasks_failed > 0, the pipeline likely failed \
-at triage — treat as degraded rather than \"nothing new\".
+at triage; treat as degraded rather than \"nothing new\".
 - \"failed\": Pipeline could not complete. outcome = \"failure\". Check error context.
 
 Set wait_seconds to block until the job completes or the timeout \
