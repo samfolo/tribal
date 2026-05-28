@@ -95,11 +95,30 @@ fn parse_optional_url(maybe: Option<&str>, fallback: &Url) -> Result<Url, String
     }
 }
 
-/// Canonicalises a resource URL for byte-equal audience comparison.
+/// Canonicalises a resource URL into the byte-exact form used for RFC
+/// 8707 audience equality.
 ///
-/// Lowercases scheme and host, removes any fragment, and trims a single
-/// trailing slash from the path (a bare `/` is preserved as `""` to
-/// keep the URL byte-stable across canonicalisations).
+/// The output is compared byte-for-byte against the canonicalised
+/// `resource` indicator a client sends and against the audience recorded
+/// on a minted token, so its rules are fixed by what a compliant client
+/// transmits, not by convenience:
+///
+/// - lowercases scheme and host (both case-insensitive per RFC 3986);
+/// - removes any fragment (never part of a resource identifier);
+/// - trims a single trailing slash so `.../mcp` and `.../mcp/` agree,
+///   while a bare `/` collapses to `""` to stay byte-stable across
+///   repeated canonicalisation;
+/// - does NOT add an explicit default port, because clients send
+///   `https://host/mcp`, not `https://host:443/mcp`; and
+/// - retains the query string, because a resource indicator may carry
+///   one and byte-equality is the contract (Tribal's resource never
+///   does).
+///
+/// This deliberately differs from the registry-key normalisation used
+/// to dedupe provider endpoints, which adds explicit ports and drops the
+/// query: that answers an identity-of-endpoint question, whereas this
+/// answers a security-load-bearing match against exactly what the client
+/// transmits.
 #[must_use]
 pub fn canonicalise_resource_url(url: &Url) -> String {
     let mut clone = url.clone();
@@ -147,6 +166,61 @@ mod tests {
     fn test_canonicalise_drops_fragment() {
         let canonical = canonicalise_resource_url(&url("https://example.com/mcp#frag"));
         assert_eq!(canonical, "https://example.com/mcp");
+    }
+
+    // -- Pinned canonical forms for the resource shapes Tribal serves -------
+    // These lock the byte-exact audience form. A change here is a change to
+    // what every minted token's audience must equal, so it must be
+    // deliberate (see Workstream F of the hardening round).
+
+    #[test]
+    fn test_canonicalise_pins_bare_host() {
+        assert_eq!(
+            canonicalise_resource_url(&url("https://example.com")),
+            "https://example.com",
+        );
+    }
+
+    #[test]
+    fn test_canonicalise_pins_host_port() {
+        assert_eq!(
+            canonicalise_resource_url(&url("http://127.0.0.1:8080")),
+            "http://127.0.0.1:8080",
+        );
+    }
+
+    #[test]
+    fn test_canonicalise_pins_host_path() {
+        assert_eq!(
+            canonicalise_resource_url(&url("http://127.0.0.1:8080/mcp")),
+            "http://127.0.0.1:8080/mcp",
+        );
+    }
+
+    #[test]
+    fn test_canonicalise_does_not_add_explicit_default_port() {
+        // A compliant client sends the audience without :443; adding one
+        // would make every token's audience fail to match.
+        assert_eq!(
+            canonicalise_resource_url(&url("https://example.com/mcp")),
+            "https://example.com/mcp",
+        );
+    }
+
+    #[test]
+    fn test_canonicalise_retains_query() {
+        assert_eq!(
+            canonicalise_resource_url(&url("https://example.com/mcp?tenant=a")),
+            "https://example.com/mcp?tenant=a",
+        );
+    }
+
+    #[test]
+    fn test_canonicalise_pins_ipv6_literal() {
+        assert_eq!(
+            canonicalise_resource_url(&url("http://[::1]:8080/mcp")),
+            "http://[::1]:8080/mcp",
+        );
     }
 
     #[test]
