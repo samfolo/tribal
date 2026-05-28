@@ -399,9 +399,9 @@ impl OAuthError {
             }
             Self::InvalidRedirectUri { reason } => Cow::Owned(reason.to_string()),
             Self::InvalidClientMetadata { reason } => Cow::Owned(reason.to_string()),
-            Self::UnsupportedResponseType { presented } => {
-                Cow::Owned(format!("response_type must be \"code\" (got {presented:?})"))
-            }
+            Self::UnsupportedResponseType { presented } => Cow::Owned(format!(
+                "response_type must be \"code\" (got {presented:?})"
+            )),
         }
     }
 
