@@ -88,7 +88,8 @@ impl IntoMcpError for AuthError {
         let (code, details) = match &self {
             AuthError::InvalidToken { .. }
             | AuthError::TokenRevoked { .. }
-            | AuthError::TokenExpired { .. } => {
+            | AuthError::TokenExpired { .. }
+            | AuthError::AudienceMismatch { .. } => {
                 (McpErrorCode::Unauthenticated, serde_json::json!({}))
             }
             AuthError::PrincipalNotFound { .. }

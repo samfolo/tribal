@@ -9,6 +9,7 @@ define_factory! {
         token_hash: String = "a".repeat(64),
         principal_id: PrincipalId = PrincipalId::new(),
         scopes: Vec<Scope> = full_access_scopes(),
+        audience: String = String::new(),
         expires_at: chrono::DateTime<Utc> = Utc::now() + chrono::Duration::hours(24),
         created_at: chrono::DateTime<Utc> = Utc::now(),
         revoked_at: Option<chrono::DateTime<Utc>> = None,
@@ -27,6 +28,7 @@ define_factory! {
         token_hash: String = "a".repeat(64),
         principal_id: PrincipalId = PrincipalId::new(),
         scopes: Vec<Scope> = full_access_scopes(),
+        audience: String = String::new(),
         expires_at: chrono::DateTime<Utc> = Utc::now() + chrono::Duration::hours(24),
     }
 }

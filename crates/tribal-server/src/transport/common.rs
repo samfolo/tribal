@@ -90,11 +90,13 @@ pub(super) async fn bind_listener(
 /// transports.
 pub(super) fn auth_middleware_state(
     state: &Arc<AppState>,
+    runtime: &OAuthRuntimeConfig,
     challenge: Arc<BearerChallenge>,
 ) -> AuthMiddlewareState {
-    let authenticator = Arc::new(Authenticator::new(
+    let authenticator = Arc::new(Authenticator::with_audience(
         Arc::new(PgAuthTokenRepository),
         Arc::new(PgPrincipalRepository),
+        Some(runtime.canonical_resource.clone()),
     ));
 
     AuthMiddlewareState::new(state.mcp_pool().clone(), authenticator, challenge)

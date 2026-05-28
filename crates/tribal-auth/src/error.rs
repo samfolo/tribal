@@ -97,6 +97,17 @@ pub enum AuthError {
         /// The scopes the token was granted.
         granted_scopes: Vec<Scope>,
     },
+
+    /// The token's audience claim does not match the running server's
+    /// canonical resource URL. Tokens issued for a different resource
+    /// are rejected per RFC 8707 and the MCP 2025-11-25 spec.
+    #[error("{DISPLAY_INVALID_TOKEN}")]
+    AudienceMismatch {
+        /// The audience the running server expects.
+        expected: String,
+        /// The audience recorded on the presented token.
+        found: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

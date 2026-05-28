@@ -177,6 +177,12 @@ fn auth_error_response(error: &AuthError, challenge: &BearerChallenge) -> Respon
             unauthorised_response(DISPLAY_TOKEN_EXPIRED, challenge, /* with_error */ true)
         }
 
+        // Audience mismatch is a 401 with invalid_token; the token does
+        // exist and verify but is bound to a different resource.
+        AuthError::AudienceMismatch { .. } => {
+            unauthorised_response(DISPLAY_INVALID_TOKEN, challenge, /* with_error */ true)
+        }
+
         // Defensive: verify_token cannot return these, but handle them
         // to avoid leaking internal state if the code path changes.
         AuthError::PrincipalNotFound { .. }
