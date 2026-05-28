@@ -6,12 +6,14 @@
 
 use std::net::SocketAddr;
 
+use url::Url;
+
 use crate::{
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
     sections::{
-        MAX_AUTHORIZATION_CODE_TTL_SECONDS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind,
-        TribalConfig,
+        MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
+        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig,
     },
 };
 
@@ -226,11 +228,11 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
         diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
             "oauth.access_token_ttl_hours",
         )));
-    } else if access_ttl > MAX_TTL_HOURS {
+    } else if access_ttl > MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS {
         diags.push(ValidationError::AboveMax {
             field: ConfigPath::from_static("oauth.access_token_ttl_hours"),
             value: access_ttl,
-            limit: MAX_TTL_HOURS,
+            limit: MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
         });
     }
 
@@ -246,6 +248,34 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
             field: ConfigPath::from_static("oauth.authorization_code_ttl_seconds"),
             value: code_ttl,
             limit: MAX_AUTHORIZATION_CODE_TTL_SECONDS,
+        });
+    }
+
+    // Fail fast at load time on an unparseable issuer or resource URL,
+    // rather than only when the runtime config is constructed at serve.
+    validate_optional_url(
+        "oauth.issuer_url",
+        config.oauth.issuer_url.as_deref(),
+        diags,
+    );
+    validate_optional_url(
+        "oauth.resource_url",
+        config.oauth.resource_url.as_deref(),
+        diags,
+    );
+}
+
+/// Pushes a [`ValidationError::UrlMalformed`] when `value` is set,
+/// non-empty, and does not parse as a URL. An unset field is admissible
+/// (the consumer derives it from the bind address).
+fn validate_optional_url(field: &'static str, value: Option<&str>, diags: &mut Diagnostics) {
+    if let Some(raw) = value
+        && !raw.is_empty()
+        && Url::parse(raw).is_err()
+    {
+        diags.push(ValidationError::UrlMalformed {
+            field: ConfigPath::from_static(field),
+            value: raw.to_owned(),
         });
     }
 }
@@ -794,6 +824,117 @@ mod tests {
     fn test_validate_accepts_token_ttl_at_max() {
         let mut config = valid_config();
         config.auth.token_ttl_hours = MAX_TTL_HOURS;
+        assert!(validate(&config).is_ok());
+    }
+
+    // -- oauth -------------------------------------------------------------
+
+    #[test]
+    fn test_validate_rejects_zero_oauth_access_ttl() {
+        let mut config = valid_config();
+        config.oauth.access_token_ttl_hours = 0;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "oauth.access_token_ttl_hours",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_excessive_oauth_access_ttl() {
+        let mut config = valid_config();
+        config.oauth.access_token_ttl_hours = MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS + 1;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::AboveMax { field, limit, .. }
+                if field.as_str() == "oauth.access_token_ttl_hours"
+                    && *limit == MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_oauth_access_ttl_at_max() {
+        let mut config = valid_config();
+        config.oauth.access_token_ttl_hours = MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_oauth_code_ttl_below_min() {
+        let mut config = valid_config();
+        config.oauth.authorization_code_ttl_seconds = MIN_AUTHORIZATION_CODE_TTL_SECONDS - 1;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min, .. }
+                if field.as_str() == "oauth.authorization_code_ttl_seconds"
+                    && *min == MIN_AUTHORIZATION_CODE_TTL_SECONDS,
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_oauth_code_ttl_above_max() {
+        let mut config = valid_config();
+        config.oauth.authorization_code_ttl_seconds = MAX_AUTHORIZATION_CODE_TTL_SECONDS + 1;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::AboveMax { field, limit, .. }
+                if field.as_str() == "oauth.authorization_code_ttl_seconds"
+                    && *limit == MAX_AUTHORIZATION_CODE_TTL_SECONDS,
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_oauth_code_ttl_at_bounds() {
+        let mut config = valid_config();
+        config.oauth.authorization_code_ttl_seconds = MIN_AUTHORIZATION_CODE_TTL_SECONDS;
+        assert!(validate(&config).is_ok());
+        config.oauth.authorization_code_ttl_seconds = MAX_AUTHORIZATION_CODE_TTL_SECONDS;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_oauth_issuer_url() {
+        let mut config = valid_config();
+        config.oauth.issuer_url = Some("not a url".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "oauth.issuer_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_oauth_resource_url() {
+        let mut config = valid_config();
+        config.oauth.resource_url = Some(":::not-a-url".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "oauth.resource_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_valid_oauth_urls() {
+        let mut config = valid_config();
+        config.oauth.issuer_url = Some("https://auth.example.com".to_owned());
+        config.oauth.resource_url = Some("https://auth.example.com/mcp".to_owned());
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_unset_oauth_urls() {
+        // Unset URLs are admissible: the consumer derives them from the
+        // bind address at startup.
+        let mut config = valid_config();
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
         assert!(validate(&config).is_ok());
     }
 
