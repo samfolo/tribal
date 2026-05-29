@@ -859,6 +859,20 @@ mod tests {
     }
 
     #[test]
+    fn test_oauth_surface_wildcard_bind_behind_loopback_port_is_loopback() {
+        // The Docker compose shape: bound to 0.0.0.0 inside the container,
+        // reached on a loopback host port mapping, with no advertised
+        // override. The surface is loopback, so `valid_token_exists` skips
+        // rather than warns and the container healthcheck stays green.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("0.0.0.0:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        assert!(!oauth_surface_is_routable(&config, None));
+    }
+
+    #[test]
     fn test_validate_rejects_zero_shutdown_deadline() {
         let mut config = valid_config();
         config.server.shutdown_deadline_ms = 0;
