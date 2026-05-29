@@ -8,7 +8,7 @@ use std::{
 use tribal_config::{
     Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
     CredentialsPermissions, LoadedCredentials, TransportKind, TribalConfig, load_config,
-    read_credentials,
+    oauth_surface_is_routable, public_mcp_url_override, read_credentials,
 };
 use tribal_domain::BearerToken;
 
@@ -42,6 +42,9 @@ pub struct McpConfigOptions<'a> {
     pub transport: TransportKind,
     /// Bearer token override from `--token`, if supplied.
     pub explicit_token: Option<String>,
+    /// Whether `--static-token` was passed, forcing the persisted static
+    /// token into an http/sse snippet regardless of deployment topology.
+    pub static_token: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +59,7 @@ const PROJECT_RESOLUTION_FAILED_CONTEXT: &str = "no project resolved by --projec
 /// Warning emitted when `--token` is passed under the stdio transport,
 /// which authenticates as `principal:local` at runtime and cannot embed
 /// a token in the snippet.
-const STDIO_TOKEN_IGNORED: &str = "--token has no effect when transport is stdio; stdio authenticates as principal:local at runtime";
+const STDIO_TOKEN_IGNORED: &str = "--token / --static-token have no effect when transport is stdio; stdio authenticates as principal:local at runtime";
 
 /// Pool name for the short-lived mcp-config connection.
 const POOL_NAME_MCP_CONFIG: &str = "mcp-config";
@@ -85,6 +88,7 @@ pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppE
     let transport = args.transport;
     let project = args.project.take();
     let token = args.token.take();
+    let static_token = args.static_token;
 
     let cli_overrides = args.into_cli_overrides();
     let config = load_config(
@@ -111,6 +115,7 @@ pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppE
             project_override: project,
             transport,
             explicit_token: token,
+            static_token,
         },
         &mut stdout,
         &mut stderr,
@@ -151,7 +156,13 @@ pub async fn run_async(
             context: PROJECT_RESOLUTION_FAILED_CONTEXT.into(),
         })?;
 
-    let auth = resolve_auth(opts.transport, opts.explicit_token, out_stderr)?;
+    let auth = resolve_auth(
+        opts.transport,
+        opts.config,
+        opts.explicit_token,
+        opts.static_token,
+        out_stderr,
+    )?;
     let advertised_url = resolved_advertised_url(opts.config);
     let entry = build_snippet_entry(
         resolved.id(),
@@ -171,14 +182,20 @@ pub async fn run_async(
 /// Resolves the [`Auth`] value to embed in the snippet.
 ///
 /// stdio short-circuits to `None` — harness-spawned servers authenticate
-/// as `principal:local` at runtime. Network transports prefer the
-/// explicit `--token` override, falling back to the persisted credentials
-/// file via [`read_credentials`]. The `--token` value is trimmed once at
-/// this boundary; empty-after-trim falls through to the credentials
-/// file (mcp-config does not consult `TRIBAL_AUTH_TOKEN`).
+/// as `principal:local` at runtime. For network transports an explicit
+/// `--token` always embeds that token; otherwise the persisted static
+/// token is embedded only where it is the auth path: when `--static-token`
+/// forces it (a harness that cannot perform the OAuth flow), or when the
+/// surface is routable so open DCR is refused. A loopback surface
+/// defaults to a `None` (URL-only) snippet, leaving an OAuth-capable
+/// harness to authenticate via the flow with nothing to copy. The
+/// `--token` value is trimmed once at this boundary; empty-after-trim is
+/// treated as absent (mcp-config does not consult `TRIBAL_AUTH_TOKEN`).
 fn resolve_auth(
     transport: TransportKind,
+    config: &TribalConfig,
     explicit_token: Option<String>,
+    static_token: bool,
     out_stderr: &mut dyn Write,
 ) -> Result<Option<Auth>, AppError> {
     let trimmed_token = explicit_token
@@ -187,12 +204,16 @@ fn resolve_auth(
 
     match transport {
         TransportKind::Stdio => {
-            if trimmed_token.is_some() {
+            if trimmed_token.is_some() || static_token {
                 let _ = writeln!(out_stderr, "{STDIO_TOKEN_IGNORED}");
             }
             Ok(None)
         }
         TransportKind::Http | TransportKind::Sse => {
+            let routable = oauth_surface_is_routable(config, public_mcp_url_override().as_deref());
+            if trimmed_token.is_none() && !static_token && !routable {
+                return Ok(None);
+            }
             let auth = resolve_network_auth(trimmed_token, out_stderr)?;
             Ok(Some(auth))
         }

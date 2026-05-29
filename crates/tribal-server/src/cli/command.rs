@@ -819,11 +819,19 @@ pub struct McpConfigArgs {
     #[arg(long, env = "TRIBAL_PROJECT_ID", help_heading = "Session")]
     pub project: Option<String>,
 
-    /// Bearer token override for http/sse snippets. When omitted the
-    /// token is read from the persisted credentials file. Ignored for
-    /// stdio.
+    /// Bearer token override for http/sse snippets: embeds this exact
+    /// token. Ignored for stdio.
     #[arg(long, help_heading = "Output")]
     pub token: Option<String>,
+
+    /// Embed the persisted static bearer token in the http/sse snippet.
+    ///
+    /// The default http/sse snippet on a loopback deployment is URL-only
+    /// and relies on OAuth, which suits OAuth-capable harnesses. Pass this
+    /// for a harness that authenticates only with a static `Authorization`
+    /// header and so cannot perform the OAuth flow. Ignored for stdio.
+    #[arg(long, help_heading = "Output")]
+    pub static_token: bool,
 
     /// Database connection options.
     #[command(flatten)]
@@ -833,8 +841,8 @@ pub struct McpConfigArgs {
 impl McpConfigArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
-    /// `--transport`, `--project`, and `--token` affect only this single
-    /// rendering and do not flow into [`CliOverrides`].
+    /// `--transport`, `--project`, `--token`, and `--static-token` affect
+    /// only this single rendering and do not flow into [`CliOverrides`].
     pub fn into_cli_overrides(self) -> CliOverrides {
         self.database.into_cli_overrides()
     }
@@ -1539,6 +1547,7 @@ mod tests {
             transport: None,
             project: None,
             token: None,
+            static_token: false,
             database: DatabaseArgs {
                 database_url: Some("postgres://h/db".into()),
             },
