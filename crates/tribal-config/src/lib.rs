@@ -38,7 +38,7 @@ pub use paths::{
 pub use redact::redact_secrets;
 pub use render::{ConfigPersistence, render_minimal_config, render_persisted_config};
 pub use sections::{
-    Auth, AuthConfig, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX,
+    Auth, AuthConfig, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, advertised_oauth_host,
     CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX, CREDENTIALS_WRITE_FAILED_PREFIX,
     CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials, CredentialsPermissions, CredentialsReadError,
     CredentialsWriteError, DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,

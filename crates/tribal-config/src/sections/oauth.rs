@@ -5,6 +5,8 @@
 //! `url::Url` at consumer construction time, matching the existing
 //! pattern for `server.bind_address`.
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -34,6 +36,24 @@ pub const MAX_AUTHORIZATION_CODE_TTL_SECONDS: u64 = 600;
 
 /// Lower bound on authorisation-code TTL accepted by `validate()`.
 pub const MIN_AUTHORIZATION_CODE_TTL_SECONDS: u64 = 60;
+
+// ---------------------------------------------------------------------------
+// Host derivation
+// ---------------------------------------------------------------------------
+
+/// The host a bind address advertises in an OAuth-derived URL.
+///
+/// A wildcard bind (`0.0.0.0` or `[::]`) collapses to the IPv4 loopback so
+/// a URL derived from it resolves to a reachable address; every other
+/// address is returned verbatim.
+#[must_use]
+pub fn advertised_oauth_host(addr: SocketAddr) -> IpAddr {
+    match addr.ip() {
+        IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        other => other,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // OAuthConfig
@@ -117,5 +137,32 @@ mod tests {
     fn test_default_deserialises_from_empty_object() {
         let config: OAuthConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(config, OAuthConfig::default());
+    }
+
+    #[test]
+    fn test_advertised_host_collapses_v4_wildcard_to_loopback() {
+        let host = advertised_oauth_host("0.0.0.0:8725".parse().unwrap());
+        assert_eq!(host, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert!(host.is_loopback());
+    }
+
+    #[test]
+    fn test_advertised_host_collapses_v6_wildcard_to_loopback() {
+        let host = advertised_oauth_host("[::]:8725".parse().unwrap());
+        assert_eq!(host, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert!(host.is_loopback());
+    }
+
+    #[test]
+    fn test_advertised_host_preserves_routable_address() {
+        let host = advertised_oauth_host("10.0.0.5:8725".parse().unwrap());
+        assert_eq!(host, "10.0.0.5".parse::<IpAddr>().unwrap());
+        assert!(!host.is_loopback());
+    }
+
+    #[test]
+    fn test_advertised_host_preserves_loopback_address() {
+        let host = advertised_oauth_host("127.0.0.1:8725".parse().unwrap());
+        assert!(host.is_loopback());
     }
 }

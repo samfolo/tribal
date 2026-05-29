@@ -8,10 +8,10 @@
 //! literal when the bind address itself is unspecified (`0.0.0.0` or
 //! `[::]`) so the URLs land somewhere a client can actually reach.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 use tribal_auth::oauth::{OAuthRuntimeConfig, OAuthRuntimeConfigError};
-use tribal_config::{DEFAULT_BIND_ADDRESS, TransportKind, TribalConfig};
+use tribal_config::{DEFAULT_BIND_ADDRESS, TransportKind, TribalConfig, advertised_oauth_host};
 use url::Url;
 
 use crate::error::AppError;
@@ -85,16 +85,10 @@ pub fn expected_token_audience(
     }
 }
 
-/// Translates a bind address to a host/port pair suitable for embedding
-/// in a public URL.
-///
-/// Wildcard addresses (`0.0.0.0`, `[::]`) are rewritten to the IPv4
-/// loopback literal `127.0.0.1` so the derived URL is reachable. All
-/// other addresses are preserved verbatim.
+/// Formats the host [`advertised_oauth_host`] derives for `addr`, with the
+/// port, for embedding in a URL: an IPv6 host is wrapped in brackets.
 fn canonical_host_and_port(addr: SocketAddr) -> (String, u16) {
-    let host = match addr.ip() {
-        IpAddr::V4(v4) if v4.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
-        IpAddr::V6(v6) if v6.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
+    let host = match advertised_oauth_host(addr) {
         IpAddr::V4(v4) => v4.to_string(),
         IpAddr::V6(v6) => format!("[{v6}]"),
     };

@@ -12,8 +12,8 @@ use crate::{
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
     sections::{
-        MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
-        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig,
+        DEFAULT_BIND_ADDRESS, MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
+        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, advertised_oauth_host,
     },
 };
 
@@ -257,20 +257,44 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
     validate_resource_url(config.oauth.resource_url.as_deref(), diags);
 
     // /register is unauthenticated, so DCR is refused when the OAuth
-    // surface is advertised on a routable host. An explicitly non-loopback
-    // issuer or resource URL is the reliable "remote clients intended"
-    // signal: an unset URL derives a loopback address (wildcard binds are
-    // rewritten to 127.0.0.1 at runtime), so a container bound to 0.0.0.0
-    // behind a loopback port mapping is correctly allowed.
+    // surface is advertised on a routable host. The effective host is the
+    // explicit issuer/resource URL when set, otherwise the host the bind
+    // address advertises; a wildcard bind collapses to loopback, so a
+    // container bound to 0.0.0.0 behind a loopback port mapping is allowed
+    // while a routable bind or a routable advertised URL is refused.
     if matches!(
         config.server.transport,
         TransportKind::Http | TransportKind::Sse
     ) && config.oauth.dcr_enabled
-        && (url_is_explicit_non_loopback(config.oauth.issuer_url.as_deref())
-            || url_is_explicit_non_loopback(config.oauth.resource_url.as_deref()))
+        && oauth_surface_is_routable(config)
     {
         diags.push(ValidationError::NonLoopbackDcrConflict);
     }
+}
+
+/// Returns `true` when the advertised OAuth surface resolves to a
+/// non-loopback host, the signal that DCR's unauthenticated `/register`
+/// would be reachable by remote clients.
+///
+/// Each of the issuer and resource hosts is the explicit URL when one is
+/// set, otherwise the host the bind address advertises
+/// ([`advertised_oauth_host`]).
+fn oauth_surface_is_routable(config: &TribalConfig) -> bool {
+    let bind_routable = config
+        .server
+        .bind_address
+        .as_deref()
+        .unwrap_or(DEFAULT_BIND_ADDRESS)
+        .parse::<SocketAddr>()
+        .is_ok_and(|addr| !advertised_oauth_host(addr).is_loopback());
+
+    let field_routable = |url: Option<&str>| match url.filter(|raw| !raw.is_empty()) {
+        Some(raw) => url_is_explicit_non_loopback(Some(raw)),
+        None => bind_routable,
+    };
+
+    field_routable(config.oauth.issuer_url.as_deref())
+        || field_routable(config.oauth.resource_url.as_deref())
 }
 
 /// Returns `true` when `value` is set and parses to a URL whose host is
@@ -623,7 +647,6 @@ mod tests {
     use tribal_domain::ProviderKind;
 
     use super::*;
-    use crate::DEFAULT_BIND_ADDRESS;
 
     fn valid_config() -> TribalConfig {
         TribalConfig::minimum_valid("postgres://localhost/tribal")
@@ -756,6 +779,24 @@ mod tests {
         config.oauth.resource_url = None;
         config.oauth.dcr_enabled = true;
         assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_dcr_on_specific_routable_bind_with_unset_urls() {
+        // A specific (non-wildcard) routable bind with unset URLs derives a
+        // routable issuer/resource, so the unauthenticated /register would
+        // be reachable: it must be refused even though no URL is set.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("10.0.0.5:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.oauth.dcr_enabled = true;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::NonLoopbackDcrConflict,
+        )));
     }
 
     #[test]
