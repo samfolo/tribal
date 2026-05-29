@@ -13,26 +13,20 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use tribal_common::sha256_hex;
 use tribal_db::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
 use tribal_domain::{ApplicationType, OauthClient, TokenEndpointAuthMethod};
 use url::Url;
 
-use crate::oauth::{
-    common::{GRANT_TYPE_AUTHORIZATION_CODE, RESPONSE_TYPE_CODE, is_loopback_host},
-    error::{ClientMetadataRejection, InternalOperation, OAuthError, RedirectUriRejection},
-    scope::first_uncatalogued_scope,
+use crate::{
+    issuance::generate_token_value,
+    oauth::{
+        common::{GRANT_TYPE_AUTHORIZATION_CODE, RESPONSE_TYPE_CODE, is_loopback_host},
+        error::{ClientMetadataRejection, InternalOperation, OAuthError, RedirectUriRejection},
+        scope::first_uncatalogued_scope,
+    },
 };
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Number of random bytes used for `client_id` and `client_secret`.
-const RANDOM_BYTE_LENGTH: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Request and response types
@@ -217,9 +211,9 @@ async fn register(
         .map(parse_application_type)
         .transpose()?;
 
-    let client_id = generate_random_token();
+    let client_id = generate_token_value();
     let (client_secret, client_secret_hash) = if auth_method.requires_secret() {
-        let raw = generate_random_token();
+        let raw = generate_token_value();
         let hash = sha256_hex(&raw);
         (Some(raw), Some(hash))
     } else {
@@ -358,12 +352,6 @@ fn validate_grant_response_consistency(
         });
     }
     Ok(())
-}
-
-fn generate_random_token() -> String {
-    let mut bytes = [0u8; RANDOM_BYTE_LENGTH];
-    rand::rng().fill(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 #[cfg(test)]
