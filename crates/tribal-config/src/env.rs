@@ -76,7 +76,22 @@ pub fn standard_env_var_name(kind: ProviderKind) -> Option<&'static str> {
     }
 }
 
+/// Returns the publicly-advertised MCP URL override, if one is set.
+///
+/// Reads [`ENV_PUBLIC_MCP_URL`] once, treating an unset or blank value as
+/// absent. The single read of the override, so every value derived from
+/// it agrees on the URL clients are told to reach.
+#[must_use]
+pub fn public_mcp_url_override() -> Option<String> {
+    std::env::var(ENV_PUBLIC_MCP_URL)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
 #[cfg(test)]
+// `Jail::expect_with` closures return `Result<(), figment::Error>` (208 bytes),
+// which we cannot reduce without wrapping an upstream type.
+#[allow(clippy::result_large_err)]
 mod tests {
     use super::*;
 
@@ -107,5 +122,23 @@ mod tests {
             env_var_for_path("server.transport"),
             "TRIBAL_SERVER__TRANSPORT",
         );
+    }
+
+    #[test]
+    fn test_public_mcp_url_override_reads_value_and_treats_blank_as_absent() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(ENV_PUBLIC_MCP_URL, "https://tribal.example.com/mcp");
+            assert_eq!(
+                public_mcp_url_override().as_deref(),
+                Some("https://tribal.example.com/mcp"),
+            );
+            jail.set_env(ENV_PUBLIC_MCP_URL, "   ");
+            assert_eq!(
+                public_mcp_url_override(),
+                None,
+                "a blank value is treated as no override",
+            );
+            Ok(())
+        });
     }
 }

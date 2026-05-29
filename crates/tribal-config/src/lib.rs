@@ -28,7 +28,7 @@ pub use divergence::{
 pub use env::{
     ENV_ANTHROPIC_API_KEY, ENV_AUTH_TOKEN, ENV_CONFIG_PATH, ENV_NESTED_SEPARATOR,
     ENV_OPENAI_API_KEY, ENV_PREFIX, ENV_PROJECT_ID, ENV_PUBLIC_MCP_URL, env_var_for_path,
-    standard_env_var_name,
+    public_mcp_url_override, standard_env_var_name,
 };
 pub use error::ConfigError;
 pub use loader::load_config;
@@ -56,7 +56,7 @@ pub use sections::{
 };
 pub use validation::{
     ComputedFloor, ConfigPath, Diagnostics, Endpoint, FieldValue, Inclusion, NumericRange,
-    OrderRelation, ProviderStage, ValidationError, validate,
+    OrderRelation, ProviderStage, ValidationError, oauth_surface_is_routable, validate,
 };
 
 // ---------------------------------------------------------------------------
