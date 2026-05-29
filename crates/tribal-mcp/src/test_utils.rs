@@ -8,6 +8,7 @@ use rmcp::{
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use tribal_auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
 use tribal_domain::{PrincipalId, ProjectId, PromptVersionId, ProviderKind};
@@ -25,7 +26,6 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     app_state::AppState,
-    auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy},
     config::HandlerConfig,
     fingerprint::PipelineProviderIdentities,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},

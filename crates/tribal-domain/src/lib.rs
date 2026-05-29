@@ -60,6 +60,8 @@ mod inference_parameters;
 mod item_observation;
 mod job;
 mod knowledge;
+mod oauth_authorization_code;
+mod oauth_client;
 mod pipeline_stage;
 mod principal;
 mod project;
@@ -107,6 +109,8 @@ pub use inference_parameters::{
 pub use item_observation::{ItemObservation, ItemObservationBuilder};
 pub use job::{Job, JobBuilder, JobOutcome, JobState, JobStatus};
 pub use knowledge::{Confidence, KnowledgeItem, KnowledgeItemBuilder, KnowledgeKind};
+pub use oauth_authorization_code::{OauthAuthorizationCode, OauthAuthorizationCodeBuilder};
+pub use oauth_client::{ApplicationType, OauthClient, OauthClientBuilder, TokenEndpointAuthMethod};
 pub use pipeline_stage::PipelineStage;
 pub use principal::{LOCAL_PRINCIPAL_KEY, Principal, PrincipalBuilder};
 pub use project::{Project, ProjectBuilder};

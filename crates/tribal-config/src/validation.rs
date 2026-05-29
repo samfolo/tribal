@@ -6,10 +6,15 @@
 
 use std::net::SocketAddr;
 
+use url::{Host, Url};
+
 use crate::{
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
-    sections::{TransportKind, TribalConfig},
+    sections::{
+        DEFAULT_BIND_ADDRESS, MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
+        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, advertised_oauth_host,
+    },
 };
 
 mod diagnostics;
@@ -64,6 +69,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_database(config, &mut diags);
     validate_server(config, &mut diags);
     validate_auth(config, &mut diags);
+    validate_oauth(config, &mut diags);
     validate_worker(config, &mut diags);
     validate_pool_sizing(config, &mut diags);
     validate_embedding(config, &mut diags);
@@ -212,6 +218,158 @@ fn validate_auth(config: &TribalConfig, diags: &mut Diagnostics) {
             field: ConfigPath::from_static("auth.token_ttl_hours"),
             value: ttl,
             limit: MAX_TTL_HOURS,
+        });
+    }
+}
+
+fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
+    let access_ttl = config.oauth.access_token_ttl_hours;
+    if access_ttl == 0 {
+        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "oauth.access_token_ttl_hours",
+        )));
+    } else if access_ttl > MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS {
+        diags.push(ValidationError::AboveMax {
+            field: ConfigPath::from_static("oauth.access_token_ttl_hours"),
+            value: access_ttl,
+            limit: MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
+        });
+    }
+
+    let code_ttl = config.oauth.authorization_code_ttl_seconds;
+    if code_ttl < MIN_AUTHORIZATION_CODE_TTL_SECONDS {
+        diags.push(ValidationError::BelowMin {
+            field: ConfigPath::from_static("oauth.authorization_code_ttl_seconds"),
+            value: code_ttl,
+            min: MIN_AUTHORIZATION_CODE_TTL_SECONDS,
+        });
+    } else if code_ttl > MAX_AUTHORIZATION_CODE_TTL_SECONDS {
+        diags.push(ValidationError::AboveMax {
+            field: ConfigPath::from_static("oauth.authorization_code_ttl_seconds"),
+            value: code_ttl,
+            limit: MAX_AUTHORIZATION_CODE_TTL_SECONDS,
+        });
+    }
+
+    // Fail fast at load time on a malformed or unsupported issuer/resource
+    // URL, rather than only when the runtime config is built at serve.
+    validate_issuer_url(config.oauth.issuer_url.as_deref(), diags);
+    validate_resource_url(config.oauth.resource_url.as_deref(), diags);
+
+    // /register is unauthenticated, so DCR is refused when the OAuth
+    // surface is advertised on a routable host. The effective host is the
+    // explicit issuer/resource URL when set, otherwise the host the bind
+    // address advertises; a wildcard bind collapses to loopback, so a
+    // container bound to 0.0.0.0 behind a loopback port mapping is allowed
+    // while a routable bind or a routable advertised URL is refused.
+    if matches!(
+        config.server.transport,
+        TransportKind::Http | TransportKind::Sse
+    ) && config.oauth.dcr_enabled
+        && oauth_surface_is_routable(config)
+    {
+        diags.push(ValidationError::NonLoopbackDcrConflict);
+    }
+}
+
+/// Returns `true` when the advertised OAuth surface resolves to a
+/// non-loopback host, the signal that DCR's unauthenticated `/register`
+/// would be reachable by remote clients.
+///
+/// Each of the issuer and resource hosts is the explicit URL when one is
+/// set, otherwise the host the bind address advertises
+/// ([`advertised_oauth_host`]).
+fn oauth_surface_is_routable(config: &TribalConfig) -> bool {
+    let bind_routable = config
+        .server
+        .bind_address
+        .as_deref()
+        .unwrap_or(DEFAULT_BIND_ADDRESS)
+        .parse::<SocketAddr>()
+        .is_ok_and(|addr| !advertised_oauth_host(addr).is_loopback());
+
+    let field_routable = |url: Option<&str>| match url.filter(|raw| !raw.is_empty()) {
+        Some(raw) => url_is_explicit_non_loopback(Some(raw)),
+        None => bind_routable,
+    };
+
+    field_routable(config.oauth.issuer_url.as_deref())
+        || field_routable(config.oauth.resource_url.as_deref())
+}
+
+/// Returns `true` when `value` is set and parses to a URL whose host is
+/// not a loopback address — the signal that the OAuth surface is
+/// advertised to remote clients.
+fn url_is_explicit_non_loopback(value: Option<&str>) -> bool {
+    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
+        return false;
+    };
+    let Ok(url) = Url::parse(raw) else {
+        return false;
+    };
+    match url.host() {
+        Some(Host::Ipv4(ip)) => !ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => !ip.is_loopback(),
+        Some(Host::Domain(domain)) => domain != "localhost",
+        None => false,
+    }
+}
+
+/// Required form of `oauth.issuer_url`.
+const ISSUER_ORIGIN_REQUIREMENT: &str = "must be an origin URL with no path, query, or fragment";
+
+/// Required form of `oauth.resource_url` (RFC 8707).
+const RESOURCE_FRAGMENT_REQUIREMENT: &str = "must not contain a fragment";
+
+/// Validates `oauth.issuer_url`: when set, it must parse and be an origin
+/// (no path, query, or fragment).
+///
+/// The authorisation-server metadata endpoints are appended to the issuer
+/// and served at absolute root paths, so a sub-path issuer would advertise
+/// endpoints the router does not serve. An unset field is admissible (the
+/// consumer derives it from the bind address).
+fn validate_issuer_url(value: Option<&str>, diags: &mut Diagnostics) {
+    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
+        return;
+    };
+    let field = ConfigPath::from_static("oauth.issuer_url");
+    let Ok(url) = Url::parse(raw) else {
+        diags.push(ValidationError::UrlMalformed {
+            field,
+            value: raw.to_owned(),
+        });
+        return;
+    };
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        diags.push(ValidationError::UrlUnsupportedForm {
+            field,
+            value: raw.to_owned(),
+            requirement: ISSUER_ORIGIN_REQUIREMENT,
+        });
+    }
+}
+
+/// Validates `oauth.resource_url`: when set, it must parse and carry no
+/// fragment (RFC 8707 forbids a fragment on a resource indicator). An
+/// unset field is admissible (the consumer derives it from the bind
+/// address).
+fn validate_resource_url(value: Option<&str>, diags: &mut Diagnostics) {
+    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
+        return;
+    };
+    let field = ConfigPath::from_static("oauth.resource_url");
+    let Ok(url) = Url::parse(raw) else {
+        diags.push(ValidationError::UrlMalformed {
+            field,
+            value: raw.to_owned(),
+        });
+        return;
+    };
+    if url.fragment().is_some() {
+        diags.push(ValidationError::UrlUnsupportedForm {
+            field,
+            value: raw.to_owned(),
+            requirement: RESOURCE_FRAGMENT_REQUIREMENT,
         });
     }
 }
@@ -489,7 +647,6 @@ mod tests {
     use tribal_domain::ProviderKind;
 
     use super::*;
-    use crate::DEFAULT_BIND_ADDRESS;
 
     fn valid_config() -> TribalConfig {
         TribalConfig::minimum_valid("postgres://localhost/tribal")
@@ -572,6 +729,83 @@ mod tests {
             ValidationError::BindAddressMalformed { value }
                 if value == "not-an-address",
         )));
+    }
+
+    #[test]
+    fn test_validate_rejects_dcr_with_routable_resource_url() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
+        config.oauth.dcr_enabled = true;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::NonLoopbackDcrConflict,
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_dcr_with_routable_issuer_url() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.oauth.issuer_url = Some("https://auth.example.com".into());
+        config.oauth.dcr_enabled = true;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::NonLoopbackDcrConflict,
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_dcr_with_loopback_resource_url() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.oauth.resource_url = Some("http://127.0.0.1:8725/mcp".into());
+        config.oauth.dcr_enabled = true;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_dcr_on_wildcard_bind_with_unset_urls() {
+        // A wildcard bind with unset issuer/resource URLs derives a
+        // loopback audience, so DCR stays allowed regardless of the bind
+        // — the shape of a container bound to 0.0.0.0 behind a loopback
+        // port mapping. A routable advertised URL is refused above.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("0.0.0.0:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.oauth.dcr_enabled = true;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_dcr_on_specific_routable_bind_with_unset_urls() {
+        // A specific (non-wildcard) routable bind with unset URLs derives a
+        // routable issuer/resource, so the unauthenticated /register would
+        // be reachable: it must be refused even though no URL is set.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("10.0.0.5:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.oauth.dcr_enabled = true;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::NonLoopbackDcrConflict,
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_routable_resource_without_dcr() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
+        config.oauth.dcr_enabled = false;
+        assert!(validate(&config).is_ok());
     }
 
     #[test]
@@ -760,6 +994,141 @@ mod tests {
     fn test_validate_accepts_token_ttl_at_max() {
         let mut config = valid_config();
         config.auth.token_ttl_hours = MAX_TTL_HOURS;
+        assert!(validate(&config).is_ok());
+    }
+
+    // -- oauth -------------------------------------------------------------
+
+    #[test]
+    fn test_validate_rejects_zero_oauth_access_ttl() {
+        let mut config = valid_config();
+        config.oauth.access_token_ttl_hours = 0;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min: 1, .. }
+                if field.as_str() == "oauth.access_token_ttl_hours",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_excessive_oauth_access_ttl() {
+        let mut config = valid_config();
+        config.oauth.access_token_ttl_hours = MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS + 1;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::AboveMax { field, limit, .. }
+                if field.as_str() == "oauth.access_token_ttl_hours"
+                    && *limit == MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_oauth_access_ttl_at_max() {
+        let mut config = valid_config();
+        config.oauth.access_token_ttl_hours = MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_oauth_code_ttl_below_min() {
+        let mut config = valid_config();
+        config.oauth.authorization_code_ttl_seconds = MIN_AUTHORIZATION_CODE_TTL_SECONDS - 1;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::BelowMin { field, min, .. }
+                if field.as_str() == "oauth.authorization_code_ttl_seconds"
+                    && *min == MIN_AUTHORIZATION_CODE_TTL_SECONDS,
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_oauth_code_ttl_above_max() {
+        let mut config = valid_config();
+        config.oauth.authorization_code_ttl_seconds = MAX_AUTHORIZATION_CODE_TTL_SECONDS + 1;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::AboveMax { field, limit, .. }
+                if field.as_str() == "oauth.authorization_code_ttl_seconds"
+                    && *limit == MAX_AUTHORIZATION_CODE_TTL_SECONDS,
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_oauth_code_ttl_at_bounds() {
+        let mut config = valid_config();
+        config.oauth.authorization_code_ttl_seconds = MIN_AUTHORIZATION_CODE_TTL_SECONDS;
+        assert!(validate(&config).is_ok());
+        config.oauth.authorization_code_ttl_seconds = MAX_AUTHORIZATION_CODE_TTL_SECONDS;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_oauth_issuer_url() {
+        let mut config = valid_config();
+        config.oauth.issuer_url = Some("not a url".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "oauth.issuer_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_oauth_resource_url() {
+        let mut config = valid_config();
+        config.oauth.resource_url = Some(":::not-a-url".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "oauth.resource_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_oauth_issuer_with_path() {
+        let mut config = valid_config();
+        config.oauth.issuer_url = Some("https://auth.example.com/tribal".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlUnsupportedForm { field, .. }
+                if field.as_str() == "oauth.issuer_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_oauth_resource_with_fragment() {
+        let mut config = valid_config();
+        config.oauth.resource_url = Some("https://auth.example.com/mcp#frag".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlUnsupportedForm { field, .. }
+                if field.as_str() == "oauth.resource_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_valid_oauth_urls() {
+        let mut config = valid_config();
+        config.oauth.issuer_url = Some("https://auth.example.com".to_owned());
+        config.oauth.resource_url = Some("https://auth.example.com/mcp".to_owned());
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_unset_oauth_urls() {
+        // Unset URLs are admissible: the consumer derives them from the
+        // bind address at startup.
+        let mut config = valid_config();
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
         assert!(validate(&config).is_ok());
     }
 

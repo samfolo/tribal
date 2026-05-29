@@ -12,14 +12,22 @@ use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use transport_harness::{
     INITIALIZE_BODY, LIFECYCLE_FAR_FUTURE_MS, MINIMAL_INITIALIZE_BODY, McpTestClient,
-    TransportHandle, assert_tool_visibility, fresh_pool, seed_auth, seed_scoped_auth,
-    spawn_transport, test_app_state, test_client,
+    TEST_CANONICAL_RESOURCE, TransportHandle, assert_tool_visibility, fresh_pool, seed_auth,
+    seed_scoped_auth, spawn_transport, test_app_state, test_client,
 };
 use tribal::run_sse_transport;
-use tribal_config::{ServerConfig, SseConfig};
+use tribal_auth::oauth::OAuthRuntimeConfig;
+use tribal_config::{OAuthConfig, ServerConfig, SseConfig};
 use tribal_domain::Scope;
 use tribal_mcp::{AppState, HandlerConfig};
 use tribal_test_utils::serial_lock;
+use url::Url;
+
+fn test_oauth_runtime() -> Arc<OAuthRuntimeConfig> {
+    let issuer = Url::parse("http://127.0.0.1:8080").unwrap();
+    let resource = Url::parse(TEST_CANONICAL_RESOURCE).unwrap();
+    Arc::new(OAuthRuntimeConfig::build(&OAuthConfig::default(), &issuer, &resource).unwrap())
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -79,6 +87,7 @@ fn spawn_sse(
             run_sse_transport(
                 &state,
                 &cfg,
+                test_oauth_runtime(),
                 HandlerConfig::default(),
                 task_ct,
                 Some(listener),

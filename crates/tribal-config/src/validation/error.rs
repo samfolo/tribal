@@ -308,6 +308,18 @@ pub enum ValidationError {
     BindAddressStdioConflict,
     /// `server.bind_address` failed to parse as `<host>:<port>`.
     BindAddressMalformed { value: String },
+    /// A URL-bearing config field failed to parse as a URL.
+    UrlMalformed { field: ConfigPath, value: String },
+    /// A URL-bearing config field parsed but does not meet a structural
+    /// requirement this server supports (for example an origin-only
+    /// issuer, or a fragment-free resource indicator).
+    UrlUnsupportedForm {
+        field: ConfigPath,
+        value: String,
+        requirement: &'static str,
+    },
+    /// `oauth.dcr_enabled` is set with a non-loopback `server.bind_address`.
+    NonLoopbackDcrConflict,
     /// `embedding.provider` is a provider that does not support
     /// embedding.  Renders the provider name in both clauses for clarity.
     EmbeddingProviderUnsupported { provider: ProviderKind },
@@ -403,6 +415,26 @@ impl fmt::Display for ValidationError {
             Self::BindAddressMalformed { value } => write!(
                 f,
                 "server.bind_address is not a valid socket address: {value}"
+            ),
+
+            Self::UrlMalformed { field, value } => {
+                write!(f, "{field} is not a valid URL: {value}")
+            }
+
+            Self::UrlUnsupportedForm {
+                field,
+                value,
+                requirement,
+            } => {
+                write!(f, "{field} {requirement}: {value}")
+            }
+
+            Self::NonLoopbackDcrConflict => write!(
+                f,
+                "oauth.dcr_enabled is not supported with a non-loopback \
+                 oauth.issuer_url or oauth.resource_url: dynamic client \
+                 registration is loopback-only, so set oauth.dcr_enabled = \
+                 false to use static tokens for a networked deployment",
             ),
 
             Self::EmbeddingProviderUnsupported { provider } => write!(
@@ -833,6 +865,44 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "server.bind_address is not a valid socket address: not-an-address",
+        );
+    }
+
+    #[test]
+    fn test_display_url_malformed() {
+        let err = ValidationError::UrlMalformed {
+            field: ConfigPath::from_static("oauth.issuer_url"),
+            value: "not a url".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "oauth.issuer_url is not a valid URL: not a url",
+        );
+    }
+
+    #[test]
+    fn test_display_url_unsupported_form() {
+        let err = ValidationError::UrlUnsupportedForm {
+            field: ConfigPath::from_static("oauth.issuer_url"),
+            value: "https://host/tribal".into(),
+            requirement: "must be an origin URL with no path, query, or fragment",
+        };
+        assert_eq!(
+            err.to_string(),
+            "oauth.issuer_url must be an origin URL with no path, query, or fragment: \
+             https://host/tribal",
+        );
+    }
+
+    #[test]
+    fn test_display_non_loopback_dcr_conflict() {
+        let err = ValidationError::NonLoopbackDcrConflict;
+        assert_eq!(
+            err.to_string(),
+            "oauth.dcr_enabled is not supported with a non-loopback \
+             oauth.issuer_url or oauth.resource_url: dynamic client \
+             registration is loopback-only, so set oauth.dcr_enabled = \
+             false to use static tokens for a networked deployment",
         );
     }
 

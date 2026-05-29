@@ -5294,6 +5294,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "tribal-auth",
  "tribal-common",
  "tribal-config",
  "tribal-db",
@@ -5304,8 +5305,38 @@ dependencies = [
  "tribal-test-utils",
  "tribal-ui",
  "tribal-worker",
+ "url",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "tribal-auth"
+version = "0.2.4"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "http",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
+ "sqlx",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
+ "tribal-common",
+ "tribal-config",
+ "tribal-db",
+ "tribal-domain",
+ "tribal-test-utils",
+ "typed-builder",
+ "url",
 ]
 
 [[package]]
@@ -5332,6 +5363,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tribal-domain",
+ "url",
 ]
 
 [[package]]
@@ -5382,6 +5414,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tribal",
+ "tribal-auth",
  "tribal-common",
  "tribal-config",
  "tribal-db",
@@ -5390,6 +5423,7 @@ dependencies = [
  "tribal-mcp",
  "tribal-telemetry",
  "tribal-test-utils",
+ "url",
  "wiremock",
 ]
 
@@ -5431,6 +5465,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "tribal-auth",
  "tribal-common",
  "tribal-config",
  "tribal-db",

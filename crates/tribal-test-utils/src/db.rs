@@ -39,7 +39,7 @@ use crate::TestDbError;
 /// Shared test database context: a pgvector container and connection pool.
 ///
 /// Created once per test binary via [`test_context`]. The container is
-/// started with the `ankane/pgvector` image, migrations are run, and a
+/// started with the `pgvector/pgvector` image, migrations are run, and a
 /// connection pool is established.
 ///
 /// Individual tests call [`begin_test`](TestContext::begin_test) to obtain
@@ -82,7 +82,7 @@ impl TestContext {
                 .with_times(2),
         );
 
-        let container = GenericImage::new("ankane/pgvector", "latest")
+        let container = GenericImage::new("pgvector/pgvector", "pg17")
             .with_exposed_port(5432.tcp())
             .with_wait_for(ready_condition)
             .with_env_var("POSTGRES_DB", "tribal_test")
@@ -91,7 +91,7 @@ impl TestContext {
             .start()
             .await
             .map_err(|source| TestDbError::ContainerStart {
-                context: "starting ankane/pgvector container".to_owned(),
+                context: "starting pgvector/pgvector container".to_owned(),
                 source,
             })?;
 

@@ -305,6 +305,15 @@ pub enum AppError {
         #[source]
         source: CredentialsReadError,
     },
+
+    /// A configured value failed an invariant that the loader's
+    /// validation step does not enforce (e.g. a URL field that parses
+    /// only in the OAuth runtime layer).
+    #[error("configuration invariant violated: {reason}")]
+    ConfigInvariant {
+        /// Description of the violated invariant.
+        reason: String,
+    },
 }
 
 impl AppError {

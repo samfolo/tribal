@@ -44,6 +44,11 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
 
     let expires_at = compute_expires_at(TtlInput::from_pair(ttl, config.auth.token_ttl_hours))?;
     let principal_key = principal.unwrap_or_else(|| LOCAL_PRINCIPAL_KEY.to_owned());
+    // The audience must be byte-identical to the value the running
+    // server compares against, so it is derived from the same resolver
+    // (server bind address plus any oauth.resource_url override) the
+    // serve path uses, not from oauth.resource_url alone.
+    let audience = crate::startup::resolve_oauth_runtime(&config)?.canonical_resource;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -55,6 +60,7 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
     rt.block_on(run_async(
         &config.database,
         &principal_key,
+        &audience,
         expires_at,
         &mut stdout,
         &mut stderr,
@@ -77,6 +83,7 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
 pub async fn run_async(
     db_config: &DatabaseConfig,
     principal_key: &str,
+    audience: &str,
     expires_at: DateTime<Utc>,
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
@@ -105,6 +112,7 @@ pub async fn run_async(
         .token_hash(token_hash)
         .principal_id(principal.id())
         .scopes(full_access_scopes())
+        .audience(audience.to_owned())
         .expires_at(expires_at)
         .build();
 
