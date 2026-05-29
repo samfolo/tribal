@@ -252,9 +252,13 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     // Fail fast at load time on a malformed or unsupported issuer/resource
-    // URL, rather than only when the runtime config is built at serve.
+    // URL, rather than only when the runtime config is built at serve. The
+    // advertised MCP URL is the third routability input, so it carries the
+    // same load-time guard: a malformed value must not silently classify
+    // as loopback and reopen DCR's `/register`.
     validate_issuer_url(config.oauth.issuer_url.as_deref(), diags);
     validate_resource_url(config.oauth.resource_url.as_deref(), diags);
+    validate_public_mcp_url(config.server.public_mcp_url.as_deref(), diags);
 
     // /register is unauthenticated, so DCR is refused when the OAuth
     // surface is advertised on a routable host. The effective host is the
@@ -319,7 +323,12 @@ fn url_is_explicit_non_loopback(value: Option<&str>) -> bool {
         return false;
     };
     let Ok(url) = Url::parse(raw) else {
-        return false;
+        // Fail closed: a present-but-unparseable value is treated as
+        // non-loopback so a malformed advertised URL refuses DCR rather
+        // than leaving open registration reachable. Load-time validation
+        // rejects such a value first; this guards the callers that do not
+        // validate (e.g. `mcp-config`).
+        return true;
     };
     match url.host() {
         Some(Host::Ipv4(ip)) => !ip.is_loopback(),
@@ -384,6 +393,25 @@ fn validate_resource_url(value: Option<&str>, diags: &mut Diagnostics) {
             field,
             value: raw.to_owned(),
             requirement: RESOURCE_FRAGMENT_REQUIREMENT,
+        });
+    }
+}
+
+/// Validates `server.public_mcp_url`: when set, it must parse as a URL.
+///
+/// The advertised endpoint is one of the routability inputs and is also
+/// emitted verbatim into the wire-up snippet, so a malformed value is
+/// rejected at load rather than silently classifying as loopback (which
+/// would reopen DCR's unauthenticated `/register`) or shipping a broken
+/// URL to the client.
+fn validate_public_mcp_url(value: Option<&str>, diags: &mut Diagnostics) {
+    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
+        return;
+    };
+    if Url::parse(raw).is_err() {
+        diags.push(ValidationError::UrlMalformed {
+            field: ConfigPath::from_static("server.public_mcp_url"),
+            value: raw.to_owned(),
         });
     }
 }
@@ -868,6 +896,32 @@ mod tests {
         config.oauth.resource_url = None;
         config.server.public_mcp_url = Some("http://127.0.0.1:8725/mcp".into());
         assert!(!oauth_surface_is_routable(&config));
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_public_mcp_url() {
+        let mut config = valid_config();
+        config.server.public_mcp_url = Some("not a url".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "server.public_mcp_url",
+        )));
+    }
+
+    #[test]
+    fn test_oauth_surface_routable_on_malformed_public_mcp_url() {
+        // Defence-in-depth for non-validating callers: a present-but-
+        // unparseable advertised URL classifies as routable so DCR is
+        // refused rather than left open on a malformed value.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.server.public_mcp_url = Some("not a url".into());
+        assert!(oauth_surface_is_routable(&config));
     }
 
     #[test]
