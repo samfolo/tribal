@@ -112,7 +112,10 @@ impl AuthorizeQuery {
                 "code_challenge_method",
             )?,
             state: self.state,
-            scope: self.scope,
+            // A blank or whitespace-only scope is treated as omitted, so it
+            // falls back to the client's registered scope rather than being
+            // recorded as an explicit empty scope.
+            scope: self.scope.filter(|raw| !raw.trim().is_empty()),
             resource: self.resource,
         })
     }
