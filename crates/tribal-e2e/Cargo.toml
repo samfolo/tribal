@@ -22,7 +22,7 @@ wiremock.workspace = true
 
 tribal = { workspace = true, features = ["test-helpers"] }
 
-tribal-auth.workspace = true
+tribal-auth = { workspace = true, features = ["test-helpers"] }
 tribal-common.workspace = true
 tribal-config.workspace = true
 tribal-db.workspace = true
