@@ -6,10 +6,10 @@
 
 use std::net::SocketAddr;
 
-use url::Url;
+use url::{Host, Url};
 
 use crate::{
-    DEFAULT_BIND_ADDRESS, MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
+    MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
     sections::{
         MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
@@ -256,22 +256,38 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
     validate_issuer_url(config.oauth.issuer_url.as_deref(), diags);
     validate_resource_url(config.oauth.resource_url.as_deref(), diags);
 
-    // /register is unauthenticated; the OAuth surface is loopback-only in
-    // v1, so a routable network bind with DCR enabled is refused. The raw
-    // bind is checked, so the 0.0.0.0 / [::] wildcards are caught.
+    // /register is unauthenticated, so DCR is refused when the OAuth
+    // surface is advertised on a routable host. An explicitly non-loopback
+    // issuer or resource URL is the reliable "remote clients intended"
+    // signal: an unset URL derives a loopback address (wildcard binds are
+    // rewritten to 127.0.0.1 at runtime), so a container bound to 0.0.0.0
+    // behind a loopback port mapping is correctly allowed.
     if matches!(
         config.server.transport,
         TransportKind::Http | TransportKind::Sse
     ) && config.oauth.dcr_enabled
-        && let Ok(addr) = config
-            .server
-            .bind_address
-            .as_deref()
-            .unwrap_or(DEFAULT_BIND_ADDRESS)
-            .parse::<SocketAddr>()
-        && !addr.ip().is_loopback()
+        && (url_is_explicit_non_loopback(config.oauth.issuer_url.as_deref())
+            || url_is_explicit_non_loopback(config.oauth.resource_url.as_deref()))
     {
         diags.push(ValidationError::NonLoopbackDcrConflict);
+    }
+}
+
+/// Returns `true` when `value` is set and parses to a URL whose host is
+/// not a loopback address — the signal that the OAuth surface is
+/// advertised to remote clients.
+fn url_is_explicit_non_loopback(value: Option<&str>) -> bool {
+    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
+        return false;
+    };
+    let Ok(url) = Url::parse(raw) else {
+        return false;
+    };
+    match url.host() {
+        Some(Host::Ipv4(ip)) => !ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => !ip.is_loopback(),
+        Some(Host::Domain(domain)) => domain != "localhost",
+        None => false,
     }
 }
 
@@ -693,10 +709,10 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_dcr_on_non_loopback_bind() {
+    fn test_validate_rejects_dcr_with_routable_resource_url() {
         let mut config = valid_config();
         config.server.transport = TransportKind::Http;
-        config.server.bind_address = Some("0.0.0.0:8080".into());
+        config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
         config.oauth.dcr_enabled = true;
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
@@ -706,19 +722,47 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_accepts_dcr_on_loopback_bind() {
+    fn test_validate_rejects_dcr_with_routable_issuer_url() {
         let mut config = valid_config();
         config.server.transport = TransportKind::Http;
-        config.server.bind_address = Some("127.0.0.1:8080".into());
+        config.oauth.issuer_url = Some("https://auth.example.com".into());
+        config.oauth.dcr_enabled = true;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::NonLoopbackDcrConflict,
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_dcr_with_loopback_resource_url() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.oauth.resource_url = Some("http://127.0.0.1:8725/mcp".into());
         config.oauth.dcr_enabled = true;
         assert!(validate(&config).is_ok());
     }
 
     #[test]
-    fn test_validate_accepts_non_loopback_bind_without_dcr() {
+    fn test_validate_accepts_dcr_on_wildcard_bind_with_unset_urls() {
+        // A wildcard bind with unset issuer/resource URLs derives a
+        // loopback audience, so DCR stays allowed regardless of the bind
+        // — the shape of a container bound to 0.0.0.0 behind a loopback
+        // port mapping. A routable advertised URL is refused above.
         let mut config = valid_config();
         config.server.transport = TransportKind::Http;
-        config.server.bind_address = Some("0.0.0.0:8080".into());
+        config.server.bind_address = Some("0.0.0.0:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.oauth.dcr_enabled = true;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_routable_resource_without_dcr() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
         config.oauth.dcr_enabled = false;
         assert!(validate(&config).is_ok());
     }

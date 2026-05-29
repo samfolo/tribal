@@ -432,9 +432,9 @@ impl fmt::Display for ValidationError {
             Self::NonLoopbackDcrConflict => write!(
                 f,
                 "oauth.dcr_enabled is not supported with a non-loopback \
-                 server.bind_address: bind to a loopback address for dynamic \
-                 client registration, or set oauth.dcr_enabled = false to use \
-                 static tokens over the network",
+                 oauth.issuer_url or oauth.resource_url: dynamic client \
+                 registration is loopback-only, so set oauth.dcr_enabled = \
+                 false to use static tokens for a networked deployment",
             ),
 
             Self::EmbeddingProviderUnsupported { provider } => write!(
@@ -900,9 +900,9 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "oauth.dcr_enabled is not supported with a non-loopback \
-             server.bind_address: bind to a loopback address for dynamic \
-             client registration, or set oauth.dcr_enabled = false to use \
-             static tokens over the network",
+             oauth.issuer_url or oauth.resource_url: dynamic client \
+             registration is loopback-only, so set oauth.dcr_enabled = \
+             false to use static tokens for a networked deployment",
         );
     }
 

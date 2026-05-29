@@ -83,10 +83,14 @@ pub struct AuthorizeQuery {
 }
 
 /// An authorisation request whose required parameters are all present.
+///
+/// `redirect_uri` stays optional: RFC 6749 §3.1.2.3 lets a client omit it
+/// when exactly one redirect URI is registered, so it is resolved against
+/// the registry rather than required here.
 struct ValidatedAuthorizeQuery {
     response_type: String,
     client_id: String,
-    redirect_uri: String,
+    redirect_uri: Option<String>,
     code_challenge: String,
     code_challenge_method: String,
     state: Option<String>,
@@ -95,13 +99,13 @@ struct ValidatedAuthorizeQuery {
 }
 
 impl AuthorizeQuery {
-    /// Validates that every required parameter is present, mapping an
-    /// absent one to an `invalid_request` error.
+    /// Validates that every unconditionally-required parameter is present,
+    /// mapping an absent one to an `invalid_request` error.
     fn validate(self) -> Result<ValidatedAuthorizeQuery, OAuthError> {
         Ok(ValidatedAuthorizeQuery {
             response_type: require_param(self.response_type, "response_type")?,
             client_id: require_param(self.client_id, "client_id")?,
-            redirect_uri: require_param(self.redirect_uri, "redirect_uri")?,
+            redirect_uri: self.redirect_uri,
             code_challenge: require_param(self.code_challenge, "code_challenge")?,
             code_challenge_method: require_param(
                 self.code_challenge_method,
@@ -214,25 +218,47 @@ async fn validate_pre_redirect(
 
     let client = resolve_client(state, &query.client_id).await?;
     let registered_uris = parse_registered_redirect_uris(&client)?;
-    let redirect_uri = Url::parse(&query.redirect_uri).map_err(|_| OAuthError::InvalidRequest {
-        reason: InvalidRequestReason::MalformedRedirectUri {
-            value: query.redirect_uri.clone(),
-        },
-    })?;
-
-    if !registered_uris
-        .iter()
-        .any(|registered| matches_redirect_uri(registered, &redirect_uri))
-    {
-        return Err(OAuthError::InvalidRedirectUri {
-            reason: RedirectUriRejection::NoRegisteredMatch,
-        });
-    }
+    let redirect_uri = resolve_redirect_uri(query.redirect_uri.as_deref(), &registered_uris)?;
 
     Ok(ResolvedClient {
         redirect_uri,
         registered_scope: client.scope().map(str::to_owned),
     })
+}
+
+/// Resolves the request's redirect URI against the client's registered set.
+///
+/// A provided value must parse and match a registered URI. RFC 6749
+/// §3.1.2.3 permits omitting `redirect_uri` only when exactly one URI is
+/// registered; with several registered, the request must name one.
+fn resolve_redirect_uri(requested: Option<&str>, registered: &[Url]) -> Result<Url, OAuthError> {
+    match requested {
+        Some(raw) => {
+            let parsed = Url::parse(raw).map_err(|_| OAuthError::InvalidRequest {
+                reason: InvalidRequestReason::MalformedRedirectUri {
+                    value: raw.to_owned(),
+                },
+            })?;
+            if registered
+                .iter()
+                .any(|candidate| matches_redirect_uri(candidate, &parsed))
+            {
+                Ok(parsed)
+            } else {
+                Err(OAuthError::InvalidRedirectUri {
+                    reason: RedirectUriRejection::NoRegisteredMatch,
+                })
+            }
+        }
+        None => match registered {
+            [single] => Ok(single.clone()),
+            _ => Err(OAuthError::InvalidRequest {
+                reason: InvalidRequestReason::MissingParameter {
+                    parameter: "redirect_uri",
+                },
+            }),
+        },
+    }
 }
 
 /// Resolves a registered client by identifier.
@@ -385,7 +411,15 @@ async fn issue_code(
         .client_id(query.client_id.clone())
         .redirect_uri(resolved.redirect_uri.as_str().to_owned())
         .code_challenge(challenge.as_str().to_owned())
-        .scope(query.scope.clone())
+        // Fall back to the client's registered scope when the request
+        // omits one, so /token mints within the registration rather than
+        // defaulting to the broader DEFAULT_GRANT_SCOPE.
+        .scope(
+            query
+                .scope
+                .clone()
+                .or_else(|| resolved.registered_scope.clone()),
+        )
         .resource(Some(canonical))
         .principal_id(principal_id)
         .expires_at(expires_at)
