@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use sqlx::PgPool;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{
     authenticator::Authenticator,
@@ -117,7 +117,10 @@ pub async fn require_bearer_auth(
     let challenge = state.challenge.as_ref();
 
     let Some(token) = extract_bearer_token(&request) else {
-        warn!(
+        // Routine on this path: health probes and the OAuth discovery
+        // challenge both arrive unauthenticated. Log at DEBUG so they do
+        // not flood WARN.
+        debug!(
             auth_failure_reason = AUTH_FAILURE_REASON_MISSING,
             "auth rejected: missing bearer token",
         );
