@@ -838,6 +838,91 @@ async fn test_authorize_rejects_duplicate_parameter() {
     assert_eq!(body["error"], "invalid_request");
 }
 
+#[tokio::test]
+async fn test_token_omitted_scope_falls_back_to_registration() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // Register a client whose grant is narrower than the default.
+    let register = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "scope": "tribal.knowledge:read",
+        }))
+        .await;
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
+    let client_id = register["client_id"].as_str().unwrap().to_owned();
+
+    // authorize_code omits the scope parameter; the minted token must carry
+    // the registered scope, not the broader DEFAULT_GRANT_SCOPE.
+    let code = client.authorize_code(&client_id).await;
+    let response = client
+        .post_token(token_form(&code, &client_id, VERIFIER, None))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(token["scope"], "tribal.knowledge:read");
+}
+
+#[tokio::test]
+async fn test_authorize_omits_redirect_uri_with_single_registered() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // A client with exactly one registered redirect URI may omit it
+    // (RFC 6749 §3.1.2.3); the single registered URI is used.
+    let (client_id, _) = client.register("none").await;
+    let query = format!(
+        "response_type=code&client_id={client_id}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256&resource={RESOURCE_ENCODED}",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(read_body(response).await).unwrap();
+    let target = extract_approve_href(&html);
+    assert!(
+        target.starts_with(REDIRECT_URI),
+        "the single registered redirect URI is used: {target}",
+    );
+}
+
+#[tokio::test]
+async fn test_authorize_rejects_omitted_redirect_uri_with_multiple_registered() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // With several registered redirect URIs, the request must name one.
+    let register = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": ["http://127.0.0.1:53076/cb", "http://127.0.0.1:53077/cb"],
+            "token_endpoint_auth_method": "none",
+        }))
+        .await;
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
+    let client_id = register["client_id"].as_str().unwrap().to_owned();
+
+    let query = format!(
+        "response_type=code&client_id={client_id}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256&resource={RESOURCE_ENCODED}",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(body["error"], "invalid_request");
+}
+
 // ---------------------------------------------------------------------------
 // Adversarial cases
 // ---------------------------------------------------------------------------
