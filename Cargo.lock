@@ -5264,7 +5264,6 @@ version = "0.2.4"
 dependencies = [
  "anstream 1.0.0",
  "axum",
- "base64 0.22.1",
  "bytes",
  "chrono",
  "clap",
@@ -5278,7 +5277,6 @@ dependencies = [
  "notify-debouncer-mini",
  "path-clean",
  "pin-project-lite",
- "rand 0.10.1",
  "reqwest 0.13.2",
  "rmcp",
  "serde",

@@ -15,38 +15,31 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use base64::{
-    Engine,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::Utc;
-use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sqlx::Acquire;
 use subtle::ConstantTimeEq;
 use tribal_common::sha256_hex;
 use tribal_db::{
-    AuthTokenRepository, NewAuthToken, OauthAuthorizationCodeRepository, OauthClientRepository,
+    AuthTokenRepository, OauthAuthorizationCodeRepository, OauthClientRepository,
     PgAuthTokenRepository, PgOauthAuthorizationCodeRepository, PgOauthClientRepository,
 };
 use tribal_domain::TokenEndpointAuthMethod;
 
-use crate::oauth::{
-    common::GRANT_TYPE_AUTHORIZATION_CODE,
-    config::{OAuthRuntimeConfig, canonicalise_resource_url},
-    error::{
-        InternalOperation, InvalidClientReason, InvalidGrantReason, InvalidRequestReason,
-        InvalidTargetReason, OAuthError, require_param,
+use crate::{
+    issue_token,
+    oauth::{
+        common::GRANT_TYPE_AUTHORIZATION_CODE,
+        config::{OAuthRuntimeConfig, canonicalise_resource_url},
+        error::{
+            InternalOperation, InvalidClientReason, InvalidGrantReason, InvalidRequestReason,
+            InvalidTargetReason, OAuthError, require_param,
+        },
+        pkce::{CodeChallenge, CodeVerifier},
+        scope::{DEFAULT_GRANT_SCOPE, parse_scope_list},
     },
-    pkce::{CodeChallenge, CodeVerifier},
-    scope::{DEFAULT_GRANT_SCOPE, parse_scope_list},
 };
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const RANDOM_TOKEN_BYTE_LENGTH: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Request and response
@@ -324,8 +317,6 @@ async fn exchange(
 
     let scopes = parse_scope_list(&scope)?;
 
-    let raw_token = generate_random_token();
-    let token_hash = sha256_hex(&raw_token);
     let expires_at = now
         + chrono::Duration::from_std(state.runtime.access_token_ttl).map_err(|err| {
             OAuthError::Internal {
@@ -334,22 +325,22 @@ async fn exchange(
             }
         })?;
 
-    let new_token = NewAuthToken::builder()
-        .token_hash(token_hash)
-        .principal_id(code.principal_id())
-        .scopes(scopes)
-        .audience(state.runtime.canonical_resource.clone())
-        .expires_at(expires_at)
-        .build();
-
-    state
-        .auth_token_repo
-        .insert(&mut tx, &new_token)
-        .await
-        .map_err(|err| OAuthError::Internal {
-            operation: InternalOperation::InsertAccessToken,
-            source: Some(Box::new(err)),
-        })?;
+    // Issue through the shared primitive so the /token plane and the
+    // bearer plane mint identically; the injected repository preserves
+    // the handler's insert-failure test seam.
+    let access_token = issue_token(
+        &mut tx,
+        state.auth_token_repo.as_ref(),
+        code.principal_id(),
+        scopes,
+        state.runtime.canonical_resource.clone(),
+        expires_at,
+    )
+    .await
+    .map_err(|err| OAuthError::Internal {
+        operation: InternalOperation::InsertAccessToken,
+        source: Some(Box::new(err)),
+    })?;
 
     tx.commit().await.map_err(|err| OAuthError::Internal {
         operation: InternalOperation::CommitTransaction,
@@ -359,7 +350,7 @@ async fn exchange(
     let expires_in = i64::try_from(state.runtime.access_token_ttl.as_secs()).unwrap_or(i64::MAX);
 
     Ok(TokenResponse {
-        access_token: raw_token,
+        access_token,
         token_type: "Bearer",
         expires_in,
         scope,
@@ -475,12 +466,6 @@ fn verify_client_secret(
             }
         }
     }
-}
-
-fn generate_random_token() -> String {
-    let mut bytes = [0u8; RANDOM_TOKEN_BYTE_LENGTH];
-    rand::rng().fill(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 #[cfg(test)]

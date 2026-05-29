@@ -13,6 +13,7 @@
 mod authenticator;
 mod context;
 mod error;
+mod issuance;
 mod middleware;
 pub mod oauth;
 mod principal;
@@ -24,6 +25,7 @@ pub use error::{
     AuthError, DISPLAY_INVALID_TOKEN, DISPLAY_MISSING_TOKEN, DISPLAY_TOKEN_EXPIRED,
     DISPLAY_TOKEN_REVOKED,
 };
+pub use issuance::issue_token;
 pub use middleware::{AuthMiddlewareState, require_bearer_auth};
 pub use principal::AuthenticatedPrincipal;
 pub use strategy::TransportAuthStrategy;
