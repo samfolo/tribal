@@ -38,7 +38,7 @@ pub use paths::{
 pub use redact::redact_secrets;
 pub use render::{ConfigPersistence, render_minimal_config, render_persisted_config};
 pub use sections::{
-    Auth, AuthConfig, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, advertised_oauth_host,
+    Auth, AuthConfig, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX,
     CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX, CREDENTIALS_WRITE_FAILED_PREFIX,
     CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials, CredentialsPermissions, CredentialsReadError,
     CredentialsWriteError, DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,
@@ -51,7 +51,8 @@ pub use sections::{
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     MIN_AUTHORIZATION_CODE_TTL_SECONDS, OAuthConfig, PromptSource, PromptsConfig,
     ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig,
-    TransportKind, TribalConfig, VERSION, WorkerConfig, read_credentials, write_credentials,
+    TransportKind, TribalConfig, VERSION, WorkerConfig, advertised_oauth_host, read_credentials,
+    write_credentials,
 };
 pub use validation::{
     ComputedFloor, ConfigPath, Diagnostics, Endpoint, FieldValue, Inclusion, NumericRange,
