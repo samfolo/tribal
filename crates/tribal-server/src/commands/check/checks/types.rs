@@ -156,16 +156,16 @@ pub(in crate::commands::check) enum CheckDetail {
         transport: TokenTransport,
         reason: TokenFailureReason,
     },
-    /// No token resolvable from any source, but the database has at
-    /// least one active token.
-    TokenAggregateWarn,
-    /// No token resolvable from any source and the database has no
-    /// active tokens.
-    NoActiveTokens,
-    /// The aggregate any-active query failed at the infrastructure layer.
-    TokenAggregateQueryFailed { error: String },
-    /// `credentials.json` exists but is unreadable; absent files fall
-    /// through to the aggregate fallback instead.
+    /// Network transport on a loopback surface with no static token.
+    /// Network clients authenticate via OAuth, so a static token is
+    /// optional and its absence is not a finding.
+    TokenSkippedLoopbackOauth,
+    /// Network transport on a routable surface with no static token.
+    /// Open registration is refused there, so an absent static token
+    /// leaves clients with no authentication path.
+    TokenMissingRoutable,
+    /// `credentials.json` exists but is unreadable; an absent file
+    /// instead resolves by deployment topology.
     CredentialsUnreadable { error: String },
     /// Stdio transport has no advertised URL — nothing to probe.
     AdvertisedUrlSkippedStdio,
@@ -285,11 +285,10 @@ impl CheckDetail {
             | Self::ProjectCascadeMissing
             | Self::ProjectQueryFailed { .. } => CheckName::ProjectResolution,
             Self::TokenSkippedStdio
+            | Self::TokenSkippedLoopbackOauth
+            | Self::TokenMissingRoutable
             | Self::TokenVerified { .. }
             | Self::TokenVerificationFailed { .. }
-            | Self::TokenAggregateWarn
-            | Self::NoActiveTokens
-            | Self::TokenAggregateQueryFailed { .. }
             | Self::CredentialsUnreadable { .. } => CheckName::ValidTokenExists,
             Self::AdvertisedUrlSkippedStdio
             | Self::AdvertisedUrlReachable { .. }
@@ -366,14 +365,15 @@ impl CheckDetail {
                     TokenTransport::Http => base,
                 }
             }
-            Self::TokenAggregateWarn => {
-                "no specific token resolved; database contains at least one active token".into()
+            Self::TokenSkippedLoopbackOauth => {
+                "no static token configured; network clients authenticate via OAuth on this \
+                 loopback deployment, so a static token is not required"
+                    .into()
             }
-            Self::NoActiveTokens => {
-                "no token resolvable and no active tokens exist in the database".into()
-            }
-            Self::TokenAggregateQueryFailed { error } => {
-                format!("token aggregate check failed: {error}")
+            Self::TokenMissingRoutable => {
+                "no static token configured and this deployment is reachable beyond loopback, \
+                 so open registration is refused; clients have no authentication path"
+                    .into()
             }
             Self::CredentialsUnreadable { error } => {
                 format!("credentials.json is present but unreadable: {error}")
