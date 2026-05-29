@@ -176,11 +176,8 @@ fn map_oauth_client_row(r: &sqlx::postgres::PgRow) -> OauthClient {
     let auth_method = TokenEndpointAuthMethod::parse(&auth_method_str)
         .unwrap_or_else(|| panic!("{EXPECT_VALID_AUTH_METHOD}: {auth_method_str:?}"));
 
-    let application_type: Option<ApplicationType> = r
-        .try_get::<Option<String>, _>("application_type")
-        .ok()
-        .flatten()
-        .map(|s| {
+    let application_type: Option<ApplicationType> =
+        r.get::<Option<String>, _>("application_type").map(|s| {
             ApplicationType::parse(&s)
                 .unwrap_or_else(|| panic!("{EXPECT_VALID_APPLICATION_TYPE}: {s:?}"))
         });

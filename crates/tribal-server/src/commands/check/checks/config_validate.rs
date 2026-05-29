@@ -60,6 +60,7 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         | ValidationError::EmbeddingProviderUnsupported { .. }
         | ValidationError::UrlMalformed { .. }
         | ValidationError::UrlUnsupportedForm { .. }
+        | ValidationError::NonLoopbackDcrConflict
         | ValidationError::TelemetryFileExportRequiresEnabled => None,
     }
 }

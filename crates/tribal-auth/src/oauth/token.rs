@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::{
     Form, Json,
-    extract::State,
+    extract::{State, rejection::FormRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -163,12 +163,22 @@ impl TokenState {
 pub async fn handle_token(
     State(state): State<TokenState>,
     headers: HeaderMap,
-    Form(req): Form<TokenRequest>,
+    req: Result<Form<TokenRequest>, FormRejection>,
 ) -> Response {
     let basic = BasicCredentials::from_headers(&headers);
-    let result = match req.validate() {
-        Ok(validated) => exchange(&state, &validated, basic.as_ref()).await,
-        Err(err) => Err(err),
+    // A body that cannot be deserialised (malformed form encoding, a
+    // duplicated scalar parameter) is mapped to the OAuth error model
+    // rather than the framework's bare rejection.
+    let result = match req {
+        Ok(Form(req)) => match req.validate() {
+            Ok(validated) => exchange(&state, &validated, basic.as_ref()).await,
+            Err(err) => Err(err),
+        },
+        Err(rejection) => Err(OAuthError::InvalidRequest {
+            reason: InvalidRequestReason::MalformedRequest {
+                detail: rejection.body_text(),
+            },
+        }),
     };
     match result {
         Ok(response) => {
@@ -471,4 +481,140 @@ fn generate_random_token() -> String {
     let mut bytes = [0u8; RANDOM_TOKEN_BYTE_LENGTH];
     rand::rng().fill(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use tribal_config::OAuthConfig;
+    use tribal_db::{
+        DbError, NewOauthAuthorizationCode, NewOauthClient, NewPrincipal, PgPrincipalRepository,
+        PrincipalRepository,
+    };
+    use tribal_test_utils::{MockAuthTokenRepository, test_context};
+    use url::Url;
+
+    use super::*;
+
+    // RFC 7636 Appendix B verifier and its S256 challenge.
+    const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+    const REDIRECT_URI: &str = "http://127.0.0.1:53076/cb";
+    const RESOURCE: &str = "http://127.0.0.1:8080/mcp";
+
+    #[tokio::test]
+    async fn test_exchange_rolls_back_on_token_insert_failure() {
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.unwrap();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let principal_id = PgPrincipalRepository
+            .insert(
+                &mut conn,
+                &NewPrincipal::builder()
+                    .principal_key("rollback-insert-test-principal".to_owned())
+                    .build(),
+            )
+            .await
+            .unwrap()
+            .id();
+        let client = PgOauthClientRepository
+            .insert(
+                &mut conn,
+                &NewOauthClient::builder()
+                    .client_id("rollback-insert-client".to_owned())
+                    .redirect_uris(vec![REDIRECT_URI.to_owned()])
+                    .grant_types(vec![GRANT_TYPE_AUTHORIZATION_CODE.to_owned()])
+                    .response_types(vec!["code".to_owned()])
+                    .token_endpoint_auth_method(TokenEndpointAuthMethod::None)
+                    .build(),
+            )
+            .await
+            .unwrap();
+        let client_id = client.client_id().to_owned();
+
+        let raw_code = "rollback-insert-failure-code";
+        let code_hash = sha256_hex(raw_code);
+        PgOauthAuthorizationCodeRepository
+            .insert(
+                &mut conn,
+                &NewOauthAuthorizationCode::builder()
+                    .code_hash(code_hash.clone())
+                    .client_id(client_id.clone())
+                    .redirect_uri(REDIRECT_URI.to_owned())
+                    .code_challenge(CHALLENGE.to_owned())
+                    .resource(Some(RESOURCE.to_owned()))
+                    .principal_id(principal_id)
+                    .expires_at(Utc::now() + chrono::Duration::hours(1))
+                    .build(),
+            )
+            .await
+            .unwrap();
+        drop(conn);
+
+        // A mock token repository whose insert fails, so the access-token
+        // insert inside the exchange transaction errors after the code has
+        // been consumed.
+        let auth_token_repo = MockAuthTokenRepository::builder()
+            .on_insert_error(
+                || DbError::UniqueViolation {
+                    table: "auth_tokens".to_owned(),
+                    constraint: "test_injected".to_owned(),
+                    detail: "injected insert failure".to_owned(),
+                },
+                None,
+            )
+            .build();
+
+        let runtime = Arc::new(
+            OAuthRuntimeConfig::build(
+                &OAuthConfig::default(),
+                &Url::parse("http://127.0.0.1:8080").unwrap(),
+                &Url::parse(RESOURCE).unwrap(),
+            )
+            .unwrap(),
+        );
+        // Struct literal so the mock token repository can stand in for the
+        // Postgres one while the real code repository is used.
+        let state = TokenState {
+            pool: pool.clone(),
+            code_repo: Arc::new(PgOauthAuthorizationCodeRepository),
+            auth_token_repo: Arc::new(auth_token_repo),
+            client_repo: Arc::new(PgOauthClientRepository),
+            runtime,
+        };
+
+        let req = ValidatedTokenRequest {
+            grant_type: GRANT_TYPE_AUTHORIZATION_CODE.to_owned(),
+            code: raw_code.to_owned(),
+            redirect_uri: REDIRECT_URI.to_owned(),
+            client_id: client_id.clone(),
+            code_verifier: VERIFIER.to_owned(),
+            resource: Some(RESOURCE.to_owned()),
+            client_secret: None,
+        };
+
+        let result = exchange(&state, &req, None).await;
+        assert!(
+            matches!(
+                result,
+                Err(OAuthError::Internal {
+                    operation: InternalOperation::InsertAccessToken,
+                    ..
+                })
+            ),
+            "a failed token insert surfaces as an internal error",
+        );
+
+        // The transaction rolled back, so the consume was undone and the
+        // code is still exchangeable.
+        let mut conn = pool.acquire().await.unwrap();
+        let after = PgOauthAuthorizationCodeRepository
+            .consume_by_hash(&mut conn, &code_hash, Utc::now())
+            .await
+            .unwrap();
+        assert!(
+            after.is_some(),
+            "a rolled-back insert leaves the code exchangeable",
+        );
+    }
 }

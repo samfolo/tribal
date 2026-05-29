@@ -318,6 +318,8 @@ pub enum ValidationError {
         value: String,
         requirement: &'static str,
     },
+    /// `oauth.dcr_enabled` is set with a non-loopback `server.bind_address`.
+    NonLoopbackDcrConflict,
     /// `embedding.provider` is a provider that does not support
     /// embedding.  Renders the provider name in both clauses for clarity.
     EmbeddingProviderUnsupported { provider: ProviderKind },
@@ -426,6 +428,14 @@ impl fmt::Display for ValidationError {
             } => {
                 write!(f, "{field} {requirement}: {value}")
             }
+
+            Self::NonLoopbackDcrConflict => write!(
+                f,
+                "oauth.dcr_enabled is not supported with a non-loopback \
+                 server.bind_address: bind to a loopback address for dynamic \
+                 client registration, or set oauth.dcr_enabled = false to use \
+                 static tokens over the network",
+            ),
 
             Self::EmbeddingProviderUnsupported { provider } => write!(
                 f,
@@ -867,6 +877,32 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "oauth.issuer_url is not a valid URL: not a url",
+        );
+    }
+
+    #[test]
+    fn test_display_url_unsupported_form() {
+        let err = ValidationError::UrlUnsupportedForm {
+            field: ConfigPath::from_static("oauth.issuer_url"),
+            value: "https://host/tribal".into(),
+            requirement: "must be an origin URL with no path, query, or fragment",
+        };
+        assert_eq!(
+            err.to_string(),
+            "oauth.issuer_url must be an origin URL with no path, query, or fragment: \
+             https://host/tribal",
+        );
+    }
+
+    #[test]
+    fn test_display_non_loopback_dcr_conflict() {
+        let err = ValidationError::NonLoopbackDcrConflict;
+        assert_eq!(
+            err.to_string(),
+            "oauth.dcr_enabled is not supported with a non-loopback \
+             server.bind_address: bind to a loopback address for dynamic \
+             client registration, or set oauth.dcr_enabled = false to use \
+             static tokens over the network",
         );
     }
 

@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
+    extract::rejection::JsonRejection,
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -126,8 +127,21 @@ impl RegisterState {
 /// `POST /register` handler.
 pub async fn handle_register(
     axum::extract::State(state): axum::extract::State<RegisterState>,
-    Json(req): Json<RegisterRequest>,
+    req: Result<Json<RegisterRequest>, JsonRejection>,
 ) -> Response {
+    // Malformed JSON or a wrong-typed field (RFC 7591 §3.2.2) is mapped to
+    // `invalid_client_metadata` rather than the framework's bare rejection.
+    let req = match req {
+        Ok(Json(req)) => req,
+        Err(rejection) => {
+            return OAuthError::InvalidClientMetadata {
+                reason: ClientMetadataRejection::MalformedMetadata {
+                    detail: rejection.body_text(),
+                },
+            }
+            .into_json_response();
+        }
+    };
     match register(&state, req).await {
         Ok(response) => {
             let mut headers = HeaderMap::new();
@@ -161,11 +175,18 @@ async fn register(
     let grant_types = filter_supported(req.grant_types, GRANT_TYPE_AUTHORIZATION_CODE);
     let response_types = filter_supported(req.response_types, RESPONSE_TYPE_CODE);
 
-    // A client that declared only unsupported grant types leaves no flow
-    // we can serve; there is nothing to register it for.
+    // A client that declared only unsupported grant or response types
+    // leaves no flow we can serve; there is nothing to register it for.
+    // An omitted field defaulted to the supported value above, so an empty
+    // result here means the client declared values and none were supported.
     if grant_types.is_empty() {
         return Err(OAuthError::InvalidClientMetadata {
             reason: ClientMetadataRejection::NoSupportedGrantType,
+        });
+    }
+    if response_types.is_empty() {
+        return Err(OAuthError::InvalidClientMetadata {
+            reason: ClientMetadataRejection::NoSupportedResponseType,
         });
     }
     validate_grant_response_consistency(&grant_types, &response_types)?;

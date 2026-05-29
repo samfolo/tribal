@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Query, State},
+    extract::{Query, State, rejection::QueryRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -149,8 +149,23 @@ impl AuthorizeState {
 /// `GET /authorize` handler.
 pub async fn handle_authorize(
     State(state): State<AuthorizeState>,
-    Query(query): Query<AuthorizeQuery>,
+    query: Result<Query<AuthorizeQuery>, QueryRejection>,
 ) -> Response {
+    // A query that cannot be deserialised (a malformed pair, a duplicated
+    // scalar parameter) is mapped to the OAuth error model rather than the
+    // framework's bare rejection. The redirect URI is not yet validated,
+    // so the error renders as JSON (RFC 6749 §3.1.2.4).
+    let query = match query {
+        Ok(Query(query)) => query,
+        Err(rejection) => {
+            return OAuthError::InvalidRequest {
+                reason: InvalidRequestReason::MalformedRequest {
+                    detail: rejection.body_text(),
+                },
+            }
+            .into_json_response();
+        }
+    };
     let query = match query.validate() {
         Ok(query) => query,
         Err(err) => return err.into_json_response(),

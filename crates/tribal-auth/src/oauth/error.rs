@@ -117,6 +117,12 @@ pub enum InvalidRequestReason {
         /// The name of the missing parameter.
         parameter: &'static str,
     },
+    /// The request query or body could not be parsed.
+    #[error("request is malformed: {detail}")]
+    MalformedRequest {
+        /// The parser's description of the failure.
+        detail: String,
+    },
 }
 
 /// Why an `invalid_client` was raised.
@@ -240,11 +246,21 @@ pub enum ClientMetadataRejection {
     /// server can register the client for.
     #[error("no supported grant_type was declared")]
     NoSupportedGrantType,
+    /// Every declared `response_type` was unsupported, leaving no flow the
+    /// server can register the client for.
+    #[error("no supported response_type was declared")]
+    NoSupportedResponseType,
     /// A declared `scope` token is not in the advertised catalogue.
     #[error("unsupported scope: {presented}")]
     UnsupportedScope {
         /// The scope token the client declared.
         presented: String,
+    },
+    /// The registration body could not be parsed as client metadata.
+    #[error("client metadata is malformed: {detail}")]
+    MalformedMetadata {
+        /// The parser's description of the failure.
+        detail: String,
     },
 }
 
