@@ -89,6 +89,62 @@ async fn test_valid_token_is_skip_under_stdio_without_token_override() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_valid_token_skips_on_loopback_http_without_token() {
+    let ctx = test_context().await;
+    let _lock = serial_lock().await;
+    let env = TestEnv::new();
+    let _pool = fresh_db(ctx).await;
+    let mut config = TribalConfig::minimum_valid(ctx.database_url());
+    config.server.transport = TransportKind::Http;
+    config.server.bind_address = Some("127.0.0.1:8725".into());
+    write_config(&env.config_path, &config);
+
+    let (stdout, _stderr, _output) = run_check(CheckRun {
+        config_path: &env.config_path,
+        json: true,
+        providers: false,
+        project: None,
+        token: None,
+    })
+    .await
+    .expect("check runs");
+
+    // Loopback OAuth surface, no static token: clients authenticate via
+    // OAuth, so the absent token is not a finding.
+    let output = parse_json(&stdout);
+    assert_eq!(row_status(&output, "valid_token_exists"), Some("skip"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_valid_token_warns_on_routable_http_without_token() {
+    let ctx = test_context().await;
+    let _lock = serial_lock().await;
+    let env = TestEnv::new();
+    let _pool = fresh_db(ctx).await;
+    let mut config = TribalConfig::minimum_valid(ctx.database_url());
+    config.server.transport = TransportKind::Http;
+    config.server.bind_address = Some("127.0.0.1:8725".into());
+    // A routable advertised surface with open registration off: the
+    // static token is the only auth path, so its absence is a gap.
+    config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
+    config.oauth.dcr_enabled = false;
+    write_config(&env.config_path, &config);
+
+    let (stdout, _stderr, _output) = run_check(CheckRun {
+        config_path: &env.config_path,
+        json: true,
+        providers: false,
+        project: None,
+        token: None,
+    })
+    .await
+    .expect("check runs");
+
+    let output = parse_json(&stdout);
+    assert_eq!(row_status(&output, "valid_token_exists"), Some("warn"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_advertised_url_is_skip_under_stdio_transport() {
     let ctx = test_context().await;
     let _lock = serial_lock().await;

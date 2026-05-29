@@ -84,6 +84,16 @@ pub struct ServerConfig {
     #[serde(default)]
     pub bind_address: Option<String>,
 
+    /// Publicly-advertised MCP URL, resolved from the environment at load.
+    ///
+    /// A reverse-proxied deployment sets it to the routable URL clients
+    /// reach while binding loopback, so it is the most public statement of
+    /// where the OAuth surface is served. `#[serde(skip)]`: it is an
+    /// environment-resolved runtime value, not a configuration-file field,
+    /// and is populated after extraction.
+    #[serde(skip)]
+    pub public_mcp_url: Option<String>,
+
     /// Graceful shutdown deadline in milliseconds.
     #[serde(default = "default_shutdown_deadline_ms")]
     pub shutdown_deadline_ms: u64,
@@ -108,6 +118,7 @@ impl Default for ServerConfig {
         Self {
             transport: TransportKind::default(),
             bind_address: None,
+            public_mcp_url: None,
             shutdown_deadline_ms: default_shutdown_deadline_ms(),
             job_state_ttl_seconds: default_job_state_ttl_seconds(),
             job_state_hard_ttl_seconds: default_job_state_hard_ttl_seconds(),

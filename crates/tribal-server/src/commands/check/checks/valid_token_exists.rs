@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use tribal_auth::{AuthError, Authenticator};
 use tribal_config::{
     Auth, CredentialsReadError, ENV_AUTH_TOKEN, TransportKind, oauth_surface_is_routable,
-    public_mcp_url_override, read_credentials,
+    read_credentials,
 };
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 
@@ -117,8 +117,7 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
             let expected_audience = resolve_oauth_runtime(config)
                 .ok()
                 .and_then(|runtime| expected_token_audience(config.server.transport, &runtime));
-            let oauth_surface_routable =
-                oauth_surface_is_routable(config, public_mcp_url_override().as_deref());
+            let oauth_surface_routable = oauth_surface_is_routable(config);
             network_path(
                 pool,
                 token_override,

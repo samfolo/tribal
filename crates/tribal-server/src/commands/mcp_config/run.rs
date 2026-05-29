@@ -8,9 +8,9 @@ use std::{
 use tribal_config::{
     Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
     CredentialsPermissions, LoadedCredentials, TransportKind, TribalConfig, load_config,
-    oauth_surface_is_routable, public_mcp_url_override, read_credentials,
+    oauth_surface_is_routable, read_credentials,
 };
-use tribal_domain::BearerToken;
+use tribal_domain::{BearerToken, ProjectId};
 
 use crate::{
     cli::McpConfigArgs,
@@ -19,7 +19,7 @@ use crate::{
         resolve_absolute_config_path,
     },
     error::AppError,
-    output::{build_snippet_entry, resolved_advertised_url},
+    output::{McpSnippet, build_snippet_entry, resolved_advertised_url},
     startup::resolve_project,
 };
 
@@ -151,38 +151,28 @@ fn token_strategy_from_args(token: Option<String>, static_token: bool) -> TokenS
 // Async flow
 // ---------------------------------------------------------------------------
 
-/// Drives database connection, project resolution, auth resolution, and
-/// snippet rendering.
+/// Resolves auth, renders the transport-specific snippet, and writes it.
+///
+/// stdio embeds `serve --project <id>` as its spawn command, so that path
+/// resolves a project, which is the only step that needs the database.
+/// The network transports render a url-plus-auth entry whose project is
+/// bound server-side via `serve --project`, so they touch neither the
+/// resolution cascade nor the database.
 ///
 /// `out_stdout` receives the rendered JSON; `out_stderr` carries warnings
 /// (stdio `--token` ignored, permissions drift).
 ///
 /// # Errors
 ///
-/// Returns an [`AppError`] if the database connection, project
-/// resolution, credentials read, or snippet write fails.
+/// Returns an [`AppError`] if project resolution or the database
+/// connection (stdio only), the credentials read, or the snippet write
+/// fails.
 pub async fn run_async(
     opts: McpConfigOptions<'_>,
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
 ) -> Result<(), AppError> {
-    let pool = tribal_db::create_pool(
-        &opts.config.database,
-        POOL_NAME_MCP_CONFIG,
-        COMMAND_POOL_MAX_CONNECTIONS,
-        COMMAND_STATEMENT_TIMEOUT_MS,
-    )
-    .await
-    .map_err(|source| AppError::Database { source })?;
-
-    let resolved = resolve_project(&pool, opts.project_override)
-        .await?
-        .ok_or_else(|| AppError::ProjectResolution {
-            context: PROJECT_RESOLUTION_FAILED_CONTEXT.into(),
-        })?;
-
-    let oauth_surface_routable =
-        oauth_surface_is_routable(opts.config, public_mcp_url_override().as_deref());
+    let oauth_surface_routable = oauth_surface_is_routable(opts.config);
     let auth = resolve_auth(
         opts.transport,
         opts.token_strategy,
@@ -190,15 +180,51 @@ pub async fn run_async(
         out_stderr,
     )?;
     let advertised_url = resolved_advertised_url(opts.config);
-    let entry = build_snippet_entry(
-        resolved.id(),
-        opts.transport,
-        auth.as_ref(),
-        opts.config_path,
-        &advertised_url,
-    );
 
-    write_snippet(out_stdout, &entry)
+    let snippet = match opts.transport {
+        TransportKind::Stdio => {
+            let project_id = resolve_stdio_project(opts.config, opts.project_override).await?;
+            McpSnippet::Stdio {
+                project_id,
+                config_path: opts.config_path,
+            }
+        }
+        TransportKind::Http => McpSnippet::Http {
+            auth: auth.as_ref(),
+            advertised_url: advertised_url.as_str(),
+        },
+        TransportKind::Sse => McpSnippet::Sse {
+            auth: auth.as_ref(),
+            advertised_url: advertised_url.as_str(),
+        },
+    };
+
+    write_snippet(out_stdout, &build_snippet_entry(&snippet))
+}
+
+/// Resolves the project the stdio snippet embeds in its `serve --project`
+/// spawn command. This is the only path in mcp-config that needs the
+/// database; the network transports bind their project server-side.
+async fn resolve_stdio_project(
+    config: &TribalConfig,
+    project_override: Option<String>,
+) -> Result<ProjectId, AppError> {
+    let pool = tribal_db::create_pool(
+        &config.database,
+        POOL_NAME_MCP_CONFIG,
+        COMMAND_POOL_MAX_CONNECTIONS,
+        COMMAND_STATEMENT_TIMEOUT_MS,
+    )
+    .await
+    .map_err(|source| AppError::Database { source })?;
+
+    let resolved = resolve_project(&pool, project_override)
+        .await?
+        .ok_or_else(|| AppError::ProjectResolution {
+            context: PROJECT_RESOLUTION_FAILED_CONTEXT.into(),
+        })?;
+
+    Ok(resolved.id())
 }
 
 // ---------------------------------------------------------------------------
@@ -313,13 +339,23 @@ mod tests {
     /// Drives the production render path against fixture inputs and
     /// returns the captured stdout parsed as a JSON value.
     fn render_snippet(transport: TransportKind, auth: Option<&Auth>) -> serde_json::Value {
-        let entry = build_snippet_entry(
-            fixture_project_id(),
-            transport,
-            auth,
-            &fixture_config_path(),
-            &fixture_advertised_url(),
-        );
+        let config_path = fixture_config_path();
+        let advertised_url = fixture_advertised_url();
+        let snippet = match transport {
+            TransportKind::Stdio => McpSnippet::Stdio {
+                project_id: fixture_project_id(),
+                config_path: config_path.as_path(),
+            },
+            TransportKind::Http => McpSnippet::Http {
+                auth,
+                advertised_url: advertised_url.as_str(),
+            },
+            TransportKind::Sse => McpSnippet::Sse {
+                auth,
+                advertised_url: advertised_url.as_str(),
+            },
+        };
+        let entry = build_snippet_entry(&snippet);
         let mut buf: Vec<u8> = Vec::new();
         write_snippet(&mut buf, &entry).expect("write_snippet succeeds");
         let captured = String::from_utf8(buf).expect("utf8");

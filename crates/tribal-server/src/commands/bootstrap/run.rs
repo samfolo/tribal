@@ -10,7 +10,7 @@ use anstream::AutoStream;
 use chrono::{DateTime, Utc};
 use tribal_config::{
     Auth, CREDENTIALS_FILENAME, CliOverrides, ConfigPersistence, TRIBAL_DIRECTORY_NAME,
-    TransportKind, TribalConfig, oauth_surface_is_routable, public_mcp_url_override,
+    TransportKind, TribalConfig, oauth_surface_is_routable,
 };
 use tribal_domain::GitRemote;
 use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
@@ -171,8 +171,7 @@ pub async fn run_async(
 
     // -- Register -----------------------------------------------------------
 
-    let oauth_surface_routable =
-        oauth_surface_is_routable(opts.config, public_mcp_url_override().as_deref());
+    let oauth_surface_routable = oauth_surface_is_routable(opts.config);
     let auth = Auth::Bearer {
         token: setup_outcome.bearer_token.clone(),
     };

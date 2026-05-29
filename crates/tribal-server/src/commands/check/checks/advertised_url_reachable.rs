@@ -94,6 +94,20 @@ mod tests {
     }
 
     #[test]
+    fn test_advertised_url_reachable_is_pass_for_server_error_status() {
+        // Any HTTP response means the URL is reachable; a 5xx still passes.
+        // Only connection refused / DNS / timeout yields Fail.
+        let outcome =
+            CheckOutcome::advertised_url_reachable("http://localhost:8080/mcp".into(), 503);
+        assert!(matches!(
+            &outcome,
+            CheckOutcome::Pass {
+                detail: CheckDetail::AdvertisedUrlReachable { status: 503, .. },
+            },
+        ));
+    }
+
+    #[test]
     fn test_advertised_url_unreachable_is_fail_with_remediation() {
         let outcome = CheckOutcome::advertised_url_unreachable(
             "http://localhost:8080/mcp".into(),

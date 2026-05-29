@@ -91,6 +91,7 @@ impl Component for HandoffView<'_> {
             config_file: h.config_file,
             persistence: h.persistence,
             oauth_surface_routable: h.oauth_surface_routable,
+            credentials: h.credentials,
         };
 
         match h.transport {
@@ -191,7 +192,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::output::build_snippet_entry;
+    use crate::output::{McpSnippet, build_snippet_entry};
 
     /// Inputs that swing between snapshot cases.
     struct Case<'a> {
@@ -259,13 +260,22 @@ mod tests {
     fn fixture_mcp_entry(transport: TransportKind, auth: Option<&Auth>) -> Value {
         let project = fixture_project();
         let path = fixture_config_path();
-        build_snippet_entry(
-            project.id(),
-            transport,
-            auth,
-            &path,
-            &fixture_advertised_url(),
-        )
+        let advertised_url = fixture_advertised_url();
+        let snippet = match transport {
+            TransportKind::Stdio => McpSnippet::Stdio {
+                project_id: project.id(),
+                config_path: path.as_path(),
+            },
+            TransportKind::Http => McpSnippet::Http {
+                auth,
+                advertised_url: advertised_url.as_str(),
+            },
+            TransportKind::Sse => McpSnippet::Sse {
+                auth,
+                advertised_url: advertised_url.as_str(),
+            },
+        };
+        build_snippet_entry(&snippet)
     }
 
     fn fixture_written() -> ConfigFileOutcome {
@@ -494,14 +504,21 @@ mod tests {
 
     // -- Stderr × credentials failure (both transports) ----------------------
 
-    fn render_stderr_credentials_failed(transport: TransportKind) -> String {
+    fn render_stderr_credentials_failed(
+        transport: TransportKind,
+        oauth_surface_routable: bool,
+    ) -> String {
         let bearer = fixture_bearer_token();
         let project = fixture_project();
         let auth = Auth::Bearer {
             token: bearer.clone(),
         };
         let mcp_entry = fixture_mcp_entry(transport, Some(&auth));
-        let advertised_url = fixture_advertised_url();
+        let advertised_url = if oauth_surface_routable {
+            "https://tribal.example.com/mcp".to_owned()
+        } else {
+            fixture_advertised_url()
+        };
         let config_file = fixture_written();
         let credentials = CredentialsPersistOutcome::Failed {
             warning: "warning: could not persist credentials.json at /tmp/x: …".into(),
@@ -519,7 +536,7 @@ mod tests {
             credentials: &credentials,
             persistence: ConfigPersistence::Minimal,
             advertised_url: &advertised_url,
-            oauth_surface_routable: false,
+            oauth_surface_routable,
         };
         let theme = Theme::default_dark();
         render_to_string(|w| write_human(w, &theme, &handoff))
@@ -527,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_stderr_stdio_credentials_failed_matches_snapshot() {
-        let captured = render_stderr_credentials_failed(TransportKind::Stdio);
+        let captured = render_stderr_credentials_failed(TransportKind::Stdio, false);
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-stdio-credentials-failed.txt"
@@ -536,10 +553,19 @@ mod tests {
 
     #[test]
     fn test_stderr_http_credentials_failed_matches_snapshot() {
-        let captured = render_stderr_credentials_failed(TransportKind::Http);
+        let captured = render_stderr_credentials_failed(TransportKind::Http, false);
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-http-credentials-failed.txt"
+        );
+    }
+
+    #[test]
+    fn test_stderr_http_routable_credentials_failed_matches_snapshot() {
+        let captured = render_stderr_credentials_failed(TransportKind::Http, true);
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-http-routable-credentials-failed.txt"
         );
     }
 

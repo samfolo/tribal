@@ -2,34 +2,57 @@
 
 use std::path::Path;
 
-use tribal_config::{
-    Auth, DEFAULT_BIND_ADDRESS, TransportKind, TribalConfig, public_mcp_url_override,
-};
+use tribal_config::{Auth, DEFAULT_BIND_ADDRESS, TransportKind, TribalConfig};
 use tribal_domain::{GitRemote, ProjectId};
 
-/// Builds the MCP server entry for a project.
+/// Inputs for a single MCP server-config entry, partitioned by transport.
 ///
-/// The shape varies by transport: stdio uses `command`/`args` (with an
-/// absolute `--config` flag pinning the harness-spawned process to the
-/// same config the human used); HTTP and SSE use `url` with optional
-/// `headers`. Both shapes include a `"type"` discriminator so consumers
-/// can dispatch without inspecting which keys are present.
+/// The project rides only with stdio: stdio embeds `serve --project <id>`
+/// as its spawn command, so the `Stdio` variant carries the project and
+/// the config path. The network transports render a url-plus-auth entry
+/// whose project is bound server-side via `serve --project`, so they
+/// carry no project. Pairing a project with a network transport is
+/// therefore unrepresentable.
+pub(crate) enum McpSnippet<'a> {
+    Stdio {
+        project_id: ProjectId,
+        config_path: &'a Path,
+    },
+    Http {
+        auth: Option<&'a Auth>,
+        advertised_url: &'a str,
+    },
+    Sse {
+        auth: Option<&'a Auth>,
+        advertised_url: &'a str,
+    },
+}
+
+/// Builds the MCP server entry JSON for a snippet.
 ///
-/// `auth` is dispatched per [`Auth`] variant — new variants force the
+/// stdio uses `command`/`args` (with an absolute `--config` flag pinning
+/// the harness-spawned process to the same config the human used); the
+/// network transports use `url` with optional `headers`. Every shape
+/// includes a `"type"` discriminator so consumers can dispatch without
+/// inspecting which keys are present.
+///
+/// `auth` is dispatched per [`Auth`] variant, so new variants force the
 /// inner builders to update via exhaustive match rather than silently
 /// falling through to a "bearer-shaped" assumption.
-pub(crate) fn build_snippet_entry(
-    project_id: ProjectId,
-    transport: TransportKind,
-    auth: Option<&Auth>,
-    config_path: &Path,
-    advertised_url: &str,
-) -> serde_json::Value {
-    match transport {
-        TransportKind::Stdio => build_stdio_entry(project_id, config_path),
-        TransportKind::Http | TransportKind::Sse => {
-            build_network_entry(transport, auth, advertised_url)
-        }
+pub(crate) fn build_snippet_entry(snippet: &McpSnippet<'_>) -> serde_json::Value {
+    match snippet {
+        McpSnippet::Stdio {
+            project_id,
+            config_path,
+        } => build_stdio_entry(*project_id, config_path),
+        McpSnippet::Http {
+            auth,
+            advertised_url,
+        } => build_network_entry(TransportKind::Http, *auth, advertised_url),
+        McpSnippet::Sse {
+            auth,
+            advertised_url,
+        } => build_network_entry(TransportKind::Sse, *auth, advertised_url),
     }
 }
 
@@ -81,11 +104,10 @@ pub(crate) fn snippet_key(git_remote: &GitRemote) -> String {
 
 /// Resolves the URL clients should reach for HTTP/SSE transports.
 ///
-/// `TRIBAL_PUBLIC_MCP_URL` (when set and non-empty) takes precedence so
-/// deployments behind a reverse proxy can advertise the public URL.
-/// Otherwise falls back to `http://<bind_address>/mcp`.
+/// A configured public URL (the reverse-proxy case) takes precedence;
+/// otherwise this falls back to `http://<bind_address>/mcp`.
 pub(crate) fn resolved_advertised_url(config: &TribalConfig) -> String {
-    public_mcp_url_override().unwrap_or_else(|| {
+    config.server.public_mcp_url.clone().unwrap_or_else(|| {
         let addr = config
             .server
             .bind_address
@@ -100,14 +122,9 @@ pub(crate) fn resolved_advertised_url(config: &TribalConfig) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-// `Jail::expect_with` closures return `Result<(), figment::Error>` (208 bytes),
-// which we cannot reduce without wrapping an upstream type.
-#[allow(clippy::result_large_err)]
 mod tests {
     use std::path::PathBuf;
 
-    use figment::Jail;
-    use tribal_config::ENV_PUBLIC_MCP_URL;
     use tribal_domain::{GitRemote, ProjectId};
     use tribal_test_utils::a_project;
 
@@ -130,6 +147,30 @@ mod tests {
         format!("http://{DEFAULT_BIND_ADDRESS}/mcp")
     }
 
+    /// Renders a stdio entry from the given project and config path.
+    fn stdio(project_id: ProjectId, config_path: &Path) -> serde_json::Value {
+        build_snippet_entry(&McpSnippet::Stdio {
+            project_id,
+            config_path,
+        })
+    }
+
+    /// Renders an http entry from the given auth and advertised URL.
+    fn http(auth: Option<&Auth>, advertised_url: &str) -> serde_json::Value {
+        build_snippet_entry(&McpSnippet::Http {
+            auth,
+            advertised_url,
+        })
+    }
+
+    /// Renders an sse entry from the given auth and advertised URL.
+    fn sse(auth: Option<&Auth>, advertised_url: &str) -> serde_json::Value {
+        build_snippet_entry(&McpSnippet::Sse {
+            auth,
+            advertised_url,
+        })
+    }
+
     // -- Stdio snippet --------------------------------------------------------
 
     #[test]
@@ -138,13 +179,7 @@ mod tests {
             .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
             .build();
 
-        let entry = build_snippet_entry(
-            project.id(),
-            TransportKind::Stdio,
-            None,
-            &config_path(),
-            &default_advertised_url(),
-        );
+        let entry = stdio(project.id(), &config_path());
         assert_eq!(entry["type"], "stdio");
         assert_eq!(entry["command"], "tribal");
 
@@ -167,13 +202,7 @@ mod tests {
             .build();
         let custom = PathBuf::from("/var/lib/tribal/alt.yaml");
 
-        let entry = build_snippet_entry(
-            project.id(),
-            TransportKind::Stdio,
-            None,
-            &custom,
-            &default_advertised_url(),
-        );
+        let entry = stdio(project.id(), &custom);
         let args = entry["args"].as_array().expect("args array");
         assert_eq!(args[1], "/var/lib/tribal/alt.yaml");
     }
@@ -182,18 +211,9 @@ mod tests {
 
     #[test]
     fn test_build_http_entry_with_bearer_token() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
         let auth = bearer("test-token-abc");
 
-        let entry = build_snippet_entry(
-            project.id(),
-            TransportKind::Http,
-            Some(&auth),
-            &config_path(),
-            &default_advertised_url(),
-        );
+        let entry = http(Some(&auth), &default_advertised_url());
 
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], default_advertised_url());
@@ -206,54 +226,26 @@ mod tests {
 
     #[test]
     fn test_build_http_entry_uses_advertised_url() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
         let auth = bearer("tok");
         let url = "https://tribal.example.com/mcp";
 
-        let entry = build_snippet_entry(
-            project.id(),
-            TransportKind::Http,
-            Some(&auth),
-            &config_path(),
-            url,
-        );
+        let entry = http(Some(&auth), url);
 
         assert_eq!(entry["url"], url);
     }
 
     #[test]
     fn test_build_http_entry_without_auth_omits_headers() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
-
-        let entry = build_snippet_entry(
-            project.id(),
-            TransportKind::Http,
-            None,
-            &config_path(),
-            &default_advertised_url(),
-        );
+        let entry = http(None, &default_advertised_url());
         assert_eq!(entry["type"], "http");
         assert!(entry.get("headers").is_none(), "no headers without auth");
     }
 
     #[test]
     fn test_build_sse_entry_emits_sse_type() {
-        let project = a_project()
-            .git_remote(GitRemote::from_parts("github.com", "acme/widgets", None))
-            .build();
         let auth = bearer("tok");
 
-        let entry = build_snippet_entry(
-            project.id(),
-            TransportKind::Sse,
-            Some(&auth),
-            &config_path(),
-            &default_advertised_url(),
-        );
+        let entry = sse(Some(&auth), &default_advertised_url());
 
         assert_eq!(entry["type"], "sse");
         assert_eq!(entry["url"], default_advertised_url());
@@ -272,39 +264,16 @@ mod tests {
 
     #[test]
     fn test_resolved_advertised_url_falls_back_to_bind_address() {
-        Jail::expect_with(|jail| {
-            jail.clear_env();
-
-            let config = TribalConfig::minimum_valid("postgres://x/y");
-            let url = resolved_advertised_url(&config);
-            assert_eq!(url, format!("http://{DEFAULT_BIND_ADDRESS}/mcp"));
-            Ok(())
-        });
+        let config = TribalConfig::minimum_valid("postgres://x/y");
+        let url = resolved_advertised_url(&config);
+        assert_eq!(url, format!("http://{DEFAULT_BIND_ADDRESS}/mcp"));
     }
 
     #[test]
-    fn test_resolved_advertised_url_honours_env_override() {
-        Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env(ENV_PUBLIC_MCP_URL, "https://tribal.example.com/mcp");
-
-            let config = TribalConfig::minimum_valid("postgres://x/y");
-            let url = resolved_advertised_url(&config);
-            assert_eq!(url, "https://tribal.example.com/mcp");
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_resolved_advertised_url_ignores_empty_env() {
-        Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env(ENV_PUBLIC_MCP_URL, "   ");
-
-            let config = TribalConfig::minimum_valid("postgres://x/y");
-            let url = resolved_advertised_url(&config);
-            assert_eq!(url, format!("http://{DEFAULT_BIND_ADDRESS}/mcp"));
-            Ok(())
-        });
+    fn test_resolved_advertised_url_honours_public_mcp_url() {
+        let mut config = TribalConfig::minimum_valid("postgres://x/y");
+        config.server.public_mcp_url = Some("https://tribal.example.com/mcp".into());
+        let url = resolved_advertised_url(&config);
+        assert_eq!(url, "https://tribal.example.com/mcp");
     }
 }
