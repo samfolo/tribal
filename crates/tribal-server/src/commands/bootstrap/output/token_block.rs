@@ -42,29 +42,21 @@ impl Component for StdioTokenBlock<'_> {
     }
 }
 
-/// HTTP/SSE variant: leading block, rendered before the action list
-/// because step 1 (`export TRIBAL_AUTH_TOKEN=…`) references the token.
+/// HTTP/SSE last-resort recovery block: rendered only when
+/// `credentials.json` could not be written, so a freshly minted token is
+/// not lost. On the success path the token stays in `credentials.json`
+/// (retrievable through `tribal mcp-config --static-token`) and is never
+/// printed, keeping it out of terminal transcripts.
 pub(super) struct HttpSseTokenBlock<'a> {
     pub token: &'a BearerToken,
-    pub credentials: &'a CredentialsPersistOutcome,
 }
 
 impl Component for HttpSseTokenBlock<'_> {
     fn render(&self, ctx: &mut RenderCtx) -> io::Result<()> {
         let style = ctx.theme().typography.body;
-        let heading = match self.credentials {
-            CredentialsPersistOutcome::Persisted { path } => {
-                format!(
-                    "Bearer token (save this — it will not be shown again; also saved to {}):",
-                    path.display(),
-                )
-            }
-            CredentialsPersistOutcome::Failed { .. } => {
-                "Bearer token (save this — credentials.json was NOT written, copy it manually):"
-                    .to_owned()
-            }
-        };
-        Text::new(heading).with_style(style).renderln(ctx)?;
+        Text::new("Bearer token (credentials.json was NOT written, copy it manually):")
+            .with_style(style)
+            .renderln(ctx)?;
         writeln!(ctx)?;
         Text::new(self.token.as_str())
             .with_style(style)

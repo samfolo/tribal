@@ -10,8 +10,8 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use tempfile::TempDir;
 use tribal::{
-    AppError, BootstrapOptions, McpConfigOptions, SetupOutcome, bootstrap_async, mcp_config_async,
-    prepare_config, setup_async, token_create_async,
+    AppError, BootstrapOptions, McpConfigOptions, SetupOutcome, TokenStrategy, bootstrap_async,
+    mcp_config_async, prepare_config, setup_async, token_create_async,
 };
 use tribal_config::{CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config};
 use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY};
@@ -235,7 +235,7 @@ pub(crate) async fn run_mcp_config(
     overrides: CliOverrides,
     project_override: Option<String>,
     transport: TransportKind,
-    explicit_token: Option<String>,
+    token_strategy: TokenStrategy,
 ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
     let merged = load_test_config(ctx, config_path, overrides)?;
     let mut stdout = Vec::<u8>::new();
@@ -246,7 +246,7 @@ pub(crate) async fn run_mcp_config(
             config_path,
             project_override,
             transport,
-            explicit_token,
+            token_strategy,
         },
         &mut stdout,
         &mut stderr,

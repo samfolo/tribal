@@ -4,4 +4,4 @@ mod run;
 
 pub(crate) use run::run;
 #[cfg(feature = "test-helpers")]
-pub use run::{McpConfigOptions, run_async};
+pub use run::{McpConfigOptions, TokenStrategy, run_async};
