@@ -8,7 +8,7 @@
 
 use url::Url;
 
-use crate::oauth::common::LOOPBACK_HOSTS;
+use crate::oauth::common::is_loopback_host;
 
 /// Returns `true` when `incoming` is an acceptable match for the
 /// `registered` redirect URI.
@@ -30,10 +30,8 @@ pub fn matches_redirect_uri(registered: &Url, incoming: &Url) -> bool {
         return false;
     }
 
-    let is_loopback = matches!(
-        registered.host_str(),
-        Some(host) if LOOPBACK_HOSTS.contains(&host),
-    ) && registered.scheme() == "http";
+    let is_loopback =
+        registered.scheme() == "http" && registered.host_str().is_some_and(is_loopback_host);
 
     if !is_loopback && registered.port_or_known_default() != incoming.port_or_known_default() {
         return false;
@@ -67,6 +65,16 @@ mod tests {
     fn test_loopback_with_registered_port_still_accepts_other_port() {
         let registered = url("http://127.0.0.1:3118/cb");
         let incoming = url("http://127.0.0.1:53076/cb");
+        assert!(matches_redirect_uri(&registered, &incoming));
+    }
+
+    #[test]
+    fn test_ipv6_loopback_accepts_any_port() {
+        // The IPv6 loopback literal gets the same any-port flexibility as
+        // 127.0.0.1: `host_str` returns it bracketed, which the shared
+        // loopback resolver unwraps.
+        let registered = url("http://[::1]/cb");
+        let incoming = url("http://[::1]:53076/cb");
         assert!(matches_redirect_uri(&registered, &incoming));
     }
 

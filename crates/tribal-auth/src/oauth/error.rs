@@ -224,6 +224,24 @@ pub enum ClientMetadataRejection {
     /// `response_type=code` was declared without `grant_type=authorization_code`.
     #[error("response_type=code requires grant_type=authorization_code")]
     GrantResponseInconsistent,
+    /// A declared `grant_type` is not supported by this server.
+    #[error("unsupported grant_type: {presented}")]
+    UnsupportedGrantType {
+        /// The grant type the client declared.
+        presented: String,
+    },
+    /// A declared `response_type` is not supported by this server.
+    #[error("unsupported response_type: {presented}")]
+    UnsupportedResponseType {
+        /// The response type the client declared.
+        presented: String,
+    },
+    /// A declared `scope` token is not in the advertised catalogue.
+    #[error("unsupported scope: {presented}")]
+    UnsupportedScope {
+        /// The scope token the client declared.
+        presented: String,
+    },
 }
 
 /// The internal operation that failed. Never reaches the client (see

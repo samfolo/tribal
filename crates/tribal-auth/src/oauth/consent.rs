@@ -19,7 +19,7 @@
 //! string from input fields and strip those parameters; the anchor
 //! follows the `href` byte-for-byte.
 
-use crate::oauth::common::LOOPBACK_HOSTS;
+use crate::oauth::common::is_loopback_host;
 
 /// Placeholder shown when the client requested no explicit scope.
 const NO_SCOPE_REQUESTED: &str = "(no explicit scope requested)";
@@ -41,7 +41,7 @@ pub fn build_consent_html(
     scope: Option<&str>,
 ) -> String {
     let scope_display = scope.unwrap_or(NO_SCOPE_REQUESTED);
-    let warning_html = if LOOPBACK_HOSTS.contains(&redirect_host) {
+    let warning_html = if is_loopback_host(redirect_host) {
         LOOPBACK_WARNING
     } else {
         ""

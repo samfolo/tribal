@@ -14,21 +14,12 @@ use url::Url;
 use crate::oauth::{
     common::{CODE_CHALLENGE_METHOD_S256, GRANT_TYPE_AUTHORIZATION_CODE, RESPONSE_TYPE_CODE},
     config::OAuthRuntimeConfig,
+    scope::SCOPES_CATALOGUE,
 };
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// Catalogue of permission scopes advertised in metadata documents.
-pub const SCOPES_CATALOGUE: &[&str] = &[
-    "tribal:read",
-    "tribal:write",
-    "tribal.knowledge:read",
-    "tribal.knowledge:write",
-    "tribal.jobs:read",
-    "tribal.jobs:write",
-];
 
 /// Bearer methods supported by the MCP transport.
 pub const BEARER_METHOD_HEADER: &str = "header";
@@ -154,22 +145,8 @@ fn join_issuer(issuer: &Url, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use tribal_config::OAuthConfig;
-    use tribal_domain::Scope;
 
     use super::*;
-
-    #[test]
-    fn test_scopes_catalogue_entries_are_valid_scopes() {
-        // The catalogue is the wire vocabulary advertised in both metadata
-        // documents. Every entry must parse as a `Scope`, so a typo or a
-        // scope that no longer exists cannot drift into what we advertise.
-        for raw in SCOPES_CATALOGUE {
-            assert!(
-                Scope::parse(raw).is_ok(),
-                "advertised scope {raw:?} is not a valid Scope",
-            );
-        }
-    }
 
     fn runtime() -> OAuthRuntimeConfig {
         let issuer = Url::parse("http://127.0.0.1:8080").unwrap();
