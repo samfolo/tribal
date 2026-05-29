@@ -1,10 +1,9 @@
 -- DCR-registered OAuth clients per RFC 7591.
 --
 -- client_id is the opaque identifier returned to the client at
--- registration. It is TEXT (not a foreign key target for the
--- authorisation-code table) so the system can also accept client
--- identifiers that have no stored registration row here; validation
--- against the registry happens in the application layer.
+-- registration. It is TEXT with no foreign key from the
+-- authorisation-code table, so registry membership is not a schema
+-- constraint; it is validated in the application layer.
 --
 -- client_secret_hash holds the SHA-256 hex digest of the raw secret;
 -- the raw secret is returned once at registration and never persisted.

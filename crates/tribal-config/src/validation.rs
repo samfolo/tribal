@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use url::Url;
 
 use crate::{
-    MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
+    DEFAULT_BIND_ADDRESS, MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
     sections::{
         MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
@@ -255,6 +255,24 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
     // URL, rather than only when the runtime config is built at serve.
     validate_issuer_url(config.oauth.issuer_url.as_deref(), diags);
     validate_resource_url(config.oauth.resource_url.as_deref(), diags);
+
+    // /register is unauthenticated; the OAuth surface is loopback-only in
+    // v1, so a routable network bind with DCR enabled is refused. The raw
+    // bind is checked, so the 0.0.0.0 / [::] wildcards are caught.
+    if matches!(
+        config.server.transport,
+        TransportKind::Http | TransportKind::Sse
+    ) && config.oauth.dcr_enabled
+        && let Ok(addr) = config
+            .server
+            .bind_address
+            .as_deref()
+            .unwrap_or(DEFAULT_BIND_ADDRESS)
+            .parse::<SocketAddr>()
+        && !addr.ip().is_loopback()
+    {
+        diags.push(ValidationError::NonLoopbackDcrConflict);
+    }
 }
 
 /// Required form of `oauth.issuer_url`.
@@ -672,6 +690,37 @@ mod tests {
             ValidationError::BindAddressMalformed { value }
                 if value == "not-an-address",
         )));
+    }
+
+    #[test]
+    fn test_validate_rejects_dcr_on_non_loopback_bind() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("0.0.0.0:8080".into());
+        config.oauth.dcr_enabled = true;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::NonLoopbackDcrConflict,
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_dcr_on_loopback_bind() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8080".into());
+        config.oauth.dcr_enabled = true;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_non_loopback_bind_without_dcr() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("0.0.0.0:8080".into());
+        config.oauth.dcr_enabled = false;
+        assert!(validate(&config).is_ok());
     }
 
     #[test]

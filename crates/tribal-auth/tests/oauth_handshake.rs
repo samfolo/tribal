@@ -744,6 +744,100 @@ async fn test_register_filters_unsupported_grant_types() {
     );
 }
 
+#[tokio::test]
+async fn test_register_rejects_unsupported_response_types() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // A client declaring only an unsupported response type leaves nothing
+    // the server can register it for (symmetric with grant_types).
+    let response = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "response_types": ["token"],
+        }))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(body["error"], "invalid_client_metadata");
+}
+
+#[tokio::test]
+async fn test_register_rejects_malformed_json() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // A body that is not valid JSON maps to invalid_client_metadata, not
+    // the framework's bare deserialisation rejection.
+    let response = client
+        .send(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/register")
+                .header(header::CONTENT_TYPE, CONTENT_TYPE_JSON)
+                .body(Body::from("{ not valid json"))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(body["error"], "invalid_client_metadata");
+}
+
+#[tokio::test]
+async fn test_token_rejects_duplicate_parameter() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // A duplicated scalar parameter (RFC 6749 §3.1 forbids it) fails
+    // deserialisation and maps to invalid_request rather than a bare 400.
+    let body = "grant_type=authorization_code&client_id=a&client_id=b\
+                &code=c&redirect_uri=http://127.0.0.1:53076/cb&code_verifier=v\
+                &resource=http://127.0.0.1:8080/mcp";
+    let response = client
+        .send(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/token")
+                .header(header::CONTENT_TYPE, CONTENT_TYPE_FORM)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(json["error"], "invalid_request");
+}
+
+#[tokio::test]
+async fn test_authorize_rejects_duplicate_parameter() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // A duplicated scalar query parameter maps to invalid_request (JSON,
+    // since the redirect URI is not yet validated).
+    let response = client
+        .authorize(&format!(
+            "response_type=code&client_id=a&client_id=b&redirect_uri={REDIRECT_URI_ENCODED}\
+             &code_challenge={CHALLENGE}&code_challenge_method=S256&resource={RESOURCE_ENCODED}",
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(body["error"], "invalid_request");
+}
+
 // ---------------------------------------------------------------------------
 // Adversarial cases
 // ---------------------------------------------------------------------------
