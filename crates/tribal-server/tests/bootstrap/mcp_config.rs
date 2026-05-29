@@ -9,12 +9,16 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use tribal::TokenStrategy;
 use tribal_config::{
-    CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX, CliOverrides, Credentials, TransportKind,
+    CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX, CliOverrides, Credentials, ENV_PUBLIC_MCP_URL,
+    TransportKind,
 };
 use tribal_test_utils::{TestContext, serial_lock, test_context};
 
-use super::common::{CwdGuard, TestEnv, fresh_db, parse_json, run_bootstrap, run_mcp_config};
+use super::common::{
+    CwdGuard, EnvGuard, TestEnv, fresh_db, parse_json, run_bootstrap, run_mcp_config,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,7 +66,7 @@ async fn test_mcp_config_stdio_succeeds_without_credentials() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Stdio,
-        None,
+        TokenStrategy::Auto,
     )
     .await
     .expect("mcp-config stdio succeeds without credentials");
@@ -85,25 +89,63 @@ async fn test_mcp_config_stdio_token_emits_warning_and_succeeds() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Stdio,
-        Some("ignored-token".to_owned()),
+        TokenStrategy::Explicit("ignored-token".to_owned()),
     )
     .await
     .expect("mcp-config stdio with token still succeeds");
 
     let stderr = String::from_utf8(stderr).expect("utf8 stderr");
     assert!(
-        stderr.contains("--token has no effect when transport is stdio"),
+        stderr.contains("have no effect when transport is stdio"),
         "expected stdio-token warning in: {stderr}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// http: topology-aware default
+// ---------------------------------------------------------------------------
+
+/// The loopback http default is URL-only: with no `--token` or
+/// `--static-token`, the snippet carries no `Authorization` header and an
+/// OAuth-capable harness authenticates via the flow.
+#[tokio::test]
+async fn test_mcp_config_http_loopback_default_is_url_only() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    // The bind is loopback, so only a routable advertised override would
+    // flip the topology; clear it so the default is deterministic.
+    let _public_url_guard = EnvGuard::remove(ENV_PUBLIC_MCP_URL);
+    let project_id = seed_project(ctx, &env).await;
+
+    let (stdout, _stderr) = run_mcp_config(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        Some(project_id),
+        TransportKind::Http,
+        TokenStrategy::Auto,
+    )
+    .await
+    .expect("mcp-config http loopback default succeeds");
+
+    let entry = parse_json(&stdout);
+    assert!(
+        entry.get("headers").is_none(),
+        "loopback default omits the Authorization header: {entry}",
     );
 }
 
 // ---------------------------------------------------------------------------
 // http: credentials resolution
 // ---------------------------------------------------------------------------
+//
+// The loopback http default is URL-only and never reads credentials, so
+// these cases force the credentials path with `--static-token`.
 
-/// http with no credentials.json and no `--token` override must
-/// surface the canonical "no saved credentials" literal and exit
-/// non-zero.
+/// http `--static-token` with no credentials.json must surface the
+/// canonical "no saved credentials" literal and exit non-zero.
 #[tokio::test]
 async fn test_mcp_config_http_missing_credentials_errors_with_literal() {
     let _lock = serial_lock().await;
@@ -119,7 +161,7 @@ async fn test_mcp_config_http_missing_credentials_errors_with_literal() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        None,
+        TokenStrategy::Static,
     )
     .await
     .expect_err("http without credentials must fail");
@@ -153,7 +195,7 @@ async fn test_mcp_config_http_malformed_credentials_errors_with_literal() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        None,
+        TokenStrategy::Static,
     )
     .await
     .expect_err("malformed credentials must fail");
@@ -194,7 +236,7 @@ async fn test_mcp_config_http_schema_mismatch_errors_with_literal() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        None,
+        TokenStrategy::Static,
     )
     .await
     .expect_err("schema-mismatch credentials must fail");
@@ -234,7 +276,7 @@ async fn test_mcp_config_http_permissive_credentials_warn_and_succeed() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        None,
+        TokenStrategy::Static,
     )
     .await
     .expect("mcp-config still succeeds with permissive credentials");
@@ -263,7 +305,7 @@ async fn test_mcp_config_http_explicit_token_overrides_credentials() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        Some(override_token.to_owned()),
+        TokenStrategy::Explicit(override_token.to_owned()),
     )
     .await
     .expect("mcp-config http with --token succeeds");
@@ -301,7 +343,7 @@ async fn test_mcp_config_project_resolution_failure_errors_with_literal() {
         CliOverrides::default(),
         None,
         TransportKind::Stdio,
-        None,
+        TokenStrategy::Auto,
     )
     .await
     .expect_err("resolution must fail without inputs");

@@ -27,6 +27,24 @@ use crate::{
 // Inputs
 // ---------------------------------------------------------------------------
 
+/// How an http/sse snippet's authentication is chosen.
+///
+/// `--token` and `--static-token` are mutually exclusive at the CLI, so
+/// the two flags resolve to a single value here and the invalid
+/// "both at once" combination cannot be represented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenStrategy {
+    /// `--token <value>`: embed this caller-supplied bearer token.
+    Explicit(String),
+    /// `--static-token`: embed the persisted static token from the
+    /// credentials file, whatever the deployment topology.
+    Static,
+    /// No override: embed the static token only on a routable surface;
+    /// a loopback surface advertises a URL-only snippet for the OAuth
+    /// flow, leaving nothing to copy.
+    Auto,
+}
+
 /// Bundle of inputs threaded into [`run_async`].
 ///
 /// Constructed by the synchronous [`run`] wrapper from the parsed
@@ -40,11 +58,8 @@ pub struct McpConfigOptions<'a> {
     pub project_override: Option<String>,
     /// Resolved transport for the rendered snippet.
     pub transport: TransportKind,
-    /// Bearer token override from `--token`, if supplied.
-    pub explicit_token: Option<String>,
-    /// Whether `--static-token` was passed, forcing the persisted static
-    /// token into an http/sse snippet regardless of deployment topology.
-    pub static_token: bool,
+    /// How the http/sse snippet's authentication is chosen.
+    pub token_strategy: TokenStrategy,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,8 +102,7 @@ const POOL_NAME_MCP_CONFIG: &str = "mcp-config";
 pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppError> {
     let transport = args.transport;
     let project = args.project.take();
-    let token = args.token.take();
-    let static_token = args.static_token;
+    let token_strategy = token_strategy_from_args(args.token.take(), args.static_token);
 
     let cli_overrides = args.into_cli_overrides();
     let config = load_config(
@@ -114,12 +128,23 @@ pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppE
             config_path: &absolute_config_path,
             project_override: project,
             transport,
-            explicit_token: token,
-            static_token,
+            token_strategy,
         },
         &mut stdout,
         &mut stderr,
     ))
+}
+
+/// Resolves the parsed `--token` / `--static-token` flags into a single
+/// [`TokenStrategy`]. The `--token` value is trimmed here, so an
+/// empty-after-trim value is treated as absent rather than reaching
+/// [`TokenStrategy::Explicit`].
+fn token_strategy_from_args(token: Option<String>, static_token: bool) -> TokenStrategy {
+    match token.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
+        Some(token) => TokenStrategy::Explicit(token),
+        None if static_token => TokenStrategy::Static,
+        None => TokenStrategy::Auto,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,11 +181,12 @@ pub async fn run_async(
             context: PROJECT_RESOLUTION_FAILED_CONTEXT.into(),
         })?;
 
+    let oauth_surface_routable =
+        oauth_surface_is_routable(opts.config, public_mcp_url_override().as_deref());
     let auth = resolve_auth(
         opts.transport,
-        opts.config,
-        opts.explicit_token,
-        opts.static_token,
+        opts.token_strategy,
+        oauth_surface_routable,
         out_stderr,
     )?;
     let advertised_url = resolved_advertised_url(opts.config);
@@ -179,62 +205,50 @@ pub async fn run_async(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolves the [`Auth`] value to embed in the snippet.
+/// Resolves the [`Auth`] to embed in the snippet from the chosen
+/// [`TokenStrategy`] and the deployment topology.
 ///
-/// stdio short-circuits to `None` — harness-spawned servers authenticate
-/// as `principal:local` at runtime. For network transports an explicit
-/// `--token` always embeds that token; otherwise the persisted static
-/// token is embedded only where it is the auth path: when `--static-token`
-/// forces it (a harness that cannot perform the OAuth flow), or when the
-/// surface is routable so open DCR is refused. A loopback surface
-/// defaults to a `None` (URL-only) snippet, leaving an OAuth-capable
-/// harness to authenticate via the flow with nothing to copy. The
-/// `--token` value is trimmed once at this boundary; empty-after-trim is
-/// treated as absent (mcp-config does not consult `TRIBAL_AUTH_TOKEN`).
+/// stdio carries no `Authorization` header, so it always resolves to
+/// `None` and warns when a token strategy was nonetheless requested.
+/// `None` is the URL-only snippet: an OAuth-capable harness authenticates
+/// via the flow with nothing to copy. mcp-config does not consult
+/// `TRIBAL_AUTH_TOKEN`.
 fn resolve_auth(
     transport: TransportKind,
-    config: &TribalConfig,
-    explicit_token: Option<String>,
-    static_token: bool,
+    token_strategy: TokenStrategy,
+    oauth_surface_routable: bool,
     out_stderr: &mut dyn Write,
 ) -> Result<Option<Auth>, AppError> {
-    let trimmed_token = explicit_token
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
-
     match transport {
         TransportKind::Stdio => {
-            if trimmed_token.is_some() || static_token {
+            if !matches!(token_strategy, TokenStrategy::Auto) {
                 let _ = writeln!(out_stderr, "{STDIO_TOKEN_IGNORED}");
             }
             Ok(None)
         }
-        TransportKind::Http | TransportKind::Sse => {
-            let routable = oauth_surface_is_routable(config, public_mcp_url_override().as_deref());
-            if trimmed_token.is_none() && !static_token && !routable {
-                return Ok(None);
+        TransportKind::Http | TransportKind::Sse => match token_strategy {
+            TokenStrategy::Explicit(token) => Ok(Some(bearer_from_explicit(&token)?)),
+            TokenStrategy::Static => Ok(Some(read_persisted_auth(out_stderr)?)),
+            TokenStrategy::Auto if oauth_surface_routable => {
+                Ok(Some(read_persisted_auth(out_stderr)?))
             }
-            let auth = resolve_network_auth(trimmed_token, out_stderr)?;
-            Ok(Some(auth))
-        }
+            TokenStrategy::Auto => Ok(None),
+        },
     }
 }
 
-/// Network-transport auth resolution: explicit `--token` first (already
-/// trimmed by [`resolve_auth`]), then persisted credentials. Permissions
-/// drift warns on stderr but does not block.
-fn resolve_network_auth(
-    explicit_token: Option<String>,
-    out_stderr: &mut dyn Write,
-) -> Result<Auth, AppError> {
-    if let Some(raw) = explicit_token {
-        let token: BearerToken = raw.parse().map_err(|source| AppError::TokenVerification {
-            reason: "bearer token from --token is invalid".into(),
-            source: Box::new(source),
-        })?;
-        return Ok(Auth::Bearer { token });
-    }
+/// Builds bearer auth from a caller-supplied `--token` value.
+fn bearer_from_explicit(raw: &str) -> Result<Auth, AppError> {
+    let token: BearerToken = raw.parse().map_err(|source| AppError::TokenVerification {
+        reason: "bearer token from --token is invalid".into(),
+        source: Box::new(source),
+    })?;
+    Ok(Auth::Bearer { token })
+}
 
+/// Reads the persisted static token from the credentials file. Permissions
+/// drift warns on stderr but does not block.
+fn read_persisted_auth(out_stderr: &mut dyn Write) -> Result<Auth, AppError> {
     let loaded = read_credentials().map_err(|source| AppError::Credentials { source })?;
     let LoadedCredentials {
         credentials,
@@ -337,5 +351,85 @@ mod tests {
             &payload,
             "src/commands/mcp_config/snapshots/snippet-http.json"
         );
+    }
+
+    // -- token_strategy_from_args ---------------------------------------------
+
+    #[test]
+    fn test_token_strategy_from_args_maps_each_flag_combination() {
+        assert_eq!(
+            token_strategy_from_args(Some("abc".to_owned()), false),
+            TokenStrategy::Explicit("abc".to_owned()),
+        );
+        assert_eq!(token_strategy_from_args(None, true), TokenStrategy::Static);
+        assert_eq!(token_strategy_from_args(None, false), TokenStrategy::Auto);
+    }
+
+    #[test]
+    fn test_token_strategy_from_args_treats_blank_token_as_absent() {
+        assert_eq!(
+            token_strategy_from_args(Some("   ".to_owned()), false),
+            TokenStrategy::Auto,
+        );
+        assert_eq!(
+            token_strategy_from_args(Some("  abc  ".to_owned()), false),
+            TokenStrategy::Explicit("abc".to_owned()),
+        );
+    }
+
+    // -- resolve_auth ---------------------------------------------------------
+
+    #[test]
+    fn test_resolve_auth_stdio_warns_when_a_token_is_requested() {
+        let mut stderr = Vec::<u8>::new();
+        let auth = resolve_auth(
+            TransportKind::Stdio,
+            TokenStrategy::Static,
+            false,
+            &mut stderr,
+        )
+        .expect("stdio auth resolves");
+        assert!(auth.is_none(), "stdio embeds no token in the snippet");
+        let warning = String::from_utf8(stderr).expect("utf8 stderr");
+        assert_eq!(warning.trim_end(), STDIO_TOKEN_IGNORED);
+    }
+
+    #[test]
+    fn test_resolve_auth_stdio_auto_is_silent() {
+        let mut stderr = Vec::<u8>::new();
+        let auth = resolve_auth(
+            TransportKind::Stdio,
+            TokenStrategy::Auto,
+            false,
+            &mut stderr,
+        )
+        .expect("stdio auth resolves");
+        assert!(auth.is_none());
+        assert!(
+            stderr.is_empty(),
+            "stdio without a token strategy is silent"
+        );
+    }
+
+    #[test]
+    fn test_resolve_auth_loopback_auto_is_url_only() {
+        let mut stderr = Vec::<u8>::new();
+        let auth = resolve_auth(TransportKind::Http, TokenStrategy::Auto, false, &mut stderr)
+            .expect("loopback auth resolves");
+        assert!(auth.is_none(), "loopback default is URL-only");
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_auth_explicit_token_embeds_on_loopback() {
+        let mut stderr = Vec::<u8>::new();
+        let auth = resolve_auth(
+            TransportKind::Http,
+            TokenStrategy::Explicit("test-bearer-token".to_owned()),
+            false,
+            &mut stderr,
+        )
+        .expect("explicit token resolves");
+        assert!(matches!(auth, Some(Auth::Bearer { .. })));
     }
 }

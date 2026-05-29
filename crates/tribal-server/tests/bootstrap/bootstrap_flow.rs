@@ -1,5 +1,6 @@
 //! End-to-end tests for `tribal bootstrap`.
 
+use tribal::TokenStrategy;
 use tribal_common::sha256_hex;
 use tribal_config::{
     CliOverrides, ENV_OPENAI_API_KEY, EmbeddingCliOverrides, TelemetryCliOverrides, TransportKind,
@@ -51,7 +52,7 @@ async fn test_bootstrap_then_mcp_config_round_trip_stdio() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Stdio,
-        None,
+        TokenStrategy::Auto,
     )
     .await
     .expect("mcp-config succeeds");
@@ -94,7 +95,7 @@ async fn test_bootstrap_then_mcp_config_round_trip_http() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        None,
+        TokenStrategy::Auto,
     )
     .await
     .expect("mcp-config succeeds");

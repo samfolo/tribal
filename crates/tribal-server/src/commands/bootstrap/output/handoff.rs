@@ -41,6 +41,7 @@ pub(in crate::commands::bootstrap) struct Handoff<'a> {
     pub credentials: &'a CredentialsPersistOutcome,
     pub persistence: ConfigPersistence<'a>,
     pub advertised_url: &'a str,
+    pub oauth_surface_routable: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -84,12 +85,12 @@ impl Component for HandoffView<'_> {
         }
 
         let inputs = ActionInputs {
-            bearer_token: h.bearer_token,
             transport: h.transport,
             project_id: h.project_id,
             config_path: h.config_file.path().display().to_string(),
             config_file: h.config_file,
             persistence: h.persistence,
+            oauth_surface_routable: h.oauth_surface_routable,
         };
 
         match h.transport {
@@ -105,13 +106,18 @@ impl Component for HandoffView<'_> {
                 .render(ctx)?;
             }
             TransportKind::Http | TransportKind::Sse => {
-                HttpSseTokenBlock {
-                    token: h.bearer_token,
-                    credentials: h.credentials,
+                // A write failure leaves no copy in credentials.json, so
+                // surface the token inline as a last resort. On success it
+                // stays in the file and is never printed (the OAuth or
+                // `tribal mcp-config --static-token` path retrieves it).
+                if let CredentialsPersistOutcome::Failed { .. } = h.credentials {
+                    HttpSseTokenBlock {
+                        token: h.bearer_token,
+                    }
+                    .render(ctx)?;
+                    writeln!(ctx)?;
+                    writeln!(ctx)?;
                 }
-                .render(ctx)?;
-                writeln!(ctx)?;
-                writeln!(ctx)?;
                 let steps = http_sse_steps(&inputs);
                 ActionList { steps: &steps }.render(ctx)?;
             }
@@ -192,6 +198,8 @@ mod tests {
         transport: TransportKind,
         persistence: ConfigPersistence<'a>,
         config_file: ConfigFileOutcome,
+        advertised_url: String,
+        oauth_surface_routable: bool,
     }
 
     fn fixture_bearer_token() -> BearerToken {
@@ -290,7 +298,6 @@ mod tests {
             token: bearer.clone(),
         };
         let mcp_entry = fixture_mcp_entry(case.transport, Some(&auth));
-        let advertised_url = fixture_advertised_url();
         let credentials = fixture_credentials_persisted();
         let handoff = Handoff {
             bearer_token: &bearer,
@@ -304,7 +311,8 @@ mod tests {
             config_file: &case.config_file,
             credentials: &credentials,
             persistence: case.persistence,
-            advertised_url: &advertised_url,
+            advertised_url: &case.advertised_url,
+            oauth_surface_routable: case.oauth_surface_routable,
         };
         let theme = Theme::default_dark();
         render_to_string(|w| write_human(w, &theme, &handoff))
@@ -313,10 +321,10 @@ mod tests {
     fn render_json(transport: TransportKind) -> serde_json::Value {
         let bearer = fixture_bearer_token();
         let project = fixture_project();
-        let auth = Auth::Bearer {
-            token: bearer.clone(),
-        };
-        let mcp_entry = fixture_mcp_entry(transport, Some(&auth));
+        // The loopback default advertises a URL-only snippet; the raw
+        // token still rides the top-level `bearer_token` field as the
+        // machine escape hatch.
+        let mcp_entry = fixture_mcp_entry(transport, None);
         let config_file = fixture_written();
         let advertised_url = fixture_advertised_url();
         let credentials = fixture_credentials_persisted();
@@ -333,6 +341,7 @@ mod tests {
             credentials: &credentials,
             persistence: ConfigPersistence::Minimal,
             advertised_url: &advertised_url,
+            oauth_surface_routable: false,
         };
         let captured = render_to_string(|w| write_json(w, &handoff));
         serde_json::from_str(&captured).expect("output is valid JSON")
@@ -346,6 +355,8 @@ mod tests {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_written(),
+            advertised_url: fixture_advertised_url(),
+            oauth_surface_routable: false,
         });
         assert_text_snapshot!(
             &captured,
@@ -359,6 +370,8 @@ mod tests {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_already_exists(),
+            advertised_url: fixture_advertised_url(),
+            oauth_surface_routable: false,
         });
         assert_text_snapshot!(
             &captured,
@@ -373,6 +386,8 @@ mod tests {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_written(),
+            advertised_url: fixture_advertised_url(),
+            oauth_surface_routable: false,
         });
         assert_text_snapshot!(
             &captured,
@@ -387,6 +402,8 @@ mod tests {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_already_exists(),
+            advertised_url: fixture_advertised_url(),
+            oauth_surface_routable: false,
         });
         assert_text_snapshot!(
             &captured,
@@ -402,6 +419,8 @@ mod tests {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_written(),
+            advertised_url: fixture_advertised_url(),
+            oauth_surface_routable: false,
         });
         assert_text_snapshot!(
             &captured,
@@ -415,6 +434,8 @@ mod tests {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_already_exists(),
+            advertised_url: fixture_advertised_url(),
+            oauth_surface_routable: false,
         });
         assert_text_snapshot!(
             &captured,
@@ -429,6 +450,8 @@ mod tests {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_written(),
+            advertised_url: fixture_advertised_url(),
+            oauth_surface_routable: false,
         });
         assert_text_snapshot!(
             &captured,
@@ -443,10 +466,29 @@ mod tests {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_already_exists(),
+            advertised_url: fixture_advertised_url(),
+            oauth_surface_routable: false,
         });
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-http-flags-file-exists.txt"
+        );
+    }
+
+    // -- Stderr × http routable (1 case) -------------------------------------
+
+    #[test]
+    fn test_stderr_http_routable_no_flags_first_run_matches_snapshot() {
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Http,
+            persistence: ConfigPersistence::Minimal,
+            config_file: fixture_written(),
+            advertised_url: "https://tribal.example.com/mcp".to_owned(),
+            oauth_surface_routable: true,
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-http-routable-no-flags-first-run.txt"
         );
     }
 
@@ -477,6 +519,7 @@ mod tests {
             credentials: &credentials,
             persistence: ConfigPersistence::Minimal,
             advertised_url: &advertised_url,
+            oauth_surface_routable: false,
         };
         let theme = Theme::default_dark();
         render_to_string(|w| write_human(w, &theme, &handoff))

@@ -10,7 +10,7 @@ use anstream::AutoStream;
 use chrono::{DateTime, Utc};
 use tribal_config::{
     Auth, CREDENTIALS_FILENAME, CliOverrides, ConfigPersistence, TRIBAL_DIRECTORY_NAME,
-    TransportKind, TribalConfig,
+    TransportKind, TribalConfig, oauth_surface_is_routable, public_mcp_url_override,
 };
 use tribal_domain::GitRemote;
 use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
@@ -171,9 +171,18 @@ pub async fn run_async(
 
     // -- Register -----------------------------------------------------------
 
+    let oauth_surface_routable =
+        oauth_surface_is_routable(opts.config, public_mcp_url_override().as_deref());
     let auth = Auth::Bearer {
         token: setup_outcome.bearer_token.clone(),
     };
+    // The embedded snippet follows the same topology rule as
+    // `tribal mcp-config`: a loopback surface advertises a URL-only
+    // (OAuth) snippet with nothing to copy, a routable surface embeds the
+    // bearer token for harnesses that cannot perform the flow. The token
+    // is persisted to credentials.json regardless, so the static-token
+    // escape hatch stays available.
+    let snippet_auth = oauth_surface_routable.then_some(&auth);
     let project = register::compute(
         opts.config,
         opts.git_remote,
@@ -182,7 +191,7 @@ pub async fn run_async(
         &OutputOptions {
             json: false,
             transport: opts.transport,
-            auth: Some(&auth),
+            auth: snippet_auth,
             // The token was just minted by setup against this same
             // database — re-verifying would only add a round trip.
             skip_validation: true,
@@ -208,6 +217,7 @@ pub async fn run_async(
         credentials: &setup_outcome.credentials,
         persistence: ConfigPersistence::Persisted(opts.persisted_overrides),
         advertised_url: &advertised_url,
+        oauth_surface_routable,
     };
 
     if opts.json {

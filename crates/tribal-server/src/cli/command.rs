@@ -829,8 +829,9 @@ pub struct McpConfigArgs {
     /// The default http/sse snippet on a loopback deployment is URL-only
     /// and relies on OAuth, which suits OAuth-capable harnesses. Pass this
     /// for a harness that authenticates only with a static `Authorization`
-    /// header and so cannot perform the OAuth flow. Ignored for stdio.
-    #[arg(long, help_heading = "Output")]
+    /// header and so cannot perform the OAuth flow. Mutually exclusive with
+    /// `--token`. Ignored for stdio.
+    #[arg(long, conflicts_with = "token", help_heading = "Output")]
     pub static_token: bool,
 
     /// Database connection options.
