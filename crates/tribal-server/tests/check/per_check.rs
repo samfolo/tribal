@@ -116,7 +116,7 @@ async fn test_valid_token_skips_on_loopback_http_without_token() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_valid_token_warns_on_routable_http_without_token() {
+async fn test_valid_token_fails_on_routable_http_without_token() {
     let ctx = test_context().await;
     let _lock = serial_lock().await;
     let env = TestEnv::new();
@@ -125,7 +125,8 @@ async fn test_valid_token_warns_on_routable_http_without_token() {
     config.server.transport = TransportKind::Http;
     config.server.bind_address = Some("127.0.0.1:8725".into());
     // A routable advertised surface with open registration off: the
-    // static token is the only auth path, so its absence is a gap.
+    // static token is the only auth path, so its absence leaves clients
+    // unable to authenticate. That is a readiness failure, not advice.
     config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
     config.oauth.dcr_enabled = false;
     write_config(&env.config_path, &config);
@@ -141,7 +142,10 @@ async fn test_valid_token_warns_on_routable_http_without_token() {
     .expect("check runs");
 
     let output = parse_json(&stdout);
-    assert_eq!(row_status(&output, "valid_token_exists"), Some("warn"));
+    assert_eq!(row_status(&output, "valid_token_exists"), Some("fail"));
+    // A routable deployment with no auth path is not ready: the failed
+    // row must drive the aggregate `ok` to false.
+    assert_eq!(output["ok"], false);
 }
 
 #[tokio::test(flavor = "multi_thread")]
