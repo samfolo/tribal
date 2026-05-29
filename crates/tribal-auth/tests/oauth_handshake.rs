@@ -870,6 +870,52 @@ async fn test_token_omitted_scope_falls_back_to_registration() {
 }
 
 #[tokio::test]
+async fn test_token_blank_scope_falls_back_to_registration() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // Register a client whose grant is narrower than the default.
+    let register = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "scope": "tribal.knowledge:read",
+        }))
+        .await;
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
+    let client_id = register["client_id"].as_str().unwrap().to_owned();
+
+    // An explicit but blank `scope=` is treated as omitted: the minted token
+    // must carry the registered scope, not the broader DEFAULT_GRANT_SCOPE.
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}&scope=",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(read_body(response).await).unwrap();
+    let target = extract_approve_href(&html);
+    let code = Url::parse(&target)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .expect("consent page carries the authorisation code");
+
+    let response = client
+        .post_token(token_form(&code, &client_id, VERIFIER, None))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(token["scope"], "tribal.knowledge:read");
+}
+
+#[tokio::test]
 async fn test_authorize_omits_redirect_uri_with_single_registered() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.unwrap();
