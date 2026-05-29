@@ -14,6 +14,18 @@
 //! could perceive the destination; the code is released only after the
 //! user confirms the hostname shown.
 //!
+//! This is a display-and-confirm gate, not a server-enforced one. The
+//! code is persisted before the page renders and the Authorise anchor is
+//! a client-side navigation, so the human click gates delivery of the
+//! code to the redirect target but is not itself recorded server-side.
+//! Its security value is that a human perceives the redirect host before
+//! any code reaches it, which is what the loopback threat model requires:
+//! a single-user local server where the agent acts on the user's own
+//! behalf. A networked or multi-party authorisation server instead
+//! requires a server-enforced confirmation (a POST back to the server
+//! that releases the code only on explicit approval); the code-issue
+//! point moves behind that POST, leaving the rest of this flow intact.
+//!
 //! Navigation is an anchor whose `href` is the full redirect target,
 //! carrying the `code` and `state`. A GET form would rebuild its query
 //! string from input fields and strip those parameters; the anchor

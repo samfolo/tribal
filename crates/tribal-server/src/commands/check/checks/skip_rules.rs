@@ -55,7 +55,8 @@ impl SkipMask {
         match diagnostic {
             ValidationError::BindAddressStdioConflict
             | ValidationError::BindAddressMalformed { .. }
-            | ValidationError::UrlMalformed { .. } => {
+            | ValidationError::UrlMalformed { .. }
+            | ValidationError::UrlUnsupportedForm { .. } => {
                 self.bits |= flag::ADVERTISED_URL;
             }
             ValidationError::MissingApiKey { stage, .. } => match stage {

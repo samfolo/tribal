@@ -36,7 +36,7 @@ use crate::oauth::{
     config::{OAuthRuntimeConfig, canonicalise_resource_url},
     error::{
         InternalOperation, InvalidClientReason, InvalidGrantReason, InvalidRequestReason,
-        InvalidTargetReason, OAuthError,
+        InvalidTargetReason, OAuthError, require_param,
     },
     pkce::{CodeChallenge, CodeVerifier},
     scope::{DEFAULT_GRANT_SCOPE, parse_scope_list},
@@ -52,23 +52,32 @@ const RANDOM_TOKEN_BYTE_LENGTH: usize = 32;
 // Request and response
 // ---------------------------------------------------------------------------
 
-/// RFC 6749 §4.1.3 token-endpoint request body.
+/// RFC 6749 §4.1.3 token-endpoint request body, before required-field
+/// validation.
+///
+/// Every required parameter is modelled as `Option` so an absent value
+/// surfaces as an RFC 6749 §5.2 `invalid_request` (via
+/// [`TokenRequest::validate`]) rather than a bare form-deserialisation
+/// rejection from the framework.
 #[derive(Debug, Deserialize)]
 pub struct TokenRequest {
     /// Required grant type (must be `authorization_code`).
-    pub grant_type: String,
+    #[serde(default)]
+    pub grant_type: Option<String>,
     /// The authorisation code returned at /authorize.
-    pub code: String,
+    #[serde(default)]
+    pub code: Option<String>,
     /// Redirect URI bound to the code.
-    pub redirect_uri: String,
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
     /// Client identifier bound to the code.
-    pub client_id: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
     /// PKCE code verifier.
-    pub code_verifier: String,
+    #[serde(default)]
+    pub code_verifier: Option<String>,
     /// Resource indicator per RFC 8707. Required, and must canonicalise
-    /// to the same value bound to the code at `/authorize`. Modelled as
-    /// `Option` only so an omitted value surfaces as an `invalid_target`
-    /// JSON error rather than a bare form-deserialisation rejection.
+    /// to the same value bound to the code at `/authorize`.
     #[serde(default)]
     pub resource: Option<String>,
     /// Client secret for the `client_secret_post` method, presented in
@@ -76,6 +85,33 @@ pub struct TokenRequest {
     /// presents its secret in the `Authorization: Basic` header instead.
     #[serde(default)]
     pub client_secret: Option<String>,
+}
+
+/// A token request whose required parameters are all present.
+struct ValidatedTokenRequest {
+    grant_type: String,
+    code: String,
+    redirect_uri: String,
+    client_id: String,
+    code_verifier: String,
+    resource: Option<String>,
+    client_secret: Option<String>,
+}
+
+impl TokenRequest {
+    /// Validates that every required parameter is present, mapping an
+    /// absent one to an `invalid_request` error.
+    fn validate(self) -> Result<ValidatedTokenRequest, OAuthError> {
+        Ok(ValidatedTokenRequest {
+            grant_type: require_param(self.grant_type, "grant_type")?,
+            code: require_param(self.code, "code")?,
+            redirect_uri: require_param(self.redirect_uri, "redirect_uri")?,
+            client_id: require_param(self.client_id, "client_id")?,
+            code_verifier: require_param(self.code_verifier, "code_verifier")?,
+            resource: self.resource,
+            client_secret: self.client_secret,
+        })
+    }
 }
 
 /// RFC 6749 §5.1 token-endpoint success response.
@@ -130,7 +166,11 @@ pub async fn handle_token(
     Form(req): Form<TokenRequest>,
 ) -> Response {
     let basic = BasicCredentials::from_headers(&headers);
-    match exchange(&state, &req, basic.as_ref()).await {
+    let result = match req.validate() {
+        Ok(validated) => exchange(&state, &validated, basic.as_ref()).await,
+        Err(err) => Err(err),
+    };
+    match result {
         Ok(response) => {
             let mut headers = HeaderMap::new();
             headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -159,7 +199,7 @@ pub async fn handle_token(
 
 async fn exchange(
     state: &TokenState,
-    req: &TokenRequest,
+    req: &ValidatedTokenRequest,
     basic: Option<&BasicCredentials>,
 ) -> Result<TokenResponse, OAuthError> {
     if req.grant_type != GRANT_TYPE_AUTHORIZATION_CODE {
@@ -209,7 +249,17 @@ async fn exchange(
             reason: InvalidGrantReason::ClientIdMismatch,
         });
     }
-    if code.redirect_uri() != req.redirect_uri {
+    // Compare the redirect URI through the same URL normalisation
+    // `/authorize` applied before storing it, so a client that sends the
+    // identical string at both endpoints is not rejected over a
+    // normalisation difference (a missing path, host case, percent-
+    // encoding). A value that no longer parses cannot match the stored
+    // code and is an invalid grant.
+    let presented_redirect =
+        url::Url::parse(&req.redirect_uri).map_err(|_| OAuthError::InvalidGrant {
+            reason: InvalidGrantReason::RedirectUriMismatch,
+        })?;
+    if code.redirect_uri() != presented_redirect.as_str() {
         return Err(OAuthError::InvalidGrant {
             reason: InvalidGrantReason::RedirectUriMismatch,
         });
@@ -225,6 +275,13 @@ async fn exchange(
             value: presented.to_owned(),
         },
     })?;
+    if presented_url.fragment().is_some() {
+        return Err(OAuthError::InvalidTarget {
+            reason: InvalidTargetReason::FragmentPresent {
+                value: presented.to_owned(),
+            },
+        });
+    }
     let canonical_presented = canonicalise_resource_url(&presented_url);
     let expected = code.resource().unwrap_or("");
     if canonical_presented != expected {
@@ -343,7 +400,7 @@ impl BasicCredentials {
 async fn enforce_client_secret(
     state: &TokenState,
     conn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    req: &TokenRequest,
+    req: &ValidatedTokenRequest,
     basic: Option<&BasicCredentials>,
 ) -> Result<(), OAuthError> {
     let client = state
@@ -378,12 +435,21 @@ async fn enforce_client_secret(
 }
 
 /// Constant-time-compares a presented secret against the stored hash.
+///
+/// Reached only for confidential clients (the `none` method returns
+/// before calling this), so a `None` stored hash is a registration-time
+/// invariant violation, not a public client. It fails closed: a
+/// confidential client whose stored secret is missing is rejected as an
+/// internal error rather than silently authenticated.
 fn verify_client_secret(
     stored_hash: Option<&str>,
     presented: Option<&str>,
 ) -> Result<(), OAuthError> {
     match (stored_hash, presented) {
-        (None, _) => Ok(()),
+        (None, _) => Err(OAuthError::Internal {
+            operation: InternalOperation::ConfidentialClientMissingSecret,
+            source: None,
+        }),
         (Some(_), None) => Err(OAuthError::InvalidClient {
             reason: InvalidClientReason::SecretRequired,
         }),

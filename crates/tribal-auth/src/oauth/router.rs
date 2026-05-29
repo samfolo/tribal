@@ -30,12 +30,6 @@ use crate::oauth::{
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Path under the resource-metadata root that targets the `/mcp` path.
-///
-/// MCP clients per RFC 9728 §3 query the path-suffixed form first;
-/// serving both is the most interoperable choice.
-const PATH_PROTECTED_RESOURCE_METADATA_MCP: &str = "/.well-known/oauth-protected-resource/mcp";
-
 /// `Cache-Control` value applied to metadata document responses.
 const METADATA_CACHE_CONTROL: &str = "public, max-age=300";
 
@@ -77,10 +71,6 @@ pub fn oauth_router(state: OAuthRouterState) -> Router {
             get(serve_protected_resource_metadata).with_state(metadata_state.clone()),
         )
         .route(
-            PATH_PROTECTED_RESOURCE_METADATA_MCP,
-            get(serve_protected_resource_metadata).with_state(metadata_state.clone()),
-        )
-        .route(
             PATH_AUTHORIZATION_SERVER_METADATA,
             get(serve_authorization_server_metadata).with_state(metadata_state.clone()),
         )
@@ -89,6 +79,20 @@ pub fn oauth_router(state: OAuthRouterState) -> Router {
             get(handle_authorize).with_state(authorize_state),
         )
         .route(PATH_TOKEN, post(handle_token).with_state(token_state));
+
+    // RFC 9728 §3 clients query the path-suffixed protected-resource
+    // metadata first. Derive the suffix from the configured resource path
+    // so the served route matches the `WWW-Authenticate` challenge the
+    // bearer middleware emits, rather than assuming a fixed `/mcp`. A
+    // resource with no path is served by the root route alone.
+    let resource_path = state.runtime.resource_url.path().trim_start_matches('/');
+    if !resource_path.is_empty() {
+        let suffixed = format!("{PATH_PROTECTED_RESOURCE_METADATA}/{resource_path}");
+        router = router.route(
+            &suffixed,
+            get(serve_protected_resource_metadata).with_state(metadata_state.clone()),
+        );
+    }
 
     if state.runtime.dcr_enabled {
         router = router.route(

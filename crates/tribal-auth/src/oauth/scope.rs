@@ -7,7 +7,7 @@
 //! this one definition, so what we advertise, accept, and mint cannot
 //! drift apart.
 
-use tribal_domain::Scope;
+use tribal_domain::{Scope, is_authorised};
 
 use crate::oauth::error::OAuthError;
 
@@ -60,6 +60,31 @@ pub(crate) fn parse_scope_list(raw: &str) -> Result<Vec<Scope>, OAuthError> {
 pub(crate) fn first_uncatalogued_scope(raw: &str) -> Option<&str> {
     raw.split_ascii_whitespace()
         .find(|token| !SCOPES_CATALOGUE.contains(token))
+}
+
+/// Returns the first requested scope token not granted by the client's
+/// registered scope, or `None` when every requested token is within it.
+///
+/// A requested token is within the registration when some registered
+/// scope satisfies it (the same hierarchy [`is_authorised`] enforces), so
+/// a client registered for the broad `tribal:read` may request the
+/// narrower `tribal.knowledge:read`. Catalogue membership is a separate,
+/// outer bound enforced by [`first_uncatalogued_scope`]; this is the
+/// per-client upper bound DCR registration establishes.
+pub(crate) fn scope_exceeding_registration<'a>(
+    requested: &'a str,
+    registered: &str,
+) -> Option<&'a str> {
+    let registered: Vec<Scope> = registered
+        .split_ascii_whitespace()
+        .filter_map(|token| Scope::parse(token).ok())
+        .collect();
+    requested
+        .split_ascii_whitespace()
+        .find(|token| match Scope::parse(token) {
+            Ok(requested_scope) => !is_authorised(&registered, &requested_scope),
+            Err(_) => true,
+        })
 }
 
 #[cfg(test)]

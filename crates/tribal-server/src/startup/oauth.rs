@@ -11,7 +11,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use tribal_auth::oauth::{OAuthRuntimeConfig, OAuthRuntimeConfigError};
-use tribal_config::{DEFAULT_BIND_ADDRESS, TribalConfig};
+use tribal_config::{DEFAULT_BIND_ADDRESS, TransportKind, TribalConfig};
 use url::Url;
 
 use crate::error::AppError;
@@ -63,6 +63,26 @@ pub fn resolve_oauth_runtime(config: &TribalConfig) -> Result<OAuthRuntimeConfig
             },
         },
     )
+}
+
+/// The bearer-token audience a token must carry to be accepted under
+/// `transport`.
+///
+/// Network transports bind the canonical resource (RFC 8707 audience
+/// restriction); stdio carries no audience. This is the single
+/// definition the network auth middleware and the CLI validation paths
+/// (`tribal check`, `tribal project register`) all resolve against, so
+/// what the live server enforces and what the validators assert cannot
+/// drift apart.
+#[must_use]
+pub fn expected_token_audience(
+    transport: TransportKind,
+    runtime: &OAuthRuntimeConfig,
+) -> Option<String> {
+    match transport {
+        TransportKind::Http | TransportKind::Sse => Some(runtime.canonical_resource.clone()),
+        TransportKind::Stdio => None,
+    }
 }
 
 /// Translates a bind address to a host/port pair suitable for embedding

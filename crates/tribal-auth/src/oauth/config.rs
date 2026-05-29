@@ -103,7 +103,9 @@ fn parse_optional_url(maybe: Option<&str>, fallback: &Url) -> Result<Url, String
 /// on a minted token, so its rules are fixed by what a compliant client
 /// transmits, not by convenience:
 ///
-/// - lowercases scheme and host (both case-insensitive per RFC 3986);
+/// - relies on URL parsing having already lowercased the scheme and host
+///   (both case-insensitive per RFC 3986; `url` normalises them at parse
+///   time for the `http`/`https` schemes a resource indicator uses);
 /// - removes any fragment (never part of a resource identifier);
 /// - trims a single trailing slash so `.../mcp` and `.../mcp/` agree,
 ///   while a bare `/` collapses to `""` to stay byte-stable across
@@ -123,12 +125,6 @@ fn parse_optional_url(maybe: Option<&str>, fallback: &Url) -> Result<Url, String
 pub fn canonicalise_resource_url(url: &Url) -> String {
     let mut clone = url.clone();
     clone.set_fragment(None);
-    let scheme = clone.scheme().to_ascii_lowercase();
-    let _ = clone.set_scheme(&scheme);
-    let host = clone.host_str().map(str::to_ascii_lowercase);
-    if let Some(h) = host {
-        let _ = clone.set_host(Some(&h));
-    }
     let mut s: String = clone.into();
     if s.ends_with('/') && !s.ends_with("//") {
         s.pop();

@@ -26,9 +26,6 @@ const COLUMNS: Columns = Columns(&[
     "consumed_at",
 ]);
 
-/// Sole supported code-challenge method.
-const CODE_CHALLENGE_METHOD_S256: &str = "S256";
-
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
@@ -119,7 +116,7 @@ impl OauthAuthorizationCodeRepository for PgOauthAuthorizationCodeRepository {
             .bind(&new.client_id)
             .bind(&new.redirect_uri)
             .bind(&new.code_challenge)
-            .bind(CODE_CHALLENGE_METHOD_S256)
+            .bind(OauthAuthorizationCode::CODE_CHALLENGE_METHOD_S256)
             .bind(&new.scope)
             .bind(&new.resource)
             .bind(new.principal_id.inner())
