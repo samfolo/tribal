@@ -12,6 +12,7 @@ use tokio::signal;
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
+use tribal_auth::oauth::OAuthRuntimeConfig;
 use tribal_config::{TransportKind, load_config, validate};
 use tribal_mcp::HandlerConfig;
 
@@ -64,6 +65,8 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 
     let handler_config = HandlerConfig::from(&config).with_pool_name(POOL_NAME_MCP);
 
+    let oauth_runtime = Arc::new(crate::startup::resolve_oauth_runtime(&config)?);
+
     tracing::info!(%transport, "startup sequence complete");
 
     // -- Transport + signal handling -----------------------------------------
@@ -75,6 +78,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
         let mut transport_handle = tokio::spawn(run_transport(
             transport,
             Arc::clone(handle.state()),
+            Arc::clone(&oauth_runtime),
             handler_config,
             cancellation_token.clone(),
             config.server.clone(),
@@ -117,6 +121,7 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
 async fn run_transport(
     transport: TransportKind,
     state: Arc<tribal_mcp::AppState>,
+    oauth_runtime: Arc<OAuthRuntimeConfig>,
     handler_config: HandlerConfig,
     cancellation_token: CancellationToken,
     server_config: tribal_config::ServerConfig,
@@ -126,6 +131,7 @@ async fn run_transport(
             transport::run_http_transport(
                 &state,
                 &server_config,
+                oauth_runtime,
                 handler_config,
                 cancellation_token,
                 None,
@@ -139,6 +145,7 @@ async fn run_transport(
             transport::run_sse_transport(
                 &state,
                 &server_config,
+                oauth_runtime,
                 handler_config,
                 cancellation_token,
                 None,

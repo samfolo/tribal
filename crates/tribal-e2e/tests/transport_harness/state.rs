@@ -25,6 +25,12 @@ use tribal_test_utils::{MockEmbeddingProvider, MockInferenceProvider, test_conte
 /// Default instance ID prefix for transport tests.
 const TEST_INSTANCE_ID: &str = "transport-test-00000000-0000-0000-0000-000000000000";
 
+/// Canonical resource URL the transport harness binds and audience-binds
+/// seeded tokens to. The transport runtimes build their resource from
+/// this so a seeded token's audience matches what the bearer middleware
+/// verifies (RFC 8707).
+pub const TEST_CANONICAL_RESOURCE: &str = "http://127.0.0.1:8080/mcp";
+
 // ---------------------------------------------------------------------------
 // Pool
 // ---------------------------------------------------------------------------
@@ -150,6 +156,7 @@ pub async fn seed_scoped_auth(
                 .token_hash(sha256_hex(raw_token))
                 .principal_id(principal.id())
                 .scopes(scopes)
+                .audience(TEST_CANONICAL_RESOURCE.to_owned())
                 .expires_at(Utc::now() + expires_in)
                 .build(),
         )

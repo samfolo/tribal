@@ -7,13 +7,13 @@ use std::{
     sync::Arc,
 };
 
+use tribal_auth::Authenticator;
 use tribal_config::{Auth, ENV_AUTH_TOKEN, TransportKind, TribalConfig, load_config};
 use tribal_db::{
     DbError, NewProject, PgAuthTokenRepository, PgPrincipalRepository, PgProjectRepository,
     ProjectRepository,
 };
 use tribal_domain::{BearerToken, GitRemote};
-use tribal_mcp::Authenticator;
 
 use super::{
     outcome::{RegisterOutcome, RegisteredProject},
@@ -28,6 +28,7 @@ use crate::{
     error::AppError,
     git::detect_git_remote,
     output::{build_snippet_entry, resolved_advertised_url},
+    startup::{expected_token_audience, resolve_oauth_runtime},
 };
 
 // ---------------------------------------------------------------------------
@@ -164,9 +165,16 @@ pub(crate) async fn compute(
     if let Some(auth) = opts.auth
         && !opts.skip_validation
     {
-        let authenticator = Authenticator::new(
+        // Bind the token audience to the resource the configured transport
+        // will enforce, so validation here matches what the running server
+        // does. A resolve failure leaves it unbound.
+        let expected_audience = resolve_oauth_runtime(config)
+            .ok()
+            .and_then(|runtime| expected_token_audience(opts.transport, &runtime));
+        let authenticator = Authenticator::with_audience(
             Arc::new(PgAuthTokenRepository),
             Arc::new(PgPrincipalRepository),
+            expected_audience,
         );
         match auth {
             Auth::Bearer { token } => {

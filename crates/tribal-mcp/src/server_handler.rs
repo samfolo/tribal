@@ -11,6 +11,7 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use tokio::sync::RwLock;
+use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_db::{
     JobRepository, KnowledgeItemRepository, PgJobRepository, PgKnowledgeItemRepository,
     PgPrincipalRepository, PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository,
@@ -24,7 +25,6 @@ use tribal_domain::{PromptRole, PromptStage, PromptVersionId, is_authorised};
 
 use crate::{
     app_state::AppState,
-    auth::{AuthenticatedPrincipal, TransportAuthStrategy},
     config::HandlerConfig,
     error::method_not_found,
     mapping::session_to_json,
@@ -466,12 +466,12 @@ mod tests {
         handler::server::ServerHandler,
         model::{ErrorCode, Extensions as RmcpExtensions, ResourceContents},
     };
+    use tribal_auth::{AuthenticatedPrincipal, TransportAuthStrategy};
     use tribal_domain::PrincipalId;
     use tribal_test_utils::TEST_PRINCIPAL_KEY;
 
     use super::*;
     use crate::{
-        auth::{AuthenticatedPrincipal, TransportAuthStrategy},
         session::SESSION_RESOURCE_URI,
         test_utils::{TestHandler, session_with_project, test_request_context},
     };

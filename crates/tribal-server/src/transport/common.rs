@@ -13,14 +13,20 @@ use rmcp::transport::streamable_http_server::{
 };
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+use tribal_auth::{
+    AuthMiddlewareState, Authenticator, TransportAuthStrategy,
+    oauth::{
+        BearerChallenge, OAuthRuntimeConfig, PATH_PROTECTED_RESOURCE_METADATA, SCOPES_CATALOGUE,
+    },
+};
 use tribal_config::{DEFAULT_BIND_ADDRESS, ServerConfig, TransportKind};
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 use tribal_mcp::{
-    AppState, AuthMiddlewareState, Authenticator, ConnectionRepositories, HandlerConfig,
-    SessionContext, SessionProject, TransportAuthStrategy, TribalServerHandler,
+    AppState, ConnectionRepositories, HandlerConfig, SessionContext, SessionProject,
+    TribalServerHandler,
 };
 
-use crate::error::AppError;
+use crate::{error::AppError, startup::expected_token_audience};
 
 // ---------------------------------------------------------------------------
 // Listener
@@ -80,13 +86,50 @@ pub(super) async fn bind_listener(
 
 /// Creates the bearer-token auth middleware state for per-request
 /// transports.
-pub(super) fn auth_middleware_state(state: &Arc<AppState>) -> AuthMiddlewareState {
-    let authenticator = Arc::new(Authenticator::new(
+pub(super) fn auth_middleware_state(
+    state: &Arc<AppState>,
+    transport: TransportKind,
+    runtime: &OAuthRuntimeConfig,
+    challenge: Arc<BearerChallenge>,
+) -> AuthMiddlewareState {
+    let authenticator = Arc::new(Authenticator::with_audience(
         Arc::new(PgAuthTokenRepository),
         Arc::new(PgPrincipalRepository),
+        expected_token_audience(transport, runtime),
     ));
 
-    AuthMiddlewareState::new(state.mcp_pool().clone(), authenticator)
+    AuthMiddlewareState::new(state.mcp_pool().clone(), authenticator, challenge)
+}
+
+/// Builds the `WWW-Authenticate: Bearer` challenge template for the
+/// active OAuth runtime configuration.
+///
+/// The resource-metadata URL is derived from the protected-resource URL
+/// (RFC 9728 §3): it carries the resource's own scheme, host, and port,
+/// with the resource path appended under `/.well-known/oauth-protected-
+/// resource` so spec-compliant MCP clients hit it directly. Deriving it
+/// from the resource (not the issuer) keeps the challenge correct when an
+/// operator configures a resource host distinct from the issuer.
+pub(super) fn bearer_challenge_for(runtime: &OAuthRuntimeConfig) -> BearerChallenge {
+    let path_suffix = runtime.resource_url.path().trim_start_matches('/');
+    let resource_metadata_url = {
+        let mut url = runtime.resource_url.clone();
+        let suffix = if path_suffix.is_empty() {
+            PATH_PROTECTED_RESOURCE_METADATA.to_owned()
+        } else {
+            format!("{PATH_PROTECTED_RESOURCE_METADATA}/{path_suffix}")
+        };
+        url.set_path(&suffix);
+        url.set_query(None);
+        url.set_fragment(None);
+        url
+    };
+
+    BearerChallenge {
+        resource_metadata_url,
+        scope: Some(SCOPES_CATALOGUE.join(" ")),
+        error: None,
+    }
 }
 
 // ---------------------------------------------------------------------------

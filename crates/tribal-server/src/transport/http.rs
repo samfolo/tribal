@@ -8,8 +8,12 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+use tribal_auth::{
+    oauth::{OAuthRouterState, OAuthRuntimeConfig, oauth_router},
+    require_bearer_auth,
+};
 use tribal_config::{ServerConfig, TransportKind};
-use tribal_mcp::{AppState, HandlerConfig, require_bearer_auth};
+use tribal_mcp::{AppState, HandlerConfig};
 
 use super::common;
 use crate::error::AppError;
@@ -46,6 +50,7 @@ use crate::error::AppError;
 pub async fn run_http_transport(
     state: &Arc<AppState>,
     server_config: &ServerConfig,
+    oauth_runtime: Arc<OAuthRuntimeConfig>,
     handler_config: HandlerConfig,
     cancellation_token: CancellationToken,
     listener: Option<TcpListener>,
@@ -53,7 +58,9 @@ pub async fn run_http_transport(
     let transport = TransportKind::Http;
 
     let (listener, local_addr) = common::bind_listener(server_config, transport, listener).await?;
-    let auth_state = common::auth_middleware_state(state);
+    let challenge = Arc::new(common::bearer_challenge_for(&oauth_runtime));
+    let auth_state =
+        common::auth_middleware_state(state, transport, &oauth_runtime, Arc::clone(&challenge));
     let mcp_service = common::mcp_service(
         state,
         handler_config,
@@ -62,9 +69,18 @@ pub async fn run_http_transport(
         "http",
     );
 
-    let app = axum::Router::new().nest_service("/mcp", mcp_service).layer(
-        axum::middleware::from_fn_with_state(auth_state, require_bearer_auth),
-    );
+    let oauth = oauth_router(OAuthRouterState::new(
+        oauth_runtime,
+        state.mcp_pool().clone(),
+    ));
+
+    let app = axum::Router::new()
+        .nest_service("/mcp", mcp_service)
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            require_bearer_auth,
+        ))
+        .merge(oauth);
 
     tracing::info!(%local_addr, "HTTP transport listening");
 

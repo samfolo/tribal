@@ -34,6 +34,7 @@ const KNOWN_SECTIONS: &[&str] = &[
     "server.",
     "database.",
     "auth.",
+    "oauth.",
     "worker.",
     "embedding.",
     "inference.",
