@@ -64,9 +64,10 @@ pub async fn issue_token(
     Ok(raw)
 }
 
-/// Generates an opaque random credential: 32 bytes encoded as base64url
-/// without padding. The single definition of an opaque credential value
-/// for the crate, covering both bearer tokens and OAuth client secrets.
+/// Generates an opaque random value: 32 bytes encoded as base64url
+/// without padding. The single definition of an opaque random value for
+/// the crate, covering bearer tokens, OAuth client secrets, and OAuth
+/// client identifiers.
 #[must_use]
 pub(crate) fn generate_token_value() -> String {
     let mut bytes = [0u8; TOKEN_BYTE_LENGTH];
