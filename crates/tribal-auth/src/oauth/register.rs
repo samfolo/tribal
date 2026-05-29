@@ -21,8 +21,9 @@ use tribal_domain::{ApplicationType, OauthClient, TokenEndpointAuthMethod};
 use url::Url;
 
 use crate::oauth::{
-    common::{GRANT_TYPE_AUTHORIZATION_CODE, LOOPBACK_HOSTS, RESPONSE_TYPE_CODE},
+    common::{GRANT_TYPE_AUTHORIZATION_CODE, RESPONSE_TYPE_CODE, is_loopback_host},
     error::{ClientMetadataRejection, InternalOperation, OAuthError, RedirectUriRejection},
+    scope::first_uncatalogued_scope,
 };
 
 // ---------------------------------------------------------------------------
@@ -155,7 +156,16 @@ async fn register(
         .response_types
         .unwrap_or_else(|| vec![RESPONSE_TYPE_CODE.to_owned()]);
 
+    validate_supported_grant_response_types(&grant_types, &response_types)?;
     validate_grant_response_consistency(&grant_types, &response_types)?;
+
+    if let Some(uncatalogued) = req.scope.as_deref().and_then(first_uncatalogued_scope) {
+        return Err(OAuthError::InvalidClientMetadata {
+            reason: ClientMetadataRejection::UnsupportedScope {
+                presented: uncatalogued.to_owned(),
+            },
+        });
+    }
 
     // Default an omitted auth method to the public PKCE client (`none`),
     // not the RFC 7591 §2 default of `client_secret_basic`. Tribal's
@@ -266,15 +276,7 @@ fn validate_redirect_uri(raw: &str) -> Result<(), OAuthError> {
     match url.scheme() {
         "https" => Ok(()),
         "http" => {
-            // `Url::host_str()` brackets IPv6 literals; strip the brackets
-            // before comparing against the loopback allowlist so `[::1]`
-            // and `::1` both match.
-            let host = url
-                .host_str()
-                .unwrap_or_default()
-                .trim_start_matches('[')
-                .trim_end_matches(']');
-            if LOOPBACK_HOSTS.contains(&host) {
+            if url.host_str().is_some_and(is_loopback_host) {
                 Ok(())
             } else {
                 Err(OAuthError::InvalidRedirectUri {
@@ -290,6 +292,39 @@ fn validate_redirect_uri(raw: &str) -> Result<(), OAuthError> {
             },
         }),
     }
+}
+
+/// Rejects declared grant or response types this server does not support.
+///
+/// Only `authorization_code` grants and `code` responses are supported;
+/// any other declared value (`client_credentials`, `token`, …) is
+/// rejected rather than silently dropped, so the persisted record never
+/// implies a capability the server does not honour.
+fn validate_supported_grant_response_types(
+    grant_types: &[String],
+    response_types: &[String],
+) -> Result<(), OAuthError> {
+    if let Some(unsupported) = grant_types
+        .iter()
+        .find(|grant| grant.as_str() != GRANT_TYPE_AUTHORIZATION_CODE)
+    {
+        return Err(OAuthError::InvalidClientMetadata {
+            reason: ClientMetadataRejection::UnsupportedGrantType {
+                presented: unsupported.clone(),
+            },
+        });
+    }
+    if let Some(unsupported) = response_types
+        .iter()
+        .find(|response| response.as_str() != RESPONSE_TYPE_CODE)
+    {
+        return Err(OAuthError::InvalidClientMetadata {
+            reason: ClientMetadataRejection::UnsupportedResponseType {
+                presented: unsupported.clone(),
+            },
+        });
+    }
+    Ok(())
 }
 
 fn validate_grant_response_consistency(
@@ -349,15 +384,62 @@ mod tests {
     #[test]
     fn test_validate_grant_response_consistency_requires_authorization_code() {
         assert!(
-            validate_grant_response_consistency(&["password".to_owned()], &["code".to_owned()])
-                .is_err(),
+            validate_grant_response_consistency(
+                &["password".to_owned()],
+                &[RESPONSE_TYPE_CODE.to_owned()],
+            )
+            .is_err(),
         );
         assert!(
             validate_grant_response_consistency(
-                &["authorization_code".to_owned()],
-                &["code".to_owned()],
+                &[GRANT_TYPE_AUTHORIZATION_CODE.to_owned()],
+                &[RESPONSE_TYPE_CODE.to_owned()],
             )
             .is_ok(),
         );
+    }
+
+    #[test]
+    fn test_validate_supported_grant_response_types_accepts_supported() {
+        assert!(
+            validate_supported_grant_response_types(
+                &[GRANT_TYPE_AUTHORIZATION_CODE.to_owned()],
+                &[RESPONSE_TYPE_CODE.to_owned()],
+            )
+            .is_ok(),
+        );
+    }
+
+    #[test]
+    fn test_validate_supported_grant_response_types_rejects_unknown_grant() {
+        let err = validate_supported_grant_response_types(
+            &[
+                GRANT_TYPE_AUTHORIZATION_CODE.to_owned(),
+                "client_credentials".to_owned(),
+            ],
+            &[RESPONSE_TYPE_CODE.to_owned()],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            OAuthError::InvalidClientMetadata {
+                reason: ClientMetadataRejection::UnsupportedGrantType { .. },
+            },
+        ));
+    }
+
+    #[test]
+    fn test_validate_supported_grant_response_types_rejects_unknown_response() {
+        let err = validate_supported_grant_response_types(
+            &[GRANT_TYPE_AUTHORIZATION_CODE.to_owned()],
+            &[RESPONSE_TYPE_CODE.to_owned(), "token".to_owned()],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            OAuthError::InvalidClientMetadata {
+                reason: ClientMetadataRejection::UnsupportedResponseType { .. },
+            },
+        ));
     }
 }

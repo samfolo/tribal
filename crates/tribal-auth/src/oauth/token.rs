@@ -29,7 +29,7 @@ use tribal_db::{
     AuthTokenRepository, NewAuthToken, OauthAuthorizationCodeRepository, OauthClientRepository,
     PgAuthTokenRepository, PgOauthAuthorizationCodeRepository, PgOauthClientRepository,
 };
-use tribal_domain::{Scope, TokenEndpointAuthMethod};
+use tribal_domain::TokenEndpointAuthMethod;
 
 use crate::oauth::{
     common::GRANT_TYPE_AUTHORIZATION_CODE,
@@ -39,6 +39,7 @@ use crate::oauth::{
         InvalidTargetReason, OAuthError,
     },
     pkce::{CodeChallenge, CodeVerifier},
+    scope::{DEFAULT_GRANT_SCOPE, parse_scope_list},
 };
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,6 @@ use crate::oauth::{
 // ---------------------------------------------------------------------------
 
 const RANDOM_TOKEN_BYTE_LENGTH: usize = 32;
-const DEFAULT_GRANT_SCOPE: &str = "tribal:read";
 
 // ---------------------------------------------------------------------------
 // Request and response
@@ -65,7 +65,10 @@ pub struct TokenRequest {
     pub client_id: String,
     /// PKCE code verifier.
     pub code_verifier: String,
-    /// Resource indicator per RFC 8707.
+    /// Resource indicator per RFC 8707. Required, and must canonicalise
+    /// to the same value bound to the code at `/authorize`. Modelled as
+    /// `Option` only so an omitted value surfaces as an `invalid_target`
+    /// JSON error rather than a bare form-deserialisation rejection.
     #[serde(default)]
     pub resource: Option<String>,
     /// Client secret for the `client_secret_post` method, presented in
@@ -212,22 +215,25 @@ async fn exchange(
         });
     }
 
-    if let Some(presented) = req.resource.as_deref() {
-        let presented_url = url::Url::parse(presented).map_err(|_| OAuthError::InvalidTarget {
-            reason: InvalidTargetReason::Malformed {
-                value: presented.to_owned(),
+    // The resource indicator is required at /token, matching /authorize,
+    // and must canonicalise to the value bound to the code (RFC 8707 §2).
+    let presented = req.resource.as_deref().ok_or(OAuthError::InvalidTarget {
+        reason: InvalidTargetReason::Missing,
+    })?;
+    let presented_url = url::Url::parse(presented).map_err(|_| OAuthError::InvalidTarget {
+        reason: InvalidTargetReason::Malformed {
+            value: presented.to_owned(),
+        },
+    })?;
+    let canonical_presented = canonicalise_resource_url(&presented_url);
+    let expected = code.resource().unwrap_or("");
+    if canonical_presented != expected {
+        return Err(OAuthError::InvalidTarget {
+            reason: InvalidTargetReason::Mismatch {
+                expected: expected.to_owned(),
+                presented: canonical_presented,
             },
-        })?;
-        let canonical_presented = canonicalise_resource_url(&presented_url);
-        let expected = code.resource().unwrap_or("");
-        if canonical_presented != expected {
-            return Err(OAuthError::InvalidTarget {
-                reason: InvalidTargetReason::Mismatch {
-                    expected: expected.to_owned(),
-                    presented: canonical_presented,
-                },
-            });
-        }
+        });
     }
 
     // Verify the client secret for confidential clients.
@@ -395,35 +401,8 @@ fn verify_client_secret(
     }
 }
 
-fn parse_scope_list(raw: &str) -> Result<Vec<Scope>, OAuthError> {
-    raw.split_ascii_whitespace()
-        .map(|token| {
-            Scope::parse(token).map_err(|_| OAuthError::InvalidScope {
-                unknown_token: token.to_owned(),
-            })
-        })
-        .collect()
-}
-
 fn generate_random_token() -> String {
     let mut bytes = [0u8; RANDOM_TOKEN_BYTE_LENGTH];
     rand::rng().fill(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_scope_list_accepts_valid_tokens() {
-        let scopes = parse_scope_list("tribal:read tribal.knowledge:write").unwrap();
-        assert_eq!(scopes.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_scope_list_rejects_unknown() {
-        let err = parse_scope_list("tribal:admin").unwrap_err();
-        assert!(matches!(err, OAuthError::InvalidScope { .. }));
-    }
 }

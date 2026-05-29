@@ -34,6 +34,7 @@ use crate::oauth::{
     },
     pkce::CodeChallenge,
     redirect::matches_redirect_uri,
+    scope::first_uncatalogued_scope,
 };
 
 // ---------------------------------------------------------------------------
@@ -211,6 +212,15 @@ async fn issue_code(
         CodeChallenge::parse(&query.code_challenge).map_err(|_| OAuthError::InvalidRequest {
             reason: InvalidRequestReason::MalformedCodeChallenge,
         })?;
+
+    // A requested scope outside the advertised catalogue is rejected
+    // before the code issues (RFC 6749 §4.1.2.1 invalid_scope). An absent
+    // scope is permitted; the grant falls back to the default at /token.
+    if let Some(uncatalogued) = query.scope.as_deref().and_then(first_uncatalogued_scope) {
+        return Err(OAuthError::InvalidScope {
+            unknown_token: uncatalogued.to_owned(),
+        });
+    }
 
     let resource = query.resource.as_deref().ok_or_else(|| {
         tracing::warn!(

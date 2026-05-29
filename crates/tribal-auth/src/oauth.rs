@@ -17,6 +17,7 @@ mod pkce;
 mod redirect;
 mod register;
 mod router;
+mod scope;
 mod token;
 
 pub use authorize::{AuthorizeQuery, AuthorizeState, handle_authorize};
@@ -28,10 +29,11 @@ pub use error::{
 };
 pub use metadata::{
     AuthorizationServerMetadata, PATH_PROTECTED_RESOURCE_METADATA, ProtectedResourceMetadata,
-    SCOPES_CATALOGUE, authorization_server_metadata, protected_resource_metadata,
+    authorization_server_metadata, protected_resource_metadata,
 };
 pub use pkce::{CodeChallenge, CodeVerifier, PkceParseError};
 pub use redirect::matches_redirect_uri;
 pub use register::{RegisterRequest, RegisterResponse, RegisterState, handle_register};
 pub use router::{OAuthRouterState, oauth_router};
+pub use scope::SCOPES_CATALOGUE;
 pub use token::{TokenRequest, TokenResponse, TokenState, handle_token};

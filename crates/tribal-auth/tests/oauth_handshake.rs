@@ -32,8 +32,15 @@ use url::Url;
 
 const ISSUER: &str = "http://127.0.0.1:8080";
 const RESOURCE: &str = "http://127.0.0.1:8080/mcp";
+const RESOURCE_ENCODED: &str = "http%3A%2F%2F127.0.0.1%3A8080%2Fmcp";
 const REDIRECT_URI: &str = "http://127.0.0.1:53076/cb";
 const REDIRECT_URI_ENCODED: &str = "http%3A%2F%2F127.0.0.1%3A53076%2Fcb";
+
+/// Content type of the DCR registration request body.
+const CONTENT_TYPE_JSON: &str = "application/json";
+
+/// Content type of the token-endpoint request body.
+const CONTENT_TYPE_FORM: &str = "application/x-www-form-urlencoded";
 
 /// RFC 7636 Appendix B verifier and its S256 challenge, reused across
 /// the handshake tests.
@@ -95,6 +102,159 @@ async fn read_body(response: axum::response::Response) -> Vec<u8> {
         .to_vec()
 }
 
+// ---------------------------------------------------------------------------
+// Test harness
+// ---------------------------------------------------------------------------
+
+/// Wraps the OAuth router with the request helpers the handshake cases
+/// drive it through, mirroring the e2e `McpTestClient`. Centralising
+/// request construction keeps the route, header, and content-type
+/// literals in one place per endpoint.
+struct OAuthClient {
+    router: Router,
+}
+
+impl OAuthClient {
+    fn new(runtime: Arc<OAuthRuntimeConfig>, pool: sqlx::PgPool) -> Self {
+        Self {
+            router: oauth_router(OAuthRouterState::new(runtime, pool)),
+        }
+    }
+
+    /// Sends a request through the router, panicking on a transport error.
+    async fn send(&self, request: Request<Body>) -> axum::response::Response {
+        self.router.clone().oneshot(request).await.unwrap()
+    }
+
+    /// Issues a GET against the router (discovery documents).
+    async fn get(&self, uri: &str) -> axum::response::Response {
+        self.send(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+    }
+
+    /// Posts a raw JSON metadata document to `/register`.
+    async fn register_raw(&self, body: serde_json::Value) -> axum::response::Response {
+        self.send(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/register")
+                .header(header::CONTENT_TYPE, CONTENT_TYPE_JSON)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+    }
+
+    /// Registers a client with the given auth method, asserting success
+    /// and returning its `client_id` and optional secret.
+    async fn register(&self, auth_method: &str) -> (String, Option<String>) {
+        let response = self
+            .register_raw(serde_json::json!({
+                "redirect_uris": [REDIRECT_URI],
+                "token_endpoint_auth_method": auth_method,
+            }))
+            .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let json: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+        let client_id = json["client_id"].as_str().unwrap().to_owned();
+        let client_secret = json["client_secret"].as_str().map(str::to_owned);
+        (client_id, client_secret)
+    }
+
+    /// Drives `/authorize` with a raw query string.
+    async fn authorize(&self, query: &str) -> axum::response::Response {
+        self.get(&format!("/authorize?{query}")).await
+    }
+
+    /// Drives `/authorize` for a client and returns the issued
+    /// authorisation code from the consent page's approve anchor.
+    async fn authorize_code(&self, client_id: &str) -> String {
+        let query = format!(
+            "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+             &code_challenge={CHALLENGE}&code_challenge_method=S256\
+             &resource={RESOURCE_ENCODED}",
+        );
+        let response = self.authorize(&query).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = String::from_utf8(read_body(response).await).unwrap();
+        let target = extract_approve_href(&html);
+        Url::parse(&target)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.into_owned())
+            .expect("consent page carries the authorisation code")
+    }
+
+    /// Posts a form body to `/token`, optionally carrying the
+    /// `client_secret_basic` Authorization header.
+    async fn post_token_form(
+        &self,
+        body: String,
+        basic_auth: Option<&str>,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder()
+            .method(Method::POST)
+            .uri("/token")
+            .header(header::CONTENT_TYPE, CONTENT_TYPE_FORM);
+        if let Some(basic) = basic_auth {
+            builder = builder.header(header::AUTHORIZATION, format!("Basic {basic}"));
+        }
+        self.send(builder.body(Body::from(body)).unwrap()).await
+    }
+
+    /// Posts a form body to `/token` with no client-authentication header.
+    async fn post_token(&self, body: String) -> axum::response::Response {
+        self.post_token_form(body, None).await
+    }
+
+    /// Posts a form body to `/token` with an `Authorization: Basic`
+    /// header carrying `client_id:secret` (the `client_secret_basic`
+    /// mechanism).
+    async fn post_token_basic(
+        &self,
+        body: String,
+        client_id: &str,
+        secret: &str,
+    ) -> axum::response::Response {
+        let basic = base64_encode(&format!("{client_id}:{secret}"));
+        self.post_token_form(body, Some(&basic)).await
+    }
+
+    /// Walks register (public) → authorise → token, returning the issued
+    /// access token.
+    async fn mint_access_token(&self) -> String {
+        let (client_id, _) = self.register("none").await;
+        let code = self.authorize_code(&client_id).await;
+        let response = self
+            .post_token(token_form(&code, &client_id, VERIFIER, None))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+        json["access_token"].as_str().unwrap().to_owned()
+    }
+}
+
+/// Builds an `application/x-www-form-urlencoded` `/token` request body.
+fn token_form(code: &str, client_id: &str, verifier: &str, client_secret: Option<&str>) -> String {
+    let mut params = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("redirect_uri", REDIRECT_URI),
+        ("client_id", client_id),
+        ("code_verifier", verifier),
+        ("resource", RESOURCE),
+    ];
+    if let Some(secret) = client_secret {
+        params.push(("client_secret", secret));
+    }
+    serde_urlencoded::to_string(params).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Full handshake
+// ---------------------------------------------------------------------------
+
 #[tokio::test]
 async fn test_handshake_dcr_full_round_trip() {
     let ctx = test_context().await;
@@ -102,56 +262,30 @@ async fn test_handshake_dcr_full_round_trip() {
     ensure_local_principal(&pool).await;
 
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool.clone()));
+    let client = OAuthClient::new(Arc::clone(&runtime), pool.clone());
 
     // -- Discovery -----------------------------------------------------------
-    let prm_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/.well-known/oauth-protected-resource/mcp")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let prm_response = client
+        .get("/.well-known/oauth-protected-resource/mcp")
+        .await;
     assert_eq!(prm_response.status(), StatusCode::OK);
     let prm: serde_json::Value = serde_json::from_slice(&read_body(prm_response).await).unwrap();
     assert_eq!(prm["resource"], RESOURCE);
 
-    let asm_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/.well-known/oauth-authorization-server")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let asm_response = client.get("/.well-known/oauth-authorization-server").await;
     assert_eq!(asm_response.status(), StatusCode::OK);
     let asm: serde_json::Value = serde_json::from_slice(&read_body(asm_response).await).unwrap();
     assert_eq!(asm["code_challenge_methods_supported"][0], "S256");
     assert!(asm["registration_endpoint"].is_string());
 
     // -- DCR registration ----------------------------------------------------
-    let register_body = serde_json::json!({
-        "redirect_uris": ["http://127.0.0.1:53076/cb"],
-        "client_name": "mcp-remote-test",
-        "token_endpoint_auth_method": "client_secret_basic",
-    });
-    let register_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/register")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(register_body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let register_response = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "client_name": "mcp-remote-test",
+            "token_endpoint_auth_method": "client_secret_basic",
+        }))
+        .await;
     assert_eq!(register_response.status(), StatusCode::CREATED);
     let register: serde_json::Value =
         serde_json::from_slice(&read_body(register_response).await).unwrap();
@@ -159,24 +293,13 @@ async fn test_handshake_dcr_full_round_trip() {
     let client_secret = register["client_secret"].as_str().unwrap().to_owned();
 
     // -- Authorise -----------------------------------------------------------
-    let verifier = VERIFIER;
-    let challenge = CHALLENGE;
     let authorize_query = format!(
-        "response_type=code&client_id={client_id}&redirect_uri=http%3A%2F%2F127.0.0.1%3A53076%2Fcb\
-         &code_challenge={challenge}&code_challenge_method=S256\
-         &resource=http%3A%2F%2F127.0.0.1%3A8080%2Fmcp&scope=tribal%3Aread%20tribal%3Awrite\
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}&scope=tribal%3Aread%20tribal%3Awrite\
          &state=opaque",
     );
-    let authorize_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/authorize?{authorize_query}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let authorize_response = client.authorize(&authorize_query).await;
     assert_eq!(authorize_response.status(), StatusCode::OK);
     let consent_html = String::from_utf8(read_body(authorize_response).await).unwrap();
     assert!(
@@ -195,29 +318,13 @@ async fn test_handshake_dcr_full_round_trip() {
     // -- Token exchange ------------------------------------------------------
     // The client registered `client_secret_basic`, so its secret travels
     // only in the Authorization: Basic header, never the form body.
-    let basic_auth = base64_encode(&format!("{client_id}:{client_secret}"));
-    let token_body = serde_urlencoded::to_string([
-        ("grant_type", "authorization_code"),
-        ("code", &code),
-        ("redirect_uri", "http://127.0.0.1:53076/cb"),
-        ("client_id", &client_id),
-        ("code_verifier", verifier),
-        ("resource", "http://127.0.0.1:8080/mcp"),
-    ])
-    .unwrap();
-    let token_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/token")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::AUTHORIZATION, format!("Basic {basic_auth}"))
-                .body(Body::from(token_body))
-                .unwrap(),
+    let token_response = client
+        .post_token_basic(
+            token_form(&code, &client_id, VERIFIER, None),
+            &client_id,
+            &client_secret,
         )
-        .await
-        .unwrap();
+        .await;
     assert_eq!(token_response.status(), StatusCode::OK);
     let token: serde_json::Value =
         serde_json::from_slice(&read_body(token_response).await).unwrap();
@@ -226,28 +333,13 @@ async fn test_handshake_dcr_full_round_trip() {
     assert!(token["expires_in"].as_i64().unwrap() > 0);
 
     // -- Replay rejection ----------------------------------------------------
-    let replay_body = serde_urlencoded::to_string([
-        ("grant_type", "authorization_code"),
-        ("code", &code),
-        ("redirect_uri", "http://127.0.0.1:53076/cb"),
-        ("client_id", &client_id),
-        ("code_verifier", verifier),
-        ("resource", "http://127.0.0.1:8080/mcp"),
-    ])
-    .unwrap();
-    let replay_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/token")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::AUTHORIZATION, format!("Basic {basic_auth}"))
-                .body(Body::from(replay_body))
-                .unwrap(),
+    let replay_response = client
+        .post_token_basic(
+            token_form(&code, &client_id, VERIFIER, None),
+            &client_id,
+            &client_secret,
         )
-        .await
-        .unwrap();
+        .await;
     assert_eq!(replay_response.status(), StatusCode::BAD_REQUEST);
     let replay: serde_json::Value =
         serde_json::from_slice(&read_body(replay_response).await).unwrap();
@@ -306,6 +398,10 @@ async fn test_handshake_dcr_full_round_trip() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Endpoint rejection cases
+// ---------------------------------------------------------------------------
+
 #[tokio::test]
 async fn test_authorize_rejects_resource_mismatch() {
     let ctx = test_context().await;
@@ -313,43 +409,24 @@ async fn test_authorize_rejects_resource_mismatch() {
     ensure_local_principal(&pool).await;
 
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool.clone()));
+    let client = OAuthClient::new(runtime, pool);
 
-    // Register a client.
-    let register_body = serde_json::json!({
-        "redirect_uris": ["http://127.0.0.1:53076/cb"],
-        "token_endpoint_auth_method": "none",
-    });
-    let register_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/register")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(register_body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let register_response = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+        }))
+        .await;
     let register: serde_json::Value =
         serde_json::from_slice(&read_body(register_response).await).unwrap();
     let client_id = register["client_id"].as_str().unwrap().to_owned();
 
     let authorize_query = format!(
-        "response_type=code&client_id={client_id}&redirect_uri=http%3A%2F%2F127.0.0.1%3A53076%2Fcb\
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
          &code_challenge={CHALLENGE}&code_challenge_method=S256\
          &resource=http%3A%2F%2Fwrong.example%2Fmcp",
     );
-    let authorize_response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/authorize?{authorize_query}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let authorize_response = client.authorize(&authorize_query).await;
     assert_eq!(authorize_response.status(), StatusCode::SEE_OTHER);
     let redirect_to = authorize_response
         .headers()
@@ -361,85 +438,80 @@ async fn test_authorize_rejects_resource_mismatch() {
 }
 
 #[tokio::test]
+async fn test_authorize_rejects_uncatalogued_scope() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    let (client_id, _) = client.register("none").await;
+    // `tribal.knowledge.facts:read` is a valid scope but is not in the
+    // advertised catalogue, so the request is rejected before a code
+    // issues. The error rides the redirect per RFC 6749 §4.1.2.1.
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}&scope=tribal.knowledge.facts%3Aread",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let redirect_to = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(redirect_to.contains("error=invalid_scope"));
+}
+
+#[tokio::test]
 async fn test_token_rejects_pkce_verifier_mismatch() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
 
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool.clone()));
+    let client = OAuthClient::new(runtime, pool);
 
-    // Register a public client.
-    let register_body = serde_json::json!({
-        "redirect_uris": ["http://127.0.0.1:53076/cb"],
-        "token_endpoint_auth_method": "none",
-    });
-    let register_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/register")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(register_body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let register: serde_json::Value =
-        serde_json::from_slice(&read_body(register_response).await).unwrap();
-    let client_id = register["client_id"].as_str().unwrap().to_owned();
-
-    let challenge = CHALLENGE;
-    let authorize_query = format!(
-        "response_type=code&client_id={client_id}&redirect_uri=http%3A%2F%2F127.0.0.1%3A53076%2Fcb\
-         &code_challenge={challenge}&code_challenge_method=S256\
-         &resource=http%3A%2F%2F127.0.0.1%3A8080%2Fmcp",
-    );
-    let authorize_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/authorize?{authorize_query}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let consent_html = String::from_utf8(read_body(authorize_response).await).unwrap();
-    let target_url = extract_approve_href(&consent_html);
-    let code = Url::parse(&target_url)
-        .unwrap()
-        .query_pairs()
-        .find(|(k, _)| k == "code")
-        .map(|(_, v)| v.into_owned())
-        .unwrap();
+    let (client_id, _) = client.register("none").await;
+    let code = client.authorize_code(&client_id).await;
 
     // Verifier whose S256 challenge does NOT match the recorded one.
     let wrong_verifier = "ZyXwVuTsRqPoNmLkJiHgFeDcBa0987654321ABCDEFG";
-    let token_body = serde_urlencoded::to_string([
+    let response = client
+        .post_token(token_form(&code, &client_id, wrong_verifier, None))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(body["error"], "invalid_grant");
+}
+
+#[tokio::test]
+async fn test_token_requires_resource() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    let (client_id, _) = client.register("none").await;
+    let code = client.authorize_code(&client_id).await;
+
+    // The resource indicator is required at /token, matching /authorize.
+    // This form omits it entirely.
+    let body = serde_urlencoded::to_string([
         ("grant_type", "authorization_code"),
-        ("code", &code),
-        ("redirect_uri", "http://127.0.0.1:53076/cb"),
-        ("client_id", &client_id),
-        ("code_verifier", wrong_verifier),
-        ("resource", "http://127.0.0.1:8080/mcp"),
+        ("code", code.as_str()),
+        ("redirect_uri", REDIRECT_URI),
+        ("client_id", client_id.as_str()),
+        ("code_verifier", VERIFIER),
     ])
     .unwrap();
-    let token_response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/token")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(token_body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(token_response.status(), StatusCode::BAD_REQUEST);
-    let body: serde_json::Value = serde_json::from_slice(&read_body(token_response).await).unwrap();
-    assert_eq!(body["error"], "invalid_grant");
+    let response = client.post_token(body).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(json["error"], "invalid_target");
 }
 
 #[tokio::test]
@@ -447,149 +519,38 @@ async fn test_register_rejects_non_loopback_http_redirect() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.unwrap();
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool));
+    let client = OAuthClient::new(runtime, pool);
 
-    let register_body = serde_json::json!({
-        "redirect_uris": ["http://example.com/cb"],
-        "token_endpoint_auth_method": "none",
-    });
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/register")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(register_body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": ["http://example.com/cb"],
+            "token_endpoint_auth_method": "none",
+        }))
+        .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
     assert_eq!(body["error"], "invalid_redirect_uri");
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers for the adversarial cases
-// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn test_register_rejects_uncatalogued_scope() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
 
-/// Registers a client and returns its `client_id` and optional secret.
-async fn register_client(app: &Router, auth_method: &str) -> (String, Option<String>) {
-    let body = serde_json::json!({
-        "redirect_uris": [REDIRECT_URI],
-        "token_endpoint_auth_method": auth_method,
-    });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/register")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let json: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
-    let client_id = json["client_id"].as_str().unwrap().to_owned();
-    let client_secret = json["client_secret"].as_str().map(str::to_owned);
-    (client_id, client_secret)
-}
-
-/// Drives `/authorize` for a client and returns the issued authorisation
-/// code from the consent page's approve anchor.
-async fn authorize_code(app: &Router, client_id: &str) -> String {
-    let query = format!(
-        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
-         &code_challenge={CHALLENGE}&code_challenge_method=S256\
-         &resource=http%3A%2F%2F127.0.0.1%3A8080%2Fmcp",
-    );
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/authorize?{query}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = String::from_utf8(read_body(response).await).unwrap();
-    let target = extract_approve_href(&html);
-    Url::parse(&target)
-        .unwrap()
-        .query_pairs()
-        .find(|(k, _)| k == "code")
-        .map(|(_, v)| v.into_owned())
-        .expect("consent page carries the authorisation code")
-}
-
-/// Builds an `application/x-www-form-urlencoded` `/token` request body.
-fn token_form(code: &str, client_id: &str, verifier: &str, client_secret: Option<&str>) -> String {
-    let mut params = vec![
-        ("grant_type", "authorization_code"),
-        ("code", code),
-        ("redirect_uri", REDIRECT_URI),
-        ("client_id", client_id),
-        ("code_verifier", verifier),
-        ("resource", RESOURCE),
-    ];
-    if let Some(secret) = client_secret {
-        params.push(("client_secret", secret));
-    }
-    serde_urlencoded::to_string(params).unwrap()
-}
-
-/// Posts a form body to `/token`.
-async fn post_token(app: &Router, body: String) -> axum::response::Response {
-    app.clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/token")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-}
-
-/// Posts a form body to `/token` with an `Authorization: Basic` header
-/// carrying `client_id:secret` (the `client_secret_basic` mechanism).
-async fn post_token_basic(
-    app: &Router,
-    body: String,
-    client_id: &str,
-    secret: &str,
-) -> axum::response::Response {
-    let basic = base64_encode(&format!("{client_id}:{secret}"));
-    app.clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/token")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::AUTHORIZATION, format!("Basic {basic}"))
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-}
-
-/// Walks register (public) then authorise then token, returning the
-/// issued access token.
-async fn mint_access_token(app: &Router) -> String {
-    let (client_id, _) = register_client(app, "none").await;
-    let code = authorize_code(app, &client_id).await;
-    let response = post_token(app, token_form(&code, &client_id, VERIFIER, None)).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let json: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
-    json["access_token"].as_str().unwrap().to_owned()
+    // A valid-syntax scope outside the advertised catalogue is rejected
+    // as invalid client metadata (RFC 7591 §3.2.2).
+    let response = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "scope": "tribal.knowledge.facts:read",
+        }))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(body["error"], "invalid_client_metadata");
 }
 
 // ---------------------------------------------------------------------------
@@ -602,25 +563,17 @@ async fn test_authorize_rejects_unregistered_redirect_uri() {
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool));
+    let client = OAuthClient::new(runtime, pool);
 
-    let (client_id, _) = register_client(&app, "none").await;
+    let (client_id, _) = client.register("none").await;
     // Loopback HTTP grants any-port flexibility, so vary the PATH (not the
     // port) to exercise the exact-match rejection before any code issues.
     let query = format!(
         "response_type=code&client_id={client_id}&redirect_uri=http%3A%2F%2F127.0.0.1%3A53076%2Fevil\
          &code_challenge={CHALLENGE}&code_challenge_method=S256\
-         &resource=http%3A%2F%2F127.0.0.1%3A8080%2Fmcp",
+         &resource={RESOURCE_ENCODED}",
     );
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/authorize?{query}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = client.authorize(&query).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
     assert_eq!(body["error"], "invalid_redirect_uri");
@@ -632,13 +585,15 @@ async fn test_token_rejects_missing_client_secret() {
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool));
+    let client = OAuthClient::new(runtime, pool);
 
-    let (client_id, secret) = register_client(&app, "client_secret_basic").await;
+    let (client_id, secret) = client.register("client_secret_basic").await;
     assert!(secret.is_some(), "a confidential client is issued a secret");
-    let code = authorize_code(&app, &client_id).await;
+    let code = client.authorize_code(&client_id).await;
 
-    let response = post_token(&app, token_form(&code, &client_id, VERIFIER, None)).await;
+    let response = client
+        .post_token(token_form(&code, &client_id, VERIFIER, None))
+        .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
     assert_eq!(body["error"], "invalid_client");
@@ -650,19 +605,19 @@ async fn test_token_rejects_wrong_client_secret() {
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool));
+    let client = OAuthClient::new(runtime, pool);
 
-    let (client_id, _secret) = register_client(&app, "client_secret_basic").await;
-    let code = authorize_code(&app, &client_id).await;
+    let (client_id, _secret) = client.register("client_secret_basic").await;
+    let code = client.authorize_code(&client_id).await;
 
     // Wrong secret presented via the Basic header (its registered method).
-    let response = post_token_basic(
-        &app,
-        token_form(&code, &client_id, VERIFIER, None),
-        &client_id,
-        "not-the-real-secret",
-    )
-    .await;
+    let response = client
+        .post_token_basic(
+            token_form(&code, &client_id, VERIFIER, None),
+            &client_id,
+            "not-the-real-secret",
+        )
+        .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
     assert_eq!(body["error"], "invalid_client");
@@ -674,16 +629,18 @@ async fn test_token_basic_client_rejected_when_secret_only_in_form() {
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool));
+    let client = OAuthClient::new(runtime, pool);
 
-    let (client_id, secret) = register_client(&app, "client_secret_basic").await;
+    let (client_id, secret) = client.register("client_secret_basic").await;
     let secret = secret.expect("confidential client is issued a secret");
-    let code = authorize_code(&app, &client_id).await;
+    let code = client.authorize_code(&client_id).await;
 
     // The correct secret, but presented via the form body rather than the
     // registered Basic header: the method is enforced, so it is rejected
     // rather than silently downgraded to client_secret_post.
-    let response = post_token(&app, token_form(&code, &client_id, VERIFIER, Some(&secret))).await;
+    let response = client
+        .post_token(token_form(&code, &client_id, VERIFIER, Some(&secret)))
+        .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
     assert_eq!(body["error"], "invalid_client");
@@ -695,14 +652,16 @@ async fn test_token_post_client_succeeds_with_form_secret() {
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool));
+    let client = OAuthClient::new(runtime, pool);
 
-    let (client_id, secret) = register_client(&app, "client_secret_post").await;
+    let (client_id, secret) = client.register("client_secret_post").await;
     let secret = secret.expect("a client_secret_post client is issued a secret");
-    let code = authorize_code(&app, &client_id).await;
+    let code = client.authorize_code(&client_id).await;
 
     // A client_secret_post client presents its secret in the form body.
-    let response = post_token(&app, token_form(&code, &client_id, VERIFIER, Some(&secret))).await;
+    let response = client
+        .post_token(token_form(&code, &client_id, VERIFIER, Some(&secret)))
+        .await;
     assert_eq!(response.status(), StatusCode::OK);
 }
 
@@ -712,17 +671,17 @@ async fn test_concurrent_code_exchange_has_one_winner() {
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool));
+    let client = OAuthClient::new(runtime, pool);
 
-    let (client_id, _) = register_client(&app, "none").await;
-    let code = authorize_code(&app, &client_id).await;
+    let (client_id, _) = client.register("none").await;
+    let code = client.authorize_code(&client_id).await;
 
     // Two simultaneous exchanges of the same code. The atomic
     // UPDATE ... WHERE consumed_at IS NULL ... RETURNING admits exactly
     // one winner.
     let (first, second) = tokio::join!(
-        post_token(&app, token_form(&code, &client_id, VERIFIER, None)),
-        post_token(&app, token_form(&code, &client_id, VERIFIER, None)),
+        client.post_token(token_form(&code, &client_id, VERIFIER, None)),
+        client.post_token(token_form(&code, &client_id, VERIFIER, None)),
     );
 
     let statuses = [first.status(), second.status()];
@@ -744,9 +703,9 @@ async fn test_token_rejects_expired_authorization_code() {
     let pool = ctx.create_pool().await.unwrap();
     let principal_id = ensure_local_principal(&pool).await;
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool.clone()));
+    let client = OAuthClient::new(runtime, pool.clone());
 
-    let (client_id, _) = register_client(&app, "none").await;
+    let (client_id, _) = client.register("none").await;
 
     // Insert a code whose expiry is already in the past, then exchange it.
     let raw_code = "expired-authorization-code";
@@ -769,7 +728,9 @@ async fn test_token_rejects_expired_authorization_code() {
         .unwrap();
     drop(conn);
 
-    let response = post_token(&app, token_form(raw_code, &client_id, VERIFIER, None)).await;
+    let response = client
+        .post_token(token_form(raw_code, &client_id, VERIFIER, None))
+        .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
     assert_eq!(body["error"], "invalid_grant");
@@ -781,10 +742,10 @@ async fn test_token_rejected_by_server_with_different_audience() {
     let pool = ctx.create_pool().await.unwrap();
     ensure_local_principal(&pool).await;
     let runtime = runtime_config();
-    let app = oauth_router(OAuthRouterState::new(Arc::clone(&runtime), pool.clone()));
+    let client = OAuthClient::new(Arc::clone(&runtime), pool.clone());
 
     // Mint a token bound to this server's resource.
-    let access_token = mint_access_token(&app).await;
+    let access_token = client.mint_access_token().await;
 
     // A bearer middleware bound to a different resource must reject it.
     let authenticator = Arc::new(Authenticator::with_audience(
@@ -871,6 +832,10 @@ async fn test_authorization_code_survives_transaction_rollback() {
         "a rolled-back consume must leave the code exchangeable",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Consent-page parsing helpers
+// ---------------------------------------------------------------------------
 
 fn extract_approve_href(html: &str) -> String {
     // The consent page presents the redirect target as an `<a href>` the
