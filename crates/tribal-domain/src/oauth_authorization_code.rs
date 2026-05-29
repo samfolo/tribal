@@ -39,6 +39,17 @@ pub struct OauthAuthorizationCode {
 }
 
 impl OauthAuthorizationCode {
+    /// Sole supported PKCE `code_challenge_method` (OAuth 2.1 forbids
+    /// `plain`).
+    ///
+    /// Owned here because the challenge method is intrinsic to the code.
+    /// The auth layer reads it for the inbound-request comparison and the
+    /// metadata advertisement, and the DB layer binds it as the stored
+    /// value, so both reference this one definition. The SQL `CHECK`
+    /// constraint repeats the literal by necessity, since it cannot
+    /// reference a Rust constant.
+    pub const CODE_CHALLENGE_METHOD_S256: &'static str = "S256";
+
     /// Returns the SHA-256 hex digest of the raw code.
     #[must_use]
     pub fn code_hash(&self) -> &str {

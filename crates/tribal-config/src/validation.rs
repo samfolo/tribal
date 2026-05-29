@@ -251,31 +251,67 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
         });
     }
 
-    // Fail fast at load time on an unparseable issuer or resource URL,
-    // rather than only when the runtime config is constructed at serve.
-    validate_optional_url(
-        "oauth.issuer_url",
-        config.oauth.issuer_url.as_deref(),
-        diags,
-    );
-    validate_optional_url(
-        "oauth.resource_url",
-        config.oauth.resource_url.as_deref(),
-        diags,
-    );
+    // Fail fast at load time on a malformed or unsupported issuer/resource
+    // URL, rather than only when the runtime config is built at serve.
+    validate_issuer_url(config.oauth.issuer_url.as_deref(), diags);
+    validate_resource_url(config.oauth.resource_url.as_deref(), diags);
 }
 
-/// Pushes a [`ValidationError::UrlMalformed`] when `value` is set,
-/// non-empty, and does not parse as a URL. An unset field is admissible
-/// (the consumer derives it from the bind address).
-fn validate_optional_url(field: &'static str, value: Option<&str>, diags: &mut Diagnostics) {
-    if let Some(raw) = value
-        && !raw.is_empty()
-        && Url::parse(raw).is_err()
-    {
+/// Required form of `oauth.issuer_url`.
+const ISSUER_ORIGIN_REQUIREMENT: &str = "must be an origin URL with no path, query, or fragment";
+
+/// Required form of `oauth.resource_url` (RFC 8707).
+const RESOURCE_FRAGMENT_REQUIREMENT: &str = "must not contain a fragment";
+
+/// Validates `oauth.issuer_url`: when set, it must parse and be an origin
+/// (no path, query, or fragment).
+///
+/// The authorisation-server metadata endpoints are appended to the issuer
+/// and served at absolute root paths, so a sub-path issuer would advertise
+/// endpoints the router does not serve. An unset field is admissible (the
+/// consumer derives it from the bind address).
+fn validate_issuer_url(value: Option<&str>, diags: &mut Diagnostics) {
+    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
+        return;
+    };
+    let field = ConfigPath::from_static("oauth.issuer_url");
+    let Ok(url) = Url::parse(raw) else {
         diags.push(ValidationError::UrlMalformed {
-            field: ConfigPath::from_static(field),
+            field,
             value: raw.to_owned(),
+        });
+        return;
+    };
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        diags.push(ValidationError::UrlUnsupportedForm {
+            field,
+            value: raw.to_owned(),
+            requirement: ISSUER_ORIGIN_REQUIREMENT,
+        });
+    }
+}
+
+/// Validates `oauth.resource_url`: when set, it must parse and carry no
+/// fragment (RFC 8707 forbids a fragment on a resource indicator). An
+/// unset field is admissible (the consumer derives it from the bind
+/// address).
+fn validate_resource_url(value: Option<&str>, diags: &mut Diagnostics) {
+    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
+        return;
+    };
+    let field = ConfigPath::from_static("oauth.resource_url");
+    let Ok(url) = Url::parse(raw) else {
+        diags.push(ValidationError::UrlMalformed {
+            field,
+            value: raw.to_owned(),
+        });
+        return;
+    };
+    if url.fragment().is_some() {
+        diags.push(ValidationError::UrlUnsupportedForm {
+            field,
+            value: raw.to_owned(),
+            requirement: RESOURCE_FRAGMENT_REQUIREMENT,
         });
     }
 }
@@ -916,6 +952,30 @@ mod tests {
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "oauth.resource_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_oauth_issuer_with_path() {
+        let mut config = valid_config();
+        config.oauth.issuer_url = Some("https://auth.example.com/tribal".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlUnsupportedForm { field, .. }
+                if field.as_str() == "oauth.issuer_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_oauth_resource_with_fragment() {
+        let mut config = valid_config();
+        config.oauth.resource_url = Some("https://auth.example.com/mcp#frag".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlUnsupportedForm { field, .. }
                 if field.as_str() == "oauth.resource_url",
         )));
     }

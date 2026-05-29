@@ -40,8 +40,11 @@ const RANDOM_BYTE_LENGTH: usize = 32;
 /// RFC 7591 §2 client metadata request body.
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
-    /// Registered redirect URIs.
-    pub redirect_uris: Vec<String>,
+    /// Registered redirect URIs. Required; modelled as `Option` so an
+    /// absent field surfaces as the RFC 7591 `invalid_redirect_uri` error
+    /// rather than a bare JSON-deserialisation rejection.
+    #[serde(default)]
+    pub redirect_uris: Option<Vec<String>>,
     /// Optional human-readable client name.
     #[serde(default)]
     pub client_name: Option<String>,
@@ -139,24 +142,32 @@ async fn register(
     state: &RegisterState,
     req: RegisterRequest,
 ) -> Result<RegisterResponse, OAuthError> {
-    if req.redirect_uris.is_empty() {
+    let redirect_uris = req.redirect_uris.unwrap_or_default();
+    if redirect_uris.is_empty() {
         return Err(OAuthError::InvalidRedirectUri {
             reason: RedirectUriRejection::NoneRegistered,
         });
     }
 
-    for raw in &req.redirect_uris {
+    for raw in &redirect_uris {
         validate_redirect_uri(raw)?;
     }
 
-    let grant_types = req
-        .grant_types
-        .unwrap_or_else(|| vec![GRANT_TYPE_AUTHORIZATION_CODE.to_owned()]);
-    let response_types = req
-        .response_types
-        .unwrap_or_else(|| vec![RESPONSE_TYPE_CODE.to_owned()]);
+    // Filter declared grant/response types to those this server supports
+    // rather than rejecting a client that also declares ones we do not
+    // honour (notably `refresh_token`, which the MCP spec encourages
+    // clients to request). RFC 7591 §3.2.1 lets the AS register a subset
+    // and echo it back, so the client learns what it actually got.
+    let grant_types = filter_supported(req.grant_types, GRANT_TYPE_AUTHORIZATION_CODE);
+    let response_types = filter_supported(req.response_types, RESPONSE_TYPE_CODE);
 
-    validate_supported_grant_response_types(&grant_types, &response_types)?;
+    // A client that declared only unsupported grant types leaves no flow
+    // we can serve; there is nothing to register it for.
+    if grant_types.is_empty() {
+        return Err(OAuthError::InvalidClientMetadata {
+            reason: ClientMetadataRejection::NoSupportedGrantType,
+        });
+    }
     validate_grant_response_consistency(&grant_types, &response_types)?;
 
     if let Some(uncatalogued) = req.scope.as_deref().and_then(first_uncatalogued_scope) {
@@ -198,7 +209,7 @@ async fn register(
         .client_id(client_id.clone())
         .client_secret_hash(client_secret_hash)
         .client_name(req.client_name.clone())
-        .redirect_uris(req.redirect_uris.clone())
+        .redirect_uris(redirect_uris.clone())
         .grant_types(grant_types.clone())
         .response_types(response_types.clone())
         .token_endpoint_auth_method(auth_method)
@@ -294,37 +305,22 @@ fn validate_redirect_uri(raw: &str) -> Result<(), OAuthError> {
     }
 }
 
-/// Rejects declared grant or response types this server does not support.
+/// Filters declared metadata values to the single one this server
+/// supports, defaulting to it when the client declared none.
 ///
-/// Only `authorization_code` grants and `code` responses are supported;
-/// any other declared value (`client_credentials`, `token`, …) is
-/// rejected rather than silently dropped, so the persisted record never
-/// implies a capability the server does not honour.
-fn validate_supported_grant_response_types(
-    grant_types: &[String],
-    response_types: &[String],
-) -> Result<(), OAuthError> {
-    if let Some(unsupported) = grant_types
-        .iter()
-        .find(|grant| grant.as_str() != GRANT_TYPE_AUTHORIZATION_CODE)
-    {
-        return Err(OAuthError::InvalidClientMetadata {
-            reason: ClientMetadataRejection::UnsupportedGrantType {
-                presented: unsupported.clone(),
-            },
-        });
+/// Only `authorization_code` grants and `code` responses are supported.
+/// Filtering (rather than rejecting) lets a client that also declares an
+/// unsupported value still register, receiving the supported subset back;
+/// the persisted record never implies a capability the server does not
+/// honour, since the unsupported values are dropped.
+fn filter_supported(declared: Option<Vec<String>>, supported: &str) -> Vec<String> {
+    match declared {
+        None => vec![supported.to_owned()],
+        Some(values) => values
+            .into_iter()
+            .filter(|value| value == supported)
+            .collect(),
     }
-    if let Some(unsupported) = response_types
-        .iter()
-        .find(|response| response.as_str() != RESPONSE_TYPE_CODE)
-    {
-        return Err(OAuthError::InvalidClientMetadata {
-            reason: ClientMetadataRejection::UnsupportedResponseType {
-                presented: unsupported.clone(),
-            },
-        });
-    }
-    Ok(())
 }
 
 fn validate_grant_response_consistency(
@@ -400,46 +396,37 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_supported_grant_response_types_accepts_supported() {
-        assert!(
-            validate_supported_grant_response_types(
-                &[GRANT_TYPE_AUTHORIZATION_CODE.to_owned()],
-                &[RESPONSE_TYPE_CODE.to_owned()],
-            )
-            .is_ok(),
+    fn test_filter_supported_keeps_supported_and_drops_unsupported() {
+        // A client declaring authorization_code + refresh_token keeps only
+        // the supported grant; the refresh_token it cannot use is dropped.
+        assert_eq!(
+            filter_supported(
+                Some(vec![
+                    GRANT_TYPE_AUTHORIZATION_CODE.to_owned(),
+                    "refresh_token".to_owned(),
+                ]),
+                GRANT_TYPE_AUTHORIZATION_CODE,
+            ),
+            vec![GRANT_TYPE_AUTHORIZATION_CODE.to_owned()],
         );
     }
 
     #[test]
-    fn test_validate_supported_grant_response_types_rejects_unknown_grant() {
-        let err = validate_supported_grant_response_types(
-            &[
-                GRANT_TYPE_AUTHORIZATION_CODE.to_owned(),
-                "client_credentials".to_owned(),
-            ],
-            &[RESPONSE_TYPE_CODE.to_owned()],
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            OAuthError::InvalidClientMetadata {
-                reason: ClientMetadataRejection::UnsupportedGrantType { .. },
-            },
-        ));
+    fn test_filter_supported_defaults_when_absent() {
+        assert_eq!(
+            filter_supported(None, RESPONSE_TYPE_CODE),
+            vec![RESPONSE_TYPE_CODE.to_owned()],
+        );
     }
 
     #[test]
-    fn test_validate_supported_grant_response_types_rejects_unknown_response() {
-        let err = validate_supported_grant_response_types(
-            &[GRANT_TYPE_AUTHORIZATION_CODE.to_owned()],
-            &[RESPONSE_TYPE_CODE.to_owned(), "token".to_owned()],
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            OAuthError::InvalidClientMetadata {
-                reason: ClientMetadataRejection::UnsupportedResponseType { .. },
-            },
-        ));
+    fn test_filter_supported_empty_when_only_unsupported() {
+        assert!(
+            filter_supported(
+                Some(vec!["client_credentials".to_owned()]),
+                GRANT_TYPE_AUTHORIZATION_CODE
+            )
+            .is_empty(),
+        );
     }
 }

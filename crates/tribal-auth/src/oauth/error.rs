@@ -111,6 +111,12 @@ pub enum InvalidRequestReason {
         /// The grant type the client presented.
         presented: String,
     },
+    /// A required request parameter was absent.
+    #[error("required parameter {parameter} is missing")]
+    MissingParameter {
+        /// The name of the missing parameter.
+        parameter: &'static str,
+    },
 }
 
 /// Why an `invalid_client` was raised.
@@ -158,6 +164,12 @@ pub enum InvalidTargetReason {
     /// The `resource` value did not parse as a URL.
     #[error("resource is not a valid URL: {value:?}")]
     Malformed {
+        /// The raw value the client presented.
+        value: String,
+    },
+    /// The `resource` value carried a fragment, which RFC 8707 forbids.
+    #[error("resource must not contain a fragment: {value:?}")]
+    FragmentPresent {
         /// The raw value the client presented.
         value: String,
     },
@@ -224,18 +236,10 @@ pub enum ClientMetadataRejection {
     /// `response_type=code` was declared without `grant_type=authorization_code`.
     #[error("response_type=code requires grant_type=authorization_code")]
     GrantResponseInconsistent,
-    /// A declared `grant_type` is not supported by this server.
-    #[error("unsupported grant_type: {presented}")]
-    UnsupportedGrantType {
-        /// The grant type the client declared.
-        presented: String,
-    },
-    /// A declared `response_type` is not supported by this server.
-    #[error("unsupported response_type: {presented}")]
-    UnsupportedResponseType {
-        /// The response type the client declared.
-        presented: String,
-    },
+    /// Every declared `grant_type` was unsupported, leaving no flow the
+    /// server can register the client for.
+    #[error("no supported grant_type was declared")]
+    NoSupportedGrantType,
     /// A declared `scope` token is not in the advertised catalogue.
     #[error("unsupported scope: {presented}")]
     UnsupportedScope {
@@ -278,6 +282,10 @@ pub enum InternalOperation {
     /// Inserting the issued access token.
     #[error("access token insertion")]
     InsertAccessToken,
+    /// A confidential client row carried no stored secret hash (a
+    /// registration-time invariant violation, not a client error).
+    #[error("confidential client missing stored secret")]
+    ConfidentialClientMissingSecret,
     /// Converting the authorisation-code TTL to a `chrono` duration.
     #[error("authorization-code TTL conversion")]
     AuthorizationCodeTtlConversion,
@@ -457,6 +465,26 @@ impl OAuthError {
         }
         Redirect::to(url.as_str()).into_response()
     }
+}
+
+/// Returns the value of a required OAuth request parameter, or an
+/// `invalid_request` error naming the parameter that was absent.
+///
+/// A present-but-empty value is treated as absent: an empty required
+/// parameter is unusable, and surfacing it as `invalid_request` reads
+/// better than letting it fail an opaque downstream check. Modelling
+/// required parameters as `Option` and mapping them here keeps a missing
+/// value on the RFC 6749 §5.2 error path rather than the framework's
+/// extractor rejection.
+pub(crate) fn require_param(
+    value: Option<String>,
+    parameter: &'static str,
+) -> Result<String, OAuthError> {
+    value
+        .filter(|v| !v.is_empty())
+        .ok_or(OAuthError::InvalidRequest {
+            reason: InvalidRequestReason::MissingParameter { parameter },
+        })
 }
 
 #[cfg(test)]

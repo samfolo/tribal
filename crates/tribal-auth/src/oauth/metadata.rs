@@ -8,11 +8,11 @@
 //! supported token-endpoint auth methods, and the scope catalogue.
 
 use serde::{Deserialize, Serialize};
-use tribal_domain::TokenEndpointAuthMethod;
+use tribal_domain::{OauthAuthorizationCode, TokenEndpointAuthMethod};
 use url::Url;
 
 use crate::oauth::{
-    common::{CODE_CHALLENGE_METHOD_S256, GRANT_TYPE_AUTHORIZATION_CODE, RESPONSE_TYPE_CODE},
+    common::{GRANT_TYPE_AUTHORIZATION_CODE, RESPONSE_TYPE_CODE},
     config::OAuthRuntimeConfig,
     scope::SCOPES_CATALOGUE,
 };
@@ -121,7 +121,9 @@ pub fn authorization_server_metadata(runtime: &OAuthRuntimeConfig) -> Authorizat
             .then(|| join_issuer(&runtime.issuer_url, PATH_REGISTER)),
         response_types_supported: vec![RESPONSE_TYPE_CODE.to_owned()],
         grant_types_supported: vec![GRANT_TYPE_AUTHORIZATION_CODE.to_owned()],
-        code_challenge_methods_supported: vec![CODE_CHALLENGE_METHOD_S256.to_owned()],
+        code_challenge_methods_supported: vec![
+            OauthAuthorizationCode::CODE_CHALLENGE_METHOD_S256.to_owned(),
+        ],
         token_endpoint_auth_methods_supported,
         scopes_supported: SCOPES_CATALOGUE.iter().map(|s| (*s).to_owned()).collect(),
     }

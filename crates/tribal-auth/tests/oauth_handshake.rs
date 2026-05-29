@@ -553,6 +553,197 @@ async fn test_register_rejects_uncatalogued_scope() {
     assert_eq!(body["error"], "invalid_client_metadata");
 }
 
+#[tokio::test]
+async fn test_authorize_rejects_scope_beyond_registration() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // Register a read-only client.
+    let register = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "scope": "tribal:read",
+        }))
+        .await;
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
+    let client_id = register["client_id"].as_str().unwrap().to_owned();
+
+    // It may not authorise a write scope it was never registered for.
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}&scope=tribal%3Awrite",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(location.contains("error=invalid_scope"));
+}
+
+#[tokio::test]
+async fn test_authorize_accepts_scope_within_registration() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    let register = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "scope": "tribal:read tribal:write",
+        }))
+        .await;
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
+    let client_id = register["client_id"].as_str().unwrap().to_owned();
+
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}&scope=tribal%3Aread",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a scope within the registration is accepted",
+    );
+}
+
+#[tokio::test]
+async fn test_authorize_rejects_resource_with_fragment() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    let (client_id, _) = client.register("none").await;
+    // A resource carrying a fragment (forbidden by RFC 8707) is rejected,
+    // not silently stripped.
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource=http%3A%2F%2F127.0.0.1%3A8080%2Fmcp%23frag",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(location.contains("error=invalid_target"));
+}
+
+#[tokio::test]
+async fn test_authorize_missing_client_id_returns_invalid_request() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // No client_id: the OAuth error model renders a JSON invalid_request,
+    // not a bare framework deserialisation rejection.
+    let query = format!(
+        "response_type=code&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256&resource={RESOURCE_ENCODED}",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(body["error"], "invalid_request");
+}
+
+#[tokio::test]
+async fn test_token_missing_code_verifier_returns_invalid_request() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    let (client_id, _) = client.register("none").await;
+    let code = client.authorize_code(&client_id).await;
+    // Form omits code_verifier entirely.
+    let body = serde_urlencoded::to_string([
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", REDIRECT_URI),
+        ("client_id", client_id.as_str()),
+        ("resource", RESOURCE),
+    ])
+    .unwrap();
+    let response = client.post_token(body).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(json["error"], "invalid_request");
+}
+
+#[tokio::test]
+async fn test_register_missing_redirect_uris_returns_invalid_redirect_uri() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // No redirect_uris field at all: surfaces as the OAuth
+    // invalid_redirect_uri error, not a framework rejection.
+    let response = client
+        .register_raw(serde_json::json!({
+            "token_endpoint_auth_method": "none",
+        }))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(body["error"], "invalid_redirect_uri");
+}
+
+#[tokio::test]
+async fn test_register_filters_unsupported_grant_types() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // A client declaring refresh_token alongside authorization_code
+    // registers successfully, with only the supported grant echoed back.
+    let response = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code", "refresh_token"],
+        }))
+        .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    let grants: Vec<&str> = body["grant_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        grants,
+        vec!["authorization_code"],
+        "refresh_token is filtered out, not rejected",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Adversarial cases
 // ---------------------------------------------------------------------------

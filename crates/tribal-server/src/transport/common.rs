@@ -26,7 +26,7 @@ use tribal_mcp::{
     TribalServerHandler,
 };
 
-use crate::error::AppError;
+use crate::{error::AppError, startup::expected_token_audience};
 
 // ---------------------------------------------------------------------------
 // Listener
@@ -88,13 +88,14 @@ pub(super) async fn bind_listener(
 /// transports.
 pub(super) fn auth_middleware_state(
     state: &Arc<AppState>,
+    transport: TransportKind,
     runtime: &OAuthRuntimeConfig,
     challenge: Arc<BearerChallenge>,
 ) -> AuthMiddlewareState {
     let authenticator = Arc::new(Authenticator::with_audience(
         Arc::new(PgAuthTokenRepository),
         Arc::new(PgPrincipalRepository),
-        Some(runtime.canonical_resource.clone()),
+        expected_token_audience(transport, runtime),
     ));
 
     AuthMiddlewareState::new(state.mcp_pool().clone(), authenticator, challenge)
@@ -103,19 +104,24 @@ pub(super) fn auth_middleware_state(
 /// Builds the `WWW-Authenticate: Bearer` challenge template for the
 /// active OAuth runtime configuration.
 ///
-/// The resource-metadata URL points at the path-suffixed PRM variant
-/// (`/.well-known/oauth-protected-resource/mcp`) so spec-compliant MCP
-/// clients hit it directly per RFC 9728 §3.
+/// The resource-metadata URL is derived from the protected-resource URL
+/// (RFC 9728 §3): it carries the resource's own scheme, host, and port,
+/// with the resource path appended under `/.well-known/oauth-protected-
+/// resource` so spec-compliant MCP clients hit it directly. Deriving it
+/// from the resource (not the issuer) keeps the challenge correct when an
+/// operator configures a resource host distinct from the issuer.
 pub(super) fn bearer_challenge_for(runtime: &OAuthRuntimeConfig) -> BearerChallenge {
     let path_suffix = runtime.resource_url.path().trim_start_matches('/');
     let resource_metadata_url = {
-        let mut url = runtime.issuer_url.clone();
+        let mut url = runtime.resource_url.clone();
         let suffix = if path_suffix.is_empty() {
             PATH_PROTECTED_RESOURCE_METADATA.to_owned()
         } else {
             format!("{PATH_PROTECTED_RESOURCE_METADATA}/{path_suffix}")
         };
         url.set_path(&suffix);
+        url.set_query(None);
+        url.set_fragment(None);
         url
     };
 

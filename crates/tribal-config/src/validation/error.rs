@@ -310,6 +310,14 @@ pub enum ValidationError {
     BindAddressMalformed { value: String },
     /// A URL-bearing config field failed to parse as a URL.
     UrlMalformed { field: ConfigPath, value: String },
+    /// A URL-bearing config field parsed but does not meet a structural
+    /// requirement this server supports (for example an origin-only
+    /// issuer, or a fragment-free resource indicator).
+    UrlUnsupportedForm {
+        field: ConfigPath,
+        value: String,
+        requirement: &'static str,
+    },
     /// `embedding.provider` is a provider that does not support
     /// embedding.  Renders the provider name in both clauses for clarity.
     EmbeddingProviderUnsupported { provider: ProviderKind },
@@ -409,6 +417,14 @@ impl fmt::Display for ValidationError {
 
             Self::UrlMalformed { field, value } => {
                 write!(f, "{field} is not a valid URL: {value}")
+            }
+
+            Self::UrlUnsupportedForm {
+                field,
+                value,
+                requirement,
+            } => {
+                write!(f, "{field} {requirement}: {value}")
             }
 
             Self::EmbeddingProviderUnsupported { provider } => write!(

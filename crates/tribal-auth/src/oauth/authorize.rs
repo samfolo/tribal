@@ -21,20 +21,20 @@ use tribal_db::{
     PgOauthAuthorizationCodeRepository, PgOauthClientRepository, PgPrincipalRepository,
     PrincipalRepository,
 };
-use tribal_domain::LOCAL_PRINCIPAL_KEY;
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, OauthAuthorizationCode, OauthClient};
 use url::Url;
 
 use crate::oauth::{
-    common::{CODE_CHALLENGE_METHOD_S256, RESPONSE_TYPE_CODE},
+    common::RESPONSE_TYPE_CODE,
     config::{OAuthRuntimeConfig, canonicalise_resource_url},
     consent::build_consent_html,
     error::{
         InternalOperation, InvalidClientReason, InvalidRequestReason, InvalidTargetReason,
-        OAuthError, RedirectUriRejection,
+        OAuthError, RedirectUriRejection, require_param,
     },
     pkce::CodeChallenge,
     redirect::matches_redirect_uri,
-    scope::first_uncatalogued_scope,
+    scope::{first_uncatalogued_scope, scope_exceeding_registration},
 };
 
 // ---------------------------------------------------------------------------
@@ -47,19 +47,30 @@ const RANDOM_CODE_BYTE_LENGTH: usize = 32;
 // Query parameters
 // ---------------------------------------------------------------------------
 
-/// Query parameters accepted by `/authorize`.
+/// Query parameters accepted by `/authorize`, before required-field
+/// validation.
+///
+/// Every required parameter is modelled as `Option` so an absent value
+/// surfaces as an RFC 6749 §5.2 `invalid_request` (via
+/// [`AuthorizeQuery::validate`]) rather than a bare query-deserialisation
+/// rejection from the framework.
 #[derive(Debug, Deserialize)]
 pub struct AuthorizeQuery {
     /// Required `response_type` value (must be `code`).
-    pub response_type: String,
+    #[serde(default)]
+    pub response_type: Option<String>,
     /// Client identifier issued by dynamic client registration.
-    pub client_id: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
     /// Redirect URI to send the code to on success.
-    pub redirect_uri: String,
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
     /// PKCE code challenge derived from the code verifier via S256.
-    pub code_challenge: String,
+    #[serde(default)]
+    pub code_challenge: Option<String>,
     /// PKCE challenge method (must be `S256`).
-    pub code_challenge_method: String,
+    #[serde(default)]
+    pub code_challenge_method: Option<String>,
     /// Optional client-supplied state token, echoed back on redirect.
     #[serde(default)]
     pub state: Option<String>,
@@ -69,6 +80,38 @@ pub struct AuthorizeQuery {
     /// Resource indicator per RFC 8707.
     #[serde(default)]
     pub resource: Option<String>,
+}
+
+/// An authorisation request whose required parameters are all present.
+struct ValidatedAuthorizeQuery {
+    response_type: String,
+    client_id: String,
+    redirect_uri: String,
+    code_challenge: String,
+    code_challenge_method: String,
+    state: Option<String>,
+    scope: Option<String>,
+    resource: Option<String>,
+}
+
+impl AuthorizeQuery {
+    /// Validates that every required parameter is present, mapping an
+    /// absent one to an `invalid_request` error.
+    fn validate(self) -> Result<ValidatedAuthorizeQuery, OAuthError> {
+        Ok(ValidatedAuthorizeQuery {
+            response_type: require_param(self.response_type, "response_type")?,
+            client_id: require_param(self.client_id, "client_id")?,
+            redirect_uri: require_param(self.redirect_uri, "redirect_uri")?,
+            code_challenge: require_param(self.code_challenge, "code_challenge")?,
+            code_challenge_method: require_param(
+                self.code_challenge_method,
+                "code_challenge_method",
+            )?,
+            state: self.state,
+            scope: self.scope,
+            resource: self.resource,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -108,32 +151,45 @@ pub async fn handle_authorize(
     State(state): State<AuthorizeState>,
     Query(query): Query<AuthorizeQuery>,
 ) -> Response {
+    let query = match query.validate() {
+        Ok(query) => query,
+        Err(err) => return err.into_json_response(),
+    };
+
     // Stage 1: validate inputs that produce a JSON error if the redirect
     // URI is untrusted (RFC 6749 §3.1.2.4 forbids redirect-to-untrusted).
-    let redirect_uri = match validate_pre_redirect(&state, &query).await {
-        Ok(uri) => uri,
+    let resolved = match validate_pre_redirect(&state, &query).await {
+        Ok(resolved) => resolved,
         Err(err) => return err.into_json_response(),
     };
 
     // Stage 2: validate inputs whose failure mode is a 302 redirect carrying
     // the error code per RFC 6749 §4.1.2.1.
-    match issue_code(&state, &query, &redirect_uri).await {
+    match issue_code(&state, &query, &resolved).await {
         Ok(redirect_response) => redirect_response,
-        Err(err) => err.into_redirect_response(&redirect_uri, query.state.as_deref()),
+        Err(err) => err.into_redirect_response(&resolved.redirect_uri, query.state.as_deref()),
     }
+}
+
+/// A `/authorize` client resolved against the registry: the matched
+/// redirect URI, and the registered scope grant that bounds what a code
+/// issued to this client may carry.
+struct ResolvedClient {
+    redirect_uri: Url,
+    registered_scope: Option<String>,
 }
 
 async fn validate_pre_redirect(
     state: &AuthorizeState,
-    query: &AuthorizeQuery,
-) -> Result<Url, OAuthError> {
+    query: &ValidatedAuthorizeQuery,
+) -> Result<ResolvedClient, OAuthError> {
     if query.response_type != RESPONSE_TYPE_CODE {
         return Err(OAuthError::UnsupportedResponseType {
             presented: query.response_type.clone(),
         });
     }
 
-    if query.code_challenge_method != CODE_CHALLENGE_METHOD_S256 {
+    if query.code_challenge_method != OauthAuthorizationCode::CODE_CHALLENGE_METHOD_S256 {
         return Err(OAuthError::InvalidRequest {
             reason: InvalidRequestReason::UnsupportedCodeChallengeMethod {
                 presented: query.code_challenge_method.clone(),
@@ -141,7 +197,8 @@ async fn validate_pre_redirect(
         });
     }
 
-    let registered_uris = resolve_client_redirect_uris(state, &query.client_id).await?;
+    let client = resolve_client(state, &query.client_id).await?;
+    let registered_uris = parse_registered_redirect_uris(&client)?;
     let redirect_uri = Url::parse(&query.redirect_uri).map_err(|_| OAuthError::InvalidRequest {
         reason: InvalidRequestReason::MalformedRedirectUri {
             value: query.redirect_uri.clone(),
@@ -157,19 +214,22 @@ async fn validate_pre_redirect(
         });
     }
 
-    Ok(redirect_uri)
+    Ok(ResolvedClient {
+        redirect_uri,
+        registered_scope: client.scope().map(str::to_owned),
+    })
 }
 
-/// Resolves the redirect URIs registered against a client identifier.
+/// Resolves a registered client by identifier.
 ///
 /// # Errors
 ///
 /// Returns [`OAuthError::InvalidClient`] when the identifier is absent
 /// from the client registry.
-async fn resolve_client_redirect_uris(
+async fn resolve_client(
     state: &AuthorizeState,
     client_id: &str,
-) -> Result<Vec<Url>, OAuthError> {
+) -> Result<OauthClient, OAuthError> {
     let mut conn = state
         .pool
         .acquire()
@@ -179,7 +239,7 @@ async fn resolve_client_redirect_uris(
             source: Some(Box::new(err)),
         })?;
 
-    let client = state
+    state
         .client_repo
         .find_by_id(&mut conn, client_id)
         .await
@@ -189,8 +249,11 @@ async fn resolve_client_redirect_uris(
         })?
         .ok_or(OAuthError::InvalidClient {
             reason: InvalidClientReason::Unregistered,
-        })?;
+        })
+}
 
+/// Parses the redirect URIs registered against a client into URLs.
+fn parse_registered_redirect_uris(client: &OauthClient) -> Result<Vec<Url>, OAuthError> {
     client
         .redirect_uris()
         .iter()
@@ -205,8 +268,8 @@ async fn resolve_client_redirect_uris(
 
 async fn issue_code(
     state: &AuthorizeState,
-    query: &AuthorizeQuery,
-    redirect_uri: &Url,
+    query: &ValidatedAuthorizeQuery,
+    resolved: &ResolvedClient,
 ) -> Result<Response, OAuthError> {
     let challenge =
         CodeChallenge::parse(&query.code_challenge).map_err(|_| OAuthError::InvalidRequest {
@@ -219,6 +282,20 @@ async fn issue_code(
     if let Some(uncatalogued) = query.scope.as_deref().and_then(first_uncatalogued_scope) {
         return Err(OAuthError::InvalidScope {
             unknown_token: uncatalogued.to_owned(),
+        });
+    }
+
+    // A requested scope must also stay within the client's registered
+    // grant: DCR registration records the scope a client may use, and a
+    // code must not carry more than that per-client upper bound.
+    let excess = resolved
+        .registered_scope
+        .as_deref()
+        .zip(query.scope.as_deref())
+        .and_then(|(registered, requested)| scope_exceeding_registration(requested, registered));
+    if let Some(excess) = excess {
+        return Err(OAuthError::InvalidScope {
+            unknown_token: excess.to_owned(),
         });
     }
 
@@ -237,6 +314,13 @@ async fn issue_code(
             value: resource.to_owned(),
         },
     })?;
+    if resource_url.fragment().is_some() {
+        return Err(OAuthError::InvalidTarget {
+            reason: InvalidTargetReason::FragmentPresent {
+                value: resource.to_owned(),
+            },
+        });
+    }
     let canonical = canonicalise_resource_url(&resource_url);
     if canonical != state.runtime.canonical_resource {
         return Err(OAuthError::InvalidTarget {
@@ -284,7 +368,7 @@ async fn issue_code(
     let new = NewOauthAuthorizationCode::builder()
         .code_hash(code_hash)
         .client_id(query.client_id.clone())
-        .redirect_uri(redirect_uri.as_str().to_owned())
+        .redirect_uri(resolved.redirect_uri.as_str().to_owned())
         .code_challenge(challenge.as_str().to_owned())
         .scope(query.scope.clone())
         .resource(Some(canonical))
@@ -310,7 +394,7 @@ async fn issue_code(
         })?;
 
     Ok(consent_page_response(
-        redirect_uri,
+        &resolved.redirect_uri,
         &raw_code,
         query.state.as_deref(),
         &query.client_id,

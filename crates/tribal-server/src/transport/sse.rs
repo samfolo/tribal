@@ -68,7 +68,8 @@ pub async fn run_sse_transport(
 
     let (listener, local_addr) = common::bind_listener(server_config, transport, listener).await?;
     let challenge = Arc::new(common::bearer_challenge_for(&oauth_runtime));
-    let auth_state = common::auth_middleware_state(state, &oauth_runtime, Arc::clone(&challenge));
+    let auth_state =
+        common::auth_middleware_state(state, transport, &oauth_runtime, Arc::clone(&challenge));
     let mcp_service = common::mcp_service(
         state,
         handler_config,

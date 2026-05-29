@@ -18,6 +18,7 @@ use super::{
     state::CheckState,
     types::{CheckDetail, CheckOutcome, CheckRemediation, TokenFailureReason, TokenTransport},
 };
+use crate::startup::{expected_token_audience, resolve_oauth_runtime};
 
 impl CheckOutcome {
     pub(in crate::commands::check) fn token_skipped_stdio() -> Self {
@@ -103,7 +104,8 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
                     .pool
                     .as_ref()
                     .expect("preflight ensures state.pool is populated under stdio + --token");
-                verify_against(pool, token, TokenTransport::Stdio).await
+                // Stdio does not bind a bearer audience.
+                verify_against(pool, token, TokenTransport::Stdio, None).await
             }
         },
         TransportKind::Http | TransportKind::Sse => {
@@ -111,24 +113,42 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
                 .pool
                 .as_ref()
                 .expect("preflight ensures state.pool is populated under network transport");
-            network_path(pool, token_override).await
+            // Match the live network middleware, which binds the token
+            // audience to the canonical resource: a token minted for a
+            // different resource must fail this check exactly as it would
+            // at `/mcp`. A resolve failure leaves the audience unbound
+            // rather than failing the existence check outright.
+            let expected_audience = resolve_oauth_runtime(config)
+                .ok()
+                .and_then(|runtime| expected_token_audience(config.server.transport, &runtime));
+            network_path(pool, token_override, expected_audience).await
         }
     }
 }
 
-async fn network_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutcome {
+async fn network_path(
+    pool: &PgPool,
+    token_override: Option<&str>,
+    expected_audience: Option<String>,
+) -> CheckOutcome {
     if let Some(token) = token_override {
-        return verify_against(pool, token, TokenTransport::Http).await;
+        return verify_against(pool, token, TokenTransport::Http, expected_audience).await;
     }
     if let Ok(token) = std::env::var(ENV_AUTH_TOKEN)
         && !token.trim().is_empty()
     {
-        return verify_against(pool, token.trim(), TokenTransport::Http).await;
+        return verify_against(pool, token.trim(), TokenTransport::Http, expected_audience).await;
     }
     match read_credentials() {
         Ok(loaded) => match loaded.credentials.auth {
             Auth::Bearer { token } => {
-                verify_against(pool, token.as_str(), TokenTransport::Http).await
+                verify_against(
+                    pool,
+                    token.as_str(),
+                    TokenTransport::Http,
+                    expected_audience,
+                )
+                .await
             }
         },
         Err(CredentialsReadError::NotFound) => check_aggregate(pool).await,
@@ -147,7 +167,12 @@ async fn network_path(pool: &PgPool, token_override: Option<&str>) -> CheckOutco
     }
 }
 
-async fn verify_against(pool: &PgPool, token: &str, transport: TokenTransport) -> CheckOutcome {
+async fn verify_against(
+    pool: &PgPool,
+    token: &str,
+    transport: TokenTransport,
+    expected_audience: Option<String>,
+) -> CheckOutcome {
     let mut conn = match pool.acquire().await {
         Ok(c) => c,
         Err(err) => {
@@ -159,9 +184,10 @@ async fn verify_against(pool: &PgPool, token: &str, transport: TokenTransport) -
             );
         }
     };
-    let authenticator = Authenticator::new(
+    let authenticator = Authenticator::with_audience(
         Arc::new(PgAuthTokenRepository),
         Arc::new(PgPrincipalRepository),
+        expected_audience,
     );
     let Err(err) = authenticator.verify_token(&mut conn, token).await else {
         return CheckOutcome::token_verified(transport);
