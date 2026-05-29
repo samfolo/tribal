@@ -319,12 +319,55 @@ async fn test_mcp_config_http_explicit_token_overrides_credentials() {
 }
 
 // ---------------------------------------------------------------------------
-// Project resolution failure
+// Project resolution: required for stdio, irrelevant for the network
+// transports
 // ---------------------------------------------------------------------------
 
+/// The network snippet binds its project server-side via `serve
+/// --project`, so http renders even when the resolution cascade would
+/// find nothing: no `--project`, no `TRIBAL_PROJECT_ID`, and a cwd with
+/// no `.git`. The emitted entry carries a url and no project.
+#[tokio::test]
+async fn test_mcp_config_http_renders_without_a_resolvable_project() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    // Loopback default keeps this URL-only, so credentials are never
+    // read and the snippet is fully determined by the cascade outcome.
+    let _public_url_guard = EnvGuard::remove(ENV_PUBLIC_MCP_URL);
+
+    // Cwd into a tempdir with no `.git` so the git-remote fallback
+    // returns None and the cascade would otherwise exhaust.
+    let cwd_dir = tempfile::tempdir().expect("cwd tempdir");
+    let _cwd_guard = CwdGuard::set(cwd_dir.path());
+
+    let (stdout, _stderr) = run_mcp_config(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        None,
+        TransportKind::Http,
+        TokenStrategy::Auto,
+    )
+    .await
+    .expect("http renders without a resolvable project");
+
+    let entry = parse_json(&stdout);
+    assert_eq!(
+        entry["type"], "http",
+        "network snippet carries the transport type: {entry}",
+    );
+    assert!(
+        entry.get("url").is_some(),
+        "network snippet carries a url: {entry}",
+    );
+}
+
 /// With no `--project`, no `TRIBAL_PROJECT_ID`, and a cwd that has
-/// no `.git`, the resolution cascade exhausts and surfaces the
-/// canonical literal.
+/// no `.git`, the stdio resolution cascade exhausts and surfaces the
+/// canonical literal. stdio embeds `serve --project <id>`, so a project
+/// is required here.
 #[tokio::test]
 async fn test_mcp_config_project_resolution_failure_errors_with_literal() {
     let _lock = serial_lock().await;

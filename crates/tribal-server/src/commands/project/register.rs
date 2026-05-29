@@ -27,7 +27,7 @@ use crate::{
     },
     error::AppError,
     git::detect_git_remote,
-    output::{build_snippet_entry, resolved_advertised_url},
+    output::{McpSnippet, build_snippet_entry, resolved_advertised_url},
     startup::{expected_token_audience, resolve_oauth_runtime},
 };
 
@@ -219,13 +219,21 @@ pub(crate) async fn compute(
     };
 
     let advertised_url = resolved_advertised_url(config);
-    let mcp_config = build_snippet_entry(
-        project.id(),
-        opts.transport,
-        opts.auth,
-        opts.config_path,
-        &advertised_url,
-    );
+    let snippet = match opts.transport {
+        TransportKind::Stdio => McpSnippet::Stdio {
+            project_id: project.id(),
+            config_path: opts.config_path,
+        },
+        TransportKind::Http => McpSnippet::Http {
+            auth: opts.auth,
+            advertised_url: advertised_url.as_str(),
+        },
+        TransportKind::Sse => McpSnippet::Sse {
+            auth: opts.auth,
+            advertised_url: advertised_url.as_str(),
+        },
+    };
+    let mcp_config = build_snippet_entry(&snippet);
 
     let registered = RegisteredProject {
         project_id: project.id(),

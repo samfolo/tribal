@@ -814,8 +814,10 @@ pub struct McpConfigArgs {
     #[arg(long, help_heading = "Output")]
     pub transport: Option<TransportKind>,
 
-    /// Project ID (`proj_`-prefixed) to render the snippet for. Falls
-    /// back to `TRIBAL_PROJECT_ID` and then to git-remote detection.
+    /// Project ID (`proj_`-prefixed) embedded in the stdio snippet's
+    /// `serve --project`. Falls back to `TRIBAL_PROJECT_ID`, then
+    /// git-remote detection. The http/sse snippet binds its project
+    /// server-side, so this has no effect there.
     #[arg(long, env = "TRIBAL_PROJECT_ID", help_heading = "Session")]
     pub project: Option<String>,
 

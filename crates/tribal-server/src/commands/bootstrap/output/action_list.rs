@@ -6,7 +6,10 @@ use tribal_config::{ConfigPersistence, TransportKind, env_var_for_path};
 use tribal_domain::ProjectId;
 use tribal_ui::{Component, OrderedList, RenderCtx, Text};
 
-use crate::{cli::PersistableFlag, commands::setup::ConfigFileOutcome};
+use crate::{
+    cli::PersistableFlag,
+    commands::{common::CredentialsPersistOutcome, setup::ConfigFileOutcome},
+};
 
 // ---------------------------------------------------------------------------
 // List wrapper
@@ -109,6 +112,7 @@ pub(super) struct ActionInputs<'a> {
     pub config_file: &'a ConfigFileOutcome,
     pub persistence: ConfigPersistence<'a>,
     pub oauth_surface_routable: bool,
+    pub credentials: &'a CredentialsPersistOutcome,
 }
 
 /// Builds the stdio variant's action list.
@@ -132,8 +136,13 @@ pub(super) fn http_sse_steps(inputs: &ActionInputs<'_>) -> Vec<ActionStep> {
     }
     steps.push(start_server_step(inputs));
     push_verify_steps(&mut steps);
-    push_authenticate_step(&mut steps, inputs.oauth_surface_routable);
-    push_wire_up_step(&mut steps);
+    match inputs.credentials {
+        CredentialsPersistOutcome::Persisted { .. } => {
+            push_authenticate_step(&mut steps, inputs.oauth_surface_routable);
+            push_wire_up_step(&mut steps);
+        }
+        CredentialsPersistOutcome::Failed { .. } => push_recovery_wire_up_step(&mut steps),
+    }
     push_skills_step(&mut steps);
     steps
 }
@@ -296,6 +305,21 @@ fn push_wire_up_step(steps: &mut Vec<ActionStep>) {
             BodyLine::new("claude mcp add-json tribal \"$(tribal mcp-config)\"")
                 .indented_by(DEEPER),
             BodyLine::new("For other harnesses, see the installation skill."),
+        ],
+    ));
+}
+
+fn push_recovery_wire_up_step(steps: &mut Vec<ActionStep>) {
+    steps.push(ActionStep::new(
+        "credentials.json was not written. Wire up with the token shown above. For Claude Code:",
+        vec![
+            BodyLine::new("claude mcp add-json tribal \"$(tribal mcp-config --token <token>)\"")
+                .indented_by(DEEPER),
+            BodyLine::new(
+                "Substitute <token> with the value above. For other harnesses, see the \
+                 installation skill.",
+            ),
+            BodyLine::new("Re-run bootstrap to restore credentials.json and the OAuth default."),
         ],
     ));
 }
