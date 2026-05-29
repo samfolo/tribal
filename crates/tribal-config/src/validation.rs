@@ -11,6 +11,7 @@ use url::{Host, Url};
 use crate::{
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
+    public_mcp_url_override,
     sections::{
         DEFAULT_BIND_ADDRESS, MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
         MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, advertised_oauth_host,
@@ -266,7 +267,7 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
         config.server.transport,
         TransportKind::Http | TransportKind::Sse
     ) && config.oauth.dcr_enabled
-        && oauth_surface_is_routable(config)
+        && oauth_surface_is_routable(config, public_mcp_url_override().as_deref())
     {
         diags.push(ValidationError::NonLoopbackDcrConflict);
     }
@@ -276,10 +277,22 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
 /// non-loopback host, the signal that DCR's unauthenticated `/register`
 /// would be reachable by remote clients.
 ///
-/// Each of the issuer and resource hosts is the explicit URL when one is
-/// set, otherwise the host the bind address advertises
-/// ([`advertised_oauth_host`]).
-fn oauth_surface_is_routable(config: &TribalConfig) -> bool {
+/// The surface is the most public of three sources: an explicit
+/// `oauth.issuer_url`/`oauth.resource_url`; `public_mcp_url`, the
+/// caller-supplied advertised endpoint (sourced from
+/// [`public_mcp_url_override`]) that a reverse-proxied deployment sets
+/// while binding loopback, so a routable host is served despite a
+/// loopback bind; and otherwise the host the bind address advertises
+/// ([`advertised_oauth_host`]). Any one of them being non-loopback makes
+/// the surface routable.
+///
+/// Taking the advertised URL as an argument keeps the function pure: the
+/// single environment read lives in [`public_mcp_url_override`]. Callers
+/// that must branch on whether the surface is publicly reachable share
+/// this one judgement rather than re-deriving it from the bind address,
+/// so the answer cannot diverge across them.
+#[must_use]
+pub fn oauth_surface_is_routable(config: &TribalConfig, public_mcp_url: Option<&str>) -> bool {
     let bind_routable = config
         .server
         .bind_address
@@ -293,7 +306,11 @@ fn oauth_surface_is_routable(config: &TribalConfig) -> bool {
         None => bind_routable,
     };
 
-    field_routable(config.oauth.issuer_url.as_deref())
+    // The publicly-advertised MCP URL overrides the bind for what remote
+    // clients actually reach, so a non-loopback advertised URL makes the
+    // surface routable even when the bind and OAuth URLs are loopback.
+    url_is_explicit_non_loopback(public_mcp_url)
+        || field_routable(config.oauth.issuer_url.as_deref())
         || field_routable(config.oauth.resource_url.as_deref())
 }
 
@@ -806,6 +823,39 @@ mod tests {
         config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
         config.oauth.dcr_enabled = false;
         assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_oauth_surface_routable_via_public_mcp_url_override() {
+        // A loopback bind with no explicit OAuth URLs is loopback on its
+        // own, but a routable advertised URL (the reverse-proxy case)
+        // makes the surface routable, the signal that refuses open DCR.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        assert!(oauth_surface_is_routable(
+            &config,
+            Some("https://tribal.example.com/mcp"),
+        ));
+        assert!(
+            !oauth_surface_is_routable(&config, None),
+            "without an advertised override the same config is loopback",
+        );
+    }
+
+    #[test]
+    fn test_oauth_surface_loopback_public_mcp_url_stays_loopback() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        assert!(!oauth_surface_is_routable(
+            &config,
+            Some("http://127.0.0.1:8725/mcp"),
+        ));
     }
 
     #[test]

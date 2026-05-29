@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use tribal_config::{Auth, DEFAULT_BIND_ADDRESS, ENV_PUBLIC_MCP_URL, TransportKind, TribalConfig};
+use tribal_config::{
+    Auth, DEFAULT_BIND_ADDRESS, TransportKind, TribalConfig, public_mcp_url_override,
+};
 use tribal_domain::{GitRemote, ProjectId};
 
 /// Builds the MCP server entry for a project.
@@ -83,17 +85,14 @@ pub(crate) fn snippet_key(git_remote: &GitRemote) -> String {
 /// deployments behind a reverse proxy can advertise the public URL.
 /// Otherwise falls back to `http://<bind_address>/mcp`.
 pub(crate) fn resolved_advertised_url(config: &TribalConfig) -> String {
-    std::env::var(ENV_PUBLIC_MCP_URL)
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            let addr = config
-                .server
-                .bind_address
-                .as_deref()
-                .unwrap_or(DEFAULT_BIND_ADDRESS);
-            format!("http://{addr}/mcp")
-        })
+    public_mcp_url_override().unwrap_or_else(|| {
+        let addr = config
+            .server
+            .bind_address
+            .as_deref()
+            .unwrap_or(DEFAULT_BIND_ADDRESS);
+        format!("http://{addr}/mcp")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +107,7 @@ mod tests {
     use std::path::PathBuf;
 
     use figment::Jail;
+    use tribal_config::ENV_PUBLIC_MCP_URL;
     use tribal_domain::{GitRemote, ProjectId};
     use tribal_test_utils::a_project;
 
