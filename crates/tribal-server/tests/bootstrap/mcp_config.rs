@@ -175,6 +175,39 @@ async fn test_mcp_config_http_missing_credentials_errors_with_literal() {
     );
 }
 
+/// A routable advertised surface flips the `Auto` default from URL-only
+/// to embedding the persisted bearer: open registration is refused
+/// beyond loopback, so a bearer-only harness needs the token in the
+/// snippet. credentials.json (seeded by bootstrap) supplies it.
+#[tokio::test]
+async fn test_mcp_config_http_routable_auto_embeds_persisted_bearer() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    let _public_url_guard = EnvGuard::set(ENV_PUBLIC_MCP_URL, "https://tribal.example.com/mcp");
+    let project_id = seed_project(ctx, &env).await;
+
+    let (stdout, _stderr) = run_mcp_config(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        Some(project_id),
+        TransportKind::Http,
+        TokenStrategy::Auto,
+    )
+    .await
+    .expect("mcp-config http routable Auto succeeds");
+
+    let entry = parse_json(&stdout);
+    assert!(
+        entry["headers"]["Authorization"]
+            .as_str()
+            .is_some_and(|header| header.starts_with("Bearer ")),
+        "routable Auto embeds the persisted bearer: {entry}",
+    );
+}
+
 /// http with garbage credentials.json must report a malformed-file
 /// error citing the resolved path and a recovery hint. `contains` on
 /// each invariant fragment (path-bearing prefix, recovery suffix)
