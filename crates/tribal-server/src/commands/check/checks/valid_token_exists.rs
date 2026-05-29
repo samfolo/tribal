@@ -3,7 +3,7 @@
 //! Resolution order under `http` / `sse`: `--token` → `TRIBAL_AUTH_TOKEN`
 //! → `credentials.json`.  If every source is empty, the outcome turns on
 //! deployment topology: a loopback surface skips (network clients
-//! authenticate via OAuth), while a routable surface warns (open
+//! authenticate via OAuth), while a routable surface fails (open
 //! registration is refused, so an absent static token leaves clients no
 //! authentication path).  Under `stdio`, only `--token` is consulted; an
 //! absent override yields `Skip`.
@@ -61,7 +61,7 @@ impl CheckOutcome {
     }
 
     pub(in crate::commands::check) fn token_missing_routable() -> Self {
-        Self::Warn {
+        Self::Fail {
             detail: CheckDetail::TokenMissingRoutable,
             remediation: CheckRemediation::RunTribalTokenCreate,
         }
@@ -323,10 +323,10 @@ mod tests {
     }
 
     #[test]
-    fn test_token_missing_routable_is_warn_routing_to_token_create() {
+    fn test_token_missing_routable_is_fail_routing_to_token_create() {
         assert!(matches!(
             &CheckOutcome::token_missing_routable(),
-            CheckOutcome::Warn {
+            CheckOutcome::Fail {
                 detail: CheckDetail::TokenMissingRoutable,
                 remediation: CheckRemediation::RunTribalTokenCreate,
             },
