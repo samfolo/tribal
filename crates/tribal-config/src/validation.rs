@@ -905,6 +905,22 @@ mod tests {
     }
 
     #[test]
+    fn test_oauth_surface_routable_on_hostless_public_mcp_url() {
+        // Defence-in-depth for non-validating callers: a parseable but
+        // hostless advertised URL (mailto:/file: style) has no loopback
+        // guarantee, so it classifies as routable (fail closed) rather than
+        // reopening DCR on a wildcard bind. Load-time validation rejects it
+        // first; this guards the renderer path that skips validation.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("0.0.0.0:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.server.public_mcp_url = Some("mailto:ops@example.com".into());
+        assert!(oauth_surface_is_routable(&config));
+    }
+
+    #[test]
     fn test_validate_accepts_dcr_on_wildcard_bind_with_loopback_public_mcp_url() {
         // The validate-side of the Docker shape: a wildcard bind with an
         // explicit loopback advertised URL is the trusted-exposure override,
