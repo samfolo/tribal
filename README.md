@@ -22,6 +22,8 @@ npx skills add tribal-memory/skills
 
 Then ask your agent to set Tribal up. The steps below are what the skills walk it through, or what to run by hand. The agent can help either way.
 
+If you plan to use a cloud provider (OpenAI or Anthropic), export its API key in your shell **before** you launch the agent harness, so the harness and the Tribal binary it spawns inherit it. A key exported into a terminal the harness is already running in is not picked up until you relaunch. Setting it up front removes a lot of the early configuration friction.
+
 Install Tribal using whichever path fits your environment. Pick one:
 
 **Homebrew (macOS)**
@@ -59,7 +61,7 @@ tribal bootstrap
 - Postgres 14 or higher with the `pgvector` extension.
 - A provider for embeddings and inference. Either a local Ollama installation with the required models, or API keys for a supported cloud provider set in your environment.
 
-Provider configuration is a prerequisite for ingest, not for `tribal bootstrap`. Bootstrap completes regardless of provider state. Ingest readiness is verified separately by `tribal check --providers`.
+`tribal bootstrap` never calls a provider, but it does validate configuration, so a configured cloud provider's API key must already be in your environment when you run it. Provider reachability for ingest is verified separately by `tribal check --providers`.
 
 ## Setting up
 
