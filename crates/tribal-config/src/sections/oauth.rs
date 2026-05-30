@@ -140,26 +140,28 @@ fn bind_is_routable(bind: &str) -> bool {
     }
 }
 
-/// Returns `true` when `value` is set and parses to a URL whose host is
-/// not a loopback address — the signal that the OAuth surface is
-/// advertised to remote clients.
+/// Returns `true` when `value` advertises the OAuth surface to a
+/// non-loopback host, the signal that DCR's `/register` would be reachable
+/// by remote clients.
+///
+/// Fails closed (returns `true`) whenever loopback safety cannot be
+/// established: an unparseable value, or a parseable one with no host (a
+/// `mailto:`/`file:` style URL). Load-time validation rejects such values
+/// first, so this is the defence-in-depth guard for callers that do not
+/// validate (e.g. `mcp-config`); it must never let a value it cannot reason
+/// about reopen open registration.
 fn url_is_explicit_non_loopback(value: Option<&str>) -> bool {
     let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
         return false;
     };
     let Ok(url) = Url::parse(raw) else {
-        // Fail closed: a present-but-unparseable value is treated as
-        // non-loopback so a malformed advertised URL refuses DCR rather
-        // than leaving open registration reachable. Load-time validation
-        // rejects such a value first; this guards the callers that do not
-        // validate (e.g. `mcp-config`).
         return true;
     };
     match url.host() {
         Some(Host::Ipv4(ip)) => !ip.is_loopback(),
         Some(Host::Ipv6(ip)) => !ip.is_loopback(),
         Some(Host::Domain(domain)) => domain != "localhost",
-        None => false,
+        None => true,
     }
 }
 
