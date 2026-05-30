@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-05-30
+
+### Added
+
+- OAuth 2.1 authentication for the HTTP and SSE transports, in a new `tribal-auth` crate. Tribal now runs as an OAuth authorisation server: Dynamic Client Registration (RFC 7591), PKCE, an authorisation-code flow with an explicit consent step, the RFC 8414 and RFC 9728 discovery metadata endpoints, and audience-bound bearer tokens. An OAuth-capable harness registers and authenticates itself on first connect, so the loopback wire-up carries no token to copy.
+
+### Changed
+
+- `tribal bootstrap` and `tribal mcp-config` choose the wire-up shape from the deployment's onboarding mode rather than always emitting a token. A loopback deployment with dynamic registration enabled advertises a URL-only OAuth snippet with nothing to copy; every other surface (reachable beyond loopback, or with registration disabled) embeds the persisted static token. Pass `--static-token` to force that token for a harness that authenticates with a bearer header only.
+- `tribal check`'s token check follows the same onboarding mode: it skips on a URL-only surface, where clients authenticate over OAuth, and fails when a surface that depends on a static token has none.
+- A missing bearer token on a network request now logs at DEBUG rather than WARN, so a steady-state healthcheck cycle no longer emits misleading authentication warnings.
+
+### Security
+
+- The unauthenticated Dynamic Client Registration endpoint is refused whenever the OAuth surface is reachable beyond loopback. With no explicit advertised URL, a wildcard bind (`0.0.0.0` or `[::]`) is treated as routable and fails closed; a loopback `server.public_mcp_url` is the trusted-exposure override for the container host-port-mapping shape. `server.public_mcp_url` is validated at load as an `http(s)` endpoint with a host and no fragment, and the same check guards the non-validating `tribal mcp-config` renderer.
+
 ## [0.2.4] - 2026-05-28
 
 ### Fixed
@@ -48,7 +64,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Docker Compose provider configuration through `.env`, letting the containerised path target a cloud provider (OpenAI, Anthropic) instead of only a local Ollama.
 
-[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/tribal-memory/tribal/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/tribal-memory/tribal/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/tribal-memory/tribal/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/tribal-memory/tribal/compare/v0.2.1...v0.2.2
