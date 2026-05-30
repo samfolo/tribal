@@ -79,8 +79,8 @@ pub fn standard_env_var_name(kind: ProviderKind) -> Option<&'static str> {
 /// Returns the publicly-advertised MCP URL override, if one is set.
 ///
 /// Reads [`ENV_PUBLIC_MCP_URL`] once, treating an unset or blank value as
-/// absent. The single read of the override, so every value derived from
-/// it agrees on the URL clients are told to reach.
+/// absent, so every value derived from it agrees on the URL clients are
+/// told to reach.
 #[must_use]
 pub fn public_mcp_url_override() -> Option<String> {
     std::env::var(ENV_PUBLIC_MCP_URL)
