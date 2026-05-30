@@ -803,10 +803,11 @@ pub struct ConfigShowArgs {
 
 /// Arguments for the `mcp-config` subcommand.
 ///
-/// Renders the wire-up snippet bootstrap emits, reconstructed from the
-/// resolved project and the persisted bearer token. The database is
-/// reached through the same overlay cascade as every other command so
-/// `--project` typos surface immediately rather than at server start.
+/// Renders the wire-up snippet bootstrap emits. The stdio snippet resolves
+/// a project against the database for its `serve --project` command, so a
+/// `--project` typo surfaces here rather than at server start. Http/sse
+/// snippets bind their project server-side and default to URL-only OAuth,
+/// embedding the static token only when forced or on a non-URL-only surface.
 #[derive(Debug, Args)]
 pub struct McpConfigArgs {
     /// Transport mode for the generated snippet. Falls back to

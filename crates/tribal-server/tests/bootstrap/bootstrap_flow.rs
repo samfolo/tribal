@@ -61,9 +61,10 @@ async fn test_bootstrap_then_mcp_config_round_trip_stdio() {
     assert_eq!(boot_mcp, mc_json, "stdio mcp_config round-trip");
 }
 
-/// Same round-trip property for the http transport — bearer token
-/// embedded by bootstrap must match the one mcp-config reads back
-/// from the persisted credentials.
+/// The round-trip property for the loopback http default: both commands
+/// advertise the URL-only OAuth snippet (no `Authorization` header), so the
+/// byte-identical shape is the OAuth default with nothing to copy. The
+/// embedded-token round-trip is covered by the DCR-disabled case below.
 #[tokio::test]
 async fn test_bootstrap_then_mcp_config_round_trip_http() {
     let _lock = serial_lock().await;
@@ -102,6 +103,62 @@ async fn test_bootstrap_then_mcp_config_round_trip_http() {
 
     let mc_json = parse_json(&mc_stdout);
     assert_eq!(boot_mcp, mc_json, "http mcp_config round-trip");
+}
+
+/// The byte-identical round-trip with an actually-embedded token. A
+/// loopback surface with DCR disabled is not URL-only onboarding, so
+/// bootstrap embeds the minted bearer and mcp-config `Auto` reads the same
+/// token back from credentials.json. Both snippets must carry the identical
+/// `Authorization` header, guarding the cross-command embedded-token
+/// property that the URL-only default no longer exercises.
+#[tokio::test]
+async fn test_bootstrap_then_mcp_config_round_trip_http_embeds_token() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    // DCR disabled on a loopback surface is not URL-only onboarding, so
+    // both commands embed the static token. The nested-env name follows the
+    // `TRIBAL_<SECTION>__<FIELD>` mapping the figment loader honours.
+    let _dcr_guard = EnvGuard::set("TRIBAL_OAUTH__DCR_ENABLED", "false");
+
+    let (boot_stdout, _) = run_bootstrap(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        None,
+        TransportKind::Http,
+        true,
+    )
+    .await
+    .expect("bootstrap succeeds");
+
+    let boot_json = parse_json(&boot_stdout);
+    let project_id = boot_json["project_id"]
+        .as_str()
+        .expect("project_id")
+        .to_owned();
+    let boot_mcp = boot_json["mcp_config"].clone();
+
+    let (mc_stdout, _) = run_mcp_config(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        Some(project_id),
+        TransportKind::Http,
+        TokenStrategy::Auto,
+    )
+    .await
+    .expect("mcp-config succeeds");
+
+    let mc_json = parse_json(&mc_stdout);
+    assert_eq!(boot_mcp, mc_json, "http embedded-token round-trip");
+    assert!(
+        mc_json["headers"]["Authorization"]
+            .as_str()
+            .is_some_and(|header| header.starts_with("Bearer ")),
+        "a non-URL-only surface must embed the bearer on both sides: {mc_json}",
+    );
 }
 
 // ---------------------------------------------------------------------------

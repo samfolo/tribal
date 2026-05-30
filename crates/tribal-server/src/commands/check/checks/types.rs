@@ -371,8 +371,9 @@ impl CheckDetail {
                     .into()
             }
             Self::TokenMissingRoutable => {
-                "no static token configured and this deployment is reachable beyond loopback, \
-                 so open registration is refused; clients have no authentication path"
+                "no static token configured and automatic client registration is unavailable \
+                 for this deployment (it is routable, or DCR is disabled), so clients have no \
+                 authentication path"
                     .into()
             }
             Self::CredentialsUnreadable { error } => {

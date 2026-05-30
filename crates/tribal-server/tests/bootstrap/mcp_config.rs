@@ -208,6 +208,43 @@ async fn test_mcp_config_http_routable_auto_embeds_persisted_bearer() {
     );
 }
 
+/// A loopback surface with DCR disabled is not URL-only onboarding: with no
+/// automatic registration path, a static token is the only way a fresh
+/// client authenticates, so `Auto` embeds the persisted bearer rather than
+/// advertising the OAuth flow. The decision turns on the onboarding mode,
+/// not routability alone.
+#[tokio::test]
+async fn test_mcp_config_http_loopback_dcr_disabled_auto_embeds_persisted_bearer() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    // Loopback bind, no advertised override, DCR off. The nested-env name
+    // follows the `TRIBAL_<SECTION>__<FIELD>` mapping the loader honours.
+    let _public_url_guard = EnvGuard::remove(ENV_PUBLIC_MCP_URL);
+    let _dcr_guard = EnvGuard::set("TRIBAL_OAUTH__DCR_ENABLED", "false");
+    let project_id = seed_project(ctx, &env).await;
+
+    let (stdout, _stderr) = run_mcp_config(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        Some(project_id),
+        TransportKind::Http,
+        TokenStrategy::Auto,
+    )
+    .await
+    .expect("mcp-config loopback dcr-disabled Auto succeeds");
+
+    let entry = parse_json(&stdout);
+    assert!(
+        entry["headers"]["Authorization"]
+            .as_str()
+            .is_some_and(|header| header.starts_with("Bearer ")),
+        "loopback + DCR off embeds the persisted bearer: {entry}",
+    );
+}
+
 /// http with garbage credentials.json must report a malformed-file
 /// error citing the resolved path and a recovery hint. `contains` on
 /// each invariant fragment (path-bearing prefix, recovery suffix)

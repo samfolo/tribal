@@ -2,18 +2,19 @@
 //!
 //! Resolution order under `http` / `sse`: `--token` → `TRIBAL_AUTH_TOKEN`
 //! → `credentials.json`.  If every source is empty, the outcome turns on
-//! deployment topology: a loopback surface skips (network clients
-//! authenticate via OAuth), while a routable surface fails (open
-//! registration is refused, so an absent static token leaves clients no
-//! authentication path).  Under `stdio`, only `--token` is consulted; an
-//! absent override yields `Skip`.
+//! the onboarding mode: a URL-only surface (loopback with DCR enabled)
+//! skips, since a fresh client registers and authenticates via OAuth on
+//! first connect; every other surface (routable, or DCR disabled) fails,
+//! since an absent static token leaves clients no authentication path.
+//! Under `stdio`, only `--token` is consulted; an absent override yields
+//! `Skip`.
 
 use std::sync::Arc;
 
 use sqlx::PgPool;
 use tribal_auth::{AuthError, Authenticator};
 use tribal_config::{
-    Auth, CredentialsReadError, ENV_AUTH_TOKEN, TransportKind, oauth_surface_is_routable,
+    Auth, CredentialsReadError, ENV_AUTH_TOKEN, TransportKind, oauth_onboarding_is_url_only,
     read_credentials,
 };
 use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
@@ -117,14 +118,8 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
             let expected_audience = resolve_oauth_runtime(config)
                 .ok()
                 .and_then(|runtime| expected_token_audience(config.server.transport, &runtime));
-            let oauth_surface_routable = oauth_surface_is_routable(config);
-            network_path(
-                pool,
-                token_override,
-                expected_audience,
-                oauth_surface_routable,
-            )
-            .await
+            let onboarding_url_only = oauth_onboarding_is_url_only(config);
+            network_path(pool, token_override, expected_audience, onboarding_url_only).await
         }
     }
 }
@@ -133,7 +128,7 @@ async fn network_path(
     pool: &PgPool,
     token_override: Option<&str>,
     expected_audience: Option<String>,
-    oauth_surface_routable: bool,
+    onboarding_url_only: bool,
 ) -> CheckOutcome {
     if let Some(token) = token_override {
         return verify_against(pool, token, TokenTransport::Http, expected_audience).await;
@@ -155,14 +150,15 @@ async fn network_path(
                 .await
             }
         },
-        // No static token resolves. On a loopback surface that is fine:
-        // network clients authenticate via OAuth. On a routable surface
-        // open registration is refused, so the absent token is a gap.
+        // No static token resolves. Under URL-only onboarding that is
+        // fine: a fresh client registers and authenticates via OAuth. On
+        // every other surface (routable, or DCR disabled) there is no
+        // automatic registration path, so the absent token is a gap.
         Err(CredentialsReadError::NotFound) => {
-            if oauth_surface_routable {
-                CheckOutcome::token_missing_routable()
-            } else {
+            if onboarding_url_only {
                 CheckOutcome::token_skipped_loopback_oauth()
+            } else {
+                CheckOutcome::token_missing_routable()
             }
         }
         Err(
