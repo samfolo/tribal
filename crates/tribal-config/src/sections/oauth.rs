@@ -8,6 +8,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
+use url::{Host, Url};
+
+use super::{root::TribalConfig, server::DEFAULT_BIND_ADDRESS};
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -52,6 +55,111 @@ pub fn advertised_oauth_host(addr: SocketAddr) -> IpAddr {
         IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
         other => other,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Surface routability
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when the OAuth surface is reachable beyond loopback, the
+/// signal that DCR's unauthenticated `/register` would be exposed to remote
+/// clients.
+///
+/// An explicit advertised URL (`server.public_mcp_url`, `oauth.issuer_url`,
+/// or `oauth.resource_url`) is the operator's authoritative statement of
+/// where clients reach the server: when any is set it alone decides
+/// routability, and the bind is not consulted. A loopback advertised URL is
+/// therefore the trusted-exposure override that keeps a wildcard-bound
+/// server (the Docker host-port-mapping shape) classified as loopback.
+///
+/// With no advertised URL the bind decides, and a wildcard bind
+/// (`0.0.0.0` / `[::]`) is treated as routable rather than collapsed to
+/// loopback: from inside the process a public wildcard bind is
+/// indistinguishable from one mapped to host loopback, so DCR fails closed
+/// unless the operator names an explicit loopback advertised URL.
+///
+/// Pure over `&TribalConfig`: the advertised URL is resolved into config at
+/// load, so every caller shares one judgement that cannot diverge across
+/// them, nor depend on the ambient environment.
+#[must_use]
+pub fn oauth_surface_is_routable(config: &TribalConfig) -> bool {
+    let advertised = [
+        config.server.public_mcp_url.as_deref(),
+        config.oauth.issuer_url.as_deref(),
+        config.oauth.resource_url.as_deref(),
+    ];
+
+    // An explicit advertised URL is authoritative: when any is set, the
+    // surface is routable iff any is non-loopback, and the bind is ignored
+    // (a loopback advertised URL is the trusted-exposure override).
+    if advertised.iter().any(|url| is_nonempty(*url)) {
+        return advertised
+            .iter()
+            .any(|url| url_is_explicit_non_loopback(*url));
+    }
+
+    // No advertised URL: classify from the bind, treating a wildcard or
+    // unparseable bind as routable (fail closed).
+    bind_is_routable(
+        config
+            .server
+            .bind_address
+            .as_deref()
+            .unwrap_or(DEFAULT_BIND_ADDRESS),
+    )
+}
+
+/// Returns `true` when the onboarding hand-off should advertise the URL-only
+/// OAuth flow rather than embed a static bearer: only on a loopback surface
+/// with DCR enabled, where a fresh harness can register itself on first
+/// connect. Every other case (routable, or DCR disabled) needs the static
+/// token, so the snippet embeds it and the readiness check requires it.
+/// Shared by bootstrap, `mcp-config`, and `valid_token_exists` so the three
+/// never disagree.
+#[must_use]
+pub fn oauth_onboarding_is_url_only(config: &TribalConfig) -> bool {
+    config.oauth.dcr_enabled && !oauth_surface_is_routable(config)
+}
+
+/// Whether `value` is a present, non-empty string.
+fn is_nonempty(value: Option<&str>) -> bool {
+    value.is_some_and(|raw| !raw.is_empty())
+}
+
+/// Whether a bind address exposes the listener beyond loopback. A loopback
+/// IP is not routable; a routable IP, a wildcard bind (`0.0.0.0` / `[::]`),
+/// or an unparseable value all are (fail closed). Distinct from
+/// [`advertised_oauth_host`], which collapses a wildcard to loopback for
+/// client-facing URL derivation: this is the listener-exposure judgement,
+/// where a wildcard must not be assumed loopback-only.
+fn bind_is_routable(bind: &str) -> bool {
+    match bind.parse::<SocketAddr>() {
+        Ok(addr) => !addr.ip().is_loopback(),
+        Err(_) => true,
+    }
+}
+
+/// Returns `true` when `value` is set and parses to a URL whose host is
+/// not a loopback address — the signal that the OAuth surface is
+/// advertised to remote clients.
+fn url_is_explicit_non_loopback(value: Option<&str>) -> bool {
+    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
+        return false;
+    };
+    let Ok(url) = Url::parse(raw) else {
+        // Fail closed: a present-but-unparseable value is treated as
+        // non-loopback so a malformed advertised URL refuses DCR rather
+        // than leaving open registration reachable. Load-time validation
+        // rejects such a value first; this guards the callers that do not
+        // validate (e.g. `mcp-config`).
+        return true;
+    };
+    match url.host() {
+        Some(Host::Ipv4(ip)) => !ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => !ip.is_loopback(),
+        Some(Host::Domain(domain)) => domain != "localhost",
+        None => false,
     }
 }
 

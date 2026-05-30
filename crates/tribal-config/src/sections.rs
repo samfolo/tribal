@@ -46,6 +46,7 @@ pub use oauth::{
     DEFAULT_ACCESS_TOKEN_TTL_HOURS, DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS,
     MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
     MIN_AUTHORIZATION_CODE_TTL_SECONDS, OAuthConfig, advertised_oauth_host,
+    oauth_onboarding_is_url_only, oauth_surface_is_routable,
 };
 pub use prompts::{PromptSource, PromptsConfig};
 pub use root::{TribalConfig, VERSION};
