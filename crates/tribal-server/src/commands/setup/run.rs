@@ -6,9 +6,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use tribal_common::sha256_hex;
+use tribal_auth::issue_token;
 use tribal_config::{ConfigPersistence, PromptSource, TribalConfig};
-use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
+use tribal_db::PgAuthTokenRepository;
 use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, full_access_scopes};
 
 use super::{config_file, outcome::SetupOutcome, output};
@@ -17,7 +17,7 @@ use crate::{
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, CredentialsPersistOutcome, DATABASE_COMMAND_DEFAULTS,
         TIMESTAMP_FORMAT, TtlInput, compute_expires_at, find_or_create_principal,
-        generate_raw_token, persist_credentials, prepare_config, resolve_absolute_config_path,
+        persist_credentials, prepare_config, resolve_absolute_config_path,
     },
     error::AppError,
     startup::{ensure_prompt_files, resolve_oauth_runtime, run_migrations},
@@ -155,26 +155,21 @@ pub async fn run_async(
         .map_err(|source| AppError::Config { source })?;
     let config_file = config_file::write_if_absent(config_path, config, &content).await?;
 
-    let raw_token = generate_raw_token();
-    let token_hash = sha256_hex(&raw_token);
-
     // Bind the issued token to the same canonical resource the running
     // server verifies against, derived from the shared resolver (server
     // bind address plus any oauth.resource_url override).
     let audience = resolve_oauth_runtime(config)?.canonical_resource;
 
-    let new_token = NewAuthToken::builder()
-        .token_hash(token_hash)
-        .principal_id(token_principal.id())
-        .scopes(full_access_scopes())
-        .audience(audience)
-        .expires_at(expires_at)
-        .build();
-
-    PgAuthTokenRepository
-        .insert(&mut conn, &new_token)
-        .await
-        .map_err(|source| AppError::Database { source })?;
+    let raw_token = issue_token(
+        &mut conn,
+        &PgAuthTokenRepository,
+        token_principal.id(),
+        full_access_scopes(),
+        audience,
+        expires_at,
+    )
+    .await
+    .map_err(|source| AppError::Database { source })?;
 
     drop(conn);
 

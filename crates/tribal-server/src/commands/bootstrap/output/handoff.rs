@@ -41,6 +41,7 @@ pub(in crate::commands::bootstrap) struct Handoff<'a> {
     pub credentials: &'a CredentialsPersistOutcome,
     pub persistence: ConfigPersistence<'a>,
     pub advertised_url: &'a str,
+    pub onboarding_url_only: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -84,12 +85,13 @@ impl Component for HandoffView<'_> {
         }
 
         let inputs = ActionInputs {
-            bearer_token: h.bearer_token,
             transport: h.transport,
             project_id: h.project_id,
             config_path: h.config_file.path().display().to_string(),
             config_file: h.config_file,
             persistence: h.persistence,
+            onboarding_url_only: h.onboarding_url_only,
+            credentials: h.credentials,
         };
 
         match h.transport {
@@ -105,13 +107,18 @@ impl Component for HandoffView<'_> {
                 .render(ctx)?;
             }
             TransportKind::Http | TransportKind::Sse => {
-                HttpSseTokenBlock {
-                    token: h.bearer_token,
-                    credentials: h.credentials,
+                // A write failure leaves no copy in credentials.json, so
+                // surface the token inline as a last resort. On success it
+                // stays in the file and is never printed (the OAuth or
+                // `tribal mcp-config --static-token` path retrieves it).
+                if let CredentialsPersistOutcome::Failed { .. } = h.credentials {
+                    HttpSseTokenBlock {
+                        token: h.bearer_token,
+                    }
+                    .render(ctx)?;
+                    writeln!(ctx)?;
+                    writeln!(ctx)?;
                 }
-                .render(ctx)?;
-                writeln!(ctx)?;
-                writeln!(ctx)?;
                 let steps = http_sse_steps(&inputs);
                 ActionList { steps: &steps }.render(ctx)?;
             }
@@ -185,13 +192,15 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::output::build_snippet_entry;
+    use crate::output::{McpSnippet, build_snippet_entry};
 
     /// Inputs that swing between snapshot cases.
     struct Case<'a> {
         transport: TransportKind,
         persistence: ConfigPersistence<'a>,
         config_file: ConfigFileOutcome,
+        advertised_url: String,
+        onboarding_url_only: bool,
     }
 
     fn fixture_bearer_token() -> BearerToken {
@@ -251,13 +260,22 @@ mod tests {
     fn fixture_mcp_entry(transport: TransportKind, auth: Option<&Auth>) -> Value {
         let project = fixture_project();
         let path = fixture_config_path();
-        build_snippet_entry(
-            project.id(),
-            transport,
-            auth,
-            &path,
-            &fixture_advertised_url(),
-        )
+        let advertised_url = fixture_advertised_url();
+        let snippet = match transport {
+            TransportKind::Stdio => McpSnippet::Stdio {
+                project_id: project.id(),
+                config_path: path.as_path(),
+            },
+            TransportKind::Http => McpSnippet::Http {
+                auth,
+                advertised_url: advertised_url.as_str(),
+            },
+            TransportKind::Sse => McpSnippet::Sse {
+                auth,
+                advertised_url: advertised_url.as_str(),
+            },
+        };
+        build_snippet_entry(&snippet)
     }
 
     fn fixture_written() -> ConfigFileOutcome {
@@ -290,7 +308,6 @@ mod tests {
             token: bearer.clone(),
         };
         let mcp_entry = fixture_mcp_entry(case.transport, Some(&auth));
-        let advertised_url = fixture_advertised_url();
         let credentials = fixture_credentials_persisted();
         let handoff = Handoff {
             bearer_token: &bearer,
@@ -304,7 +321,8 @@ mod tests {
             config_file: &case.config_file,
             credentials: &credentials,
             persistence: case.persistence,
-            advertised_url: &advertised_url,
+            advertised_url: &case.advertised_url,
+            onboarding_url_only: case.onboarding_url_only,
         };
         let theme = Theme::default_dark();
         render_to_string(|w| write_human(w, &theme, &handoff))
@@ -313,10 +331,10 @@ mod tests {
     fn render_json(transport: TransportKind) -> serde_json::Value {
         let bearer = fixture_bearer_token();
         let project = fixture_project();
-        let auth = Auth::Bearer {
-            token: bearer.clone(),
-        };
-        let mcp_entry = fixture_mcp_entry(transport, Some(&auth));
+        // The loopback default advertises a URL-only snippet; the raw
+        // token still rides the top-level `bearer_token` field as the
+        // machine escape hatch.
+        let mcp_entry = fixture_mcp_entry(transport, None);
         let config_file = fixture_written();
         let advertised_url = fixture_advertised_url();
         let credentials = fixture_credentials_persisted();
@@ -333,6 +351,7 @@ mod tests {
             credentials: &credentials,
             persistence: ConfigPersistence::Minimal,
             advertised_url: &advertised_url,
+            onboarding_url_only: true,
         };
         let captured = render_to_string(|w| write_json(w, &handoff));
         serde_json::from_str(&captured).expect("output is valid JSON")
@@ -346,6 +365,8 @@ mod tests {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_written(),
+            advertised_url: fixture_advertised_url(),
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -359,6 +380,8 @@ mod tests {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_already_exists(),
+            advertised_url: fixture_advertised_url(),
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -373,6 +396,8 @@ mod tests {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_written(),
+            advertised_url: fixture_advertised_url(),
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -387,6 +412,8 @@ mod tests {
             transport: TransportKind::Stdio,
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_already_exists(),
+            advertised_url: fixture_advertised_url(),
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -402,6 +429,8 @@ mod tests {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_written(),
+            advertised_url: fixture_advertised_url(),
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -415,6 +444,8 @@ mod tests {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_already_exists(),
+            advertised_url: fixture_advertised_url(),
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -429,6 +460,8 @@ mod tests {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_written(),
+            advertised_url: fixture_advertised_url(),
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -443,6 +476,8 @@ mod tests {
             transport: TransportKind::Http,
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_already_exists(),
+            advertised_url: fixture_advertised_url(),
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -450,16 +485,40 @@ mod tests {
         );
     }
 
+    // -- Stderr × http routable (1 case) -------------------------------------
+
+    #[test]
+    fn test_stderr_http_routable_no_flags_first_run_matches_snapshot() {
+        let captured = render_stderr(&Case {
+            transport: TransportKind::Http,
+            persistence: ConfigPersistence::Minimal,
+            config_file: fixture_written(),
+            advertised_url: "https://tribal.example.com/mcp".to_owned(),
+            onboarding_url_only: false,
+        });
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-http-routable-no-flags-first-run.txt"
+        );
+    }
+
     // -- Stderr × credentials failure (both transports) ----------------------
 
-    fn render_stderr_credentials_failed(transport: TransportKind) -> String {
+    fn render_stderr_credentials_failed(
+        transport: TransportKind,
+        onboarding_url_only: bool,
+    ) -> String {
         let bearer = fixture_bearer_token();
         let project = fixture_project();
         let auth = Auth::Bearer {
             token: bearer.clone(),
         };
         let mcp_entry = fixture_mcp_entry(transport, Some(&auth));
-        let advertised_url = fixture_advertised_url();
+        let advertised_url = if onboarding_url_only {
+            fixture_advertised_url()
+        } else {
+            "https://tribal.example.com/mcp".to_owned()
+        };
         let config_file = fixture_written();
         let credentials = CredentialsPersistOutcome::Failed {
             warning: "warning: could not persist credentials.json at /tmp/x: …".into(),
@@ -477,6 +536,7 @@ mod tests {
             credentials: &credentials,
             persistence: ConfigPersistence::Minimal,
             advertised_url: &advertised_url,
+            onboarding_url_only,
         };
         let theme = Theme::default_dark();
         render_to_string(|w| write_human(w, &theme, &handoff))
@@ -484,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_stderr_stdio_credentials_failed_matches_snapshot() {
-        let captured = render_stderr_credentials_failed(TransportKind::Stdio);
+        let captured = render_stderr_credentials_failed(TransportKind::Stdio, true);
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-stdio-credentials-failed.txt"
@@ -493,10 +553,19 @@ mod tests {
 
     #[test]
     fn test_stderr_http_credentials_failed_matches_snapshot() {
-        let captured = render_stderr_credentials_failed(TransportKind::Http);
+        let captured = render_stderr_credentials_failed(TransportKind::Http, true);
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-http-credentials-failed.txt"
+        );
+    }
+
+    #[test]
+    fn test_stderr_http_routable_credentials_failed_matches_snapshot() {
+        let captured = render_stderr_credentials_failed(TransportKind::Http, false);
+        assert_text_snapshot!(
+            &captured,
+            "src/commands/bootstrap/snapshots/stderr-http-routable-credentials-failed.txt"
         );
     }
 

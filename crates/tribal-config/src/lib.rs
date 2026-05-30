@@ -28,7 +28,7 @@ pub use divergence::{
 pub use env::{
     ENV_ANTHROPIC_API_KEY, ENV_AUTH_TOKEN, ENV_CONFIG_PATH, ENV_NESTED_SEPARATOR,
     ENV_OPENAI_API_KEY, ENV_PREFIX, ENV_PROJECT_ID, ENV_PUBLIC_MCP_URL, env_var_for_path,
-    standard_env_var_name,
+    public_mcp_url_override, standard_env_var_name,
 };
 pub use error::ConfigError;
 pub use loader::load_config;
@@ -51,12 +51,13 @@ pub use sections::{
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     MIN_AUTHORIZATION_CODE_TTL_SECONDS, OAuthConfig, PromptSource, PromptsConfig,
     ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig,
-    TransportKind, TribalConfig, VERSION, WorkerConfig, advertised_oauth_host, read_credentials,
-    write_credentials,
+    TransportKind, TribalConfig, VERSION, WorkerConfig, advertised_oauth_host,
+    oauth_onboarding_is_url_only, oauth_surface_is_routable, read_credentials, write_credentials,
 };
 pub use validation::{
     ComputedFloor, ConfigPath, Diagnostics, Endpoint, FieldValue, Inclusion, NumericRange,
-    OrderRelation, ProviderStage, ValidationError, validate,
+    OrderRelation, PUBLIC_MCP_URL_REQUIREMENT, ProviderStage, ValidationError,
+    is_valid_public_mcp_url, validate,
 };
 
 // ---------------------------------------------------------------------------

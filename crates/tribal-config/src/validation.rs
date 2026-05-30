@@ -6,14 +6,14 @@
 
 use std::net::SocketAddr;
 
-use url::{Host, Url};
+use url::Url;
 
 use crate::{
     MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS,
     error::ConfigError,
     sections::{
-        DEFAULT_BIND_ADDRESS, MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
-        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, advertised_oauth_host,
+        MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
+        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, oauth_surface_is_routable,
     },
 };
 
@@ -252,16 +252,19 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
     }
 
     // Fail fast at load time on a malformed or unsupported issuer/resource
-    // URL, rather than only when the runtime config is built at serve.
+    // URL, rather than only when the runtime config is built at serve. The
+    // advertised MCP URL is the third routability input, so it carries the
+    // same load-time guard: a malformed value must not silently classify
+    // as loopback and reopen DCR's `/register`.
     validate_issuer_url(config.oauth.issuer_url.as_deref(), diags);
     validate_resource_url(config.oauth.resource_url.as_deref(), diags);
+    validate_public_mcp_url(config.server.public_mcp_url.as_deref(), diags);
 
-    // /register is unauthenticated, so DCR is refused when the OAuth
-    // surface is advertised on a routable host. The effective host is the
-    // explicit issuer/resource URL when set, otherwise the host the bind
-    // address advertises; a wildcard bind collapses to loopback, so a
-    // container bound to 0.0.0.0 behind a loopback port mapping is allowed
-    // while a routable bind or a routable advertised URL is refused.
+    // /register is unauthenticated, so DCR is refused when the OAuth surface
+    // is reachable beyond loopback. An explicit advertised URL decides this;
+    // with none, a routable or wildcard bind is treated as reachable (fail
+    // closed), so a bare public bind refuses DCR unless an explicit loopback
+    // advertised URL marks it trusted (the Docker host-port-mapping shape).
     if matches!(
         config.server.transport,
         TransportKind::Http | TransportKind::Sse
@@ -269,49 +272,6 @@ fn validate_oauth(config: &TribalConfig, diags: &mut Diagnostics) {
         && oauth_surface_is_routable(config)
     {
         diags.push(ValidationError::NonLoopbackDcrConflict);
-    }
-}
-
-/// Returns `true` when the advertised OAuth surface resolves to a
-/// non-loopback host, the signal that DCR's unauthenticated `/register`
-/// would be reachable by remote clients.
-///
-/// Each of the issuer and resource hosts is the explicit URL when one is
-/// set, otherwise the host the bind address advertises
-/// ([`advertised_oauth_host`]).
-fn oauth_surface_is_routable(config: &TribalConfig) -> bool {
-    let bind_routable = config
-        .server
-        .bind_address
-        .as_deref()
-        .unwrap_or(DEFAULT_BIND_ADDRESS)
-        .parse::<SocketAddr>()
-        .is_ok_and(|addr| !advertised_oauth_host(addr).is_loopback());
-
-    let field_routable = |url: Option<&str>| match url.filter(|raw| !raw.is_empty()) {
-        Some(raw) => url_is_explicit_non_loopback(Some(raw)),
-        None => bind_routable,
-    };
-
-    field_routable(config.oauth.issuer_url.as_deref())
-        || field_routable(config.oauth.resource_url.as_deref())
-}
-
-/// Returns `true` when `value` is set and parses to a URL whose host is
-/// not a loopback address — the signal that the OAuth surface is
-/// advertised to remote clients.
-fn url_is_explicit_non_loopback(value: Option<&str>) -> bool {
-    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
-        return false;
-    };
-    let Ok(url) = Url::parse(raw) else {
-        return false;
-    };
-    match url.host() {
-        Some(Host::Ipv4(ip)) => !ip.is_loopback(),
-        Some(Host::Ipv6(ip)) => !ip.is_loopback(),
-        Some(Host::Domain(domain)) => domain != "localhost",
-        None => false,
     }
 }
 
@@ -370,6 +330,47 @@ fn validate_resource_url(value: Option<&str>, diags: &mut Diagnostics) {
             field,
             value: raw.to_owned(),
             requirement: RESOURCE_FRAGMENT_REQUIREMENT,
+        });
+    }
+}
+
+/// The form `server.public_mcp_url` must take: an `http`/`https` URL with a
+/// host and no fragment. A path such as `/mcp` is preserved.
+pub const PUBLIC_MCP_URL_REQUIREMENT: &str = "must be an http(s) URL with a host and no fragment";
+
+/// Returns `true` when `raw` is a usable public MCP endpoint per
+/// [`PUBLIC_MCP_URL_REQUIREMENT`]. Shared by load-time validation and the
+/// non-validating `mcp-config` renderer so both reject the same shapes.
+#[must_use]
+pub fn is_valid_public_mcp_url(raw: &str) -> bool {
+    Url::parse(raw).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https") && url.host().is_some() && url.fragment().is_none()
+    })
+}
+
+/// Validates `server.public_mcp_url`: when set, it must be a usable public
+/// MCP endpoint (see [`PUBLIC_MCP_URL_REQUIREMENT`]).
+///
+/// The advertised endpoint is one of the routability inputs and is also
+/// emitted verbatim into the wire-up snippet, so a malformed or non-endpoint
+/// value is rejected at load rather than silently classifying as loopback
+/// (which would reopen DCR's unauthenticated `/register`) or shipping a
+/// broken URL to the client.
+fn validate_public_mcp_url(value: Option<&str>, diags: &mut Diagnostics) {
+    let Some(raw) = value.filter(|raw| !raw.is_empty()) else {
+        return;
+    };
+    let field = ConfigPath::from_static("server.public_mcp_url");
+    if Url::parse(raw).is_err() {
+        diags.push(ValidationError::UrlMalformed {
+            field,
+            value: raw.to_owned(),
+        });
+    } else if !is_valid_public_mcp_url(raw) {
+        diags.push(ValidationError::UrlUnsupportedForm {
+            field,
+            value: raw.to_owned(),
+            requirement: PUBLIC_MCP_URL_REQUIREMENT,
         });
     }
 }
@@ -647,6 +648,7 @@ mod tests {
     use tribal_domain::ProviderKind;
 
     use super::*;
+    use crate::sections::{DEFAULT_BIND_ADDRESS, oauth_onboarding_is_url_only};
 
     fn valid_config() -> TribalConfig {
         TribalConfig::minimum_valid("postgres://localhost/tribal")
@@ -767,18 +769,22 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_accepts_dcr_on_wildcard_bind_with_unset_urls() {
-        // A wildcard bind with unset issuer/resource URLs derives a
-        // loopback audience, so DCR stays allowed regardless of the bind
-        // — the shape of a container bound to 0.0.0.0 behind a loopback
-        // port mapping. A routable advertised URL is refused above.
+    fn test_validate_refuses_dcr_on_wildcard_bind_with_unset_urls() {
+        // A bare wildcard bind with no advertised URL fails closed: the
+        // process cannot tell a public 0.0.0.0 bind from one mapped to host
+        // loopback, so open DCR is refused unless an explicit loopback
+        // advertised URL marks the surface trusted (see the Docker case).
         let mut config = valid_config();
         config.server.transport = TransportKind::Http;
         config.server.bind_address = Some("0.0.0.0:8725".into());
         config.oauth.issuer_url = None;
         config.oauth.resource_url = None;
         config.oauth.dcr_enabled = true;
-        assert!(validate(&config).is_ok());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::NonLoopbackDcrConflict,
+        )));
     }
 
     #[test]
@@ -806,6 +812,178 @@ mod tests {
         config.oauth.resource_url = Some("https://tribal.example.com/mcp".into());
         config.oauth.dcr_enabled = false;
         assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_dcr_with_routable_public_mcp_url() {
+        // A loopback bind with a routable advertised URL (the reverse-proxy
+        // case) is a routable surface, so open DCR is refused even though
+        // the bind and the OAuth URLs are loopback. validate() reads the
+        // resolved field, so this needs no environment.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".into());
+        config.server.public_mcp_url = Some("https://tribal.example.com/mcp".into());
+        config.oauth.dcr_enabled = true;
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::NonLoopbackDcrConflict,
+        )));
+    }
+
+    #[test]
+    fn test_oauth_surface_routable_via_public_mcp_url() {
+        // A loopback bind with no explicit OAuth URLs is loopback on its
+        // own, but a routable advertised URL (the reverse-proxy case)
+        // makes the surface routable, the signal that refuses open DCR.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.server.public_mcp_url = Some("https://tribal.example.com/mcp".into());
+        assert!(oauth_surface_is_routable(&config));
+        config.server.public_mcp_url = None;
+        assert!(
+            !oauth_surface_is_routable(&config),
+            "without an advertised URL the same config is loopback",
+        );
+    }
+
+    #[test]
+    fn test_oauth_surface_loopback_public_mcp_url_stays_loopback() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.server.public_mcp_url = Some("http://127.0.0.1:8725/mcp".into());
+        assert!(!oauth_surface_is_routable(&config));
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_public_mcp_url() {
+        let mut config = valid_config();
+        config.server.public_mcp_url = Some("not a url".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "server.public_mcp_url",
+        )));
+    }
+
+    #[test]
+    fn test_oauth_surface_routable_on_malformed_public_mcp_url() {
+        // Defence-in-depth for non-validating callers: a present-but-
+        // unparseable advertised URL classifies as routable so DCR is
+        // refused rather than left open on a malformed value.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.server.public_mcp_url = Some("not a url".into());
+        assert!(oauth_surface_is_routable(&config));
+    }
+
+    #[test]
+    fn test_oauth_surface_wildcard_bind_behind_loopback_port_is_loopback() {
+        // The Docker compose shape: bound to 0.0.0.0 inside the container,
+        // reached on a loopback host port mapping, with TRIBAL_PUBLIC_MCP_URL
+        // set to a loopback advertised URL. That explicit loopback override
+        // keeps the surface loopback despite the wildcard bind, so
+        // `valid_token_exists` skips rather than warns and DCR stays allowed.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("0.0.0.0:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.server.public_mcp_url = Some("http://127.0.0.1:8725/mcp".into());
+        assert!(!oauth_surface_is_routable(&config));
+    }
+
+    #[test]
+    fn test_oauth_surface_routable_on_hostless_public_mcp_url() {
+        // Defence-in-depth for non-validating callers: a parseable but
+        // hostless advertised URL (mailto:/file: style) has no loopback
+        // guarantee, so it classifies as routable (fail closed) rather than
+        // reopening DCR on a wildcard bind. Load-time validation rejects it
+        // first; this guards the renderer path that skips validation.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("0.0.0.0:8725".into());
+        config.oauth.issuer_url = None;
+        config.oauth.resource_url = None;
+        config.server.public_mcp_url = Some("mailto:ops@example.com".into());
+        assert!(oauth_surface_is_routable(&config));
+    }
+
+    #[test]
+    fn test_validate_accepts_dcr_on_wildcard_bind_with_loopback_public_mcp_url() {
+        // The validate-side of the Docker shape: a wildcard bind with an
+        // explicit loopback advertised URL is the trusted-exposure override,
+        // so open DCR is allowed.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("0.0.0.0:8725".into());
+        config.server.public_mcp_url = Some("http://127.0.0.1:8725/mcp".into());
+        config.oauth.dcr_enabled = true;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_onboarding_url_only_on_loopback_with_dcr() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".into());
+        config.oauth.dcr_enabled = true;
+        assert!(oauth_onboarding_is_url_only(&config));
+    }
+
+    #[test]
+    fn test_onboarding_not_url_only_when_dcr_disabled() {
+        // Loopback but DCR off: a fresh harness cannot register, so the
+        // static token is the auth path, not the URL-only OAuth snippet.
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.bind_address = Some("127.0.0.1:8725".into());
+        config.oauth.dcr_enabled = false;
+        assert!(!oauth_onboarding_is_url_only(&config));
+    }
+
+    #[test]
+    fn test_onboarding_not_url_only_when_routable() {
+        let mut config = valid_config();
+        config.server.transport = TransportKind::Http;
+        config.server.public_mcp_url = Some("https://tribal.example.com/mcp".into());
+        config.oauth.dcr_enabled = true;
+        assert!(!oauth_onboarding_is_url_only(&config));
+    }
+
+    #[test]
+    fn test_validate_rejects_non_http_public_mcp_url() {
+        let mut config = valid_config();
+        config.server.public_mcp_url = Some("file:///tmp/mcp".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlUnsupportedForm { field, .. }
+                if field.as_str() == "server.public_mcp_url",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_public_mcp_url_with_fragment() {
+        let mut config = valid_config();
+        config.server.public_mcp_url = Some("https://tribal.example.com/mcp#frag".to_owned());
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlUnsupportedForm { field, .. }
+                if field.as_str() == "server.public_mcp_url",
+        )));
     }
 
     #[test]

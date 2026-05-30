@@ -7,16 +7,9 @@ MCP URL:     http://127.0.0.1:8725/mcp
 
 warning: database.url differs from the resolved value
 
-Bearer token (save this — it will not be shown again; also saved to /home/sam/.config/tribal/credentials.json):
-
-  test-bearer-token
-
 Next steps:
 
-1. Export the token for your shell session:
-   export TRIBAL_AUTH_TOKEN="test-bearer-token"
-
-2. Make this transport durable so `tribal check` and `tribal serve`
+1. Make this transport durable so `tribal check` and `tribal serve`
    pick it up without re-passing flags. Either set:
      export TRIBAL_SERVER__TRANSPORT="http"
    for the current shell, or edit your config file:
@@ -24,7 +17,7 @@ Next steps:
    to set `server.transport: http` (and if you want a non-default
    bind, `server.bind_address`).
 
-3. These flag values were NOT persisted because the config file already exists.
+2. These flag values were NOT persisted because the config file already exists.
    Edit /etc/tribal/tribal.yaml or export the corresponding TRIBAL_* env vars:
      export TRIBAL_EMBEDDING__PROVIDER=openai
      export TRIBAL_EMBEDDING__MODEL=text-embedding-3-small
@@ -32,16 +25,21 @@ Next steps:
      export TRIBAL_INFERENCE__EXTRACTION__MODEL=gpt-4o-mini
      export TRIBAL_TELEMETRY__OTLP_ENDPOINT=http://localhost:4317
 
-4. Start the server in another terminal (it is NOT running yet —
+3. Start the server in another terminal (it is NOT running yet —
    bootstrap registers + mints a token but does not start serve):
    tribal --config /etc/tribal/tribal.yaml serve --transport http --project proj_00000000-0000-0000-0000-000000000002
    Leave it running. The MCP URL above is what your agent connects to.
 
-5. Verify your installation is ready for use:
+4. Verify your installation is ready for use:
    tribal check
 
-6. (When ready for real ingest) verify providers:
+5. (When ready for real ingest) verify providers:
    tribal check --providers
+
+6. Authenticate your agent harness:
+   OAuth-capable harnesses authenticate on first connect; there is nothing to copy.
+   For a harness that cannot perform the OAuth flow, embed the token instead:
+     tribal mcp-config --static-token
 
 7. Wire Tribal into your agent harness. For Claude Code:
      claude mcp add-json tribal "$(tribal mcp-config)"

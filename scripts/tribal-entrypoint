@@ -42,7 +42,7 @@ print_full_onboarding() {
 Tribal is running on http://localhost:8725/mcp.
 
 To wire Tribal into Claude Code, run this from your host shell:
-  claude mcp add-json tribal "$(docker compose exec tribal sh -c 'TRIBAL_PROJECT_ID=$(cat /var/lib/tribal/tribal/project_id) tribal mcp-config')"
+  claude mcp add-json tribal "$(docker compose exec tribal tribal mcp-config)"
 
 For Codex / Gemini CLI / OpenCode, see the installation skill.
 
@@ -79,7 +79,7 @@ print_brief_status() {
 Tribal is running on http://localhost:8725/mcp.
 
 To wire into Claude Code (from your host shell):
-  claude mcp add-json tribal "$(docker compose exec tribal sh -c 'TRIBAL_PROJECT_ID=$(cat /var/lib/tribal/tribal/project_id) tribal mcp-config')"
+  claude mcp add-json tribal "$(docker compose exec tribal tribal mcp-config)"
 EOF
 }
 

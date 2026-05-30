@@ -9,12 +9,16 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use tribal::TokenStrategy;
 use tribal_config::{
-    CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX, CliOverrides, Credentials, TransportKind,
+    CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX, CliOverrides, Credentials, ENV_PUBLIC_MCP_URL,
+    TransportKind,
 };
 use tribal_test_utils::{TestContext, serial_lock, test_context};
 
-use super::common::{CwdGuard, TestEnv, fresh_db, parse_json, run_bootstrap, run_mcp_config};
+use super::common::{
+    CwdGuard, EnvGuard, TestEnv, fresh_db, parse_json, run_bootstrap, run_mcp_config,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,7 +66,7 @@ async fn test_mcp_config_stdio_succeeds_without_credentials() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Stdio,
-        None,
+        TokenStrategy::Auto,
     )
     .await
     .expect("mcp-config stdio succeeds without credentials");
@@ -85,25 +89,63 @@ async fn test_mcp_config_stdio_token_emits_warning_and_succeeds() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Stdio,
-        Some("ignored-token".to_owned()),
+        TokenStrategy::Explicit("ignored-token".to_owned()),
     )
     .await
     .expect("mcp-config stdio with token still succeeds");
 
     let stderr = String::from_utf8(stderr).expect("utf8 stderr");
     assert!(
-        stderr.contains("--token has no effect when transport is stdio"),
+        stderr.contains("have no effect when transport is stdio"),
         "expected stdio-token warning in: {stderr}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// http: topology-aware default
+// ---------------------------------------------------------------------------
+
+/// The loopback http default is URL-only: with no `--token` or
+/// `--static-token`, the snippet carries no `Authorization` header and an
+/// OAuth-capable harness authenticates via the flow.
+#[tokio::test]
+async fn test_mcp_config_http_loopback_default_is_url_only() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    // The bind is loopback, so only a routable advertised override would
+    // flip the topology; clear it so the default is deterministic.
+    let _public_url_guard = EnvGuard::remove(ENV_PUBLIC_MCP_URL);
+    let project_id = seed_project(ctx, &env).await;
+
+    let (stdout, _stderr) = run_mcp_config(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        Some(project_id),
+        TransportKind::Http,
+        TokenStrategy::Auto,
+    )
+    .await
+    .expect("mcp-config http loopback default succeeds");
+
+    let entry = parse_json(&stdout);
+    assert!(
+        entry.get("headers").is_none(),
+        "loopback default omits the Authorization header: {entry}",
     );
 }
 
 // ---------------------------------------------------------------------------
 // http: credentials resolution
 // ---------------------------------------------------------------------------
+//
+// The loopback http default is URL-only and never reads credentials, so
+// these cases force the credentials path with `--static-token`.
 
-/// http with no credentials.json and no `--token` override must
-/// surface the canonical "no saved credentials" literal and exit
-/// non-zero.
+/// http `--static-token` with no credentials.json must surface the
+/// canonical "no saved credentials" literal and exit non-zero.
 #[tokio::test]
 async fn test_mcp_config_http_missing_credentials_errors_with_literal() {
     let _lock = serial_lock().await;
@@ -119,7 +161,7 @@ async fn test_mcp_config_http_missing_credentials_errors_with_literal() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        None,
+        TokenStrategy::Static,
     )
     .await
     .expect_err("http without credentials must fail");
@@ -130,6 +172,76 @@ async fn test_mcp_config_http_missing_credentials_errors_with_literal() {
             "no saved credentials; run `tribal setup` or `tribal bootstrap`, or pass `--token` explicitly.",
         ),
         "missing literal in: {display}",
+    );
+}
+
+/// A routable advertised surface flips the `Auto` default from URL-only
+/// to embedding the persisted bearer: open registration is refused
+/// beyond loopback, so a bearer-only harness needs the token in the
+/// snippet. credentials.json (seeded by bootstrap) supplies it.
+#[tokio::test]
+async fn test_mcp_config_http_routable_auto_embeds_persisted_bearer() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    let _public_url_guard = EnvGuard::set(ENV_PUBLIC_MCP_URL, "https://tribal.example.com/mcp");
+    let project_id = seed_project(ctx, &env).await;
+
+    let (stdout, _stderr) = run_mcp_config(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        Some(project_id),
+        TransportKind::Http,
+        TokenStrategy::Auto,
+    )
+    .await
+    .expect("mcp-config http routable Auto succeeds");
+
+    let entry = parse_json(&stdout);
+    assert!(
+        entry["headers"]["Authorization"]
+            .as_str()
+            .is_some_and(|header| header.starts_with("Bearer ")),
+        "routable Auto embeds the persisted bearer: {entry}",
+    );
+}
+
+/// A loopback surface with DCR disabled is not URL-only onboarding: with no
+/// automatic registration path, a static token is the only way a fresh
+/// client authenticates, so `Auto` embeds the persisted bearer rather than
+/// advertising the OAuth flow. The decision turns on the onboarding mode,
+/// not routability alone.
+#[tokio::test]
+async fn test_mcp_config_http_loopback_dcr_disabled_auto_embeds_persisted_bearer() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    // Loopback bind, no advertised override, DCR off. The nested-env name
+    // follows the `TRIBAL_<SECTION>__<FIELD>` mapping the loader honours.
+    let _public_url_guard = EnvGuard::remove(ENV_PUBLIC_MCP_URL);
+    let _dcr_guard = EnvGuard::set("TRIBAL_OAUTH__DCR_ENABLED", "false");
+    let project_id = seed_project(ctx, &env).await;
+
+    let (stdout, _stderr) = run_mcp_config(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        Some(project_id),
+        TransportKind::Http,
+        TokenStrategy::Auto,
+    )
+    .await
+    .expect("mcp-config loopback dcr-disabled Auto succeeds");
+
+    let entry = parse_json(&stdout);
+    assert!(
+        entry["headers"]["Authorization"]
+            .as_str()
+            .is_some_and(|header| header.starts_with("Bearer ")),
+        "loopback + DCR off embeds the persisted bearer: {entry}",
     );
 }
 
@@ -153,7 +265,7 @@ async fn test_mcp_config_http_malformed_credentials_errors_with_literal() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        None,
+        TokenStrategy::Static,
     )
     .await
     .expect_err("malformed credentials must fail");
@@ -194,7 +306,7 @@ async fn test_mcp_config_http_schema_mismatch_errors_with_literal() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        None,
+        TokenStrategy::Static,
     )
     .await
     .expect_err("schema-mismatch credentials must fail");
@@ -234,7 +346,7 @@ async fn test_mcp_config_http_permissive_credentials_warn_and_succeed() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        None,
+        TokenStrategy::Static,
     )
     .await
     .expect("mcp-config still succeeds with permissive credentials");
@@ -263,7 +375,7 @@ async fn test_mcp_config_http_explicit_token_overrides_credentials() {
         CliOverrides::default(),
         Some(project_id),
         TransportKind::Http,
-        Some(override_token.to_owned()),
+        TokenStrategy::Explicit(override_token.to_owned()),
     )
     .await
     .expect("mcp-config http with --token succeeds");
@@ -277,12 +389,55 @@ async fn test_mcp_config_http_explicit_token_overrides_credentials() {
 }
 
 // ---------------------------------------------------------------------------
-// Project resolution failure
+// Project resolution: required for stdio, irrelevant for the network
+// transports
 // ---------------------------------------------------------------------------
 
+/// The network snippet binds its project server-side via `serve
+/// --project`, so http renders even when the resolution cascade would
+/// find nothing: no `--project`, no `TRIBAL_PROJECT_ID`, and a cwd with
+/// no `.git`. The emitted entry carries a url and no project.
+#[tokio::test]
+async fn test_mcp_config_http_renders_without_a_resolvable_project() {
+    let _lock = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = fresh_db(ctx).await;
+    let env = TestEnv::new();
+    // Loopback default keeps this URL-only, so credentials are never
+    // read and the snippet is fully determined by the cascade outcome.
+    let _public_url_guard = EnvGuard::remove(ENV_PUBLIC_MCP_URL);
+
+    // Cwd into a tempdir with no `.git` so the git-remote fallback
+    // returns None and the cascade would otherwise exhaust.
+    let cwd_dir = tempfile::tempdir().expect("cwd tempdir");
+    let _cwd_guard = CwdGuard::set(cwd_dir.path());
+
+    let (stdout, _stderr) = run_mcp_config(
+        ctx,
+        &env.config_path,
+        CliOverrides::default(),
+        None,
+        TransportKind::Http,
+        TokenStrategy::Auto,
+    )
+    .await
+    .expect("http renders without a resolvable project");
+
+    let entry = parse_json(&stdout);
+    assert_eq!(
+        entry["type"], "http",
+        "network snippet carries the transport type: {entry}",
+    );
+    assert!(
+        entry.get("url").is_some(),
+        "network snippet carries a url: {entry}",
+    );
+}
+
 /// With no `--project`, no `TRIBAL_PROJECT_ID`, and a cwd that has
-/// no `.git`, the resolution cascade exhausts and surfaces the
-/// canonical literal.
+/// no `.git`, the stdio resolution cascade exhausts and surfaces the
+/// canonical literal. stdio embeds `serve --project <id>`, so a project
+/// is required here.
 #[tokio::test]
 async fn test_mcp_config_project_resolution_failure_errors_with_literal() {
     let _lock = serial_lock().await;
@@ -301,7 +456,7 @@ async fn test_mcp_config_project_resolution_failure_errors_with_literal() {
         CliOverrides::default(),
         None,
         TransportKind::Stdio,
-        None,
+        TokenStrategy::Auto,
     )
     .await
     .expect_err("resolution must fail without inputs");

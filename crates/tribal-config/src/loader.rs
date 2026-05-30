@@ -12,7 +12,7 @@ use tribal_domain::{ApiKey, ProviderKind};
 
 use crate::{
     CliOverrides, LoggingConfig, TelemetryConfig, TribalConfig,
-    env::{ENV_NESTED_SEPARATOR, ENV_PREFIX, standard_env_var_name},
+    env::{ENV_NESTED_SEPARATOR, ENV_PREFIX, public_mcp_url_override, standard_env_var_name},
     error::ConfigError,
     sections::PromptSource,
 };
@@ -122,6 +122,7 @@ pub fn load_config(
     apply_standard_env_var_fallback(&mut config);
     expand_paths(&mut config);
     restore_temp_dir_fallback_flags(&mut config);
+    resolve_public_mcp_url(&mut config);
 
     Ok(config)
 }
@@ -185,6 +186,14 @@ fn restore_temp_dir_fallback_flags(config: &mut TribalConfig) {
     }
 }
 
+/// Resolves the publicly-advertised MCP URL from the environment into the
+/// config, so consumers read one resolved value rather than each
+/// re-reading the environment. `#[serde(skip)]` leaves the field at its
+/// default after extraction, so this populates it.
+fn resolve_public_mcp_url(config: &mut TribalConfig) {
+    config.server.public_mcp_url = public_mcp_url_override();
+}
+
 /// Populates `api_key` for any cloud-provider stage where prior cascade
 /// layers left it `None`, using the env var returned by
 /// [`standard_env_var_name`](crate::env::standard_env_var_name).
@@ -244,7 +253,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, TransportKind,
+        ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ENV_PUBLIC_MCP_URL, TransportKind,
         cli_overrides::{
             DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
             InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
@@ -270,7 +279,22 @@ mod tests {
             let mut expected = TribalConfig::default();
             expand_paths(&mut expected);
             restore_temp_dir_fallback_flags(&mut expected);
+            resolve_public_mcp_url(&mut expected);
             assert_eq!(config, expected);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_public_mcp_url_resolved_from_env() {
+        Jail::expect_with(|jail| {
+            let path = jail.directory().join("tribal.yaml");
+            jail.set_env(ENV_PUBLIC_MCP_URL, "https://tribal.example.com/mcp");
+            let config = load_config(path.to_str().unwrap(), None, None).unwrap();
+            assert_eq!(
+                config.server.public_mcp_url.as_deref(),
+                Some("https://tribal.example.com/mcp"),
+            );
             Ok(())
         });
     }

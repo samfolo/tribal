@@ -7,10 +7,11 @@ use std::{
 
 use tribal_config::{
     Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
-    CredentialsPermissions, LoadedCredentials, TransportKind, TribalConfig, load_config,
+    CredentialsPermissions, LoadedCredentials, PUBLIC_MCP_URL_REQUIREMENT, TransportKind,
+    TribalConfig, is_valid_public_mcp_url, load_config, oauth_onboarding_is_url_only,
     read_credentials,
 };
-use tribal_domain::BearerToken;
+use tribal_domain::{BearerToken, ProjectId};
 
 use crate::{
     cli::McpConfigArgs,
@@ -19,13 +20,31 @@ use crate::{
         resolve_absolute_config_path,
     },
     error::AppError,
-    output::{build_snippet_entry, resolved_advertised_url},
+    output::{McpSnippet, build_snippet_entry, resolved_advertised_url},
     startup::resolve_project,
 };
 
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
+
+/// How an http/sse snippet's authentication is chosen.
+///
+/// `--token` and `--static-token` are mutually exclusive at the CLI, so
+/// the two flags resolve to a single value here and the invalid
+/// "both at once" combination cannot be represented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenStrategy {
+    /// `--token <value>`: embed this caller-supplied bearer token.
+    Explicit(String),
+    /// `--static-token`: embed the persisted static token from the
+    /// credentials file, whatever the deployment topology.
+    Static,
+    /// No override: embed the static token unless OAuth onboarding is
+    /// URL-only (a loopback surface with DCR enabled), where the snippet
+    /// advertises the OAuth flow with nothing to copy.
+    Auto,
+}
 
 /// Bundle of inputs threaded into [`run_async`].
 ///
@@ -40,8 +59,8 @@ pub struct McpConfigOptions<'a> {
     pub project_override: Option<String>,
     /// Resolved transport for the rendered snippet.
     pub transport: TransportKind,
-    /// Bearer token override from `--token`, if supplied.
-    pub explicit_token: Option<String>,
+    /// How the http/sse snippet's authentication is chosen.
+    pub token_strategy: TokenStrategy,
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +75,7 @@ const PROJECT_RESOLUTION_FAILED_CONTEXT: &str = "no project resolved by --projec
 /// Warning emitted when `--token` is passed under the stdio transport,
 /// which authenticates as `principal:local` at runtime and cannot embed
 /// a token in the snippet.
-const STDIO_TOKEN_IGNORED: &str = "--token has no effect when transport is stdio; stdio authenticates as principal:local at runtime";
+const STDIO_TOKEN_IGNORED: &str = "--token / --static-token have no effect when transport is stdio; stdio authenticates as principal:local at runtime";
 
 /// Pool name for the short-lived mcp-config connection.
 const POOL_NAME_MCP_CONFIG: &str = "mcp-config";
@@ -67,10 +86,13 @@ const POOL_NAME_MCP_CONFIG: &str = "mcp-config";
 
 /// Runs the `tribal mcp-config` flow.
 ///
-/// Resolves the active project against the database and renders the same
-/// snippet `tribal bootstrap` emits. Bearer tokens for http/sse transports
-/// come from the persisted credentials file unless overridden by
-/// `--token`.
+/// Renders the same snippet `tribal bootstrap` emits. The stdio snippet
+/// resolves a project against the database for its `serve --project`
+/// command; http/sse snippets bind their project server-side and need no
+/// resolution. An http/sse snippet is URL-only when OAuth onboarding is
+/// URL-only (a loopback surface with DCR enabled); otherwise it embeds the
+/// persisted static token (`--static-token` forces it, `--token` supplies
+/// an explicit one).
 ///
 /// # Errors
 ///
@@ -84,7 +106,7 @@ const POOL_NAME_MCP_CONFIG: &str = "mcp-config";
 pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppError> {
     let transport = args.transport;
     let project = args.project.take();
-    let token = args.token.take();
+    let token_strategy = token_strategy_from_args(args.token.take(), args.static_token);
 
     let cli_overrides = args.into_cli_overrides();
     let config = load_config(
@@ -110,34 +132,94 @@ pub(crate) fn run(config_path: &str, mut args: McpConfigArgs) -> Result<(), AppE
             config_path: &absolute_config_path,
             project_override: project,
             transport,
-            explicit_token: token,
+            token_strategy,
         },
         &mut stdout,
         &mut stderr,
     ))
 }
 
+/// Resolves the parsed `--token` / `--static-token` flags into a single
+/// [`TokenStrategy`]. The `--token` value is trimmed here, so an
+/// empty-after-trim value is treated as absent rather than reaching
+/// [`TokenStrategy::Explicit`].
+fn token_strategy_from_args(token: Option<String>, static_token: bool) -> TokenStrategy {
+    match token.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
+        Some(token) => TokenStrategy::Explicit(token),
+        None if static_token => TokenStrategy::Static,
+        None => TokenStrategy::Auto,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Async flow
 // ---------------------------------------------------------------------------
 
-/// Drives database connection, project resolution, auth resolution, and
-/// snippet rendering.
+/// Resolves auth, renders the transport-specific snippet, and writes it.
+///
+/// stdio embeds `serve --project <id>` as its spawn command, so that path
+/// resolves a project, which is the only step that needs the database.
+/// The network transports render a url-plus-auth entry whose project is
+/// bound server-side via `serve --project`, so they touch neither the
+/// resolution cascade nor the database.
 ///
 /// `out_stdout` receives the rendered JSON; `out_stderr` carries warnings
 /// (stdio `--token` ignored, permissions drift).
 ///
 /// # Errors
 ///
-/// Returns an [`AppError`] if the database connection, project
-/// resolution, credentials read, or snippet write fails.
+/// Returns an [`AppError`] if project resolution or the database
+/// connection (stdio only), the credentials read, or the snippet write
+/// fails.
 pub async fn run_async(
     opts: McpConfigOptions<'_>,
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
 ) -> Result<(), AppError> {
+    let onboarding_url_only = oauth_onboarding_is_url_only(opts.config);
+    let auth = resolve_auth(
+        opts.transport,
+        opts.token_strategy,
+        onboarding_url_only,
+        out_stderr,
+    )?;
+    let advertised_url = resolved_advertised_url(opts.config);
+    // mcp-config skips full `validate`, so guard the one field that ships
+    // verbatim into a network snippet before rendering it.
+    if matches!(opts.transport, TransportKind::Http | TransportKind::Sse) {
+        ensure_public_mcp_url_renderable(opts.config)?;
+    }
+
+    let snippet = match opts.transport {
+        TransportKind::Stdio => {
+            let project_id = resolve_stdio_project(opts.config, opts.project_override).await?;
+            McpSnippet::Stdio {
+                project_id,
+                config_path: opts.config_path,
+            }
+        }
+        TransportKind::Http => McpSnippet::Http {
+            auth: auth.as_ref(),
+            advertised_url: advertised_url.as_str(),
+        },
+        TransportKind::Sse => McpSnippet::Sse {
+            auth: auth.as_ref(),
+            advertised_url: advertised_url.as_str(),
+        },
+    };
+
+    write_snippet(out_stdout, &build_snippet_entry(&snippet))
+}
+
+/// Resolves the project the stdio snippet embeds in its `serve --project`
+/// spawn command. This is the only path in mcp-config that needs the
+/// database; the network transports bind their project server-side.
+async fn resolve_stdio_project(
+    config: &TribalConfig,
+    project_override: Option<String>,
+) -> Result<ProjectId, AppError> {
     let pool = tribal_db::create_pool(
-        &opts.config.database,
+        &config.database,
         POOL_NAME_MCP_CONFIG,
         COMMAND_POOL_MAX_CONNECTIONS,
         COMMAND_STATEMENT_TIMEOUT_MS,
@@ -145,75 +227,85 @@ pub async fn run_async(
     .await
     .map_err(|source| AppError::Database { source })?;
 
-    let resolved = resolve_project(&pool, opts.project_override)
+    let resolved = resolve_project(&pool, project_override)
         .await?
         .ok_or_else(|| AppError::ProjectResolution {
             context: PROJECT_RESOLUTION_FAILED_CONTEXT.into(),
         })?;
 
-    let auth = resolve_auth(opts.transport, opts.explicit_token, out_stderr)?;
-    let advertised_url = resolved_advertised_url(opts.config);
-    let entry = build_snippet_entry(
-        resolved.id(),
-        opts.transport,
-        auth.as_ref(),
-        opts.config_path,
-        &advertised_url,
-    );
-
-    write_snippet(out_stdout, &entry)
+    Ok(resolved.id())
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolves the [`Auth`] value to embed in the snippet.
+/// Resolves the [`Auth`] to embed in the snippet from the chosen
+/// [`TokenStrategy`] and the onboarding mode.
 ///
-/// stdio short-circuits to `None` — harness-spawned servers authenticate
-/// as `principal:local` at runtime. Network transports prefer the
-/// explicit `--token` override, falling back to the persisted credentials
-/// file via [`read_credentials`]. The `--token` value is trimmed once at
-/// this boundary; empty-after-trim falls through to the credentials
-/// file (mcp-config does not consult `TRIBAL_AUTH_TOKEN`).
+/// stdio carries no `Authorization` header, so it always resolves to
+/// `None` and warns when a token strategy was nonetheless requested.
+/// Under URL-only onboarding a network `Auto` also resolves to `None`: an
+/// OAuth-capable harness authenticates via the flow with nothing to copy.
+/// Every other network surface embeds the persisted static token.
+/// mcp-config does not consult `TRIBAL_AUTH_TOKEN`.
 fn resolve_auth(
     transport: TransportKind,
-    explicit_token: Option<String>,
+    token_strategy: TokenStrategy,
+    onboarding_url_only: bool,
     out_stderr: &mut dyn Write,
 ) -> Result<Option<Auth>, AppError> {
-    let trimmed_token = explicit_token
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
-
     match transport {
         TransportKind::Stdio => {
-            if trimmed_token.is_some() {
+            if !matches!(token_strategy, TokenStrategy::Auto) {
                 let _ = writeln!(out_stderr, "{STDIO_TOKEN_IGNORED}");
             }
             Ok(None)
         }
-        TransportKind::Http | TransportKind::Sse => {
-            let auth = resolve_network_auth(trimmed_token, out_stderr)?;
-            Ok(Some(auth))
-        }
+        TransportKind::Http | TransportKind::Sse => match token_strategy {
+            TokenStrategy::Explicit(token) => Ok(Some(bearer_from_explicit(&token)?)),
+            // URL-only onboarding embeds nothing; every other case (an
+            // explicit `--static-token`, or `Auto` on a non-URL-only
+            // surface) embeds the persisted static token.
+            TokenStrategy::Auto if onboarding_url_only => Ok(None),
+            TokenStrategy::Static | TokenStrategy::Auto => {
+                Ok(Some(read_persisted_auth(out_stderr)?))
+            }
+        },
     }
 }
 
-/// Network-transport auth resolution: explicit `--token` first (already
-/// trimmed by [`resolve_auth`]), then persisted credentials. Permissions
-/// drift warns on stderr but does not block.
-fn resolve_network_auth(
-    explicit_token: Option<String>,
-    out_stderr: &mut dyn Write,
-) -> Result<Auth, AppError> {
-    if let Some(raw) = explicit_token {
-        let token: BearerToken = raw.parse().map_err(|source| AppError::TokenVerification {
-            reason: "bearer token from --token is invalid".into(),
-            source: Box::new(source),
-        })?;
-        return Ok(Auth::Bearer { token });
+/// Guards the non-validating renderer against a malformed
+/// `server.public_mcp_url`.
+///
+/// `mcp-config` skips full `validate` so it can render after provider keys
+/// leave the shell, but a `public_mcp_url` that is not a usable http(s) MCP
+/// endpoint would then be emitted verbatim into the network snippet. When
+/// set, it must satisfy [`is_valid_public_mcp_url`]; otherwise rendering
+/// fails rather than shipping a broken wire-up URL.
+fn ensure_public_mcp_url_renderable(config: &TribalConfig) -> Result<(), AppError> {
+    if let Some(raw) = config.server.public_mcp_url.as_deref()
+        && !is_valid_public_mcp_url(raw)
+    {
+        return Err(AppError::ConfigInvariant {
+            reason: format!("server.public_mcp_url ({raw}) {PUBLIC_MCP_URL_REQUIREMENT}"),
+        });
     }
+    Ok(())
+}
 
+/// Builds bearer auth from a caller-supplied `--token` value.
+fn bearer_from_explicit(raw: &str) -> Result<Auth, AppError> {
+    let token: BearerToken = raw.parse().map_err(|source| AppError::TokenVerification {
+        reason: "bearer token from --token is invalid".into(),
+        source: Box::new(source),
+    })?;
+    Ok(Auth::Bearer { token })
+}
+
+/// Reads the persisted static token from the credentials file. Permissions
+/// drift warns on stderr but does not block.
+fn read_persisted_auth(out_stderr: &mut dyn Write) -> Result<Auth, AppError> {
     let loaded = read_credentials().map_err(|source| AppError::Credentials { source })?;
     let LoadedCredentials {
         credentials,
@@ -278,13 +370,23 @@ mod tests {
     /// Drives the production render path against fixture inputs and
     /// returns the captured stdout parsed as a JSON value.
     fn render_snippet(transport: TransportKind, auth: Option<&Auth>) -> serde_json::Value {
-        let entry = build_snippet_entry(
-            fixture_project_id(),
-            transport,
-            auth,
-            &fixture_config_path(),
-            &fixture_advertised_url(),
-        );
+        let config_path = fixture_config_path();
+        let advertised_url = fixture_advertised_url();
+        let snippet = match transport {
+            TransportKind::Stdio => McpSnippet::Stdio {
+                project_id: fixture_project_id(),
+                config_path: config_path.as_path(),
+            },
+            TransportKind::Http => McpSnippet::Http {
+                auth,
+                advertised_url: advertised_url.as_str(),
+            },
+            TransportKind::Sse => McpSnippet::Sse {
+                auth,
+                advertised_url: advertised_url.as_str(),
+            },
+        };
+        let entry = build_snippet_entry(&snippet);
         let mut buf: Vec<u8> = Vec::new();
         write_snippet(&mut buf, &entry).expect("write_snippet succeeds");
         let captured = String::from_utf8(buf).expect("utf8");
@@ -316,5 +418,87 @@ mod tests {
             &payload,
             "src/commands/mcp_config/snapshots/snippet-http.json"
         );
+    }
+
+    // -- token_strategy_from_args ---------------------------------------------
+
+    #[test]
+    fn test_token_strategy_from_args_maps_each_flag_combination() {
+        assert_eq!(
+            token_strategy_from_args(Some("abc".to_owned()), false),
+            TokenStrategy::Explicit("abc".to_owned()),
+        );
+        assert_eq!(token_strategy_from_args(None, true), TokenStrategy::Static);
+        assert_eq!(token_strategy_from_args(None, false), TokenStrategy::Auto);
+    }
+
+    #[test]
+    fn test_token_strategy_from_args_treats_blank_token_as_absent() {
+        assert_eq!(
+            token_strategy_from_args(Some("   ".to_owned()), false),
+            TokenStrategy::Auto,
+        );
+        assert_eq!(
+            token_strategy_from_args(Some("  abc  ".to_owned()), false),
+            TokenStrategy::Explicit("abc".to_owned()),
+        );
+    }
+
+    // -- resolve_auth ---------------------------------------------------------
+
+    #[test]
+    fn test_resolve_auth_stdio_warns_when_a_token_is_requested() {
+        let mut stderr = Vec::<u8>::new();
+        let auth = resolve_auth(
+            TransportKind::Stdio,
+            TokenStrategy::Static,
+            false,
+            &mut stderr,
+        )
+        .expect("stdio auth resolves");
+        assert!(auth.is_none(), "stdio embeds no token in the snippet");
+        let warning = String::from_utf8(stderr).expect("utf8 stderr");
+        assert_eq!(warning.trim_end(), STDIO_TOKEN_IGNORED);
+    }
+
+    #[test]
+    fn test_resolve_auth_stdio_auto_is_silent() {
+        let mut stderr = Vec::<u8>::new();
+        let auth = resolve_auth(
+            TransportKind::Stdio,
+            TokenStrategy::Auto,
+            false,
+            &mut stderr,
+        )
+        .expect("stdio auth resolves");
+        assert!(auth.is_none());
+        assert!(
+            stderr.is_empty(),
+            "stdio without a token strategy is silent"
+        );
+    }
+
+    #[test]
+    fn test_resolve_auth_url_only_auto_omits_token() {
+        let mut stderr = Vec::<u8>::new();
+        let auth = resolve_auth(TransportKind::Http, TokenStrategy::Auto, true, &mut stderr)
+            .expect("url-only auth resolves");
+        assert!(auth.is_none(), "URL-only onboarding embeds no token");
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_auth_explicit_token_embeds_even_when_url_only() {
+        // `--token` is authoritative: it embeds the supplied bearer even on
+        // a surface where `Auto` would advertise the URL-only OAuth snippet.
+        let mut stderr = Vec::<u8>::new();
+        let auth = resolve_auth(
+            TransportKind::Http,
+            TokenStrategy::Explicit("test-bearer-token".to_owned()),
+            true,
+            &mut stderr,
+        )
+        .expect("explicit token resolves");
+        assert!(matches!(auth, Some(Auth::Bearer { .. })));
     }
 }
