@@ -41,7 +41,7 @@ pub(in crate::commands::bootstrap) struct Handoff<'a> {
     pub credentials: &'a CredentialsPersistOutcome,
     pub persistence: ConfigPersistence<'a>,
     pub advertised_url: &'a str,
-    pub oauth_surface_routable: bool,
+    pub onboarding_url_only: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ impl Component for HandoffView<'_> {
             config_path: h.config_file.path().display().to_string(),
             config_file: h.config_file,
             persistence: h.persistence,
-            oauth_surface_routable: h.oauth_surface_routable,
+            onboarding_url_only: h.onboarding_url_only,
             credentials: h.credentials,
         };
 
@@ -200,7 +200,7 @@ mod tests {
         persistence: ConfigPersistence<'a>,
         config_file: ConfigFileOutcome,
         advertised_url: String,
-        oauth_surface_routable: bool,
+        onboarding_url_only: bool,
     }
 
     fn fixture_bearer_token() -> BearerToken {
@@ -322,7 +322,7 @@ mod tests {
             credentials: &credentials,
             persistence: case.persistence,
             advertised_url: &case.advertised_url,
-            oauth_surface_routable: case.oauth_surface_routable,
+            onboarding_url_only: case.onboarding_url_only,
         };
         let theme = Theme::default_dark();
         render_to_string(|w| write_human(w, &theme, &handoff))
@@ -351,7 +351,7 @@ mod tests {
             credentials: &credentials,
             persistence: ConfigPersistence::Minimal,
             advertised_url: &advertised_url,
-            oauth_surface_routable: false,
+            onboarding_url_only: true,
         };
         let captured = render_to_string(|w| write_json(w, &handoff));
         serde_json::from_str(&captured).expect("output is valid JSON")
@@ -366,7 +366,7 @@ mod tests {
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_written(),
             advertised_url: fixture_advertised_url(),
-            oauth_surface_routable: false,
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -381,7 +381,7 @@ mod tests {
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_already_exists(),
             advertised_url: fixture_advertised_url(),
-            oauth_surface_routable: false,
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -397,7 +397,7 @@ mod tests {
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_written(),
             advertised_url: fixture_advertised_url(),
-            oauth_surface_routable: false,
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -413,7 +413,7 @@ mod tests {
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_already_exists(),
             advertised_url: fixture_advertised_url(),
-            oauth_surface_routable: false,
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -430,7 +430,7 @@ mod tests {
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_written(),
             advertised_url: fixture_advertised_url(),
-            oauth_surface_routable: false,
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -445,7 +445,7 @@ mod tests {
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_already_exists(),
             advertised_url: fixture_advertised_url(),
-            oauth_surface_routable: false,
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -461,7 +461,7 @@ mod tests {
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_written(),
             advertised_url: fixture_advertised_url(),
-            oauth_surface_routable: false,
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -477,7 +477,7 @@ mod tests {
             persistence: ConfigPersistence::Persisted(&overrides),
             config_file: fixture_already_exists(),
             advertised_url: fixture_advertised_url(),
-            oauth_surface_routable: false,
+            onboarding_url_only: true,
         });
         assert_text_snapshot!(
             &captured,
@@ -494,7 +494,7 @@ mod tests {
             persistence: ConfigPersistence::Minimal,
             config_file: fixture_written(),
             advertised_url: "https://tribal.example.com/mcp".to_owned(),
-            oauth_surface_routable: true,
+            onboarding_url_only: false,
         });
         assert_text_snapshot!(
             &captured,
@@ -506,7 +506,7 @@ mod tests {
 
     fn render_stderr_credentials_failed(
         transport: TransportKind,
-        oauth_surface_routable: bool,
+        onboarding_url_only: bool,
     ) -> String {
         let bearer = fixture_bearer_token();
         let project = fixture_project();
@@ -514,10 +514,10 @@ mod tests {
             token: bearer.clone(),
         };
         let mcp_entry = fixture_mcp_entry(transport, Some(&auth));
-        let advertised_url = if oauth_surface_routable {
-            "https://tribal.example.com/mcp".to_owned()
-        } else {
+        let advertised_url = if onboarding_url_only {
             fixture_advertised_url()
+        } else {
+            "https://tribal.example.com/mcp".to_owned()
         };
         let config_file = fixture_written();
         let credentials = CredentialsPersistOutcome::Failed {
@@ -536,7 +536,7 @@ mod tests {
             credentials: &credentials,
             persistence: ConfigPersistence::Minimal,
             advertised_url: &advertised_url,
-            oauth_surface_routable,
+            onboarding_url_only,
         };
         let theme = Theme::default_dark();
         render_to_string(|w| write_human(w, &theme, &handoff))
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_stderr_stdio_credentials_failed_matches_snapshot() {
-        let captured = render_stderr_credentials_failed(TransportKind::Stdio, false);
+        let captured = render_stderr_credentials_failed(TransportKind::Stdio, true);
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-stdio-credentials-failed.txt"
@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_stderr_http_credentials_failed_matches_snapshot() {
-        let captured = render_stderr_credentials_failed(TransportKind::Http, false);
+        let captured = render_stderr_credentials_failed(TransportKind::Http, true);
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-http-credentials-failed.txt"
@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_stderr_http_routable_credentials_failed_matches_snapshot() {
-        let captured = render_stderr_credentials_failed(TransportKind::Http, true);
+        let captured = render_stderr_credentials_failed(TransportKind::Http, false);
         assert_text_snapshot!(
             &captured,
             "src/commands/bootstrap/snapshots/stderr-http-routable-credentials-failed.txt"

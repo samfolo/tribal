@@ -7,8 +7,9 @@ use std::{
 
 use tribal_config::{
     Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
-    CredentialsPermissions, LoadedCredentials, TransportKind, TribalConfig, load_config,
-    oauth_surface_is_routable, read_credentials,
+    CredentialsPermissions, LoadedCredentials, PUBLIC_MCP_URL_REQUIREMENT, TransportKind,
+    TribalConfig, is_valid_public_mcp_url, load_config, oauth_onboarding_is_url_only,
+    read_credentials,
 };
 use tribal_domain::{BearerToken, ProjectId};
 
@@ -39,9 +40,9 @@ pub enum TokenStrategy {
     /// `--static-token`: embed the persisted static token from the
     /// credentials file, whatever the deployment topology.
     Static,
-    /// No override: embed the static token only on a routable surface;
-    /// a loopback surface advertises a URL-only snippet for the OAuth
-    /// flow, leaving nothing to copy.
+    /// No override: embed the static token unless OAuth onboarding is
+    /// URL-only (a loopback surface with DCR enabled), where the snippet
+    /// advertises the OAuth flow with nothing to copy.
     Auto,
 }
 
@@ -85,10 +86,13 @@ const POOL_NAME_MCP_CONFIG: &str = "mcp-config";
 
 /// Runs the `tribal mcp-config` flow.
 ///
-/// Resolves the active project against the database and renders the same
-/// snippet `tribal bootstrap` emits. Bearer tokens for http/sse transports
-/// come from the persisted credentials file unless overridden by
-/// `--token`.
+/// Renders the same snippet `tribal bootstrap` emits. The stdio snippet
+/// resolves a project against the database for its `serve --project`
+/// command; http/sse snippets bind their project server-side and need no
+/// resolution. An http/sse snippet is URL-only when OAuth onboarding is
+/// URL-only (a loopback surface with DCR enabled); otherwise it embeds the
+/// persisted static token (`--static-token` forces it, `--token` supplies
+/// an explicit one).
 ///
 /// # Errors
 ///
@@ -172,14 +176,19 @@ pub async fn run_async(
     out_stdout: &mut dyn Write,
     out_stderr: &mut dyn Write,
 ) -> Result<(), AppError> {
-    let oauth_surface_routable = oauth_surface_is_routable(opts.config);
+    let onboarding_url_only = oauth_onboarding_is_url_only(opts.config);
     let auth = resolve_auth(
         opts.transport,
         opts.token_strategy,
-        oauth_surface_routable,
+        onboarding_url_only,
         out_stderr,
     )?;
     let advertised_url = resolved_advertised_url(opts.config);
+    // mcp-config skips full `validate`, so guard the one field that ships
+    // verbatim into a network snippet before rendering it.
+    if matches!(opts.transport, TransportKind::Http | TransportKind::Sse) {
+        ensure_public_mcp_url_renderable(opts.config)?;
+    }
 
     let snippet = match opts.transport {
         TransportKind::Stdio => {
@@ -232,17 +241,18 @@ async fn resolve_stdio_project(
 // ---------------------------------------------------------------------------
 
 /// Resolves the [`Auth`] to embed in the snippet from the chosen
-/// [`TokenStrategy`] and the deployment topology.
+/// [`TokenStrategy`] and the onboarding mode.
 ///
 /// stdio carries no `Authorization` header, so it always resolves to
 /// `None` and warns when a token strategy was nonetheless requested.
-/// `None` is the URL-only snippet: an OAuth-capable harness authenticates
-/// via the flow with nothing to copy. mcp-config does not consult
-/// `TRIBAL_AUTH_TOKEN`.
+/// Under URL-only onboarding a network `Auto` also resolves to `None`: an
+/// OAuth-capable harness authenticates via the flow with nothing to copy.
+/// Every other network surface embeds the persisted static token.
+/// mcp-config does not consult `TRIBAL_AUTH_TOKEN`.
 fn resolve_auth(
     transport: TransportKind,
     token_strategy: TokenStrategy,
-    oauth_surface_routable: bool,
+    onboarding_url_only: bool,
     out_stderr: &mut dyn Write,
 ) -> Result<Option<Auth>, AppError> {
     match transport {
@@ -254,13 +264,34 @@ fn resolve_auth(
         }
         TransportKind::Http | TransportKind::Sse => match token_strategy {
             TokenStrategy::Explicit(token) => Ok(Some(bearer_from_explicit(&token)?)),
-            TokenStrategy::Static => Ok(Some(read_persisted_auth(out_stderr)?)),
-            TokenStrategy::Auto if oauth_surface_routable => {
+            // URL-only onboarding embeds nothing; every other case (an
+            // explicit `--static-token`, or `Auto` on a non-URL-only
+            // surface) embeds the persisted static token.
+            TokenStrategy::Auto if onboarding_url_only => Ok(None),
+            TokenStrategy::Static | TokenStrategy::Auto => {
                 Ok(Some(read_persisted_auth(out_stderr)?))
             }
-            TokenStrategy::Auto => Ok(None),
         },
     }
+}
+
+/// Guards the non-validating renderer against a malformed
+/// `server.public_mcp_url`.
+///
+/// `mcp-config` skips full `validate` so it can render after provider keys
+/// leave the shell, but a `public_mcp_url` that is not a usable http(s) MCP
+/// endpoint would then be emitted verbatim into the network snippet. When
+/// set, it must satisfy [`is_valid_public_mcp_url`]; otherwise rendering
+/// fails rather than shipping a broken wire-up URL.
+fn ensure_public_mcp_url_renderable(config: &TribalConfig) -> Result<(), AppError> {
+    if let Some(raw) = config.server.public_mcp_url.as_deref()
+        && !is_valid_public_mcp_url(raw)
+    {
+        return Err(AppError::ConfigInvariant {
+            reason: format!("server.public_mcp_url ({raw}) {PUBLIC_MCP_URL_REQUIREMENT}"),
+        });
+    }
+    Ok(())
 }
 
 /// Builds bearer auth from a caller-supplied `--token` value.
@@ -448,21 +479,23 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_auth_loopback_auto_is_url_only() {
+    fn test_resolve_auth_url_only_auto_omits_token() {
         let mut stderr = Vec::<u8>::new();
-        let auth = resolve_auth(TransportKind::Http, TokenStrategy::Auto, false, &mut stderr)
-            .expect("loopback auth resolves");
-        assert!(auth.is_none(), "loopback default is URL-only");
+        let auth = resolve_auth(TransportKind::Http, TokenStrategy::Auto, true, &mut stderr)
+            .expect("url-only auth resolves");
+        assert!(auth.is_none(), "URL-only onboarding embeds no token");
         assert!(stderr.is_empty());
     }
 
     #[test]
-    fn test_resolve_auth_explicit_token_embeds_on_loopback() {
+    fn test_resolve_auth_explicit_token_embeds_even_when_url_only() {
+        // `--token` is authoritative: it embeds the supplied bearer even on
+        // a surface where `Auto` would advertise the URL-only OAuth snippet.
         let mut stderr = Vec::<u8>::new();
         let auth = resolve_auth(
             TransportKind::Http,
             TokenStrategy::Explicit("test-bearer-token".to_owned()),
-            false,
+            true,
             &mut stderr,
         )
         .expect("explicit token resolves");

@@ -27,9 +27,8 @@ Next steps:
    tribal check --providers
 
 5. Authenticate your agent harness:
-   This deployment is reachable beyond loopback, so open registration is refused.
-   The wire-up below embeds the bearer token from your credentials file.
-   OAuth-capable harnesses need a client registered in advance.
+   Automatic client registration is not available for this deployment,
+   so the wire-up below embeds the bearer token from your credentials file.
 
 6. Wire Tribal into your agent harness. For Claude Code:
      claude mcp add-json tribal "$(tribal mcp-config)"

@@ -111,7 +111,7 @@ pub(super) struct ActionInputs<'a> {
     pub config_path: String,
     pub config_file: &'a ConfigFileOutcome,
     pub persistence: ConfigPersistence<'a>,
-    pub oauth_surface_routable: bool,
+    pub onboarding_url_only: bool,
     pub credentials: &'a CredentialsPersistOutcome,
 }
 
@@ -138,7 +138,7 @@ pub(super) fn http_sse_steps(inputs: &ActionInputs<'_>) -> Vec<ActionStep> {
     push_verify_steps(&mut steps);
     match inputs.credentials {
         CredentialsPersistOutcome::Persisted { .. } => {
-            push_authenticate_step(&mut steps, inputs.oauth_surface_routable);
+            push_authenticate_step(&mut steps, inputs.onboarding_url_only);
             push_wire_up_step(&mut steps);
         }
         CredentialsPersistOutcome::Failed { .. } => push_recovery_wire_up_step(&mut steps),
@@ -209,21 +209,8 @@ fn persistence_step_already_exists(
     )
 }
 
-fn push_authenticate_step(steps: &mut Vec<ActionStep>, oauth_surface_routable: bool) {
-    let step = if oauth_surface_routable {
-        ActionStep::new(
-            "Authenticate your agent harness:",
-            vec![
-                BodyLine::new(
-                    "This deployment is reachable beyond loopback, so open registration is refused.",
-                ),
-                BodyLine::new(
-                    "The wire-up below embeds the bearer token from your credentials file.",
-                ),
-                BodyLine::new("OAuth-capable harnesses need a client registered in advance."),
-            ],
-        )
-    } else {
+fn push_authenticate_step(steps: &mut Vec<ActionStep>, onboarding_url_only: bool) {
+    let step = if onboarding_url_only {
         ActionStep::new(
             "Authenticate your agent harness:",
             vec![
@@ -234,6 +221,18 @@ fn push_authenticate_step(steps: &mut Vec<ActionStep>, oauth_surface_routable: b
                     "For a harness that cannot perform the OAuth flow, embed the token instead:",
                 ),
                 BodyLine::new("tribal mcp-config --static-token").indented_by(DEEPER),
+            ],
+        )
+    } else {
+        ActionStep::new(
+            "Authenticate your agent harness:",
+            vec![
+                BodyLine::new(
+                    "Automatic client registration is not available for this deployment,",
+                ),
+                BodyLine::new(
+                    "so the wire-up below embeds the bearer token from your credentials file.",
+                ),
             ],
         )
     };
