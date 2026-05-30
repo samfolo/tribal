@@ -10,7 +10,7 @@ use anstream::AutoStream;
 use chrono::{DateTime, Utc};
 use tribal_config::{
     Auth, CREDENTIALS_FILENAME, CliOverrides, ConfigPersistence, TRIBAL_DIRECTORY_NAME,
-    TransportKind, TribalConfig,
+    TransportKind, TribalConfig, oauth_onboarding_is_url_only,
 };
 use tribal_domain::GitRemote;
 use tribal_ui::{Mode, StreamThemeContext, Theme, resolve_mode};
@@ -71,8 +71,10 @@ pub struct BootstrapOptions<'a> {
 ///
 /// Composes `tribal setup` and `tribal project register` into a single
 /// invocation. Setup mints a bearer token and seeds the database; the
-/// token is then forwarded into register so the resulting MCP snippet
-/// embeds it for HTTP/SSE transports.
+/// token is persisted to the credentials file and embedded in the
+/// HTTP/SSE snippet only when OAuth onboarding is not URL-only (a routable
+/// surface, or DCR disabled). A loopback surface with DCR enabled
+/// advertises a URL-only snippet for the OAuth flow.
 ///
 /// # Errors
 ///
@@ -171,9 +173,17 @@ pub async fn run_async(
 
     // -- Register -----------------------------------------------------------
 
+    let onboarding_url_only = oauth_onboarding_is_url_only(opts.config);
     let auth = Auth::Bearer {
         token: setup_outcome.bearer_token.clone(),
     };
+    // The embedded snippet follows the same rule as `tribal mcp-config`:
+    // URL-only onboarding (a loopback surface with DCR enabled) advertises
+    // an OAuth snippet with nothing to copy; every other surface (routable,
+    // or DCR disabled) embeds the bearer token for harnesses that cannot
+    // perform the flow. The token is persisted to credentials.json
+    // regardless, so the static-token escape hatch stays available.
+    let snippet_auth = (!onboarding_url_only).then_some(&auth);
     let project = register::compute(
         opts.config,
         opts.git_remote,
@@ -182,7 +192,7 @@ pub async fn run_async(
         &OutputOptions {
             json: false,
             transport: opts.transport,
-            auth: Some(&auth),
+            auth: snippet_auth,
             // The token was just minted by setup against this same
             // database — re-verifying would only add a round trip.
             skip_validation: true,
@@ -208,6 +218,7 @@ pub async fn run_async(
         credentials: &setup_outcome.credentials,
         persistence: ConfigPersistence::Persisted(opts.persisted_overrides),
         advertised_url: &advertised_url,
+        onboarding_url_only,
     };
 
     if opts.json {

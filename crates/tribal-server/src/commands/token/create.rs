@@ -3,9 +3,9 @@
 use std::io::{self, Write};
 
 use chrono::{DateTime, Utc};
-use tribal_common::sha256_hex;
+use tribal_auth::issue_token;
 use tribal_config::DatabaseConfig;
-use tribal_db::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
+use tribal_db::PgAuthTokenRepository;
 use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, full_access_scopes};
 
 use super::output;
@@ -14,7 +14,7 @@ use crate::{
     commands::common::{
         COMMAND_POOL_MAX_CONNECTIONS, COMMAND_STATEMENT_TIMEOUT_MS, CredentialsPersistOutcome,
         DATABASE_COMMAND_DEFAULTS, TIMESTAMP_FORMAT, TtlInput, compute_expires_at,
-        find_or_create_principal, generate_raw_token, persist_credentials, prepare_config,
+        find_or_create_principal, persist_credentials, prepare_config,
     },
     error::AppError,
 };
@@ -105,21 +105,16 @@ pub async fn run_async(
     let principal = find_or_create_principal(&mut conn, principal_key).await?;
     output::principal_resolved(out_stderr, principal.principal_key());
 
-    let raw_token = generate_raw_token();
-    let token_hash = sha256_hex(&raw_token);
-
-    let new_token = NewAuthToken::builder()
-        .token_hash(token_hash)
-        .principal_id(principal.id())
-        .scopes(full_access_scopes())
-        .audience(audience.to_owned())
-        .expires_at(expires_at)
-        .build();
-
-    PgAuthTokenRepository
-        .insert(&mut conn, &new_token)
-        .await
-        .map_err(|source| AppError::Database { source })?;
+    let raw_token = issue_token(
+        &mut conn,
+        &PgAuthTokenRepository,
+        principal.id(),
+        full_access_scopes(),
+        audience.to_owned(),
+        expires_at,
+    )
+    .await
+    .map_err(|source| AppError::Database { source })?;
 
     drop(conn);
 

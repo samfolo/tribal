@@ -65,6 +65,13 @@ services:
       TRIBAL_INFERENCE__RELATION__BASE_URL: "${TRIBAL_INFERENCE__RELATION__BASE_URL:-http://host.docker.internal:11434}"
       TRIBAL_PROJECT_NAME: ${TRIBAL_PROJECT_NAME:-tribal-docker-local}
       TRIBAL_PROJECT_REMOTE: ${TRIBAL_PROJECT_REMOTE:-https://example.com/local/tribal-docker.git}
+      # Scopes container-side commands (the healthcheck and any
+      # `docker compose exec tribal ...`) to the bootstrapped project. Leave
+      # empty for the first `up`; once bootstrap prints the project id, set it
+      # in .env so exec'd commands resolve that project instead of warning.
+      # The server always serves the project recorded in the state volume, so
+      # a stale value here cannot mis-scope serving.
+      TRIBAL_PROJECT_ID: ${TRIBAL_PROJECT_ID:-}
       # Provider env vars passed through from the host shell. Optional;
       # required only for real ingest against the listed cloud providers.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

@@ -803,10 +803,11 @@ pub struct ConfigShowArgs {
 
 /// Arguments for the `mcp-config` subcommand.
 ///
-/// Renders the wire-up snippet bootstrap emits, reconstructed from the
-/// resolved project and the persisted bearer token. The database is
-/// reached through the same overlay cascade as every other command so
-/// `--project` typos surface immediately rather than at server start.
+/// Renders the wire-up snippet bootstrap emits. The stdio snippet resolves
+/// a project against the database for its `serve --project` command, so a
+/// `--project` typo surfaces here rather than at server start. Http/sse
+/// snippets bind their project server-side and default to URL-only OAuth,
+/// embedding the static token only when forced or on a non-URL-only surface.
 #[derive(Debug, Args)]
 pub struct McpConfigArgs {
     /// Transport mode for the generated snippet. Falls back to
@@ -814,16 +815,27 @@ pub struct McpConfigArgs {
     #[arg(long, help_heading = "Output")]
     pub transport: Option<TransportKind>,
 
-    /// Project ID (`proj_`-prefixed) to render the snippet for. Falls
-    /// back to `TRIBAL_PROJECT_ID` and then to git-remote detection.
+    /// Project ID (`proj_`-prefixed) embedded in the stdio snippet's
+    /// `serve --project`. Falls back to `TRIBAL_PROJECT_ID`, then
+    /// git-remote detection. The http/sse snippet binds its project
+    /// server-side, so this has no effect there.
     #[arg(long, env = "TRIBAL_PROJECT_ID", help_heading = "Session")]
     pub project: Option<String>,
 
-    /// Bearer token override for http/sse snippets. When omitted the
-    /// token is read from the persisted credentials file. Ignored for
-    /// stdio.
+    /// Bearer token override for http/sse snippets: embeds this exact
+    /// token. Ignored for stdio.
     #[arg(long, help_heading = "Output")]
     pub token: Option<String>,
+
+    /// Embed the persisted static bearer token in the http/sse snippet.
+    ///
+    /// The default http/sse snippet on a loopback deployment is URL-only
+    /// and relies on OAuth, which suits OAuth-capable harnesses. Pass this
+    /// for a harness that authenticates only with a static `Authorization`
+    /// header and so cannot perform the OAuth flow. Mutually exclusive with
+    /// `--token`. Ignored for stdio.
+    #[arg(long, conflicts_with = "token", help_heading = "Output")]
+    pub static_token: bool,
 
     /// Database connection options.
     #[command(flatten)]
@@ -833,8 +845,8 @@ pub struct McpConfigArgs {
 impl McpConfigArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
-    /// `--transport`, `--project`, and `--token` affect only this single
-    /// rendering and do not flow into [`CliOverrides`].
+    /// `--transport`, `--project`, `--token`, and `--static-token` affect
+    /// only this single rendering and do not flow into [`CliOverrides`].
     pub fn into_cli_overrides(self) -> CliOverrides {
         self.database.into_cli_overrides()
     }
@@ -1539,6 +1551,7 @@ mod tests {
             transport: None,
             project: None,
             token: None,
+            static_token: false,
             database: DatabaseArgs {
                 database_url: Some("postgres://h/db".into()),
             },

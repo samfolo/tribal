@@ -3,11 +3,7 @@ Bootstrap complete.
 Project:     widgets (proj_00000000-0000-0000-0000-000000000002)
 Git remote:  github.com/acme/widgets
 Transport:   http
-MCP URL:     http://127.0.0.1:8725/mcp
-
-Bearer token (credentials.json was NOT written, copy it manually):
-
-  test-bearer-token
+MCP URL:     https://tribal.example.com/mcp
 
 Next steps:
 
@@ -30,10 +26,13 @@ Next steps:
 4. (When ready for real ingest) verify providers:
    tribal check --providers
 
-5. credentials.json was not written. Wire up with the token shown above. For Claude Code:
-     claude mcp add-json tribal "$(tribal mcp-config --token <token>)"
-   Substitute <token> with the value above. For other harnesses, see the installation skill.
-   Re-run bootstrap to restore credentials.json and the OAuth default.
+5. Authenticate your agent harness:
+   Automatic client registration is not available for this deployment,
+   so the wire-up below embeds the bearer token from your credentials file.
 
-6. (Optional) Install Tribal skills into your agent:
+6. Wire Tribal into your agent harness. For Claude Code:
+     claude mcp add-json tribal "$(tribal mcp-config)"
+   For other harnesses, see the installation skill.
+
+7. (Optional) Install Tribal skills into your agent:
    npx skills add tribal-memory/skills

@@ -2,11 +2,14 @@
 
 use std::io::{self, Write};
 
-use tribal_config::{ConfigPersistence, ENV_AUTH_TOKEN, TransportKind, env_var_for_path};
-use tribal_domain::{BearerToken, ProjectId};
+use tribal_config::{ConfigPersistence, TransportKind, env_var_for_path};
+use tribal_domain::ProjectId;
 use tribal_ui::{Component, OrderedList, RenderCtx, Text};
 
-use crate::{cli::PersistableFlag, commands::setup::ConfigFileOutcome};
+use crate::{
+    cli::PersistableFlag,
+    commands::{common::CredentialsPersistOutcome, setup::ConfigFileOutcome},
+};
 
 // ---------------------------------------------------------------------------
 // List wrapper
@@ -103,12 +106,13 @@ impl Component for ActionStep {
 /// list. Bundles the strings/ids each step needs so the helpers stay
 /// signature-light.
 pub(super) struct ActionInputs<'a> {
-    pub bearer_token: &'a BearerToken,
     pub transport: TransportKind,
     pub project_id: ProjectId,
     pub config_path: String,
     pub config_file: &'a ConfigFileOutcome,
     pub persistence: ConfigPersistence<'a>,
+    pub onboarding_url_only: bool,
+    pub credentials: &'a CredentialsPersistOutcome,
 }
 
 /// Builds the stdio variant's action list.
@@ -126,14 +130,19 @@ pub(super) fn stdio_steps(inputs: &ActionInputs<'_>) -> Vec<ActionStep> {
 /// Builds the http/sse variant's action list.
 pub(super) fn http_sse_steps(inputs: &ActionInputs<'_>) -> Vec<ActionStep> {
     let mut steps = Vec::new();
-    steps.push(export_token_step(inputs));
     steps.push(durable_transport_step(inputs));
     if let Some(step) = persistence_step(inputs) {
         steps.push(step);
     }
     steps.push(start_server_step(inputs));
     push_verify_steps(&mut steps);
-    push_wire_up_step(&mut steps);
+    match inputs.credentials {
+        CredentialsPersistOutcome::Persisted { .. } => {
+            push_authenticate_step(&mut steps, inputs.onboarding_url_only);
+            push_wire_up_step(&mut steps);
+        }
+        CredentialsPersistOutcome::Failed { .. } => push_recovery_wire_up_step(&mut steps),
+    }
     push_skills_step(&mut steps);
     steps
 }
@@ -200,16 +209,34 @@ fn persistence_step_already_exists(
     )
 }
 
-fn export_token_step(inputs: &ActionInputs<'_>) -> ActionStep {
-    // BearerToken uses a base64url charset — no shell-significant
-    // characters — so unconditional `"…"` quoting is safe.
-    ActionStep::new(
-        "Export the token for your shell session:",
-        vec![BodyLine::new(format!(
-            "export {ENV_AUTH_TOKEN}=\"{}\"",
-            inputs.bearer_token.as_str(),
-        ))],
-    )
+fn push_authenticate_step(steps: &mut Vec<ActionStep>, onboarding_url_only: bool) {
+    let step = if onboarding_url_only {
+        ActionStep::new(
+            "Authenticate your agent harness:",
+            vec![
+                BodyLine::new(
+                    "OAuth-capable harnesses authenticate on first connect; there is nothing to copy.",
+                ),
+                BodyLine::new(
+                    "For a harness that cannot perform the OAuth flow, embed the token instead:",
+                ),
+                BodyLine::new("tribal mcp-config --static-token").indented_by(DEEPER),
+            ],
+        )
+    } else {
+        ActionStep::new(
+            "Authenticate your agent harness:",
+            vec![
+                BodyLine::new(
+                    "Automatic client registration is not available for this deployment,",
+                ),
+                BodyLine::new(
+                    "so the wire-up below embeds the bearer token from your credentials file.",
+                ),
+            ],
+        )
+    };
+    steps.push(step);
 }
 
 fn durable_transport_step(inputs: &ActionInputs<'_>) -> ActionStep {
@@ -277,6 +304,21 @@ fn push_wire_up_step(steps: &mut Vec<ActionStep>) {
             BodyLine::new("claude mcp add-json tribal \"$(tribal mcp-config)\"")
                 .indented_by(DEEPER),
             BodyLine::new("For other harnesses, see the installation skill."),
+        ],
+    ));
+}
+
+fn push_recovery_wire_up_step(steps: &mut Vec<ActionStep>) {
+    steps.push(ActionStep::new(
+        "credentials.json was not written. Wire up with the token shown above. For Claude Code:",
+        vec![
+            BodyLine::new("claude mcp add-json tribal \"$(tribal mcp-config --token <token>)\"")
+                .indented_by(DEEPER),
+            BodyLine::new(
+                "Substitute <token> with the value above. For other harnesses, see the \
+                 installation skill.",
+            ),
+            BodyLine::new("Re-run bootstrap to restore credentials.json and the OAuth default."),
         ],
     ));
 }

@@ -1,18 +1,23 @@
 //! Outcome constructors and probe for the `valid_token_exists` check.
 //!
 //! Resolution order under `http` / `sse`: `--token` → `TRIBAL_AUTH_TOKEN`
-//! → `credentials.json`.  If every source is empty, the check falls
-//! through to an aggregate `any_active` lookup against the database.
-//! Under `stdio`, only `--token` is consulted; an absent override
-//! yields `Skip`.
+//! → `credentials.json`.  If every source is empty, the outcome turns on
+//! the onboarding mode: a URL-only surface (loopback with DCR enabled)
+//! skips, since a fresh client registers and authenticates via OAuth on
+//! first connect; every other surface (routable, or DCR disabled) fails,
+//! since an absent static token leaves clients no authentication path.
+//! Under `stdio`, only `--token` is consulted; an absent override yields
+//! `Skip`.
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use sqlx::PgPool;
 use tribal_auth::{AuthError, Authenticator};
-use tribal_config::{Auth, CredentialsReadError, ENV_AUTH_TOKEN, TransportKind, read_credentials};
-use tribal_db::{AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository};
+use tribal_config::{
+    Auth, CredentialsReadError, ENV_AUTH_TOKEN, TransportKind, oauth_onboarding_is_url_only,
+    read_credentials,
+};
+use tribal_db::{PgAuthTokenRepository, PgPrincipalRepository};
 
 use super::{
     state::CheckState,
@@ -50,24 +55,16 @@ impl CheckOutcome {
         }
     }
 
-    pub(in crate::commands::check) fn token_aggregate_warn() -> Self {
-        Self::Warn {
-            detail: CheckDetail::TokenAggregateWarn,
-            remediation: CheckRemediation::RunTribalTokenCreate,
+    pub(in crate::commands::check) fn token_skipped_loopback_oauth() -> Self {
+        Self::Skip {
+            detail: CheckDetail::TokenSkippedLoopbackOauth,
         }
     }
 
-    pub(in crate::commands::check) fn no_active_tokens() -> Self {
+    pub(in crate::commands::check) fn token_missing_routable() -> Self {
         Self::Fail {
-            detail: CheckDetail::NoActiveTokens,
+            detail: CheckDetail::TokenMissingRoutable,
             remediation: CheckRemediation::RunTribalTokenCreate,
-        }
-    }
-
-    pub(in crate::commands::check) fn token_aggregate_query_failed(error: String) -> Self {
-        Self::Fail {
-            detail: CheckDetail::TokenAggregateQueryFailed { error },
-            remediation: CheckRemediation::ConsultUnderlyingError,
         }
     }
 
@@ -121,7 +118,8 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
             let expected_audience = resolve_oauth_runtime(config)
                 .ok()
                 .and_then(|runtime| expected_token_audience(config.server.transport, &runtime));
-            network_path(pool, token_override, expected_audience).await
+            let onboarding_url_only = oauth_onboarding_is_url_only(config);
+            network_path(pool, token_override, expected_audience, onboarding_url_only).await
         }
     }
 }
@@ -130,6 +128,7 @@ async fn network_path(
     pool: &PgPool,
     token_override: Option<&str>,
     expected_audience: Option<String>,
+    onboarding_url_only: bool,
 ) -> CheckOutcome {
     if let Some(token) = token_override {
         return verify_against(pool, token, TokenTransport::Http, expected_audience).await;
@@ -151,7 +150,17 @@ async fn network_path(
                 .await
             }
         },
-        Err(CredentialsReadError::NotFound) => check_aggregate(pool).await,
+        // No static token resolves. Under URL-only onboarding that is
+        // fine: a fresh client registers and authenticates via OAuth. On
+        // every other surface (routable, or DCR disabled) there is no
+        // automatic registration path, so the absent token is a gap.
+        Err(CredentialsReadError::NotFound) => {
+            if onboarding_url_only {
+                CheckOutcome::token_skipped_loopback_oauth()
+            } else {
+                CheckOutcome::token_missing_routable()
+            }
+        }
         Err(
             err @ (CredentialsReadError::Malformed { .. }
             | CredentialsReadError::UnsupportedSchema { .. }),
@@ -193,21 +202,6 @@ async fn verify_against(
         return CheckOutcome::token_verified(transport);
     };
     outcome_for_auth_error(err, transport)
-}
-
-async fn check_aggregate(pool: &PgPool) -> CheckOutcome {
-    let mut conn = match pool.acquire().await {
-        Ok(c) => c,
-        Err(err) => return CheckOutcome::token_aggregate_query_failed(err.to_string()),
-    };
-    match PgAuthTokenRepository
-        .any_active(&mut conn, Utc::now())
-        .await
-    {
-        Ok(true) => CheckOutcome::token_aggregate_warn(),
-        Ok(false) => CheckOutcome::no_active_tokens(),
-        Err(err) => CheckOutcome::token_aggregate_query_failed(err.to_string()),
-    }
 }
 
 /// Maps an [`AuthError`] from [`Authenticator::verify_token`] to the
@@ -315,22 +309,21 @@ mod tests {
     }
 
     #[test]
-    fn test_token_aggregate_warn_is_warn() {
+    fn test_token_skipped_loopback_oauth_is_skip() {
         assert!(matches!(
-            &CheckOutcome::token_aggregate_warn(),
-            CheckOutcome::Warn {
-                detail: CheckDetail::TokenAggregateWarn,
-                remediation: CheckRemediation::RunTribalTokenCreate,
+            &CheckOutcome::token_skipped_loopback_oauth(),
+            CheckOutcome::Skip {
+                detail: CheckDetail::TokenSkippedLoopbackOauth,
             },
         ));
     }
 
     #[test]
-    fn test_no_active_tokens_is_fail() {
+    fn test_token_missing_routable_is_fail_routing_to_token_create() {
         assert!(matches!(
-            &CheckOutcome::no_active_tokens(),
+            &CheckOutcome::token_missing_routable(),
             CheckOutcome::Fail {
-                detail: CheckDetail::NoActiveTokens,
+                detail: CheckDetail::TokenMissingRoutable,
                 remediation: CheckRemediation::RunTribalTokenCreate,
             },
         ));
@@ -355,18 +348,6 @@ mod tests {
                 "expected {remediation:?} to be threaded through, got {outcome:?}",
             );
         }
-    }
-
-    #[test]
-    fn test_token_aggregate_query_failed_routes_to_consult_underlying_error() {
-        let outcome = CheckOutcome::token_aggregate_query_failed("permission denied".into());
-        assert!(matches!(
-            &outcome,
-            CheckOutcome::Fail {
-                detail: CheckDetail::TokenAggregateQueryFailed { error },
-                remediation: CheckRemediation::ConsultUnderlyingError,
-            } if error == "permission denied",
-        ));
     }
 
     #[test]
