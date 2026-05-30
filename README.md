@@ -98,7 +98,7 @@ tribal check --json
 
 ## Connecting to your agent harness
 
-The canonical MCP config for any compatible harness comes from `tribal mcp-config --json`. The shape stays consistent across transports, with the right discriminator and credentials for whichever transport you chose during bootstrap.
+The canonical MCP config for any compatible harness comes from `tribal mcp-config`, which writes the JSON snippet to stdout. On a local HTTP or SSE deployment the snippet is URL-only: an OAuth-capable harness registers and authenticates itself on first connect, so there is nothing to copy. Pass `--static-token` to embed the persisted bearer token instead, for a harness that authenticates with an `Authorization` header only. The stdio snippet carries no token; it authenticates as a local principal at runtime.
 
 For per-harness translations, ask your agent to invoke the [`installing-tribal` skill](https://github.com/tribal-memory/skills/tree/main/skills/installing-tribal). It walks through wiring Tribal into your harness and produces the exact command to run.
 
