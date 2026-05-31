@@ -20,7 +20,22 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tribal_domain::{ApiKey, ProviderKind, normalise_endpoint_url};
+
+// ---------------------------------------------------------------------------
+// Credential resolution error
+// ---------------------------------------------------------------------------
+
+/// A provider that requires an API key has none in the catalogue.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{provider} at {base_url} requires an API key, but the catalogue has none")]
+pub struct MissingApiKey {
+    /// The provider kind whose endpoint lacks a key.
+    pub provider: ProviderKind,
+    /// The normalised endpoint the lookup targeted.
+    pub base_url: String,
+}
 
 // ---------------------------------------------------------------------------
 // Connection name grammar
@@ -92,6 +107,38 @@ impl CredentialCatalogue {
                     == Some(normalised_base_url);
             matches.then_some((name.as_str(), entry))
         })
+    }
+
+    /// Resolves the API key for an endpoint, failing closed.
+    ///
+    /// Returns the matched key (the empty string for a provider that needs
+    /// none), or [`MissingApiKey`] when a provider that requires a key has
+    /// neither a catalogue entry nor an environment-supplied one. This is the
+    /// single fail-closed rule shared by server boot (the active profile) and
+    /// the reindex worker (a building target).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MissingApiKey`] when [`ProviderKind::requires_api_key`] holds
+    /// and the resolved key is empty.
+    pub fn resolve_api_key(
+        &self,
+        provider_kind: ProviderKind,
+        normalised_base_url: &str,
+    ) -> Result<&str, MissingApiKey> {
+        let api_key = self
+            .resolve(provider_kind, normalised_base_url)
+            .and_then(|(_, entry)| entry.api_key.as_ref())
+            .map_or("", ApiKey::as_str);
+
+        if provider_kind.requires_api_key() && api_key.is_empty() {
+            return Err(MissingApiKey {
+                provider: provider_kind,
+                base_url: normalised_base_url.to_owned(),
+            });
+        }
+
+        Ok(api_key)
     }
 
     /// Returns the entry for a connection name, if present.
@@ -188,6 +235,45 @@ mod tests {
         // Right kind, wrong endpoint.
         let other = normalise_endpoint_url("http://localhost:9999").unwrap();
         assert!(catalogue.resolve(ProviderKind::Ollama, &other).is_none());
+    }
+
+    #[test]
+    fn test_resolve_api_key_returns_the_matched_key() {
+        let catalogue = catalogue_yaml(
+            "openai_default:\n  provider_kind: openai\n  base_url: https://api.openai.com/v1\n  api_key: sk-test\n",
+        );
+        let normalised = normalise_endpoint_url("https://api.openai.com/v1").unwrap();
+        assert_eq!(
+            catalogue
+                .resolve_api_key(ProviderKind::OpenAi, &normalised)
+                .expect("resolves"),
+            "sk-test",
+        );
+    }
+
+    #[test]
+    fn test_resolve_api_key_fails_closed_for_a_keyless_required_provider() {
+        let catalogue = CredentialCatalogue::default();
+        let normalised = normalise_endpoint_url("https://api.openai.com/v1").unwrap();
+        assert_eq!(
+            catalogue.resolve_api_key(ProviderKind::OpenAi, &normalised),
+            Err(MissingApiKey {
+                provider: ProviderKind::OpenAi,
+                base_url: normalised,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_resolve_api_key_allows_a_keyless_local_provider() {
+        let catalogue = CredentialCatalogue::default();
+        let normalised = normalise_endpoint_url("http://localhost:11434").unwrap();
+        assert_eq!(
+            catalogue
+                .resolve_api_key(ProviderKind::Ollama, &normalised)
+                .expect("resolves"),
+            "",
+        );
     }
 
     #[test]

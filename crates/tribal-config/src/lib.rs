@@ -50,9 +50,9 @@ pub use sections::{
     ExplorationConfig, FileRotation, InferenceConfig, InitConfig, InitEmbeddingConfig,
     LimitsConfig, LoadedCredentials, LogFormat, LogOutput, LoggingConfig,
     MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER,
-    MAX_TTL_HOURS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, OAuthConfig, PromptSource, PromptsConfig,
-    ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig,
-    TransportKind, TribalConfig, VERSION, WorkerConfig, advertised_oauth_host,
+    MAX_TTL_HOURS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, MissingApiKey, OAuthConfig, PromptSource,
+    PromptsConfig, ProviderLimitsConfig, ServerConfig, SseConfig, StageInferenceConfig,
+    TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig, advertised_oauth_host,
     oauth_onboarding_is_url_only, oauth_surface_is_routable, read_credentials, write_credentials,
 };
 pub use validation::{
