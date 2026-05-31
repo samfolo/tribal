@@ -340,6 +340,10 @@ async fn test_handshake_dcr_full_round_trip() {
         consent_html.contains("127.0.0.1"),
         "consent should display the redirect host"
     );
+    assert!(
+        consent_html.contains("Loopback redirect"),
+        "a loopback redirect must show the loopback warning"
+    );
     let target_url = extract_approve_href(&consent_html);
     let target_parsed = Url::parse(&target_url).unwrap();
     let code = target_parsed

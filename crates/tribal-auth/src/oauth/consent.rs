@@ -16,9 +16,11 @@
 //! user confirms the hostname shown.
 //!
 //! This is a display-and-confirm gate, not a server-enforced one. The
-//! code is persisted before the page renders and the Authorise anchor is
-//! a client-side navigation, so the human click gates delivery of the
-//! code to the redirect target but is not itself recorded server-side.
+//! page is built before the code is persisted, and the code is persisted
+//! before the response is returned, so by the time the user can act the
+//! code exists server-side; the Authorise anchor is a client-side
+//! navigation, so the human click gates delivery of the code to the
+//! redirect target but is not itself recorded server-side.
 //! Its security value is that a human perceives the redirect host before
 //! any code reaches it, which is what the loopback threat model requires:
 //! a single-user local server where the agent acts on the user's own
@@ -213,7 +215,7 @@ mod tests {
             "mcp.example.com",
             "tribal-cli-7f3a9c2e",
             Some("Tribal CLI"),
-            "tribal.memory:read tribal.memory:write",
+            "tribal:read tribal:write",
             false,
         )
         .expect("template renders");
@@ -227,10 +229,27 @@ mod tests {
             "127.0.0.1:53017",
             "s6BhdRkqt3",
             None,
-            "tribal.memory:read",
+            "tribal:read",
             true,
         )
         .expect("template renders");
         assert_text_snapshot!(&html, "src/oauth/snapshots/consent-loopback.html");
+    }
+
+    #[test]
+    fn test_consent_html_named_loopback_snapshot() {
+        // The highest-value real-world case: a named client (an MCP CLI)
+        // connecting to a loopback redirect, so the bdi-wrapped name and the
+        // loopback warning appear on the same page.
+        let html = build_consent_html(
+            "http://127.0.0.1:7777/callback?code=abc123&state=xyz",
+            "127.0.0.1:7777",
+            "s6BhdRkqt3",
+            Some("Local MCP Client"),
+            "tribal:read",
+            true,
+        )
+        .expect("template renders");
+        assert_text_snapshot!(&html, "src/oauth/snapshots/consent-loopback-named.html");
     }
 }
