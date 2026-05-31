@@ -419,8 +419,7 @@ async fn test_triage_duplicate_records_token_usage() {
     let system_pv_id = seed_result.prompt_version_id("system-pv");
     let user_pv_id = seed_result.prompt_version_id("user-pv");
 
-    let seeded_embedding = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut conn, ki_id, "mock-model")
+    let seeded_embedding = find_active_embedding(&mut conn, ki_id)
         .await
         .expect("find seeded embedding")
         .expect("seeded embedding should exist");

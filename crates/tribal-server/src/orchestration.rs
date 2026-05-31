@@ -27,7 +27,7 @@ use crate::{
         POOL_NAME_MCP, POOL_NAME_WORKER, build_embedding_provider, build_inference_provider,
         build_provider_registry, check_first_run, create_pool_with_retry, ensure_prompt_files,
         generate_instance_id, init_prompt_watcher, load_prompts, load_prompts_embedded,
-        resolve_project, run_migrations,
+        provision_genesis, resolve_project, run_migrations,
     },
 };
 
@@ -350,6 +350,10 @@ async fn bootstrap(
 
     check_first_run(&pool_mcp).await?;
     run_migrations(&pool_mcp).await?;
+
+    // -- First-boot provisioning ---------------------------------------------
+
+    provision_genesis(&pool_mcp, config).await?;
 
     // -- Instance identity ---------------------------------------------------
 

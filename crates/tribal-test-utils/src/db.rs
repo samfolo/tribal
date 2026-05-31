@@ -82,7 +82,7 @@ impl TestContext {
                 .with_times(2),
         );
 
-        let container = GenericImage::new("pgvector/pgvector", "pg17")
+        let container = GenericImage::new("pgvector/pgvector", "0.8.2-pg17")
             .with_exposed_port(5432.tcp())
             .with_wait_for(ready_condition)
             .with_env_var("POSTGRES_DB", "tribal_test")

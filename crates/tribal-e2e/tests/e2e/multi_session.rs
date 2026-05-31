@@ -5,7 +5,9 @@ use tribal_db::{
     PgProjectRepository, ProjectRepository,
 };
 use tribal_domain::GitRemote;
-use tribal_test_utils::{a_new_embedding, a_new_knowledge_item, a_new_project};
+use tribal_test_utils::{
+    a_new_embedding, a_new_knowledge_item, a_new_project, ensure_genesis_profile,
+};
 
 use crate::harness::{
     assertions::{assert_error, assert_success},
@@ -98,13 +100,20 @@ async fn test_multi_session_isolation() {
                 .await
                 .expect("insert platform knowledge item");
 
+            let profile_id = ensure_genesis_profile(
+                seed.conn(),
+                DEFAULT_EMBEDDING_MODEL,
+                DEFAULT_EMBEDDING_DIMENSIONS,
+            )
+            .await
+            .id();
             PgEmbeddingRepository
                 .insert(
                     seed.conn(),
                     &a_new_embedding()
                         .knowledge_item_id(platform_item.id())
+                        .embedding_profile_id(profile_id)
                         .model(DEFAULT_EMBEDDING_MODEL.to_owned())
-                        .dimensions(DEFAULT_EMBEDDING_DIMENSIONS)
                         .embedding(fixed_embedding_vector(DEFAULT_EMBEDDING_DIMENSIONS))
                         .build(),
                 )

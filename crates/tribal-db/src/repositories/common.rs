@@ -7,3 +7,4 @@
 pub(super) mod columns;
 pub(super) mod constraint;
 pub(super) mod cursor;
+pub(super) mod halfvec;

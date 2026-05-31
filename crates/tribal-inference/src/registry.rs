@@ -298,7 +298,12 @@ impl ProviderRegistry {
 /// 4. Include explicit port (default 80 for HTTP, 443 for HTTPS)
 /// 5. Retain path component
 /// 6. Drop query string and fragment
-fn normalise_registry_url(raw: &str) -> Result<String, ProviderRegistryError> {
+///
+/// # Errors
+///
+/// Returns [`ProviderRegistryError::UnparseableUrl`] when `raw` is not a valid
+/// URL or lacks a host or a port derivable from its scheme.
+pub fn normalise_registry_url(raw: &str) -> Result<String, ProviderRegistryError> {
     let parsed = Url::parse(raw).map_err(|e| ProviderRegistryError::UnparseableUrl {
         url: raw.to_owned(),
         reason: e.to_string(),

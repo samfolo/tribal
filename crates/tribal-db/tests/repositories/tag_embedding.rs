@@ -2,11 +2,13 @@ use tribal_db::{
     PgTagEmbeddingRepository, PgTagRegistryRepository, TagEmbeddingRepository,
     TagRegistryRepository,
 };
-use tribal_test_utils::{a_new_tag_embedding, test_context};
+use tribal_test_utils::{a_new_tag_embedding, create_complete_profile, test_context};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const DIM: u32 = 768;
 
 /// Inserts tags into the registry so they can be referenced by
 /// `tag_embeddings` (FK constraint).
@@ -35,14 +37,17 @@ async fn test_batch_upsert_inserts_new_embeddings() {
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust", "python"]).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
 
     let embeddings = vec![
         a_new_tag_embedding()
             .tag("rust".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build(),
         a_new_tag_embedding()
             .tag("python".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(1))
             .build(),
     ];
@@ -52,7 +57,7 @@ async fn test_batch_upsert_inserts_new_embeddings() {
         .expect("batch_upsert");
 
     let results = repo
-        .similarity_search(&mut txn, &make_test_embedding(0), "test-model", 0.99, 1)
+        .similarity_search(&mut txn, &make_test_embedding(0), profile, DIM, 0.99, 1)
         .await
         .expect("similarity_search");
 
@@ -78,11 +83,13 @@ async fn test_batch_upsert_on_conflict_is_idempotent() {
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
 
     repo.batch_upsert(
         &mut txn,
         &[a_new_tag_embedding()
             .tag("rust".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build()],
     )
@@ -95,6 +102,7 @@ async fn test_batch_upsert_on_conflict_is_idempotent() {
         &mut txn,
         &[a_new_tag_embedding()
             .tag("rust".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(5))
             .build()],
     )
@@ -103,7 +111,7 @@ async fn test_batch_upsert_on_conflict_is_idempotent() {
 
     // The original embedding (index 0) should still be stored.
     let results = repo
-        .similarity_search(&mut txn, &make_test_embedding(0), "test-model", 0.99, 1)
+        .similarity_search(&mut txn, &make_test_embedding(0), profile, DIM, 0.99, 1)
         .await
         .expect("similarity_search");
 
@@ -122,11 +130,13 @@ async fn test_similarity_search_returns_match_above_threshold() {
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
 
     repo.batch_upsert(
         &mut txn,
         &[a_new_tag_embedding()
             .tag("rust".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build()],
     )
@@ -134,7 +144,7 @@ async fn test_similarity_search_returns_match_above_threshold() {
     .expect("upsert");
 
     let results = repo
-        .similarity_search(&mut txn, &make_test_embedding(0), "test-model", 0.9, 5)
+        .similarity_search(&mut txn, &make_test_embedding(0), profile, DIM, 0.9, 5)
         .await
         .expect("similarity_search");
 
@@ -154,11 +164,13 @@ async fn test_similarity_search_excludes_below_threshold() {
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
 
     repo.batch_upsert(
         &mut txn,
         &[a_new_tag_embedding()
             .tag("rust".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build()],
     )
@@ -167,7 +179,7 @@ async fn test_similarity_search_excludes_below_threshold() {
 
     // Orthogonal vector — cosine similarity = 0.0.
     let results = repo
-        .similarity_search(&mut txn, &make_test_embedding(1), "test-model", 0.5, 5)
+        .similarity_search(&mut txn, &make_test_embedding(1), profile, DIM, 0.5, 5)
         .await
         .expect("similarity_search");
 
@@ -185,6 +197,7 @@ async fn test_similarity_search_orders_by_similarity_then_usage_then_tag() {
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["alpha", "beta"]).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
 
     // Give "beta" a higher usage_count so tie-breaking is testable.
     tag_repo
@@ -196,10 +209,12 @@ async fn test_similarity_search_orders_by_similarity_then_usage_then_tag() {
     let embeddings = vec![
         a_new_tag_embedding()
             .tag("alpha".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build(),
         a_new_tag_embedding()
             .tag("beta".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build(),
     ];
@@ -208,7 +223,7 @@ async fn test_similarity_search_orders_by_similarity_then_usage_then_tag() {
         .expect("upsert");
 
     let results = repo
-        .similarity_search(&mut txn, &make_test_embedding(0), "test-model", 0.9, 5)
+        .similarity_search(&mut txn, &make_test_embedding(0), profile, DIM, 0.9, 5)
         .await
         .expect("similarity_search");
 
@@ -219,27 +234,29 @@ async fn test_similarity_search_orders_by_similarity_then_usage_then_tag() {
 }
 
 #[tokio::test]
-async fn test_similarity_search_filters_by_model() {
+async fn test_similarity_search_filters_by_profile() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
+    let profile_a = create_complete_profile(&mut txn, "model-a", DIM).await;
+    let profile_b = create_complete_profile(&mut txn, "model-b", DIM).await;
 
     repo.batch_upsert(
         &mut txn,
         &[a_new_tag_embedding()
             .tag("rust".to_owned())
-            .model("model-a".to_owned())
+            .embedding_profile_id(profile_a)
             .embedding(make_test_embedding(0))
             .build()],
     )
     .await
     .expect("upsert");
 
-    // Query with a different model — should find nothing.
+    // Query a different profile — should find nothing.
     let results = repo
-        .similarity_search(&mut txn, &make_test_embedding(0), "model-b", 0.5, 5)
+        .similarity_search(&mut txn, &make_test_embedding(0), profile_b, DIM, 0.5, 5)
         .await
         .expect("similarity_search");
 
@@ -253,18 +270,22 @@ async fn test_similarity_search_respects_limit() {
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["alpha", "beta", "gamma"]).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
 
     let embeddings = vec![
         a_new_tag_embedding()
             .tag("alpha".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build(),
         a_new_tag_embedding()
             .tag("beta".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build(),
         a_new_tag_embedding()
             .tag("gamma".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build(),
     ];
@@ -273,7 +294,7 @@ async fn test_similarity_search_respects_limit() {
         .expect("upsert");
 
     let results = repo
-        .similarity_search(&mut txn, &make_test_embedding(0), "test-model", 0.5, 1)
+        .similarity_search(&mut txn, &make_test_embedding(0), profile, DIM, 0.5, 1)
         .await
         .expect("similarity_search");
 
@@ -291,12 +312,14 @@ async fn test_find_tags_missing_embeddings_returns_unembedded() {
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["alpha", "beta", "gamma"]).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
 
     // Embed only "beta".
     repo.batch_upsert(
         &mut txn,
         &[a_new_tag_embedding()
             .tag("beta".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build()],
     )
@@ -304,7 +327,7 @@ async fn test_find_tags_missing_embeddings_returns_unembedded() {
     .expect("upsert");
 
     let missing = repo
-        .find_tags_missing_embeddings(&mut txn, "test-model")
+        .find_tags_missing_embeddings(&mut txn, profile)
         .await
         .expect("find_tags_missing_embeddings");
 
@@ -312,28 +335,30 @@ async fn test_find_tags_missing_embeddings_returns_unembedded() {
 }
 
 #[tokio::test]
-async fn test_find_tags_missing_embeddings_filters_by_model() {
+async fn test_find_tags_missing_embeddings_filters_by_profile() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust"]).await;
+    let profile_a = create_complete_profile(&mut txn, "model-a", DIM).await;
+    let profile_b = create_complete_profile(&mut txn, "model-b", DIM).await;
 
-    // Embed for model-a only.
+    // Embed for profile_a only.
     repo.batch_upsert(
         &mut txn,
         &[a_new_tag_embedding()
             .tag("rust".to_owned())
-            .model("model-a".to_owned())
+            .embedding_profile_id(profile_a)
             .embedding(make_test_embedding(0))
             .build()],
     )
     .await
     .expect("upsert");
 
-    // Query for model-b — "rust" should show as missing.
+    // Query for profile_b — "rust" should show as missing.
     let missing = repo
-        .find_tags_missing_embeddings(&mut txn, "model-b")
+        .find_tags_missing_embeddings(&mut txn, profile_b)
         .await
         .expect("find_tags_missing_embeddings");
 
@@ -347,14 +372,17 @@ async fn test_find_tags_missing_embeddings_returns_empty_when_all_embedded() {
     let repo = PgTagEmbeddingRepository;
 
     seed_tags(&mut txn, &["rust", "python"]).await;
+    let profile = create_complete_profile(&mut txn, "test-model", DIM).await;
 
     let embeddings = vec![
         a_new_tag_embedding()
             .tag("rust".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(0))
             .build(),
         a_new_tag_embedding()
             .tag("python".to_owned())
+            .embedding_profile_id(profile)
             .embedding(make_test_embedding(1))
             .build(),
     ];
@@ -363,7 +391,7 @@ async fn test_find_tags_missing_embeddings_returns_empty_when_all_embedded() {
         .expect("upsert");
 
     let missing = repo
-        .find_tags_missing_embeddings(&mut txn, "test-model")
+        .find_tags_missing_embeddings(&mut txn, profile)
         .await
         .expect("find_tags_missing_embeddings");
 

@@ -4,7 +4,6 @@ use std::collections::HashSet;
 
 use chrono::Utc;
 use tracing::Instrument;
-use tribal_common::clamp_to_u32;
 use tribal_db::{
     EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
     JobStatusTransition, KnowledgeItemRepository, NewEmbedding, NewExtractionResult,
@@ -25,7 +24,9 @@ use super::Worker;
 use crate::{
     common::{EXPECT_BATCH_INDEX, EXPECT_CLAIMED_AT},
     error::{STAGE_EXTRACTION, STAGE_RELATION, STAGE_TRIAGE, StageError},
-    stages::{RelationCommitDecision, StageCommit, TriageCommitDecision},
+    stages::{
+        RelationCommitDecision, StageCommit, TriageCommitDecision, load_active_embedding_profile,
+    },
     tag_resolution::NewTagWithEmbedding,
 };
 
@@ -614,6 +615,10 @@ async fn commit_novel(
     new_tags: &[NewTagWithEmbedding],
     resolved_tags: &[String],
 ) -> Result<&'static str, StageError> {
+    // Resolve the active profile inside the commit transaction's snapshot; both
+    // the item and the novel-tag embeddings are written against it.
+    let profile_id = load_active_embedding_profile(txn, STAGE_TRIAGE).await?.id();
+
     // FK ordering: tag_registry inserts before tag_embeddings inserts.
     if !new_tags.is_empty() {
         let tag_names: Vec<String> = new_tags.iter().map(|t| t.tag.clone()).collect();
@@ -627,8 +632,8 @@ async fn commit_novel(
             .map(|t| {
                 NewTagEmbedding::builder()
                     .tag(t.tag.clone())
+                    .embedding_profile_id(profile_id)
                     .model(embedding_model.clone())
-                    .dimensions(t.dimensions)
                     .embedding(t.embedding.clone())
                     .build()
             })
@@ -659,8 +664,8 @@ async fn commit_novel(
 
     let new_embedding = NewEmbedding::builder()
         .knowledge_item_id(ki_id)
+        .embedding_profile_id(profile_id)
         .model(embedding_model)
-        .dimensions(clamp_to_u32(embedding_vector.len()))
         .embedding(embedding_vector)
         .build();
 

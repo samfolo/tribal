@@ -8,6 +8,8 @@
 mod auth_token;
 mod common;
 mod embedding;
+mod embedding_index;
+mod embedding_profile;
 mod extraction_result;
 mod item_observation;
 mod job;
@@ -33,6 +35,12 @@ mod triage_similar_item_decision;
 pub use auth_token::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 pub use common::cursor::encode_cursor;
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
+pub use embedding_index::{
+    EmbeddingIndexRepository, EmbeddingTable, IndexState, PgEmbeddingIndexRepository,
+};
+pub use embedding_profile::{
+    EmbeddingProfileRepository, NewEmbeddingProfile, PgEmbeddingProfileRepository,
+};
 pub use extraction_result::{
     ExtractionResultRepository, NewExtractionResult, PgExtractionResultRepository,
 };

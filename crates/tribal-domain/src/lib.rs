@@ -50,6 +50,7 @@ mod bearer_token;
 mod candidate;
 mod discovery;
 mod embedding;
+mod embedding_profile;
 mod embedding_purpose;
 mod error_code;
 mod extraction_result;
@@ -92,16 +93,19 @@ pub use bearer_token::{BearerToken, BearerTokenParseError};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use embedding::{Embedding, EmbeddingBuilder};
+pub use embedding_profile::{
+    DistanceMetric, EmbeddingProfile, EmbeddingProfileBuilder, EmbeddingProfileState,
+};
 pub use embedding_purpose::EmbeddingPurpose;
 pub use error_code::McpErrorCode;
 pub use extraction_result::{ExtractionResult, ExtractionResultBuilder};
 pub use feedback_rating::FeedbackRating;
 pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
-    AuthTokenId, EmbeddingId, EpisodeId, ExtractionResultId, IdParseError, ItemObservationId,
-    JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId,
-    RelationId, RetrievalFeedbackId, SessionId, SystemFingerprintId, TaskId, TokenUsageId,
-    TriageResultId, TriageSimilarItemDecisionId,
+    AuthTokenId, EmbeddingId, EmbeddingProfileId, EpisodeId, ExtractionResultId, IdParseError,
+    ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
+    ReferenceId, RelationBatchId, RelationId, RetrievalFeedbackId, SessionId, SystemFingerprintId,
+    TaskId, TokenUsageId, TriageResultId, TriageSimilarItemDecisionId,
 };
 pub use inference_parameters::{
     EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
