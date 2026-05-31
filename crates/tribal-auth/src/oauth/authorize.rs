@@ -25,7 +25,7 @@ use tribal_domain::{LOCAL_PRINCIPAL_KEY, OauthAuthorizationCode, OauthClient};
 use url::Url;
 
 use crate::oauth::{
-    common::RESPONSE_TYPE_CODE,
+    common::{RESPONSE_TYPE_CODE, is_loopback_host},
     config::{OAuthRuntimeConfig, canonicalise_resource_url},
     consent::build_consent_html,
     error::{
@@ -34,7 +34,7 @@ use crate::oauth::{
     },
     pkce::CodeChallenge,
     redirect::matches_redirect_uri,
-    scope::{DEFAULT_GRANT_SCOPE, first_uncatalogued_scope, scope_exceeding_registration},
+    scope::{effective_scope, first_uncatalogued_scope, scope_exceeding_registration},
 };
 
 // ---------------------------------------------------------------------------
@@ -418,23 +418,31 @@ async fn issue_code(
             }
         })?;
 
-    // Resolve the effective grant once, here, so the consent page shows
-    // exactly what /token will mint and the stored code carries the same
-    // value: the requested scope, else the client's registered scope, else
-    // the default grant. Deriving it in one place keeps the displayed scope
-    // and the stored scope from drifting apart.
-    let effective_scope = query
-        .scope
-        .clone()
-        .or_else(|| resolved.registered_scope.clone())
-        .unwrap_or_else(|| DEFAULT_GRANT_SCOPE.to_owned());
+    // Resolve the effective grant through the shared resolver so the consent
+    // page, the stored code, and the token minted at /token all carry the same
+    // scope. Empty and whitespace-only requested or registered scopes resolve
+    // to the default there, so a blank scope cannot display as nothing while a
+    // token still mints.
+    let granted_scope =
+        effective_scope(query.scope.as_deref(), resolved.registered_scope.as_deref());
+
+    // Build the consent page before persisting the code, so a render failure
+    // leaves no orphaned, never-presented authorisation code behind.
+    let response = consent_page_response(
+        &resolved.redirect_uri,
+        &raw_code,
+        query.state.as_deref(),
+        &query.client_id,
+        resolved.client_name.as_deref(),
+        &granted_scope,
+    )?;
 
     let new = NewOauthAuthorizationCode::builder()
         .code_hash(code_hash)
         .client_id(query.client_id.clone())
         .redirect_uri(resolved.redirect_uri.as_str().to_owned())
         .code_challenge(challenge.as_str().to_owned())
-        .scope(Some(effective_scope.clone()))
+        .scope(Some(granted_scope))
         .resource(Some(canonical))
         .principal_id(principal_id)
         .expires_at(expires_at)
@@ -457,14 +465,7 @@ async fn issue_code(
             source: Some(Box::new(err)),
         })?;
 
-    consent_page_response(
-        &resolved.redirect_uri,
-        &raw_code,
-        query.state.as_deref(),
-        &query.client_id,
-        resolved.client_name.as_deref(),
-        &effective_scope,
-    )
+    Ok(response)
 }
 
 fn consent_page_response(
@@ -484,12 +485,27 @@ fn consent_page_response(
         }
     }
     let target = url.as_str().to_owned();
-    let host = redirect_uri.host_str().unwrap_or("");
-    let body = build_consent_html(&target, host, client_id, client_name, scope).map_err(|err| {
-        OAuthError::Internal {
-            operation: InternalOperation::RenderConsentPage,
-            source: Some(Box::new(err)),
-        }
+    // Display the full authority the code is delivered to, including a
+    // non-default port: the port is part of where the code goes, and for a
+    // loopback redirect it identifies which local process can receive it.
+    // Classify loopback from the bare host, not the host:port shown.
+    let bare_host = redirect_uri.host_str().unwrap_or("");
+    let authority = match redirect_uri.port() {
+        Some(port) => format!("{bare_host}:{port}"),
+        None => bare_host.to_owned(),
+    };
+    let is_loopback = is_loopback_host(bare_host);
+    let body = build_consent_html(
+        &target,
+        &authority,
+        client_id,
+        client_name,
+        scope,
+        is_loopback,
+    )
+    .map_err(|err| OAuthError::Internal {
+        operation: InternalOperation::RenderConsentPage,
+        source: Some(Box::new(err)),
     })?;
     let mut headers = HeaderMap::new();
     headers.insert(

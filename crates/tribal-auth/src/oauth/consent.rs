@@ -34,8 +34,6 @@
 
 use askama::Template;
 
-use crate::oauth::common::is_loopback_host;
-
 /// Consent page model. The template HTML-escapes every interpolated
 /// value, and the markup carries no script, so a hostile `client_id`,
 /// `client_name`, `scope`, or redirect host cannot break out of its text
@@ -54,12 +52,13 @@ struct ConsentPage<'a> {
 /// Builds the consent page HTML.
 ///
 /// `target` is the full redirect URL (with the code and state) the
-/// approve anchor points at; `redirect_host` is the redirect URI host
-/// displayed to the user and checked against the loopback list;
-/// `client_name` is the client's registered display name, shown in place
-/// of the opaque `client_id` when present; `scope` is the effective grant
-/// the code carries, resolved by the caller. All interpolated values are
-/// HTML-escaped.
+/// approve anchor points at; `redirect_host` is the redirect authority
+/// (host, with its port when non-default) displayed to the user;
+/// `is_loopback` selects the loopback warning and is classified by the
+/// caller from the bare host; `client_name` is the client's registered
+/// display name, shown in place of the opaque `client_id` when present;
+/// `scope` is the effective grant the code carries, resolved by the
+/// caller. All interpolated values are HTML-escaped.
 ///
 /// # Errors
 ///
@@ -70,6 +69,7 @@ pub fn build_consent_html(
     client_id: &str,
     client_name: Option<&str>,
     scope: &str,
+    is_loopback: bool,
 ) -> Result<String, askama::Error> {
     ConsentPage {
         target,
@@ -77,7 +77,7 @@ pub fn build_consent_html(
         client_id,
         client_name,
         scope_display: scope,
-        is_loopback: is_loopback_host(redirect_host),
+        is_loopback,
     }
     .render()
 }
@@ -96,6 +96,7 @@ mod tests {
             "<script>alert(1)</script>",
             Some("<b>spoofed name</b>"),
             "\"><img src=x onerror=alert(1)>",
+            true,
         )
         .expect("template renders");
 
@@ -119,6 +120,7 @@ mod tests {
             "cid",
             None,
             "tribal:read",
+            true,
         )
         .expect("template renders");
         assert!(loopback.contains("Loopback redirect"));
@@ -129,6 +131,7 @@ mod tests {
             "cid",
             None,
             "tribal:read",
+            false,
         )
         .expect("template renders");
         assert!(!remote.contains("Loopback redirect"));
@@ -144,6 +147,7 @@ mod tests {
             "cid",
             None,
             "tribal:read",
+            true,
         )
         .expect("template renders");
         assert!(
@@ -182,6 +186,7 @@ mod tests {
             "cid",
             None,
             "tribal:read",
+            false,
         )
         .expect("template renders");
         assert!(!html.contains("<link"), "no external stylesheet");
@@ -209,6 +214,7 @@ mod tests {
             "tribal-cli-7f3a9c2e",
             Some("Tribal CLI"),
             "tribal.memory:read tribal.memory:write",
+            false,
         )
         .expect("template renders");
         assert_text_snapshot!(&html, "src/oauth/snapshots/consent-remote.html");
@@ -218,10 +224,11 @@ mod tests {
     fn test_consent_html_loopback_snapshot() {
         let html = build_consent_html(
             "http://127.0.0.1:53017/callback?code=abc123&state=xyz",
-            "127.0.0.1",
+            "127.0.0.1:53017",
             "s6BhdRkqt3",
             None,
             "tribal.memory:read",
+            true,
         )
         .expect("template renders");
         assert_text_snapshot!(&html, "src/oauth/snapshots/consent-loopback.html");

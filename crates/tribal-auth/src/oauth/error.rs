@@ -256,6 +256,12 @@ pub enum ClientMetadataRejection {
         /// The scope token the client declared.
         presented: String,
     },
+    /// `client_name` is unacceptable for display on the consent page.
+    #[error("client_name is not acceptable: {detail}")]
+    InvalidClientName {
+        /// Why the name was rejected.
+        detail: String,
+    },
     /// The registration body could not be parsed as client metadata.
     #[error("client metadata is malformed: {detail}")]
     MalformedMetadata {
