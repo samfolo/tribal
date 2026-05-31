@@ -7,13 +7,14 @@ pub(super) use tokio_util::sync::CancellationToken;
 pub(super) use tribal_common::JobStateTxs;
 pub(super) use tribal_config::WorkerConfig;
 pub(super) use tribal_db::{
-    ExtractionResultRepository, ItemObservationRepository, JobRepository, JobStatusTransition,
-    KnowledgeItemRepository, NewTagEmbedding, PgExtractionResultRepository,
-    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository,
+    EmbeddingProfileRepository, ExtractionResultRepository, ItemObservationRepository,
+    JobRepository, JobStatusTransition, KnowledgeItemRepository, NewReindexRun, NewTagEmbedding,
+    PgEmbeddingProfileRepository, PgExtractionResultRepository, PgItemObservationRepository,
+    PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository, PgReindexRunRepository,
     PgRelationRepository, PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository,
-    PgTokenUsageRepository, PgTriageResultRepository, ReferenceRepository, RelationRepository,
-    TagEmbeddingRepository, TagRegistryRepository, TaskRepository, TokenUsageRepository,
-    TriageResultRepository,
+    PgTokenUsageRepository, PgTriageResultRepository, ReferenceRepository, ReindexRunRepository,
+    RelationRepository, TagEmbeddingRepository, TagRegistryRepository, TaskRepository,
+    TokenUsageRepository, TriageResultRepository,
 };
 pub(super) use tribal_domain::{
     EmbeddingPurpose, JobOutcome, JobStatus, KnowledgeKind, PipelineStage, PrincipalId, ProjectId,
@@ -27,10 +28,11 @@ pub(super) use tribal_inference::{
 pub(super) use tribal_telemetry::noop_recorder;
 pub(super) use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
-    TestContext, a_candidate, a_completion_response, a_new_extraction_result, a_new_job,
-    a_new_knowledge_item, a_new_prompt_version, a_new_system_fingerprint, a_new_task,
-    a_new_triage_result_created, a_new_triage_result_duplicate, a_relation_hint,
-    active_embedding_profile, an_embedding_response, backdate_task_heartbeat, candidates_json,
+    TestContext, a_candidate, a_completion_response, a_new_embedding_profile,
+    a_new_extraction_result, a_new_job, a_new_knowledge_item, a_new_prompt_version,
+    a_new_system_fingerprint, a_new_task, a_new_triage_result_created,
+    a_new_triage_result_duplicate, a_relation_hint, active_embedding_profile,
+    an_embedding_response, backdate_task_heartbeat, candidates_json,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,

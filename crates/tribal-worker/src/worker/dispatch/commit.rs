@@ -5,15 +5,16 @@ use std::collections::HashSet;
 use chrono::Utc;
 use tracing::Instrument;
 use tribal_db::{
-    EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
-    JobStatusTransition, KnowledgeItemRepository, NewEmbedding, NewExtractionResult,
-    NewKnowledgeItemRelation, NewReference, NewTagEmbedding, NewTask, NewTriageResult,
-    PgEmbeddingRepository, PgExtractionResultRepository, PgItemObservationRepository,
-    PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository, PgRelationRepository,
+    AdvisoryLockRepository, EmbeddingRepository, ExtractionResultRepository,
+    ItemObservationRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,
+    NewEmbedding, NewExtractionResult, NewKnowledgeItemRelation, NewReference, NewTagEmbedding,
+    NewTask, NewTriageResult, PgAdvisoryLockRepository, PgEmbeddingRepository,
+    PgExtractionResultRepository, PgItemObservationRepository, PgJobRepository,
+    PgKnowledgeItemRepository, PgReferenceRepository, PgReindexRunRepository, PgRelationRepository,
     PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository, PgTriageResultRepository,
-    PgTriageSimilarItemDecisionRepository, ReferenceRepository, RelationRepository,
-    TagEmbeddingRepository, TagRegistryRepository, TaskRepository, TriageResultRepository,
-    TriageSimilarItemDecisionRepository,
+    PgTriageSimilarItemDecisionRepository, ReferenceRepository, ReindexRunRepository,
+    RelationRepository, TagEmbeddingRepository, TagRegistryRepository, TaskRepository,
+    TriageResultRepository, TriageSimilarItemDecisionRepository, advisory_locks,
 };
 use tribal_domain::{
     Job, JobId, JobOutcome, JobState, JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId,
@@ -615,6 +616,24 @@ async fn commit_novel(
     new_tags: &[NewTagWithEmbedding],
     resolved_tags: &[String],
 ) -> Result<&'static str, StageError> {
+    // While a reindex is live, hold the shared cutover lock for this commit so
+    // the cutover's exclusive acquisition (§6 step 8) drains this in-flight
+    // write before it runs the final set-difference and flips the active
+    // profile. Taken before the item insert so a drained commit's item is
+    // visible to that final sweep. When no reindex is live, the ingest path is
+    // unchanged: no lock, one active-profile embedding.
+    if PgReindexRunRepository
+        .find_live(txn)
+        .await
+        .map_err(|e| stage_db_error(STAGE_TRIAGE, "checking for a live reindex", e))?
+        .is_some()
+    {
+        PgAdvisoryLockRepository
+            .acquire_shared_xact(txn, advisory_locks::CUTOVER)
+            .await
+            .map_err(|e| stage_db_error(STAGE_TRIAGE, "holding the shared cutover lock", e))?;
+    }
+
     // Resolve the active profile inside the commit transaction's snapshot; both
     // the item and the novel-tag embeddings are written against it.
     let profile_id = load_active_embedding_profile(txn, STAGE_TRIAGE).await?.id();

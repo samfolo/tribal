@@ -141,6 +141,126 @@ async fn test_triage_novel_path() {
     teardown(ctx).await;
 }
 
+/// Verifies the novel commit path while a reindex is live (§6 step 10): with a
+/// queued reindex run present, the commit takes the shared cutover lock yet
+/// still completes, writing its embedding against the active profile rather than
+/// the building target. The drain the lock enables is exercised by the §6
+/// cutover race tests; here the contract is that an uncontended live reindex
+/// leaves the ingest path's outcome unchanged.
+#[tokio::test]
+async fn test_triage_novel_commits_with_a_live_reindex() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "triage-novel-reindex").await;
+
+    // Stand up a building profile and a queued reindex run so the commit path
+    // sees a live reindex and takes the shared cutover lock. The building
+    // profile is a higher epoch but not yet complete, so the active profile is
+    // still the genesis the embedding is written against.
+    {
+        let mut conn = raw_conn(ctx).await;
+        let building = PgEmbeddingProfileRepository
+            .insert(&mut conn, &a_new_embedding_profile().build())
+            .await
+            .expect("insert building profile");
+        PgReindexRunRepository
+            .insert(
+                &mut conn,
+                &NewReindexRun::builder()
+                    .target_profile_id(building.id())
+                    .epoch(building.epoch())
+                    .initiated_by_principal_id(principal_id)
+                    .build(),
+            )
+            .await
+            .expect("insert reindex run");
+    }
+
+    let candidates = vec![
+        a_candidate()
+            .content("Rust has zero-cost abstractions".to_owned())
+            .suggested_tags(vec!["rust".to_owned()])
+            .build(),
+    ];
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
+    };
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    );
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(
+        task.status(),
+        TaskStatus::Completed,
+        "novel commit completes while a reindex is live",
+    );
+
+    let mut conn = raw_conn(ctx).await;
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+    let TriageOutcome::Created { item_id } = triage_result.outcome() else {
+        panic!(
+            "expected Created outcome, got {:?}",
+            triage_result.outcome()
+        );
+    };
+
+    // The embedding is written against the active profile, never the building
+    // target (which carries no rows until the catch-up sweep fills it).
+    let emb = find_active_embedding(&mut conn, *item_id)
+        .await
+        .expect("find embedding");
+    assert!(
+        emb.is_some(),
+        "embedding is written against the active profile",
+    );
+
+    teardown(ctx).await;
+}
+
 /// Verifies the duplicate path: the triage stage classifies a candidate
 /// as a duplicate of an existing knowledge item, creates an observation,
 /// and records a Duplicate triage result.
