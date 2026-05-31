@@ -22,7 +22,7 @@ use crate::error::StageError;
 /// out post-hoc or constrained only via prompt instructions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-#[schemars(description = "How the source item relates to the target item.")]
+#[schemars(description = "How the source claim relates to the target claim.")]
 pub(crate) enum IngestionRelationKind {
     /// Source provides evidence for, reinforces, or adds supporting
     /// context to target.
@@ -65,26 +65,26 @@ impl fmt::Display for IngestionRelationKind {
 #[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
 #[schemars(
     description = "The relationship edges to create. Empty when no genuine relationship \
-    holds between the items."
+    holds between the claims."
 )]
 pub(crate) struct RelationOutput {
     /// The complete set of relations to create for this job.
     #[schemars(
-        description = "Directed edges, each connecting a source item to a target item. \
-        Only edges grounded in the content of both items."
+        description = "Directed edges, each connecting a source claim to a target claim. \
+        Only edges grounded in the content of both claims."
     )]
     pub relations: Vec<RelationEdge>,
 }
 
 /// A single directed relationship edge to create.
 #[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
-#[schemars(description = "A directed relationship between two knowledge items.")]
+#[schemars(description = "A directed relationship between two claims.")]
 pub(crate) struct RelationEdge {
-    /// The source item (the item asserting the relationship).
-    #[schemars(description = "The item asserting the relationship.")]
+    /// The source claim (the claim asserting the relationship).
+    #[schemars(description = "The claim asserting the relationship.")]
     pub source: RelationTarget,
-    /// The target item.
-    #[schemars(description = "The item the relationship is asserted about.")]
+    /// The target claim.
+    #[schemars(description = "The claim the relationship is asserted about.")]
     pub target: RelationTarget,
     /// The relationship type.
     #[schemars(description = "How the source relates to the target.")]
@@ -92,7 +92,7 @@ pub(crate) struct RelationEdge {
     /// The agent's reasoning for this relationship.
     #[serde(default)]
     #[schemars(
-        description = "Why this relationship holds, grounded in the content of both items."
+        description = "Why this relationship holds, grounded in the content of both claims."
     )]
     pub justification: Option<String>,
 }
@@ -116,7 +116,7 @@ pub(crate) enum RelationTarget {
     /// Wire format: `{"kind": "context_index", "context_index": 2}`
     #[serde(rename = "context_index")]
     #[schemars(description = "An item from the prompt context, referenced by its \
-        zero-based index in the numbered item list.")]
+        zero-based index in the numbered item list. The index must be one of those shown in the prompt.")]
     ContextIndex { context_index: u32 },
 }
 

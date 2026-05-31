@@ -14,15 +14,15 @@ use crate::error::StageError;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[schemars(
     description = "The triage classification for a single candidate. Contains the \
-    novel/duplicate decision and independent per-item relationship assessments."
+    novel/duplicate decision and independent per-claim relationship assessments."
 )]
 pub(crate) struct TriageClassification {
     /// Whether the candidate is novel or a duplicate.
-    #[schemars(description = "Whether the candidate is novel or duplicates an existing item.")]
+    #[schemars(description = "Whether the candidate is novel or duplicates an existing claim.")]
     pub outcome: TriageDecision,
     /// Per-similar-item decisions with justifications.
     #[schemars(
-        description = "One assessment per provided similar item, each made independently \
+        description = "One assessment per provided similar claim, each made independently \
         of the novel/duplicate outcome."
     )]
     pub similar_item_decisions: Vec<SimilarItemClassification>,
@@ -35,8 +35,8 @@ impl TriageClassification {
         self.reconcile_contradiction_as_duplicate();
     }
 
-    /// A candidate that contradicts any existing item cannot be a
-    /// duplicate — the knowledge base needs both perspectives.
+    /// A candidate that contradicts any existing claim cannot be a
+    /// duplicate; the knowledge base needs both perspectives.
     fn reconcile_contradiction_as_duplicate(&mut self) {
         if !matches!(self.outcome, TriageDecision::Duplicate { .. }) {
             return;
@@ -82,7 +82,7 @@ pub(crate) enum TriageItemReference {
     #[serde(rename = "context_index")]
     #[schemars(
         description = "A similar item, referenced by its zero-based index in the \
-        numbered similar-items list shown in the prompt."
+        numbered similar-items list shown in the prompt; the index must be one of those shown."
     )]
     ContextIndex { context_index: u32 },
 }
@@ -94,49 +94,51 @@ pub(crate) enum TriageItemReference {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "decision")]
 #[schemars(
-    description = "Whether the candidate records new knowledge or duplicates an existing item."
+    description = "Whether the candidate records new knowledge or duplicates an existing claim."
 )]
 pub(crate) enum TriageDecision {
-    /// The candidate is novel — a new knowledge item should be created.
+    /// The candidate is novel; a new claim should be created.
     #[serde(rename = "created")]
     #[schemars(
         description = "The candidate records knowledge not already captured by an \
-        existing item. Default to this when the candidate adds any new context, or when \
+        existing claim. Default to this when the candidate adds any new context, or when \
         uncertain."
     )]
     Novel,
-    /// The candidate duplicates an existing item.
+    /// The candidate duplicates an existing claim.
     #[serde(rename = "duplicate")]
     #[schemars(
-        description = "The candidate restates an existing item, adding no meaningful new \
-        information. A candidate that contradicts an existing item is never a duplicate."
+        description = "The candidate restates an existing claim, adding no meaningful new \
+        information. A candidate that contradicts an existing claim is never a duplicate."
     )]
     Duplicate {
-        /// The similar item the candidate duplicates, referenced by index.
+        /// The similar claim the candidate duplicates, referenced by index.
         #[schemars(
-            description = "The existing item this candidate duplicates, referenced by its \
+            description = "The existing claim this candidate duplicates, referenced by its \
             context index."
         )]
         matched_item: TriageItemReference,
     },
 }
 
-/// The triage agent's decision about a single similar item.
+/// The triage agent's decision about a single similar claim.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[schemars(
-    description = "An independent assessment of one existing item's relationship to \
+    description = "An independent assessment of one existing claim's relationship to \
     the candidate."
 )]
 pub(crate) struct SimilarItemClassification {
-    /// The similar item that was compared against, referenced by index.
-    #[schemars(description = "The existing item being assessed, referenced by its context index.")]
+    /// The similar claim that was compared against, referenced by index.
+    #[schemars(
+        description = "The existing claim being assessed, referenced by its context index."
+    )]
     pub item: TriageItemReference,
     /// The agent's suggested relation classification.
-    #[schemars(description = "How the candidate relates to the existing item.")]
+    #[schemars(description = "How the candidate relates to the existing claim.")]
     pub suggested_relation: RelationSuggestion,
     /// The agent's reasoning for the classification.
     #[schemars(
-        description = "Why this assessment was chosen, grounded in the content of both items."
+        description = "Why this assessment was chosen, grounded in the content of both claims."
     )]
     pub justification: String,
 }
