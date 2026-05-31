@@ -11,8 +11,8 @@ use tribal_db::{
     TagEmbeddingRepository,
 };
 use tribal_domain::{
-    DistanceMetric, EndpointUrlError, McpErrorCode, PrincipalId, ProviderKind, ReindexRunId,
-    ReindexRunState, normalise_endpoint_url, span_attrs,
+    DistanceMetric, EmbeddingProfileId, EndpointUrlError, McpErrorCode, PrincipalId, ProviderKind,
+    ReindexRunId, ReindexRunState, normalise_endpoint_url, span_attrs,
 };
 use tribal_inference::{DimensionResolutionError, InferenceError, resolve_dimensions};
 use tribal_worker::{
@@ -159,6 +159,8 @@ impl TribalServerHandler {
         let normalised_base_url = normalise_endpoint_url(&base_url)?;
         let dimensions = resolve_dimensions(provider_kind, &request.model, request.dimensions)?;
 
+        // Building the provider validates the credential fail-closed without a
+        // network call; the probe (drift signal) is deferred to the real run.
         let (provider, _semaphore) = build_provider_for_identity(
             &self.state.provider_registry,
             &self.state.credentials,
@@ -168,39 +170,47 @@ impl TribalServerHandler {
             dimensions,
         )
         .map_err(ReindexError::Provider)?;
-        let target = resolve_reindex_target(
-            provider.as_ref(),
-            provider_kind,
-            normalised_base_url.clone(),
-            request.model.clone(),
-            dimensions,
-            DistanceMetric::Cosine,
-        )
-        .await
-        .map_err(ReindexError::Probe)?;
 
-        let mut tx = self.state.pool_worker.begin().await.map_err(|e| {
-            ReindexError::Db(DbError::QueryFailed {
-                context: "beginning the reindex transaction".to_owned(),
-                source: e,
-            })
-        })?;
-        let outcome = create_reindex_run(&mut tx, &target, principal_id).await?;
-        tx.commit().await.map_err(|e| {
-            ReindexError::Db(DbError::QueryFailed {
-                context: "committing the reindex".to_owned(),
-                source: e,
-            })
-        })?;
+        let (estimated_items, estimated_tags) = self.estimate_corpus().await?;
 
-        let (outcome_label, run_id) = match outcome {
-            ReindexCreationOutcome::Created(run) => ("created", Some(run.id().to_string())),
-            ReindexCreationOutcome::Unchanged(_) => ("unchanged", None),
-            ReindexCreationOutcome::AlreadyLive(run) => {
-                ("already_live", Some(run.id().to_string()))
+        let (outcome_label, run_id) = if request.dry_run {
+            ("plan", None)
+        } else {
+            let target = resolve_reindex_target(
+                provider.as_ref(),
+                provider_kind,
+                normalised_base_url.clone(),
+                request.model.clone(),
+                dimensions,
+                DistanceMetric::Cosine,
+            )
+            .await
+            .map_err(ReindexError::Probe)?;
+
+            let mut tx = self.state.pool_worker.begin().await.map_err(|e| {
+                ReindexError::Db(DbError::QueryFailed {
+                    context: "beginning the reindex transaction".to_owned(),
+                    source: e,
+                })
+            })?;
+            let outcome = create_reindex_run(&mut tx, &target, principal_id).await?;
+            tx.commit().await.map_err(|e| {
+                ReindexError::Db(DbError::QueryFailed {
+                    context: "committing the reindex".to_owned(),
+                    source: e,
+                })
+            })?;
+
+            match outcome {
+                ReindexCreationOutcome::Created(run) => ("created", Some(run.id().to_string())),
+                ReindexCreationOutcome::Unchanged(_) => ("unchanged", None),
+                ReindexCreationOutcome::AlreadyLive(run) => {
+                    ("already_live", Some(run.id().to_string()))
+                }
+                ReindexCreationOutcome::LockContended => ("lock_contended", None),
             }
-            ReindexCreationOutcome::LockContended => ("lock_contended", None),
         };
+
         Ok(McpReindexResponse {
             outcome: outcome_label.to_owned(),
             run_id,
@@ -208,8 +218,34 @@ impl TribalServerHandler {
             model: request.model,
             dimensions,
             base_url: normalised_base_url,
+            estimated_items,
+            estimated_tags,
         }
         .into_call_tool_result())
+    }
+
+    /// Counts the items and tags a fresh geometry must embed. A profile that
+    /// holds no embeddings yet sees the whole corpus, so a never-used id gives
+    /// the count without standing up the target profile.
+    async fn estimate_corpus(&self) -> Result<(u64, u64), ReindexError> {
+        let mut conn = self.state.pool_mcp.acquire().await.map_err(|e| {
+            ReindexError::Db(DbError::QueryFailed {
+                context: "acquiring a connection for the reindex estimate".to_owned(),
+                source: e,
+            })
+        })?;
+        let probe_id = EmbeddingProfileId::new();
+        let items = PgEmbeddingRepository
+            .count_items_without_embedding(&mut conn, probe_id)
+            .await?;
+        let tags = PgTagEmbeddingRepository
+            .find_tags_missing_embeddings(&mut conn, probe_id)
+            .await?
+            .len();
+        Ok((
+            u64::try_from(items).unwrap_or(0),
+            u64::try_from(tags).unwrap_or(u64::MAX),
+        ))
     }
 
     /// Handles the `tribal_reindex_cancel` tool call: aborts the live reindex
@@ -558,5 +594,35 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect("structured content");
         assert_eq!(structured["code"], "failed_precondition");
+    }
+
+    #[tokio::test]
+    async fn test_apply_reindex_dry_run_estimates_without_creating_a_run() {
+        let ctx = test_context().await;
+        let pool = ctx.create_pool().await.expect("pool");
+        let handler = TestHandler::builder().pool(pool).build();
+
+        // Ollama needs no credential, so a dry run resolves and estimates the
+        // corpus (empty here) without a probe or a run.
+        let result = handler
+            .apply_reindex(
+                serde_json::json!({
+                    "provider": "ollama",
+                    "model": "nomic-embed-text:v1.5",
+                    "dimensions": 768,
+                    "dry_run": true,
+                }),
+                PrincipalId::new(),
+            )
+            .await
+            .expect("no protocol error");
+
+        assert_eq!(result.is_error, Some(false));
+        let structured = result.structured_content.expect("structured content");
+        assert_eq!(structured["outcome"], "plan");
+        assert_eq!(structured["run_id"], serde_json::Value::Null);
+        assert_eq!(structured["dimensions"], 768);
+        assert_eq!(structured["estimated_items"], 0);
+        assert_eq!(structured["estimated_tags"], 0);
     }
 }

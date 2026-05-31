@@ -1318,6 +1318,10 @@
           "description": "The target vector dimension. Resolved from the model when omitted.",
           "type": "integer"
         },
+        "dry_run": {
+          "description": "When true, resolve the target, validate its credential, and return the item and tag counts without creating a run.",
+          "type": "boolean"
+        },
         "model": {
           "description": "The target embedding model.",
           "type": "string"
@@ -1345,13 +1349,22 @@
           "description": "The resolved target dimension.",
           "type": "integer"
         },
+        "estimated_items": {
+          "description": "The number of items the new geometry must embed.",
+          "type": "integer"
+        },
+        "estimated_tags": {
+          "description": "The number of tags the new geometry must embed.",
+          "type": "integer"
+        },
         "model": {
           "description": "The resolved target model.",
           "type": "string"
         },
         "outcome": {
-          "description": "created: a new run was queued. unchanged: the target already matches the active profile. already_live: a run is already in progress. lock_contended: another create holds the single-flight lock; retry.",
+          "description": "plan: a dry run; no run was created. created: a new run was queued. unchanged: the target already matches the active profile. already_live: a run is already in progress. lock_contended: another create holds the single-flight lock; retry.",
           "enum": [
+            "plan",
             "created",
             "unchanged",
             "already_live",
@@ -1377,7 +1390,9 @@
         "provider",
         "model",
         "dimensions",
-        "base_url"
+        "base_url",
+        "estimated_items",
+        "estimated_tags"
       ],
       "type": "object"
     },
