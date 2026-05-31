@@ -931,7 +931,7 @@ pub async fn drive_reindex_cycle(
         };
         process_tasks(conn, &ctx, claimed_by).await?;
         if run_dead_lettered(conn, run.id()).await? {
-            abort_run(
+            fail_run(
                 conn,
                 &run,
                 &building,
@@ -946,7 +946,7 @@ pub async fn drive_reindex_cycle(
         if let Some(current) = PgReindexRunRepository.find_by_id(conn, run.id()).await?
             && quarantine_exceeds_cap(&current)
         {
-            abort_run(
+            fail_run(
                 conn,
                 &run,
                 &building,
@@ -1015,12 +1015,13 @@ async fn embed_pending_tags(
     Ok(transient)
 }
 
-/// Aborts a reindex run: fails the building profile (so it drops out of every
+/// Fails a reindex run: fails the building profile (so it drops out of every
 /// set-difference and the next boot reconcile is a no-op) and moves the run to
-/// `aborted` with the reason. A stuck migration ends cleanly rather than
-/// looping forever; the operator restarts a fresh reindex once the cause is
-/// fixed.
-async fn abort_run(
+/// `failed` with the reason. A run that exhausts retries, exceeds the quarantine
+/// cap, or drifts mid-build ends cleanly rather than looping forever; the
+/// operator restarts a fresh reindex once the cause is fixed. Operator
+/// cancellation is the separate `aborted` path.
+async fn fail_run(
     conn: &mut PgConnection,
     run: &ReindexRun,
     building: &EmbeddingProfile,
@@ -1034,11 +1035,11 @@ async fn abort_run(
             conn,
             run.id(),
             ReindexRunState::Running,
-            ReindexRunState::Aborted,
+            ReindexRunState::Failed,
             Some(reason),
         )
         .await?;
-    tracing::warn!(run_id = %run.id(), reason, "reindex run aborted");
+    tracing::warn!(run_id = %run.id(), reason, "reindex run failed");
     Ok(())
 }
 
@@ -1072,10 +1073,20 @@ async fn run_dead_lettered(conn: &mut PgConnection, run_id: ReindexRunId) -> Res
 }
 
 /// Re-probes the building provider and reports whether its geometry drifted from
-/// the digest captured at build start. A profile with no captured digest cannot
-/// drift. A transient probe failure reports no drift, so a flaky probe does not
-/// abort a sound build; the next cutover re-probes.
+/// the signals captured at build start: a provider-native revision token change
+/// (compared only when the provider exposes one), or a probe-digest change as a
+/// cross-provider backstop. A profile with neither captured signal cannot drift.
+/// A transient probe failure reports no drift, so a flaky probe does not fail a
+/// sound build; the next cutover re-probes.
+///
+/// Both checks are provider network calls, so this must run lock-free, never
+/// while the exclusive cutover lock is held.
 async fn probe_drifted(ctx: &ReindexCtx<'_>) -> bool {
+    let resolved_token = ctx.provider.revision_token().await;
+    if !resolved_token.is_empty() && resolved_token != ctx.building.revision_token() {
+        return true;
+    }
+
     let Some(stored) = ctx.building.probe_digest() else {
         return false;
     };
@@ -1094,16 +1105,37 @@ async fn probe_drifted(ctx: &ReindexCtx<'_>) -> bool {
     }
 }
 
-/// Drains the building set-difference (items and tags) lock-free, then under the
-/// exclusive cutover lock (whose acquisition drains every in-flight ingest
-/// commit holding the shared form) re-probes for drift and, when nothing
-/// remains and the geometry held, flips the building profile to active and
-/// completes the run in one transaction.
+/// Counts the items and tags still missing the building embedding, the
+/// set-difference the cutover drives to zero. Quarantined entities are excluded
+/// by both underlying queries, so a permanently-failing entity does not hold it
+/// above zero.
+async fn count_remaining(
+    conn: &mut PgConnection,
+    building: &EmbeddingProfile,
+) -> Result<i64, DbError> {
+    let items = PgEmbeddingRepository
+        .count_items_without_embedding(conn, building.id())
+        .await?;
+    let tags = PgTagEmbeddingRepository
+        .find_tags_missing_embeddings(conn, building.id())
+        .await?
+        .len();
+    Ok(items + i64::try_from(tags).unwrap_or(i64::MAX))
+}
+
+/// Drains the building set-difference (items and tags) lock-free, re-probes for
+/// drift lock-free, then under the exclusive cutover lock (whose acquisition
+/// drains every in-flight ingest commit holding the shared form) confirms the
+/// set-difference is empty and flips the building profile to active, completing
+/// the run in one transaction.
 ///
-/// The flip is atomic against ingest: no commit can start while the exclusive
-/// lock is held, and the final check ran after the drain, so nothing
-/// committed-but-unembedded survives it. Returns whether the run completed; it
-/// yields without flipping if the delta does not converge within the bound.
+/// The re-probe is a provider network call, so it runs before the lock is taken,
+/// never while it is held: under the exclusive lock only pure-SQL work happens,
+/// so ingest is paused only for the brief final-sweep-and-flip queries. The flip
+/// is atomic against ingest because no commit can start while the lock is held
+/// and the final check ran after the drain. Returns whether the run completed;
+/// it fails the run on drift or a quarantine-cap breach, and yields without
+/// flipping when a transient stalls convergence.
 ///
 /// # Errors
 ///
@@ -1112,13 +1144,57 @@ async fn catch_up_and_cutover(
     conn: &mut PgConnection,
     ctx: &ReindexCtx<'_>,
 ) -> Result<bool, ReindexError> {
+    let mut prev_remaining: Option<i64> = None;
     for _ in 0..REINDEX_CUTOVER_MAX_PASSES {
-        // Lock-free: embed whatever the set-difference currently holds.
-        embed_pending_batch(conn, ctx).await?;
-        embed_pending_tags(conn, ctx).await?;
+        // Lock-free: embed whatever the set-difference currently holds, keeping
+        // any transient failure's signal for the stall check below.
+        let transient = {
+            let items = embed_pending_batch(conn, ctx).await?;
+            let tags = embed_pending_tags(conn, ctx).await?;
+            items.or(tags)
+        };
 
-        // Under the exclusive lock no ingest can commit, so an empty
-        // set-difference here is final.
+        // The sweep may have quarantined past the cap; fail before flipping
+        // rather than activating a corpus too degraded to serve.
+        if let Some(current) = PgReindexRunRepository
+            .find_by_id(conn, ctx.run.id())
+            .await?
+            && quarantine_exceeds_cap(&current)
+        {
+            fail_run(
+                conn,
+                ctx.run,
+                ctx.building,
+                "quarantined items exceeded the cap; rebuild required",
+            )
+            .await?;
+            return Ok(false);
+        }
+
+        // Lock-free emptiness check: only pay for the drift re-probe and the
+        // exclusive lock once the backlog looks drained.
+        let remaining = count_remaining(conn, ctx.building).await?;
+        if remaining != 0 {
+            // No progress since the last pass and a transient is in play: yield
+            // to the next cycle rather than spinning the full pass budget.
+            if transient.is_some() && prev_remaining == Some(remaining) {
+                tracing::warn!(
+                    remaining,
+                    "reindex catch-up stalled on a transient failure; yielding to the next cycle",
+                );
+                return Ok(false);
+            }
+            prev_remaining = Some(remaining);
+            continue;
+        }
+
+        // Re-probe before the lock: a mutable model alias may have changed
+        // mid-build, leaving the profile holding two geometries. A provider call
+        // must never span the exclusive cutover lock, so it happens here.
+        let drifted = probe_drifted(ctx).await;
+
+        // Under the exclusive lock no ingest can commit, so the set-difference
+        // measured here is final.
         let mut txn =
             sqlx::Connection::begin(&mut *conn)
                 .await
@@ -1129,27 +1205,18 @@ async fn catch_up_and_cutover(
         PgAdvisoryLockRepository
             .acquire_exclusive_xact(&mut txn, advisory_locks::CUTOVER)
             .await?;
-        let items_left = PgEmbeddingRepository
-            .count_items_without_embedding(&mut txn, ctx.building.id())
-            .await?;
-        let tags_left = PgTagEmbeddingRepository
-            .find_tags_missing_embeddings(&mut txn, ctx.building.id())
-            .await?
-            .len();
-        if items_left == 0 && tags_left == 0 {
-            // Re-probe before activating: a mutable model alias may have changed
-            // mid-build, leaving the profile holding two geometries. Abort
-            // rather than activate a mixed space; the operator rebuilds.
-            if probe_drifted(ctx).await {
-                abort_run(
+        let remaining_locked = count_remaining(&mut txn, ctx.building).await?;
+        if remaining_locked == 0 {
+            if drifted {
+                fail_run(
                     &mut txn,
                     ctx.run,
                     ctx.building,
-                    "probe digest drifted during build; rebuild required",
+                    "probe digest or revision token drifted during build; rebuild required",
                 )
                 .await?;
                 txn.commit().await.map_err(|e| DbError::QueryFailed {
-                    context: "committing cutover abort".to_owned(),
+                    context: "committing cutover failure".to_owned(),
                     source: e,
                 })?;
                 return Ok(false);
@@ -1173,11 +1240,13 @@ async fn catch_up_and_cutover(
             })?;
             return Ok(true);
         }
-        // Items committed during the sweep remain: release the lock and loop.
+        // A commit drained into the lock between the lock-free check and here:
+        // release and loop to embed it.
         txn.rollback().await.map_err(|e| DbError::QueryFailed {
             context: "releasing the cutover lock".to_owned(),
             source: e,
         })?;
+        prev_remaining = Some(remaining_locked);
     }
     Ok(false)
 }
@@ -1188,15 +1257,54 @@ async fn catch_up_and_cutover(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use tribal_db::{PgPrincipalRepository, PrincipalRepository};
     use tribal_domain::{KnowledgeKind, ReindexRunState};
+    use tribal_inference::{EmbeddingResponse, ProviderIdentity};
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, Seed, a_new_embedding_profile,
-        a_new_knowledge_item, a_new_principal, an_embedding_profile, an_embedding_response, item,
-        serial_lock, test_context, truncate_all_tables,
+        a_new_knowledge_item, a_new_principal, a_provider_unavailable, an_embedding_profile,
+        an_embedding_response, item, serial_lock, test_context, truncate_all_tables,
     };
 
     use super::*;
+
+    /// An embedding provider that, on every embed, checks on a separate
+    /// connection whether the exclusive cutover lock is held (a failed
+    /// `pg_try_advisory_xact_lock_shared` means an exclusive holder exists) and
+    /// latches a flag if so. It proves the cutover never calls the provider
+    /// while holding the exclusive lock.
+    struct CutoverLockObserver {
+        pool: sqlx::PgPool,
+        identity: ProviderIdentity,
+        vector: Vec<f32>,
+        observed_exclusive_held: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl EmbeddingProvider for CutoverLockObserver {
+        fn identity(&self) -> &ProviderIdentity {
+            &self.identity
+        }
+
+        async fn embed(
+            &self,
+            _request: EmbeddingRequest,
+        ) -> Result<EmbeddingResponse, InferenceError> {
+            let mut conn = self.pool.acquire().await.expect("observer connection");
+            let got_shared: bool =
+                sqlx::query_scalar("SELECT pg_try_advisory_xact_lock_shared($1)")
+                    .bind(advisory_locks::CUTOVER)
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("try the shared cutover lock");
+            if !got_shared {
+                self.observed_exclusive_held.store(true, Ordering::SeqCst);
+            }
+            Ok(an_embedding_response(self.vector.clone()))
+        }
+    }
 
     fn a_target() -> ReindexTarget {
         ReindexTarget {
@@ -1440,7 +1548,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dead_lettered_task_aborts_the_run() {
+    async fn test_dead_lettered_task_fails_the_run() {
         let _guard = serial_lock().await;
         let ctx = test_context().await;
         let mut txn = ctx.begin_test().await.expect("begin_test");
@@ -1457,7 +1565,7 @@ mod tests {
             .await
             .expect("find_building")
             .expect("a building profile");
-        // The driver aborts a running run, so promote it as drive_reindex would.
+        // The driver fails a running run, so promote it as drive_reindex would.
         PgReindexRunRepository
             .transition(
                 &mut txn,
@@ -1511,10 +1619,11 @@ mod tests {
             "the exhausted task has dead-lettered",
         );
 
-        // Aborting fails the building profile and aborts the run.
-        abort_run(&mut txn, &run, &building, "a reindex task dead-lettered")
+        // Failing the run fails the building profile and moves the run to failed
+        // (not aborted, which is reserved for operator cancellation).
+        fail_run(&mut txn, &run, &building, "a reindex task dead-lettered")
             .await
-            .expect("abort");
+            .expect("fail");
         assert!(
             PgEmbeddingProfileRepository
                 .find_building(&mut txn)
@@ -1529,7 +1638,17 @@ mod tests {
                 .await
                 .expect("find_live")
                 .is_none(),
-            "the run is aborted, no longer live",
+            "the run is failed, no longer live",
+        );
+        let failed = PgReindexRunRepository
+            .find_by_id(&mut txn, run.id())
+            .await
+            .expect("find_by_id")
+            .expect("the run");
+        assert_eq!(
+            failed.state(),
+            ReindexRunState::Failed,
+            "a dead-lettered task fails the run, not aborts it",
         );
     }
 
@@ -1793,7 +1912,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cutover_aborts_when_the_probe_digest_drifts() {
+    async fn test_cutover_fails_the_run_when_the_probe_digest_drifts() {
         let _guard = serial_lock().await;
         let ctx_db = test_context().await;
         let mut conn = ctx_db.raw_connection().await.expect("raw connection");
@@ -1856,11 +1975,11 @@ mod tests {
             .expect("process tasks");
         assert!(
             !catch_up_and_cutover(&mut txn, &ctx).await.expect("cutover"),
-            "the cutover aborts on drift rather than completing the run",
+            "the cutover fails the run on drift rather than completing it",
         );
 
         // The drifted building profile is failed, never activated, and the run
-        // is aborted.
+        // is failed (not aborted, which is operator cancellation).
         assert!(
             PgEmbeddingProfileRepository
                 .find_building(&mut txn)
@@ -1875,7 +1994,17 @@ mod tests {
                 .await
                 .expect("find_live")
                 .is_none(),
-            "the run is aborted, no longer live",
+            "the run is failed, no longer live",
+        );
+        assert_eq!(
+            PgReindexRunRepository
+                .find_by_id(&mut txn, run.id())
+                .await
+                .expect("find_by_id")
+                .expect("the run")
+                .state(),
+            ReindexRunState::Failed,
+            "drift fails the run",
         );
         assert!(
             PgEmbeddingProfileRepository
@@ -1885,6 +2014,165 @@ mod tests {
                 .is_none_or(|active| active.id() != building.id()),
             "the drifted building profile was not activated",
         );
+    }
+
+    /// A transient failure that the catch-up sweep cannot drain makes the cutover
+    /// yield to the next cycle rather than spin the full pass budget hammering the
+    /// provider; the stalled item stays unembedded and the run stays live.
+    #[tokio::test]
+    async fn test_catch_up_yields_when_a_transient_stalls_convergence() {
+        let _guard = serial_lock().await;
+        let ctx_db = test_context().await;
+        let mut setup = ctx_db.raw_connection().await.expect("setup connection");
+
+        let seed = Seed::new()
+            .define_principal("user", "user:reindex-stall")
+            .define_project("proj", "git@github.com:test/reindex-stall.git")
+            .set_embedding_model("mock-model", 768)
+            .as_principal("user")
+            .for_project("proj", |store| {
+                store.add_item("a", item(KnowledgeKind::Fact, "first"));
+            })
+            .execute(&mut setup)
+            .await;
+        let principal = seed.principal_id("user");
+
+        let ReindexCreationOutcome::Created(_) =
+            create_reindex_run(&mut setup, &a_target(), principal)
+                .await
+                .expect("create")
+        else {
+            panic!("expected a created run");
+        };
+        let run = drive_reindex(&mut setup)
+            .await
+            .expect("drive")
+            .expect("a running run");
+        let building = PgEmbeddingProfileRepository
+            .find_building(&mut setup)
+            .await
+            .expect("find_building")
+            .expect("a building profile");
+
+        // Every embed fails transiently, so the set-difference never drains and
+        // the item is never quarantined; the loop must yield on the stall.
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_exhaust(ExhaustBehaviour::Error(a_provider_unavailable("transient")))
+                .build(),
+        );
+        let semaphore = Semaphore::new(4);
+        let ctx = ReindexCtx {
+            run: &run,
+            building: &building,
+            provider: provider.as_ref(),
+            semaphore: &semaphore,
+        };
+
+        assert!(
+            !catch_up_and_cutover(&mut setup, &ctx)
+                .await
+                .expect("cutover"),
+            "the cutover yields without flipping when a transient stalls convergence",
+        );
+        assert_eq!(
+            count_remaining(&mut setup, &building)
+                .await
+                .expect("count_remaining"),
+            1,
+            "the stalled item is still unembedded",
+        );
+        assert!(
+            PgReindexRunRepository
+                .find_live(&mut setup)
+                .await
+                .expect("find_live")
+                .is_some(),
+            "the run stays live for the next cycle to retry",
+        );
+
+        truncate_all_tables(&mut setup).await;
+    }
+
+    /// The drift re-probe and every backfill embed run lock-free: the cutover
+    /// never calls the provider while holding the exclusive cutover lock, so
+    /// ingest is paused only for the brief pure-SQL flip, never for a provider
+    /// round-trip. The observer latches if any embed sees the exclusive held.
+    #[tokio::test]
+    async fn test_cutover_never_calls_the_provider_under_the_exclusive_lock() {
+        let _guard = serial_lock().await;
+        let ctx_db = test_context().await;
+        let mut setup = ctx_db.raw_connection().await.expect("setup connection");
+
+        let seed = Seed::new()
+            .define_principal("user", "user:reindex-lockobs")
+            .define_project("proj", "git@github.com:test/reindex-lockobs.git")
+            .set_embedding_model("mock-model", 768)
+            .as_principal("user")
+            .for_project("proj", |store| {
+                store.add_item("a", item(KnowledgeKind::Fact, "first"));
+            })
+            .execute(&mut setup)
+            .await;
+        let principal = seed.principal_id("user");
+
+        // The probe digest matches the observer's vector, so the build does not
+        // drift and proceeds to the flip.
+        let vector = vec![0.25_f32; 768];
+        let target = ReindexTarget {
+            probe_digest: Some(probe_digest(&vector)),
+            ..a_target()
+        };
+        let ReindexCreationOutcome::Created(_) = create_reindex_run(&mut setup, &target, principal)
+            .await
+            .expect("create")
+        else {
+            panic!("expected a created run");
+        };
+        let run = drive_reindex(&mut setup)
+            .await
+            .expect("drive")
+            .expect("a running run");
+        let building = PgEmbeddingProfileRepository
+            .find_building(&mut setup)
+            .await
+            .expect("find_building")
+            .expect("a building profile");
+
+        let pool = ctx_db.create_pool().await.expect("pool");
+        let observed = Arc::new(AtomicBool::new(false));
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(CutoverLockObserver {
+            pool,
+            identity: ProviderIdentity {
+                name: "observer".to_owned(),
+                model: "mock-model".to_owned(),
+            },
+            vector: vector.clone(),
+            observed_exclusive_held: Arc::clone(&observed),
+        });
+        let semaphore = Semaphore::new(4);
+        let ctx = ReindexCtx {
+            run: &run,
+            building: &building,
+            provider: provider.as_ref(),
+            semaphore: &semaphore,
+        };
+
+        process_tasks(&mut setup, &ctx, "test-reindex-worker")
+            .await
+            .expect("process tasks");
+        assert!(
+            catch_up_and_cutover(&mut setup, &ctx)
+                .await
+                .expect("cutover"),
+            "the run completes",
+        );
+        assert!(
+            !observed.load(Ordering::SeqCst),
+            "no embed or probe ran while the exclusive cutover lock was held",
+        );
+
+        truncate_all_tables(&mut setup).await;
     }
 
     /// The cutover's exclusive-lock acquisition drains an in-flight ingest
