@@ -5,4 +5,5 @@ mod feedback;
 mod get_item;
 mod ingest;
 mod job_status;
+mod reindex;
 mod set_context;

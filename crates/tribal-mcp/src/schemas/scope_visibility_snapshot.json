@@ -26,5 +26,9 @@
   {
     "name": "tribal_job_status",
     "required_scope": "tribal.jobs:read"
+  },
+  {
+    "name": "tribal_reindex_cancel",
+    "required_scope": "tribal.embedding:execute"
   }
 ]
