@@ -422,7 +422,7 @@ async fn bootstrap(
 
     // -- AppState assembly ---------------------------------------------------
 
-    let inference_parameters = build_inference_parameters(config);
+    let inference_parameters = build_inference_parameters(config, active_profile.dimensions());
 
     let base = AppState::builder()
         .pool_mcp(pool_mcp)
