@@ -10,18 +10,21 @@ use sqlx::PgPool;
 use tribal_config::CredentialCatalogue;
 use tribal_db::{
     DbError, EmbeddingIndexRepository, EmbeddingProfileRepository, EmbeddingRepository,
-    EmbeddingTable, PgEmbeddingIndexRepository, PgEmbeddingProfileRepository, PgEmbeddingRepository,
-    PgReindexRunRepository, PgTagEmbeddingRepository, ReindexRunRepository, TagEmbeddingRepository,
+    EmbeddingTable, PgEmbeddingIndexRepository, PgEmbeddingProfileRepository,
+    PgEmbeddingRepository, PgReindexRunRepository, PgTagEmbeddingRepository, ReindexRunRepository,
+    TagEmbeddingRepository,
 };
 use tribal_domain::{
     DistanceMetric, EmbeddingProfileId, EndpointUrlError, PrincipalId, ProviderKind, ReindexRunId,
     ReindexRunState, normalise_endpoint_url,
 };
-use tribal_inference::{DimensionResolutionError, InferenceError, ProviderRegistry, resolve_dimensions};
+use tribal_inference::{
+    DimensionResolutionError, InferenceError, ProviderRegistry, resolve_dimensions,
+};
 
 use super::reindex::{
-    ReindexCreationOutcome, TargetProviderError, build_provider_for_identity,
-    create_reindex_run, resolve_reindex_target,
+    ReindexCreationOutcome, TargetProviderError, build_provider_for_identity, create_reindex_run,
+    resolve_reindex_target,
 };
 
 /// The error message stamped on a run aborted by an operator cancel.
@@ -160,9 +163,14 @@ pub async fn reindex_run(
 
     let (status, run_id, estimate_profile) = if request.dry_run {
         let mut conn = acquire(pool, "resolving the reindex estimate target").await?;
-        let profile =
-            dry_run_estimate_profile(&mut conn, provider, &normalised_base_url, &request.model, dimensions)
-                .await?;
+        let profile = dry_run_estimate_profile(
+            &mut conn,
+            provider,
+            &normalised_base_url,
+            &request.model,
+            dimensions,
+        )
+        .await?;
         (ReindexRunStatus::Plan, None, Some(profile))
     } else {
         let target = resolve_reindex_target(
@@ -226,7 +234,10 @@ pub async fn reindex_run(
     })
 }
 
-async fn acquire(pool: &PgPool, context: &str) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, ReindexOpError> {
+async fn acquire(
+    pool: &PgPool,
+    context: &str,
+) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, ReindexOpError> {
     pool.acquire().await.map_err(|source| {
         ReindexOpError::Db(DbError::QueryFailed {
             context: format!("acquiring a connection for {context}"),
@@ -357,10 +368,10 @@ pub struct ReindexPruneOutcome {
 /// # Errors
 ///
 /// Returns [`DbError`] on a database error.
-pub async fn reindex_prune(
-    conn: &mut sqlx::PgConnection,
-) -> Result<ReindexPruneOutcome, DbError> {
-    let superseded_epochs = PgEmbeddingProfileRepository.supersede_prunable(conn).await?;
+pub async fn reindex_prune(conn: &mut sqlx::PgConnection) -> Result<ReindexPruneOutcome, DbError> {
+    let superseded_epochs = PgEmbeddingProfileRepository
+        .supersede_prunable(conn)
+        .await?;
     let embeddings_deleted = PgEmbeddingRepository.delete_superseded(conn).await?;
     let tag_embeddings_deleted = PgTagEmbeddingRepository.delete_superseded(conn).await?;
     Ok(ReindexPruneOutcome {

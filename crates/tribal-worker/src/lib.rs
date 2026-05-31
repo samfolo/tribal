@@ -23,7 +23,7 @@ pub use worker::{
     },
     reindex_ops::{
         ReindexCancelOutcome, ReindexOpError, ReindexPruneOutcome, ReindexRunOutcome,
-        ReindexRunRequest, ReindexRunStatus, drop_superseded_indexes, reindex_cancel, reindex_prune,
-        reindex_run,
+        ReindexRunRequest, ReindexRunStatus, drop_superseded_indexes, reindex_cancel,
+        reindex_prune, reindex_run,
     },
 };
