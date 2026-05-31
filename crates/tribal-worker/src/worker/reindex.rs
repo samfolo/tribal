@@ -269,6 +269,12 @@ pub async fn drive_reindex(conn: &mut PgConnection) -> Result<Option<ReindexRun>
         PgReindexRunRepository
             .set_enumerated(conn, run.id(), items, tags)
             .await?;
+        tracing::info!(
+            run_id = %run.id(),
+            items,
+            tags,
+            "reindex run started; enrolled the backfill backlog",
+        );
     }
 
     Ok(Some(run))
@@ -470,6 +476,12 @@ async fn quarantine(
     entity_ref: String,
     message: String,
 ) -> Result<bool, DbError> {
+    tracing::warn!(
+        run_id = %ctx.run.id(),
+        entity = %entity_ref,
+        error = %message,
+        "quarantined an entity during reindex; it stays unsearchable in the new profile",
+    );
     PgReindexQuarantineRepository
         .record(
             conn,
@@ -815,7 +827,14 @@ pub async fn drive_reindex_cycle(
         return Ok(());
     }
     build_partial_indexes(conn, &building).await?;
-    catch_up_and_cutover(conn, &ctx).await?;
+    if catch_up_and_cutover(conn, &ctx).await? {
+        tracing::info!(
+            run_id = %run.id(),
+            model = %building.model(),
+            dimensions = building.dimensions(),
+            "reindex complete; the new profile is now active",
+        );
+    }
     Ok(())
 }
 
@@ -892,6 +911,7 @@ async fn abort_run(
             Some(reason),
         )
         .await?;
+    tracing::warn!(run_id = %run.id(), reason, "reindex run aborted");
     Ok(())
 }
 
