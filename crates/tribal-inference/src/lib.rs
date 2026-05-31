@@ -39,7 +39,6 @@ pub use openai::{OpenAiEmbeddingProvider, OpenAiInferenceProvider};
 pub use provider::{BatchEmbeddingResult, EmbeddingProvider, InferenceProvider, ProviderIdentity};
 pub use registry::{
     ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError, RequestClass,
-    normalise_registry_url,
 };
 pub use request::{CompletionRequest, EmbeddingRequest, Message, ResponseFormat, Role};
 pub use response::{CompletionResponse, EmbeddingResponse};
