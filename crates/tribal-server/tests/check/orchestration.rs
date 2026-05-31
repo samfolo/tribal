@@ -3,8 +3,8 @@
 
 use tribal::{App, AppError};
 use tribal_config::TribalConfig;
-use tribal_domain::ProviderKind;
-use tribal_test_utils::{serial_lock, test_context};
+use tribal_domain::{ProviderKind, normalise_endpoint_url};
+use tribal_test_utils::{ensure_genesis_profile_with_endpoint, serial_lock, test_context};
 
 use super::common::{
     CheckRun, TestEnv, fresh_db, names, parse_json, row_status, run_check, statuses, write_config,
@@ -31,7 +31,7 @@ async fn test_parse_failure_cascades_skip_to_every_other_check() {
     assert_eq!(output["ok"], serde_json::Value::Bool(false));
 
     let statuses = statuses(&output);
-    assert_eq!(statuses.len(), 8, "expected 8 rows, got {statuses:?}");
+    assert_eq!(statuses.len(), 9, "expected 9 rows, got {statuses:?}");
     assert_eq!(statuses[0], "fail", "config_parse must be the failed row");
     for (i, s) in statuses.iter().enumerate().skip(1) {
         assert_eq!(s, "skip", "row {i} should be skip, got {s:?}");
@@ -206,7 +206,11 @@ async fn test_providers_flag_off_omits_provider_rows() {
             "{provider_name} must be omitted without --providers; got {names:?}",
         );
     }
-    assert_eq!(names.len(), 8, "expected 8 rows without --providers");
+    assert!(
+        names.iter().any(|n| n == "embedding_profile"),
+        "embedding_profile must appear; got {names:?}",
+    );
+    assert_eq!(names.len(), 9, "expected 9 rows without --providers");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -241,7 +245,80 @@ async fn test_providers_flag_on_emits_four_provider_rows() {
             "{provider_name} must appear under --providers; got {names:?}",
         );
     }
-    assert_eq!(names.len(), 12, "expected 12 rows with --providers");
+    assert_eq!(names.len(), 13, "expected 13 rows with --providers");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_embedding_profile_reports_the_active_seed() {
+    let ctx = test_context().await;
+    let _lock = serial_lock().await;
+    let env = TestEnv::new();
+    let pool = fresh_db(ctx).await;
+    let mut conn = pool.acquire().await.expect("acquire connection");
+    let base_url = normalise_endpoint_url(ProviderKind::Ollama.default_base_url()).unwrap();
+    // A local Ollama seed needs no credential, so the active profile resolves.
+    ensure_genesis_profile_with_endpoint(
+        &mut conn,
+        ProviderKind::Ollama,
+        "nomic-embed-text:v1.5",
+        768,
+        &base_url,
+    )
+    .await;
+    drop(conn);
+
+    let config = TribalConfig::minimum_valid(ctx.database_url());
+    write_config(&env.config_path, &config);
+
+    let (stdout, _stderr, _output) = run_check(CheckRun {
+        config_path: &env.config_path,
+        json: true,
+        providers: false,
+        project: None,
+        token: None,
+    })
+    .await
+    .expect("check runs");
+
+    let output = parse_json(&stdout);
+    assert_eq!(row_status(&output, "embedding_profile"), Some("pass"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_embedding_profile_fails_on_an_unresolvable_active_credential() {
+    let ctx = test_context().await;
+    let _lock = serial_lock().await;
+    let env = TestEnv::new();
+    let pool = fresh_db(ctx).await;
+    let mut conn = pool.acquire().await.expect("acquire connection");
+    let base_url = normalise_endpoint_url(ProviderKind::OpenAi.default_base_url()).unwrap();
+    // An OpenAI active profile with no matching catalogue entry is the
+    // fail-closed condition the next boot would trip.
+    ensure_genesis_profile_with_endpoint(
+        &mut conn,
+        ProviderKind::OpenAi,
+        "text-embedding-3-small",
+        1536,
+        &base_url,
+    )
+    .await;
+    drop(conn);
+
+    let config = TribalConfig::minimum_valid(ctx.database_url());
+    write_config(&env.config_path, &config);
+
+    let (stdout, _stderr, _output) = run_check(CheckRun {
+        config_path: &env.config_path,
+        json: true,
+        providers: false,
+        project: None,
+        token: None,
+    })
+    .await
+    .expect("check runs");
+
+    let output = parse_json(&stdout);
+    assert_eq!(row_status(&output, "embedding_profile"), Some("fail"));
 }
 
 #[test]

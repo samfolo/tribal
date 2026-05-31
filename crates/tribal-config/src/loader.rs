@@ -259,7 +259,9 @@ fn apply_genesis_credential_fallback(config: &mut TribalConfig) {
         .clone()
         .unwrap_or_else(|| provider.default_base_url().to_owned());
     if let Ok(normalised) = normalise_endpoint_url(&base_url) {
-        config.credentials.fill_missing_key(provider, &normalised, key);
+        config
+            .credentials
+            .fill_missing_key(provider, &normalised, key);
     }
 }
 
@@ -288,7 +290,8 @@ mod tests {
         ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ENV_PUBLIC_MCP_URL, TransportKind,
         cli_overrides::{
             DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
-            InferenceStageCliOverrides, InitCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
+            InferenceStageCliOverrides, InitCliOverrides, ServerCliOverrides,
+            TelemetryCliOverrides,
         },
     };
 
@@ -695,7 +698,10 @@ prompts:
     #[test]
     fn test_openai_api_key_fallback_file_wins() {
         Jail::expect_with(|jail| {
-            jail.create_file("tribal.yaml", &openai_genesis_yaml("    api_key: from-file\n"))?;
+            jail.create_file(
+                "tribal.yaml",
+                &openai_genesis_yaml("    api_key: from-file\n"),
+            )?;
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");
@@ -715,7 +721,10 @@ prompts:
     fn test_tribal_env_api_key_beats_standard_env() {
         Jail::expect_with(|jail| {
             jail.create_file("tribal.yaml", &openai_genesis_yaml(""))?;
-            jail.set_env("TRIBAL_CREDENTIALS__OPENAI_DEFAULT__API_KEY", "from-tribal-env");
+            jail.set_env(
+                "TRIBAL_CREDENTIALS__OPENAI_DEFAULT__API_KEY",
+                "from-tribal-env",
+            );
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");

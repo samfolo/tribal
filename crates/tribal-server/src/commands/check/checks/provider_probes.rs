@@ -54,7 +54,9 @@ pub(in crate::commands::check) async fn act(
         .expect("preflight ensures state.config is populated");
     let provider = provider_kind(config, target);
     let result = match target {
-        ProviderStage::Embedding => probe_genesis_embedding(state.http_client.clone(), config).await,
+        ProviderStage::Embedding => {
+            probe_genesis_embedding(state.http_client.clone(), config).await
+        }
         ProviderStage::Extraction => {
             probe_inference_provider(state.http_client.clone(), &config.inference.extraction)
                 .await
@@ -98,16 +100,9 @@ async fn probe_genesis_embedding(
         .resolve_api_key(provider, &normalised_base_url)
         .map_err(|e| e.to_string())?;
 
-    probe_embedding_provider(
-        client,
-        provider,
-        &init.model,
-        dimensions,
-        base_url,
-        api_key,
-    )
-    .await
-    .map_err(|e| e.to_string())
+    probe_embedding_provider(client, provider, &init.model, dimensions, base_url, api_key)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn provider_kind(config: &TribalConfig, target: ProviderStage) -> ProviderKind {
