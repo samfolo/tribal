@@ -50,6 +50,7 @@ mod bearer_token;
 mod candidate;
 mod discovery;
 mod embedding;
+mod embedding_error_class;
 mod embedding_profile;
 mod embedding_purpose;
 mod error_code;
@@ -74,6 +75,7 @@ mod redacted_secret;
 mod redaction;
 mod reference;
 mod reference_kind;
+mod reindex;
 mod relation;
 mod retrieval_feedback;
 mod scope;
@@ -93,6 +95,7 @@ pub use bearer_token::{BearerToken, BearerTokenParseError};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use embedding::{Embedding, EmbeddingBuilder};
+pub use embedding_error_class::EmbeddingErrorClass;
 pub use embedding_profile::{
     DistanceMetric, EmbeddingProfile, EmbeddingProfileBuilder, EmbeddingProfileState,
 };
@@ -104,8 +107,9 @@ pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
     AuthTokenId, EmbeddingId, EmbeddingProfileId, EpisodeId, ExtractionResultId, IdParseError,
     ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
-    ReferenceId, RelationBatchId, RelationId, RetrievalFeedbackId, SessionId, SystemFingerprintId,
-    TaskId, TokenUsageId, TriageResultId, TriageSimilarItemDecisionId,
+    ReferenceId, ReindexRunId, ReindexTaskId, RelationBatchId, RelationId, RetrievalFeedbackId,
+    SessionId, SystemFingerprintId, TaskId, TokenUsageId, TriageResultId,
+    TriageSimilarItemDecisionId,
 };
 pub use inference_parameters::{
     EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
@@ -125,6 +129,10 @@ pub use provider_kind::ProviderKind;
 pub use redaction::REDACTED;
 pub use reference::{Reference, ReferenceBuilder};
 pub use reference_kind::ReferenceKind;
+pub use reindex::{
+    ReindexEntityKind, ReindexRun, ReindexRunBuilder, ReindexRunState, ReindexTask,
+    ReindexTaskBuilder, ReindexTaskState,
+};
 pub use relation::{
     KnowledgeItemRelation, KnowledgeItemRelationBuilder, RelationHintType, RelationKind,
     RelationSuggestion,
