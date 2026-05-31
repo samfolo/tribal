@@ -445,13 +445,13 @@ async fn issue_code(
             source: Some(Box::new(err)),
         })?;
 
-    Ok(consent_page_response(
+    consent_page_response(
         &resolved.redirect_uri,
         &raw_code,
         query.state.as_deref(),
         &query.client_id,
         query.scope.as_deref(),
-    ))
+    )
 }
 
 fn consent_page_response(
@@ -460,7 +460,7 @@ fn consent_page_response(
     state: Option<&str>,
     client_id: &str,
     scope: Option<&str>,
-) -> Response {
+) -> Result<Response, OAuthError> {
     let mut url = redirect_uri.clone();
     {
         let mut query = url.query_pairs_mut();
@@ -471,13 +471,18 @@ fn consent_page_response(
     }
     let target = url.as_str().to_owned();
     let host = redirect_uri.host_str().unwrap_or("");
-    let body = build_consent_html(&target, host, client_id, scope);
+    let body = build_consent_html(&target, host, client_id, scope).map_err(|err| {
+        OAuthError::Internal {
+            operation: InternalOperation::RenderConsentPage,
+            source: Some(Box::new(err)),
+        }
+    })?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    (StatusCode::OK, headers, body).into_response()
+    Ok((StatusCode::OK, headers, body).into_response())
 }
 
 fn generate_random_code() -> String {

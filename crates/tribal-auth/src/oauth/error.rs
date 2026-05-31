@@ -314,6 +314,9 @@ pub enum InternalOperation {
     /// Parsing a code challenge read back from the code store.
     #[error("stored code_challenge parsing")]
     MalformedStoredCodeChallenge,
+    /// Rendering the consent page template.
+    #[error("consent page rendering")]
+    RenderConsentPage,
 }
 
 // ---------------------------------------------------------------------------
