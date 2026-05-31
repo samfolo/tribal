@@ -35,6 +35,10 @@ http-body = "1"
 pin-project-lite = "0.2"
 tower = { version = "0.5", features = ["util"] }
 
+# HTML templating
+askama = "0.16"
+html-escape = "0.2"
+
 # Database
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
@@ -137,6 +141,7 @@ owo-colors = "4"
 supports-color = "3"
 termbg = "0.6"
 textwrap = "0.16"
+unicode-general-category = "1.1"
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
 

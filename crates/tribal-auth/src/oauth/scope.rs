@@ -30,6 +30,36 @@ pub const SCOPES_CATALOGUE: &[&str] = &[
 pub(crate) const DEFAULT_GRANT_SCOPE: &str = "tribal:read";
 
 // ---------------------------------------------------------------------------
+// Effective grant resolution
+// ---------------------------------------------------------------------------
+
+/// A scope string with surrounding whitespace removed, or `None` if it is
+/// empty or whitespace-only. Empty and whitespace-only scopes are treated as
+/// absent everywhere a grant is resolved, so a client cannot register or
+/// request a blank scope that displays as nothing while a token still mints.
+pub(crate) fn present_scope(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|trimmed| !trimmed.is_empty())
+}
+
+/// Resolves the effective grant a code carries at issue time: the requested
+/// scope if present, else the client's registered scope, else
+/// [`DEFAULT_GRANT_SCOPE`]. This is the single definition of the grant the
+/// consent page displays and the code stores, so the two cannot disagree.
+pub(crate) fn effective_scope(requested: Option<&str>, registered: Option<&str>) -> String {
+    present_scope(requested)
+        .or_else(|| present_scope(registered))
+        .map_or_else(|| DEFAULT_GRANT_SCOPE.to_owned(), str::to_owned)
+}
+
+/// Resolves the grant a stored code mints into a token: the code's scope if
+/// present, else [`DEFAULT_GRANT_SCOPE`]. Shares the emptiness rule with
+/// [`effective_scope`] so a code issued by `/authorize` and the token minted
+/// at `/token` carry the same grant the consent page showed.
+pub(crate) fn grant_or_default(stored: Option<&str>) -> String {
+    present_scope(stored).map_or_else(|| DEFAULT_GRANT_SCOPE.to_owned(), str::to_owned)
+}
+
+// ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 
@@ -107,6 +137,36 @@ mod tests {
     #[test]
     fn test_default_grant_scope_is_catalogued() {
         assert!(SCOPES_CATALOGUE.contains(&DEFAULT_GRANT_SCOPE));
+    }
+
+    #[test]
+    fn test_effective_scope_prefers_requested_then_registered() {
+        assert_eq!(
+            effective_scope(Some("tribal:read"), Some("tribal:write")),
+            "tribal:read",
+        );
+        assert_eq!(
+            effective_scope(None, Some("tribal.knowledge:read")),
+            "tribal.knowledge:read",
+        );
+    }
+
+    #[test]
+    fn test_effective_scope_treats_empty_and_whitespace_as_absent() {
+        // A blank or whitespace-only requested or registered scope must not
+        // display as nothing while a token still mints the default grant.
+        assert_eq!(effective_scope(Some(""), Some("")), DEFAULT_GRANT_SCOPE);
+        assert_eq!(effective_scope(Some("   "), None), DEFAULT_GRANT_SCOPE);
+        assert_eq!(effective_scope(None, Some("  ")), DEFAULT_GRANT_SCOPE);
+        assert_eq!(effective_scope(None, None), DEFAULT_GRANT_SCOPE);
+    }
+
+    #[test]
+    fn test_grant_or_default_shares_the_emptiness_rule() {
+        assert_eq!(grant_or_default(Some("tribal:write")), "tribal:write");
+        assert_eq!(grant_or_default(Some("")), DEFAULT_GRANT_SCOPE);
+        assert_eq!(grant_or_default(Some("   ")), DEFAULT_GRANT_SCOPE);
+        assert_eq!(grant_or_default(None), DEFAULT_GRANT_SCOPE);
     }
 
     #[test]
