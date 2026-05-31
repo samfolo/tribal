@@ -17,4 +17,5 @@ serde_json.workspace = true
 strum.workspace = true
 thiserror.workspace = true
 typed-builder.workspace = true
+url.workspace = true
 uuid.workspace = true

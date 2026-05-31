@@ -53,6 +53,7 @@ mod embedding;
 mod embedding_error_class;
 mod embedding_profile;
 mod embedding_purpose;
+mod endpoint_url;
 mod error_code;
 mod extraction_result;
 mod feedback_rating;
@@ -100,6 +101,7 @@ pub use embedding_profile::{
     DistanceMetric, EmbeddingProfile, EmbeddingProfileBuilder, EmbeddingProfileState,
 };
 pub use embedding_purpose::EmbeddingPurpose;
+pub use endpoint_url::{EndpointUrlError, normalise_endpoint_url};
 pub use error_code::McpErrorCode;
 pub use extraction_result::{ExtractionResult, ExtractionResultBuilder};
 pub use feedback_rating::FeedbackRating;

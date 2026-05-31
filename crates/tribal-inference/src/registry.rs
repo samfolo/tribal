@@ -11,7 +11,8 @@
 use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
 use tokio::sync::Semaphore;
-use url::{Host, Url};
+use tribal_domain::normalise_endpoint_url;
+use url::Url;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,7 +51,8 @@ impl fmt::Display for RequestClass {
 /// Compound key identifying a unique provider + request class combination.
 ///
 /// Two keys are equal when all three components match.  The
-/// `normalised_base_url` is produced by [`normalise_registry_url`] at
+/// `normalised_base_url` is produced by
+/// [`normalise_endpoint_url`](tribal_domain::normalise_endpoint_url) at
 /// construction time, ensuring trailing slashes, default ports, case
 /// differences, and query strings do not create spurious distinct keys.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -75,7 +77,12 @@ impl ProviderKey {
         base_url: &str,
         request_class: RequestClass,
     ) -> Result<Self, ProviderRegistryError> {
-        let normalised = normalise_registry_url(base_url)?;
+        let normalised = normalise_endpoint_url(base_url).map_err(|e| {
+            ProviderRegistryError::UnparseableUrl {
+                url: e.url,
+                reason: e.reason,
+            }
+        })?;
         Ok(Self {
             provider_kind: provider_kind.into(),
             normalised_base_url: normalised,
@@ -275,64 +282,6 @@ impl ProviderRegistry {
     #[must_use]
     pub fn client(&self, key: &ProviderKey) -> Option<&reqwest::Client> {
         self.clients.get(key)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// URL normalisation
-// ---------------------------------------------------------------------------
-
-/// Normalises a base URL for use as a registry key component.
-///
-/// This answers an identity-of-endpoint question (do two base URLs name
-/// the same provider, so they should share one semaphore?), so it adds
-/// the explicit default port and drops the query and fragment to fold
-/// equivalent spellings together. It is intentionally not the same
-/// transform as an RFC 8707 audience canonicalisation, which keeps the
-/// query and omits the explicit port to match a client's bytes exactly.
-///
-/// Steps:
-/// 1. Parse with [`url::Url`]
-/// 2. Lower-case scheme and host (handled by the `url` crate)
-/// 3. Strip trailing slash from path
-/// 4. Include explicit port (default 80 for HTTP, 443 for HTTPS)
-/// 5. Retain path component
-/// 6. Drop query string and fragment
-///
-/// # Errors
-///
-/// Returns [`ProviderRegistryError::UnparseableUrl`] when `raw` is not a valid
-/// URL or lacks a host or a port derivable from its scheme.
-pub fn normalise_registry_url(raw: &str) -> Result<String, ProviderRegistryError> {
-    let parsed = Url::parse(raw).map_err(|e| ProviderRegistryError::UnparseableUrl {
-        url: raw.to_owned(),
-        reason: e.to_string(),
-    })?;
-
-    let scheme = parsed.scheme();
-
-    let host = parsed
-        .host()
-        .ok_or_else(|| ProviderRegistryError::UnparseableUrl {
-            url: raw.to_owned(),
-            reason: "missing host".to_owned(),
-        })?;
-
-    let port =
-        parsed
-            .port_or_known_default()
-            .ok_or_else(|| ProviderRegistryError::UnparseableUrl {
-                url: raw.to_owned(),
-                reason: "unknown port for scheme".to_owned(),
-            })?;
-
-    let path = parsed.path().trim_end_matches('/');
-
-    // `Host::Display` formats IPv6 with brackets (e.g. `[::1]`),
-    // domains and IPv4 addresses pass through unchanged.
-    match host {
-        Host::Ipv6(addr) => Ok(format!("{scheme}://[{addr}]:{port}{path}")),
-        _ => Ok(format!("{scheme}://{host}:{port}{path}")),
     }
 }
 

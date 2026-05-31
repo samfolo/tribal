@@ -16,8 +16,7 @@ use tribal_db::{
     NewEmbeddingProfile, PgEmbeddingIndexRepository, PgEmbeddingProfileRepository,
     PgMigrationRepository, advisory_locks,
 };
-use tribal_domain::{DistanceMetric, EmbeddingProfile};
-use tribal_inference::normalise_registry_url;
+use tribal_domain::{DistanceMetric, EmbeddingProfile, normalise_endpoint_url};
 
 use super::{
     POOL_NAME_MCP,
@@ -146,8 +145,10 @@ async fn insert_genesis(
 ) -> Result<EmbeddingProfile, AppError> {
     let provider = config.embedding.provider;
     let base_url = resolve_base_url(provider, config.embedding.base_url.as_ref());
-    let normalised_base_url = normalise_registry_url(&base_url)
-        .map_err(|source| AppError::ProviderRegistry { source })?;
+    let normalised_base_url =
+        normalise_endpoint_url(&base_url).map_err(|e| AppError::ConfigInvariant {
+            reason: e.to_string(),
+        })?;
     let model = config.embedding.model.clone();
     let dimensions = config.embedding.dimensions;
 
