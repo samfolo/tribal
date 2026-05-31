@@ -65,6 +65,22 @@ pub trait EmbeddingRepository {
         new: &NewEmbedding,
     ) -> Result<Embedding, DbError>;
 
+    /// Inserts many embeddings in one statement, skipping any whose
+    /// `(knowledge_item_id, embedding_profile_id)` pair already exists, and
+    /// returns the number newly inserted.
+    ///
+    /// `ON CONFLICT DO NOTHING` makes a reindex backfill batch idempotent: a
+    /// retried batch re-inserts only the rows a prior attempt left unwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn batch_insert_skipping_existing(
+        &self,
+        conn: &mut PgConnection,
+        embeddings: &[NewEmbedding],
+    ) -> Result<u64, DbError>;
+
     /// Finds an embedding by knowledge item ID and embedding profile.
     ///
     /// Returns `None` if no embedding exists for the given pair.
@@ -172,6 +188,45 @@ impl EmbeddingRepository for PgEmbeddingRepository {
                 }
             }
         }
+    }
+
+    async fn batch_insert_skipping_existing(
+        &self,
+        conn: &mut PgConnection,
+        embeddings: &[NewEmbedding],
+    ) -> Result<u64, DbError> {
+        if embeddings.is_empty() {
+            return Ok(0);
+        }
+
+        let mut item_ids = Vec::with_capacity(embeddings.len());
+        let mut profile_ids = Vec::with_capacity(embeddings.len());
+        let mut models = Vec::with_capacity(embeddings.len());
+        let mut vectors = Vec::with_capacity(embeddings.len());
+        for e in embeddings {
+            item_ids.push(*e.knowledge_item_id.inner());
+            profile_ids.push(*e.embedding_profile_id.inner());
+            models.push(e.model.as_str());
+            vectors.push(to_halfvec(&e.embedding));
+        }
+
+        let result = sqlx::query(
+            "INSERT INTO embeddings (knowledge_item_id, embedding_profile_id, model, embedding) \
+             SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::halfvec[]) \
+             ON CONFLICT (knowledge_item_id, embedding_profile_id) DO NOTHING",
+        )
+        .bind(&item_ids)
+        .bind(&profile_ids)
+        .bind(&models)
+        .bind(&vectors)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("batch inserting {} embeddings", embeddings.len()),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
     }
 
     async fn find_by_knowledge_item_id(
