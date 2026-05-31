@@ -6,15 +6,16 @@ use rmcp::{
 };
 use tracing::Instrument;
 use tribal_db::{
-    DbError, EmbeddingProfileRepository, PgEmbeddingProfileRepository, PgReindexRunRepository,
-    ReindexRunRepository,
+    DbError, EmbeddingProfileRepository, EmbeddingRepository, PgEmbeddingProfileRepository,
+    PgEmbeddingRepository, PgReindexRunRepository, PgTagEmbeddingRepository, ReindexRunRepository,
+    TagEmbeddingRepository,
 };
 use tribal_domain::{ReindexRunId, ReindexRunState, span_attrs};
 
 use super::common::begin_transaction;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError},
-    mapping::McpReindexCancelResponse,
+    mapping::{McpReindexCancelResponse, McpReindexPruneResponse},
     server_handler::TribalServerHandler,
 };
 
@@ -102,6 +103,58 @@ impl TribalServerHandler {
         };
         Ok(response.into_call_tool_result())
     }
+
+    /// Handles the `tribal_reindex_prune` tool call: supersedes prunable
+    /// profiles and deletes their embeddings. Gated by the
+    /// `tribal.embedding:execute` scope at dispatch.
+    pub(crate) async fn handle_reindex_prune(
+        &self,
+        _params: serde_json::Value,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let principal = self.resolve_principal(&context)?;
+        let span = tracing::info_span!(
+            parent: None,
+            "tribal.reindex_prune",
+            { span_attrs::PRINCIPAL_KEY } = principal.principal_key(),
+            { span_attrs::TRANSPORT } = self.transport_name,
+        );
+        self.apply_reindex_prune().instrument(span).await
+    }
+
+    /// Core prune logic, separated from the tool adapter for testing.
+    async fn apply_reindex_prune(&self) -> Result<CallToolResult, McpError> {
+        let mut tx = match begin_transaction(
+            &self.state.pool_worker,
+            self.config.pool_name,
+            &self.state.metrics,
+        )
+        .await
+        {
+            Ok(tx) => tx,
+            Err(result) => return Ok(result),
+        };
+
+        let outcome = match execute_reindex_prune(&mut tx).await {
+            Ok(outcome) => outcome,
+            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+        };
+
+        if let Err(e) = tx.commit().await {
+            let db_err = DbError::QueryFailed {
+                context: "committing reindex prune".to_owned(),
+                source: e,
+            };
+            return Ok(db_err.into_mcp_error().into_call_tool_result());
+        }
+
+        Ok(McpReindexPruneResponse {
+            profiles_superseded: outcome.profiles_superseded,
+            embeddings_deleted: outcome.embeddings_deleted,
+            tag_embeddings_deleted: outcome.tag_embeddings_deleted,
+        }
+        .into_call_tool_result())
+    }
 }
 
 /// Aborts the live reindex run within a single transaction.
@@ -134,6 +187,46 @@ async fn execute_reindex_cancel(
         .mark_failed(conn, run.target_profile_id())
         .await?;
     Ok(ReindexCancelOutcome::Cancelled(run.id()))
+}
+
+/// The counts a prune reclaimed.
+struct ReindexPruneOutcome {
+    profiles_superseded: u64,
+    embeddings_deleted: u64,
+    tag_embeddings_deleted: u64,
+}
+
+/// Errors from the reindex prune service function.
+#[derive(Debug, thiserror::Error)]
+enum ReindexPruneError {
+    #[error(transparent)]
+    Db(#[from] DbError),
+}
+
+impl IntoMcpError for ReindexPruneError {
+    fn into_mcp_error(self) -> McpToolError {
+        match self {
+            Self::Db(e) => e.into_mcp_error(),
+        }
+    }
+}
+
+/// Supersedes every prunable profile and deletes their embeddings within a
+/// single transaction. Supersede precedes delete, so the delete's join sees the
+/// freshly-superseded profiles; the active profile and its rows are untouched.
+async fn execute_reindex_prune(
+    conn: &mut sqlx::PgConnection,
+) -> Result<ReindexPruneOutcome, ReindexPruneError> {
+    let profiles_superseded = PgEmbeddingProfileRepository
+        .supersede_prunable(conn)
+        .await?;
+    let embeddings_deleted = PgEmbeddingRepository.delete_superseded(conn).await?;
+    let tag_embeddings_deleted = PgTagEmbeddingRepository.delete_superseded(conn).await?;
+    Ok(ReindexPruneOutcome {
+        profiles_superseded,
+        embeddings_deleted,
+        tag_embeddings_deleted,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -209,5 +302,55 @@ mod tests {
 
         let outcome = execute_reindex_cancel(&mut tx).await.expect("cancel");
         assert!(matches!(outcome, ReindexCancelOutcome::NoLiveRun));
+    }
+
+    #[tokio::test]
+    async fn test_execute_reindex_prune_supersedes_all_but_the_active() {
+        let ctx = test_context().await;
+        let mut tx = ctx.begin_test().await.expect("begin_test");
+
+        // An old complete profile, the active (highest-epoch complete), and a
+        // failed one, inserted in ascending epoch order.
+        let old = PgEmbeddingProfileRepository
+            .insert(&mut tx, &a_new_embedding_profile().build())
+            .await
+            .expect("insert old");
+        PgEmbeddingProfileRepository
+            .mark_complete(&mut tx, old.id())
+            .await
+            .expect("complete old");
+        let active = PgEmbeddingProfileRepository
+            .insert(&mut tx, &a_new_embedding_profile().build())
+            .await
+            .expect("insert active");
+        PgEmbeddingProfileRepository
+            .mark_complete(&mut tx, active.id())
+            .await
+            .expect("complete active");
+        let failed = PgEmbeddingProfileRepository
+            .insert(&mut tx, &a_new_embedding_profile().build())
+            .await
+            .expect("insert failed");
+        PgEmbeddingProfileRepository
+            .mark_failed(&mut tx, failed.id())
+            .await
+            .expect("fail");
+
+        let outcome = execute_reindex_prune(&mut tx).await.expect("prune");
+        assert_eq!(
+            outcome.profiles_superseded, 2,
+            "the old complete and the failed profiles are superseded, never the active",
+        );
+
+        let still_active = PgEmbeddingProfileRepository
+            .find_active(&mut tx)
+            .await
+            .expect("find_active")
+            .expect("an active profile");
+        assert_eq!(
+            still_active.id(),
+            active.id(),
+            "the active profile survives a prune",
+        );
     }
 }

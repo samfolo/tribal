@@ -1,0 +1,6 @@
+{
+  "type": "object",
+  "description": "Reclaim storage from superseded reindexes: supersede every non-active complete profile and every failed profile, then delete their embeddings. Takes no arguments.",
+  "properties": {},
+  "additionalProperties": false
+}

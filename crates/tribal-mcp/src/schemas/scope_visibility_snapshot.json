@@ -30,5 +30,9 @@
   {
     "name": "tribal_reindex_cancel",
     "required_scope": "tribal.embedding:execute"
+  },
+  {
+    "name": "tribal_reindex_prune",
+    "required_scope": "tribal.embedding:execute"
   }
 ]

@@ -96,6 +96,14 @@ pub trait TagEmbeddingRepository {
         conn: &mut PgConnection,
         embedding_profile_id: EmbeddingProfileId,
     ) -> Result<Vec<String>, DbError>;
+
+    /// Deletes every tag embedding belonging to a superseded profile, the
+    /// destructive half of prune. Returns the number of rows deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn delete_superseded(&self, conn: &mut PgConnection) -> Result<u64, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +225,20 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
         })?;
 
         Ok(rows.iter().map(|r| r.get("tag")).collect())
+    }
+
+    async fn delete_superseded(&self, conn: &mut PgConnection) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "DELETE FROM tag_embeddings te USING embedding_profiles p \
+             WHERE te.embedding_profile_id = p.id AND p.state = 'superseded'",
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "deleting tag embeddings of superseded profiles".to_owned(),
+            source: e,
+        })?;
+        Ok(result.rows_affected())
     }
 }
 
