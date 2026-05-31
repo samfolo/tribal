@@ -8,7 +8,7 @@ use figment::{
     providers::{Env, Format, Serialized, Yaml},
 };
 use serde_json::Value as JsonValue;
-use tribal_domain::{ApiKey, ProviderKind};
+use tribal_domain::{ApiKey, ProviderKind, normalise_endpoint_url};
 
 use crate::{
     CliOverrides, LoggingConfig, TelemetryConfig, TribalConfig,
@@ -37,7 +37,6 @@ const KNOWN_SECTIONS: &[&str] = &[
     "oauth.",
     "worker.",
     "init.",
-    "embedding.",
     "credentials.",
     "inference.",
     "limits.",
@@ -208,7 +207,7 @@ fn resolve_public_mcp_url(config: &mut TribalConfig) {
 /// fail at deserialise time instead, courtesy of [`ApiKey`]'s strict
 /// `FromStr` impl.
 fn apply_standard_env_var_fallback(config: &mut TribalConfig) {
-    apply_stage_fallback(&mut config.embedding.api_key, config.embedding.provider);
+    apply_genesis_credential_fallback(config);
     apply_stage_fallback(
         &mut config.inference.extraction.api_key,
         config.inference.extraction.provider,
@@ -230,6 +229,37 @@ fn apply_stage_fallback(api_key: &mut Option<ApiKey>, provider: ProviderKind) {
         && let Some(parsed) = std::env::var(name).ok().and_then(|v| v.parse().ok())
     {
         *api_key = Some(parsed);
+    }
+}
+
+/// Supplies the genesis embedding endpoint's catalogue key from the bare
+/// provider environment variable when neither an in-file value nor
+/// `TRIBAL_CREDENTIALS__<NAME>__API_KEY` did, mirroring the per-stage
+/// inference fallback. Scoped to the entry matching the `init.embedding`
+/// endpoint, so a second same-kind endpoint staged for a migration is never
+/// filled from a shared bare variable.
+fn apply_genesis_credential_fallback(config: &mut TribalConfig) {
+    let provider = config.init.embedding.provider;
+    if !provider.requires_api_key() {
+        return;
+    }
+    let Some(name) = standard_env_var_name(provider) else {
+        return;
+    };
+    let Some(key) = std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<ApiKey>().ok())
+    else {
+        return;
+    };
+    let base_url = config
+        .init
+        .embedding
+        .base_url
+        .clone()
+        .unwrap_or_else(|| provider.default_base_url().to_owned());
+    if let Ok(normalised) = normalise_endpoint_url(&base_url) {
+        config.credentials.fill_missing_key(provider, &normalised, key);
     }
 }
 
@@ -258,19 +288,9 @@ mod tests {
         ENV_ANTHROPIC_API_KEY, ENV_OPENAI_API_KEY, ENV_PUBLIC_MCP_URL, TransportKind,
         cli_overrides::{
             DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
-            InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
+            InferenceStageCliOverrides, InitCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
         },
-        validate,
     };
-
-    /// Serialises a [`TribalConfig`] and writes it as `tribal.yaml` in the
-    /// jail's working directory. Lets tests assemble fixtures by setting
-    /// fields on a `TribalConfig` instead of hand-rolling YAML strings.
-    fn write_config_yaml(jail: &mut Jail, config: &TribalConfig) {
-        let yaml = serde_yaml::to_string(config).expect("serialise TribalConfig to YAML");
-        jail.create_file("tribal.yaml", &yaml)
-            .expect("write tribal.yaml in jail");
-    }
 
     #[test]
     fn test_defaults_only() {
@@ -495,7 +515,7 @@ prompts:
             jail.set_env("TRIBAL_DATABASE__ACQUIRE_TIMEOUT_MS", "10000");
             jail.set_env("TRIBAL_AUTH__TOKEN_TTL_HOURS", "24");
             jail.set_env("TRIBAL_WORKER__MAX_CONCURRENT_TASKS", "8");
-            jail.set_env("TRIBAL_EMBEDDING__DIMENSIONS", "1024");
+            jail.set_env("TRIBAL_INIT__EMBEDDING__DIMENSIONS", "1024");
             jail.set_env("TRIBAL_INFERENCE__EXTRACTION__TEMPERATURE", "0.5");
             jail.set_env("TRIBAL_LIMITS__PROVIDERS__OLLAMA__MAX_IN_FLIGHT", "4");
             jail.set_env("TRIBAL_PROMPTS__SOURCE__KIND", "disk");
@@ -512,7 +532,7 @@ prompts:
             assert_eq!(config.database.acquire_timeout_ms, 10_000);
             assert_eq!(config.auth.token_ttl_hours, 24);
             assert_eq!(config.worker.max_concurrent_tasks, 8);
-            assert_eq!(config.embedding.dimensions, 1024);
+            assert_eq!(config.init.embedding.dimensions, Some(1024));
             assert_eq!(config.inference.extraction.temperature, Some(0.5));
             assert_eq!(
                 config.limits.providers[&ProviderKind::Ollama].max_in_flight,
@@ -656,20 +676,36 @@ prompts:
 
     // -- Standard provider env-var fallback (closes #144) --------------------
 
+    /// A `credentials:` catalogue declaring the genesis endpoint with an
+    /// `openai` provider and the canonical base URL, plus an `init.embedding`
+    /// seed pointing at that endpoint. The trailing `api_key` line is
+    /// appended by each test that wants an in-file key.
+    fn openai_genesis_yaml(api_key_line: &str) -> String {
+        format!(
+            "init:\n  embedding:\n    provider: openai\n\
+             credentials:\n  openai_default:\n    provider_kind: openai\n    \
+             base_url: https://api.openai.com\n{api_key_line}",
+        )
+    }
+
+    fn openai_endpoint() -> String {
+        normalise_endpoint_url(ProviderKind::OpenAi.default_base_url()).unwrap()
+    }
+
     #[test]
     fn test_openai_api_key_fallback_file_wins() {
         Jail::expect_with(|jail| {
-            jail.create_file(
-                "tribal.yaml",
-                "embedding:\n  provider: openai\n  api_key: \"from-file\"\n",
-            )?;
+            jail.create_file("tribal.yaml", &openai_genesis_yaml("    api_key: from-file\n"))?;
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(
-                config.embedding.api_key.as_ref().map(ApiKey::as_str),
-                Some("from-file")
+                config
+                    .credentials
+                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
+                    .unwrap(),
+                "from-file",
             );
             Ok(())
         });
@@ -678,62 +714,59 @@ prompts:
     #[test]
     fn test_tribal_env_api_key_beats_standard_env() {
         Jail::expect_with(|jail| {
-            jail.create_file("tribal.yaml", "embedding:\n  provider: openai\n")?;
-            jail.set_env("TRIBAL_EMBEDDING__API_KEY", "from-tribal-env");
+            jail.create_file("tribal.yaml", &openai_genesis_yaml(""))?;
+            jail.set_env("TRIBAL_CREDENTIALS__OPENAI_DEFAULT__API_KEY", "from-tribal-env");
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(
-                config.embedding.api_key.as_ref().map(ApiKey::as_str),
-                Some("from-tribal-env"),
+                config
+                    .credentials
+                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
+                    .unwrap(),
+                "from-tribal-env",
             );
             Ok(())
         });
     }
 
     #[test]
-    fn test_openai_api_key_satisfies_validation() {
+    fn test_openai_api_key_fills_the_genesis_connection() {
         Jail::expect_with(|jail| {
-            let mut fixture = TribalConfig::minimum_valid("postgres://h/db");
-            fixture.embedding.provider = ProviderKind::OpenAi;
-            write_config_yaml(jail, &fixture);
+            jail.create_file("tribal.yaml", &openai_genesis_yaml(""))?;
             jail.set_env(ENV_OPENAI_API_KEY, "from-standard-env");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(
-                config.embedding.api_key.as_ref().map(ApiKey::as_str),
-                Some("from-standard-env"),
-            );
-            let result = validate(&config);
-            assert!(
-                result.is_ok(),
-                "validate must pass when the standard env var supplies the key, got {result:?}",
+                config
+                    .credentials
+                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
+                    .unwrap(),
+                "from-standard-env",
             );
             Ok(())
         });
     }
 
     #[test]
-    fn test_empty_standard_env_var_does_not_satisfy_validation() {
+    fn test_empty_standard_env_var_leaves_the_genesis_connection_unresolved() {
         Jail::expect_with(|jail| {
-            let mut fixture = TribalConfig::minimum_valid("postgres://h/db");
-            fixture.embedding.provider = ProviderKind::OpenAi;
-            write_config_yaml(jail, &fixture);
+            jail.create_file("tribal.yaml", &openai_genesis_yaml(""))?;
             // Docker compose's `${OPENAI_API_KEY:-}` emits an empty value
             // when the host env var is unset; the fallback must treat that
-            // as "no key reachable" so validation fires loudly with the
-            // existing "api_key is required" literal.
+            // as "no key reachable" so the catalogue resolves fail-closed.
             jail.set_env(ENV_OPENAI_API_KEY, "");
 
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
-            assert!(config.embedding.api_key.is_none());
-            let result = validate(&config);
             assert!(
-                result.is_err(),
-                "validate must fail when the standard env var is empty, got {result:?}",
+                config
+                    .credentials
+                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
+                    .is_err(),
+                "an empty standard env var must not satisfy the genesis credential",
             );
             Ok(())
         });
@@ -744,13 +777,10 @@ prompts:
         Jail::expect_with(|jail| {
             jail.create_file(
                 "tribal.yaml",
-                r"
-embedding:
-  provider: openai
-inference:
-  triage:
-    provider: anthropic
-",
+                &format!(
+                    "{}inference:\n  triage:\n    provider: anthropic\n",
+                    openai_genesis_yaml(""),
+                ),
             )?;
             jail.set_env(ENV_OPENAI_API_KEY, "openai-key");
             jail.set_env(ENV_ANTHROPIC_API_KEY, "anthropic-key");
@@ -758,8 +788,11 @@ inference:
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), None, None).unwrap();
             assert_eq!(
-                config.embedding.api_key.as_ref().map(ApiKey::as_str),
-                Some("openai-key")
+                config
+                    .credentials
+                    .resolve_api_key(ProviderKind::OpenAi, &openai_endpoint())
+                    .unwrap(),
+                "openai-key",
             );
             assert_eq!(
                 config.inference.triage.api_key.as_ref().map(ApiKey::as_str),
@@ -781,16 +814,17 @@ inference:
             }
 
             // For every provider that does not require an API key, the
-            // fallback must leave `api_key` as `None` for every stage that
-            // consults it — not only the embedding stage.
+            // fallback must leave the inference stages as `None` and never
+            // synthesise or fill a genesis catalogue key.
             for provider in ProviderKind::ALL
                 .into_iter()
                 .filter(|k| !k.requires_api_key())
             {
                 let yaml = format!(
                     "\
-embedding:
-  provider: {provider}
+init:
+  embedding:
+    provider: {provider}
 inference:
   extraction:
     provider: {provider}
@@ -804,8 +838,11 @@ inference:
                 let path = jail.directory().join("tribal.yaml");
                 let config = load_config(path.to_str().unwrap(), None, None).unwrap();
 
+                assert!(
+                    config.credentials.is_empty(),
+                    "{provider} genesis synthesised a catalogue key from a standard env var",
+                );
                 let stages = [
-                    ("embedding", &config.embedding.api_key),
                     ("inference.extraction", &config.inference.extraction.api_key),
                     ("inference.triage", &config.inference.triage.api_key),
                     ("inference.relation", &config.inference.relation.api_key),
@@ -827,9 +864,11 @@ inference:
     fn test_provider_cli_overrides_cascade() {
         Jail::expect_with(|jail| {
             let overrides = CliOverrides {
-                embedding: Some(EmbeddingCliOverrides {
-                    provider: Some(ProviderKind::OpenAi),
-                    model: Some("text-embedding-3-small".into()),
+                init: Some(InitCliOverrides {
+                    embedding: Some(EmbeddingCliOverrides {
+                        provider: Some(ProviderKind::OpenAi),
+                        model: Some("text-embedding-3-small".into()),
+                    }),
                 }),
                 inference: Some(InferenceCliOverrides {
                     extraction: Some(InferenceStageCliOverrides {
@@ -851,8 +890,8 @@ inference:
             let path = jail.directory().join("tribal.yaml");
             let config = load_config(path.to_str().unwrap(), Some(overrides), None).unwrap();
 
-            assert_eq!(config.embedding.provider, ProviderKind::OpenAi);
-            assert_eq!(config.embedding.model, "text-embedding-3-small");
+            assert_eq!(config.init.embedding.provider, ProviderKind::OpenAi);
+            assert_eq!(config.init.embedding.model, "text-embedding-3-small");
             assert_eq!(
                 config.inference.extraction.provider,
                 ProviderKind::Anthropic,

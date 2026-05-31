@@ -10,8 +10,8 @@ Next steps:
 
 1. These flag values were NOT persisted because the config file already exists.
    Edit /etc/tribal/tribal.yaml or export the corresponding TRIBAL_* env vars:
-     export TRIBAL_EMBEDDING__PROVIDER=openai
-     export TRIBAL_EMBEDDING__MODEL=text-embedding-3-small
+     export TRIBAL_INIT__EMBEDDING__PROVIDER=openai
+     export TRIBAL_INIT__EMBEDDING__MODEL=text-embedding-3-small
      export TRIBAL_INFERENCE__EXTRACTION__PROVIDER=openai
      export TRIBAL_INFERENCE__EXTRACTION__MODEL=gpt-4o-mini
      export TRIBAL_TELEMETRY__OTLP_ENDPOINT=http://localhost:4317

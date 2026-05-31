@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn test_config_validate_failed_with_api_key_error_has_targeted_hint() {
         let diagnostics = Diagnostics::from(vec![ValidationError::MissingApiKey {
-            stage: ProviderStage::Embedding,
+            stage: ProviderStage::Triage,
             provider: ProviderKind::OpenAi,
         }]);
         let outcome = CheckOutcome::config_validate_failed(diagnostics);
@@ -140,8 +140,8 @@ mod tests {
                 remediation: CheckRemediation::FixConfigInvariant { hints },
             } if stored.len() == 1
                 && hints.len() == 1
-                && hints[0].contains("embedding.api_key")
-                && hints[0].contains("TRIBAL_EMBEDDING__API_KEY")
+                && hints[0].contains("inference.triage.api_key")
+                && hints[0].contains("TRIBAL_INFERENCE__TRIAGE__API_KEY")
                 && hints[0].contains("OPENAI_API_KEY"),
         ));
     }

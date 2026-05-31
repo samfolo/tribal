@@ -20,7 +20,8 @@ mod validation;
 
 pub use cli_overrides::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
-    InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
+    InferenceStageCliOverrides, InitCliOverrides, PersistedCredentialEntry, ServerCliOverrides,
+    TelemetryCliOverrides,
 };
 pub use divergence::{
     WARNING_CONFIG_UNPARSEABLE, WARNING_DATABASE_URL_DIVERGENCE, check_config_divergence,
@@ -46,8 +47,8 @@ pub use sections::{
     DEFAULT_DISCOVERY_LIMIT, DEFAULT_DISCOVERY_MAX_LIMIT, DEFAULT_EMBEDDING_DIMENSIONS,
     DEFAULT_EMBEDDING_MODEL, DEFAULT_EXPLORATION_DEPTH, DEFAULT_EXPLORATION_LIMIT,
     DEFAULT_EXPLORATION_MAX_DEPTH, DEFAULT_EXPLORATION_MAX_LIMIT, DEFAULT_OVERFETCH_MULTIPLIER,
-    DEFAULT_SIMILARITY_THRESHOLD, DatabaseConfig, DiscoveryConfig, EmbeddingConfig,
-    ExplorationConfig, FileRotation, InferenceConfig, InitConfig, InitEmbeddingConfig,
+    DEFAULT_SIMILARITY_THRESHOLD, DatabaseConfig, DiscoveryConfig, ExplorationConfig, FileRotation,
+    InferenceConfig, InitConfig, InitEmbeddingConfig,
     LimitsConfig, LoadedCredentials, LogFormat, LogOutput, LoggingConfig,
     MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_LIFECYCLE_DURATION_MS, MAX_OVERFETCH_MULTIPLIER,
     MAX_TTL_HOURS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, MissingApiKey, OAuthConfig, PromptSource,

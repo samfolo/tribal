@@ -19,7 +19,6 @@ use crate::TribalConfig;
 #[derive(Debug, Clone, Copy)]
 pub enum SecretField {
     DatabaseUrl,
-    EmbeddingApiKey,
     ExtractionApiKey,
     TriageApiKey,
     RelationApiKey,
@@ -29,7 +28,6 @@ impl SecretField {
     /// All secret fields. Used by [`redact_secrets`] and tests.
     pub const ALL: &[Self] = &[
         Self::DatabaseUrl,
-        Self::EmbeddingApiKey,
         Self::ExtractionApiKey,
         Self::TriageApiKey,
         Self::RelationApiKey,
@@ -40,7 +38,6 @@ impl SecretField {
     pub fn path(self) -> &'static str {
         match self {
             Self::DatabaseUrl => "database.url",
-            Self::EmbeddingApiKey => "embedding.api_key",
             Self::ExtractionApiKey => "inference.extraction.api_key",
             Self::TriageApiKey => "inference.triage.api_key",
             Self::RelationApiKey => "inference.relation.api_key",
@@ -62,7 +59,6 @@ impl SecretField {
         };
         match self {
             Self::DatabaseUrl => config.database.url = value.to_owned(),
-            Self::EmbeddingApiKey => config.embedding.api_key = Some(key()),
             Self::ExtractionApiKey => config.inference.extraction.api_key = Some(key()),
             Self::TriageApiKey => config.inference.triage.api_key = Some(key()),
             Self::RelationApiKey => config.inference.relation.api_key = Some(key()),
@@ -172,8 +168,6 @@ inference:
     api_key: sk-secret-triage
   relation:
     api_key: sk-secret-relation
-embedding:
-  api_key: sk-secret-embedding
 ";
         let redacted = redact_secrets(yaml);
         assert!(
@@ -182,7 +176,6 @@ embedding:
         );
         assert!(!redacted.contains("sk-secret-triage"), "got: {redacted}");
         assert!(!redacted.contains("sk-secret-relation"), "got: {redacted}");
-        assert!(!redacted.contains("sk-secret-embedding"), "got: {redacted}");
     }
 
     #[test]

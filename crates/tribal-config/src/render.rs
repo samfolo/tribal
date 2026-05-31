@@ -16,13 +16,18 @@
 //! resulting [`CliOverrides`] via `serde_yaml`, with `skip_serializing_if`
 //! omitting the unpopulated slots.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use crate::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
-    InferenceStageCliOverrides, TelemetryCliOverrides, TribalConfig,
+    InferenceStageCliOverrides, InitCliOverrides, PersistedCredentialEntry, TelemetryCliOverrides,
+    TribalConfig,
     error::ConfigError,
-    sections::{EmbeddingConfig, InferenceConfig, StageInferenceConfig, TelemetryConfig},
+    sections::{
+        InferenceConfig, InitConfig, InitEmbeddingConfig, StageInferenceConfig, TelemetryConfig,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -60,13 +65,24 @@ pub(crate) trait Persisted {
 // ---------------------------------------------------------------------------
 
 impl Persisted for EmbeddingCliOverrides {
-    type Config = EmbeddingConfig;
+    type Config = InitEmbeddingConfig;
 
-    fn persisted(&self, config: &EmbeddingConfig) -> Self {
+    fn persisted(&self, config: &InitEmbeddingConfig) -> Self {
         let Self { provider, model } = self;
         Self {
             provider: provider.map(|_| config.provider),
             model: model.as_ref().map(|_| config.model.clone()),
+        }
+    }
+}
+
+impl Persisted for InitCliOverrides {
+    type Config = InitConfig;
+
+    fn persisted(&self, config: &InitConfig) -> Self {
+        let Self { embedding } = self;
+        Self {
+            embedding: embedding.as_ref().map(|o| o.persisted(&config.embedding)),
         }
     }
 }
@@ -123,9 +139,10 @@ impl Persisted for CliOverrides {
         let Self {
             server: _,
             database: _,
-            embedding,
+            init,
             inference,
             telemetry,
+            credentials: _,
         } = self;
         Self {
             // Server fields belong to the runtime invocation, never the
@@ -137,11 +154,42 @@ impl Persisted for CliOverrides {
             database: Some(DatabaseCliOverrides {
                 url: Some(config.database.url.clone()),
             }),
-            embedding: embedding.as_ref().map(|o| o.persisted(&config.embedding)),
+            init: init.as_ref().map(|o| o.persisted(&config.init)),
             inference: inference.as_ref().map(|o| o.persisted(&config.inference)),
             telemetry: telemetry.as_ref().map(|o| o.persisted(&config.telemetry)),
+            // When the genesis embedding identity is pinned, persist the
+            // matching catalogue connection skeleton so the runtime has an
+            // entry to resolve the credential into.
+            credentials: init
+                .as_ref()
+                .and_then(|_| persisted_genesis_credentials(config)),
         }
     }
+}
+
+/// Synthesises the genesis `<provider>_default` connection skeleton when the
+/// seeded embedding provider needs a key, so `tribal bootstrap` writes a
+/// catalogue entry the runtime can resolve the credential into. The key is
+/// supplied at runtime from the environment, never persisted.
+fn persisted_genesis_credentials(
+    config: &TribalConfig,
+) -> Option<BTreeMap<String, PersistedCredentialEntry>> {
+    let init = &config.init.embedding;
+    if !init.provider.requires_api_key() {
+        return None;
+    }
+    let base_url = init
+        .base_url
+        .clone()
+        .unwrap_or_else(|| init.provider.default_base_url().to_owned());
+    let name = format!("{}_default", init.provider.as_str());
+    Some(BTreeMap::from([(
+        name,
+        PersistedCredentialEntry {
+            provider_kind: init.provider,
+            base_url,
+        },
+    )]))
 }
 
 // ---------------------------------------------------------------------------
@@ -281,33 +329,35 @@ mod tests {
         );
     }
 
+    /// Builds a `CliOverrides` whose genesis embedding identity is pinned.
+    fn embedding_overrides(provider: Option<ProviderKind>, model: Option<String>) -> CliOverrides {
+        CliOverrides {
+            init: Some(InitCliOverrides {
+                embedding: Some(EmbeddingCliOverrides { provider, model }),
+            }),
+            ..CliOverrides::default()
+        }
+    }
+
     #[test]
     fn test_render_persisted_config_emits_only_supplied_embedding_fields() {
         let mut config = TribalConfig::minimum_valid("postgres://h/db");
-        config.embedding.provider = ProviderKind::OpenAi;
-        config.embedding.model = "text-embedding-3-small".into();
+        config.init.embedding.provider = ProviderKind::OpenAi;
+        config.init.embedding.model = "text-embedding-3-small".into();
 
-        let overrides = CliOverrides {
-            embedding: Some(EmbeddingCliOverrides {
-                provider: Some(ProviderKind::OpenAi),
-                model: None,
-            }),
-            ..CliOverrides::default()
-        };
+        let overrides = embedding_overrides(Some(ProviderKind::OpenAi), None);
 
         let parsed = parse_yaml(&render_persisted_config(&config, &overrides).unwrap());
+        let embedding = parsed
+            .get("init")
+            .and_then(|i| i.get("embedding"))
+            .expect("init.embedding subtree");
         assert_eq!(
-            parsed
-                .get("embedding")
-                .and_then(|e| e.get("provider"))
-                .and_then(|p| p.as_str()),
+            embedding.get("provider").and_then(|p| p.as_str()),
             Some("openai"),
         );
         assert!(
-            parsed
-                .get("embedding")
-                .and_then(|e| e.get("model"))
-                .is_none(),
+            embedding.get("model").is_none(),
             "model should be omitted when no flag supplied: {parsed:?}",
         );
     }
@@ -315,19 +365,17 @@ mod tests {
     #[test]
     fn test_render_persisted_config_emits_full_embedding_when_both_flags_supplied() {
         let mut config = TribalConfig::minimum_valid("postgres://h/db");
-        config.embedding.provider = ProviderKind::OpenAi;
-        config.embedding.model = "text-embedding-3-small".into();
+        config.init.embedding.provider = ProviderKind::OpenAi;
+        config.init.embedding.model = "text-embedding-3-small".into();
 
-        let overrides = CliOverrides {
-            embedding: Some(EmbeddingCliOverrides {
-                provider: Some(ProviderKind::OpenAi),
-                model: Some("text-embedding-3-small".into()),
-            }),
-            ..CliOverrides::default()
-        };
+        let overrides =
+            embedding_overrides(Some(ProviderKind::OpenAi), Some("text-embedding-3-small".into()));
 
         let parsed = parse_yaml(&render_persisted_config(&config, &overrides).unwrap());
-        let embedding = parsed.get("embedding").expect("embedding subtree");
+        let embedding = parsed
+            .get("init")
+            .and_then(|i| i.get("embedding"))
+            .expect("init.embedding subtree");
         assert_eq!(
             embedding.get("provider").and_then(|p| p.as_str()),
             Some("openai"),
@@ -335,6 +383,43 @@ mod tests {
         assert_eq!(
             embedding.get("model").and_then(|m| m.as_str()),
             Some("text-embedding-3-small"),
+        );
+    }
+
+    #[test]
+    fn test_render_persisted_config_emits_keyless_genesis_credential_skeleton() {
+        let mut config = TribalConfig::minimum_valid("postgres://h/db");
+        config.init.embedding.provider = ProviderKind::OpenAi;
+
+        let overrides = embedding_overrides(Some(ProviderKind::OpenAi), None);
+
+        let parsed = parse_yaml(&render_persisted_config(&config, &overrides).unwrap());
+        let entry = parsed
+            .get("credentials")
+            .and_then(|c| c.get("openai_default"))
+            .expect("openai_default connection skeleton");
+        assert_eq!(
+            entry.get("provider_kind").and_then(|p| p.as_str()),
+            Some("openai"),
+        );
+        assert!(entry.get("base_url").and_then(|u| u.as_str()).is_some());
+        assert!(
+            entry.get("api_key").is_none(),
+            "the key is never persisted: {parsed:?}",
+        );
+    }
+
+    #[test]
+    fn test_render_persisted_config_omits_credential_skeleton_for_keyless_provider() {
+        let mut config = TribalConfig::minimum_valid("postgres://h/db");
+        config.init.embedding.provider = ProviderKind::Ollama;
+
+        let overrides = embedding_overrides(Some(ProviderKind::Ollama), None);
+
+        let parsed = parse_yaml(&render_persisted_config(&config, &overrides).unwrap());
+        assert!(
+            parsed.get("credentials").is_none(),
+            "a keyless provider needs no catalogue entry: {parsed:?}",
         );
     }
 
@@ -439,23 +524,28 @@ mod tests {
         // What we render must parse back through `TribalConfig` without
         // tripping `deny_unknown_fields` on any section.
         let mut config = TribalConfig::minimum_valid("postgres://h/db");
-        config.embedding.provider = ProviderKind::OpenAi;
-        config.embedding.model = "text-embedding-3-small".into();
+        config.init.embedding.provider = ProviderKind::OpenAi;
+        config.init.embedding.model = "text-embedding-3-small".into();
 
-        let overrides = CliOverrides {
-            embedding: Some(EmbeddingCliOverrides {
-                provider: Some(ProviderKind::OpenAi),
-                model: Some("text-embedding-3-small".into()),
-            }),
-            ..CliOverrides::default()
-        };
+        let overrides =
+            embedding_overrides(Some(ProviderKind::OpenAi), Some("text-embedding-3-small".into()));
 
         let rendered = render_persisted_config(&config, &overrides).unwrap();
         let parsed: TribalConfig =
             serde_yaml::from_str(rendered.strip_prefix(CONFIG_HEADER).unwrap())
                 .expect("rendered config must round-trip through TribalConfig");
         assert_eq!(parsed.database.url, "postgres://h/db");
-        assert_eq!(parsed.embedding.provider, ProviderKind::OpenAi);
-        assert_eq!(parsed.embedding.model, "text-embedding-3-small");
+        assert_eq!(parsed.init.embedding.provider, ProviderKind::OpenAi);
+        assert_eq!(parsed.init.embedding.model, "text-embedding-3-small");
+        // The synthesised skeleton round-trips into a keyless catalogue entry.
+        let normalised =
+            tribal_domain::normalise_endpoint_url(ProviderKind::OpenAi.default_base_url()).unwrap();
+        assert!(
+            parsed
+                .credentials
+                .resolve(ProviderKind::OpenAi, &normalised)
+                .is_some(),
+            "the genesis connection must round-trip into the catalogue",
+        );
     }
 }
