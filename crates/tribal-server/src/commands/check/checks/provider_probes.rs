@@ -54,7 +54,21 @@ pub(in crate::commands::check) async fn act(
     let provider = provider_kind(config, target);
     let result = match target {
         ProviderStage::Embedding => {
-            probe_embedding_provider(state.http_client.clone(), &config.embedding).await
+            let base_url = config
+                .embedding
+                .base_url
+                .as_deref()
+                .unwrap_or_else(|| config.embedding.provider.default_base_url());
+            let api_key = config.embedding.api_key.as_ref().map_or("", |k| k.as_str());
+            probe_embedding_provider(
+                state.http_client.clone(),
+                config.embedding.provider,
+                &config.embedding.model,
+                config.embedding.dimensions,
+                base_url,
+                api_key,
+            )
+            .await
         }
         ProviderStage::Extraction => {
             probe_inference_provider(state.http_client.clone(), &config.inference.extraction).await

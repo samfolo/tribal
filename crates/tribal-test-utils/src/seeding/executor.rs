@@ -387,25 +387,38 @@ async fn handle_set_embedding_model(
 
     debug!("seed[{idx}]: SetEmbeddingModel model={model:?} dimensions={dimensions}");
 
-    // Create the genesis profile the seeded embeddings key against, mirroring
-    // what first-boot provisioning does in production.
-    let new_profile = NewEmbeddingProfile::builder()
-        .provider_kind(ProviderKind::Ollama)
-        .normalised_base_url(ProviderKind::DEFAULT_OLLAMA_BASE_URL.to_owned())
-        .model(model.to_owned())
-        .dimensions(u32::try_from(dimensions).expect("dimensions fit in u32"))
-        .fingerprint_hash(format!("seed:{model}:{dimensions}"))
-        .build();
-    let profile = PgEmbeddingProfileRepository
-        .insert(&mut *conn, &new_profile)
+    // Reuse the active profile when one already exists — the harness may have
+    // seeded the genesis from init.embedding so its endpoint matches the live
+    // embedding identity. Otherwise create a default-endpoint genesis, mirroring
+    // first-boot provisioning. The seeded embeddings key against, and take their
+    // dimension from, whichever profile is active.
+    let profile = if let Some(existing) = PgEmbeddingProfileRepository
+        .find_active(&mut *conn)
         .await
-        .expect("seed: insert genesis profile");
-    PgEmbeddingProfileRepository
-        .mark_complete(&mut *conn, profile.id())
-        .await
-        .expect("seed: complete genesis profile");
+        .expect("seed: find active profile")
+    {
+        existing
+    } else {
+        let new_profile = NewEmbeddingProfile::builder()
+            .provider_kind(ProviderKind::Ollama)
+            .normalised_base_url(ProviderKind::DEFAULT_OLLAMA_BASE_URL.to_owned())
+            .model(model.to_owned())
+            .dimensions(u32::try_from(dimensions).expect("dimensions fit in u32"))
+            .fingerprint_hash(format!("seed:{model}:{dimensions}"))
+            .build();
+        let inserted = PgEmbeddingProfileRepository
+            .insert(&mut *conn, &new_profile)
+            .await
+            .expect("seed: insert genesis profile");
+        PgEmbeddingProfileRepository
+            .mark_complete(&mut *conn, inserted.id())
+            .await
+            .expect("seed: complete genesis profile");
+        inserted
+    };
 
-    state.embedding_model = Some(model.to_owned());
+    let dimensions = usize::try_from(profile.dimensions()).expect("dimensions fit in usize");
+    state.embedding_model = Some(profile.model().to_owned());
     state.embedding_dimensions = Some(dimensions);
     state.embedding_group_assigner = Some(EmbeddingGroupAssigner::new(dimensions));
     state.embedding_profile_id = Some(profile.id());

@@ -1,4 +1,8 @@
-use tribal_config::{PromptSource, TribalConfig};
+use sqlx::PgPool;
+use tribal_config::{CredentialEntry, PromptSource, TribalConfig};
+use tribal_domain::normalise_endpoint_url;
+use tribal_inference::resolve_dimensions;
+use tribal_test_utils::ensure_genesis_profile_with_endpoint;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -89,4 +93,69 @@ pub fn test_config(
     config.logging.include_llm_content = true;
 
     config
+}
+
+/// Mirrors the resolved `config.embedding` identity into `init.embedding` (the
+/// genesis seed the runtime provisions from) and, for a key-requiring provider,
+/// a `<provider>_default` catalogue entry (the credential the runtime resolves
+/// the active profile against).
+///
+/// E2E tests configure embedding through `config.embedding`, but the runtime
+/// resolves the live embedding identity from the active profile and its
+/// credential from the catalogue. Calling this after the per-test override keeps
+/// the genesis profile, the registry, and the mounted embedding mock in
+/// agreement.
+pub fn mirror_embedding_into_init_and_catalogue(config: &mut TribalConfig) {
+    config.init.embedding.provider = config.embedding.provider;
+    config.init.embedding.model = config.embedding.model.clone();
+    config.init.embedding.dimensions = Some(config.embedding.dimensions);
+    config.init.embedding.base_url = config.embedding.base_url.clone();
+
+    if config.embedding.provider.requires_api_key() {
+        let base_url = config
+            .embedding
+            .base_url
+            .clone()
+            .unwrap_or_else(|| config.embedding.provider.default_base_url().to_owned());
+        config.credentials.insert(
+            format!("{}_default", config.embedding.provider.as_str()),
+            CredentialEntry {
+                provider_kind: config.embedding.provider,
+                base_url,
+                api_key: config.embedding.api_key.clone(),
+            },
+        );
+    }
+}
+
+/// Seeds the genesis embedding profile from `init.embedding` so the seed graph
+/// and the server's first-boot provisioning both reuse it.
+///
+/// Called after the config is resolved (so `init.embedding` reflects the test's
+/// final embedding identity) and before the seed runs, the resulting active
+/// profile carries the test's wiremock endpoint, which the server's provider
+/// builder constructs against.
+pub async fn seed_genesis_from_init(pool: &PgPool, config: &TribalConfig) {
+    let init = &config.init.embedding;
+    let base_url = init
+        .base_url
+        .clone()
+        .unwrap_or_else(|| init.provider.default_base_url().to_owned());
+    let normalised =
+        normalise_endpoint_url(&base_url).expect("init.embedding.base_url must normalise");
+    let dimensions = resolve_dimensions(init.provider, &init.model, init.dimensions)
+        .expect("init.embedding dimensions must resolve");
+
+    let mut conn = pool
+        .acquire()
+        .await
+        .expect("acquire connection for genesis");
+    ensure_genesis_profile_with_endpoint(
+        &mut conn,
+        init.provider,
+        &init.model,
+        dimensions,
+        &normalised,
+    )
+    .await;
 }

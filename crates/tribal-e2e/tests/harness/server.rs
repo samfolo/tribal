@@ -41,7 +41,7 @@ use wiremock::{
 };
 
 use super::{
-    config::test_config,
+    config::{mirror_embedding_into_init_and_catalogue, seed_genesis_from_init, test_config},
     diagnostics::{DiagnosticContext, ServerDiagnostic},
     mocks::{
         envelope::{
@@ -333,7 +333,34 @@ impl TestHarness {
         let mut setup = HarnessSetup::new();
         setup_fn(&mut setup);
 
-        // 5–6. Seed data (graph path or manual path)
+        // 5. Build config (before seeding so the genesis profile the seed
+        // attaches embeddings to matches the live embedding identity the
+        // server's provider builder constructs from).
+        let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");
+        let mut config = test_config(
+            ctx.database_url(),
+            &embedding_server.uri(),
+            &extraction_server.uri(),
+            &triage_server.uri(),
+            &relation_server.uri(),
+            prompts_dir.path().to_str().expect("prompts dir to str"),
+        );
+
+        if let Some(config_override) = setup.config_override.take() {
+            config_override(&mut config);
+        }
+
+        // The runtime provisions the genesis profile from init.embedding and
+        // resolves its credential from the catalogue, so mirror the test's
+        // config.embedding settings into both before validation and boot.
+        mirror_embedding_into_init_and_catalogue(&mut config);
+        validate(&config).expect("E2E test config must pass validation");
+
+        // Seed the genesis profile from init.embedding so both the seed below
+        // and the server's first-boot provisioning reuse it.
+        seed_genesis_from_init(&pool, &config).await;
+
+        // 6–7. Seed data (graph path or manual path)
         let mut raw_conn = ctx.raw_connection().await.expect("raw connection for seed");
 
         let (cli_project, labels) = if let Some(graph_fn) = setup.graph_fn {
@@ -400,25 +427,7 @@ impl TestHarness {
             (cli_project, labels)
         };
 
-        // 7. Build config
-        let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");
-        let mut config = test_config(
-            ctx.database_url(),
-            &embedding_server.uri(),
-            &extraction_server.uri(),
-            &triage_server.uri(),
-            &relation_server.uri(),
-            prompts_dir.path().to_str().expect("prompts dir to str"),
-        );
-
-        if let Some(config_override) = setup.config_override {
-            config_override(&mut config);
-        }
-
-        // 8. Validate
-        validate(&config).expect("E2E test config must pass validation");
-
-        // 9. Mount infrastructure mocks
+        // 8. Mount infrastructure mocks
         mount_infrastructure_mocks(
             &config,
             &embedding_server,
