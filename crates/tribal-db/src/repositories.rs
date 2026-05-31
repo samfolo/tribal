@@ -5,6 +5,7 @@
 //! `&mut PgConnection` as an explicit executor parameter, keeping
 //! repositories pool-agnostic.
 
+mod advisory_lock;
 mod auth_token;
 mod common;
 mod embedding;
@@ -35,6 +36,7 @@ mod token_usage;
 mod triage_result;
 mod triage_similar_item_decision;
 
+pub use advisory_lock::{AdvisoryLockRepository, PgAdvisoryLockRepository};
 pub use auth_token::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 pub use common::cursor::encode_cursor;
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};

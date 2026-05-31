@@ -5,6 +5,9 @@
 //! [`TestTransaction`](tribal_test_utils::TestTransaction) for isolation
 //! via transaction rollback.
 
+#[path = "repositories/advisory_lock.rs"]
+mod advisory_lock;
+
 #[path = "repositories/auth_token.rs"]
 mod auth_token;
 
