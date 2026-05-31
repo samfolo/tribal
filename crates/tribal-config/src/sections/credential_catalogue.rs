@@ -23,6 +23,23 @@ use serde::{Deserialize, Serialize};
 use tribal_domain::{ApiKey, ProviderKind, normalise_endpoint_url};
 
 // ---------------------------------------------------------------------------
+// Connection name grammar
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when `name` is a valid connection name: `[a-z][a-z0-9_]*`.
+///
+/// The grammar excludes hyphens because the env override
+/// `TRIBAL_CREDENTIALS__<NAME>__API_KEY` upper-cases the name into a figment
+/// double-underscore segment, and a hyphen is not a portable variable-name
+/// character.
+#[must_use]
+pub fn is_valid_connection_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+// ---------------------------------------------------------------------------
 // CredentialEntry
 // ---------------------------------------------------------------------------
 
@@ -162,6 +179,21 @@ mod tests {
         // Right kind, wrong endpoint.
         let other = normalise_endpoint_url("http://localhost:9999").unwrap();
         assert!(catalogue.resolve(ProviderKind::Ollama, &other).is_none());
+    }
+
+    #[test]
+    fn test_connection_name_grammar() {
+        // A trailing underscore is permitted; only a leading non-letter,
+        // uppercase, hyphen, or other punctuation is rejected.
+        for valid in ["openai_default", "o", "ollama2", "a_b_c", "x9", "trailing_"] {
+            assert!(is_valid_connection_name(valid), "{valid:?} should be valid");
+        }
+        for invalid in ["", "Openai", "open-ai", "9start", "_lead", "has space"] {
+            assert!(
+                !is_valid_connection_name(invalid),
+                "{invalid:?} should be invalid"
+            );
+        }
     }
 
     #[test]
