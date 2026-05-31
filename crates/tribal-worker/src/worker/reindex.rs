@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sqlx::PgConnection;
 use tokio::sync::Semaphore;
+use tracing::Instrument;
 use tribal_common::clamp_to_i32;
 use tribal_config::{CredentialCatalogue, MissingApiKey};
 use tribal_db::{
@@ -31,7 +32,7 @@ use tribal_db::{
 use tribal_domain::{
     DistanceMetric, EmbeddingErrorClass, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose,
     KnowledgeItemId, PrincipalId, ProviderKind, ReindexEntityKind, ReindexRun, ReindexRunId,
-    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, TokenUsageStage,
+    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, TokenUsageStage, span_attrs,
 };
 use tribal_inference::{
     BatchEmbeddingResult, EMBEDDING_PROBE_INPUT, EmbeddingProvider, EmbeddingRequest,
@@ -808,34 +809,42 @@ pub async fn drive_reindex_cycle(
     let Some(building) = PgEmbeddingProfileRepository.find_building(conn).await? else {
         return Ok(());
     };
-    let (provider, semaphore) = build_target_provider(registry, cache, credentials, &building)?;
-    let ctx = ReindexCtx {
-        run: &run,
-        building: &building,
-        provider: provider.as_ref(),
-        semaphore: &semaphore,
-    };
-    process_tasks(conn, &ctx, claimed_by).await?;
-    if run_dead_lettered(conn, run.id()).await? {
-        abort_run(
-            conn,
-            &run,
-            &building,
-            "a reindex task dead-lettered; rebuild required",
-        )
-        .await?;
-        return Ok(());
+
+    // One span per live run groups the cycle's work and its lifecycle events
+    // under the run id; the target model and dimensions decorate every child.
+    let span = tracing::info_span!(
+        "tribal.reindex.run",
+        { span_attrs::REINDEX_RUN_ID } = %run.id(),
+        { span_attrs::EMBEDDING_MODEL } = %building.model(),
+        { span_attrs::EMBEDDING_DIMENSIONS } = building.dimensions(),
+    );
+    async {
+        let (provider, semaphore) = build_target_provider(registry, cache, credentials, &building)?;
+        let ctx = ReindexCtx {
+            run: &run,
+            building: &building,
+            provider: provider.as_ref(),
+            semaphore: &semaphore,
+        };
+        process_tasks(conn, &ctx, claimed_by).await?;
+        if run_dead_lettered(conn, run.id()).await? {
+            abort_run(
+                conn,
+                &run,
+                &building,
+                "a reindex task dead-lettered; rebuild required",
+            )
+            .await?;
+            return Ok(());
+        }
+        build_partial_indexes(conn, &building).await?;
+        if catch_up_and_cutover(conn, &ctx).await? {
+            tracing::info!("reindex complete; the new profile is now active");
+        }
+        Ok(())
     }
-    build_partial_indexes(conn, &building).await?;
-    if catch_up_and_cutover(conn, &ctx).await? {
-        tracing::info!(
-            run_id = %run.id(),
-            model = %building.model(),
-            dimensions = building.dimensions(),
-            "reindex complete; the new profile is now active",
-        );
-    }
-    Ok(())
+    .instrument(span)
+    .await
 }
 
 /// Builds the building profile's partial HNSW indexes once the backlog is
