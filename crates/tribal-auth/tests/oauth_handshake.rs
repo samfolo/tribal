@@ -892,9 +892,29 @@ async fn test_token_omitted_scope_falls_back_to_registration() {
     let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
     let client_id = register["client_id"].as_str().unwrap().to_owned();
 
-    // authorize_code omits the scope parameter; the minted token must carry
-    // the registered scope, not the broader DEFAULT_GRANT_SCOPE.
-    let code = client.authorize_code(&client_id).await;
+    // The scope parameter is omitted entirely. The consent page must show
+    // the effective grant the code carries (the registered scope), and the
+    // minted token must carry it too, not the broader DEFAULT_GRANT_SCOPE.
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(read_body(response).await).unwrap();
+    assert!(
+        html.contains("tribal.knowledge:read"),
+        "consent page must show the effective registered scope when scope is omitted",
+    );
+    let target = extract_approve_href(&html);
+    let code = Url::parse(&target)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .expect("consent page carries the authorisation code");
+
     let response = client
         .post_token(token_form(&code, &client_id, VERIFIER, None))
         .await;
@@ -933,6 +953,10 @@ async fn test_token_blank_scope_falls_back_to_registration() {
     let response = client.authorize(&query).await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = String::from_utf8(read_body(response).await).unwrap();
+    assert!(
+        html.contains("tribal.knowledge:read"),
+        "consent page must show the effective registered scope when scope is blank",
+    );
     let target = extract_approve_href(&html);
     let code = Url::parse(&target)
         .unwrap()
@@ -1295,8 +1319,16 @@ fn extract_approve_href(html: &str) -> String {
     let anchor = html
         .find(r#"class="approve""#)
         .expect("consent page approve anchor present");
+    // Bound the href search to the approve anchor's own opening tag, so a
+    // later unrelated link cannot be followed if the anchor ever loses its
+    // href.
+    let tag_end = html[anchor..]
+        .find('>')
+        .map(|rel| anchor + rel)
+        .expect("approve anchor opening tag is closed");
+    let opening_tag = &html[anchor..tag_end];
     let href_marker = r#"href=""#;
-    let href_rel = html[anchor..]
+    let href_rel = opening_tag
         .find(href_marker)
         .expect("approve anchor carries an href");
     let start = anchor + href_rel + href_marker.len();

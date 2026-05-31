@@ -10,9 +10,7 @@
        external request. */
     :root {
       --colour-bg: oklch(0.1633 0.0055 355.53);
-      --colour-bg-deep: oklch(0.1391 0.0060 354.68);
       --colour-surface: oklch(0.2042 0.0076 48.33);
-      --colour-surface-raised: oklch(0.2388 0.0073 48.40);
       --colour-surface-code: oklch(0.1818 0.0078 48.27);
 
       --colour-text: oklch(0.9428 0.0076 61.45);
@@ -21,7 +19,6 @@
       --colour-text-subtle: oklch(0.6392 0.0113 48.54);
 
       --colour-rose-base: oklch(0.7800 0.0850 18);
-      --colour-rose-ink: oklch(0.9200 0.0500 18);
       --colour-border-tint: oklch(0.9314 0.0128 48.58);
       --colour-hue-warning: oklch(0.8000 0.1500 70);
 
@@ -274,9 +271,9 @@
     <dl class="detail">
       <div class="field">
         <dt>Client</dt>
-        <dd>tribal-cli-7f3a9c2e</dd>
+        <dd>Tribal CLI<span class="note">Self-reported by the client, not verified. Identifier: tribal-cli-7f3a9c2e</span></dd>
       </div>
-      <div class="field field--host">
+      <div class="field">
         <dt>Redirect host</dt>
         <dd>mcp.example.com<span class="note">The authorisation code is delivered here.</span></dd>
       </div>
@@ -285,8 +282,6 @@
         <dd>tribal.memory:read tribal.memory:write</dd>
       </div>
     </dl>
-
-    
 
     <a class="approve" id="approve" href="https://mcp.example.com/callback?code=abc123&#38;state=xyz">Authorise</a>
     <p class="deny">To deny, close this window.</p>
