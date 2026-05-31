@@ -16,7 +16,7 @@ use dashmap::DashMap;
 use sqlx::PgConnection;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
-use tribal_common::clamp_to_i32;
+use tribal_common::{clamp_to_i32, embedding_profile_fingerprint};
 use tribal_config::{CredentialCatalogue, MissingApiKey};
 use tribal_db::{
     AdvisoryLockRepository, DbError, EmbeddingIndexRepository, EmbeddingProfileRepository,
@@ -413,7 +413,13 @@ fn embedding_key(kind: ProviderKind, url: &str) -> Result<ProviderKey, ProviderR
 /// cover it, so a model-change reindex shares their client and rate-limit
 /// budget), resolves the credential fail-closed, and constructs the provider.
 /// [`build_target_provider`] wraps this with the per-profile cache.
-fn build_provider_for_identity(
+///
+/// # Errors
+///
+/// Returns [`TargetProviderError`] if the endpoint cannot be keyed or
+/// registered, no client or semaphore resolves, the credential is missing, or
+/// the provider kind has no embedding API.
+pub fn build_provider_for_identity(
     registry: &ProviderRegistry,
     credentials: &CredentialCatalogue,
     kind: ProviderKind,
@@ -432,6 +438,51 @@ fn build_provider_for_identity(
         .resolve_semaphore(&key)
         .ok_or(TargetProviderError::EndpointUnresolved)?;
     Ok((provider, semaphore))
+}
+
+/// Probes a built target provider for its drift signal and assembles the
+/// [`ReindexTarget`] a run is created from.
+///
+/// The probe digest is the cross-provider drift backstop: the same canonical
+/// input embedded and quantised, so a serving whose geometry shifts mid-build is
+/// caught at cutover. A provider-native revision token is left empty here.
+///
+/// # Errors
+///
+/// Returns [`InferenceError`] when the probe embedding call fails.
+pub async fn resolve_reindex_target(
+    provider: &dyn EmbeddingProvider,
+    provider_kind: ProviderKind,
+    normalised_base_url: String,
+    model: String,
+    dimensions: u32,
+    distance_metric: DistanceMetric,
+) -> Result<ReindexTarget, InferenceError> {
+    let response = provider
+        .embed(EmbeddingRequest {
+            input: EMBEDDING_PROBE_INPUT.to_owned(),
+            purpose: EmbeddingPurpose::Query,
+        })
+        .await?;
+    let revision_token = String::new();
+    let fingerprint_hash = embedding_profile_fingerprint(
+        provider_kind.as_str(),
+        &normalised_base_url,
+        &model,
+        dimensions,
+        distance_metric.as_str(),
+        &revision_token,
+    );
+    Ok(ReindexTarget {
+        provider_kind,
+        normalised_base_url,
+        model,
+        dimensions,
+        distance_metric,
+        revision_token,
+        probe_digest: Some(probe_digest(&response.vector)),
+        fingerprint_hash,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1276,6 +1327,38 @@ mod tests {
             quarantine_exceeds_cap(&over),
             "three of ten exceeds the cap",
         );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_reindex_target_probes_and_fingerprints() {
+        let probe_vector = vec![0.25_f32; 768];
+        let mock = MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(probe_vector.clone()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build();
+
+        let target = resolve_reindex_target(
+            &mock,
+            ProviderKind::Ollama,
+            "http://localhost:11500".to_owned(),
+            "nomic-embed-text:v1.5".to_owned(),
+            768,
+            DistanceMetric::Cosine,
+        )
+        .await
+        .expect("resolve target");
+
+        assert_eq!(target.provider_kind, ProviderKind::Ollama);
+        assert_eq!(target.model, "nomic-embed-text:v1.5");
+        assert_eq!(target.dimensions, 768);
+        assert_eq!(target.distance_metric, DistanceMetric::Cosine);
+        assert_eq!(target.revision_token, "");
+        assert_eq!(
+            target.probe_digest,
+            Some(probe_digest(&probe_vector)),
+            "the probe digest is the quantised hash of the probe embedding",
+        );
+        assert!(!target.fingerprint_hash.is_empty());
     }
 
     #[tokio::test]
