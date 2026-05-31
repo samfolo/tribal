@@ -1,9 +1,9 @@
 //! Reindex run and task domain types.
 //!
 //! A reindex run is one `tribal reindex` invocation: the operator-facing
-//! lifecycle and the §9 monitoring surface. Its work is leased out as reindex
-//! tasks, which reuse the ingestion lease invariants (claim implies a token,
-//! owner, and heartbeat) against a distinct state set.
+//! lifecycle and monitoring surface. Its work is leased out as reindex tasks,
+//! which reuse the ingestion lease invariants (claim implies a token, owner,
+//! and heartbeat) against a distinct state set.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

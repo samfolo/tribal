@@ -1,9 +1,9 @@
 //! Reindex quarantine repository: the durable permanent-failure relation.
 //!
-//! A `permanent`-class item or tag is recorded here and excluded from every §6
-//! set-difference, so one bad entity is durably skipped rather than re-swept
-//! forever. Keyed by `(target_profile_id, kind, entity_ref)` so re-enrolment is
-//! idempotent and the exclusion is a direct join.
+//! A `permanent`-class item or tag is recorded here and excluded from every
+//! reindex set-difference, so one bad entity is durably skipped rather than
+//! re-swept forever. Keyed by `(target_profile_id, kind, entity_ref)` so
+//! re-enrolment is idempotent and the exclusion is a direct join.
 
 use async_trait::async_trait;
 use sqlx::PgConnection;
