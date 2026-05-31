@@ -271,7 +271,7 @@ async fn test_items_without_embedding_is_the_set_difference() {
         1,
     );
     let pending = repo
-        .find_items_without_embedding(&mut txn, profile.id(), 10)
+        .find_items_without_embedding(&mut txn, profile.id(), None, 10)
         .await
         .expect("find");
     assert_eq!(pending, vec![missing]);
@@ -312,9 +312,73 @@ async fn test_items_without_embedding_is_the_set_difference() {
         0,
     );
     assert!(
-        repo.find_items_without_embedding(&mut txn, profile.id(), 10)
+        repo.find_items_without_embedding(&mut txn, profile.id(), None, 10)
             .await
             .expect("find after quarantine")
             .is_empty(),
     );
+}
+
+#[tokio::test]
+async fn test_find_items_without_embedding_pages_by_cursor() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgEmbeddingRepository;
+
+    let principal = PgPrincipalRepository
+        .insert(
+            &mut txn,
+            &a_new_principal()
+                .principal_key("user:set-diff-page".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert principal");
+    let project = PgProjectRepository
+        .insert(
+            &mut txn,
+            &a_new_project()
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    "test/set-diff-page",
+                    None,
+                ))
+                .build(),
+        )
+        .await
+        .expect("insert project");
+    let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, 768).await;
+
+    // Two un-embedded items; page with size 1 to walk the cursor across them.
+    for _ in 0..2 {
+        PgKnowledgeItemRepository
+            .insert(
+                &mut txn,
+                &a_new_knowledge_item()
+                    .project_id(project.id())
+                    .principal_id(principal.id())
+                    .build(),
+            )
+            .await
+            .expect("insert item");
+    }
+
+    let page_one = repo
+        .find_items_without_embedding(&mut txn, profile.id(), None, 1)
+        .await
+        .expect("page one");
+    assert_eq!(page_one.len(), 1);
+
+    let page_two = repo
+        .find_items_without_embedding(&mut txn, profile.id(), Some(page_one[0]), 1)
+        .await
+        .expect("page two");
+    assert_eq!(page_two.len(), 1);
+    assert!(page_two[0] > page_one[0], "the cursor must advance by id");
+
+    let page_three = repo
+        .find_items_without_embedding(&mut txn, profile.id(), Some(page_two[0]), 1)
+        .await
+        .expect("page three");
+    assert!(page_three.is_empty(), "no items remain past the last");
 }
