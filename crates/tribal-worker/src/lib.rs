@@ -15,4 +15,7 @@ mod worker;
 pub use error::WorkerError;
 pub use gauge_task::run_queue_health_gauges;
 pub use prompt::{reserved_keys, synthetic_validation_context};
-pub use worker::Worker;
+pub use worker::{
+    Worker,
+    reindex::{ReindexCreationOutcome, ReindexTarget, create_reindex_run},
+};

@@ -10,5 +10,6 @@ pub(crate) mod backfill;
 pub(crate) mod backoff;
 mod dispatch;
 pub(crate) mod heartbeat;
+pub(crate) mod reindex;
 
 pub use dispatch::Worker;
