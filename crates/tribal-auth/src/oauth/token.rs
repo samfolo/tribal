@@ -37,7 +37,7 @@ use crate::{
             InvalidTargetReason, OAuthError, require_param,
         },
         pkce::{CodeChallenge, CodeVerifier},
-        scope::{DEFAULT_GRANT_SCOPE, parse_scope_list},
+        scope::{grant_or_default, parse_scope_list},
     },
 };
 
@@ -310,10 +310,10 @@ async fn exchange(
         });
     }
 
-    let scope = code
-        .scope()
-        .filter(|s| !s.is_empty())
-        .map_or_else(|| DEFAULT_GRANT_SCOPE.to_owned(), str::to_owned);
+    // Resolve the minted grant through the shared resolver, the same one
+    // /authorize used when it issued the code, so the token cannot carry a
+    // different scope from the one the consent page displayed.
+    let scope = grant_or_default(code.scope());
 
     let scopes = parse_scope_list(&scope)?;
 

@@ -24,7 +24,7 @@ use crate::{
     oauth::{
         common::{GRANT_TYPE_AUTHORIZATION_CODE, RESPONSE_TYPE_CODE, is_loopback_host},
         error::{ClientMetadataRejection, InternalOperation, OAuthError, RedirectUriRejection},
-        scope::first_uncatalogued_scope,
+        scope::{first_uncatalogued_scope, present_scope},
     },
 };
 
@@ -185,13 +185,23 @@ async fn register(
     }
     validate_grant_response_consistency(&grant_types, &response_types)?;
 
-    if let Some(uncatalogued) = req.scope.as_deref().and_then(first_uncatalogued_scope) {
+    // Treat a blank or whitespace-only declared scope as absent so the stored
+    // client never carries an empty scope, which would later display as nothing
+    // on the consent page while a token still minted the default grant.
+    let scope = present_scope(req.scope.as_deref());
+    if let Some(uncatalogued) = scope.and_then(first_uncatalogued_scope) {
         return Err(OAuthError::InvalidClientMetadata {
             reason: ClientMetadataRejection::UnsupportedScope {
                 presented: uncatalogued.to_owned(),
             },
         });
     }
+
+    // The registered name is shown on the consent page, a security prompt, and
+    // is attacker-chosen at open registration. Validate it before persistence:
+    // a blank name resolves to none, and control or directional formatting
+    // characters or an excessive length are rejected.
+    let client_name = validate_client_name(req.client_name.as_deref())?;
 
     // Default an omitted auth method to the public PKCE client (`none`),
     // not the RFC 7591 §2 default of `client_secret_basic`. Tribal's
@@ -223,12 +233,12 @@ async fn register(
     let new = NewOauthClient::builder()
         .client_id(client_id.clone())
         .client_secret_hash(client_secret_hash)
-        .client_name(req.client_name.clone())
+        .client_name(client_name)
         .redirect_uris(redirect_uris.clone())
         .grant_types(grant_types.clone())
         .response_types(response_types.clone())
         .token_endpoint_auth_method(auth_method)
-        .scope(req.scope.clone())
+        .scope(scope.map(str::to_owned))
         .application_type(application_type)
         .build();
 
@@ -284,6 +294,55 @@ fn parse_application_type(raw: &str) -> Result<ApplicationType, OAuthError> {
             presented: raw.to_owned(),
         },
     })
+}
+
+/// Maximum number of characters in a registered `client_name` shown on the
+/// consent page.
+const MAX_CLIENT_NAME_CHARS: usize = 200;
+
+/// Validates and normalises a registered `client_name` for safe display on the
+/// consent page. A blank or whitespace-only name resolves to `None`. A name
+/// carrying control or Unicode directional-formatting characters, or exceeding
+/// [`MAX_CLIENT_NAME_CHARS`], is rejected: the value is attacker-chosen at open
+/// registration and the consent page is a security prompt, so a name that could
+/// reorder its own disclaimer, smuggle a newline, or push the redirect host out
+/// of view is not admitted.
+fn validate_client_name(raw: Option<&str>) -> Result<Option<String>, OAuthError> {
+    let Some(name) = raw else {
+        return Ok(None);
+    };
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_CLIENT_NAME_CHARS {
+        return Err(invalid_client_name(format!(
+            "exceeds {MAX_CLIENT_NAME_CHARS} characters"
+        )));
+    }
+    if trimmed.chars().any(is_unsafe_display_char) {
+        return Err(invalid_client_name(
+            "contains control or directional formatting characters".to_owned(),
+        ));
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
+fn invalid_client_name(detail: String) -> OAuthError {
+    OAuthError::InvalidClientMetadata {
+        reason: ClientMetadataRejection::InvalidClientName { detail },
+    }
+}
+
+/// Control characters (including newlines and tabs) and the Unicode
+/// bidirectional formatting characters, which can visually reorder the text
+/// that follows them, are unsafe to display in the consent prompt.
+fn is_unsafe_display_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{200E}' | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}')
 }
 
 fn validate_redirect_uri(raw: &str) -> Result<(), OAuthError> {
@@ -437,5 +496,50 @@ mod tests {
             )
             .is_empty(),
         );
+    }
+
+    #[test]
+    fn test_validate_client_name_normalises_blank_to_none() {
+        assert_eq!(validate_client_name(None).unwrap(), None);
+        assert_eq!(validate_client_name(Some("")).unwrap(), None);
+        assert_eq!(validate_client_name(Some("   ")).unwrap(), None);
+    }
+
+    #[test]
+    fn test_validate_client_name_trims_and_accepts() {
+        assert_eq!(
+            validate_client_name(Some("  Tribal CLI  ")).unwrap(),
+            Some("Tribal CLI".to_owned()),
+        );
+    }
+
+    #[test]
+    fn test_validate_client_name_rejects_directional_and_control_chars() {
+        // U+202E (right-to-left override) can visually reorder the disclaimer
+        // and identifier that follow the name on the consent page.
+        assert!(matches!(
+            validate_client_name(Some("Tribal\u{202E}lacirT")),
+            Err(OAuthError::InvalidClientMetadata {
+                reason: ClientMetadataRejection::InvalidClientName { .. },
+            }),
+        ));
+        // A newline would let the value span lines in the prompt.
+        assert!(matches!(
+            validate_client_name(Some("line one\nline two")),
+            Err(OAuthError::InvalidClientMetadata {
+                reason: ClientMetadataRejection::InvalidClientName { .. },
+            }),
+        ));
+    }
+
+    #[test]
+    fn test_validate_client_name_rejects_overlong() {
+        let long = "a".repeat(MAX_CLIENT_NAME_CHARS + 1);
+        assert!(matches!(
+            validate_client_name(Some(&long)),
+            Err(OAuthError::InvalidClientMetadata {
+                reason: ClientMetadataRejection::InvalidClientName { .. },
+            }),
+        ));
     }
 }

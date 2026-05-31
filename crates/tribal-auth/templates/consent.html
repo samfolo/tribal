@@ -272,7 +272,7 @@
       <div class="field">
         <dt>Client</dt>
 {%- if let Some(name) = client_name %}
-        <dd>{{ name }}<span class="note">Self-reported by the client, not verified. Identifier: {{ client_id }}</span></dd>
+        <dd><bdi>{{ name }}</bdi><span class="note">Self-reported by the client, not verified. Identifier: {{ client_id }}</span></dd>
 {%- else %}
         <dd>{{ client_id }}</dd>
 {%- endif %}
@@ -282,7 +282,7 @@
         <dd>{{ redirect_host }}<span class="note">The authorisation code is delivered here.</span></dd>
       </div>
       <div class="field">
-        <dt>Requested scope</dt>
+        <dt>Access granted</dt>
         <dd>{{ scope_display }}</dd>
       </div>
     </dl>

@@ -974,6 +974,104 @@ async fn test_token_blank_scope_falls_back_to_registration() {
 }
 
 #[tokio::test]
+async fn test_token_empty_registered_scope_resolves_to_default() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // A client may register a blank scope. It must not display as nothing on
+    // the consent page while the token still mints the default grant.
+    let register = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "scope": "",
+        }))
+        .await;
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
+    let client_id = register["client_id"].as_str().unwrap().to_owned();
+
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(read_body(response).await).unwrap();
+    assert!(
+        html.contains("tribal:read"),
+        "consent page must show the default grant when the registered scope is blank",
+    );
+    let target = extract_approve_href(&html);
+    let code = Url::parse(&target)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .expect("consent page carries the authorisation code");
+
+    let response = client
+        .post_token(token_form(&code, &client_id, VERIFIER, None))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(token["scope"], "tribal:read");
+}
+
+#[tokio::test]
+async fn test_consent_page_shows_explicit_requested_scope() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    let register = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "scope": "tribal:read tribal:write",
+        }))
+        .await;
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
+    let client_id = register["client_id"].as_str().unwrap().to_owned();
+
+    // An explicit request scope must appear on the page and be exactly what
+    // the minted token carries.
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}&scope=tribal%3Aread",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(read_body(response).await).unwrap();
+    assert!(
+        html.contains("tribal:read"),
+        "consent page must show the explicitly requested scope",
+    );
+    let target = extract_approve_href(&html);
+    let code = Url::parse(&target)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .expect("consent page carries the authorisation code");
+
+    let response = client
+        .post_token(token_form(&code, &client_id, VERIFIER, None))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(token["scope"], "tribal:read");
+}
+
+#[tokio::test]
 async fn test_authorize_omits_redirect_uri_with_single_registered() {
     let ctx = test_context().await;
     let pool = ctx.create_pool().await.unwrap();
