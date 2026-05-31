@@ -965,9 +965,13 @@ mod tests {
 
     use dashmap::DashMap;
     use tribal_config::CredentialCatalogue;
+    use tribal_db::{EmbeddingRepository, PgEmbeddingRepository};
+    use tribal_domain::{EmbeddingProfileId, PromptRole};
     use tribal_inference::{EmbeddingProvider, ProviderRegistry};
     use tribal_test_utils::{
-        ExhaustBehaviour, MockEmbeddingProvider, an_embedding_profile, an_embedding_response,
+        ExhaustBehaviour, MockEmbeddingProvider, Seed, a_candidate, a_new_knowledge_item,
+        a_new_prompt_version, active_embedding_profile, an_embedding_profile,
+        an_embedding_response, seed_triage_job, test_context,
     };
 
     use super::*;
@@ -1018,6 +1022,110 @@ mod tests {
                 .iter()
                 .all(|&v| (v - 0.5).abs() < f32::EPSILON),
             "each novel tag is re-embedded against the new active too",
+        );
+    }
+
+    /// Deviation 1, end to end through `commit_novel` against a live database: a
+    /// triage commit carrying a pre-embedded vector for a superseded geometry is
+    /// re-embedded against the active profile's provider before it is written, so
+    /// the persisted vector and its model lineage match the live active rather
+    /// than the stale pre-embed.
+    #[tokio::test]
+    async fn test_commit_novel_reembeds_a_superseded_vector_against_the_active() {
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+
+        // The live active is "new-model"; the driver has cached its provider,
+        // which returns a recognisable 0.5 vector for any input.
+        let seed = Seed::new()
+            .define_principal("op", "user:reembed-e2e")
+            .define_project("proj", "git@github.com:tribal/reembed-e2e.git")
+            .set_embedding_model("new-model", 768)
+            .define_prompt_version("sys", a_new_prompt_version().build())
+            .define_prompt_version(
+                "usr",
+                a_new_prompt_version()
+                    .role(PromptRole::User)
+                    .content_hash("c".repeat(64))
+                    .build(),
+            )
+            .execute(&mut txn)
+            .await;
+        let principal = seed.principal_id("op");
+        let project = seed.project_id("proj");
+        let active = active_embedding_profile(&mut txn).await;
+        let (job_id, _) = seed_triage_job(
+            &mut txn,
+            principal,
+            project,
+            seed.prompt_version_id("sys"),
+            seed.prompt_version_id("usr"),
+            &[a_candidate().build()],
+        )
+        .await;
+
+        let cache: EmbeddingProviderCache = Arc::new(DashMap::new());
+        let mock: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(vec![0.5_f32; 768]), None)
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        cache.insert(active.id(), mock);
+        let registry = ProviderRegistry::new(vec![]).expect("registry");
+        let credentials = CredentialCatalogue::default();
+        let reembed = ReembedDeps {
+            registry: &registry,
+            cache: &cache,
+            credentials: &credentials,
+        };
+
+        // The pre-embedded vector (all 0.1) and its model name the geometry a
+        // cutover has since superseded.
+        let new_item = a_new_knowledge_item()
+            .project_id(project)
+            .principal_id(principal)
+            .build();
+        commit_novel(
+            &mut txn,
+            job_id,
+            project,
+            0,
+            &new_item,
+            vec![0.1_f32; 768],
+            "superseded-model".to_owned(),
+            &[],
+            &[],
+            &[],
+            &reembed,
+        )
+        .await
+        .expect("commit_novel");
+
+        // The committed item carries no embedding under a fresh profile, so this
+        // recovers its id without commit_novel having to return it.
+        let item_ids = PgEmbeddingRepository
+            .find_items_without_embedding(&mut txn, EmbeddingProfileId::new(), None, 10)
+            .await
+            .expect("find items");
+        assert_eq!(item_ids.len(), 1, "the committed item is the only one");
+        let stored = PgEmbeddingRepository
+            .find_by_knowledge_item_id(&mut txn, item_ids[0], active.id())
+            .await
+            .expect("find embedding")
+            .expect("the committed item is embedded under the active");
+
+        assert!(
+            stored
+                .embedding()
+                .iter()
+                .all(|&v| (v - 0.5).abs() < f32::EPSILON),
+            "the stored vector is re-embedded by the active's provider, not the stale 0.1",
+        );
+        assert_eq!(
+            stored.model(),
+            "new-model",
+            "the stored lineage names the active model, not the superseded one",
         );
     }
 }
