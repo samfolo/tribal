@@ -39,7 +39,7 @@ CREATE TABLE projects (
 );
 
 --------------------------------------------------------------------------------
--- prompt_versions — content-addressed prompt storage
+-- prompt_versions: content-addressed prompt storage
 --------------------------------------------------------------------------------
 
 CREATE TABLE prompt_versions (
@@ -52,7 +52,7 @@ CREATE TABLE prompt_versions (
 );
 
 --------------------------------------------------------------------------------
--- tag_registry — global tag catalogue (TEXT PK)
+-- tag_registry: global tag catalogue (TEXT PK)
 --------------------------------------------------------------------------------
 
 CREATE TABLE tag_registry (
@@ -61,7 +61,7 @@ CREATE TABLE tag_registry (
 );
 
 --------------------------------------------------------------------------------
--- knowledge_items — append-only
+-- knowledge_items: append-only
 --------------------------------------------------------------------------------
 
 CREATE TABLE knowledge_items (
@@ -133,7 +133,7 @@ CREATE TABLE embeddings (
 );
 
 --------------------------------------------------------------------------------
--- item_external_references — append-only
+-- item_external_references: append-only
 --------------------------------------------------------------------------------
 
 CREATE TABLE item_external_references (
@@ -149,7 +149,7 @@ CREATE TABLE item_external_references (
 );
 
 --------------------------------------------------------------------------------
--- knowledge_item_relations — append-only
+-- knowledge_item_relations: append-only
 --------------------------------------------------------------------------------
 
 CREATE TABLE knowledge_item_relations (
@@ -163,7 +163,7 @@ CREATE TABLE knowledge_item_relations (
 );
 
 --------------------------------------------------------------------------------
--- item_observations — append-only
+-- item_observations: append-only
 --------------------------------------------------------------------------------
 
 CREATE TABLE item_observations (
@@ -251,7 +251,7 @@ CREATE TABLE tasks (
 );
 
 --------------------------------------------------------------------------------
--- triage_results — append-only
+-- triage_results: append-only
 --------------------------------------------------------------------------------
 
 CREATE TABLE triage_results (
@@ -280,7 +280,7 @@ CREATE TABLE triage_results (
 );
 
 --------------------------------------------------------------------------------
--- triage_similar_item_decisions — append-only
+-- triage_similar_item_decisions: append-only
 --------------------------------------------------------------------------------
 
 CREATE TABLE triage_similar_item_decisions (
@@ -297,7 +297,7 @@ CREATE TABLE triage_similar_item_decisions (
 );
 
 --------------------------------------------------------------------------------
--- token_usage — append-only
+-- token_usage: append-only
 --------------------------------------------------------------------------------
 
 CREATE TABLE token_usage (
@@ -409,7 +409,7 @@ CREATE TABLE reindex_quarantine (
 );
 
 --------------------------------------------------------------------------------
--- auth_tokens — principal FK uses ON DELETE RESTRICT
+-- auth_tokens: principal FK uses ON DELETE RESTRICT
 --------------------------------------------------------------------------------
 
 CREATE TABLE auth_tokens (
@@ -422,7 +422,7 @@ CREATE TABLE auth_tokens (
 );
 
 --------------------------------------------------------------------------------
--- retrieval_feedback — append-only
+-- retrieval_feedback: append-only
 --------------------------------------------------------------------------------
 
 CREATE TABLE retrieval_feedback (

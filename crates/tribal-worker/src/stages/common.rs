@@ -72,7 +72,7 @@ pub(crate) enum StageCommit {
 /// fields like `knowledge_item_id` are only available after INSERT
 /// RETURNING inside the commit transaction.
 pub(crate) enum TriageCommitDecision {
-    /// Novel candidate — create a new knowledge item with embedding and references.
+    /// Novel candidate: create a new knowledge item with embedding and references.
     Novel {
         /// The knowledge item to insert.
         knowledge_item: Box<NewKnowledgeItem>,
@@ -87,12 +87,12 @@ pub(crate) enum TriageCommitDecision {
         /// Tags resolved to existing entries, for `usage_count` increment.
         resolved_tags: Vec<String>,
     },
-    /// Duplicate candidate — record an observation against the matched item.
+    /// Duplicate candidate: record an observation against the matched item.
     Duplicate {
         /// The observation to insert.
         observation: NewItemObservation,
     },
-    /// Idempotency skip — result already exists for this `(job_id, batch_index)`.
+    /// Idempotency skip: result already exists for this `(job_id, batch_index)`.
     NoOp,
 }
 

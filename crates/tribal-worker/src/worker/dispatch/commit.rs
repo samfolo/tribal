@@ -75,14 +75,11 @@ impl Worker {
         }
     }
 
-    /// Commits extraction stage effects within a single transaction:
-    ///
-    /// 1. Inserts the extraction result.
-    /// 2. Creates triage tasks (skipped when `batch_size == 0`).
-    /// 3. Updates the job's batch size and original count.
-    /// 4. Transitions the job status to `Triaging` (or `Completed` /
-    ///    `Empty` when zero candidates were extracted).
-    /// 5. Marks the task as completed, guarded by claim token.
+    /// Commits extraction stage effects within a single transaction: the
+    /// extraction result, the triage tasks it fanned out (none on an empty
+    /// batch), the job's batch size and its status transition to triaging (or
+    /// straight to completed with an empty outcome when no candidates were
+    /// extracted), and the claim-guarded task completion.
     async fn commit_extraction(
         &self,
         task: &Task,
@@ -138,7 +135,7 @@ impl Worker {
                 .map_err(|e| stage_db_error(STAGE_EXTRACTION, "updating batch size", e))?;
 
             // Zero-candidate path: when extraction produces no candidates,
-            // the job completes immediately with an Empty outcome — no
+            // the job completes immediately with an Empty outcome; no
             // triage or relation stages are needed.
             let job_transition = if is_empty {
                 JobStatusTransition::builder()
@@ -170,7 +167,7 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_EXTRACTION, "committing transaction", e))?;
 
-            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+            // chrono i64 milliseconds to f64; precision loss negligible at this scale
             #[allow(clippy::cast_precision_loss)]
             let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
                 .num_milliseconds() as f64;
@@ -178,7 +175,7 @@ impl Worker {
                 .record_task_completed(task.task_type().as_str(), duration_ms);
 
             if is_empty {
-                // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+                // chrono i64 milliseconds to f64; precision loss negligible at this scale
                 #[allow(clippy::cast_precision_loss)]
                 let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
                 self.metrics()
@@ -500,7 +497,7 @@ impl Worker {
                     if won_commit {
                         (true, Some(outcome))
                     } else {
-                        // Idempotency hit — task completed but this
+                        // Idempotency hit; task completed but this
                         // attempt did not seal the batch.
                         (false, None)
                     }
@@ -516,7 +513,7 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
-                    // NoOp does not record job metrics — the job was
+                    // NoOp does not record job metrics; the job was
                     // already completed by a prior commit attempt.
                     (false, None)
                 }
@@ -526,7 +523,7 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_RELATION, "committing transaction", e))?;
 
-            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+            // chrono i64 milliseconds to f64; precision loss negligible at this scale
             #[allow(clippy::cast_precision_loss)]
             let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
                 .num_milliseconds() as f64;
@@ -534,7 +531,7 @@ impl Worker {
                 .record_task_completed(task.task_type().as_str(), duration_ms);
 
             if let Some(outcome) = relation_outcome {
-                // chrono i64 milliseconds to f64 — precision loss negligible at this scale
+                // chrono i64 milliseconds to f64; precision loss negligible at this scale
                 #[allow(clippy::cast_precision_loss)]
                 let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
                 self.metrics()
@@ -567,7 +564,7 @@ impl Worker {
     /// preventing relation overwrites.
     /// Returns `true` if this attempt was the winning commit, `false`
     /// if the batch was already sealed by a prior attempt (idempotency
-    /// hit — task completed but no job metrics should be recorded).
+    /// hit; task completed but no job metrics should be recorded).
     #[allow(clippy::too_many_arguments)]
     async fn commit_relation_relate(
         &self,
@@ -588,7 +585,7 @@ impl Worker {
             .map_err(|e| stage_db_error(STAGE_RELATION, "setting committed batch ID", e))?
             .is_none()
         {
-            tracing::warn!("committed_batch_id already set — completing task as idempotency hit");
+            tracing::warn!("committed_batch_id already set; completing task as idempotency hit");
 
             let rows = PgTaskRepository
                 .complete(txn, task.id(), claim_token)
@@ -654,7 +651,7 @@ impl Worker {
     ///
     /// Must be called within an active transaction.  The
     /// `current_task_id` is excluded from the sibling count as a
-    /// defensive guard — its updated status is visible on the same
+    /// defensive guard; its updated status is visible on the same
     /// connection but has not yet been committed to other transactions.
     ///
     /// Returns `true` if the fan-in fired (relation task creation was
