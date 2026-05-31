@@ -87,7 +87,11 @@ impl PersistableFlag {
     #[must_use]
     pub fn resolve_overrides(overrides: &CliOverrides) -> Vec<(Self, String)> {
         let mut out = Vec::new();
-        if let Some(embedding) = overrides.init.as_ref().and_then(|init| init.embedding.as_ref()) {
+        if let Some(embedding) = overrides
+            .init
+            .as_ref()
+            .and_then(|init| init.embedding.as_ref())
+        {
             if let Some(provider) = &embedding.provider {
                 out.push((Self::EmbeddingProvider, provider.to_string()));
             }

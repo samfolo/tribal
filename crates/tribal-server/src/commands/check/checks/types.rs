@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use tribal_config::{Diagnostics, ProviderStage, ValidationError, standard_env_var_name};
-use tribal_domain::{ProjectId, ProviderKind};
+use tribal_domain::{ProjectId, ProviderKind, ReindexRunState};
 
 use crate::error::FIRST_RUN_REQUIRED;
 
@@ -29,6 +29,7 @@ pub enum CheckName {
     ValidTokenExists,
     AdvertisedUrlReachable,
     BinaryUniqueness,
+    EmbeddingProfile,
     ProviderEmbedding,
     ProviderExtraction,
     ProviderTriage,
@@ -48,6 +49,7 @@ impl CheckName {
             Self::ValidTokenExists => "valid_token_exists",
             Self::AdvertisedUrlReachable => "advertised_url_reachable",
             Self::BinaryUniqueness => "binary_uniqueness",
+            Self::EmbeddingProfile => "embedding_profile",
             Self::ProviderEmbedding => "provider_embedding",
             Self::ProviderExtraction => "provider_extraction",
             Self::ProviderTriage => "provider_triage",
@@ -195,6 +197,34 @@ pub(in crate::commands::check) enum CheckDetail {
         provider: ProviderKind,
         error: String,
     },
+    /// No active embedding profile exists yet; first server boot provisions
+    /// it from `init.embedding`.
+    EmbeddingProfilePending,
+    /// The active embedding profile is healthy. `genesis_drift` carries the
+    /// genesis seed identity when it differs from the live profile, reported
+    /// as informational state (the seed is stale by design once a corpus
+    /// exists).
+    EmbeddingProfileLive {
+        provider: ProviderKind,
+        model: String,
+        dimensions: u32,
+        genesis_drift: Option<String>,
+    },
+    /// The active profile's provider endpoint has no resolvable credential in
+    /// the catalogue, the fail-closed condition the next server boot trips.
+    EmbeddingCredentialUnresolved {
+        provider: ProviderKind,
+        base_url: String,
+    },
+    /// A reindex run is live and/or items are quarantined out of the active
+    /// space, conditions that warrant operator attention.
+    EmbeddingReindexAttention {
+        live_run: Option<(String, ReindexRunState)>,
+        quarantined: u64,
+    },
+    /// A database query backing the embedding-profile check failed after
+    /// connectivity was confirmed.
+    EmbeddingProfileQueryFailed { error: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +330,11 @@ impl CheckDetail {
             Self::ProviderProbePassed { target, .. } | Self::ProviderProbeFailed { target, .. } => {
                 CheckName::from(*target)
             }
+            Self::EmbeddingProfilePending
+            | Self::EmbeddingProfileLive { .. }
+            | Self::EmbeddingCredentialUnresolved { .. }
+            | Self::EmbeddingReindexAttention { .. }
+            | Self::EmbeddingProfileQueryFailed { .. } => CheckName::EmbeddingProfile,
         }
     }
 
@@ -426,8 +461,71 @@ impl CheckDetail {
                 "{} provider ({provider}) probe failed: {error}",
                 target.section_path()
             ),
+            Self::EmbeddingProfilePending => {
+                "no active embedding profile yet; first server boot provisions it from \
+                 init.embedding"
+                    .into()
+            }
+            Self::EmbeddingProfileLive {
+                provider,
+                model,
+                dimensions,
+                genesis_drift,
+            } => render_embedding_profile_live(
+                *provider,
+                model,
+                *dimensions,
+                genesis_drift.as_deref(),
+            ),
+            Self::EmbeddingCredentialUnresolved { provider, base_url } => format!(
+                "the active embedding profile expects credentials for {provider} at {base_url}; \
+                 no catalogue entry resolves"
+            ),
+            Self::EmbeddingReindexAttention {
+                live_run,
+                quarantined,
+            } => render_reindex_attention(live_run.as_ref(), *quarantined),
+            Self::EmbeddingProfileQueryFailed { error } => {
+                format!("embedding-profile check query failed: {error}")
+            }
         }
     }
+}
+
+/// Renders an active-profile detail, appending the genesis divergence note as
+/// informational state when the seed no longer matches the live model.
+fn render_embedding_profile_live(
+    provider: ProviderKind,
+    model: &str,
+    dimensions: u32,
+    genesis_drift: Option<&str>,
+) -> String {
+    let base = format!("active embedding profile: {provider}/{model} ({dimensions}d)");
+    match genesis_drift {
+        Some(genesis) => format!(
+            "{base}; genesis seed init.embedding ({genesis}) differs from the live model \
+             (informational; update init.embedding to mirror it)"
+        ),
+        None => base,
+    }
+}
+
+/// Renders the reindex-attention warning, joining the live-run and
+/// quarantine lines that apply.
+fn render_reindex_attention(
+    live_run: Option<&(String, ReindexRunState)>,
+    quarantined: u64,
+) -> String {
+    let mut lines = Vec::new();
+    if let Some((run_id, state)) = live_run {
+        lines.push(format!("reindex run {run_id} is live ({state})"));
+    }
+    if quarantined > 0 {
+        lines.push(format!(
+            "{quarantined} item(s) quarantined out of the active embedding space"
+        ));
+    }
+    lines.join("\n")
 }
 
 /// Suffix appended to stdio token-verification renderings — stdio
@@ -485,6 +583,11 @@ pub(in crate::commands::check) enum CheckRemediation {
         target: ProviderStage,
         provider: ProviderKind,
     },
+    /// Add a catalogue credential for the active embedding provider's
+    /// endpoint so the next server boot resolves it.
+    AddEmbeddingCredential { provider: ProviderKind },
+    /// Inspect the live reindex run and any quarantined items.
+    InspectReindexRun,
 }
 
 impl CheckRemediation {
@@ -556,6 +659,23 @@ impl CheckRemediation {
                     }
                 };
                 format!("{head}, or run `tribal serve` to see the underlying startup probe warning")
+            }
+            Self::AddEmbeddingCredential { provider } => {
+                let connection = format!("{provider}_default");
+                let path = format!("credentials.{connection}.api_key");
+                match standard_env_var_name(*provider) {
+                    Some(standard) => format!(
+                        "set `{path}` (or export `TRIBAL_CREDENTIALS__{}__API_KEY` / `{standard}`) \
+                         so the active profile's endpoint resolves",
+                        connection.to_uppercase()
+                    ),
+                    None => format!("add `credentials.{connection}` for the active endpoint"),
+                }
+            }
+            Self::InspectReindexRun => {
+                "confirm the reindex worker is running (cancel a stalled run with `tribal reindex \
+                 cancel`), then re-run `tribal reindex` once any quarantined items are addressed"
+                    .into()
             }
         }
     }

@@ -4,10 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     auth::AuthConfig, credential_catalogue::CredentialCatalogue, database::DatabaseConfig,
-    discovery::DiscoveryConfig, exploration::ExplorationConfig,
-    inference::InferenceConfig, init::InitConfig, limits::LimitsConfig, logging::LoggingConfig,
-    oauth::OAuthConfig, prompts::PromptsConfig, server::ServerConfig, telemetry::TelemetryConfig,
-    worker::WorkerConfig,
+    discovery::DiscoveryConfig, exploration::ExplorationConfig, inference::InferenceConfig,
+    init::InitConfig, limits::LimitsConfig, logging::LoggingConfig, oauth::OAuthConfig,
+    prompts::PromptsConfig, server::ServerConfig, telemetry::TelemetryConfig, worker::WorkerConfig,
 };
 
 // ---------------------------------------------------------------------------

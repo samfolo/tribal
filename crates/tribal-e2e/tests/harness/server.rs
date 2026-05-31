@@ -903,7 +903,12 @@ async fn mount_infrastructure_mocks(
 
     // -- Embedding server ----------------------------------------------------
     if let Some(tags_endpoint) = tags_path(embedding_provider) {
-        mount_tags(embedding_server, tags_endpoint, &config.init.embedding.model).await;
+        mount_tags(
+            embedding_server,
+            tags_endpoint,
+            &config.init.embedding.model,
+        )
+        .await;
     }
 
     let dimensions = config

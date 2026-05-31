@@ -11,7 +11,7 @@ use tribal_config::{ProviderStage, TransportKind};
 
 use super::{
     advertised_url_reachable, binary_uniqueness, config_parse, config_validate, database_reachable,
-    migrations_current, project_resolution, provider_probes,
+    embedding_profile, migrations_current, project_resolution, provider_probes,
     state::CheckState,
     types::{CheckName, CheckOutcome, SkipReason},
     valid_token_exists,
@@ -38,6 +38,7 @@ pub(in crate::commands::check) enum CheckStep {
     DatabaseReachable,
     MigrationsCurrent,
     ProjectResolution,
+    EmbeddingProfile,
     ValidTokenExists,
     AdvertisedUrlReachable,
     BinaryUniqueness,
@@ -55,6 +56,7 @@ impl CheckStep {
             Self::DatabaseReachable => CheckName::DatabaseReachable,
             Self::MigrationsCurrent => CheckName::MigrationsCurrent,
             Self::ProjectResolution => CheckName::ProjectResolution,
+            Self::EmbeddingProfile => CheckName::EmbeddingProfile,
             Self::ValidTokenExists => CheckName::ValidTokenExists,
             Self::AdvertisedUrlReachable => CheckName::AdvertisedUrlReachable,
             Self::BinaryUniqueness => CheckName::BinaryUniqueness,
@@ -71,7 +73,9 @@ impl CheckStep {
             Self::ConfigValidate | Self::DatabaseReachable | Self::BinaryUniqueness => {
                 require_config(state)
             }
-            Self::MigrationsCurrent | Self::ProjectResolution => require_pool(state),
+            Self::MigrationsCurrent | Self::ProjectResolution | Self::EmbeddingProfile => {
+                require_pool(state)
+            }
             Self::ValidTokenExists => require_token_resolution(state),
             Self::AdvertisedUrlReachable => require_advertised_url(state),
             Self::ProviderEmbedding => require_provider(state, ProviderStage::Embedding),
@@ -88,6 +92,7 @@ impl CheckStep {
             Self::DatabaseReachable => database_reachable::act(state).await,
             Self::MigrationsCurrent => migrations_current::act(state).await,
             Self::ProjectResolution => project_resolution::act(state).await,
+            Self::EmbeddingProfile => embedding_profile::act(state).await,
             Self::ValidTokenExists => valid_token_exists::act(state).await,
             Self::AdvertisedUrlReachable => advertised_url_reachable::act(state).await,
             Self::BinaryUniqueness => binary_uniqueness::act(state).await,

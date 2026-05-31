@@ -3,8 +3,8 @@
 use tribal::TokenStrategy;
 use tribal_common::sha256_hex;
 use tribal_config::{
-    CliOverrides, ENV_OPENAI_API_KEY, EmbeddingCliOverrides, InitCliOverrides, TelemetryCliOverrides,
-    TransportKind,
+    CliOverrides, ENV_OPENAI_API_KEY, EmbeddingCliOverrides, InitCliOverrides,
+    TelemetryCliOverrides, TransportKind,
 };
 use tribal_db::{
     AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
@@ -294,9 +294,14 @@ async fn test_setup_openai_without_key_succeeds() {
     let env = TestEnv::new();
     let _api_key_guard = EnvGuard::remove(ENV_OPENAI_API_KEY);
 
-    run_setup(ctx, &env.config_path, openai_embedding_overrides(None), None)
-        .await
-        .expect("openai embedding sets up; the credential resolves at boot");
+    run_setup(
+        ctx,
+        &env.config_path,
+        openai_embedding_overrides(None),
+        None,
+    )
+    .await
+    .expect("openai embedding sets up; the credential resolves at boot");
 }
 
 // ---------------------------------------------------------------------------

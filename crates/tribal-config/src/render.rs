@@ -368,8 +368,10 @@ mod tests {
         config.init.embedding.provider = ProviderKind::OpenAi;
         config.init.embedding.model = "text-embedding-3-small".into();
 
-        let overrides =
-            embedding_overrides(Some(ProviderKind::OpenAi), Some("text-embedding-3-small".into()));
+        let overrides = embedding_overrides(
+            Some(ProviderKind::OpenAi),
+            Some("text-embedding-3-small".into()),
+        );
 
         let parsed = parse_yaml(&render_persisted_config(&config, &overrides).unwrap());
         let embedding = parsed
@@ -527,8 +529,10 @@ mod tests {
         config.init.embedding.provider = ProviderKind::OpenAi;
         config.init.embedding.model = "text-embedding-3-small".into();
 
-        let overrides =
-            embedding_overrides(Some(ProviderKind::OpenAi), Some("text-embedding-3-small".into()));
+        let overrides = embedding_overrides(
+            Some(ProviderKind::OpenAi),
+            Some("text-embedding-3-small".into()),
+        );
 
         let rendered = render_persisted_config(&config, &overrides).unwrap();
         let parsed: TribalConfig =
