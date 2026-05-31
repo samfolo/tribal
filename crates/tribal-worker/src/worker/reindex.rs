@@ -353,30 +353,55 @@ pub fn build_target_provider(
     credentials: &CredentialCatalogue,
     profile: &EmbeddingProfile,
 ) -> Result<(Arc<dyn EmbeddingProvider>, Arc<Semaphore>), TargetProviderError> {
-    let kind = profile.provider_kind();
-    let url = profile.normalised_base_url();
-    let key = ProviderKey::new(kind.to_string(), url, RequestClass::Embedding)?;
-    registry.register_building(key.clone(), &DEFAULT_REINDEX_PROVIDER_LIMITS)?;
-
-    let provider = if let Some(cached) = cache.get(&profile.id()).map(|p| p.value().clone()) {
-        cached
-    } else {
-        let client = registry
-            .resolve_client(&key)
+    if let Some(cached) = cache.get(&profile.id()).map(|p| p.value().clone()) {
+        // The provider is built; its endpoint is registered, so the semaphore
+        // resolves without re-registering.
+        let key = embedding_key(profile.provider_kind(), profile.normalised_base_url())?;
+        let semaphore = registry
+            .resolve_semaphore(&key)
             .ok_or(TargetProviderError::EndpointUnresolved)?;
-        let api_key = credentials.resolve_api_key(kind, url)?;
-        let provider = make_embedding_provider(
-            kind,
-            client,
-            url,
-            profile.model(),
-            profile.dimensions(),
-            api_key,
-        )?;
-        cache.insert(profile.id(), Arc::clone(&provider));
-        provider
-    };
+        return Ok((cached, semaphore));
+    }
 
+    let built = build_provider_for_identity(
+        registry,
+        credentials,
+        profile.provider_kind(),
+        profile.normalised_base_url(),
+        profile.model(),
+        profile.dimensions(),
+    )?;
+    cache.insert(profile.id(), Arc::clone(&built.0));
+    Ok(built)
+}
+
+/// Keys an embedding endpoint for registry and credential lookups.
+fn embedding_key(kind: ProviderKind, url: &str) -> Result<ProviderKey, ProviderRegistryError> {
+    ProviderKey::new(kind.to_string(), url, RequestClass::Embedding)
+}
+
+/// Builds an embedding provider and its endpoint rate-limit semaphore from a
+/// target identity, with no per-profile cache.
+///
+/// Registers the endpoint if new (a no-op when the active providers already
+/// cover it, so a model-change reindex shares their client and rate-limit
+/// budget), resolves the credential fail-closed, and constructs the provider.
+/// [`build_target_provider`] wraps this with the per-profile cache.
+fn build_provider_for_identity(
+    registry: &ProviderRegistry,
+    credentials: &CredentialCatalogue,
+    kind: ProviderKind,
+    url: &str,
+    model: &str,
+    dimensions: u32,
+) -> Result<(Arc<dyn EmbeddingProvider>, Arc<Semaphore>), TargetProviderError> {
+    let key = embedding_key(kind, url)?;
+    registry.register_building(key.clone(), &DEFAULT_REINDEX_PROVIDER_LIMITS)?;
+    let client = registry
+        .resolve_client(&key)
+        .ok_or(TargetProviderError::EndpointUnresolved)?;
+    let api_key = credentials.resolve_api_key(kind, url)?;
+    let provider = make_embedding_provider(kind, client, url, model, dimensions, api_key)?;
     let semaphore = registry
         .resolve_semaphore(&key)
         .ok_or(TargetProviderError::EndpointUnresolved)?;
