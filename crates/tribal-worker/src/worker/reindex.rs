@@ -72,6 +72,29 @@ pub struct ReindexTarget {
 }
 
 impl ReindexTarget {
+    /// A copy of this target whose revision token is stamped with the probe
+    /// digest, for a probe-forced rebuild: the declared identity matches the
+    /// active but the geometry drifted and the provider exposes no native token,
+    /// so a synthetic token makes the new activation a distinct, recognisable row
+    /// rather than one that collides with the pre-force profile. The fingerprint
+    /// is recomputed over the stamped token.
+    fn with_probe_forced_revision(&self) -> Self {
+        let revision_token = self.probe_digest.clone().unwrap_or_default();
+        let fingerprint_hash = embedding_profile_fingerprint(
+            self.provider_kind.as_str(),
+            &self.normalised_base_url,
+            &self.model,
+            self.dimensions,
+            self.distance_metric.as_str(),
+            &revision_token,
+        );
+        Self {
+            revision_token,
+            fingerprint_hash,
+            ..self.clone()
+        }
+    }
+
     /// Projects the target into the `building`-profile insert shape.
     fn to_new_profile(&self) -> NewEmbeddingProfile {
         NewEmbeddingProfile::builder()
@@ -140,17 +163,30 @@ pub async fn create_reindex_run(
 
     // No-op when the target already matches the active (latest `complete`)
     // profile: identical declared identity and drift signals mean the corpus is
-    // already in this geometry, so there is nothing to re-embed. A declared
-    // identity that matches but whose drift signals diverged falls through to a
-    // fresh build, which re-embeds against the new serving.
-    if let Some(active) = PgEmbeddingProfileRepository.find_active(conn).await?
-        && target_matches_profile(target, &active)
+    // already in this geometry, so there is nothing to re-embed.
+    let active = PgEmbeddingProfileRepository.find_active(conn).await?;
+    if let Some(active) = active.as_ref()
+        && target_matches_profile(target, active)
     {
-        return Ok(ReindexCreationOutcome::Unchanged(active));
+        return Ok(ReindexCreationOutcome::Unchanged(active.clone()));
     }
 
+    // A declared identity that matches the active but whose probe diverged is a
+    // probe-forced rebuild: when the provider exposes no native revision token,
+    // stamp the synthetic one so the new activation is distinct rather than
+    // colliding with the pre-force profile. A genuinely new geometry inserts
+    // as-resolved.
+    let new_target = match active.as_ref() {
+        Some(active)
+            if declared_identity_matches(target, active) && target.revision_token.is_empty() =>
+        {
+            target.with_probe_forced_revision()
+        }
+        _ => target.clone(),
+    };
+
     let profile = PgEmbeddingProfileRepository
-        .insert(conn, &target.to_new_profile())
+        .insert(conn, &new_target.to_new_profile())
         .await?;
 
     let run = PgReindexRunRepository
@@ -167,16 +203,26 @@ pub async fn create_reindex_run(
     Ok(ReindexCreationOutcome::Created(run))
 }
 
-/// Reports whether a target's declared identity and drift signals match an
-/// existing profile, so a reindex to it would re-derive an identical geometry.
-fn target_matches_profile(target: &ReindexTarget, profile: &EmbeddingProfile) -> bool {
+/// Reports whether a target's declared identity (the config-re-derivable tuple,
+/// excluding the drift signals) matches an existing profile.
+fn declared_identity_matches(target: &ReindexTarget, profile: &EmbeddingProfile) -> bool {
     target.provider_kind == profile.provider_kind()
         && target.normalised_base_url == profile.normalised_base_url()
         && target.model == profile.model()
         && target.dimensions == profile.dimensions()
         && target.distance_metric == profile.distance_metric()
-        && target.revision_token == profile.revision_token()
+}
+
+/// Reports whether a target matches an existing profile closely enough that a
+/// reindex to it would re-derive an identical geometry: the declared identity,
+/// the probe digest, and the provider revision token. The revision token is
+/// compared only when the provider exposes one, because a probe-forced profile
+/// carries a synthetic token the configuration can never re-derive and must
+/// still be recognised as unchanged.
+fn target_matches_profile(target: &ReindexTarget, profile: &EmbeddingProfile) -> bool {
+    declared_identity_matches(target, profile)
         && target.probe_digest.as_deref() == profile.probe_digest()
+        && (target.revision_token.is_empty() || target.revision_token == profile.revision_token())
 }
 
 // ---------------------------------------------------------------------------
@@ -1386,6 +1432,111 @@ mod tests {
                 .expect("find_building")
                 .is_none(),
             "a no-op writes no building profile",
+        );
+    }
+
+    #[test]
+    fn test_target_matches_a_probe_forced_active_when_the_provider_has_no_native_token() {
+        // A probe-forced active carries a synthetic revision token (its probe
+        // digest); a provider that exposes no native token re-resolves an empty
+        // token, and the active must still be recognised as unchanged.
+        let profile = an_embedding_profile()
+            .normalised_base_url("http://localhost:11500".to_owned())
+            .revision_token("digest-1".to_owned())
+            .probe_digest(Some("digest-1".to_owned()))
+            .build();
+        let target = ReindexTarget {
+            revision_token: String::new(),
+            probe_digest: Some("digest-1".to_owned()),
+            ..a_target()
+        };
+        assert!(
+            target_matches_profile(&target, &profile),
+            "a synthetic revision token is ignored when the provider exposes none",
+        );
+    }
+
+    #[test]
+    fn test_target_does_not_match_when_a_native_revision_token_differs() {
+        let profile = an_embedding_profile()
+            .normalised_base_url("http://localhost:11500".to_owned())
+            .revision_token("sha256:old".to_owned())
+            .probe_digest(Some("digest-1".to_owned()))
+            .build();
+        let target = ReindexTarget {
+            revision_token: "sha256:new".to_owned(),
+            probe_digest: Some("digest-1".to_owned()),
+            ..a_target()
+        };
+        assert!(
+            !target_matches_profile(&target, &profile),
+            "a changed native revision token is drift, not a no-op",
+        );
+    }
+
+    #[test]
+    fn test_with_probe_forced_revision_stamps_the_probe_digest() {
+        let target = ReindexTarget {
+            revision_token: String::new(),
+            probe_digest: Some("digest-2".to_owned()),
+            ..a_target()
+        };
+        let forced = target.with_probe_forced_revision();
+        assert_eq!(
+            forced.revision_token, "digest-2",
+            "the synthetic token is the probe digest",
+        );
+        assert_ne!(
+            forced.fingerprint_hash, target.fingerprint_hash,
+            "the fingerprint changes with the stamped token",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_reindex_run_force_rebuilds_with_a_stamped_token_on_probe_drift() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let principal = insert_principal(&mut txn, "user:reindex-force").await;
+
+        // An active profile in the target's declared identity whose stored probe
+        // digest is the original; the provider exposes no native token.
+        let new_active = a_new_embedding_profile()
+            .normalised_base_url("http://localhost:11500".to_owned())
+            .probe_digest(Some("digest-original".to_owned()))
+            .fingerprint_hash("fp-original".to_owned())
+            .build();
+        let active = PgEmbeddingProfileRepository
+            .insert(&mut txn, &new_active)
+            .await
+            .expect("insert active");
+        PgEmbeddingProfileRepository
+            .mark_complete(&mut txn, active.id())
+            .await
+            .expect("mark complete");
+
+        // Same declared identity, diverged probe, no native token.
+        let target = ReindexTarget {
+            revision_token: String::new(),
+            probe_digest: Some("digest-drifted".to_owned()),
+            ..a_target()
+        };
+        let ReindexCreationOutcome::Created(_) = create_reindex_run(&mut txn, &target, principal)
+            .await
+            .expect("create")
+        else {
+            panic!("a diverged probe forces a rebuild, not a no-op");
+        };
+
+        let building = PgEmbeddingProfileRepository
+            .find_building(&mut txn)
+            .await
+            .expect("find_building")
+            .expect("a building profile");
+        assert_eq!(
+            building.revision_token(),
+            "digest-drifted",
+            "the forced rebuild stamps the probe digest as a synthetic revision token",
         );
     }
 
