@@ -264,13 +264,10 @@ mod tests {
             checks: vec![CheckResult::Fail {
                 name: CheckName::ConfigValidate,
                 detail: "server.bind_address cannot be set when server.transport is stdio\n\
-                         embedding.api_key is required when embedding.provider is openai\n\
                          inference.triage.api_key is required when inference.triage.provider is \
                          openai"
                     .into(),
                 remediation: "remove `server.bind_address` for stdio transport\n\
-                              set `embedding.api_key` or export \
-                              `TRIBAL_EMBEDDING__API_KEY` / `OPENAI_API_KEY`\n\
                               set `inference.triage.api_key` or export \
                               `TRIBAL_INFERENCE__TRIAGE__API_KEY` / `OPENAI_API_KEY`"
                     .into(),

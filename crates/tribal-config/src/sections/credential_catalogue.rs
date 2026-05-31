@@ -156,6 +156,33 @@ impl CredentialCatalogue {
         self.0.insert(name, entry)
     }
 
+    /// Supplies a key to the entry matching `(provider_kind, normalised base
+    /// URL)` only when that entry currently has none, leaving an explicitly
+    /// configured key untouched.
+    ///
+    /// This is the genesis convenience: `tribal bootstrap` writes a keyless
+    /// `<provider>_default` skeleton, and the bare provider environment
+    /// variable (for example `OPENAI_API_KEY`) supplies its key at runtime
+    /// when neither an in-file value nor `TRIBAL_CREDENTIALS__<NAME>__API_KEY`
+    /// did. An endpoint with no entry stays the fail-closed condition.
+    pub fn fill_missing_key(
+        &mut self,
+        provider_kind: ProviderKind,
+        normalised_base_url: &str,
+        api_key: ApiKey,
+    ) {
+        for entry in self.0.values_mut() {
+            if entry.api_key.is_none()
+                && entry.provider_kind == provider_kind
+                && normalise_endpoint_url(&entry.base_url).as_deref().ok()
+                    == Some(normalised_base_url)
+            {
+                entry.api_key = Some(api_key);
+                return;
+            }
+        }
+    }
+
     /// Iterates the catalogue's `(name, entry)` pairs in name order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &CredentialEntry)> {
         self.0.iter().map(|(name, entry)| (name.as_str(), entry))

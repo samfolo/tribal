@@ -75,11 +75,11 @@ async fn test_validate_failure_targeted_skip_for_provider_under_providers_flag()
     let _lock = serial_lock().await;
     let env = TestEnv::new();
     let _pool = fresh_db(ctx).await;
-    // OpenAI embedding requires `api_key`; omitting it trips a
-    // targeted skip for the embedding provider probe.
+    // An inference stage missing its api key trips a config-validate failure
+    // and a targeted skip of that stage's provider probe.
     let mut config = TribalConfig::minimum_valid(ctx.database_url());
-    config.embedding.provider = ProviderKind::OpenAi;
-    config.embedding.api_key = None;
+    config.inference.triage.provider = ProviderKind::OpenAi;
+    config.inference.triage.api_key = None;
     write_config(&env.config_path, &config);
 
     let (stdout, _stderr, _output) = run_check(CheckRun {
@@ -94,7 +94,36 @@ async fn test_validate_failure_targeted_skip_for_provider_under_providers_flag()
 
     let output = parse_json(&stdout);
     assert_eq!(row_status(&output, "config_validate"), Some("fail"));
-    assert_eq!(row_status(&output, "provider_embedding"), Some("skip"));
+    assert_eq!(row_status(&output, "provider_triage"), Some("skip"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_keyless_embedding_genesis_fails_the_provider_probe() {
+    let ctx = test_context().await;
+    let _lock = serial_lock().await;
+    let env = TestEnv::new();
+    let _pool = fresh_db(ctx).await;
+    // An OpenAI embedding genesis resolves its credential through the
+    // catalogue; with no matching entry the re-homed probe fails closed
+    // rather than being skipped, and the config itself stays valid.
+    let mut config = TribalConfig::minimum_valid(ctx.database_url());
+    config.init.embedding.provider = ProviderKind::OpenAi;
+    config.init.embedding.model = "text-embedding-3-small".to_owned();
+    write_config(&env.config_path, &config);
+
+    let (stdout, _stderr, _output) = run_check(CheckRun {
+        config_path: &env.config_path,
+        json: true,
+        providers: true,
+        project: None,
+        token: None,
+    })
+    .await
+    .expect("check runs");
+
+    let output = parse_json(&stdout);
+    assert_eq!(row_status(&output, "config_validate"), Some("pass"));
+    assert_eq!(row_status(&output, "provider_embedding"), Some("fail"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -3,8 +3,8 @@
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use tribal_config::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
-    InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides, TransportKind,
-    default_config_file_path,
+    InferenceStageCliOverrides, InitCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
+    TransportKind, default_config_file_path,
 };
 use tribal_domain::{ProviderKind, Scope, is_mintable_scope};
 
@@ -316,13 +316,15 @@ pub struct ProviderArgs {
 impl ProviderArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
-    /// Each subtree (`embedding`, `inference.*`) is populated only when at
+    /// Each subtree (`init.embedding`, `inference.*`) is populated only when at
     /// least one of its flags was supplied, so absent flags never mask
     /// lower-precedence layers.
     pub fn into_cli_overrides(self) -> CliOverrides {
-        let embedding = match (self.embedding_provider, self.embedding_model) {
+        let init = match (self.embedding_provider, self.embedding_model) {
             (None, None) => None,
-            (provider, model) => Some(EmbeddingCliOverrides { provider, model }),
+            (provider, model) => Some(InitCliOverrides {
+                embedding: Some(EmbeddingCliOverrides { provider, model }),
+            }),
         };
 
         let extraction = inference_stage_overrides(
@@ -347,7 +349,7 @@ impl ProviderArgs {
         };
 
         CliOverrides {
-            embedding,
+            init,
             inference,
             ..CliOverrides::default()
         }
@@ -493,9 +495,11 @@ impl BootstrapArgs {
         CliOverrides {
             server,
             database: database.database,
-            embedding: provider.embedding,
+            init: provider.init,
             inference: provider.inference,
             telemetry: telemetry.telemetry,
+            // Synthesised only at persistence time, never from flags.
+            credentials: None,
         }
     }
 }
@@ -1140,7 +1144,7 @@ mod tests {
     fn test_provider_args_into_cli_overrides_no_flags() {
         let parsed = ProviderArgsHarness::try_parse_from(std::iter::empty::<&str>()).unwrap();
         let overrides = parsed.args.into_cli_overrides();
-        assert!(overrides.embedding.is_none());
+        assert!(overrides.init.is_none());
         assert!(overrides.inference.is_none());
     }
 
@@ -1155,7 +1159,8 @@ mod tests {
         .unwrap();
         let overrides = parsed.args.into_cli_overrides();
 
-        let embedding = overrides.embedding.expect("embedding subtree populated");
+        let init = overrides.init.expect("init subtree populated");
+        let embedding = init.embedding.expect("embedding subtree populated");
         assert_eq!(embedding.provider, Some(ProviderKind::OpenAi));
         assert!(embedding.model.is_none());
 

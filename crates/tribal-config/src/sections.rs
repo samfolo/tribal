@@ -5,7 +5,6 @@ mod credential_catalogue;
 mod credentials;
 mod database;
 mod discovery;
-mod embedding;
 mod exploration;
 mod inference;
 mod init;
@@ -35,7 +34,6 @@ pub use discovery::{
     DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD, DiscoveryConfig,
     MAX_OVERFETCH_MULTIPLIER,
 };
-pub use embedding::EmbeddingConfig;
 pub use exploration::{
     DEFAULT_DEPTH as DEFAULT_EXPLORATION_DEPTH, DEFAULT_LIMIT as DEFAULT_EXPLORATION_LIMIT,
     DEFAULT_MAX_DEPTH as DEFAULT_EXPLORATION_MAX_DEPTH,

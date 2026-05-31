@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     auth::AuthConfig, credential_catalogue::CredentialCatalogue, database::DatabaseConfig,
-    discovery::DiscoveryConfig, embedding::EmbeddingConfig, exploration::ExplorationConfig,
+    discovery::DiscoveryConfig, exploration::ExplorationConfig,
     inference::InferenceConfig, init::InitConfig, limits::LimitsConfig, logging::LoggingConfig,
     oauth::OAuthConfig, prompts::PromptsConfig, server::ServerConfig, telemetry::TelemetryConfig,
     worker::WorkerConfig,
@@ -61,10 +61,6 @@ pub struct TribalConfig {
     /// corpus).
     #[serde(default)]
     pub init: InitConfig,
-
-    /// Embedding provider settings.
-    #[serde(default)]
-    pub embedding: EmbeddingConfig,
 
     /// Named embedding credential connections, resolved by endpoint.
     #[serde(default)]
@@ -137,7 +133,6 @@ impl Default for TribalConfig {
             oauth: OAuthConfig::default(),
             worker: WorkerConfig::default(),
             init: InitConfig::default(),
-            embedding: EmbeddingConfig::default(),
             credentials: CredentialCatalogue::default(),
             inference: InferenceConfig::default(),
             limits: LimitsConfig::default(),

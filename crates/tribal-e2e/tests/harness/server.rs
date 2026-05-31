@@ -41,7 +41,7 @@ use wiremock::{
 };
 
 use super::{
-    config::{mirror_embedding_into_init_and_catalogue, seed_genesis_from_init, test_config},
+    config::{seed_genesis_from_init, test_config},
     diagnostics::{DiagnosticContext, ServerDiagnostic},
     mocks::{
         envelope::{
@@ -350,10 +350,6 @@ impl TestHarness {
             config_override(&mut config);
         }
 
-        // The runtime provisions the genesis profile from init.embedding and
-        // resolves its credential from the catalogue, so mirror the test's
-        // config.embedding settings into both before validation and boot.
-        mirror_embedding_into_init_and_catalogue(&mut config);
         validate(&config).expect("E2E test config must pass validation");
 
         // Seed the genesis profile from init.embedding so both the seed below
@@ -685,7 +681,7 @@ impl TestHarness {
                 ServerDiagnostic {
                     name: "embedding",
                     server: &self.embedding_server,
-                    provider: self.config.embedding.provider,
+                    provider: self.config.init.embedding.provider,
                     request_class: RequestClass::Embedding,
                 },
                 ServerDiagnostic {
@@ -903,14 +899,19 @@ async fn mount_infrastructure_mocks(
     triage_server: &MockServer,
     relation_server: &MockServer,
 ) {
-    let embedding_provider = config.embedding.provider;
+    let embedding_provider = config.init.embedding.provider;
 
     // -- Embedding server ----------------------------------------------------
     if let Some(tags_endpoint) = tags_path(embedding_provider) {
-        mount_tags(embedding_server, tags_endpoint, &config.embedding.model).await;
+        mount_tags(embedding_server, tags_endpoint, &config.init.embedding.model).await;
     }
 
-    let vector = fixed_embedding_vector(config.embedding.dimensions);
+    let dimensions = config
+        .init
+        .embedding
+        .dimensions
+        .expect("E2E test config sets a concrete embedding dimension");
+    let vector = fixed_embedding_vector(dimensions);
     let embed_response = wrap_embedding(&vector, embedding_provider);
     let embedding_endpoint = embed_path(embedding_provider);
 

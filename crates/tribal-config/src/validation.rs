@@ -77,7 +77,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_oauth(config, &mut diags);
     validate_worker(config, &mut diags);
     validate_pool_sizing(config, &mut diags);
-    validate_embedding(config, &mut diags);
+    validate_init(config, &mut diags);
     validate_inference(config, &mut diags);
     validate_provider_limits(config, &mut diags);
     validate_api_key_presence(config, &mut diags);
@@ -390,22 +390,27 @@ fn validate_model_id(field: ConfigPath, model: &str, diags: &mut Diagnostics) {
     }
 }
 
-fn validate_embedding(config: &TribalConfig, diags: &mut Diagnostics) {
+fn validate_init(config: &TribalConfig, diags: &mut Diagnostics) {
+    let init = &config.init.embedding;
+
     validate_model_id(
-        ConfigPath::from_static("embedding.model"),
-        &config.embedding.model,
+        ConfigPath::from_static("init.embedding.model"),
+        &init.model,
         diags,
     );
 
-    if config.embedding.dimensions == 0 {
+    // `dimensions` is optional: `None` resolves through the embedding
+    // service's native-dimension chain at provisioning, so only an explicit
+    // zero is invalid.
+    if init.dimensions == Some(0) {
         diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
-            "embedding.dimensions",
+            "init.embedding.dimensions",
         )));
     }
 
-    if !config.embedding.provider.supports_embedding() {
+    if !init.provider.supports_embedding() {
         diags.push(ValidationError::EmbeddingProviderUnsupported {
-            provider: config.embedding.provider,
+            provider: init.provider,
         });
     }
 }
@@ -532,21 +537,9 @@ fn validate_provider_limits(config: &TribalConfig, diags: &mut Diagnostics) {
 }
 
 fn validate_api_key_presence(config: &TribalConfig, diags: &mut Diagnostics) {
-    let embedding_provider = config.embedding.provider;
-    // Skip the api-key check for embedding providers that are
-    // unsupported anyway — `validate_embedding` already emits
-    // `EmbeddingProviderUnsupported`, so a parallel "set the api key"
-    // remediation would only mislead the operator.
-    if embedding_provider.supports_embedding()
-        && embedding_provider.requires_api_key()
-        && config.embedding.api_key.is_none()
-    {
-        diags.push(ValidationError::MissingApiKey {
-            stage: ProviderStage::Embedding,
-            provider: embedding_provider,
-        });
-    }
-
+    // The embedding credential is not checked here: it lives in the catalogue
+    // keyed by the live active provider's endpoint, resolved fail-closed at
+    // boot and by `tribal check`, not against the genesis seed at config time.
     let stages = [
         (ProviderStage::Extraction, &config.inference.extraction),
         (ProviderStage::Triage, &config.inference.triage),
@@ -1353,13 +1346,21 @@ mod tests {
     #[test]
     fn test_validate_rejects_zero_embedding_dimensions() {
         let mut config = valid_config();
-        config.embedding.dimensions = 0;
+        config.init.embedding.dimensions = Some(0);
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::BelowMin { field, min: 1, .. }
-                if field.as_str() == "embedding.dimensions",
+                if field.as_str() == "init.embedding.dimensions",
         )));
+    }
+
+    #[test]
+    fn test_validate_accepts_unset_embedding_dimensions() {
+        let mut config = valid_config();
+        // `None` resolves through the native-dimension chain at provisioning.
+        config.init.embedding.dimensions = None;
+        assert!(validate(&config).is_ok());
     }
 
     #[test]
@@ -1420,24 +1421,12 @@ mod tests {
     #[test]
     fn test_validate_rejects_anthropic_embedding_provider() {
         let mut config = valid_config();
-        config.embedding.provider = ProviderKind::Anthropic;
-        config.embedding.api_key = None;
+        config.init.embedding.provider = ProviderKind::Anthropic;
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::EmbeddingProviderUnsupported {
                 provider: ProviderKind::Anthropic
-            },
-        )));
-        // `Anthropic` is unsupported for embedding, so a parallel
-        // "set the api key" remediation would mislead the operator.
-        // `validate_api_key_presence` must skip the embedding stage
-        // when the chosen provider is unsupported.
-        assert!(!any(&diags, |d| matches!(
-            d,
-            ValidationError::MissingApiKey {
-                stage: ProviderStage::Embedding,
-                ..
             },
         )));
     }
@@ -1507,13 +1496,13 @@ mod tests {
     #[test]
     fn test_validate_rejects_missing_api_key_for_cloud_provider() {
         let mut config = valid_config();
-        config.embedding.provider = ProviderKind::OpenAi;
-        config.embedding.api_key = None;
+        config.inference.extraction.provider = ProviderKind::OpenAi;
+        config.inference.extraction.api_key = None;
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::MissingApiKey {
-                stage: ProviderStage::Embedding,
+                stage: ProviderStage::Extraction,
                 provider: ProviderKind::OpenAi,
             },
         )));
@@ -1522,8 +1511,6 @@ mod tests {
     #[test]
     fn test_validate_emits_one_missing_api_key_per_stage() {
         let mut config = valid_config();
-        config.embedding.provider = ProviderKind::OpenAi;
-        config.embedding.api_key = None;
         config.inference.extraction.provider = ProviderKind::OpenAi;
         config.inference.extraction.api_key = None;
         config.inference.triage.provider = ProviderKind::OpenAi;
@@ -1533,7 +1520,6 @@ mod tests {
 
         let diags = diagnostics_for(&config);
         for stage in [
-            ProviderStage::Embedding,
             ProviderStage::Extraction,
             ProviderStage::Triage,
             ProviderStage::Relation,
@@ -1692,11 +1678,11 @@ mod tests {
     #[test]
     fn test_validate_rejects_empty_embedding_model() {
         let mut config = valid_config();
-        config.embedding.model = String::new();
+        config.init.embedding.model = String::new();
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
-            ValidationError::Empty { field } if field.as_str() == "embedding.model",
+            ValidationError::Empty { field } if field.as_str() == "init.embedding.model",
         )));
     }
 

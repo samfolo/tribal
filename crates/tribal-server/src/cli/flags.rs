@@ -51,8 +51,8 @@ impl PersistableFlag {
     #[must_use]
     pub const fn config_path(self) -> &'static str {
         match self {
-            Self::EmbeddingProvider => "embedding.provider",
-            Self::EmbeddingModel => "embedding.model",
+            Self::EmbeddingProvider => "init.embedding.provider",
+            Self::EmbeddingModel => "init.embedding.model",
             Self::InferenceExtractionProvider => "inference.extraction.provider",
             Self::InferenceExtractionModel => "inference.extraction.model",
             Self::InferenceTriageProvider => "inference.triage.provider",
@@ -87,7 +87,7 @@ impl PersistableFlag {
     #[must_use]
     pub fn resolve_overrides(overrides: &CliOverrides) -> Vec<(Self, String)> {
         let mut out = Vec::new();
-        if let Some(embedding) = &overrides.embedding {
+        if let Some(embedding) = overrides.init.as_ref().and_then(|init| init.embedding.as_ref()) {
             if let Some(provider) = &embedding.provider {
                 out.push((Self::EmbeddingProvider, provider.to_string()));
             }
@@ -138,7 +138,7 @@ impl PersistableFlag {
 mod tests {
     use tribal_config::{
         CliOverrides, EmbeddingCliOverrides, InferenceCliOverrides, InferenceStageCliOverrides,
-        TelemetryCliOverrides,
+        InitCliOverrides, TelemetryCliOverrides,
     };
     use tribal_domain::ProviderKind;
 
@@ -169,7 +169,7 @@ mod tests {
     fn test_env_var_routes_through_loader_convention() {
         assert_eq!(
             PersistableFlag::EmbeddingProvider.env_var(),
-            "TRIBAL_EMBEDDING__PROVIDER",
+            "TRIBAL_INIT__EMBEDDING__PROVIDER",
         );
     }
 
@@ -187,9 +187,11 @@ mod tests {
     #[test]
     fn test_from_cli_overrides_returns_only_set_flags() {
         let overrides = CliOverrides {
-            embedding: Some(EmbeddingCliOverrides {
-                provider: Some(ProviderKind::OpenAi),
-                model: None,
+            init: Some(InitCliOverrides {
+                embedding: Some(EmbeddingCliOverrides {
+                    provider: Some(ProviderKind::OpenAi),
+                    model: None,
+                }),
             }),
             inference: Some(InferenceCliOverrides {
                 extraction: Some(InferenceStageCliOverrides {
