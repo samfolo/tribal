@@ -28,5 +28,5 @@ pub(crate) use providers::{
     build_embedding_provider, build_inference_provider, build_provider_registry,
     probe_embedding_provider, probe_inference_provider,
 };
-pub(crate) use provisioning::provision_genesis;
+pub(crate) use provisioning::{provision_genesis, read_active_profile};
 pub(crate) use watcher::init_prompt_watcher;

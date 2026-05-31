@@ -93,6 +93,33 @@ pub async fn ensure_genesis_profile(
     model: &str,
     dimensions: u32,
 ) -> EmbeddingProfile {
+    ensure_genesis_profile_with_endpoint(
+        conn,
+        ProviderKind::Ollama,
+        model,
+        dimensions,
+        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+    )
+    .await
+}
+
+/// Ensures an active genesis profile with a specific provider and endpoint.
+///
+/// Like [`ensure_genesis_profile`] but parameterised over the provider kind and
+/// already-normalised base URL, for harnesses whose live embedding identity is
+/// not the Ollama default (so the seeded genesis matches what the server's
+/// provider builder will construct from it).
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn ensure_genesis_profile_with_endpoint(
+    conn: &mut PgConnection,
+    provider_kind: ProviderKind,
+    model: &str,
+    dimensions: u32,
+    normalised_base_url: &str,
+) -> EmbeddingProfile {
     if let Some(profile) = PgEmbeddingProfileRepository
         .find_active(&mut *conn)
         .await
@@ -102,8 +129,8 @@ pub async fn ensure_genesis_profile(
     }
 
     let new_profile = NewEmbeddingProfile::builder()
-        .provider_kind(ProviderKind::Ollama)
-        .normalised_base_url(ProviderKind::DEFAULT_OLLAMA_BASE_URL.to_owned())
+        .provider_kind(provider_kind)
+        .normalised_base_url(normalised_base_url.to_owned())
         .model(model.to_owned())
         .dimensions(dimensions)
         .fingerprint_hash(format!("setup:{model}:{dimensions}"))

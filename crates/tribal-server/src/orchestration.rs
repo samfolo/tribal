@@ -27,7 +27,7 @@ use crate::{
         POOL_NAME_MCP, POOL_NAME_WORKER, build_embedding_provider, build_inference_provider,
         build_provider_registry, check_first_run, create_pool_with_retry, ensure_prompt_files,
         generate_instance_id, init_prompt_watcher, load_prompts, load_prompts_embedded,
-        provision_genesis, resolve_project, run_migrations,
+        provision_genesis, read_active_profile, resolve_project, run_migrations,
     },
 };
 
@@ -372,10 +372,13 @@ async fn bootstrap(
 
     // -- Providers -----------------------------------------------------------
 
-    let registry = build_provider_registry(config)?;
+    // The active profile (seeded by provisioning) is the live embedding
+    // identity; the registry and provider are built from it, not from config.
+    let active_profile = read_active_profile(&pool_mcp).await?;
+    let registry = build_provider_registry(config, &active_profile)?;
 
     let (embedding_provider, embedding_key) =
-        build_embedding_provider(&registry, &config.embedding).await?;
+        build_embedding_provider(&registry, &active_profile, &config.credentials).await?;
 
     let (extraction_provider, extraction_key) =
         build_inference_provider(&registry, &config.inference.extraction).await?;

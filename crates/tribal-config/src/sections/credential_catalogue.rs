@@ -100,6 +100,15 @@ impl CredentialCatalogue {
         self.0.get(name)
     }
 
+    /// Inserts or replaces a named connection, returning any prior entry.
+    ///
+    /// Used to assemble a catalogue programmatically (for example `tribal
+    /// bootstrap` writing the default connection); names should obey the
+    /// `[a-z][a-z0-9_]*` grammar that [`is_valid_connection_name`] enforces.
+    pub fn insert(&mut self, name: String, entry: CredentialEntry) -> Option<CredentialEntry> {
+        self.0.insert(name, entry)
+    }
+
     /// Iterates the catalogue's `(name, entry)` pairs in name order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &CredentialEntry)> {
         self.0.iter().map(|(name, entry)| (name.as_str(), entry))

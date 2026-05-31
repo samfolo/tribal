@@ -1,7 +1,8 @@
 //! First-boot provisioning of the genesis embedding profile.
 //!
 //! Run after migrations, this seeds the corpus's first embedding profile from
-//! `embedding` config and builds its per-profile partial HNSW indexes. It is
+//! the `init.embedding` genesis seed and builds its per-profile partial HNSW
+//! indexes. It is
 //! serialised across processes by its own advisory lock, idempotent, and
 //! crash-safe: a crash before the profile is marked `complete` leaves it
 //! `building` (never active), so a restart re-adopts and completes it rather
@@ -17,6 +18,7 @@ use tribal_db::{
     PgMigrationRepository, advisory_locks,
 };
 use tribal_domain::{DistanceMetric, EmbeddingProfile, normalise_endpoint_url};
+use tribal_inference::resolve_dimensions;
 
 use super::{
     POOL_NAME_MCP,
@@ -138,19 +140,44 @@ async fn provision_under_lock(
     Ok(())
 }
 
-/// Inserts a `building` genesis profile from the `embedding` config.
+/// Reads the active embedding profile, which provisioning guarantees exists
+/// once it has returned. The active profile is the live embedding identity the
+/// provider builders construct from.
+///
+/// # Errors
+///
+/// Returns an [`AppError`] when the pool or query fails, or when no active
+/// profile exists (a provisioning invariant violation).
+pub(crate) async fn read_active_profile(pool: &PgPool) -> Result<EmbeddingProfile, AppError> {
+    let mut conn = pool.acquire().await.map_err(|e| {
+        AppError::pool_acquire(POOL_NAME_MCP, "reading active embedding profile", e)
+    })?;
+
+    PgEmbeddingProfileRepository
+        .find_active(&mut conn)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| AppError::ProviderSetup {
+            context: "no active embedding profile after provisioning".to_owned(),
+        })
+}
+
+/// Inserts a `building` genesis profile from the `init.embedding` seed.
 async fn insert_genesis(
     conn: &mut PgConnection,
     config: &TribalConfig,
 ) -> Result<EmbeddingProfile, AppError> {
-    let provider = config.embedding.provider;
-    let base_url = resolve_base_url(provider, config.embedding.base_url.as_ref());
+    let provider = config.init.embedding.provider;
+    let base_url = resolve_base_url(provider, config.init.embedding.base_url.as_ref());
     let normalised_base_url =
         normalise_endpoint_url(&base_url).map_err(|e| AppError::ConfigInvariant {
             reason: e.to_string(),
         })?;
-    let model = config.embedding.model.clone();
-    let dimensions = config.embedding.dimensions;
+    let model = config.init.embedding.model.clone();
+    let dimensions = resolve_dimensions(provider, &model, config.init.embedding.dimensions)
+        .map_err(|e| AppError::ConfigInvariant {
+            reason: e.to_string(),
+        })?;
 
     let fingerprint_hash = embedding_profile_fingerprint(
         provider.as_str(),
