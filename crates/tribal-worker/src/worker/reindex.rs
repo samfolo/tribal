@@ -1395,4 +1395,60 @@ mod tests {
 
         truncate_all_tables(&mut check).await;
     }
+
+    /// Single-flight is per table across sessions: while one session holds the
+    /// creation lock, a concurrent session finds it contended and mints no
+    /// competing run. A two-connection interleaving against a live database.
+    #[tokio::test]
+    async fn test_create_reindex_run_is_single_flight_across_sessions() {
+        let _guard = serial_lock().await;
+        let ctx_db = test_context().await;
+
+        let mut setup = ctx_db.raw_connection().await.expect("setup connection");
+        let principal = insert_principal(&mut setup, "user:reindex-single-flight").await;
+
+        // Session A creates the run, holding the single-flight lock for its
+        // transaction.
+        let mut conn_a = ctx_db.raw_connection().await.expect("session a");
+        let mut tx_a = sqlx::Connection::begin(&mut conn_a)
+            .await
+            .expect("begin session a");
+        assert!(
+            matches!(
+                create_reindex_run(&mut tx_a, &a_target(), principal)
+                    .await
+                    .expect("create a"),
+                ReindexCreationOutcome::Created(_)
+            ),
+            "session A creates the run",
+        );
+
+        // Session B, concurrently, finds the lock held and does not compete.
+        let mut conn_b = ctx_db.raw_connection().await.expect("session b");
+        let mut tx_b = sqlx::Connection::begin(&mut conn_b)
+            .await
+            .expect("begin session b");
+        assert!(
+            matches!(
+                create_reindex_run(&mut tx_b, &a_target(), principal)
+                    .await
+                    .expect("create b"),
+                ReindexCreationOutcome::LockContended
+            ),
+            "session B is lock-contended and mints no competing run",
+        );
+        tx_b.rollback().await.expect("roll back session b");
+        tx_a.commit().await.expect("commit session a");
+
+        let mut check = ctx_db.raw_connection().await.expect("assertion connection");
+        assert!(
+            PgReindexRunRepository
+                .find_live(&mut check)
+                .await
+                .expect("find_live")
+                .is_some(),
+            "exactly one run is live",
+        );
+        truncate_all_tables(&mut check).await;
+    }
 }
