@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tribal_common::{JobStateTxs, POOL_NAME_WORKER, clamp_to_i32, clamp_to_u32};
-use tribal_config::WorkerConfig;
+use tribal_config::{CredentialCatalogue, WorkerConfig};
 use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository,
     PgPrincipalRepository, PgTaskRepository, PgTokenUsageRepository, PrincipalRepository,
@@ -34,7 +34,7 @@ use crate::{
         backfill::BackfillProcessor,
         backoff::BACKOFF_CAP_SECS,
         heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
-        reindex::{drive_reindex, reconcile_orphan_building_profile},
+        reindex::{EmbeddingProviderCache, drive_reindex_cycle, reconcile_orphan_building_profile},
     },
 };
 
@@ -60,6 +60,12 @@ pub struct Worker {
     pub(crate) triage_provider: Arc<dyn InferenceProvider>,
     pub(crate) relation_provider: Arc<dyn InferenceProvider>,
     pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
+    /// Embedding providers built for reindex building profiles, keyed by profile
+    /// id. The reindex driver populates it; the commit path reads it.
+    embedding_providers: EmbeddingProviderCache,
+    /// The embedding-credential catalogue, used to resolve a reindex target
+    /// provider's credential fail-closed.
+    credentials: CredentialCatalogue,
     pub(crate) extraction_key: ProviderKey,
     pub(crate) triage_inference_key: ProviderKey,
     pub(crate) triage_embedding_key: ProviderKey,
@@ -89,6 +95,8 @@ impl Worker {
         triage_provider: Arc<dyn InferenceProvider>,
         relation_provider: Arc<dyn InferenceProvider>,
         embedding_provider: Arc<dyn EmbeddingProvider>,
+        embedding_providers: EmbeddingProviderCache,
+        credentials: CredentialCatalogue,
         extraction_key: ProviderKey,
         triage_inference_key: ProviderKey,
         triage_embedding_key: ProviderKey,
@@ -107,6 +115,8 @@ impl Worker {
             triage_provider,
             relation_provider,
             embedding_provider,
+            embedding_providers,
+            credentials,
             extraction_key,
             triage_inference_key,
             triage_embedding_key,
@@ -813,7 +823,15 @@ impl Worker {
                 }
             };
 
-            if let Err(e) = drive_reindex(&mut conn).await {
+            if let Err(e) = drive_reindex_cycle(
+                &mut conn,
+                &self.provider_registry,
+                &self.embedding_providers,
+                &self.credentials,
+                &self.instance_id,
+            )
+            .await
+            {
                 tracing::warn!(error = %e, "reindex drive cycle failed");
             }
         }
