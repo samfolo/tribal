@@ -362,9 +362,9 @@ pub enum ReindexError {
 /// Builds the embedding provider for a profile, caching it by profile id, and
 /// resolves its endpoint's rate-limit semaphore.
 ///
-/// Registers the endpoint in the registry if it is new — a no-op for an
+/// Registers the endpoint in the registry if it is new (a no-op for an
 /// endpoint the active providers already cover, so a model-change reindex
-/// shares their client and rate-limit budget — resolves the credential
+/// shares their client and rate-limit budget), resolves the credential
 /// fail-closed, and constructs the provider. A second call for the same profile
 /// returns the cached provider.
 ///
@@ -1095,8 +1095,8 @@ async fn probe_drifted(ctx: &ReindexCtx<'_>) -> bool {
 }
 
 /// Drains the building set-difference (items and tags) lock-free, then under the
-/// exclusive cutover lock — whose acquisition drains every in-flight ingest
-/// commit holding the shared form — re-probes for drift and, when nothing
+/// exclusive cutover lock (whose acquisition drains every in-flight ingest
+/// commit holding the shared form) re-probes for drift and, when nothing
 /// remains and the geometry held, flips the building profile to active and
 /// completes the run in one transaction.
 ///

@@ -254,7 +254,7 @@ async fn test_similarity_search_filters_by_profile() {
     .await
     .expect("upsert");
 
-    // Query a different profile — should find nothing.
+    // Query a different profile; should find nothing.
     let results = repo
         .similarity_search(&mut txn, &make_test_embedding(0), profile_b, DIM, 0.5, 5)
         .await
@@ -356,7 +356,7 @@ async fn test_find_tags_missing_embeddings_filters_by_profile() {
     .await
     .expect("upsert");
 
-    // Query for profile_b — "rust" should show as missing.
+    // Query for profile_b; "rust" should show as missing.
     let missing = repo
         .find_tags_missing_embeddings(&mut txn, profile_b)
         .await

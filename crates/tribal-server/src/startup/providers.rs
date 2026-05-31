@@ -77,7 +77,7 @@ pub(crate) fn build_provider_registry(
 /// `(provider_kind, normalised_base_url)`. Boot fails closed when a provider
 /// that requires a key has none in the catalogue. Returns the boxed provider
 /// and the registry key for semaphore lookups. Calls
-/// [`probe_embedding_provider`] before construction — logs a warning on
+/// [`probe_embedding_provider`] before construction; logs a warning on
 /// failure but does not fail startup.
 pub(crate) async fn build_embedding_provider(
     registry: &ProviderRegistry,

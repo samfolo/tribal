@@ -36,10 +36,10 @@ const COLUMNS: Columns = Columns(&[
 ]);
 
 const DIMENSIONS_EXCEEDS_I32: &str = "profile dimensions exceeds i32::MAX";
-const DIMENSIONS_OVERFLOW: &str = "negative dimensions in database — data corruption";
-const UNKNOWN_PROVIDER_KIND_IN_DB: &str = "unknown provider_kind in database — data corruption";
-const UNKNOWN_DISTANCE_METRIC_IN_DB: &str = "unknown distance_metric in database — data corruption";
-const UNKNOWN_PROFILE_STATE_IN_DB: &str = "unknown profile state in database — data corruption";
+const DIMENSIONS_OVERFLOW: &str = "negative dimensions in database: data corruption";
+const UNKNOWN_PROVIDER_KIND_IN_DB: &str = "unknown provider_kind in database: data corruption";
+const UNKNOWN_DISTANCE_METRIC_IN_DB: &str = "unknown distance_metric in database: data corruption";
+const UNKNOWN_PROFILE_STATE_IN_DB: &str = "unknown profile state in database: data corruption";
 
 // ---------------------------------------------------------------------------
 // Input types

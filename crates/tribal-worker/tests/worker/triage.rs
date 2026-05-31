@@ -141,12 +141,12 @@ async fn test_triage_novel_path() {
     teardown(ctx).await;
 }
 
-/// Verifies the novel commit path while a reindex is live (§6 step 10): with a
-/// queued reindex run present, the commit takes the shared cutover lock yet
-/// still completes, writing its embedding against the active profile rather than
-/// the building target. The drain the lock enables is exercised by the §6
-/// cutover race tests; here the contract is that an uncontended live reindex
-/// leaves the ingest path's outcome unchanged.
+/// Verifies the novel commit path while a reindex is live: with a queued reindex
+/// run present, the commit takes the shared cutover lock yet still completes,
+/// writing its embedding against the active profile rather than the building
+/// target. The drain the lock enables is exercised by the cutover race tests;
+/// here the contract is that an uncontended live reindex leaves the ingest
+/// path's outcome unchanged.
 #[tokio::test]
 async fn test_triage_novel_commits_with_a_live_reindex() {
     let _guard = serial_lock().await;

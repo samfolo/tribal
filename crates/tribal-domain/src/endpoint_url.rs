@@ -23,20 +23,18 @@ pub struct EndpointUrlError {
     pub reason: String,
 }
 
-/// Normalises a provider base URL into a stable endpoint identity.
-///
-/// Steps:
-/// 1. Parse with [`url::Url`]
-/// 2. Lower-case scheme and host (handled by the `url` crate)
-/// 3. Include the explicit port (default 80 for HTTP, 443 for HTTPS)
-/// 4. Retain the path, stripped of a trailing slash
-/// 5. Drop the query string and fragment
+/// Normalises a provider base URL into a stable endpoint identity: a lower-cased
+/// scheme and host, an explicit port (the scheme default when none is given),
+/// the path with any trailing slash stripped, and no query or fragment. Two URLs
+/// that name the same endpoint canonicalise to the same string, so the result is
+/// sound as a registry and credential-catalogue key.
 ///
 /// # Errors
 ///
 /// Returns [`EndpointUrlError`] when `raw` is not a valid URL or lacks a host
 /// or a port derivable from its scheme.
 pub fn normalise_endpoint_url(raw: &str) -> Result<String, EndpointUrlError> {
+    // `url::Url` lower-cases the scheme and host on parse.
     let parsed = Url::parse(raw).map_err(|e| EndpointUrlError {
         url: raw.to_owned(),
         reason: e.to_string(),

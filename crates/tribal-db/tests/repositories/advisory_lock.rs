@@ -4,8 +4,8 @@ use tribal_test_utils::test_context;
 // Each test uses a distinct, test-scoped lock id (the `test` ASCII prefix plus
 // a per-test suffix) so concurrently-running tests never contend on the same
 // advisory lock across their pooled connections. Cross-session contention
-// semantics (shared coexists, exclusive blocks) are covered by the §6 reindex
-// race tests, which drive two real connections.
+// semantics (shared coexists, exclusive blocks) are covered by the reindex
+// cutover race tests, which drive two real connections.
 const LOCK_SHARED: i64 = 0x7465_7374_0000_0001;
 const LOCK_EXCLUSIVE: i64 = 0x7465_7374_0000_0002;
 const LOCK_TRY: i64 = 0x7465_7374_0000_0003;

@@ -81,7 +81,7 @@ CREATE TABLE knowledge_items (
 );
 
 --------------------------------------------------------------------------------
--- embedding_profiles — append-only, epoch-ordered activation log
+-- embedding_profiles: append-only, epoch-ordered activation log
 --------------------------------------------------------------------------------
 -- Each row is one activation of one embedding geometry, immutable once written.
 -- The active profile is derived (highest-epoch 'complete'), never stored.
@@ -114,7 +114,7 @@ CREATE TABLE embedding_profiles (
 );
 
 --------------------------------------------------------------------------------
--- embeddings — append-only, write-once per (knowledge_item, profile)
+-- embeddings: append-only, write-once per (knowledge_item, profile)
 --------------------------------------------------------------------------------
 -- Bare halfvec (untyped, mixed-dimension across profiles). model is retained as
 -- denormalised lineage, no longer an identity key. dimensions is recoverable via
@@ -328,7 +328,7 @@ CREATE TABLE token_usage (
 );
 
 --------------------------------------------------------------------------------
--- reindex_runs — operator-facing lifecycle of a model migration, retained as
+-- reindex_runs: operator-facing lifecycle of a model migration, retained as
 -- run history. Single-flight per embeddings table via uq_reindex_run_live.
 --------------------------------------------------------------------------------
 
@@ -358,7 +358,7 @@ CREATE TABLE reindex_runs (
 );
 
 --------------------------------------------------------------------------------
--- reindex_tasks — the lease protocol for a reindex run's per-batch work.
+-- reindex_tasks: the lease protocol for a reindex run's per-batch work.
 -- Derived from the ingestion task lease (claim/heartbeat/reclaim), distinct
 -- state set and attempt/max_attempts columns.
 --------------------------------------------------------------------------------
@@ -391,8 +391,8 @@ CREATE TABLE reindex_tasks (
 );
 
 --------------------------------------------------------------------------------
--- reindex_quarantine — durable permanent-failure relation, keyed by the target
--- profile so the §6 set-difference excludes it directly.
+-- reindex_quarantine: durable permanent-failure relation, keyed by the target
+-- profile so the reindex set-difference excludes it directly.
 --------------------------------------------------------------------------------
 
 CREATE TABLE reindex_quarantine (
@@ -454,7 +454,7 @@ CREATE INDEX idx_knowledge_items_created    ON knowledge_items(created_at);
 CREATE INDEX idx_embedding_profiles_state_epoch ON embedding_profiles(state, epoch DESC);
 CREATE INDEX idx_embedding_profiles_fingerprint ON embedding_profiles(fingerprint_hash);
 
--- embeddings — the profile-only index keeps prune and the reindex set-difference
+-- embeddings: the profile-only index keeps prune and the reindex set-difference
 -- off a sequential scan; embedding_profile_id is the trailing column of
 -- uq_embedding_item_profile, which therefore cannot serve a profile-scoped scan.
 -- Per-profile partial HNSW indexes are built at runtime, not here.

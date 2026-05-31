@@ -387,7 +387,7 @@ async fn handle_set_embedding_model(
 
     debug!("seed[{idx}]: SetEmbeddingModel model={model:?} dimensions={dimensions}");
 
-    // Reuse the active profile when one already exists — the harness may have
+    // Reuse the active profile when one already exists; the harness may have
     // seeded the genesis from init.embedding so its endpoint matches the live
     // embedding identity. Otherwise create a default-endpoint genesis, mirroring
     // first-boot provisioning. The seeded embeddings key against, and take their
