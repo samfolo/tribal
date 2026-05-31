@@ -1,6 +1,7 @@
 mod auth_token;
 mod common;
 mod embedding;
+mod embedding_profile;
 mod episode;
 mod extraction_result;
 mod feedback;
@@ -23,6 +24,7 @@ mod triage_similar_item_decision;
 pub use auth_token::AuthTokenId;
 pub use common::IdParseError;
 pub use embedding::EmbeddingId;
+pub use embedding_profile::EmbeddingProfileId;
 pub use episode::EpisodeId;
 pub use extraction_result::ExtractionResultId;
 pub use feedback::RetrievalFeedbackId;

@@ -276,7 +276,7 @@ fn get_client<'a>(
 
 /// Resolves the base URL for a provider, falling back to the provider's
 /// default when no explicit URL is configured.
-fn resolve_base_url(provider: ProviderKind, config_url: Option<&String>) -> String {
+pub(super) fn resolve_base_url(provider: ProviderKind, config_url: Option<&String>) -> String {
     config_url
         .map_or(provider.default_base_url(), String::as_str)
         .to_owned()

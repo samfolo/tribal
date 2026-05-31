@@ -3,14 +3,14 @@
 use std::sync::Arc;
 
 use tribal_db::{
-    NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
-    NewTriageSimilarItemDecision, PgPromptVersionRepository, PgSystemFingerprintRepository,
-    PgTagRegistryRepository, PromptVersionRepository, SystemFingerprintRepository,
-    TagRegistryRepository,
+    EmbeddingProfileRepository, NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
+    NewTriageSimilarItemDecision, PgEmbeddingProfileRepository, PgPromptVersionRepository,
+    PgSystemFingerprintRepository, PgTagRegistryRepository, PromptVersionRepository,
+    SystemFingerprintRepository, TagRegistryRepository,
 };
 use tribal_domain::{
-    ProjectId, PromptVersion, PromptVersionId, SuggestedReference, SystemFingerprint,
-    TagRegistryEntry, span_attrs,
+    EmbeddingProfile, ProjectId, PromptVersion, PromptVersionId, SuggestedReference,
+    SystemFingerprint, TagRegistryEntry, span_attrs,
 };
 use tribal_inference::{EmbeddingProvider, Usage};
 
@@ -94,6 +94,45 @@ pub(crate) enum TriageCommitDecision {
     },
     /// Idempotency skip — result already exists for this `(job_id, batch_index)`.
     NoOp,
+}
+
+// ---------------------------------------------------------------------------
+// Active embedding profile
+// ---------------------------------------------------------------------------
+
+/// Loads the active embedding profile against the given connection.
+///
+/// Reads and writes embed against the active profile, so the read site, the
+/// commit transaction, and tag resolution all resolve it through here. Taking
+/// an explicit connection lets the commit path resolve it inside the
+/// transaction's snapshot. First-boot provisioning completes a genesis profile
+/// before the worker serves any task, so its absence is a consistency fault,
+/// not an expected outcome.
+///
+/// # Errors
+///
+/// Returns [`StageError::Database`] on query failure or when no profile is
+/// active.
+pub(crate) async fn load_active_embedding_profile(
+    conn: &mut sqlx::PgConnection,
+    stage: &str,
+) -> Result<EmbeddingProfile, StageError> {
+    PgEmbeddingProfileRepository
+        .find_active(conn)
+        .await
+        .map_err(|e| StageError::Database {
+            stage: stage.into(),
+            context: "loading active embedding profile".into(),
+            source: e,
+        })?
+        .ok_or_else(|| StageError::Database {
+            stage: stage.into(),
+            context: "no active embedding profile".into(),
+            source: tribal_db::DbError::NotFound {
+                entity: "embedding_profile",
+                id: "active".to_owned(),
+            },
+        })
 }
 
 // ---------------------------------------------------------------------------

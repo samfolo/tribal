@@ -30,7 +30,7 @@ db-up:
             -e POSTGRES_PASSWORD=tribal \
             -e POSTGRES_DB=tribal \
             -p 5432:5432 \
-            pgvector/pgvector:pg17
+            pgvector/pgvector:0.8.2-pg17
         echo "tribal-postgres created and started"
     fi
 

@@ -110,8 +110,7 @@ async fn test_triage_novel_path() {
     );
 
     // Verify embedding was created.
-    let emb = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut conn, ki_id, "mock-model")
+    let emb = find_active_embedding(&mut conn, ki_id)
         .await
         .expect("find embedding");
     assert!(emb.is_some(), "embedding should exist for mock-model");
@@ -182,8 +181,7 @@ async fn test_triage_duplicate_path() {
 
     // Read the deterministic embedding vector back from the database so
     // the mock provider can return the same vector for cosine similarity.
-    let seeded_embedding = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut conn, ki_id, "mock-model")
+    let seeded_embedding = find_active_embedding(&mut conn, ki_id)
         .await
         .expect("find seeded embedding")
         .expect("seeded embedding should exist");
@@ -310,8 +308,7 @@ async fn test_triage_duplicate_out_of_range_downgrades_to_novel() {
     let system_pv_id = seed_result.prompt_version_id("system-pv");
     let user_pv_id = seed_result.prompt_version_id("user-pv");
 
-    let seeded_embedding = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut conn, existing_id, "mock-model")
+    let seeded_embedding = find_active_embedding(&mut conn, existing_id)
         .await
         .expect("find seeded embedding")
         .expect("seeded embedding should exist");
@@ -762,8 +759,9 @@ async fn test_triage_novel_semantic_tag_resolution() {
     );
 
     // New tag "performance" should have an embedding in tag_embeddings.
+    let profile_id = active_embedding_profile(&mut conn).await.id();
     let missing = PgTagEmbeddingRepository
-        .find_tags_missing_embeddings(&mut conn, "mock-model")
+        .find_tags_missing_embeddings(&mut conn, profile_id)
         .await
         .expect("find missing");
     assert!(
@@ -811,8 +809,9 @@ async fn test_startup_backfill_embeds_missing_tags() {
     worker.startup().await.expect("startup");
 
     let mut conn = raw_conn(ctx).await;
+    let profile_id = active_embedding_profile(&mut conn).await.id();
     let missing = PgTagEmbeddingRepository
-        .find_tags_missing_embeddings(&mut conn, "mock-model")
+        .find_tags_missing_embeddings(&mut conn, profile_id)
         .await
         .expect("find missing");
     assert!(
@@ -1115,10 +1114,13 @@ async fn test_triage_semantic_match_determinism() {
         Seed::new()
             .define_project("tag-proj", "git@github.com:test/determinism.git")
             .define_principal("tag-user", "user:determinism")
+            .set_embedding_model("mock-model", 768)
             .define_tag("alpha")
             .define_tag("beta")
             .execute(&mut conn)
             .await;
+
+        let profile_id = active_embedding_profile(&mut conn).await.id();
 
         // Insert identical embeddings for both tags.
         let embedding_vec = make_test_embedding(0);
@@ -1128,14 +1130,14 @@ async fn test_triage_semantic_match_determinism() {
                 &[
                     NewTagEmbedding::builder()
                         .tag("alpha".to_owned())
+                        .embedding_profile_id(profile_id)
                         .model("mock-model".to_owned())
-                        .dimensions(768)
                         .embedding(embedding_vec.clone())
                         .build(),
                     NewTagEmbedding::builder()
                         .tag("beta".to_owned())
+                        .embedding_profile_id(profile_id)
                         .model("mock-model".to_owned())
-                        .dimensions(768)
                         .embedding(embedding_vec)
                         .build(),
                 ],

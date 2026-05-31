@@ -3,6 +3,7 @@
 //! Database layer for Tribal: repository traits and implementations,
 //! sqlx queries, migrations, and connection pool management.
 
+pub mod advisory_locks;
 mod error;
 mod pool;
 mod repositories;
@@ -22,23 +23,24 @@ pub use pool::create_pool;
 #[cfg(feature = "test-helpers")]
 pub use repositories::JobStateOverride;
 pub use repositories::{
-    AuthTokenRepository, EmbeddingRepository, ExtractionResultRepository,
-    ItemObservationRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,
-    MigrationHeadStatus, MigrationRepository, NewAuthToken, NewEmbedding, NewExtractionResult,
+    AuthTokenRepository, EmbeddingIndexRepository, EmbeddingProfileRepository, EmbeddingRepository,
+    EmbeddingTable, ExtractionResultRepository, IndexState, ItemObservationRepository,
+    JobRepository, JobStatusTransition, KnowledgeItemRepository, MigrationHeadStatus,
+    MigrationRepository, NewAuthToken, NewEmbedding, NewEmbeddingProfile, NewExtractionResult,
     NewItemObservation, NewJob, NewKnowledgeItem, NewKnowledgeItemRelation,
     NewOauthAuthorizationCode, NewOauthClient, NewPrincipal, NewProject, NewPromptVersion,
     NewReference, NewRetrievalFeedback, NewSystemFingerprint, NewTagEmbedding, NewTask,
     NewTokenUsage, NewTriageResult, NewTriageSimilarItemDecision, OauthAuthorizationCodeRepository,
-    OauthClientRepository, PgAuthTokenRepository, PgEmbeddingRepository,
-    PgExtractionResultRepository, PgItemObservationRepository, PgJobRepository,
-    PgKnowledgeItemRepository, PgMigrationRepository, PgOauthAuthorizationCodeRepository,
-    PgOauthClientRepository, PgPrincipalRepository, PgProjectRepository, PgPromptVersionRepository,
-    PgReferenceRepository, PgRelationRepository, PgRetrievalFeedbackRepository,
-    PgStandingRepository, PgSystemFingerprintRepository, PgTagEmbeddingRepository,
-    PgTagRegistryRepository, PgTaskRepository, PgTokenUsageRepository, PgTriageResultRepository,
-    PgTriageSimilarItemDecisionRepository, PrincipalRepository, ProjectRepository,
-    PromptVersionRepository, ReclaimOutcome, ReferenceRepository, RelationRepository,
-    RetrievalFeedbackRepository, SemanticSearchParams, SemanticSearchResponse,
+    OauthClientRepository, PgAuthTokenRepository, PgEmbeddingIndexRepository,
+    PgEmbeddingProfileRepository, PgEmbeddingRepository, PgExtractionResultRepository,
+    PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository, PgMigrationRepository,
+    PgOauthAuthorizationCodeRepository, PgOauthClientRepository, PgPrincipalRepository,
+    PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository, PgRelationRepository,
+    PgRetrievalFeedbackRepository, PgStandingRepository, PgSystemFingerprintRepository,
+    PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository, PgTokenUsageRepository,
+    PgTriageResultRepository, PgTriageSimilarItemDecisionRepository, PrincipalRepository,
+    ProjectRepository, PromptVersionRepository, ReclaimOutcome, ReferenceRepository,
+    RelationRepository, RetrievalFeedbackRepository, SemanticSearchParams, SemanticSearchResponse,
     SemanticSearchResult, StandingRepository, SystemFingerprintRepository, TagEmbeddingRepository,
     TagRegistryRepository, TaskRepository, TaskStatusCount, TokenUsageRepository,
     TraversalDirection, TraversalNode, TraversalResponse, TriageResultRepository,

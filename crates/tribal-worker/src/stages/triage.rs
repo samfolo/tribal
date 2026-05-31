@@ -17,7 +17,10 @@ use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
 };
 
-use super::{StageCommit, StageOutput, TriageCommitDecision, record_prompt_version_ids};
+use super::{
+    StageCommit, StageOutput, TriageCommitDecision, load_active_embedding_profile,
+    record_prompt_version_ids,
+};
 use crate::{
     common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
     error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError},
@@ -423,9 +426,12 @@ impl Worker {
                     triage_sqlx_error("acquiring connection for semantic search", e)
                 })?;
 
+            let profile = load_active_embedding_profile(&mut conn, STAGE_TRIAGE).await?;
+
             let params = SemanticSearchParams::builder()
                 .query_embedding(embedding.to_vec())
-                .embedding_model(self.embedding_provider().identity().model.clone())
+                .embedding_profile_id(profile.id())
+                .dimensions(profile.dimensions())
                 .project_id(Some(job.project_id()))
                 .limit(self.config().triage_search_limit)
                 .build();

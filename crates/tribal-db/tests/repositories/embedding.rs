@@ -3,23 +3,27 @@ use tribal_db::{
     PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository, PrincipalRepository,
     ProjectRepository,
 };
-use tribal_domain::{GitRemote, KnowledgeItemId, PrincipalId, ProjectId};
+use tribal_domain::{EmbeddingProfileId, GitRemote, KnowledgeItemId};
 use tribal_test_utils::{
-    a_new_embedding, a_new_knowledge_item, a_new_principal, a_new_project, test_context,
+    a_new_embedding, a_new_knowledge_item, a_new_principal, a_new_project, ensure_genesis_profile,
+    test_context,
 };
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Inserts a principal, project, and knowledge item, returning their IDs.
+const EMBEDDING_MODEL: &str = "text-embedding-test";
+
+/// Inserts a principal, project, knowledge item, and a genesis embedding
+/// profile, returning the item id and the profile id.
 ///
-/// The `suffix` disambiguates git remotes and principal keys within a
-/// single test transaction.
+/// The `suffix` disambiguates git remotes and principal keys within a single
+/// test transaction.
 async fn setup_prerequisites(
     txn: &mut sqlx::PgConnection,
     suffix: &str,
-) -> (PrincipalId, ProjectId, KnowledgeItemId) {
+) -> (KnowledgeItemId, EmbeddingProfileId) {
     let principal = PgPrincipalRepository
         .insert(
             txn,
@@ -55,7 +59,9 @@ async fn setup_prerequisites(
         .await
         .expect("insert knowledge item");
 
-    (principal.id(), project.id(), item.id())
+    let profile = ensure_genesis_profile(txn, EMBEDDING_MODEL, 768).await;
+
+    (item.id(), profile.id())
 }
 
 /// Creates a 768-dimensional unit vector with 1.0 at the given index.
@@ -75,19 +81,21 @@ async fn test_insert_returns_populated_embedding() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
-    let (_, _, item_id) = setup_prerequisites(&mut txn, "emb-insert-pop").await;
+    let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-insert-pop").await;
 
     let embedding_vec = make_test_embedding(0);
     let new = a_new_embedding()
         .knowledge_item_id(item_id)
-        .model("text-embedding-test".to_owned())
+        .embedding_profile_id(profile_id)
+        .model(EMBEDDING_MODEL.to_owned())
         .embedding(embedding_vec.clone())
         .build();
 
     let emb = repo.insert(&mut txn, &new).await.expect("insert");
 
     assert_eq!(emb.knowledge_item_id(), item_id);
-    assert_eq!(emb.model(), "text-embedding-test");
+    assert_eq!(emb.embedding_profile_id(), profile_id);
+    assert_eq!(emb.model(), EMBEDDING_MODEL);
     assert_eq!(emb.dimensions(), 768);
     assert_eq!(emb.embedding(), &embedding_vec);
 }
@@ -98,9 +106,12 @@ async fn test_insert_generates_prefixed_id() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
-    let (_, _, item_id) = setup_prerequisites(&mut txn, "emb-insert-prefix").await;
+    let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-insert-prefix").await;
 
-    let new = a_new_embedding().knowledge_item_id(item_id).build();
+    let new = a_new_embedding()
+        .knowledge_item_id(item_id)
+        .embedding_profile_id(profile_id)
+        .build();
 
     let emb = repo.insert(&mut txn, &new).await.expect("insert");
 
@@ -112,23 +123,23 @@ async fn test_insert_generates_prefixed_id() {
 }
 
 #[tokio::test]
-async fn test_insert_duplicate_item_model_returns_unique_violation() {
+async fn test_insert_duplicate_item_profile_returns_unique_violation() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
-    let (_, _, item_id) = setup_prerequisites(&mut txn, "emb-insert-dup").await;
+    let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-insert-dup").await;
 
     let new = a_new_embedding()
         .knowledge_item_id(item_id)
-        .model("same-model".to_owned())
+        .embedding_profile_id(profile_id)
         .build();
 
     repo.insert(&mut txn, &new).await.expect("first insert");
 
     let duplicate = a_new_embedding()
         .knowledge_item_id(item_id)
-        .model("same-model".to_owned())
+        .embedding_profile_id(profile_id)
         .embedding(make_test_embedding(1))
         .build();
 
@@ -149,26 +160,28 @@ async fn test_find_by_knowledge_item_id_returns_embedding() {
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgEmbeddingRepository;
 
-    let (_, _, item_id) = setup_prerequisites(&mut txn, "emb-find").await;
+    let (item_id, profile_id) = setup_prerequisites(&mut txn, "emb-find").await;
 
     let embedding_vec = make_test_embedding(3);
     let new = a_new_embedding()
         .knowledge_item_id(item_id)
-        .model("find-test-model".to_owned())
+        .embedding_profile_id(profile_id)
+        .model(EMBEDDING_MODEL.to_owned())
         .embedding(embedding_vec.clone())
         .build();
 
     let inserted = repo.insert(&mut txn, &new).await.expect("insert");
 
     let found = repo
-        .find_by_knowledge_item_id(&mut txn, item_id, "find-test-model")
+        .find_by_knowledge_item_id(&mut txn, item_id, profile_id)
         .await
         .expect("find");
 
     let found = found.expect("expected Some(Embedding)");
     assert_eq!(found.id(), inserted.id());
     assert_eq!(found.knowledge_item_id(), item_id);
-    assert_eq!(found.model(), "find-test-model");
+    assert_eq!(found.embedding_profile_id(), profile_id);
+    assert_eq!(found.model(), EMBEDDING_MODEL);
     assert_eq!(found.dimensions(), 768);
     assert_eq!(found.embedding(), &embedding_vec);
 }
@@ -180,7 +193,7 @@ async fn test_find_by_knowledge_item_id_not_found_returns_none() {
     let repo = PgEmbeddingRepository;
 
     let found = repo
-        .find_by_knowledge_item_id(&mut txn, KnowledgeItemId::new(), "nonexistent-model")
+        .find_by_knowledge_item_id(&mut txn, KnowledgeItemId::new(), EmbeddingProfileId::new())
         .await
         .expect("find");
 

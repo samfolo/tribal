@@ -107,6 +107,13 @@ pub enum AppError {
         source: sqlx::migrate::MigrateError,
     },
 
+    /// First-boot provisioning advisory lock could not be acquired.
+    #[error("could not acquire provisioning lock after {attempts} attempts")]
+    ProvisioningLockFailed {
+        /// Number of lock attempts made.
+        attempts: u32,
+    },
+
     /// Provider registry construction failed.
     #[error("{source}")]
     ProviderRegistry {

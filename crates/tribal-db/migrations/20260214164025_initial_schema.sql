@@ -1,6 +1,9 @@
 -- Initial schema migration for Tribal.
--- Creates the pgvector extension and all 16 tables in FK-dependency order,
--- followed by all indexes (B-tree, GIN, HNSW, partial unique).
+-- Creates the pgvector extension and all application tables in FK-dependency
+-- order, followed by all indexes (B-tree, GIN, partial unique). Per-profile
+-- HNSW indexes on the embedding tables are not created here: they are built at
+-- runtime by first-boot provisioning and the reindex worker, because each needs
+-- its profile UUID inlined and a non-transactional CREATE INDEX CONCURRENTLY.
 
 --------------------------------------------------------------------------------
 -- pgvector extension
@@ -78,16 +81,55 @@ CREATE TABLE knowledge_items (
 );
 
 --------------------------------------------------------------------------------
--- embeddings — append-only
+-- embedding_profiles — append-only, epoch-ordered activation log
 --------------------------------------------------------------------------------
+-- Each row is one activation of one embedding geometry, immutable once written.
+-- The active profile is derived (highest-epoch 'complete'), never stored.
+-- Identity is not unique; epoch is. Created before embeddings for the FK.
+
+CREATE SEQUENCE embedding_profile_epoch_seq;
+
+CREATE TABLE embedding_profiles (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    epoch                BIGINT NOT NULL UNIQUE
+                             DEFAULT nextval('embedding_profile_epoch_seq'),
+    provider_kind        TEXT NOT NULL,
+    normalised_base_url  TEXT NOT NULL,
+    model                TEXT NOT NULL,
+    dimensions           INT NOT NULL CHECK (dimensions > 0 AND dimensions <= 4000),
+    distance_metric      TEXT NOT NULL DEFAULT 'cosine'
+                             CHECK (distance_metric IN ('cosine')),
+    revision_token       TEXT NOT NULL DEFAULT '',
+    probe_digest         TEXT,
+    state                TEXT NOT NULL
+                             CHECK (state IN ('building', 'complete', 'failed', 'superseded')),
+    fingerprint_hash     TEXT NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at         TIMESTAMPTZ,
+
+    CONSTRAINT chk_completed_state CHECK (
+        (state = 'building' AND completed_at IS NULL)
+        OR (state IN ('complete', 'failed', 'superseded') AND completed_at IS NOT NULL)
+    )
+);
+
+--------------------------------------------------------------------------------
+-- embeddings — append-only, write-once per (knowledge_item, profile)
+--------------------------------------------------------------------------------
+-- Bare halfvec (untyped, mixed-dimension across profiles). model is retained as
+-- denormalised lineage, no longer an identity key. dimensions is recoverable via
+-- vector_dims(embedding) and is fixed per profile, so it is not stored.
 
 CREATE TABLE embeddings (
-    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    knowledge_item_id  UUID NOT NULL REFERENCES knowledge_items(id),
-    model              TEXT NOT NULL,
-    dimensions         INT NOT NULL,
-    embedding          vector(768) NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    knowledge_item_id     UUID NOT NULL REFERENCES knowledge_items(id),
+    embedding_profile_id  UUID NOT NULL REFERENCES embedding_profiles(id),
+    model                 TEXT NOT NULL,
+    embedding             halfvec NOT NULL,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT uq_embedding_item_profile UNIQUE (knowledge_item_id, embedding_profile_id),
+    CONSTRAINT chk_nonzero_vector CHECK (l2_norm(embedding) > 0)
 );
 
 --------------------------------------------------------------------------------
@@ -327,9 +369,15 @@ CREATE INDEX idx_knowledge_items_episode    ON knowledge_items(episode_id);
 CREATE INDEX idx_knowledge_items_tags       ON knowledge_items USING gin(tags);
 CREATE INDEX idx_knowledge_items_created    ON knowledge_items(created_at);
 
--- embeddings
-CREATE INDEX idx_embeddings_item_model ON embeddings(knowledge_item_id, model);
-CREATE INDEX idx_embeddings_hnsw       ON embeddings USING hnsw(embedding vector_cosine_ops);
+-- embedding_profiles
+CREATE INDEX idx_embedding_profiles_state_epoch ON embedding_profiles(state, epoch DESC);
+CREATE INDEX idx_embedding_profiles_fingerprint ON embedding_profiles(fingerprint_hash);
+
+-- embeddings — the profile-only index keeps prune and the reindex set-difference
+-- off a sequential scan; embedding_profile_id is the trailing column of
+-- uq_embedding_item_profile, which therefore cannot serve a profile-scoped scan.
+-- Per-profile partial HNSW indexes are built at runtime, not here.
+CREATE INDEX idx_embeddings_profile ON embeddings(embedding_profile_id);
 
 -- item_external_references
 CREATE INDEX idx_external_refs_item  ON item_external_references(knowledge_item_id);

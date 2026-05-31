@@ -1,0 +1,270 @@
+//! Embedding profile repository: trait definition and Postgres implementation.
+//!
+//! `embedding_profiles` is an append-only activation log. The active profile is
+//! derived as the highest-epoch `complete` row. Raw `sqlx::query()` is used
+//! because the row maps onto domain enums parsed as `TEXT`, which the
+//! compile-time `sqlx::query!` macro cannot construct.
+
+use async_trait::async_trait;
+use sqlx::{PgConnection, Row};
+use tribal_domain::{
+    DistanceMetric, EmbeddingProfile, EmbeddingProfileId, EmbeddingProfileState, ProviderKind,
+};
+use typed_builder::TypedBuilder;
+
+use super::common::columns::Columns;
+use crate::DbError;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const COLUMNS: Columns = Columns(&[
+    "id",
+    "epoch",
+    "provider_kind",
+    "normalised_base_url",
+    "model",
+    "dimensions",
+    "distance_metric",
+    "revision_token",
+    "probe_digest",
+    "state",
+    "fingerprint_hash",
+    "created_at",
+    "completed_at",
+]);
+
+const DIMENSIONS_EXCEEDS_I32: &str = "profile dimensions exceeds i32::MAX";
+const DIMENSIONS_OVERFLOW: &str = "negative dimensions in database — data corruption";
+const UNKNOWN_PROVIDER_KIND_IN_DB: &str = "unknown provider_kind in database — data corruption";
+const UNKNOWN_DISTANCE_METRIC_IN_DB: &str = "unknown distance_metric in database — data corruption";
+const UNKNOWN_PROFILE_STATE_IN_DB: &str = "unknown profile state in database — data corruption";
+
+// ---------------------------------------------------------------------------
+// Input types
+// ---------------------------------------------------------------------------
+
+/// Input for creating a new embedding profile.
+///
+/// A profile is always inserted in the `building` state; `id`, `epoch`,
+/// `created_at`, and `completed_at` are server-generated. The genesis profile
+/// and every reindex target are created through this shape.
+#[derive(Debug, Clone, TypedBuilder)]
+pub struct NewEmbeddingProfile {
+    /// The provider that produces this geometry.
+    pub provider_kind: ProviderKind,
+    /// The provider endpoint, normalised for credential and registry lookup.
+    pub normalised_base_url: String,
+    /// The embedding model name.
+    pub model: String,
+    /// Vector dimension.
+    pub dimensions: u32,
+    /// The distance metric the index is built for.
+    #[builder(default)]
+    pub distance_metric: DistanceMetric,
+    /// A provider-exposed revision signal; empty when none.
+    #[builder(default)]
+    pub revision_token: String,
+    /// The quantised probe digest, when one was resolved.
+    #[builder(default)]
+    pub probe_digest: Option<String>,
+    /// Stable handle over the identity tuple.
+    pub fingerprint_hash: String,
+}
+
+// ---------------------------------------------------------------------------
+// Trait
+// ---------------------------------------------------------------------------
+
+/// Data access operations for embedding profiles.
+///
+/// All methods take `&mut PgConnection` as an explicit executor, keeping the
+/// repository pool-agnostic.
+#[async_trait]
+pub trait EmbeddingProfileRepository {
+    /// Inserts a new profile in the `building` state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn insert(
+        &self,
+        conn: &mut PgConnection,
+        new: &NewEmbeddingProfile,
+    ) -> Result<EmbeddingProfile, DbError>;
+
+    /// Returns the active profile: the highest-epoch `complete` row, or `None`
+    /// before any profile has completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_active(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<EmbeddingProfile>, DbError>;
+
+    /// Returns the highest-epoch `building` profile, or `None`.
+    ///
+    /// Single-flight makes at most one `building` profile live at a time;
+    /// first-boot provisioning uses this to adopt a genesis profile left by a
+    /// prior crashed run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_building(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<EmbeddingProfile>, DbError>;
+
+    /// Transitions a `building` profile to `complete`, stamping `completed_at`.
+    ///
+    /// Returns `true` if this call performed the transition, `false` if the
+    /// profile was not in the `building` state (already completed or absent),
+    /// so the caller can reason about a crash-resumed provisioning.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn mark_complete(
+        &self,
+        conn: &mut PgConnection,
+        id: EmbeddingProfileId,
+    ) -> Result<bool, DbError>;
+}
+
+// ---------------------------------------------------------------------------
+// Postgres implementation
+// ---------------------------------------------------------------------------
+
+/// Postgres implementation of [`EmbeddingProfileRepository`].
+///
+/// A zero-sized type with no internal state.
+pub struct PgEmbeddingProfileRepository;
+
+#[async_trait]
+impl EmbeddingProfileRepository for PgEmbeddingProfileRepository {
+    async fn insert(
+        &self,
+        conn: &mut PgConnection,
+        new: &NewEmbeddingProfile,
+    ) -> Result<EmbeddingProfile, DbError> {
+        let dimensions = i32::try_from(new.dimensions).expect(DIMENSIONS_EXCEEDS_I32);
+
+        let row = sqlx::query(&format!(
+            "INSERT INTO embedding_profiles \
+                 (provider_kind, normalised_base_url, model, dimensions, distance_metric, \
+                  revision_token, probe_digest, state, fingerprint_hash) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'building', $8) \
+             RETURNING {COLUMNS}"
+        ))
+        .bind(new.provider_kind.as_str())
+        .bind(&new.normalised_base_url)
+        .bind(&new.model)
+        .bind(dimensions)
+        .bind(new.distance_metric.as_str())
+        .bind(&new.revision_token)
+        .bind(&new.probe_digest)
+        .bind(&new.fingerprint_hash)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "inserting embedding profile".to_owned(),
+            source: e,
+        })?;
+
+        Ok(map_embedding_profile_row(&row))
+    }
+
+    async fn find_active(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<EmbeddingProfile>, DbError> {
+        let row = sqlx::query(&format!(
+            "SELECT {COLUMNS} FROM embedding_profiles \
+             WHERE state = 'complete' ORDER BY epoch DESC LIMIT 1"
+        ))
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "finding active embedding profile".to_owned(),
+            source: e,
+        })?;
+
+        Ok(row.as_ref().map(map_embedding_profile_row))
+    }
+
+    async fn find_building(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<EmbeddingProfile>, DbError> {
+        let row = sqlx::query(&format!(
+            "SELECT {COLUMNS} FROM embedding_profiles \
+             WHERE state = 'building' ORDER BY epoch DESC LIMIT 1"
+        ))
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "finding building embedding profile".to_owned(),
+            source: e,
+        })?;
+
+        Ok(row.as_ref().map(map_embedding_profile_row))
+    }
+
+    async fn mark_complete(
+        &self,
+        conn: &mut PgConnection,
+        id: EmbeddingProfileId,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE embedding_profiles SET state = 'complete', completed_at = now() \
+             WHERE id = $1 AND state = 'building'",
+        )
+        .bind(id.inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("completing embedding profile {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row mapping
+// ---------------------------------------------------------------------------
+
+fn map_embedding_profile_row(r: &sqlx::postgres::PgRow) -> EmbeddingProfile {
+    EmbeddingProfile::builder()
+        .id(EmbeddingProfileId::from(r.get::<uuid::Uuid, _>("id")))
+        .epoch(r.get::<i64, _>("epoch"))
+        .provider_kind(
+            r.get::<String, _>("provider_kind")
+                .parse::<ProviderKind>()
+                .expect(UNKNOWN_PROVIDER_KIND_IN_DB),
+        )
+        .normalised_base_url(r.get::<String, _>("normalised_base_url"))
+        .model(r.get::<String, _>("model"))
+        .dimensions(u32::try_from(r.get::<i32, _>("dimensions")).expect(DIMENSIONS_OVERFLOW))
+        .distance_metric(
+            r.get::<String, _>("distance_metric")
+                .parse::<DistanceMetric>()
+                .expect(UNKNOWN_DISTANCE_METRIC_IN_DB),
+        )
+        .revision_token(r.get::<String, _>("revision_token"))
+        .probe_digest(r.get::<Option<String>, _>("probe_digest"))
+        .state(
+            r.get::<String, _>("state")
+                .parse::<EmbeddingProfileState>()
+                .expect(UNKNOWN_PROFILE_STATE_IN_DB),
+        )
+        .fingerprint_hash(r.get::<String, _>("fingerprint_hash"))
+        .created_at(r.get("created_at"))
+        .completed_at(r.get("completed_at"))
+        .build()
+}

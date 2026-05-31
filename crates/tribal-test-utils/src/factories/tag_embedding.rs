@@ -1,12 +1,16 @@
 use tribal_db::NewTagEmbedding;
+use tribal_domain::EmbeddingProfileId;
 
 define_factory! {
     /// Factory for [`NewTagEmbedding`] instances.
+    ///
+    /// `embedding_profile_id` defaults to a fresh value; insert tests must
+    /// override it with an existing profile's id to satisfy the foreign key.
     pub struct NewTagEmbeddingFactory for NewTagEmbedding {
         tag: String = "test-tag".to_owned(),
+        embedding_profile_id: EmbeddingProfileId = EmbeddingProfileId::new(),
         model: String = "test-model".to_owned(),
-        dimensions: u32 = 768,
-        embedding: Vec<f32> = vec![0.0; 768],
+        embedding: Vec<f32> = vec![0.1; 768],
     }
 }
 
@@ -24,7 +28,6 @@ mod tests {
         let t = a_new_tag_embedding().build();
         assert_eq!(t.tag, "test-tag");
         assert_eq!(t.model, "test-model");
-        assert_eq!(t.dimensions, 768);
         assert_eq!(t.embedding.len(), 768);
     }
 }

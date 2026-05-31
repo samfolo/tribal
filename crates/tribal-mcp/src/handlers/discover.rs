@@ -9,7 +9,10 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tracing::Instrument;
-use tribal_db::{DbError, SemanticSearchParams, encode_cursor};
+use tribal_db::{
+    DbError, EmbeddingProfileRepository, PgEmbeddingProfileRepository, SemanticSearchParams,
+    encode_cursor,
+};
 use tribal_domain::{
     EmbeddingPurpose, KnowledgeItemId, KnowledgeKind, McpErrorCode, PrincipalId, ProjectId,
     Reference, Standing, span_attrs,
@@ -339,9 +342,21 @@ async fn execute_discover(
         (_, name) => name,
     };
 
+    // Search against the active profile; the query was embedded by the adapter
+    // against the same live identity. Provisioning completes a genesis profile
+    // before the server serves, so its absence is a consistency fault.
+    let active_profile = PgEmbeddingProfileRepository
+        .find_active(conn)
+        .await?
+        .ok_or(DbError::NotFound {
+            entity: "embedding_profile",
+            id: "active".to_owned(),
+        })?;
+
     let search_params = SemanticSearchParams::builder()
         .query_embedding(params.query_embedding)
-        .embedding_model(params.embedding_model.clone())
+        .embedding_profile_id(active_profile.id())
+        .dimensions(active_profile.dimensions())
         .project_id(params.project_id)
         .kinds(params.kinds)
         .tags(params.tags)
