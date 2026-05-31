@@ -301,6 +301,40 @@ async fn test_handshake_dcr_full_round_trip() {
     );
     let authorize_response = client.authorize(&authorize_query).await;
     assert_eq!(authorize_response.status(), StatusCode::OK);
+    // The consent page carries the authorisation code, so it is locked
+    // down: a deny-by-default CSP, unframable, no sniffing, no referrer
+    // leak of the request URL, and never cached.
+    let headers = authorize_response.headers();
+    let csp = headers
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        csp.contains("default-src 'none'"),
+        "CSP denies by default: {csp}"
+    );
+    assert!(
+        csp.contains("frame-ancestors 'none'"),
+        "CSP forbids framing: {csp}"
+    );
+    assert_eq!(
+        headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+        Some("DENY"),
+    );
+    assert_eq!(
+        headers
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff"),
+    );
+    assert_eq!(
+        headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
+        Some("no-referrer"),
+    );
+    assert_eq!(
+        headers.get("cache-control").and_then(|v| v.to_str().ok()),
+        Some("no-store"),
+    );
     let consent_html = String::from_utf8(read_body(authorize_response).await).unwrap();
     assert!(
         consent_html.contains("127.0.0.1"),

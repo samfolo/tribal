@@ -43,6 +43,12 @@ use crate::oauth::{
 
 const RANDOM_CODE_BYTE_LENGTH: usize = 32;
 
+/// Content-Security-Policy for the consent page. The page is fully
+/// self-contained: it loads nothing and runs no script, so everything is
+/// denied except its own inline styles. `frame-ancestors 'none'` blocks
+/// the page being framed for a clickjacked authorisation.
+const CONSENT_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 // ---------------------------------------------------------------------------
 // Query parameters
 // ---------------------------------------------------------------------------
@@ -481,6 +487,24 @@ fn consent_page_response(
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    // The page embeds a single-use authorisation code and gates a
+    // credential grant, so it is locked down: never cached or stored,
+    // never framed (clickjacking), no MIME sniffing, and no referrer
+    // leak of the `/authorize` request URL to the redirect target.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CONSENT_CSP),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
     );
     Ok((StatusCode::OK, headers, body).into_response())
 }
