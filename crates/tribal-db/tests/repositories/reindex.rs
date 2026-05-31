@@ -70,7 +70,13 @@ async fn test_run_inserts_queued_and_find_live() {
     // Complete it: no longer live, and completed_at is stamped.
     assert!(
         PgReindexRunRepository
-            .transition(&mut txn, run_id, ReindexRunState::Completed, None)
+            .transition(
+                &mut txn,
+                run_id,
+                ReindexRunState::Queued,
+                ReindexRunState::Completed,
+                None,
+            )
             .await
             .expect("transition")
     );
