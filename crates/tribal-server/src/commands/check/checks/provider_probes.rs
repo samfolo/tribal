@@ -7,7 +7,8 @@
 //! [`ProviderStage`] dispatched in by the step pipeline.
 
 use tribal_config::{ProviderStage, TribalConfig};
-use tribal_domain::ProviderKind;
+use tribal_domain::{ProviderKind, normalise_endpoint_url};
+use tribal_inference::resolve_dimensions;
 
 use super::{
     state::CheckState,
@@ -53,42 +54,65 @@ pub(in crate::commands::check) async fn act(
         .expect("preflight ensures state.config is populated");
     let provider = provider_kind(config, target);
     let result = match target {
-        ProviderStage::Embedding => {
-            let base_url = config
-                .embedding
-                .base_url
-                .as_deref()
-                .unwrap_or_else(|| config.embedding.provider.default_base_url());
-            let api_key = config.embedding.api_key.as_ref().map_or("", |k| k.as_str());
-            probe_embedding_provider(
-                state.http_client.clone(),
-                config.embedding.provider,
-                &config.embedding.model,
-                config.embedding.dimensions,
-                base_url,
-                api_key,
-            )
-            .await
-        }
+        ProviderStage::Embedding => probe_genesis_embedding(state.http_client.clone(), config).await,
         ProviderStage::Extraction => {
-            probe_inference_provider(state.http_client.clone(), &config.inference.extraction).await
+            probe_inference_provider(state.http_client.clone(), &config.inference.extraction)
+                .await
+                .map_err(|e| e.to_string())
         }
         ProviderStage::Triage => {
-            probe_inference_provider(state.http_client.clone(), &config.inference.triage).await
+            probe_inference_provider(state.http_client.clone(), &config.inference.triage)
+                .await
+                .map_err(|e| e.to_string())
         }
         ProviderStage::Relation => {
-            probe_inference_provider(state.http_client.clone(), &config.inference.relation).await
+            probe_inference_provider(state.http_client.clone(), &config.inference.relation)
+                .await
+                .map_err(|e| e.to_string())
         }
     };
     match result {
         Ok(()) => CheckOutcome::provider_probe_passed(target, provider),
-        Err(err) => CheckOutcome::provider_probe_failed(target, provider, err.to_string()),
+        Err(error) => CheckOutcome::provider_probe_failed(target, provider, error),
     }
+}
+
+/// Probes the genesis embedding seed (`init.embedding`) for reachability,
+/// resolving its dimension through the capability chain and its credential
+/// through the catalogue exactly as first-boot provisioning does.
+async fn probe_genesis_embedding(
+    client: reqwest::Client,
+    config: &TribalConfig,
+) -> Result<(), String> {
+    let init = &config.init.embedding;
+    let provider = init.provider;
+    let base_url = init
+        .base_url
+        .as_deref()
+        .unwrap_or_else(|| provider.default_base_url());
+    let dimensions =
+        resolve_dimensions(provider, &init.model, init.dimensions).map_err(|e| e.to_string())?;
+    let normalised_base_url = normalise_endpoint_url(base_url).map_err(|e| e.to_string())?;
+    let api_key = config
+        .credentials
+        .resolve_api_key(provider, &normalised_base_url)
+        .map_err(|e| e.to_string())?;
+
+    probe_embedding_provider(
+        client,
+        provider,
+        &init.model,
+        dimensions,
+        base_url,
+        api_key,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 fn provider_kind(config: &TribalConfig, target: ProviderStage) -> ProviderKind {
     match target {
-        ProviderStage::Embedding => config.embedding.provider,
+        ProviderStage::Embedding => config.init.embedding.provider,
         ProviderStage::Extraction => config.inference.extraction.provider,
         ProviderStage::Triage => config.inference.triage.provider,
         ProviderStage::Relation => config.inference.relation.provider,
