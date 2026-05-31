@@ -301,10 +301,48 @@ async fn test_handshake_dcr_full_round_trip() {
     );
     let authorize_response = client.authorize(&authorize_query).await;
     assert_eq!(authorize_response.status(), StatusCode::OK);
+    // The consent page carries the authorisation code, so it is locked
+    // down: a deny-by-default CSP, unframable, no sniffing, no referrer
+    // leak of the request URL, and never cached.
+    let headers = authorize_response.headers();
+    let csp = headers
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        csp.contains("default-src 'none'"),
+        "CSP denies by default: {csp}"
+    );
+    assert!(
+        csp.contains("frame-ancestors 'none'"),
+        "CSP forbids framing: {csp}"
+    );
+    assert_eq!(
+        headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+        Some("DENY"),
+    );
+    assert_eq!(
+        headers
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff"),
+    );
+    assert_eq!(
+        headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
+        Some("no-referrer"),
+    );
+    assert_eq!(
+        headers.get("cache-control").and_then(|v| v.to_str().ok()),
+        Some("no-store"),
+    );
     let consent_html = String::from_utf8(read_body(authorize_response).await).unwrap();
     assert!(
         consent_html.contains("127.0.0.1"),
         "consent should display the redirect host"
+    );
+    assert!(
+        consent_html.contains("Loopback redirect"),
+        "a loopback redirect must show the loopback warning"
     );
     let target_url = extract_approve_href(&consent_html);
     let target_parsed = Url::parse(&target_url).unwrap();
@@ -858,9 +896,29 @@ async fn test_token_omitted_scope_falls_back_to_registration() {
     let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
     let client_id = register["client_id"].as_str().unwrap().to_owned();
 
-    // authorize_code omits the scope parameter; the minted token must carry
-    // the registered scope, not the broader DEFAULT_GRANT_SCOPE.
-    let code = client.authorize_code(&client_id).await;
+    // The scope parameter is omitted entirely. The consent page must show
+    // the effective grant the code carries (the registered scope), and the
+    // minted token must carry it too, not the broader DEFAULT_GRANT_SCOPE.
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(read_body(response).await).unwrap();
+    assert!(
+        html.contains("tribal.knowledge:read"),
+        "consent page must show the effective registered scope when scope is omitted",
+    );
+    let target = extract_approve_href(&html);
+    let code = Url::parse(&target)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .expect("consent page carries the authorisation code");
+
     let response = client
         .post_token(token_form(&code, &client_id, VERIFIER, None))
         .await;
@@ -899,6 +957,10 @@ async fn test_token_blank_scope_falls_back_to_registration() {
     let response = client.authorize(&query).await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = String::from_utf8(read_body(response).await).unwrap();
+    assert!(
+        html.contains("tribal.knowledge:read"),
+        "consent page must show the effective registered scope when scope is blank",
+    );
     let target = extract_approve_href(&html);
     let code = Url::parse(&target)
         .unwrap()
@@ -913,6 +975,104 @@ async fn test_token_blank_scope_falls_back_to_registration() {
     assert_eq!(response.status(), StatusCode::OK);
     let token: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
     assert_eq!(token["scope"], "tribal.knowledge:read");
+}
+
+#[tokio::test]
+async fn test_token_empty_registered_scope_resolves_to_default() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    // A client may register a blank scope. It must not display as nothing on
+    // the consent page while the token still mints the default grant.
+    let register = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "scope": "",
+        }))
+        .await;
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
+    let client_id = register["client_id"].as_str().unwrap().to_owned();
+
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(read_body(response).await).unwrap();
+    assert!(
+        html.contains("tribal:read"),
+        "consent page must show the default grant when the registered scope is blank",
+    );
+    let target = extract_approve_href(&html);
+    let code = Url::parse(&target)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .expect("consent page carries the authorisation code");
+
+    let response = client
+        .post_token(token_form(&code, &client_id, VERIFIER, None))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(token["scope"], "tribal:read");
+}
+
+#[tokio::test]
+async fn test_consent_page_shows_explicit_requested_scope() {
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.unwrap();
+    ensure_local_principal(&pool).await;
+    let runtime = runtime_config();
+    let client = OAuthClient::new(runtime, pool);
+
+    let register = client
+        .register_raw(serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "scope": "tribal:read tribal:write",
+        }))
+        .await;
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let register: serde_json::Value = serde_json::from_slice(&read_body(register).await).unwrap();
+    let client_id = register["client_id"].as_str().unwrap().to_owned();
+
+    // An explicit request scope must appear on the page and be exactly what
+    // the minted token carries.
+    let query = format!(
+        "response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256\
+         &resource={RESOURCE_ENCODED}&scope=tribal%3Aread",
+    );
+    let response = client.authorize(&query).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(read_body(response).await).unwrap();
+    assert!(
+        html.contains("tribal:read"),
+        "consent page must show the explicitly requested scope",
+    );
+    let target = extract_approve_href(&html);
+    let code = Url::parse(&target)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .expect("consent page carries the authorisation code");
+
+    let response = client
+        .post_token(token_form(&code, &client_id, VERIFIER, None))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token: serde_json::Value = serde_json::from_slice(&read_body(response).await).unwrap();
+    assert_eq!(token["scope"], "tribal:read");
 }
 
 #[tokio::test]
@@ -1254,19 +1414,31 @@ async fn test_authorization_code_survives_transaction_rollback() {
 // ---------------------------------------------------------------------------
 
 fn extract_approve_href(html: &str) -> String {
-    // The consent page presents the redirect target as an `<a href>` the
-    // user clicks to authorise; the href carries the full target URL with
-    // its query string intact. Extract it to drive the exchange.
-    let start = html
-        .find(r#"<a id="approve" href=""#)
+    // The consent page presents the redirect target as the approve
+    // anchor's href; it carries the full target URL with its query string
+    // intact. Locate the href within that anchor (independent of the
+    // anchor's other attributes) to drive the exchange.
+    let anchor = html
+        .find(r#"class="approve""#)
         .expect("consent page approve anchor present");
-    let after = &html[start + r#"<a id="approve" href=""#.len()..];
+    // Bound the href search to the approve anchor's own opening tag, so a
+    // later unrelated link cannot be followed if the anchor ever loses its
+    // href.
+    let tag_end = html[anchor..]
+        .find('>')
+        .map(|rel| anchor + rel)
+        .expect("approve anchor opening tag is closed");
+    let opening_tag = &html[anchor..tag_end];
+    let href_marker = r#"href=""#;
+    let href_rel = opening_tag
+        .find(href_marker)
+        .expect("approve anchor carries an href");
+    let start = anchor + href_rel + href_marker.len();
+    let after = &html[start..];
     let end = after.find('"').expect("approve href quoted");
-    decode_html_attribute(&after[..end])
-}
-
-fn decode_html_attribute(s: &str) -> String {
-    s.replace("&amp;", "&")
+    // The href is HTML-attribute-escaped; decode every entity form back
+    // to the raw redirect URL rather than special-casing the separator.
+    html_escape::decode_html_entities(&after[..end]).into_owned()
 }
 
 fn base64_encode(input: &str) -> String {

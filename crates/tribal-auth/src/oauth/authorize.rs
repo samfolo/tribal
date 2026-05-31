@@ -25,7 +25,7 @@ use tribal_domain::{LOCAL_PRINCIPAL_KEY, OauthAuthorizationCode, OauthClient};
 use url::Url;
 
 use crate::oauth::{
-    common::RESPONSE_TYPE_CODE,
+    common::{RESPONSE_TYPE_CODE, is_loopback_host},
     config::{OAuthRuntimeConfig, canonicalise_resource_url},
     consent::build_consent_html,
     error::{
@@ -34,7 +34,7 @@ use crate::oauth::{
     },
     pkce::CodeChallenge,
     redirect::matches_redirect_uri,
-    scope::{first_uncatalogued_scope, scope_exceeding_registration},
+    scope::{effective_scope, first_uncatalogued_scope, scope_exceeding_registration},
 };
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,12 @@ use crate::oauth::{
 // ---------------------------------------------------------------------------
 
 const RANDOM_CODE_BYTE_LENGTH: usize = 32;
+
+/// Content-Security-Policy for the consent page. The page is fully
+/// self-contained: it loads nothing and runs no script, so everything is
+/// denied except its own inline styles. `frame-ancestors 'none'` blocks
+/// the page being framed for a clickjacked authorisation.
+const CONSENT_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 // ---------------------------------------------------------------------------
 // Query parameters
@@ -194,11 +200,13 @@ pub async fn handle_authorize(
 }
 
 /// A `/authorize` client resolved against the registry: the matched
-/// redirect URI, and the registered scope grant that bounds what a code
-/// issued to this client may carry.
+/// redirect URI, the registered scope grant that bounds what a code issued
+/// to this client may carry, and the registered display name (when one was
+/// supplied at registration) shown on the consent page.
 struct ResolvedClient {
     redirect_uri: Url,
     registered_scope: Option<String>,
+    client_name: Option<String>,
 }
 
 async fn validate_pre_redirect(
@@ -226,6 +234,7 @@ async fn validate_pre_redirect(
     Ok(ResolvedClient {
         redirect_uri,
         registered_scope: client.scope().map(str::to_owned),
+        client_name: client.client_name().map(str::to_owned),
     })
 }
 
@@ -322,7 +331,7 @@ async fn issue_code(
 
     // A requested scope outside the advertised catalogue is rejected
     // before the code issues (RFC 6749 §4.1.2.1 invalid_scope). An absent
-    // scope is permitted; the grant falls back to the default at /token.
+    // scope is permitted; the effective grant is resolved below.
     if let Some(uncatalogued) = query.scope.as_deref().and_then(first_uncatalogued_scope) {
         return Err(OAuthError::InvalidScope {
             unknown_token: uncatalogued.to_owned(),
@@ -409,20 +418,31 @@ async fn issue_code(
             }
         })?;
 
+    // Resolve the effective grant through the shared resolver so the consent
+    // page, the stored code, and the token minted at /token all carry the same
+    // scope. Empty and whitespace-only requested or registered scopes resolve
+    // to the default there, so a blank scope cannot display as nothing while a
+    // token still mints.
+    let granted_scope =
+        effective_scope(query.scope.as_deref(), resolved.registered_scope.as_deref());
+
+    // Build the consent page before persisting the code, so a render failure
+    // leaves no orphaned, never-presented authorisation code behind.
+    let response = consent_page_response(
+        &resolved.redirect_uri,
+        &raw_code,
+        query.state.as_deref(),
+        &query.client_id,
+        resolved.client_name.as_deref(),
+        &granted_scope,
+    )?;
+
     let new = NewOauthAuthorizationCode::builder()
         .code_hash(code_hash)
         .client_id(query.client_id.clone())
         .redirect_uri(resolved.redirect_uri.as_str().to_owned())
         .code_challenge(challenge.as_str().to_owned())
-        // Fall back to the client's registered scope when the request
-        // omits one, so /token mints within the registration rather than
-        // defaulting to the broader DEFAULT_GRANT_SCOPE.
-        .scope(
-            query
-                .scope
-                .clone()
-                .or_else(|| resolved.registered_scope.clone()),
-        )
+        .scope(Some(granted_scope))
         .resource(Some(canonical))
         .principal_id(principal_id)
         .expires_at(expires_at)
@@ -445,13 +465,7 @@ async fn issue_code(
             source: Some(Box::new(err)),
         })?;
 
-    Ok(consent_page_response(
-        &resolved.redirect_uri,
-        &raw_code,
-        query.state.as_deref(),
-        &query.client_id,
-        query.scope.as_deref(),
-    ))
+    Ok(response)
 }
 
 fn consent_page_response(
@@ -459,8 +473,9 @@ fn consent_page_response(
     code: &str,
     state: Option<&str>,
     client_id: &str,
-    scope: Option<&str>,
-) -> Response {
+    client_name: Option<&str>,
+    scope: &str,
+) -> Result<Response, OAuthError> {
     let mut url = redirect_uri.clone();
     {
         let mut query = url.query_pairs_mut();
@@ -470,14 +485,52 @@ fn consent_page_response(
         }
     }
     let target = url.as_str().to_owned();
-    let host = redirect_uri.host_str().unwrap_or("");
-    let body = build_consent_html(&target, host, client_id, scope);
+    // Display the full authority the code is delivered to, including a
+    // non-default port: the port is part of where the code goes, and for a
+    // loopback redirect it identifies which local process can receive it.
+    // Classify loopback from the bare host, not the host:port shown.
+    let bare_host = redirect_uri.host_str().unwrap_or("");
+    let authority = match redirect_uri.port() {
+        Some(port) => format!("{bare_host}:{port}"),
+        None => bare_host.to_owned(),
+    };
+    let is_loopback = is_loopback_host(bare_host);
+    let body = build_consent_html(
+        &target,
+        &authority,
+        client_id,
+        client_name,
+        scope,
+        is_loopback,
+    )
+    .map_err(|err| OAuthError::Internal {
+        operation: InternalOperation::RenderConsentPage,
+        source: Some(Box::new(err)),
+    })?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    (StatusCode::OK, headers, body).into_response()
+    // The page embeds a single-use authorisation code and gates a
+    // credential grant, so it is locked down: never cached or stored,
+    // never framed (clickjacking), no MIME sniffing, and no referrer
+    // leak of the `/authorize` request URL to the redirect target.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CONSENT_CSP),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    Ok((StatusCode::OK, headers, body).into_response())
 }
 
 fn generate_random_code() -> String {
