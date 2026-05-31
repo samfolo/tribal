@@ -44,12 +44,12 @@ const COLUMNS: Columns = Columns(&[
     "completed_at",
 ]);
 
-const UNKNOWN_KIND_IN_DB: &str = "unrecognised reindex task kind in database — schema mismatch";
-const UNKNOWN_STATE_IN_DB: &str = "unrecognised reindex task state in database — schema mismatch";
+const UNKNOWN_KIND_IN_DB: &str = "unrecognised reindex task kind in database: schema mismatch";
+const UNKNOWN_STATE_IN_DB: &str = "unrecognised reindex task state in database: schema mismatch";
 const UNKNOWN_ERROR_CLASS_IN_DB: &str =
-    "unrecognised reindex error class in database — schema mismatch";
-const ATTEMPT_OVERFLOW: &str = "negative attempt in database — data corruption";
-const MAX_ATTEMPTS_OVERFLOW: &str = "negative max_attempts in database — data corruption";
+    "unrecognised reindex error class in database: schema mismatch";
+const ATTEMPT_OVERFLOW: &str = "negative attempt in database: data corruption";
+const MAX_ATTEMPTS_OVERFLOW: &str = "negative max_attempts in database: data corruption";
 
 /// A count of reindex tasks in a given state within a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

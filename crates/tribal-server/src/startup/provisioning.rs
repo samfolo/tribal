@@ -7,7 +7,7 @@
 //! crash-safe: a crash before the profile is marked `complete` leaves it
 //! `building` (never active), so a restart re-adopts and completes it rather
 //! than minting a second genesis. It never registers a later configuration
-//! change as a profile — that is the reindex's job.
+//! change as a profile; that is the reindex's job.
 
 use sqlx::{PgConnection, PgPool};
 use tribal_common::{embedding_profile_fingerprint, random_duration_in_range};

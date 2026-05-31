@@ -1097,11 +1097,11 @@ mod tests {
 
     use super::*;
 
-    /// Deviation 1: when a cutover flips the active profile between an ingest's
-    /// pre-embed and its commit, the commit re-embeds the item and its novel
-    /// tags against the new active's provider (resolved from the cache the
-    /// reindex driver populated) rather than writing the stale, old-space
-    /// vectors under the new active.
+    /// When a cutover flips the active profile between an ingest's pre-embed and
+    /// its commit, the commit re-embeds the item and its novel tags against the
+    /// new active's provider (resolved from the cache the reindex driver
+    /// populated) rather than writing the stale, old-space vectors under the new
+    /// active.
     #[tokio::test]
     async fn test_reembed_against_active_uses_the_new_active_provider() {
         // The new active, its built provider already cached by the driver,
@@ -1163,11 +1163,10 @@ mod tests {
         );
     }
 
-    /// Deviation 1, the §10-respecting signal: when the active a cutover has
-    /// since flipped no longer matches the pre-embedded vector's model or
-    /// dimension, `commit_novel` writes nothing and returns the new active for
-    /// the caller to re-embed against, so a provider call never spans the open
-    /// transaction or the cutover lock.
+    /// When the active a cutover has since flipped no longer matches the
+    /// pre-embedded vector's model or dimension, `commit_novel` writes nothing
+    /// and returns the new active for the caller to re-embed against, so a
+    /// provider call never spans the open transaction or the cutover lock.
     #[tokio::test]
     async fn test_commit_novel_signals_reembed_when_the_active_flipped() {
         let ctx = test_context().await;

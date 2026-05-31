@@ -2,7 +2,7 @@
 //!
 //! [`probe_digest`] reduces a probe embedding to a compact, comparable digest:
 //! it quantises each coordinate and hashes the result. The contract is
-//! quantised-digest equality, not a distance tolerance — a digest cannot
+//! quantised-digest equality, not a distance tolerance; a digest cannot
 //! express "diverges beyond a threshold", only whether two probes are the same.
 //! The quantisation is coarse enough that healthy serving jitter rounds to the
 //! same digest (so the no-op decision is stable and duplicate builds are

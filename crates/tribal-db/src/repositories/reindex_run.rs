@@ -35,8 +35,8 @@ const COLUMNS: Columns = Columns(&[
     "completed_at",
 ]);
 
-const UNKNOWN_STATE_IN_DB: &str = "unrecognised reindex run state in database — schema mismatch";
-const EPOCH_OVERFLOW: &str = "negative count in database — data corruption";
+const UNKNOWN_STATE_IN_DB: &str = "unrecognised reindex run state in database: schema mismatch";
+const EPOCH_OVERFLOW: &str = "negative count in database: data corruption";
 const COUNT_EXCEEDS_I32: &str = "count exceeds i32::MAX";
 
 // ---------------------------------------------------------------------------

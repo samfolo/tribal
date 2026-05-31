@@ -300,8 +300,8 @@ impl ProviderRegistry {
     }
 
     /// Registers a provider for a target endpoint discovered after
-    /// construction (a reindex target), idempotently. A key already present —
-    /// eager or dynamically registered — is a no-op.
+    /// construction (a reindex target), idempotently. A key already present
+    /// (eager or dynamically registered) is a no-op.
     ///
     /// # Errors
     ///

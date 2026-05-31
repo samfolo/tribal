@@ -82,7 +82,7 @@ pub async fn upsert_system_fingerprint(
 /// Ensures a `complete` genesis embedding profile exists and returns it.
 ///
 /// Reuses the active profile when one is present, otherwise creates a profile
-/// from the given model and dimension and completes it — mirroring first-boot
+/// from the given model and dimension and completes it, mirroring first-boot
 /// provisioning so embedding inserts have a profile to key against.
 ///
 /// # Panics
@@ -220,7 +220,7 @@ pub async fn active_embedding_profile(conn: &mut PgConnection) -> EmbeddingProfi
 /// Inserts a test embedding for a knowledge item, ensuring a genesis profile
 /// exists and keying the row to it.
 ///
-/// No production repository exposes direct embedding insertion — this uses raw
+/// No production repository exposes direct embedding insertion; this uses raw
 /// SQL.
 ///
 /// # Panics

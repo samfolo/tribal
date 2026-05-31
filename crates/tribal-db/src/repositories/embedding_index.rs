@@ -21,9 +21,9 @@ use crate::DbError;
 /// The two tables that carry per-profile embedding indexes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddingTable {
-    /// `embeddings` — knowledge-item vectors.
+    /// `embeddings`: knowledge-item vectors.
     Embeddings,
-    /// `tag_embeddings` — tag-registry vectors.
+    /// `tag_embeddings`: tag-registry vectors.
     TagEmbeddings,
 }
 

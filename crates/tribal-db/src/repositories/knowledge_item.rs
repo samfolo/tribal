@@ -514,7 +514,7 @@ async fn fetch_candidates(
 ) -> Result<Vec<SemanticSearchResult>, DbError> {
     // The profile UUID and dimension are inlined as literals (the UUID rendered
     // from a typed value, never untrusted text) so the query predicate implies
-    // the partial index predicate and the cast matches the index expression —
+    // the partial index predicate and the cast matches the index expression,
     // both required for the per-profile partial HNSW index to be pickable. The
     // similarity vector stays a bind parameter, keeping the prepared-statement
     // cache warm across queries against the same active profile.

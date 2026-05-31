@@ -1,4 +1,4 @@
-//! Embedding profile — one activation of one embedding geometry.
+//! Embedding profile: one activation of one embedding geometry.
 //!
 //! `embedding_profiles` is an append-only, epoch-ordered activation log. The
 //! active profile is the highest-epoch `complete` row, derived at read time and
