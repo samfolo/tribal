@@ -35,17 +35,17 @@ pub use discovery::{
     DEFAULT_OVERFETCH_MULTIPLIER, DEFAULT_SIMILARITY_THRESHOLD, DiscoveryConfig,
     MAX_OVERFETCH_MULTIPLIER,
 };
-pub use embedding::{
-    DEFAULT_DIMENSIONS as DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_MODEL as DEFAULT_EMBEDDING_MODEL,
-    EmbeddingConfig,
-};
+pub use embedding::EmbeddingConfig;
 pub use exploration::{
     DEFAULT_DEPTH as DEFAULT_EXPLORATION_DEPTH, DEFAULT_LIMIT as DEFAULT_EXPLORATION_LIMIT,
     DEFAULT_MAX_DEPTH as DEFAULT_EXPLORATION_MAX_DEPTH,
     DEFAULT_MAX_LIMIT as DEFAULT_EXPLORATION_MAX_LIMIT, ExplorationConfig,
 };
 pub use inference::{InferenceConfig, StageInferenceConfig};
-pub use init::{InitConfig, InitEmbeddingConfig};
+pub use init::{
+    DEFAULT_DIMENSIONS as DEFAULT_EMBEDDING_DIMENSIONS, DEFAULT_MODEL as DEFAULT_EMBEDDING_MODEL,
+    InitConfig, InitEmbeddingConfig,
+};
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
 pub use oauth::{

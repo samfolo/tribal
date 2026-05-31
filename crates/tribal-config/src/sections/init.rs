@@ -11,7 +11,20 @@
 use serde::{Deserialize, Serialize};
 use tribal_domain::ProviderKind;
 
-use super::embedding::DEFAULT_MODEL;
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Default genesis embedding model.
+pub const DEFAULT_MODEL: &str = "nomic-embed-text:v1.5";
+
+/// Native output dimensionality of [`DEFAULT_MODEL`].
+///
+/// `init.embedding.dimensions` is `None` by default and resolves through the
+/// embedding service's native-dimension chain at provisioning; this is the
+/// value that chain yields for the default model, exposed for tests and the
+/// rendered-config reference.
+pub const DEFAULT_DIMENSIONS: u32 = 768;
 
 fn default_model() -> String {
     String::from(DEFAULT_MODEL)

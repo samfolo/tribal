@@ -3,15 +3,11 @@
 use serde::{Deserialize, Serialize};
 use tribal_domain::{ApiKey, ProviderKind};
 
+use super::init::{DEFAULT_DIMENSIONS, DEFAULT_MODEL};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// Default embedding model name.
-pub const DEFAULT_MODEL: &str = "nomic-embed-text:v1.5";
-
-/// Default vector dimensions.
-pub const DEFAULT_DIMENSIONS: u32 = 768;
 
 fn default_model() -> String {
     String::from(DEFAULT_MODEL)
