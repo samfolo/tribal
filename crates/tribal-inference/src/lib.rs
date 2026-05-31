@@ -27,7 +27,7 @@ pub use capabilities::{
 pub use embedding_capabilities::{
     DimensionResolutionError, EmbeddingCapabilities, resolve_dimensions, resolve_embedding,
 };
-pub use error::InferenceError;
+pub use error::{InferenceError, classify_embedding_error};
 #[cfg(feature = "test-helpers")]
 pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
 #[cfg(feature = "test-helpers")]
