@@ -359,8 +359,10 @@ CREATE TABLE reindex_runs (
 
 --------------------------------------------------------------------------------
 -- reindex_tasks: the lease protocol for a reindex run's per-batch work.
--- Derived from the ingestion task lease (claim/heartbeat/reclaim), distinct
--- state set and attempt/max_attempts columns.
+-- Derived from the ingestion task claim, with a distinct state set and
+-- attempt/max_attempts columns. The driver claims and processes one task per
+-- cycle synchronously; a crashed worker's task is re-done by the set-difference
+-- catch-up, so there is no stale-lease reclaim.
 --------------------------------------------------------------------------------
 
 CREATE TABLE reindex_tasks (
@@ -509,10 +511,11 @@ CREATE INDEX idx_token_usage_model_created ON token_usage(model, created_at);
 CREATE UNIQUE INDEX uq_reindex_run_live ON reindex_runs ((true))
     WHERE state IN ('queued', 'running');
 
--- reindex_tasks: pickup index covers claimed rows so stale reclaim is an index
--- scan (broader than the ingestion task pickup, which excludes claimed rows).
+-- reindex_tasks: pickup index over the claimable rows, scanned by the worker's
+-- claim query (claimed rows are never pickup-scanned, so the partition is
+-- pending-only).
 CREATE INDEX idx_reindex_tasks_pickup ON reindex_tasks(available_at)
-    WHERE state IN ('pending', 'claimed');
+    WHERE state = 'pending';
 
 -- retrieval_feedback
 CREATE INDEX idx_feedback_trace     ON retrieval_feedback(trace_id);

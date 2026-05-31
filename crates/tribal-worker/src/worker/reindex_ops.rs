@@ -44,7 +44,7 @@ pub struct ReindexRunRequest {
     pub dimensions: Option<u32>,
     /// Endpoint base URL, or `None` for the provider's canonical endpoint.
     pub base_url: Option<String>,
-    /// When set, estimate only — no run is created.
+    /// When set, estimate only; no run is created.
     pub dry_run: bool,
 }
 
