@@ -1,11 +1,14 @@
 //! Reindex task repository: the lease protocol for a reindex run's work.
 //!
 //! Derived from the ingestion [`task`](super::task) lease behaviour, not the
-//! literal SQL re-pointed: claim via `FOR UPDATE SKIP LOCKED`, heartbeat, stale
-//! reclaim, and retry-with-backoff are identical in spirit, but the table is
+//! literal SQL re-pointed: claim via `FOR UPDATE SKIP LOCKED` and
+//! retry-with-backoff are identical in spirit, but the table is
 //! `reindex_tasks`, the live state is `pending`, the retry budget is the
 //! `max_attempts` column (not a call-site value), and a permanent-class failure
-//! is routed to `reindex_quarantine` rather than a task state. Uses raw
+//! is routed to `reindex_quarantine` rather than a task state. The reindex
+//! driver claims and processes one task per cycle synchronously, so it neither
+//! refreshes a heartbeat nor sweeps for stale leases; a crashed worker's task
+//! is re-done by the set-difference catch-up, not lease reclaim. Uses raw
 //! `sqlx::query()` for the CTE-based atomic operations and `CASE` retry logic.
 
 use async_trait::async_trait;
@@ -18,7 +21,7 @@ use tribal_domain::{
 use typed_builder::TypedBuilder;
 
 use super::common::columns::Columns;
-use crate::{DbError, ReclaimOutcome};
+use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -117,19 +120,6 @@ pub trait ReindexTaskRepository {
         claimed_by: &str,
     ) -> Result<Vec<ReindexTask>, DbError>;
 
-    /// Refreshes a claimed task's heartbeat. Returns the affected row count
-    /// (`0` if the claim token no longer matches).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn heartbeat(
-        &self,
-        conn: &mut PgConnection,
-        id: ReindexTaskId,
-        claim_token: uuid::Uuid,
-    ) -> Result<u64, DbError>;
-
     /// Marks a claimed task `completed`. Returns the affected row count.
     ///
     /// # Errors
@@ -158,23 +148,6 @@ pub trait ReindexTaskRepository {
         error_class: EmbeddingErrorClass,
         error_message: &str,
     ) -> Result<u64, DbError>;
-
-    /// Reclaims tasks whose heartbeat has expired, requeuing or dead-lettering
-    /// them. Reclaim backoff is pre-increment (`2^attempt`), one step below the
-    /// inline-failure backoff so reclaimed work retries sooner.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn reclaim_stale(
-        &self,
-        conn: &mut PgConnection,
-        timeout_seconds: u32,
-        limit: u32,
-        error_class: EmbeddingErrorClass,
-        error_message: &str,
-        flat_backoff_seconds: Option<u32>,
-    ) -> Result<ReclaimOutcome, DbError>;
 
     /// Counts a run's tasks grouped by state.
     ///
@@ -275,29 +248,6 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
         Ok(rows.iter().map(map_reindex_task_row).collect())
     }
 
-    async fn heartbeat(
-        &self,
-        conn: &mut PgConnection,
-        id: ReindexTaskId,
-        claim_token: uuid::Uuid,
-    ) -> Result<u64, DbError> {
-        let result = sqlx::query(
-            "UPDATE reindex_tasks \
-             SET heartbeat_at = now(), updated_at = now() \
-             WHERE id = $1 AND claim_token = $2 AND state = 'claimed'",
-        )
-        .bind(id.inner())
-        .bind(claim_token)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("heartbeat for reindex task {id}"),
-            source: e,
-        })?;
-
-        Ok(result.rows_affected())
-    }
-
     async fn complete(
         &self,
         conn: &mut PgConnection,
@@ -363,76 +313,6 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
         })?;
 
         Ok(result.rows_affected())
-    }
-
-    async fn reclaim_stale(
-        &self,
-        conn: &mut PgConnection,
-        timeout_seconds: u32,
-        limit: u32,
-        error_class: EmbeddingErrorClass,
-        error_message: &str,
-        flat_backoff_seconds: Option<u32>,
-    ) -> Result<ReclaimOutcome, DbError> {
-        let rows = sqlx::query(
-            "WITH stale AS ( \
-                 SELECT id, attempt, max_attempts FROM reindex_tasks \
-                 WHERE state = 'claimed' \
-                   AND heartbeat_at < now() - make_interval(secs => $1::double precision) \
-                 ORDER BY heartbeat_at ASC \
-                 LIMIT $2 \
-                 FOR UPDATE SKIP LOCKED \
-             ) \
-             UPDATE reindex_tasks t \
-             SET attempt = s.attempt + 1, \
-                 state = CASE \
-                     WHEN s.attempt + 1 > s.max_attempts THEN 'dead_letter' \
-                     ELSE 'pending' \
-                 END, \
-                 available_at = CASE \
-                     WHEN s.attempt + 1 > s.max_attempts THEN t.available_at \
-                     WHEN $5 IS NOT NULL THEN now() + make_interval(secs => $5) \
-                     ELSE now() + make_interval( \
-                         secs => power(2, s.attempt)::double precision \
-                     ) \
-                 END, \
-                 claim_token = NULL, \
-                 claimed_by = NULL, \
-                 claimed_at = NULL, \
-                 heartbeat_at = NULL, \
-                 last_error_class = $3, \
-                 last_error = $4, \
-                 updated_at = now() \
-             FROM stale s \
-             WHERE t.id = s.id \
-             RETURNING t.state",
-        )
-        .bind(f64::from(timeout_seconds))
-        .bind(i64::from(limit))
-        .bind(error_class.as_str())
-        .bind(error_message)
-        .bind(flat_backoff_seconds.map(f64::from))
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: "reclaiming stale reindex tasks".to_owned(),
-            source: e,
-        })?;
-
-        let mut requeued: u64 = 0;
-        let mut dead_lettered: u64 = 0;
-        for row in &rows {
-            match row.get::<String, _>("state").as_str() {
-                "pending" => requeued += 1,
-                "dead_letter" => dead_lettered += 1,
-                other => debug_assert!(false, "unexpected reclaim state: {other}"),
-            }
-        }
-
-        Ok(ReclaimOutcome {
-            requeued,
-            dead_lettered,
-        })
     }
 
     async fn count_by_state(

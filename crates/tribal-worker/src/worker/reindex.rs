@@ -647,13 +647,41 @@ async fn quarantine(
         .await
 }
 
-/// Classifies one embed result for an item: a dimension mismatch or a
-/// permanent-class error quarantines the item; a transient-class error is
-/// surfaced so the whole batch retries.
-enum ItemOutcome {
-    Embedded(NewEmbedding),
+/// A failed embed: a dimension mismatch or a permanent-class error quarantines
+/// the entity; a transient-class error is surfaced so the batch retries. Shared
+/// by the item and tag paths, neither of which carries a success here.
+enum EmbedFailure {
     Quarantine(String),
     Transient(String),
+}
+
+/// Classifies one embed result against the building geometry, distinguishing a
+/// written row from a failure.
+enum ItemOutcome {
+    Embedded(NewEmbedding),
+    Failed(EmbedFailure),
+}
+
+/// Classifies an embedding result against the building geometry: an out-of-range
+/// vector quarantines, an error routes by class.
+fn classify_embedding(
+    building: &EmbeddingProfile,
+    result: Result<Vec<f32>, InferenceError>,
+) -> Result<Vec<f32>, EmbedFailure> {
+    match result {
+        Ok(vector) if u32::try_from(vector.len()) == Ok(building.dimensions()) => Ok(vector),
+        Ok(vector) => Err(EmbedFailure::Quarantine(format!(
+            "expected {} dimensions, got {}",
+            building.dimensions(),
+            vector.len(),
+        ))),
+        Err(e) => Err(match classify_embedding_error(&e) {
+            EmbeddingErrorClass::Permanent => EmbedFailure::Quarantine(e.to_string()),
+            EmbeddingErrorClass::Transient
+            | EmbeddingErrorClass::RateLimited
+            | EmbeddingErrorClass::Overloaded => EmbedFailure::Transient(e.to_string()),
+        }),
+    }
 }
 
 fn classify_item_embedding(
@@ -661,28 +689,16 @@ fn classify_item_embedding(
     building: &EmbeddingProfile,
     result: Result<Vec<f32>, InferenceError>,
 ) -> ItemOutcome {
-    match result {
-        Ok(vector) if u32::try_from(vector.len()) == Ok(building.dimensions()) => {
-            ItemOutcome::Embedded(
-                NewEmbedding::builder()
-                    .knowledge_item_id(item_id)
-                    .embedding_profile_id(building.id())
-                    .model(building.model().to_owned())
-                    .embedding(vector)
-                    .build(),
-            )
-        }
-        Ok(vector) => ItemOutcome::Quarantine(format!(
-            "expected {} dimensions, got {}",
-            building.dimensions(),
-            vector.len(),
-        )),
-        Err(e) => match classify_embedding_error(&e) {
-            EmbeddingErrorClass::Permanent => ItemOutcome::Quarantine(e.to_string()),
-            EmbeddingErrorClass::Transient
-            | EmbeddingErrorClass::RateLimited
-            | EmbeddingErrorClass::Overloaded => ItemOutcome::Transient(e.to_string()),
-        },
+    match classify_embedding(building, result) {
+        Ok(vector) => ItemOutcome::Embedded(
+            NewEmbedding::builder()
+                .knowledge_item_id(item_id)
+                .embedding_profile_id(building.id())
+                .model(building.model().to_owned())
+                .embedding(vector)
+                .build(),
+        ),
+        Err(failure) => ItemOutcome::Failed(failure),
     }
 }
 
@@ -725,7 +741,7 @@ async fn embed_pending_batch(
     for (item, res) in items.iter().zip(result.items) {
         match classify_item_embedding(item.id(), ctx.building, res) {
             ItemOutcome::Embedded(row) => rows.push(row),
-            ItemOutcome::Quarantine(message) => {
+            ItemOutcome::Failed(EmbedFailure::Quarantine(message)) => {
                 if quarantine(
                     conn,
                     ctx,
@@ -738,7 +754,7 @@ async fn embed_pending_batch(
                     quarantined += 1;
                 }
             }
-            ItemOutcome::Transient(message) => {
+            ItemOutcome::Failed(EmbedFailure::Transient(message)) => {
                 transient.get_or_insert(message);
             }
         }
@@ -809,8 +825,12 @@ async fn embed_one_tag(
     let mut result = embed_with_permit(ctx.provider, ctx.semaphore, vec![request]).await;
     record_reindex_usage(conn, ctx.run.id(), EmbeddingPurpose::Tag, &result.usage).await;
 
-    let outcome = match result.items.pop() {
-        Some(Ok(vector)) if u32::try_from(vector.len()) == Ok(ctx.building.dimensions()) => {
+    let Some(result) = result.items.pop() else {
+        return Ok(Some("embedding returned no result".to_owned()));
+    };
+
+    let failure = match classify_embedding(ctx.building, result) {
+        Ok(vector) => {
             PgTagEmbeddingRepository
                 .batch_upsert(
                     conn,
@@ -827,22 +847,11 @@ async fn embed_one_tag(
                 .await?;
             return Ok(None);
         }
-        Some(Ok(vector)) => ItemOutcome::Quarantine(format!(
-            "expected {} dimensions, got {}",
-            ctx.building.dimensions(),
-            vector.len(),
-        )),
-        Some(Err(e)) => match classify_embedding_error(&e) {
-            EmbeddingErrorClass::Permanent => ItemOutcome::Quarantine(e.to_string()),
-            EmbeddingErrorClass::Transient
-            | EmbeddingErrorClass::RateLimited
-            | EmbeddingErrorClass::Overloaded => ItemOutcome::Transient(e.to_string()),
-        },
-        None => ItemOutcome::Transient("embedding returned no result".to_owned()),
+        Err(failure) => failure,
     };
 
-    match outcome {
-        ItemOutcome::Quarantine(message) => {
+    match failure {
+        EmbedFailure::Quarantine(message) => {
             if quarantine(conn, ctx, ReindexEntityKind::Tag, tag.to_owned(), message).await? {
                 PgReindexRunRepository
                     .bump_quarantined(conn, ctx.run.id(), 0, 1)
@@ -850,8 +859,7 @@ async fn embed_one_tag(
             }
             Ok(None)
         }
-        ItemOutcome::Transient(message) => Ok(Some(message)),
-        ItemOutcome::Embedded(_) => Ok(None),
+        EmbedFailure::Transient(message) => Ok(Some(message)),
     }
 }
 

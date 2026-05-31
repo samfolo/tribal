@@ -230,8 +230,7 @@ impl ReindexRunRepository for PgReindexRunRepository {
         // Terminal states stamp completed_at (preserved if already set, so a
         // superseded run keeps its original completion time); live states leave
         // it null. The chk_terminal_completed CHECK enforces the pairing.
-        let is_terminal = !matches!(to, ReindexRunState::Queued | ReindexRunState::Running);
-        let completed_at_sql = if is_terminal {
+        let completed_at_sql = if to.is_terminal() {
             "completed_at = COALESCE(completed_at, now())"
         } else {
             "completed_at = NULL"
