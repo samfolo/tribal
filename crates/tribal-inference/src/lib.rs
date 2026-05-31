@@ -34,7 +34,7 @@ pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
 pub use ollama::{
     CHAT_PATH as OLLAMA_CHAT_PATH, EMBED_PATH as OLLAMA_EMBED_PATH, TAGS_PATH as OLLAMA_TAGS_PATH,
 };
-pub use ollama::{OllamaEmbeddingProvider, OllamaInferenceProvider};
+pub use ollama::{OllamaEmbeddingProvider, OllamaInferenceProvider, resolve_ollama_revision_token};
 #[cfg(feature = "test-helpers")]
 pub use openai::{CHAT_PATH as OPENAI_CHAT_PATH, EMBED_PATH as OPENAI_EMBED_PATH};
 pub use openai::{OpenAiEmbeddingProvider, OpenAiInferenceProvider};
