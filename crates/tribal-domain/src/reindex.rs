@@ -30,7 +30,7 @@ pub enum ReindexRunState {
     Superseded,
     /// Cancelled by the operator.
     Aborted,
-    /// Ended in failure (retry exhaustion or quarantine cap).
+    /// Ended in failure (retry exhaustion, quarantine cap, or mid-build drift).
     Failed,
 }
 
