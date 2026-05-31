@@ -96,6 +96,9 @@ impl ReindexTarget {
 pub enum ReindexCreationOutcome {
     /// A `building` target profile and a `queued` run were created.
     Created(ReindexRun),
+    /// The target already matches the active profile: same identity and drift
+    /// signals, so the corpus is already in this geometry. No run was created.
+    Unchanged(EmbeddingProfile),
     /// A reindex is already live; single-flight returns it unchanged, having
     /// written nothing.
     AlreadyLive(ReindexRun),
@@ -135,6 +138,17 @@ pub async fn create_reindex_run(
         return Ok(ReindexCreationOutcome::AlreadyLive(run));
     }
 
+    // No-op when the target already matches the active (latest `complete`)
+    // profile: identical declared identity and drift signals mean the corpus is
+    // already in this geometry, so there is nothing to re-embed. A declared
+    // identity that matches but whose drift signals diverged falls through to a
+    // fresh build, which re-embeds against the new serving.
+    if let Some(active) = PgEmbeddingProfileRepository.find_active(conn).await?
+        && target_matches_profile(target, &active)
+    {
+        return Ok(ReindexCreationOutcome::Unchanged(active));
+    }
+
     let profile = PgEmbeddingProfileRepository
         .insert(conn, &target.to_new_profile())
         .await?;
@@ -151,6 +165,18 @@ pub async fn create_reindex_run(
         .await?;
 
     Ok(ReindexCreationOutcome::Created(run))
+}
+
+/// Reports whether a target's declared identity and drift signals match an
+/// existing profile, so a reindex to it would re-derive an identical geometry.
+fn target_matches_profile(target: &ReindexTarget, profile: &EmbeddingProfile) -> bool {
+    target.provider_kind == profile.provider_kind()
+        && target.normalised_base_url == profile.normalised_base_url()
+        && target.model == profile.model()
+        && target.dimensions == profile.dimensions()
+        && target.distance_metric == profile.distance_metric()
+        && target.revision_token == profile.revision_token()
+        && target.probe_digest.as_deref() == profile.probe_digest()
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,6 +1159,41 @@ mod tests {
             .expect("a building profile");
         assert_eq!(run.target_profile_id(), building.id());
         assert_eq!(building.dimensions(), 768);
+    }
+
+    #[tokio::test]
+    async fn test_create_reindex_run_no_ops_on_an_unchanged_target() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let principal = insert_principal(&mut txn, "user:reindex-noop").await;
+
+        // An active profile already in the target's exact geometry.
+        let active = PgEmbeddingProfileRepository
+            .insert(&mut txn, &a_target().to_new_profile())
+            .await
+            .expect("insert profile");
+        PgEmbeddingProfileRepository
+            .mark_complete(&mut txn, active.id())
+            .await
+            .expect("mark complete");
+
+        let outcome = create_reindex_run(&mut txn, &a_target(), principal)
+            .await
+            .expect("create");
+
+        assert!(
+            matches!(outcome, ReindexCreationOutcome::Unchanged(_)),
+            "an unchanged target no-ops rather than rebuilding, got {outcome:?}",
+        );
+        assert!(
+            PgEmbeddingProfileRepository
+                .find_building(&mut txn)
+                .await
+                .expect("find_building")
+                .is_none(),
+            "a no-op writes no building profile",
+        );
     }
 
     #[tokio::test]
