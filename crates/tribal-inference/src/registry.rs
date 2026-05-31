@@ -8,7 +8,12 @@
 //!
 //! The registry is eagerly constructed and immutable after construction.
 
-use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use tokio::sync::Semaphore;
 use tribal_domain::normalise_endpoint_url;
@@ -189,15 +194,46 @@ pub enum ProviderRegistryError {
 // ProviderRegistry
 // ---------------------------------------------------------------------------
 
+/// A semaphore and HTTP client registered after construction.
+#[derive(Debug)]
+struct DynamicProvider {
+    semaphore: Arc<Semaphore>,
+    client: reqwest::Client,
+}
+
+/// Builds the `reqwest::Client` for a provider key's limits.
+fn build_provider_client(
+    key: &ProviderKey,
+    limits: &ProviderLimits,
+) -> Result<reqwest::Client, ProviderRegistryError> {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(limits.max_in_flight as usize)
+        .timeout(limits.request_timeout)
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| ProviderRegistryError::ClientBuildFailed {
+            key: key.clone(),
+            reason: e.to_string(),
+        })
+}
+
 /// Maps provider targets to concurrency semaphores and dedicated HTTP
 /// clients.
 ///
-/// Eagerly constructed and immutable after construction.  Each
+/// The boot-time entries are eagerly constructed and immutable. Each
 /// [`ProviderKey`] maps to:
 ///
 /// - An [`Arc<Semaphore>`] with permits equal to `max_in_flight`
 /// - A [`reqwest::Client`] configured with `pool_max_idle_per_host`
 ///   and `timeout` matching the provider's limits
+///
+/// A reindex target endpoint discovered after boot is added through
+/// [`register_building`](Self::register_building) into a lock-guarded
+/// side-table, so the shared `Arc<ProviderRegistry>` need not be rebuilt.
+/// [`resolve_semaphore`](Self::resolve_semaphore) and
+/// [`resolve_client`](Self::resolve_client) consult both; the eager-only
+/// [`semaphore`](Self::semaphore)/[`client`](Self::client) accessors serve the
+/// hot boot-time path.
 ///
 /// # Construction
 ///
@@ -208,6 +244,7 @@ pub enum ProviderRegistryError {
 pub struct ProviderRegistry {
     semaphores: HashMap<ProviderKey, Arc<Semaphore>>,
     clients: HashMap<ProviderKey, reqwest::Client>,
+    dynamic: RwLock<HashMap<ProviderKey, DynamicProvider>>,
 }
 
 impl ProviderRegistry {
@@ -248,19 +285,8 @@ impl ProviderRegistry {
                 return Err(ProviderRegistryError::DuplicateKey { key });
             }
 
-            let pool_size = limits.max_in_flight as usize;
-
-            let semaphore = Arc::new(Semaphore::new(pool_size));
-
-            let client = reqwest::Client::builder()
-                .pool_max_idle_per_host(pool_size)
-                .timeout(limits.request_timeout)
-                .user_agent(USER_AGENT)
-                .build()
-                .map_err(|e| ProviderRegistryError::ClientBuildFailed {
-                    key: key.clone(),
-                    reason: e.to_string(),
-                })?;
+            let semaphore = Arc::new(Semaphore::new(limits.max_in_flight as usize));
+            let client = build_provider_client(&key, &limits)?;
 
             semaphores.insert(key.clone(), semaphore);
             clients.insert(key, client);
@@ -269,16 +295,104 @@ impl ProviderRegistry {
         Ok(Self {
             semaphores,
             clients,
+            dynamic: RwLock::new(HashMap::new()),
         })
     }
 
-    /// Returns the semaphore for the given key, if registered.
+    /// Registers a provider for a target endpoint discovered after
+    /// construction (a reindex target), idempotently. A key already present —
+    /// eager or dynamically registered — is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderRegistryError::ZeroMaxInFlight`] or
+    /// [`ProviderRegistryError::ZeroTimeout`] for invalid limits, or
+    /// [`ProviderRegistryError::ClientBuildFailed`] if the HTTP client cannot
+    /// be constructed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the dynamic-provider lock is poisoned (a thread panicked while
+    /// holding it).
+    pub fn register_building(
+        &self,
+        key: ProviderKey,
+        limits: &ProviderLimits,
+    ) -> Result<(), ProviderRegistryError> {
+        if limits.max_in_flight == 0 {
+            return Err(ProviderRegistryError::ZeroMaxInFlight { key });
+        }
+        if limits.request_timeout.is_zero() {
+            return Err(ProviderRegistryError::ZeroTimeout { key });
+        }
+        if self.semaphores.contains_key(&key) || self.dynamic_contains(&key) {
+            return Ok(());
+        }
+
+        let semaphore = Arc::new(Semaphore::new(limits.max_in_flight as usize));
+        let client = build_provider_client(&key, limits)?;
+
+        // Re-check under the write lock: another thread may have registered the
+        // same key between the read above and here.
+        self.dynamic
+            .write()
+            .expect("provider registry lock poisoned")
+            .entry(key)
+            .or_insert(DynamicProvider { semaphore, client });
+        Ok(())
+    }
+
+    fn dynamic_contains(&self, key: &ProviderKey) -> bool {
+        self.dynamic
+            .read()
+            .expect("provider registry lock poisoned")
+            .contains_key(key)
+    }
+
+    /// Returns the semaphore for `key`, consulting both eager and
+    /// dynamically-registered providers. Owned because a dynamic entry lives
+    /// behind a lock.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the dynamic-provider lock is poisoned.
+    #[must_use]
+    pub fn resolve_semaphore(&self, key: &ProviderKey) -> Option<Arc<Semaphore>> {
+        if let Some(semaphore) = self.semaphores.get(key) {
+            return Some(Arc::clone(semaphore));
+        }
+        self.dynamic
+            .read()
+            .expect("provider registry lock poisoned")
+            .get(key)
+            .map(|d| Arc::clone(&d.semaphore))
+    }
+
+    /// Returns the HTTP client for `key`, consulting both eager and
+    /// dynamically-registered providers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the dynamic-provider lock is poisoned.
+    #[must_use]
+    pub fn resolve_client(&self, key: &ProviderKey) -> Option<reqwest::Client> {
+        if let Some(client) = self.clients.get(key) {
+            return Some(client.clone());
+        }
+        self.dynamic
+            .read()
+            .expect("provider registry lock poisoned")
+            .get(key)
+            .map(|d| d.client.clone())
+    }
+
+    /// Returns the semaphore for the given key, if eagerly registered at boot.
     #[must_use]
     pub fn semaphore(&self, key: &ProviderKey) -> Option<&Arc<Semaphore>> {
         self.semaphores.get(key)
     }
 
-    /// Returns the HTTP client for the given key, if registered.
+    /// Returns the HTTP client for the given key, if eagerly registered at boot.
     #[must_use]
     pub fn client(&self, key: &ProviderKey) -> Option<&reqwest::Client> {
         self.clients.get(key)
@@ -516,6 +630,87 @@ mod tests {
 
         assert!(registry.semaphore(&key).is_some());
         assert!(registry.client(&key).is_some());
+    }
+
+    #[test]
+    fn test_register_building_adds_resolvable_provider() {
+        let registry = ProviderRegistry::new(Vec::new()).unwrap();
+        let target = ProviderKey::new(
+            "openai",
+            "https://api.openai.com/v1",
+            RequestClass::Embedding,
+        )
+        .unwrap();
+        let limits = ProviderLimits {
+            max_in_flight: 2,
+            request_timeout: Duration::from_secs(30),
+        };
+
+        registry.register_building(target.clone(), &limits).unwrap();
+
+        // Resolvable through the dynamic-aware accessors.
+        assert!(registry.resolve_semaphore(&target).is_some());
+        assert!(registry.resolve_client(&target).is_some());
+        // But not through the eager-only accessors (it was not a boot entry).
+        assert!(registry.semaphore(&target).is_none());
+        assert!(registry.client(&target).is_none());
+    }
+
+    #[test]
+    fn test_register_building_is_idempotent() {
+        let registry = ProviderRegistry::new(Vec::new()).unwrap();
+        let target =
+            ProviderKey::new("ollama", "http://localhost:11500", RequestClass::Embedding).unwrap();
+        let limits = ProviderLimits {
+            max_in_flight: 1,
+            request_timeout: Duration::from_secs(5),
+        };
+
+        registry.register_building(target.clone(), &limits).unwrap();
+        let first = Arc::as_ptr(&registry.resolve_semaphore(&target).unwrap());
+        // A second registration is a no-op: the same semaphore is retained.
+        registry.register_building(target.clone(), &limits).unwrap();
+        let second = Arc::as_ptr(&registry.resolve_semaphore(&target).unwrap());
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_register_building_rejects_zero_limits() {
+        let registry = ProviderRegistry::new(Vec::new()).unwrap();
+        let target =
+            ProviderKey::new("ollama", "http://localhost:11500", RequestClass::Embedding).unwrap();
+
+        let zero_flight = ProviderLimits {
+            max_in_flight: 0,
+            request_timeout: Duration::from_secs(5),
+        };
+        assert!(matches!(
+            registry.register_building(target.clone(), &zero_flight),
+            Err(ProviderRegistryError::ZeroMaxInFlight { .. }),
+        ));
+
+        let zero_timeout = ProviderLimits {
+            max_in_flight: 1,
+            request_timeout: Duration::ZERO,
+        };
+        assert!(matches!(
+            registry.register_building(target, &zero_timeout),
+            Err(ProviderRegistryError::ZeroTimeout { .. }),
+        ));
+    }
+
+    #[test]
+    fn test_resolve_falls_back_to_eager_entry() {
+        let key =
+            ProviderKey::new("ollama", "http://localhost:11434", RequestClass::Embedding).unwrap();
+        let limits = ProviderLimits {
+            max_in_flight: 2,
+            request_timeout: Duration::from_secs(30),
+        };
+        let registry = ProviderRegistry::new(vec![(key.clone(), limits)]).unwrap();
+
+        assert!(registry.resolve_semaphore(&key).is_some());
+        assert!(registry.resolve_client(&key).is_some());
     }
 
     #[test]
