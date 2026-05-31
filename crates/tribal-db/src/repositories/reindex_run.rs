@@ -95,9 +95,11 @@ pub trait ReindexRunRepository {
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn find_live(&self, conn: &mut PgConnection) -> Result<Option<ReindexRun>, DbError>;
 
-    /// Transitions a run to a new state, stamping `completed_at` on terminal
-    /// states and recording `error_message` on failure. Returns `true` if the
-    /// run was in a state from which the transition is valid.
+    /// Transitions a run from `from` to `to`, stamping `completed_at` on
+    /// terminal states and recording `error_message` on failure. The `from`
+    /// guard makes the change a compare-and-set: it returns `true` only if the
+    /// run was in `from`, so a promote cannot resurrect a run another path
+    /// (cancel) moved to a terminal state.
     ///
     /// # Errors
     ///
@@ -106,6 +108,7 @@ pub trait ReindexRunRepository {
         &self,
         conn: &mut PgConnection,
         id: ReindexRunId,
+        from: ReindexRunState,
         to: ReindexRunState,
         error_message: Option<&str>,
     ) -> Result<bool, DbError>;
@@ -220,6 +223,7 @@ impl ReindexRunRepository for PgReindexRunRepository {
         &self,
         conn: &mut PgConnection,
         id: ReindexRunId,
+        from: ReindexRunState,
         to: ReindexRunState,
         error_message: Option<&str>,
     ) -> Result<bool, DbError> {
@@ -235,15 +239,16 @@ impl ReindexRunRepository for PgReindexRunRepository {
 
         let result = sqlx::query(&format!(
             "UPDATE reindex_runs SET state = $2, error_message = $3, {completed_at_sql} \
-             WHERE id = $1"
+             WHERE id = $1 AND state = $4"
         ))
         .bind(id.inner())
         .bind(to.as_str())
         .bind(error_message)
+        .bind(from.as_str())
         .execute(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
-            context: format!("transitioning reindex run {id} to {to}"),
+            context: format!("transitioning reindex run {id} from {from} to {to}"),
             source: e,
         })?;
 
