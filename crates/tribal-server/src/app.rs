@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use clap::{CommandFactory, Parser};
 
 use crate::{
-    cli::{Cli, Command, ConfigCommand, ProjectCommand, TokenCommand},
+    cli::{Cli, Command, ConfigCommand, ProjectCommand, ReindexCommand, TokenCommand},
     commands,
     error::AppError,
 };
@@ -107,6 +107,17 @@ impl App {
             Command::Check { args } => {
                 commands::check(&self.cli.global.config, args)?;
             }
+            Command::Reindex(command) => match command {
+                ReindexCommand::Run { args } => {
+                    commands::reindex::run(&self.cli.global.config, args)?;
+                }
+                ReindexCommand::Cancel { args } => {
+                    commands::reindex::cancel(&self.cli.global.config, args)?;
+                }
+                ReindexCommand::Prune { args } => {
+                    commands::reindex::prune(&self.cli.global.config, args)?;
+                }
+            },
         }
 
         Ok(())

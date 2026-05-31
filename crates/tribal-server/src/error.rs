@@ -122,6 +122,14 @@ pub enum AppError {
         source: ProviderRegistryError,
     },
 
+    /// A `tribal reindex` operator command failed.
+    #[error("{source}")]
+    Reindex {
+        /// The underlying reindex operation error.
+        #[source]
+        source: tribal_worker::ReindexOpError,
+    },
+
     /// Prompt file I/O failed.
     #[error("prompt I/O failed ({context}): {source}")]
     PromptIo {
