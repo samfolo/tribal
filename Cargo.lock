@@ -5561,6 +5561,7 @@ dependencies = [
 name = "tribal-worker"
 version = "0.2.5"
 dependencies = [
+ "async-trait",
  "chrono",
  "dashmap",
  "jsonschema",
