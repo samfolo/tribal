@@ -328,6 +328,87 @@ CREATE TABLE token_usage (
 );
 
 --------------------------------------------------------------------------------
+-- reindex_runs — operator-facing lifecycle of a model migration, retained as
+-- run history. Single-flight per embeddings table via uq_reindex_run_live.
+--------------------------------------------------------------------------------
+
+CREATE TABLE reindex_runs (
+    id                         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    target_profile_id          UUID NOT NULL REFERENCES embedding_profiles(id),
+    epoch                      BIGINT NOT NULL,
+    state                      TEXT NOT NULL
+                                   CHECK (state IN ('queued', 'running', 'completed',
+                                                    'superseded', 'aborted', 'failed')),
+    initiated_by_principal_id  UUID NOT NULL REFERENCES principals(id),
+    items_enumerated           INT,
+    items_embedded             INT NOT NULL DEFAULT 0,
+    tags_enumerated            INT,
+    tags_embedded              INT NOT NULL DEFAULT 0,
+    items_quarantined          INT NOT NULL DEFAULT 0,
+    tags_quarantined           INT NOT NULL DEFAULT 0,
+    error_message              TEXT,
+    trace_context              TEXT CHECK (trace_context IS NULL OR char_length(trace_context) <= 128),
+    started_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at               TIMESTAMPTZ,
+
+    CONSTRAINT chk_terminal_completed CHECK (
+        (state IN ('completed', 'superseded', 'aborted', 'failed') AND completed_at IS NOT NULL)
+        OR (state IN ('queued', 'running') AND completed_at IS NULL)
+    )
+);
+
+--------------------------------------------------------------------------------
+-- reindex_tasks — the lease protocol for a reindex run's per-batch work.
+-- Derived from the ingestion task lease (claim/heartbeat/reclaim), distinct
+-- state set and attempt/max_attempts columns.
+--------------------------------------------------------------------------------
+
+CREATE TABLE reindex_tasks (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    reindex_run_id    UUID NOT NULL REFERENCES reindex_runs(id),
+    kind              TEXT NOT NULL CHECK (kind IN ('item', 'tag')),
+    target_ref        TEXT NOT NULL,
+    state             TEXT NOT NULL
+                          CHECK (state IN ('pending', 'claimed', 'completed', 'dead_letter')),
+    attempt           INT NOT NULL DEFAULT 0,
+    max_attempts      INT NOT NULL DEFAULT 8,
+    available_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    claim_token       UUID,
+    claimed_by        TEXT,
+    claimed_at        TIMESTAMPTZ,
+    heartbeat_at      TIMESTAMPTZ,
+    last_error        TEXT,
+    last_error_class  TEXT CHECK (last_error_class IS NULL OR last_error_class IN
+                          ('rate_limited', 'overloaded', 'transient', 'permanent')),
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at      TIMESTAMPTZ,
+
+    CONSTRAINT uq_reindex_task             UNIQUE (reindex_run_id, kind, target_ref),
+    CONSTRAINT claimed_requires_token      CHECK (state != 'claimed' OR claim_token IS NOT NULL),
+    CONSTRAINT claimed_requires_owner      CHECK (state != 'claimed' OR claimed_by IS NOT NULL),
+    CONSTRAINT claimed_requires_heartbeat  CHECK (state != 'claimed' OR heartbeat_at IS NOT NULL)
+);
+
+--------------------------------------------------------------------------------
+-- reindex_quarantine — durable permanent-failure relation, keyed by the target
+-- profile so the §6 set-difference excludes it directly.
+--------------------------------------------------------------------------------
+
+CREATE TABLE reindex_quarantine (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    reindex_run_id     UUID NOT NULL REFERENCES reindex_runs(id),
+    target_profile_id  UUID NOT NULL REFERENCES embedding_profiles(id),
+    kind               TEXT NOT NULL CHECK (kind IN ('item', 'tag')),
+    entity_ref         TEXT NOT NULL,
+    error_class        TEXT NOT NULL,
+    error_message      TEXT,
+    quarantined_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT uq_reindex_quarantine UNIQUE (target_profile_id, kind, entity_ref)
+);
+
+--------------------------------------------------------------------------------
 -- auth_tokens — principal FK uses ON DELETE RESTRICT
 --------------------------------------------------------------------------------
 
@@ -422,6 +503,15 @@ CREATE INDEX idx_triage_decisions_item      ON triage_similar_item_decisions(mat
 CREATE INDEX idx_token_usage_job           ON token_usage(job_id);
 CREATE INDEX idx_token_usage_stage_created ON token_usage(stage, created_at);
 CREATE INDEX idx_token_usage_model_created ON token_usage(model, created_at);
+
+-- reindex_runs: single-flight backstop (one live run per embeddings table).
+CREATE UNIQUE INDEX uq_reindex_run_live ON reindex_runs ((true))
+    WHERE state IN ('queued', 'running');
+
+-- reindex_tasks: pickup index covers claimed rows so stale reclaim is an index
+-- scan (broader than the ingestion task pickup, which excludes claimed rows).
+CREATE INDEX idx_reindex_tasks_pickup ON reindex_tasks(available_at)
+    WHERE state IN ('pending', 'claimed');
 
 -- retrieval_feedback
 CREATE INDEX idx_feedback_trace     ON retrieval_feedback(trace_id);
