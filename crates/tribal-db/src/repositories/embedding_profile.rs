@@ -149,21 +149,6 @@ pub trait EmbeddingProfileRepository {
         id: EmbeddingProfileId,
     ) -> Result<bool, DbError>;
 
-    /// Transitions a `failed` profile to `superseded`, stamping `completed_at`.
-    ///
-    /// Used by prune once a failed building profile's rows are removed. Returns
-    /// `true` if this call performed the transition, `false` if the profile was
-    /// not `failed`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn mark_superseded(
-        &self,
-        conn: &mut PgConnection,
-        id: EmbeddingProfileId,
-    ) -> Result<bool, DbError>;
-
     /// Supersedes every prunable profile in one statement: all `failed`
     /// profiles and every `complete` profile below the active (highest-epoch
     /// `complete`) one. The active is never superseded. `completed_at` is
@@ -176,10 +161,10 @@ pub trait EmbeddingProfileRepository {
     async fn supersede_prunable(&self, conn: &mut PgConnection) -> Result<u64, DbError>;
 }
 
-/// Transitions a profile from one state to a terminal state, stamping
-/// `completed_at`. Returns whether a row was transitioned (the guard `from`
-/// state did not match otherwise). Shared by [`mark_complete`], [`mark_failed`],
-/// and [`mark_superseded`].
+/// Transitions a building profile to a terminal state, stamping `completed_at`.
+/// Returns whether a row was transitioned (the guard `from` state did not match
+/// otherwise). Shared by [`mark_complete`] and [`mark_failed`]; the `failed →
+/// superseded` step is `supersede_prunable`, which preserves `completed_at`.
 async fn transition_to_terminal(
     conn: &mut PgConnection,
     id: EmbeddingProfileId,
@@ -309,21 +294,6 @@ impl EmbeddingProfileRepository for PgEmbeddingProfileRepository {
             EmbeddingProfileState::Building,
             EmbeddingProfileState::Failed,
             "failing",
-        )
-        .await
-    }
-
-    async fn mark_superseded(
-        &self,
-        conn: &mut PgConnection,
-        id: EmbeddingProfileId,
-    ) -> Result<bool, DbError> {
-        transition_to_terminal(
-            conn,
-            id,
-            EmbeddingProfileState::Failed,
-            EmbeddingProfileState::Superseded,
-            "superseding",
         )
         .await
     }
