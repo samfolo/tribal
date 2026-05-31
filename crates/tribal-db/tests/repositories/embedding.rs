@@ -320,6 +320,89 @@ async fn test_items_without_embedding_is_the_set_difference() {
 }
 
 #[tokio::test]
+async fn test_batch_insert_skipping_existing_skips_embedded_pairs() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgEmbeddingRepository;
+
+    let principal = PgPrincipalRepository
+        .insert(
+            &mut txn,
+            &a_new_principal()
+                .principal_key("user:batch-insert".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert principal");
+    let project = PgProjectRepository
+        .insert(
+            &mut txn,
+            &a_new_project()
+                .git_remote(GitRemote::from_parts(
+                    "github.com",
+                    "test/batch-insert",
+                    None,
+                ))
+                .build(),
+        )
+        .await
+        .expect("insert project");
+    let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, 768).await;
+
+    let new_item = || {
+        a_new_knowledge_item()
+            .project_id(project.id())
+            .principal_id(principal.id())
+            .build()
+    };
+    let first = PgKnowledgeItemRepository
+        .insert(&mut txn, &new_item())
+        .await
+        .expect("insert item")
+        .id();
+    let second = PgKnowledgeItemRepository
+        .insert(&mut txn, &new_item())
+        .await
+        .expect("insert item")
+        .id();
+
+    // Pre-embed the first item so the batch encounters one conflict.
+    repo.insert(
+        &mut txn,
+        &a_new_embedding()
+            .knowledge_item_id(first)
+            .embedding_profile_id(profile.id())
+            .model(EMBEDDING_MODEL.to_owned())
+            .embedding(make_test_embedding(0))
+            .build(),
+    )
+    .await
+    .expect("insert embedding");
+
+    let row = |id| {
+        a_new_embedding()
+            .knowledge_item_id(id)
+            .embedding_profile_id(profile.id())
+            .model(EMBEDDING_MODEL.to_owned())
+            .embedding(make_test_embedding(1))
+            .build()
+    };
+    let inserted = repo
+        .batch_insert_skipping_existing(&mut txn, &[row(first), row(second)])
+        .await
+        .expect("batch insert");
+    assert_eq!(inserted, 1, "the already-embedded first item is skipped");
+
+    assert!(
+        repo.find_by_knowledge_item_id(&mut txn, second, profile.id())
+            .await
+            .expect("find")
+            .is_some(),
+        "the un-embedded second item is now embedded",
+    );
+}
+
+#[tokio::test]
 async fn test_find_items_without_embedding_pages_by_cursor() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
