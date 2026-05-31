@@ -11,6 +11,9 @@ mod advisory_lock;
 #[path = "repositories/auth_token.rs"]
 mod auth_token;
 
+#[path = "repositories/embedding_profile.rs"]
+mod embedding_profile;
+
 #[path = "repositories/embedding.rs"]
 mod embedding;
 
