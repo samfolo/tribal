@@ -240,11 +240,7 @@ impl Worker {
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "acquiring connection", e))?;
 
-            let mut txn = sqlx::Connection::begin(&mut *conn)
-                .await
-                .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "beginning transaction", e))?;
-
-            let outcome = match decision {
+            let (outcome, fan_in_fired) = match decision {
                 TriageCommitDecision::Novel {
                     knowledge_item,
                     embedding_vector,
@@ -253,84 +249,187 @@ impl Worker {
                     new_tags,
                     resolved_tags,
                 } => {
-                    commit_novel(
-                        &mut txn,
-                        job_id,
-                        project_id,
-                        batch_index,
-                        &knowledge_item,
-                        embedding_vector,
-                        embedding_model,
-                        &suggested_references,
-                        &new_tags,
-                        &resolved_tags,
-                        &ReembedDeps {
-                            registry: self.provider_registry(),
-                            cache: self.embedding_providers(),
-                            credentials: self.credentials(),
-                        },
-                    )
-                    .await?
+                    // Re-embed and retry under a bounded budget if a cutover
+                    // flips the active profile between the pre-embed and the
+                    // write, so a provider call never spans the commit
+                    // transaction or holds the shared cutover lock.
+                    let reembed = ReembedDeps {
+                        registry: self.provider_registry(),
+                        cache: self.embedding_providers(),
+                        credentials: self.credentials(),
+                    };
+                    let mut embedding = NovelEmbedding {
+                        vector: embedding_vector,
+                        model: embedding_model,
+                        tag_vectors: new_tags.iter().map(|t| t.embedding.clone()).collect(),
+                    };
+                    let mut attempts = 0u32;
+                    loop {
+                        let mut txn = sqlx::Connection::begin(&mut *conn).await.map_err(|e| {
+                            stage_sqlx_error(STAGE_TRIAGE, "beginning transaction", e)
+                        })?;
+                        match commit_novel(
+                            &mut txn,
+                            job_id,
+                            project_id,
+                            batch_index,
+                            &knowledge_item,
+                            &embedding,
+                            &suggested_references,
+                            &new_tags,
+                            &resolved_tags,
+                        )
+                        .await?
+                        {
+                            CommitNovelOutcome::Committed(outcome) => {
+                                let fan_in_fired = self
+                                    .finalise_triage_commit(
+                                        &mut txn,
+                                        &similar_item_decisions,
+                                        task,
+                                        claim_token,
+                                        job_id,
+                                    )
+                                    .await?;
+                                txn.commit().await.map_err(|e| {
+                                    stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e)
+                                })?;
+                                break (outcome, fan_in_fired);
+                            }
+                            CommitNovelOutcome::Reembed(active) => {
+                                drop(txn);
+                                attempts += 1;
+                                if attempts > MAX_REEMBED_RETRIES {
+                                    return Err(StageError::Provider {
+                                        context: "re-embedding against the flipped active profile"
+                                            .to_owned(),
+                                        source: InferenceError::ProviderUnavailable {
+                                            provider: active.provider_kind().to_string(),
+                                            reason: "the active profile flipped repeatedly during \
+                                                     one commit"
+                                                .to_owned(),
+                                        },
+                                    });
+                                }
+                                let (vector, tag_vectors) = reembed_against_active(
+                                    &reembed,
+                                    &active,
+                                    &knowledge_item.content,
+                                    &new_tags,
+                                )
+                                .await?;
+                                embedding = NovelEmbedding {
+                                    vector,
+                                    model: active.model().to_owned(),
+                                    tag_vectors,
+                                };
+                            }
+                        }
+                    }
                 }
                 TriageCommitDecision::Duplicate { observation } => {
-                    commit_duplicate(&mut txn, job_id, batch_index, &observation).await?
+                    let mut txn = sqlx::Connection::begin(&mut *conn)
+                        .await
+                        .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "beginning transaction", e))?;
+                    let outcome =
+                        commit_duplicate(&mut txn, job_id, batch_index, &observation).await?;
+                    let fan_in_fired = self
+                        .finalise_triage_commit(
+                            &mut txn,
+                            &similar_item_decisions,
+                            task,
+                            claim_token,
+                            job_id,
+                        )
+                        .await?;
+                    txn.commit()
+                        .await
+                        .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
+                    (outcome, fan_in_fired)
                 }
                 TriageCommitDecision::NoOp => {
-                    validate_triage_noop(&mut txn, job_id, batch_index).await?
+                    let mut txn = sqlx::Connection::begin(&mut *conn)
+                        .await
+                        .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "beginning transaction", e))?;
+                    let outcome = validate_triage_noop(&mut txn, job_id, batch_index).await?;
+                    let fan_in_fired = self
+                        .finalise_triage_commit(
+                            &mut txn,
+                            &similar_item_decisions,
+                            task,
+                            claim_token,
+                            job_id,
+                        )
+                        .await?;
+                    txn.commit()
+                        .await
+                        .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
+                    (outcome, fan_in_fired)
                 }
             };
 
-            if !similar_item_decisions.is_empty() {
-                PgTriageSimilarItemDecisionRepository
-                    .batch_insert(&mut txn, &similar_item_decisions)
-                    .await
-                    .map_err(|e| {
-                        stage_db_error(STAGE_TRIAGE, "inserting similar item decisions", e)
-                    })?;
-            }
-
-            let rows = PgTaskRepository
-                .complete(&mut txn, task.id(), claim_token)
-                .await
-                .map_err(|e| stage_db_error(STAGE_TRIAGE, "completing task", e))?;
-
-            if rows == 0 {
-                return Err(StageError::OwnershipLost);
-            }
-
-            let fan_in_fired = self
-                .triage_fan_in(&mut txn, job_id, task.id())
-                .await
-                .map_err(|e| stage_db_error(STAGE_TRIAGE, "triage fan-in", e))?;
-
-            txn.commit()
-                .await
-                .map_err(|e| stage_sqlx_error(STAGE_TRIAGE, "committing transaction", e))?;
-
-            // chrono i64 milliseconds to f64 — precision loss negligible at this scale
-            #[allow(clippy::cast_precision_loss)]
-            let duration_ms = (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT))
-                .num_milliseconds() as f64;
-            self.metrics()
-                .record_task_completed(task.task_type().as_str(), duration_ms);
-
-            if fan_in_fired {
-                self.notify_job_state(job_id, JobState::Relating);
-            }
-
-            tracing::Span::current().record(span_attrs::TRIAGE_OUTCOME, outcome);
-
-            tracing::info!(
-                task_id = %task.id(),
-                task_type = "triage",
-                job_id = %task.job_id(),
-                "task.completed",
-            );
+            self.record_triage_completion(task, outcome, fan_in_fired);
 
             Ok(())
         }
         .instrument(span)
         .await
+    }
+
+    /// Records the side effects of a completed triage commit: the duration
+    /// metric, the relation-stage notification when the fan-in fired, and the
+    /// completion span and log.
+    fn record_triage_completion(&self, task: &Task, outcome: &'static str, fan_in_fired: bool) {
+        // chrono i64 milliseconds to f64; precision loss is negligible at this scale
+        #[allow(clippy::cast_precision_loss)]
+        let duration_ms =
+            (Utc::now() - task.claimed_at().expect(EXPECT_CLAIMED_AT)).num_milliseconds() as f64;
+        self.metrics()
+            .record_task_completed(task.task_type().as_str(), duration_ms);
+
+        if fan_in_fired {
+            self.notify_job_state(task.job_id(), JobState::Relating);
+        }
+
+        tracing::Span::current().record(span_attrs::TRIAGE_OUTCOME, outcome);
+
+        tracing::info!(
+            task_id = %task.id(),
+            task_type = "triage",
+            job_id = %task.job_id(),
+            "task.completed",
+        );
+    }
+
+    /// Finalises a triage commit in the caller's transaction: the similar-item
+    /// decisions, the claim-guarded task completion, and the fan-in. Returns
+    /// whether the fan-in fired the relation stage.
+    async fn finalise_triage_commit(
+        &self,
+        txn: &mut sqlx::PgConnection,
+        similar_item_decisions: &[tribal_db::NewTriageSimilarItemDecision],
+        task: &Task,
+        claim_token: uuid::Uuid,
+        job_id: JobId,
+    ) -> Result<bool, StageError> {
+        if !similar_item_decisions.is_empty() {
+            PgTriageSimilarItemDecisionRepository
+                .batch_insert(txn, similar_item_decisions)
+                .await
+                .map_err(|e| stage_db_error(STAGE_TRIAGE, "inserting similar item decisions", e))?;
+        }
+
+        let rows = PgTaskRepository
+            .complete(txn, task.id(), claim_token)
+            .await
+            .map_err(|e| stage_db_error(STAGE_TRIAGE, "completing task", e))?;
+        if rows == 0 {
+            return Err(StageError::OwnershipLost);
+        }
+
+        self.triage_fan_in(txn, job_id, task.id())
+            .await
+            .map_err(|e| stage_db_error(STAGE_TRIAGE, "triage fan-in", e))
     }
 
     /// Commits relation stage effects within a single transaction.
@@ -673,6 +772,33 @@ async fn reembed_against_active(
     Ok((vector, tag_vectors))
 }
 
+/// The pre-embedded vectors for a novel item and its tags, against the active
+/// profile read before the commit. Re-derived against the new active when a
+/// cutover flips the active mid-commit.
+struct NovelEmbedding {
+    /// The item vector.
+    vector: Vec<f32>,
+    /// The model that produced these vectors.
+    model: String,
+    /// The novel tags' vectors, in `new_tags` order.
+    tag_vectors: Vec<Vec<f32>>,
+}
+
+/// The result of one `commit_novel` attempt.
+enum CommitNovelOutcome {
+    /// The item, embedding, tags, and references were written.
+    Committed(&'static str),
+    /// A cutover flipped the active profile since the pre-embed; the caller must
+    /// re-embed against this new active and retry, holding no lock across the
+    /// provider call.
+    Reembed(EmbeddingProfile),
+}
+
+/// The bound on re-embed retries when a cutover repeatedly flips the active
+/// profile during one commit. A flip is a once-per-reindex event, so a single
+/// retry suffices in practice; the bound guards against pathological churn.
+const MAX_REEMBED_RETRIES: u32 = 3;
+
 /// Inserts the knowledge item, embedding, references, and triage result
 /// for a novel candidate.
 #[allow(clippy::too_many_arguments)]
@@ -682,13 +808,11 @@ async fn commit_novel(
     project_id: tribal_domain::ProjectId,
     batch_index: u32,
     knowledge_item: &tribal_db::NewKnowledgeItem,
-    mut embedding_vector: Vec<f32>,
-    mut embedding_model: String,
+    embedding: &NovelEmbedding,
     suggested_references: &[tribal_domain::SuggestedReference],
     new_tags: &[NewTagWithEmbedding],
     resolved_tags: &[String],
-    reembed: &ReembedDeps<'_>,
-) -> Result<&'static str, StageError> {
+) -> Result<CommitNovelOutcome, StageError> {
     // While a reindex is live, hold the shared cutover lock for this commit so
     // the cutover's exclusive acquisition drains this in-flight write before it
     // runs the final set-difference and flips the active profile. Taken before
@@ -715,18 +839,13 @@ async fn commit_novel(
     let profile_id = active.id();
 
     // If a cutover flipped the active between the pre-embed and now, the
-    // pre-embedded vector is for the superseded geometry; re-embed the item and
-    // its novel tags against the new active so an old-space vector is never
-    // written under it.
-    let mut tag_vectors: Vec<Vec<f32>> = new_tags.iter().map(|t| t.embedding.clone()).collect();
-    let flipped = active.model() != embedding_model
-        || u32::try_from(embedding_vector.len()).map_or(true, |len| len != active.dimensions());
+    // pre-embedded vector is for the superseded geometry. Signal the caller to
+    // re-embed against the new active and retry, rather than embedding here: a
+    // provider call must never hold this lock or the open transaction.
+    let flipped = active.model() != embedding.model
+        || u32::try_from(embedding.vector.len()).map_or(true, |len| len != active.dimensions());
     if flipped {
-        let (item_vector, retagged) =
-            reembed_against_active(reembed, &active, &knowledge_item.content, new_tags).await?;
-        embedding_vector = item_vector;
-        embedding_model = active.model().to_owned();
-        tag_vectors = retagged;
+        return Ok(CommitNovelOutcome::Reembed(active));
     }
 
     // FK ordering: tag_registry inserts before tag_embeddings inserts.
@@ -739,12 +858,12 @@ async fn commit_novel(
 
         let new_embeddings: Vec<NewTagEmbedding> = new_tags
             .iter()
-            .zip(&tag_vectors)
+            .zip(&embedding.tag_vectors)
             .map(|(t, vector)| {
                 NewTagEmbedding::builder()
                     .tag(t.tag.clone())
                     .embedding_profile_id(profile_id)
-                    .model(embedding_model.clone())
+                    .model(embedding.model.clone())
                     .embedding(vector.clone())
                     .build()
             })
@@ -776,8 +895,8 @@ async fn commit_novel(
     let new_embedding = NewEmbedding::builder()
         .knowledge_item_id(ki_id)
         .embedding_profile_id(profile_id)
-        .model(embedding_model)
-        .embedding(embedding_vector)
+        .model(embedding.model.clone())
+        .embedding(embedding.vector.clone())
         .build();
 
     PgEmbeddingRepository
@@ -820,7 +939,7 @@ async fn commit_novel(
         .await
         .map_err(|e| stage_db_error(STAGE_TRIAGE, "inserting triage result", e))?;
 
-    Ok("created")
+    Ok(CommitNovelOutcome::Committed("created"))
 }
 
 /// Inserts an observation and triage result for a duplicate candidate.
@@ -961,13 +1080,15 @@ fn stage_sqlx_error(stage: &str, context: &str, source: sqlx::Error) -> StageErr
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use dashmap::DashMap;
     use tribal_config::CredentialCatalogue;
     use tribal_db::{EmbeddingRepository, PgEmbeddingRepository};
     use tribal_domain::{EmbeddingProfileId, PromptRole};
-    use tribal_inference::{EmbeddingProvider, ProviderRegistry};
+    use tribal_inference::{
+        EmbeddingProvider, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
+    };
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, Seed, a_candidate, a_new_knowledge_item,
         a_new_prompt_version, active_embedding_profile, an_embedding_profile,
@@ -995,6 +1116,23 @@ mod tests {
         );
         cache.insert(active.id(), mock);
         let registry = ProviderRegistry::new(vec![]).expect("registry");
+        // The driver registered the new active's endpoint when it built and
+        // cached the provider; registering it here resolves the same rate-limit
+        // semaphore the cache hit returns alongside the cached provider.
+        registry
+            .register_building(
+                ProviderKey::new(
+                    active.provider_kind().to_string(),
+                    active.normalised_base_url(),
+                    RequestClass::Embedding,
+                )
+                .expect("endpoint key"),
+                &ProviderLimits {
+                    max_in_flight: 1,
+                    request_timeout: Duration::from_secs(30),
+                },
+            )
+            .expect("register endpoint");
         let credentials = CredentialCatalogue::default();
         let reembed = ReembedDeps {
             registry: &registry,
@@ -1025,21 +1163,120 @@ mod tests {
         );
     }
 
-    /// Deviation 1, end to end through `commit_novel` against a live database: a
-    /// triage commit carrying a pre-embedded vector for a superseded geometry is
-    /// re-embedded against the active profile's provider before it is written, so
-    /// the persisted vector and its model lineage match the live active rather
-    /// than the stale pre-embed.
+    /// Deviation 1, the §10-respecting signal: when the active a cutover has
+    /// since flipped no longer matches the pre-embedded vector's model or
+    /// dimension, `commit_novel` writes nothing and returns the new active for
+    /// the caller to re-embed against, so a provider call never spans the open
+    /// transaction or the cutover lock.
     #[tokio::test]
-    async fn test_commit_novel_reembeds_a_superseded_vector_against_the_active() {
+    async fn test_commit_novel_signals_reembed_when_the_active_flipped() {
         let ctx = test_context().await;
         let mut txn = ctx.begin_test().await.expect("begin_test");
 
-        // The live active is "new-model"; the driver has cached its provider,
-        // which returns a recognisable 0.5 vector for any input.
         let seed = Seed::new()
-            .define_principal("op", "user:reembed-e2e")
-            .define_project("proj", "git@github.com:tribal/reembed-e2e.git")
+            .define_principal("op", "user:reembed-signal")
+            .define_project("proj", "git@github.com:tribal/reembed-signal.git")
+            .set_embedding_model("new-model", 768)
+            .define_prompt_version("sys", a_new_prompt_version().build())
+            .define_prompt_version(
+                "usr",
+                a_new_prompt_version()
+                    .role(PromptRole::User)
+                    .content_hash("c".repeat(64))
+                    .build(),
+            )
+            .execute(&mut txn)
+            .await;
+        let principal = seed.principal_id("op");
+        let project = seed.project_id("proj");
+        let (job_id, _) = seed_triage_job(
+            &mut txn,
+            principal,
+            project,
+            seed.prompt_version_id("sys"),
+            seed.prompt_version_id("usr"),
+            &[a_candidate().build()],
+        )
+        .await;
+        let new_item = a_new_knowledge_item()
+            .project_id(project)
+            .principal_id(principal)
+            .build();
+
+        // The pre-embed names a model a cutover has since superseded.
+        let model_flipped = NovelEmbedding {
+            vector: vec![0.1_f32; 768],
+            model: "superseded-model".to_owned(),
+            tag_vectors: vec![],
+        };
+        let outcome = commit_novel(
+            &mut txn,
+            job_id,
+            project,
+            0,
+            &new_item,
+            &model_flipped,
+            &[],
+            &[],
+            &[],
+        )
+        .await
+        .expect("commit_novel");
+        let CommitNovelOutcome::Reembed(returned) = outcome else {
+            panic!("expected a re-embed signal for the flipped active");
+        };
+        assert_eq!(
+            returned.model(),
+            "new-model",
+            "the signal carries the new active for the caller to re-embed against",
+        );
+
+        // A dimension mismatch against the active is signalled the same way.
+        let dim_flipped = NovelEmbedding {
+            vector: vec![0.5_f32; 512],
+            model: "new-model".to_owned(),
+            tag_vectors: vec![],
+        };
+        let outcome = commit_novel(
+            &mut txn,
+            job_id,
+            project,
+            0,
+            &new_item,
+            &dim_flipped,
+            &[],
+            &[],
+            &[],
+        )
+        .await
+        .expect("commit_novel");
+        assert!(
+            matches!(outcome, CommitNovelOutcome::Reembed(_)),
+            "a dimension mismatch signals a re-embed too",
+        );
+
+        // The signal precedes every insert, so nothing was written.
+        let uncommitted = PgEmbeddingRepository
+            .find_items_without_embedding(&mut txn, EmbeddingProfileId::new(), None, 10)
+            .await
+            .expect("find items");
+        assert!(
+            uncommitted.is_empty(),
+            "a re-embed signal writes no knowledge item",
+        );
+    }
+
+    /// `commit_novel` writes the item and its embedding against the active when
+    /// the pre-embedded vector's model and dimension still match, returning the
+    /// created outcome.
+    #[tokio::test]
+    async fn test_commit_novel_commits_against_the_matching_active() {
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+
+        let seed = Seed::new()
+            .define_principal("op", "user:commit-match")
+            .define_project("proj", "git@github.com:tribal/commit-match.git")
             .set_embedding_model("new-model", 768)
             .define_prompt_version("sys", a_new_prompt_version().build())
             .define_prompt_version(
@@ -1064,46 +1301,33 @@ mod tests {
         )
         .await;
 
-        let cache: EmbeddingProviderCache = Arc::new(DashMap::new());
-        let mock: Arc<dyn EmbeddingProvider> = Arc::new(
-            MockEmbeddingProvider::builder()
-                .on_embed(an_embedding_response(vec![0.5_f32; 768]), None)
-                .on_exhaust(ExhaustBehaviour::RepeatLast)
-                .build(),
-        );
-        cache.insert(active.id(), mock);
-        let registry = ProviderRegistry::new(vec![]).expect("registry");
-        let credentials = CredentialCatalogue::default();
-        let reembed = ReembedDeps {
-            registry: &registry,
-            cache: &cache,
-            credentials: &credentials,
-        };
-
-        // The pre-embedded vector (all 0.1) and its model name the geometry a
-        // cutover has since superseded.
         let new_item = a_new_knowledge_item()
             .project_id(project)
             .principal_id(principal)
             .build();
-        commit_novel(
+        let embedding = NovelEmbedding {
+            vector: vec![0.5_f32; 768],
+            model: "new-model".to_owned(),
+            tag_vectors: vec![],
+        };
+        let outcome = commit_novel(
             &mut txn,
             job_id,
             project,
             0,
             &new_item,
-            vec![0.1_f32; 768],
-            "superseded-model".to_owned(),
+            &embedding,
             &[],
             &[],
             &[],
-            &reembed,
         )
         .await
         .expect("commit_novel");
+        assert!(
+            matches!(outcome, CommitNovelOutcome::Committed("created")),
+            "a matching embedding is committed",
+        );
 
-        // The committed item carries no embedding under a fresh profile, so this
-        // recovers its id without commit_novel having to return it.
         let item_ids = PgEmbeddingRepository
             .find_items_without_embedding(&mut txn, EmbeddingProfileId::new(), None, 10)
             .await
@@ -1114,18 +1338,17 @@ mod tests {
             .await
             .expect("find embedding")
             .expect("the committed item is embedded under the active");
-
+        assert_eq!(
+            stored.model(),
+            "new-model",
+            "the stored lineage names the active model",
+        );
         assert!(
             stored
                 .embedding()
                 .iter()
                 .all(|&v| (v - 0.5).abs() < f32::EPSILON),
-            "the stored vector is re-embedded by the active's provider, not the stale 0.1",
-        );
-        assert_eq!(
-            stored.model(),
-            "new-model",
-            "the stored lineage names the active model, not the superseded one",
+            "the stored vector is the committed one",
         );
     }
 }
