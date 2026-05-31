@@ -78,6 +78,38 @@ pub trait EmbeddingRepository {
         knowledge_item_id: KnowledgeItemId,
         embedding_profile_id: EmbeddingProfileId,
     ) -> Result<Option<Embedding>, DbError>;
+
+    /// Counts knowledge items that need embedding under `profile_id`: those with
+    /// no embedding row for the profile and not quarantined against it.
+    ///
+    /// This is the completeness predicate (the `NOT EXISTS` set-difference) a
+    /// reindex backfill and catch-up sweep drive to zero; the count feeds the
+    /// run's enumeration tally and the pre-flight estimate. A quarantined item is
+    /// excluded so one bad entity is durably skipped rather than re-swept
+    /// forever; the item quarantine `entity_ref` is the item id as text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn count_items_without_embedding(
+        &self,
+        conn: &mut PgConnection,
+        profile_id: EmbeddingProfileId,
+    ) -> Result<i64, DbError>;
+
+    /// Returns up to `limit` knowledge item ids that need embedding under
+    /// `profile_id` (no embedding row and not quarantined), in id order, for
+    /// backfill enrolment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_items_without_embedding(
+        &self,
+        conn: &mut PgConnection,
+        profile_id: EmbeddingProfileId,
+        limit: i64,
+    ) -> Result<Vec<KnowledgeItemId>, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,5 +211,65 @@ impl EmbeddingRepository for PgEmbeddingRepository {
                 .created_at(r.get("created_at"))
                 .build()
         }))
+    }
+
+    async fn count_items_without_embedding(
+        &self,
+        conn: &mut PgConnection,
+        profile_id: EmbeddingProfileId,
+    ) -> Result<i64, DbError> {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM knowledge_items ki \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM embeddings e \
+                 WHERE e.knowledge_item_id = ki.id AND e.embedding_profile_id = $1 \
+             ) \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM reindex_quarantine q \
+                 WHERE q.target_profile_id = $1 AND q.kind = 'item' \
+                   AND q.entity_ref = ki.id::text \
+             )",
+        )
+        .bind(profile_id.inner())
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("counting items without an embedding under profile {profile_id}"),
+            source: e,
+        })
+    }
+
+    async fn find_items_without_embedding(
+        &self,
+        conn: &mut PgConnection,
+        profile_id: EmbeddingProfileId,
+        limit: i64,
+    ) -> Result<Vec<KnowledgeItemId>, DbError> {
+        let rows = sqlx::query(
+            "SELECT ki.id FROM knowledge_items ki \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM embeddings e \
+                 WHERE e.knowledge_item_id = ki.id AND e.embedding_profile_id = $1 \
+             ) \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM reindex_quarantine q \
+                 WHERE q.target_profile_id = $1 AND q.kind = 'item' \
+                   AND q.entity_ref = ki.id::text \
+             ) \
+             ORDER BY ki.id LIMIT $2",
+        )
+        .bind(profile_id.inner())
+        .bind(limit)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("finding items without an embedding under profile {profile_id}"),
+            source: e,
+        })?;
+
+        Ok(rows
+            .iter()
+            .map(|r| KnowledgeItemId::from(r.get::<uuid::Uuid, _>("id")))
+            .collect())
     }
 }

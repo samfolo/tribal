@@ -1,9 +1,12 @@
 use tribal_db::{
-    DbError, EmbeddingRepository, KnowledgeItemRepository, PgEmbeddingRepository,
-    PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository, PrincipalRepository,
-    ProjectRepository,
+    DbError, EmbeddingRepository, KnowledgeItemRepository, NewReindexQuarantine, NewReindexRun,
+    PgEmbeddingRepository, PgKnowledgeItemRepository, PgPrincipalRepository, PgProjectRepository,
+    PgReindexQuarantineRepository, PgReindexRunRepository, PrincipalRepository, ProjectRepository,
+    ReindexQuarantineRepository, ReindexRunRepository,
 };
-use tribal_domain::{EmbeddingProfileId, GitRemote, KnowledgeItemId};
+use tribal_domain::{
+    EmbeddingErrorClass, EmbeddingProfileId, GitRemote, KnowledgeItemId, ReindexEntityKind,
+};
 use tribal_test_utils::{
     a_new_embedding, a_new_knowledge_item, a_new_principal, a_new_project, ensure_genesis_profile,
     test_context,
@@ -198,4 +201,120 @@ async fn test_find_by_knowledge_item_id_not_found_returns_none() {
         .expect("find");
 
     assert!(found.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// set-difference (backfill enumeration)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_items_without_embedding_is_the_set_difference() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgEmbeddingRepository;
+
+    let principal = PgPrincipalRepository
+        .insert(
+            &mut txn,
+            &a_new_principal()
+                .principal_key("user:set-diff".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert principal");
+    let project = PgProjectRepository
+        .insert(
+            &mut txn,
+            &a_new_project()
+                .git_remote(GitRemote::from_parts("github.com", "test/set-diff", None))
+                .build(),
+        )
+        .await
+        .expect("insert project");
+    let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, 768).await;
+
+    let new_item = || {
+        a_new_knowledge_item()
+            .project_id(project.id())
+            .principal_id(principal.id())
+            .build()
+    };
+    let embedded = PgKnowledgeItemRepository
+        .insert(&mut txn, &new_item())
+        .await
+        .expect("insert embedded item")
+        .id();
+    let missing = PgKnowledgeItemRepository
+        .insert(&mut txn, &new_item())
+        .await
+        .expect("insert missing item")
+        .id();
+
+    // Embed only the first item under the profile.
+    repo.insert(
+        &mut txn,
+        &a_new_embedding()
+            .knowledge_item_id(embedded)
+            .embedding_profile_id(profile.id())
+            .model(EMBEDDING_MODEL.to_owned())
+            .embedding(make_test_embedding(0))
+            .build(),
+    )
+    .await
+    .expect("insert embedding");
+
+    // Exactly the un-embedded item remains in the set-difference.
+    assert_eq!(
+        repo.count_items_without_embedding(&mut txn, profile.id())
+            .await
+            .expect("count"),
+        1,
+    );
+    let pending = repo
+        .find_items_without_embedding(&mut txn, profile.id(), 10)
+        .await
+        .expect("find");
+    assert_eq!(pending, vec![missing]);
+
+    // Quarantining the remaining item removes it from the set-difference too,
+    // so a durably-failed entity is skipped rather than re-swept forever. The
+    // item quarantine entity_ref is the raw item id text.
+    let run = PgReindexRunRepository
+        .insert(
+            &mut txn,
+            &NewReindexRun::builder()
+                .target_profile_id(profile.id())
+                .epoch(profile.epoch())
+                .initiated_by_principal_id(principal.id())
+                .build(),
+        )
+        .await
+        .expect("insert run");
+    PgReindexQuarantineRepository
+        .record(
+            &mut txn,
+            &NewReindexQuarantine {
+                reindex_run_id: run.id(),
+                target_profile_id: profile.id(),
+                kind: ReindexEntityKind::Item,
+                entity_ref: missing.inner().to_string(),
+                error_class: EmbeddingErrorClass::Permanent,
+                error_message: Some("bad input".to_owned()),
+            },
+        )
+        .await
+        .expect("record quarantine");
+
+    assert_eq!(
+        repo.count_items_without_embedding(&mut txn, profile.id())
+            .await
+            .expect("count after quarantine"),
+        0,
+    );
+    assert!(
+        repo.find_items_without_embedding(&mut txn, profile.id(), 10)
+            .await
+            .expect("find after quarantine")
+            .is_empty(),
+    );
 }
