@@ -443,9 +443,10 @@ pub fn build_provider_for_identity(
 /// Probes a built target provider for its drift signal and assembles the
 /// [`ReindexTarget`] a run is created from.
 ///
-/// The probe digest is the cross-provider drift backstop: the same canonical
-/// input embedded and quantised, so a serving whose geometry shifts mid-build is
-/// caught at cutover. A provider-native revision token is left empty here.
+/// The revision token is the provider-native drift signal where one exists (a
+/// content-addressed digest or dated snapshot); the probe digest is the
+/// cross-provider backstop: the same canonical input embedded and quantised, so
+/// a serving whose geometry shifts mid-build is caught at cutover.
 ///
 /// # Errors
 ///
@@ -464,7 +465,7 @@ pub async fn resolve_reindex_target(
             purpose: EmbeddingPurpose::Query,
         })
         .await?;
-    let revision_token = String::new();
+    let revision_token = provider.revision_token().await;
     let fingerprint_hash = embedding_profile_fingerprint(
         provider_kind.as_str(),
         &normalised_base_url,

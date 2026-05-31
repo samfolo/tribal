@@ -129,6 +129,17 @@ pub trait EmbeddingProvider: Send + Sync {
             },
         }
     }
+
+    /// Resolves the provider-native revision token for the served model: a
+    /// content-addressed digest or dated snapshot that changes when the model's
+    /// geometry changes. The cheapest reliable drift signal where a provider
+    /// exposes one, with the probe digest as the cross-provider backstop.
+    ///
+    /// Best-effort and non-failing: the default returns empty, as does an
+    /// override whose lookup does not resolve.
+    async fn revision_token(&self) -> String {
+        String::new()
+    }
 }
 
 #[cfg(test)]
