@@ -495,24 +495,20 @@ fn classify_item_embedding(
     }
 }
 
-/// Embeds the next backfill batch into the building profile, writing successes,
-/// quarantining permanent failures, and failing the task (for retry) if any
-/// item was transient. Completes the task when the set-difference is empty.
-async fn process_item_batch(
+/// Embeds the next set-difference batch into the building profile: writes the
+/// successes (`ON CONFLICT DO NOTHING`), quarantines permanent failures, and
+/// advances the run tallies. Returns a transient failure's message, if any item
+/// should be retried. The shared core of backfill processing, the catch-up
+/// sweep, and the cutover's final sweep.
+async fn embed_pending_batch(
     conn: &mut PgConnection,
     ctx: &ReindexCtx<'_>,
-    task_id: ReindexTaskId,
-    attempt: u32,
-    claim_token: uuid::Uuid,
-) -> Result<(), DbError> {
+) -> Result<Option<String>, DbError> {
     let ids = PgEmbeddingRepository
         .find_items_without_embedding(conn, ctx.building.id(), None, BACKFILL_RANGE_WIDTH)
         .await?;
     if ids.is_empty() {
-        PgReindexTaskRepository
-            .complete(conn, task_id, claim_token)
-            .await?;
-        return Ok(());
+        return Ok(None);
     }
 
     let items = PgKnowledgeItemRepository.find_by_ids(conn, &ids).await?;
@@ -567,7 +563,20 @@ async fn process_item_batch(
             .await?;
     }
 
-    if let Some(message) = transient {
+    Ok(transient)
+}
+
+/// Embeds one backfill batch and resolves the task: completes it when the batch
+/// is clean, or fails it (for retry, with capped backoff) when an item was
+/// transient.
+async fn process_item_batch(
+    conn: &mut PgConnection,
+    ctx: &ReindexCtx<'_>,
+    task_id: ReindexTaskId,
+    attempt: u32,
+    claim_token: uuid::Uuid,
+) -> Result<(), DbError> {
+    if let Some(message) = embed_pending_batch(conn, ctx).await? {
         PgReindexTaskRepository
             .fail(
                 conn,
@@ -586,16 +595,15 @@ async fn process_item_batch(
     Ok(())
 }
 
-/// Embeds a single tag into the building profile, quarantining a permanent
-/// failure and failing the task (for retry) on a transient one.
-async fn process_tag(
+/// Embeds a single tag into the building profile, writing it on success,
+/// quarantining a permanent failure, and returning a transient failure's
+/// message for the caller to retry. The shared core of tag-task processing and
+/// the catch-up/cutover tag sweep.
+async fn embed_one_tag(
     conn: &mut PgConnection,
     ctx: &ReindexCtx<'_>,
     tag: &str,
-    task_id: ReindexTaskId,
-    attempt: u32,
-    claim_token: uuid::Uuid,
-) -> Result<(), DbError> {
+) -> Result<Option<String>, DbError> {
     let request = EmbeddingRequest {
         input: tag.to_owned(),
         purpose: EmbeddingPurpose::Tag,
@@ -618,52 +626,61 @@ async fn process_tag(
             PgReindexRunRepository
                 .bump_embedded(conn, ctx.run.id(), 0, 1)
                 .await?;
-            None
+            return Ok(None);
         }
-        Some(Ok(vector)) => Some(ItemOutcome::Quarantine(format!(
+        Some(Ok(vector)) => ItemOutcome::Quarantine(format!(
             "expected {} dimensions, got {}",
             ctx.building.dimensions(),
             vector.len(),
-        ))),
-        Some(Err(e)) => Some(match classify_embedding_error(&e) {
+        )),
+        Some(Err(e)) => match classify_embedding_error(&e) {
             EmbeddingErrorClass::Permanent => ItemOutcome::Quarantine(e.to_string()),
             EmbeddingErrorClass::Transient
             | EmbeddingErrorClass::RateLimited
             | EmbeddingErrorClass::Overloaded => ItemOutcome::Transient(e.to_string()),
-        }),
-        None => Some(ItemOutcome::Transient(
-            "embedding returned no result".to_owned(),
-        )),
+        },
+        None => ItemOutcome::Transient("embedding returned no result".to_owned()),
     };
 
     match outcome {
-        None | Some(ItemOutcome::Embedded(_)) => {
-            PgReindexTaskRepository
-                .complete(conn, task_id, claim_token)
-                .await?;
-        }
-        Some(ItemOutcome::Quarantine(message)) => {
+        ItemOutcome::Quarantine(message) => {
             if quarantine(conn, ctx, ReindexEntityKind::Tag, tag.to_owned(), message).await? {
                 PgReindexRunRepository
                     .bump_quarantined(conn, ctx.run.id(), 0, 1)
                     .await?;
             }
-            PgReindexTaskRepository
-                .complete(conn, task_id, claim_token)
-                .await?;
+            Ok(None)
         }
-        Some(ItemOutcome::Transient(message)) => {
-            PgReindexTaskRepository
-                .fail(
-                    conn,
-                    task_id,
-                    claim_token,
-                    retry_at(attempt),
-                    EmbeddingErrorClass::Transient,
-                    &message,
-                )
-                .await?;
-        }
+        ItemOutcome::Transient(message) => Ok(Some(message)),
+        ItemOutcome::Embedded(_) => Ok(None),
+    }
+}
+
+/// Embeds one tag and resolves its task: completes it on success or quarantine,
+/// or fails it (for retry) on a transient failure.
+async fn process_tag(
+    conn: &mut PgConnection,
+    ctx: &ReindexCtx<'_>,
+    tag: &str,
+    task_id: ReindexTaskId,
+    attempt: u32,
+    claim_token: uuid::Uuid,
+) -> Result<(), DbError> {
+    if let Some(message) = embed_one_tag(conn, ctx, tag).await? {
+        PgReindexTaskRepository
+            .fail(
+                conn,
+                task_id,
+                claim_token,
+                retry_at(attempt),
+                EmbeddingErrorClass::Transient,
+                &message,
+            )
+            .await?;
+    } else {
+        PgReindexTaskRepository
+            .complete(conn, task_id, claim_token)
+            .await?;
     }
     Ok(())
 }
@@ -750,7 +767,104 @@ pub async fn drive_reindex_cycle(
         semaphore: &semaphore,
     };
     process_tasks(conn, &ctx, claimed_by).await?;
+    catch_up_and_cutover(conn, &ctx).await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Catch-up sweep and cutover
+// ---------------------------------------------------------------------------
+
+/// Caps the cutover's drain-and-recheck loop, so a corpus that never converges
+/// (sustained ingest or a stuck transient) yields rather than spinning; the run
+/// stays running and the next cycle retries.
+const REINDEX_CUTOVER_MAX_PASSES: u32 = 1024;
+
+/// Embeds every tag currently missing the building embedding, returning a
+/// transient failure's message if one occurred.
+async fn embed_pending_tags(
+    conn: &mut PgConnection,
+    ctx: &ReindexCtx<'_>,
+) -> Result<Option<String>, DbError> {
+    let tags = PgTagEmbeddingRepository
+        .find_tags_missing_embeddings(conn, ctx.building.id())
+        .await?;
+    let mut transient = None;
+    for tag in tags {
+        if let Some(message) = embed_one_tag(conn, ctx, &tag).await? {
+            transient.get_or_insert(message);
+        }
+    }
+    Ok(transient)
+}
+
+/// Drains the building set-difference (items and tags) lock-free, then under the
+/// exclusive cutover lock — whose acquisition drains every in-flight ingest
+/// commit holding the shared form — re-checks and, when nothing remains, flips
+/// the building profile to active and completes the run in one transaction.
+///
+/// The flip is atomic against ingest: no commit can start while the exclusive
+/// lock is held, and the final check ran after the drain, so nothing
+/// committed-but-unembedded survives it. Returns whether the run completed; it
+/// yields without flipping if the delta does not converge within the bound.
+///
+/// # Errors
+///
+/// Returns [`ReindexError`] on database failure.
+async fn catch_up_and_cutover(
+    conn: &mut PgConnection,
+    ctx: &ReindexCtx<'_>,
+) -> Result<bool, ReindexError> {
+    for _ in 0..REINDEX_CUTOVER_MAX_PASSES {
+        // Lock-free: embed whatever the set-difference currently holds.
+        embed_pending_batch(conn, ctx).await?;
+        embed_pending_tags(conn, ctx).await?;
+
+        // Under the exclusive lock no ingest can commit, so an empty
+        // set-difference here is final.
+        let mut txn =
+            sqlx::Connection::begin(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: "beginning cutover transaction".to_owned(),
+                    source: e,
+                })?;
+        PgAdvisoryLockRepository
+            .acquire_exclusive_xact(&mut txn, advisory_locks::CUTOVER)
+            .await?;
+        let items_left = PgEmbeddingRepository
+            .count_items_without_embedding(&mut txn, ctx.building.id())
+            .await?;
+        let tags_left = PgTagEmbeddingRepository
+            .find_tags_missing_embeddings(&mut txn, ctx.building.id())
+            .await?
+            .len();
+        if items_left == 0 && tags_left == 0 {
+            PgEmbeddingProfileRepository
+                .mark_complete(&mut txn, ctx.building.id())
+                .await?;
+            PgReindexRunRepository
+                .transition(
+                    &mut txn,
+                    ctx.run.id(),
+                    ReindexRunState::Running,
+                    ReindexRunState::Completed,
+                    None,
+                )
+                .await?;
+            txn.commit().await.map_err(|e| DbError::QueryFailed {
+                context: "committing cutover".to_owned(),
+                source: e,
+            })?;
+            return Ok(true);
+        }
+        // Items committed during the sweep remain: release the lock and loop.
+        txn.rollback().await.map_err(|e| DbError::QueryFailed {
+            context: "releasing the cutover lock".to_owned(),
+            source: e,
+        })?;
+    }
+    Ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,6 +1169,100 @@ mod tests {
                 .expect("count"),
             0,
             "the building set-difference is drained",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cutover_flips_the_building_profile_and_completes_the_run() {
+        let _guard = serial_lock().await;
+        let ctx_db = test_context().await;
+        // The cutover opens its own transactions for the xact-scoped cutover
+        // lock, so the test needs a depth-tracked sqlx transaction (whose nested
+        // begins become savepoints) rather than `begin_test`'s manual BEGIN
+        // (which the cutover's COMMIT would escape, leaking the seed).
+        let mut conn = ctx_db.raw_connection().await.expect("raw connection");
+        let mut txn = sqlx::Connection::begin(&mut conn)
+            .await
+            .expect("begin transaction");
+
+        let seed = Seed::new()
+            .define_principal("user", "user:reindex-cutover")
+            .define_project("proj", "git@github.com:test/reindex-cutover.git")
+            .set_embedding_model("mock-model", 768)
+            .define_tag("rust")
+            .as_principal("user")
+            .for_project("proj", |store| {
+                store.add_item("a", item(KnowledgeKind::Fact, "first"));
+            })
+            .execute(&mut txn)
+            .await;
+        let principal = seed.principal_id("user");
+
+        let ReindexCreationOutcome::Created(_) =
+            create_reindex_run(&mut txn, &a_target(), principal)
+                .await
+                .expect("create")
+        else {
+            panic!("expected a created run");
+        };
+        let run = drive_reindex(&mut txn)
+            .await
+            .expect("drive")
+            .expect("a running run");
+        let building = PgEmbeddingProfileRepository
+            .find_building(&mut txn)
+            .await
+            .expect("find_building")
+            .expect("a building profile");
+
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        let semaphore = Semaphore::new(4);
+        let ctx = ReindexCtx {
+            run: &run,
+            building: &building,
+            provider: provider.as_ref(),
+            semaphore: &semaphore,
+        };
+
+        process_tasks(&mut txn, &ctx, "test-reindex-worker")
+            .await
+            .expect("process tasks");
+        assert!(
+            catch_up_and_cutover(&mut txn, &ctx).await.expect("cutover"),
+            "the cutover completed the run",
+        );
+
+        // The building profile is now the active (highest-epoch complete) one.
+        let active = PgEmbeddingProfileRepository
+            .find_active(&mut txn)
+            .await
+            .expect("find_active")
+            .expect("an active profile");
+        assert_eq!(
+            active.id(),
+            building.id(),
+            "the building profile is now active"
+        );
+        assert!(
+            PgEmbeddingProfileRepository
+                .find_building(&mut txn)
+                .await
+                .expect("find_building")
+                .is_none(),
+            "no building profile remains",
+        );
+        assert!(
+            PgReindexRunRepository
+                .find_live(&mut txn)
+                .await
+                .expect("find_live")
+                .is_none(),
+            "the run is completed, no longer live",
         );
     }
 }
