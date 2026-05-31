@@ -36,7 +36,7 @@ pub use ollama::{OllamaEmbeddingProvider, OllamaInferenceProvider};
 #[cfg(feature = "test-helpers")]
 pub use openai::{CHAT_PATH as OPENAI_CHAT_PATH, EMBED_PATH as OPENAI_EMBED_PATH};
 pub use openai::{OpenAiEmbeddingProvider, OpenAiInferenceProvider};
-pub use provider::{EmbeddingProvider, InferenceProvider, ProviderIdentity};
+pub use provider::{BatchEmbeddingResult, EmbeddingProvider, InferenceProvider, ProviderIdentity};
 pub use registry::{
     ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError, RequestClass,
     normalise_registry_url,
