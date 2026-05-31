@@ -62,6 +62,14 @@ pub const EMBEDDING_LATENCY_MS: &str = "tribal.embedding.latency_ms";
 pub const EMBEDDING_PURPOSE: &str = "tribal.embedding.purpose";
 
 // ---------------------------------------------------------------------------
+// Reindex spans
+// ---------------------------------------------------------------------------
+
+/// Span field name for the reindex run identifier. The target model and
+/// dimensions ride [`EMBEDDING_MODEL`] and [`EMBEDDING_DIMENSIONS`].
+pub const REINDEX_RUN_ID: &str = "tribal.reindex.run_id";
+
+// ---------------------------------------------------------------------------
 // LLM completion spans
 // ---------------------------------------------------------------------------
 
