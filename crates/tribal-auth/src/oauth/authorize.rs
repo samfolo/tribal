@@ -34,7 +34,7 @@ use crate::oauth::{
     },
     pkce::CodeChallenge,
     redirect::matches_redirect_uri,
-    scope::{first_uncatalogued_scope, scope_exceeding_registration},
+    scope::{DEFAULT_GRANT_SCOPE, first_uncatalogued_scope, scope_exceeding_registration},
 };
 
 // ---------------------------------------------------------------------------
@@ -200,11 +200,13 @@ pub async fn handle_authorize(
 }
 
 /// A `/authorize` client resolved against the registry: the matched
-/// redirect URI, and the registered scope grant that bounds what a code
-/// issued to this client may carry.
+/// redirect URI, the registered scope grant that bounds what a code issued
+/// to this client may carry, and the registered display name (when one was
+/// supplied at registration) shown on the consent page.
 struct ResolvedClient {
     redirect_uri: Url,
     registered_scope: Option<String>,
+    client_name: Option<String>,
 }
 
 async fn validate_pre_redirect(
@@ -232,6 +234,7 @@ async fn validate_pre_redirect(
     Ok(ResolvedClient {
         redirect_uri,
         registered_scope: client.scope().map(str::to_owned),
+        client_name: client.client_name().map(str::to_owned),
     })
 }
 
@@ -328,7 +331,7 @@ async fn issue_code(
 
     // A requested scope outside the advertised catalogue is rejected
     // before the code issues (RFC 6749 §4.1.2.1 invalid_scope). An absent
-    // scope is permitted; the grant falls back to the default at /token.
+    // scope is permitted; the effective grant is resolved below.
     if let Some(uncatalogued) = query.scope.as_deref().and_then(first_uncatalogued_scope) {
         return Err(OAuthError::InvalidScope {
             unknown_token: uncatalogued.to_owned(),
@@ -415,20 +418,23 @@ async fn issue_code(
             }
         })?;
 
+    // Resolve the effective grant once, here, so the consent page shows
+    // exactly what /token will mint and the stored code carries the same
+    // value: the requested scope, else the client's registered scope, else
+    // the default grant. Deriving it in one place keeps the displayed scope
+    // and the stored scope from drifting apart.
+    let effective_scope = query
+        .scope
+        .clone()
+        .or_else(|| resolved.registered_scope.clone())
+        .unwrap_or_else(|| DEFAULT_GRANT_SCOPE.to_owned());
+
     let new = NewOauthAuthorizationCode::builder()
         .code_hash(code_hash)
         .client_id(query.client_id.clone())
         .redirect_uri(resolved.redirect_uri.as_str().to_owned())
         .code_challenge(challenge.as_str().to_owned())
-        // Fall back to the client's registered scope when the request
-        // omits one, so /token mints within the registration rather than
-        // defaulting to the broader DEFAULT_GRANT_SCOPE.
-        .scope(
-            query
-                .scope
-                .clone()
-                .or_else(|| resolved.registered_scope.clone()),
-        )
+        .scope(Some(effective_scope.clone()))
         .resource(Some(canonical))
         .principal_id(principal_id)
         .expires_at(expires_at)
@@ -456,7 +462,8 @@ async fn issue_code(
         &raw_code,
         query.state.as_deref(),
         &query.client_id,
-        query.scope.as_deref(),
+        resolved.client_name.as_deref(),
+        &effective_scope,
     )
 }
 
@@ -465,7 +472,8 @@ fn consent_page_response(
     code: &str,
     state: Option<&str>,
     client_id: &str,
-    scope: Option<&str>,
+    client_name: Option<&str>,
+    scope: &str,
 ) -> Result<Response, OAuthError> {
     let mut url = redirect_uri.clone();
     {
@@ -477,7 +485,7 @@ fn consent_page_response(
     }
     let target = url.as_str().to_owned();
     let host = redirect_uri.host_str().unwrap_or("");
-    let body = build_consent_html(&target, host, client_id, scope).map_err(|err| {
+    let body = build_consent_html(&target, host, client_id, client_name, scope).map_err(|err| {
         OAuthError::Internal {
             operation: InternalOperation::RenderConsentPage,
             source: Some(Box::new(err)),

@@ -1,9 +1,10 @@
 //! Consent page for the authorisation endpoint.
 //!
 //! Renders a self-contained HTML page that displays the redirect URI
-//! hostname, the client identifier, and the requested scope, plus a
-//! loopback warning, and requires the user to click Authorise to release
-//! the authorisation code to the redirect target.
+//! hostname, the client (its registered name when present, otherwise the
+//! opaque identifier), and the effective granted scope, plus a loopback
+//! warning, and requires the user to click Authorise to release the
+//! authorisation code to the redirect target.
 //!
 //! The page clearly displays the redirect URI hostname and requires an
 //! explicit human action rather than auto-advancing (MCP 2025-11-25,
@@ -35,19 +36,17 @@ use askama::Template;
 
 use crate::oauth::common::is_loopback_host;
 
-/// Placeholder shown when the client requested no explicit scope.
-const NO_SCOPE_REQUESTED: &str = "(no explicit scope requested)";
-
 /// Consent page model. The template HTML-escapes every interpolated
 /// value, and the markup carries no script, so a hostile `client_id`,
-/// `scope`, or redirect host cannot break out of its text or attribute
-/// context.
+/// `client_name`, `scope`, or redirect host cannot break out of its text
+/// or attribute context.
 #[derive(Template)]
 #[template(path = "consent.html")]
 struct ConsentPage<'a> {
     target: &'a str,
     redirect_host: &'a str,
     client_id: &'a str,
+    client_name: Option<&'a str>,
     scope_display: &'a str,
     is_loopback: bool,
 }
@@ -56,8 +55,11 @@ struct ConsentPage<'a> {
 ///
 /// `target` is the full redirect URL (with the code and state) the
 /// approve anchor points at; `redirect_host` is the redirect URI host
-/// displayed to the user and checked against the loopback list. All
-/// interpolated values are HTML-escaped.
+/// displayed to the user and checked against the loopback list;
+/// `client_name` is the client's registered display name, shown in place
+/// of the opaque `client_id` when present; `scope` is the effective grant
+/// the code carries, resolved by the caller. All interpolated values are
+/// HTML-escaped.
 ///
 /// # Errors
 ///
@@ -66,13 +68,15 @@ pub fn build_consent_html(
     target: &str,
     redirect_host: &str,
     client_id: &str,
-    scope: Option<&str>,
+    client_name: Option<&str>,
+    scope: &str,
 ) -> Result<String, askama::Error> {
     ConsentPage {
         target,
         redirect_host,
         client_id,
-        scope_display: scope.unwrap_or(NO_SCOPE_REQUESTED),
+        client_name,
+        scope_display: scope,
         is_loopback: is_loopback_host(redirect_host),
     }
     .render()
@@ -90,16 +94,18 @@ mod tests {
             "http://127.0.0.1:9000/cb?code=abc&state=x",
             "127.0.0.1",
             "<script>alert(1)</script>",
-            Some("\"><img src=x onerror=alert(1)>"),
+            Some("<b>spoofed name</b>"),
+            "\"><img src=x onerror=alert(1)>",
         )
         .expect("template renders");
 
-        // No raw angle bracket from the injected client_id or scope
-        // survives into the rendered page. The template escaper emits
-        // numeric character references (&#60; &#62; &#38;), so the
+        // No raw angle bracket from the injected client_id, client_name,
+        // or scope survives into the rendered page. The template escaper
+        // emits numeric character references (&#60; &#62; &#38;), so the
         // injected markup renders as inert text.
         assert!(!html.contains("<script>alert(1)</script>"));
         assert!(!html.contains("<img src=x"));
+        assert!(!html.contains("<b>spoofed name</b>"));
         assert!(html.contains("&#60;script&#62;alert(1)&#60;/script&#62;"));
         // The ampersand in the redirect target is attribute-escaped.
         assert!(html.contains("code=abc&#38;state=x"));
@@ -107,12 +113,24 @@ mod tests {
 
     #[test]
     fn test_consent_html_shows_loopback_warning_only_for_loopback() {
-        let loopback = build_consent_html("http://127.0.0.1/cb", "127.0.0.1", "cid", None)
-            .expect("template renders");
+        let loopback = build_consent_html(
+            "http://127.0.0.1/cb",
+            "127.0.0.1",
+            "cid",
+            None,
+            "tribal:read",
+        )
+        .expect("template renders");
         assert!(loopback.contains("Loopback redirect"));
 
-        let remote = build_consent_html("https://example.com/cb", "example.com", "cid", None)
-            .expect("template renders");
+        let remote = build_consent_html(
+            "https://example.com/cb",
+            "example.com",
+            "cid",
+            None,
+            "tribal:read",
+        )
+        .expect("template renders");
         assert!(!remote.contains("Loopback redirect"));
     }
 
@@ -120,8 +138,14 @@ mod tests {
     fn test_consent_html_requires_explicit_click_no_auto_advance() {
         // The page must not auto-advance: no script that clicks or
         // submits, and no meta refresh. The user clicks Authorise.
-        let html = build_consent_html("http://127.0.0.1/cb?code=abc", "127.0.0.1", "cid", None)
-            .expect("template renders");
+        let html = build_consent_html(
+            "http://127.0.0.1/cb?code=abc",
+            "127.0.0.1",
+            "cid",
+            None,
+            "tribal:read",
+        )
+        .expect("template renders");
         assert!(
             !html.contains("<script"),
             "consent page must carry no script"
@@ -135,8 +159,16 @@ mod tests {
             "consent page must not auto-refresh",
         );
         assert!(
+            !html.contains("<form"),
+            "consent page must navigate by anchor, never submit a form",
+        );
+        assert!(
             html.contains(">Authorise</a>"),
             "consent page must offer an explicit Authorise action",
+        );
+        assert!(
+            html.contains("<a class=\"approve\"") && html.contains("href=\""),
+            "the Authorise action must be an anchor carrying an href",
         );
     }
 
@@ -149,11 +181,24 @@ mod tests {
             "mcp.example.com",
             "cid",
             None,
+            "tribal:read",
         )
         .expect("template renders");
         assert!(!html.contains("<link"), "no external stylesheet");
         assert!(!html.contains("<script"), "no external or inline script");
         assert!(!html.contains("src="), "no external resource reference");
+        assert!(
+            !html.contains("@import"),
+            "no CSS @import of a remote sheet"
+        );
+        assert!(
+            !html.contains("url("),
+            "no CSS url() fetch of a font, image, or sheet",
+        );
+        assert!(
+            !html.contains("<iframe") && !html.contains("<object") && !html.contains("<embed"),
+            "no embedded external document",
+        );
     }
 
     #[test]
@@ -162,7 +207,8 @@ mod tests {
             "https://mcp.example.com/callback?code=abc123&state=xyz",
             "mcp.example.com",
             "tribal-cli-7f3a9c2e",
-            Some("tribal.memory:read tribal.memory:write"),
+            Some("Tribal CLI"),
+            "tribal.memory:read tribal.memory:write",
         )
         .expect("template renders");
         assert_text_snapshot!(&html, "src/oauth/snapshots/consent-remote.html");
@@ -174,7 +220,8 @@ mod tests {
             "http://127.0.0.1:53017/callback?code=abc123&state=xyz",
             "127.0.0.1",
             "s6BhdRkqt3",
-            Some("tribal.memory:read"),
+            None,
+            "tribal.memory:read",
         )
         .expect("template renders");
         assert_text_snapshot!(&html, "src/oauth/snapshots/consent-loopback.html");
