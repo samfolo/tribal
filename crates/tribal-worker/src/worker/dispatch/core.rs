@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use sqlx::PgPool;
@@ -34,8 +34,15 @@ use crate::{
         backfill::BackfillProcessor,
         backoff::BACKOFF_CAP_SECS,
         heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
+        reindex::{drive_reindex, reconcile_orphan_building_profile},
     },
 };
+
+/// Cadence at which the reindex loop polls for a live run to drive. A reindex is
+/// a rare, operator-initiated event, so this is a fixed liveness-detection
+/// interval rather than a tuned throughput knob; once a run is live, the driver
+/// runs it through to completion without waiting on this poll.
+const REINDEX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Worker
@@ -255,10 +262,16 @@ impl Worker {
             reclaim_worker.run_reclaim_loop().await;
         });
 
+        let reindex_worker = Arc::clone(self);
+        let reindex_handle = tokio::spawn(async move {
+            reindex_worker.run_reindex_loop().await;
+        });
+
         loop {
             tokio::select! {
                 () = self.cancellation_token.cancelled() => {
                     reclaim_handle.abort();
+                    reindex_handle.abort();
                     tracing::info!(instance_id = %self.instance_id, "worker cancelled, draining in-flight tasks");
                     while in_flight.join_next().await.is_some() {}
                     return Err(WorkerError::Cancelled);
@@ -771,6 +784,56 @@ impl Worker {
                     tracing::warn!(error = %e, "reclaim sweep failed");
                 }
             }
+        }
+    }
+
+    /// Drives the single live reindex run: reconciles an orphan building profile
+    /// on boot, then polls for a live run to promote and enrol. Sibling to the
+    /// reclaim loop, it returns on cancellation.
+    async fn run_reindex_loop(&self) {
+        self.reindex_boot_reconcile().await;
+
+        let mut ticker = tokio::time::interval(REINDEX_POLL_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await; // skip the immediate first tick
+
+        loop {
+            tokio::select! {
+                () = self.cancellation_token.cancelled() => {
+                    return;
+                }
+                _ = ticker.tick() => {}
+            }
+
+            let mut conn = match self.pool.acquire().await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "reindex loop pool acquire failed");
+                    continue;
+                }
+            };
+
+            if let Err(e) = drive_reindex(&mut conn).await {
+                tracing::warn!(error = %e, "reindex drive cycle failed");
+            }
+        }
+    }
+
+    /// Fails a building profile orphaned by a crashed run, once at boot.
+    async fn reindex_boot_reconcile(&self) {
+        let mut conn = match self.pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "reindex boot reconcile pool acquire failed");
+                return;
+            }
+        };
+        match reconcile_orphan_building_profile(&mut conn).await {
+            Ok(true) => {
+                tracing::warn!("failed an orphan building profile left by a crashed reindex");
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "reindex boot reconcile failed"),
         }
     }
 }

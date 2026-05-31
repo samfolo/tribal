@@ -67,7 +67,7 @@ pub struct ReindexTaskStateCount {
 /// Input for enrolling a reindex task.
 ///
 /// `id`, `state`, `attempt`, `max_attempts`, `available_at`, and the timestamps
-/// are server-defaulted. `target_ref` is a `range:<lo>-<hi>` backfill key or an
+/// are server-defaulted. `target_ref` is a `range:<lo>..<hi>` backfill key or an
 /// `item:<uuid>`/`tag:<text>` catch-up singleton.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct NewReindexTask {
