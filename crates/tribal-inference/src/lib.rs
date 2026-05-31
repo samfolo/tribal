@@ -7,6 +7,7 @@ mod anthropic;
 mod capabilities;
 mod drift;
 mod embedding_capabilities;
+mod embedding_factory;
 mod error;
 mod http;
 mod ollama;
@@ -29,6 +30,7 @@ pub use drift::probe_digest;
 pub use embedding_capabilities::{
     DimensionResolutionError, EmbeddingCapabilities, resolve_dimensions, resolve_embedding,
 };
+pub use embedding_factory::{UnsupportedEmbeddingProvider, make_embedding_provider};
 pub use error::{InferenceError, classify_embedding_error};
 #[cfg(feature = "test-helpers")]
 pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};

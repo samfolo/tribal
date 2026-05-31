@@ -11,6 +11,7 @@ use tribal_inference::{
     AnthropicInferenceProvider, EmbeddingProvider, InferenceError, InferenceProvider,
     OllamaEmbeddingProvider, OllamaInferenceProvider, OpenAiEmbeddingProvider,
     OpenAiInferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
+    make_embedding_provider,
 };
 
 use crate::error::AppError;
@@ -104,32 +105,21 @@ pub(crate) async fn build_embedding_provider(
         tracing::warn!(%e, "embedding model probe failed (non-fatal)");
     }
 
-    let provider: Arc<dyn EmbeddingProvider> = match provider_kind {
-        ProviderKind::Ollama => Arc::new(OllamaEmbeddingProvider::new(
-            client,
-            url,
-            profile.model(),
-            profile.dimensions(),
-        )),
-        ProviderKind::OpenAi => Arc::new(OpenAiEmbeddingProvider::new(
-            client,
-            url,
-            profile.model(),
-            api_key,
-            profile.dimensions(),
-        )),
-        ProviderKind::Anthropic => {
-            return Err(AppError::Config {
-                source: ConfigError::ValidationFailed {
-                    diagnostics: Diagnostics::from(vec![
-                        ValidationError::EmbeddingProviderUnsupported {
-                            provider: ProviderKind::Anthropic,
-                        },
-                    ]),
-                },
-            });
-        }
-    };
+    let provider = make_embedding_provider(
+        provider_kind,
+        client,
+        url,
+        profile.model(),
+        profile.dimensions(),
+        api_key,
+    )
+    .map_err(|e| AppError::Config {
+        source: ConfigError::ValidationFailed {
+            diagnostics: Diagnostics::from(vec![ValidationError::EmbeddingProviderUnsupported {
+                provider: e.provider,
+            }]),
+        },
+    })?;
 
     Ok((provider, key))
 }
