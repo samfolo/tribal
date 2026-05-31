@@ -140,45 +140,71 @@ pub fn resolve_embedding(provider: ProviderKind, model: &str) -> EmbeddingCapabi
 // Dimension resolution
 // ---------------------------------------------------------------------------
 
-/// The output dimensionality of an embedding target could not be determined.
+/// The largest embedding dimensionality Tribal stores: pgvector's `halfvec`
+/// HNSW ceiling. The `dimensions <= 4000` CHECK in the initial schema mirrors
+/// this; the two cannot share a literal because the constraint is SQL.
+pub const MAX_EMBEDDING_DIMENSIONS: u32 = 4000;
+
+/// The output dimensionality of an embedding target could not be resolved.
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "cannot resolve embedding dimensions for {provider} model {model:?}: \
-     no dimensions configured and the model has no known native dimensionality"
-)]
-pub struct DimensionResolutionError {
-    /// The provider whose target could not be resolved.
-    pub provider: ProviderKind,
-    /// The model whose target could not be resolved.
-    pub model: String,
+pub enum DimensionResolutionError {
+    /// No dimensions were configured and the model has no known native
+    /// dimensionality.
+    #[error(
+        "cannot resolve embedding dimensions for {provider} model {model:?}: \
+         no dimensions configured and the model has no known native dimensionality"
+    )]
+    Unresolvable {
+        /// The provider whose target could not be resolved.
+        provider: ProviderKind,
+        /// The model whose target could not be resolved.
+        model: String,
+    },
+    /// The resolved dimension is outside the storable range.
+    #[error(
+        "embedding dimensions {dimensions} out of range (must be between 1 and {})",
+        MAX_EMBEDDING_DIMENSIONS
+    )]
+    OutOfRange {
+        /// The out-of-range value.
+        dimensions: u32,
+    },
 }
 
 /// Resolves the output dimensionality for a `(provider, model)` target.
 ///
 /// Precedence: an explicit configured value wins; otherwise the model's known
 /// native dimensionality from the capability table; otherwise a typed error,
-/// never a silent default. The explicit value is taken as given (its
-/// non-zero-ness is a configuration-validation concern, enforced upstream).
+/// never a silent default. The result is range-checked against
+/// [`MAX_EMBEDDING_DIMENSIONS`], so an explicit value that the storage cannot
+/// hold is rejected here rather than at the database CHECK after a paid probe.
 ///
 /// # Errors
 ///
-/// Returns [`DimensionResolutionError`] when `explicit` is `None` and the
-/// target has no catalogued native dimensionality.
+/// Returns [`DimensionResolutionError::Unresolvable`] when `explicit` is `None`
+/// and the target has no catalogued native dimensionality, or
+/// [`DimensionResolutionError::OutOfRange`] when the resolved value is zero or
+/// exceeds [`MAX_EMBEDDING_DIMENSIONS`].
 pub fn resolve_dimensions(
     provider: ProviderKind,
     model: &str,
     explicit: Option<u32>,
 ) -> Result<u32, DimensionResolutionError> {
-    if let Some(dimensions) = explicit {
-        return Ok(dimensions);
+    let dimensions = match explicit {
+        Some(dimensions) => dimensions,
+        None => resolve_embedding(provider, model)
+            .native_dimensions
+            .ok_or_else(|| DimensionResolutionError::Unresolvable {
+                provider,
+                model: model.to_owned(),
+            })?,
+    };
+
+    if dimensions == 0 || dimensions > MAX_EMBEDDING_DIMENSIONS {
+        return Err(DimensionResolutionError::OutOfRange { dimensions });
     }
 
-    resolve_embedding(provider, model)
-        .native_dimensions
-        .ok_or_else(|| DimensionResolutionError {
-            provider,
-            model: model.to_owned(),
-        })
+    Ok(dimensions)
 }
 
 // ---------------------------------------------------------------------------
@@ -257,8 +283,26 @@ mod tests {
     #[test]
     fn test_resolve_dimensions_errors_without_explicit_or_native() {
         let err = resolve_dimensions(ProviderKind::Ollama, "some-unknown-model", None).unwrap_err();
-        assert_eq!(err.provider, ProviderKind::Ollama);
-        assert_eq!(err.model, "some-unknown-model");
+        assert!(
+            matches!(
+                err,
+                DimensionResolutionError::Unresolvable { provider, ref model }
+                    if provider == ProviderKind::Ollama && model == "some-unknown-model"
+            ),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn test_resolve_dimensions_rejects_an_out_of_range_explicit_value() {
+        for bad in [0, MAX_EMBEDDING_DIMENSIONS + 1] {
+            let err = resolve_dimensions(ProviderKind::Ollama, "nomic-embed-text:v1.5", Some(bad))
+                .unwrap_err();
+            assert!(
+                matches!(err, DimensionResolutionError::OutOfRange { dimensions } if dimensions == bad),
+                "got {err:?}",
+            );
+        }
     }
 
     #[test]

@@ -12,7 +12,9 @@
     },
     "dimensions": {
       "type": "integer",
-      "description": "The target vector dimension. Resolved from the model when omitted."
+      "minimum": 1,
+      "maximum": 4000,
+      "description": "The target vector dimension, between 1 and the halfvec storage ceiling of 4000. Resolved from the model when omitted."
     },
     "base_url": {
       "type": "string",
