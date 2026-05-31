@@ -876,8 +876,9 @@ mod tests {
     use tribal_db::{PgPrincipalRepository, PrincipalRepository};
     use tribal_domain::{KnowledgeKind, ReindexRunState};
     use tribal_test_utils::{
-        ExhaustBehaviour, MockEmbeddingProvider, Seed, a_new_embedding_profile, a_new_principal,
-        an_embedding_profile, an_embedding_response, item, serial_lock, test_context,
+        ExhaustBehaviour, MockEmbeddingProvider, Seed, a_new_embedding_profile,
+        a_new_knowledge_item, a_new_principal, an_embedding_profile, an_embedding_response, item,
+        serial_lock, test_context, truncate_all_tables,
     };
 
     use super::*;
@@ -1264,5 +1265,134 @@ mod tests {
                 .is_none(),
             "the run is completed, no longer live",
         );
+    }
+
+    /// The cutover's exclusive-lock acquisition drains an in-flight ingest
+    /// commit holding the shared lock, so an item committed during the cutover
+    /// lands in the building profile before the flip rather than being lost.
+    /// A two-connection interleaving against a live database.
+    #[tokio::test]
+    async fn test_cutover_drains_an_in_flight_ingest_commit() {
+        let _guard = serial_lock().await;
+        let ctx_db = test_context().await;
+
+        // Setup (committed, so all connections see it): an empty corpus with a
+        // running reindex whose backfill is already drained.
+        let mut setup = ctx_db.raw_connection().await.expect("setup connection");
+        let seed = Seed::new()
+            .define_principal("user", "user:reindex-drain")
+            .define_project("proj", "git@github.com:test/reindex-drain.git")
+            .set_embedding_model("mock-model", 768)
+            .execute(&mut setup)
+            .await;
+        let principal = seed.principal_id("user");
+        let project = seed.project_id("proj");
+        {
+            let mut tx = sqlx::Connection::begin(&mut setup)
+                .await
+                .expect("begin creation");
+            let ReindexCreationOutcome::Created(_) =
+                create_reindex_run(&mut tx, &a_target(), principal)
+                    .await
+                    .expect("create")
+            else {
+                panic!("expected a created run");
+            };
+            tx.commit().await.expect("commit creation");
+        }
+        let run = drive_reindex(&mut setup)
+            .await
+            .expect("drive")
+            .expect("a running run");
+        let building = PgEmbeddingProfileRepository
+            .find_building(&mut setup)
+            .await
+            .expect("find_building")
+            .expect("a building profile");
+        let building_id = building.id();
+
+        // An in-flight ingest: hold the shared cutover lock with a new,
+        // not-yet-embedded item, uncommitted.
+        let mut conn_a = ctx_db.raw_connection().await.expect("ingest connection");
+        let mut tx_a = sqlx::Connection::begin(&mut conn_a)
+            .await
+            .expect("begin ingest");
+        PgAdvisoryLockRepository
+            .acquire_shared_xact(&mut tx_a, advisory_locks::CUTOVER)
+            .await
+            .expect("hold shared cutover lock");
+        let item_a = PgKnowledgeItemRepository
+            .insert(
+                &mut tx_a,
+                &a_new_knowledge_item()
+                    .project_id(project)
+                    .principal_id(principal)
+                    .build(),
+            )
+            .await
+            .expect("insert in-flight item")
+            .id();
+
+        // The cutover runs on its own connection; its exclusive acquisition
+        // blocks on the in-flight ingest.
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        let mut conn_b = ctx_db.raw_connection().await.expect("cutover connection");
+        let handle = tokio::spawn(async move {
+            let semaphore = Semaphore::new(4);
+            let ctx = ReindexCtx {
+                run: &run,
+                building: &building,
+                provider: provider.as_ref(),
+                semaphore: &semaphore,
+            };
+            catch_up_and_cutover(&mut conn_b, &ctx).await
+        });
+
+        // Let the cutover reach and block on the exclusive lock.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        {
+            let mut probe = ctx_db.raw_connection().await.expect("probe connection");
+            assert!(
+                PgReindexRunRepository
+                    .find_live(&mut probe)
+                    .await
+                    .expect("find_live")
+                    .is_some(),
+                "the run is still live: the cutover is blocked draining the in-flight ingest",
+            );
+        }
+
+        // The ingest commits, releasing the shared lock; the cutover drains,
+        // embeds the item, and flips.
+        tx_a.commit().await.expect("commit ingest");
+        assert!(
+            handle.await.expect("join cutover").expect("cutover"),
+            "the cutover completed after the drain",
+        );
+
+        let mut check = ctx_db.raw_connection().await.expect("assertion connection");
+        assert!(
+            PgEmbeddingRepository
+                .find_by_knowledge_item_id(&mut check, item_a, building_id)
+                .await
+                .expect("find embedding")
+                .is_some(),
+            "the drained item is embedded into the building profile before the flip",
+        );
+        assert!(
+            PgReindexRunRepository
+                .find_live(&mut check)
+                .await
+                .expect("find_live")
+                .is_none(),
+            "the run is completed",
+        );
+
+        truncate_all_tables(&mut check).await;
     }
 }

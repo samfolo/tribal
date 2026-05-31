@@ -617,11 +617,11 @@ async fn commit_novel(
     resolved_tags: &[String],
 ) -> Result<&'static str, StageError> {
     // While a reindex is live, hold the shared cutover lock for this commit so
-    // the cutover's exclusive acquisition (§6 step 8) drains this in-flight
-    // write before it runs the final set-difference and flips the active
-    // profile. Taken before the item insert so a drained commit's item is
-    // visible to that final sweep. When no reindex is live, the ingest path is
-    // unchanged: no lock, one active-profile embedding.
+    // the cutover's exclusive acquisition drains this in-flight write before it
+    // runs the final set-difference and flips the active profile. Taken before
+    // the item insert so a drained commit's item is visible to that final
+    // sweep. When no reindex is live, the ingest path is unchanged: no lock,
+    // one active-profile embedding.
     if PgReindexRunRepository
         .find_live(txn)
         .await
