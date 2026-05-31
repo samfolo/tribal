@@ -888,6 +888,21 @@ pub async fn drive_reindex_cycle(
             .await?;
             return Ok(());
         }
+        // Fail rather than activate a corpus too degraded to serve: a run that
+        // quarantined more than its share of items ends here, before the index
+        // build and cutover.
+        if let Some(current) = PgReindexRunRepository.find_by_id(conn, run.id()).await?
+            && quarantine_exceeds_cap(&current)
+        {
+            abort_run(
+                conn,
+                &run,
+                &building,
+                "quarantined items exceeded the cap; rebuild required",
+            )
+            .await?;
+            return Ok(());
+        }
         build_partial_indexes(conn, &building).await?;
         if catch_up_and_cutover(conn, &ctx).await? {
             tracing::info!("reindex complete; the new profile is now active");
@@ -973,6 +988,24 @@ async fn abort_run(
         .await?;
     tracing::warn!(run_id = %run.id(), reason, "reindex run aborted");
     Ok(())
+}
+
+/// When more than one in this many enumerated items is quarantined, the run is
+/// producing a corpus too degraded to activate, so it fails rather than flipping
+/// to a profile in which a large fraction of items is unsearchable. A divisor of
+/// four caps silent quarantine at a quarter of the backlog; it is a conservative
+/// scale-invariant default, intended to become configurable.
+const REINDEX_QUARANTINE_CAP_DIVISOR: u32 = 4;
+
+/// Reports whether a run's item quarantine has exceeded the cap (more than a
+/// quarter of the enumerated items could not be embedded). A run whose backlog
+/// is not yet enumerated cannot exceed the cap.
+fn quarantine_exceeds_cap(run: &ReindexRun) -> bool {
+    let Some(enumerated) = run.items_enumerated() else {
+        return false;
+    };
+    u64::from(run.items_quarantined()) * u64::from(REINDEX_QUARANTINE_CAP_DIVISOR)
+        > u64::from(enumerated)
 }
 
 /// Reports whether the run has a dead-lettered task: a transient failure that
@@ -1193,6 +1226,55 @@ mod tests {
                 .expect("find_building")
                 .is_none(),
             "a no-op writes no building profile",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_quarantine_over_a_quarter_of_items_exceeds_the_cap() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let principal = insert_principal(&mut txn, "user:reindex-qcap").await;
+
+        let ReindexCreationOutcome::Created(run) =
+            create_reindex_run(&mut txn, &a_target(), principal)
+                .await
+                .expect("create")
+        else {
+            panic!("expected a created run");
+        };
+        PgReindexRunRepository
+            .set_enumerated(&mut txn, run.id(), 10, 0)
+            .await
+            .expect("enumerate");
+
+        // Two of ten quarantined sits within the cap; a third crosses it.
+        PgReindexRunRepository
+            .bump_quarantined(&mut txn, run.id(), 2, 0)
+            .await
+            .expect("bump");
+        let within = PgReindexRunRepository
+            .find_by_id(&mut txn, run.id())
+            .await
+            .expect("find")
+            .expect("the run");
+        assert!(
+            !quarantine_exceeds_cap(&within),
+            "two of ten is within the cap",
+        );
+
+        PgReindexRunRepository
+            .bump_quarantined(&mut txn, run.id(), 1, 0)
+            .await
+            .expect("bump");
+        let over = PgReindexRunRepository
+            .find_by_id(&mut txn, run.id())
+            .await
+            .expect("find")
+            .expect("the run");
+        assert!(
+            quarantine_exceeds_cap(&over),
+            "three of ten exceeds the cap",
         );
     }
 
