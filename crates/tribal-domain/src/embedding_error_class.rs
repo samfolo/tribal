@@ -1,9 +1,9 @@
 //! Embedding-call error classification.
 //!
-//! Partitions embedding failures by how the reindex worker should react. The
-//! single source for both the `tribal-inference` retry classifier and the
-//! `reindex_tasks.last_error_class` column; the string form drives the database
-//! `CHECK`.
+//! Partitions embedding failures by how the reindex worker should react:
+//! transient classes are retried, the permanent class is quarantined. A single
+//! typed source for both the retry decision and the persisted error class, whose
+//! string form drives the database `CHECK`.
 
 use serde::{Deserialize, Serialize};
 

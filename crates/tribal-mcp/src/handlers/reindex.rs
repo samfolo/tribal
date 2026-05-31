@@ -67,22 +67,18 @@ enum ReindexError {
 
 impl IntoMcpError for ReindexError {
     fn into_mcp_error(self) -> McpToolError {
-        match self {
-            Self::Db(e) => e.into_mcp_error(),
-            other => {
-                let code = match &other {
-                    Self::UnknownProvider(_) | Self::Url(_) | Self::Dimensions(_) => {
-                        McpErrorCode::InvalidArgument
-                    }
-                    Self::Provider(_) | Self::Probe(_) => McpErrorCode::FailedPrecondition,
-                    Self::Db(_) => McpErrorCode::Internal,
-                };
-                McpToolError {
-                    code,
-                    message: other.to_string(),
-                    details: serde_json::Value::Null,
-                }
+        let message = self.to_string();
+        let code = match self {
+            Self::Db(e) => return e.into_mcp_error(),
+            Self::UnknownProvider(_) | Self::Url(_) | Self::Dimensions(_) => {
+                McpErrorCode::InvalidArgument
             }
+            Self::Provider(_) | Self::Probe(_) => McpErrorCode::FailedPrecondition,
+        };
+        McpToolError {
+            code,
+            message,
+            details: serde_json::Value::Null,
         }
     }
 }
