@@ -8,8 +8,8 @@
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, TaskId, TokenUsage, TokenUsageId,
-    TokenUsageStage,
+    EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, ReindexRunId, TaskId, TokenUsage,
+    TokenUsageId, TokenUsageStage,
 };
 use typed_builder::TypedBuilder;
 
@@ -24,6 +24,7 @@ const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
     "task_id",
+    "reindex_run_id",
     "attempt",
     "stage",
     "purpose",
@@ -64,6 +65,10 @@ pub struct NewTokenUsage {
     /// The task this usage belongs to (null for read-path calls).
     #[builder(default)]
     pub task_id: Option<TaskId>,
+    /// The reindex run this usage belongs to (set only for reindex backfill
+    /// and catch-up embedding, null otherwise).
+    #[builder(default)]
+    pub reindex_run_id: Option<ReindexRunId>,
     /// Snapshot of the task's retry count at call time.
     pub attempt: i32,
     /// The pipeline stage and optional purpose.
@@ -154,17 +159,19 @@ impl TokenUsageRepository for PgTokenUsageRepository {
 
         let sql = format!(
             "INSERT INTO token_usage \
-                 (job_id, task_id, attempt, stage, purpose, provider, model, \
+                 (job_id, task_id, reindex_run_id, attempt, stage, purpose, provider, model, \
                   tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, \
                   tokens_total, latency_ms, system_prompt_version_id, user_prompt_version_id, \
                   trace_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $8 + $9, $12, $13, $14, $15) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $9 + $10, $13, $14, $15, \
+                     $16) \
              RETURNING {COLUMNS}",
         );
 
         let row = sqlx::query(&sql)
             .bind(new.job_id.map(|id| *id.inner()))
             .bind(new.task_id.map(|id| *id.inner()))
+            .bind(new.reindex_run_id.map(|id| *id.inner()))
             .bind(new.attempt)
             .bind(stage_str)
             .bind(purpose_str)
@@ -259,6 +266,10 @@ fn map_token_usage_row(r: &sqlx::postgres::PgRow) -> TokenUsage {
         .id(TokenUsageId::from(r.get::<uuid::Uuid, _>("id")))
         .job_id(r.get::<Option<uuid::Uuid>, _>("job_id").map(JobId::from))
         .task_id(r.get::<Option<uuid::Uuid>, _>("task_id").map(TaskId::from))
+        .reindex_run_id(
+            r.get::<Option<uuid::Uuid>, _>("reindex_run_id")
+                .map(ReindexRunId::from),
+        )
         .attempt(r.get("attempt"))
         .stage(
             r.get::<String, _>("stage")

@@ -15,27 +15,29 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sqlx::PgConnection;
 use tokio::sync::Semaphore;
+use tribal_common::clamp_to_i32;
 use tribal_config::{CredentialCatalogue, MissingApiKey};
 use tribal_db::{
     AdvisoryLockRepository, DbError, EmbeddingIndexRepository, EmbeddingProfileRepository,
     EmbeddingRepository, EmbeddingTable, KnowledgeItemRepository, NewEmbedding,
     NewEmbeddingProfile, NewReindexQuarantine, NewReindexRun, NewReindexTask, NewTagEmbedding,
-    PgAdvisoryLockRepository, PgEmbeddingIndexRepository, PgEmbeddingProfileRepository,
-    PgEmbeddingRepository, PgKnowledgeItemRepository, PgReindexQuarantineRepository,
-    PgReindexRunRepository, PgReindexTaskRepository, PgTagEmbeddingRepository,
-    ReindexQuarantineRepository, ReindexRunRepository, ReindexTaskRepository,
-    TagEmbeddingRepository, advisory_locks,
+    NewTokenUsage, PgAdvisoryLockRepository, PgEmbeddingIndexRepository,
+    PgEmbeddingProfileRepository, PgEmbeddingRepository, PgKnowledgeItemRepository,
+    PgReindexQuarantineRepository, PgReindexRunRepository, PgReindexTaskRepository,
+    PgTagEmbeddingRepository, PgTokenUsageRepository, ReindexQuarantineRepository,
+    ReindexRunRepository, ReindexTaskRepository, TagEmbeddingRepository, TokenUsageRepository,
+    advisory_locks,
 };
 use tribal_domain::{
     DistanceMetric, EmbeddingErrorClass, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose,
     KnowledgeItemId, PrincipalId, ProviderKind, ReindexEntityKind, ReindexRun, ReindexRunId,
-    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState,
+    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, TokenUsageStage,
 };
 use tribal_inference::{
     BatchEmbeddingResult, EMBEDDING_PROBE_INPUT, EmbeddingProvider, EmbeddingRequest,
-    InferenceError, ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError,
-    RequestClass, UnsupportedEmbeddingProvider, classify_embedding_error, make_embedding_provider,
-    probe_digest,
+    EmbeddingUsage, InferenceError, ProviderKey, ProviderLimits, ProviderRegistry,
+    ProviderRegistryError, RequestClass, UnsupportedEmbeddingProvider, classify_embedding_error,
+    make_embedding_provider, probe_digest,
 };
 
 // ---------------------------------------------------------------------------
@@ -425,6 +427,31 @@ async fn embed_with_permit(
     provider.embed_many(requests).await
 }
 
+/// Records a reindex batch's embedding spend against the run, mirroring the
+/// ingest path's per-call accounting. A recording failure is logged and
+/// swallowed: token accounting is observational and must never fail a batch
+/// whose embeddings are about to be written.
+async fn record_reindex_usage(
+    conn: &mut PgConnection,
+    run_id: ReindexRunId,
+    purpose: EmbeddingPurpose,
+    usage: &EmbeddingUsage,
+) {
+    let new = NewTokenUsage::builder()
+        .reindex_run_id(Some(run_id))
+        .attempt(0)
+        .stage(TokenUsageStage::Embedding { purpose })
+        .provider(usage.provider.clone())
+        .model(usage.model.clone())
+        .tokens_input(clamp_to_i32(usage.total_tokens))
+        .tokens_output(0)
+        .latency_ms(clamp_to_i32(usage.latency.as_millis()))
+        .build();
+    if let Err(e) = PgTokenUsageRepository.insert(conn, &new).await {
+        tracing::warn!(error = %e, "failed to record reindex token usage");
+    }
+}
+
 /// The per-cycle context every task in one drive cycle shares: the run, its
 /// building profile, and that profile's provider and rate-limit semaphore.
 struct ReindexCtx<'a> {
@@ -522,6 +549,13 @@ async fn embed_pending_batch(
         })
         .collect();
     let result = embed_with_permit(ctx.provider, ctx.semaphore, requests).await;
+    record_reindex_usage(
+        conn,
+        ctx.run.id(),
+        EmbeddingPurpose::Candidate,
+        &result.usage,
+    )
+    .await;
 
     let mut rows = Vec::new();
     let mut quarantined = 0u32;
@@ -611,6 +645,7 @@ async fn embed_one_tag(
         purpose: EmbeddingPurpose::Tag,
     };
     let mut result = embed_with_permit(ctx.provider, ctx.semaphore, vec![request]).await;
+    record_reindex_usage(conn, ctx.run.id(), EmbeddingPurpose::Tag, &result.usage).await;
 
     let outcome = match result.items.pop() {
         Some(Ok(vector)) if u32::try_from(vector.len()) == Ok(ctx.building.dimensions()) => {
