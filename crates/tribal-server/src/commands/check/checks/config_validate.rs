@@ -61,6 +61,8 @@ fn hint_for_error(error: &ValidationError) -> Option<String> {
         | ValidationError::UrlMalformed { .. }
         | ValidationError::UrlUnsupportedForm { .. }
         | ValidationError::NonLoopbackDcrConflict
+        | ValidationError::InvalidCredentialName { .. }
+        | ValidationError::DuplicateCredentialEndpoint { .. }
         | ValidationError::TelemetryFileExportRequiresEnabled => None,
     }
 }
