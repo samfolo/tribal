@@ -43,6 +43,15 @@ enum_text_conversions!(ReindexRunState {
     ReindexRunState::Failed => "failed",
 });
 
+impl ReindexRunState {
+    /// Returns `true` when the run has reached a terminal state: a live run is
+    /// `Queued` or `Running`, everything else is settled.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Queued | Self::Running)
+    }
+}
+
 /// Lifecycle state of a reindex task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

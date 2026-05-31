@@ -8,7 +8,6 @@
 use async_trait::async_trait;
 use sqlx::PgConnection;
 use tribal_domain::{EmbeddingErrorClass, EmbeddingProfileId, ReindexEntityKind, ReindexRunId};
-use typed_builder::TypedBuilder;
 
 use crate::DbError;
 
@@ -16,8 +15,9 @@ use crate::DbError;
 // Input types
 // ---------------------------------------------------------------------------
 
-/// Input for recording a permanently-failed entity.
-#[derive(Debug, Clone, TypedBuilder)]
+/// Input for recording a permanently-failed entity. Built by struct literal at
+/// the call sites.
+#[derive(Debug, Clone)]
 pub struct NewReindexQuarantine {
     /// The run that observed the failure.
     pub reindex_run_id: ReindexRunId,
@@ -30,7 +30,6 @@ pub struct NewReindexQuarantine {
     /// The failure class (always permanent for quarantine).
     pub error_class: EmbeddingErrorClass,
     /// The failure message, if any.
-    #[builder(default)]
     pub error_message: Option<String>,
 }
 
