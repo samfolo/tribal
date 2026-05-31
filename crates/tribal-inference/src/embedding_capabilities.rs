@@ -137,6 +137,51 @@ pub fn resolve_embedding(provider: ProviderKind, model: &str) -> EmbeddingCapabi
 }
 
 // ---------------------------------------------------------------------------
+// Dimension resolution
+// ---------------------------------------------------------------------------
+
+/// The output dimensionality of an embedding target could not be determined.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "cannot resolve embedding dimensions for {provider} model {model:?}: \
+     no dimensions configured and the model has no known native dimensionality"
+)]
+pub struct DimensionResolutionError {
+    /// The provider whose target could not be resolved.
+    pub provider: ProviderKind,
+    /// The model whose target could not be resolved.
+    pub model: String,
+}
+
+/// Resolves the output dimensionality for a `(provider, model)` target.
+///
+/// Precedence: an explicit configured value wins; otherwise the model's known
+/// native dimensionality from the capability table; otherwise a typed error,
+/// never a silent default. The explicit value is taken as given (its
+/// non-zero-ness is a configuration-validation concern, enforced upstream).
+///
+/// # Errors
+///
+/// Returns [`DimensionResolutionError`] when `explicit` is `None` and the
+/// target has no catalogued native dimensionality.
+pub fn resolve_dimensions(
+    provider: ProviderKind,
+    model: &str,
+    explicit: Option<u32>,
+) -> Result<u32, DimensionResolutionError> {
+    if let Some(dimensions) = explicit {
+        return Ok(dimensions);
+    }
+
+    resolve_embedding(provider, model)
+        .native_dimensions
+        .ok_or_else(|| DimensionResolutionError {
+            provider,
+            model: model.to_owned(),
+        })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -192,6 +237,28 @@ mod tests {
             resolve_embedding(ProviderKind::OpenAi, "text-embedding-3"),
             EmbeddingCapabilities::UNKNOWN,
         );
+    }
+
+    #[test]
+    fn test_resolve_dimensions_explicit_wins() {
+        // An explicit value is used even for a model with a known native dim.
+        let resolved =
+            resolve_dimensions(ProviderKind::OpenAi, "text-embedding-3-large", Some(256)).unwrap();
+        assert_eq!(resolved, 256);
+    }
+
+    #[test]
+    fn test_resolve_dimensions_falls_back_to_native() {
+        let resolved =
+            resolve_dimensions(ProviderKind::Ollama, "nomic-embed-text:v1.5", None).unwrap();
+        assert_eq!(resolved, 768);
+    }
+
+    #[test]
+    fn test_resolve_dimensions_errors_without_explicit_or_native() {
+        let err = resolve_dimensions(ProviderKind::Ollama, "some-unknown-model", None).unwrap_err();
+        assert_eq!(err.provider, ProviderKind::Ollama);
+        assert_eq!(err.model, "some-unknown-model");
     }
 
     #[test]
