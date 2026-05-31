@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use tribal_common::sha256_hex;
 use tribal_db::{NewOauthClient, OauthClientRepository, PgOauthClientRepository};
 use tribal_domain::{ApplicationType, OauthClient, TokenEndpointAuthMethod};
+use unicode_general_category::{GeneralCategory, get_general_category};
 use url::Url;
 
 use crate::{
@@ -27,6 +28,14 @@ use crate::{
         scope::{first_uncatalogued_scope, present_scope},
     },
 };
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Maximum number of characters in a registered `client_name` shown on the
+/// consent page.
+const MAX_CLIENT_NAME_CHARS: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Request and response types
@@ -296,10 +305,6 @@ fn parse_application_type(raw: &str) -> Result<ApplicationType, OAuthError> {
     })
 }
 
-/// Maximum number of characters in a registered `client_name` shown on the
-/// consent page.
-const MAX_CLIENT_NAME_CHARS: usize = 200;
-
 /// Validates and normalises a registered `client_name` for safe display on the
 /// consent page. A blank or whitespace-only name resolves to `None`. A name
 /// carrying control or Unicode directional-formatting characters, or exceeding
@@ -334,15 +339,22 @@ fn invalid_client_name(detail: String) -> OAuthError {
     }
 }
 
-/// Control characters (including newlines and tabs) and the Unicode
-/// bidirectional formatting characters, which can visually reorder the text
-/// that follows them, are unsafe to display in the consent prompt.
+/// Characters unsafe to display in the consent prompt, rejected by Unicode
+/// general category rather than an enumerated list so the rejection set cannot
+/// fall behind: control characters (`Cc`, including newlines and tabs), format
+/// characters (`Cf`, the bidirectional ordering controls and the zero-width and
+/// invisible marks), and line and paragraph separators (`Zl`/`Zp`, which render
+/// as forced line breaks). This conservatively refuses some legitimate uses (a
+/// name relying on a zero-width joiner, say), the right trade-off for an
+/// unverified name shown on a security prompt.
 fn is_unsafe_display_char(c: char) -> bool {
-    c.is_control()
-        || matches!(c,
-            '\u{200E}' | '\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}')
+    matches!(
+        get_general_category(c),
+        GeneralCategory::Control
+            | GeneralCategory::Format
+            | GeneralCategory::LineSeparator
+            | GeneralCategory::ParagraphSeparator
+    )
 }
 
 fn validate_redirect_uri(raw: &str) -> Result<(), OAuthError> {
@@ -514,22 +526,31 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_client_name_rejects_directional_and_control_chars() {
-        // U+202E (right-to-left override) can visually reorder the disclaimer
-        // and identifier that follow the name on the consent page.
-        assert!(matches!(
-            validate_client_name(Some("Tribal\u{202E}lacirT")),
-            Err(OAuthError::InvalidClientMetadata {
-                reason: ClientMetadataRejection::InvalidClientName { .. },
-            }),
-        ));
-        // A newline would let the value span lines in the prompt.
-        assert!(matches!(
-            validate_client_name(Some("line one\nline two")),
-            Err(OAuthError::InvalidClientMetadata {
-                reason: ClientMetadataRejection::InvalidClientName { .. },
-            }),
-        ));
+    fn test_validate_client_name_rejects_unsafe_display_chars() {
+        // Every category is_unsafe_display_char rejects must be refused: a bidi
+        // override and an invisible bidi mark and a zero-width character (all
+        // Cf), a line separator (Zl) and a paragraph separator (Zp) that render
+        // as forced line breaks, and an ordinary control character (Cc).
+        for unsafe_char in [
+            '\u{202E}', // right-to-left override
+            '\u{061C}', // Arabic letter mark
+            '\u{200B}', // zero-width space
+            '\u{2028}', // line separator
+            '\u{2029}', // paragraph separator
+            '\n',       // newline
+        ] {
+            let name = format!("Tribal{unsafe_char}CLI");
+            assert!(
+                matches!(
+                    validate_client_name(Some(&name)),
+                    Err(OAuthError::InvalidClientMetadata {
+                        reason: ClientMetadataRejection::InvalidClientName { .. },
+                    }),
+                ),
+                "expected rejection for U+{:04X}",
+                unsafe_char as u32,
+            );
+        }
     }
 
     #[test]

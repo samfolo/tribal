@@ -271,19 +271,24 @@
     <dl class="detail">
       <div class="field">
         <dt>Client</dt>
-        <dd><bdi>Tribal CLI</bdi><span class="note">Self-reported by the client, not verified. Identifier: tribal-cli-7f3a9c2e</span></dd>
+        <dd><bdi>Local MCP Client</bdi><span class="note">Self-reported by the client, not verified. Identifier: s6BhdRkqt3</span></dd>
       </div>
       <div class="field">
         <dt>Redirect host</dt>
-        <dd>mcp.example.com<span class="note">The authorisation code is delivered here.</span></dd>
+        <dd>127.0.0.1:7777<span class="note">The authorisation code is delivered here.</span></dd>
       </div>
       <div class="field">
         <dt>Access granted</dt>
-        <dd>tribal:read tribal:write</dd>
+        <dd>tribal:read</dd>
       </div>
     </dl>
 
-    <a class="approve" id="approve" href="https://mcp.example.com/callback?code=abc123&#38;state=xyz">Authorise</a>
+    <section class="warning" aria-labelledby="warn-title">
+      <h2 id="warn-title">Loopback redirect</h2>
+      <p>Any process listening on this host can receive the code. Only continue if you started a local client expecting it.</p>
+    </section>
+
+    <a class="approve" id="approve" href="http://127.0.0.1:7777/callback?code=abc123&#38;state=xyz">Authorise</a>
     <p class="deny">To deny, close this window.</p>
   </main>
 </body>
