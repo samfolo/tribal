@@ -568,7 +568,7 @@ impl Worker {
     /// Best-effort: logs a warning on failure without failing the task.
     /// Uses a freshly acquired connection from the pool (not the domain
     /// commit transaction) so recording is independent of task outcome.
-    async fn record_token_usage(&self, job: &Job, task: &Task, usage: &Usage) {
+    pub(super) async fn record_token_usage(&self, job: &Job, task: &Task, usage: &Usage) {
         let mut conn = match self.pool().acquire().await {
             Ok(c) => c,
             Err(e) => {

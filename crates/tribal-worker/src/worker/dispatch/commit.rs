@@ -21,7 +21,7 @@ use tribal_domain::{
     EmbeddingProfile, EmbeddingPurpose, Job, JobId, JobOutcome, JobState, JobStatus,
     KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
 };
-use tribal_inference::{EmbeddingRequest, InferenceError, ProviderRegistry};
+use tribal_inference::{EmbeddingRequest, InferenceError, ProviderRegistry, Usage};
 
 use super::Worker;
 use crate::{
@@ -68,7 +68,7 @@ impl Worker {
                 decision,
                 similar_item_decisions,
             } => {
-                self.commit_triage(task, project_id, decision, similar_item_decisions)
+                self.commit_triage(task, job, project_id, decision, similar_item_decisions)
                     .await
             }
             StageCommit::Relation { decision } => self.commit_relation(task, job, decision).await,
@@ -218,6 +218,7 @@ impl Worker {
     async fn commit_triage(
         &self,
         task: &Task,
+        job: &Job,
         project_id: tribal_domain::ProjectId,
         decision: TriageCommitDecision,
         similar_item_decisions: Vec<tribal_db::NewTriageSimilarItemDecision>,
@@ -311,13 +312,19 @@ impl Worker {
                                         },
                                     });
                                 }
-                                let (vector, tag_vectors) = reembed_against_active(
+                                let (vector, tag_vectors, usages) = reembed_against_active(
                                     &reembed,
                                     &active,
                                     &knowledge_item.content,
                                     &new_tags,
                                 )
                                 .await?;
+                                // The re-embed spends provider tokens whether or
+                                // not the retry ultimately commits, so account
+                                // for them like the original stage embedding.
+                                for usage in &usages {
+                                    self.record_token_usage(job, task, usage).await;
+                                }
                                 embedding = NovelEmbedding {
                                     vector,
                                     model: active.model().to_owned(),
@@ -726,7 +733,7 @@ async fn reembed_against_active(
     active: &EmbeddingProfile,
     content: &str,
     new_tags: &[NewTagWithEmbedding],
-) -> Result<(Vec<f32>, Vec<Vec<f32>>), StageError> {
+) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Usage>), StageError> {
     let (provider, semaphore) =
         build_target_provider(reembed.registry, reembed.cache, reembed.credentials, active)
             .map_err(|e| StageError::Provider {
@@ -741,7 +748,8 @@ async fn reembed_against_active(
         .await
         .expect("embedding provider semaphore is never closed");
 
-    let vector = provider
+    let mut usages = Vec::with_capacity(new_tags.len() + 1);
+    let item = provider
         .embed(EmbeddingRequest {
             input: content.to_owned(),
             purpose: EmbeddingPurpose::Candidate,
@@ -750,26 +758,32 @@ async fn reembed_against_active(
         .map_err(|e| StageError::Provider {
             context: "re-embedding the item against the flipped active".to_owned(),
             source: e,
-        })?
-        .vector;
+        })?;
+    usages.push(Usage::Embedding {
+        usage: item.usage,
+        purpose: EmbeddingPurpose::Candidate,
+    });
+    let vector = item.vector;
 
     let mut tag_vectors = Vec::with_capacity(new_tags.len());
     for tag in new_tags {
-        tag_vectors.push(
-            provider
-                .embed(EmbeddingRequest {
-                    input: tag.tag.clone(),
-                    purpose: EmbeddingPurpose::Tag,
-                })
-                .await
-                .map_err(|e| StageError::Provider {
-                    context: "re-embedding a tag against the flipped active".to_owned(),
-                    source: e,
-                })?
-                .vector,
-        );
+        let response = provider
+            .embed(EmbeddingRequest {
+                input: tag.tag.clone(),
+                purpose: EmbeddingPurpose::Tag,
+            })
+            .await
+            .map_err(|e| StageError::Provider {
+                context: "re-embedding a tag against the flipped active".to_owned(),
+                source: e,
+            })?;
+        usages.push(Usage::Embedding {
+            usage: response.usage,
+            purpose: EmbeddingPurpose::Tag,
+        });
+        tag_vectors.push(response.vector);
     }
-    Ok((vector, tag_vectors))
+    Ok((vector, tag_vectors, usages))
 }
 
 /// The pre-embedded vectors for a novel item and its tags, against the active
@@ -1145,10 +1159,15 @@ mod tests {
             tag: "rust".to_owned(),
             embedding: vec![0.1_f32; 768],
         }];
-        let (item_vector, tag_vectors) =
+        let (item_vector, tag_vectors, usages) =
             reembed_against_active(&reembed, &active, "content", &new_tags)
                 .await
                 .expect("reembed");
+        assert_eq!(
+            usages.len(),
+            2,
+            "the re-embed reports one usage for the item and one per tag",
+        );
 
         assert!(
             item_vector.iter().all(|&v| (v - 0.5).abs() < f32::EPSILON),
