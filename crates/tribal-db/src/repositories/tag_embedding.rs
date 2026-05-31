@@ -85,8 +85,10 @@ pub trait TagEmbeddingRepository {
     ) -> Result<Vec<TagSimilarityResult>, DbError>;
 
     /// Returns tag names from the registry that have no embedding for the
-    /// given profile. The profile-keyed set-difference driving backfill and
-    /// the reindex tag sweep.
+    /// given profile and are not quarantined against it. The profile-keyed
+    /// set-difference driving backfill and the reindex tag sweep; excluding
+    /// quarantined tags is what lets the sweep converge past a permanently
+    /// failing tag.
     ///
     /// # Errors
     ///
@@ -214,6 +216,11 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
              LEFT JOIN tag_embeddings te \
                  ON te.tag = tr.tag AND te.embedding_profile_id = $1 \
              WHERE te.tag IS NULL \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM reindex_quarantine q \
+                 WHERE q.target_profile_id = $1 AND q.kind = 'tag' \
+                   AND q.entity_ref = tr.tag \
+             ) \
              ORDER BY tr.tag",
         )
         .bind(embedding_profile_id.inner())

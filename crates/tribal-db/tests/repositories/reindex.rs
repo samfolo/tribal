@@ -1,7 +1,9 @@
 use tribal_db::{
-    DbError, NewReindexQuarantine, NewReindexRun, NewReindexTask, PgPrincipalRepository,
-    PgReindexQuarantineRepository, PgReindexRunRepository, PgReindexTaskRepository,
+    DbError, NewReindexQuarantine, NewReindexRun, NewReindexTask, NewTagEmbedding,
+    PgPrincipalRepository, PgReindexQuarantineRepository, PgReindexRunRepository,
+    PgReindexTaskRepository, PgTagEmbeddingRepository, PgTagRegistryRepository,
     PrincipalRepository, ReindexQuarantineRepository, ReindexRunRepository, ReindexTaskRepository,
+    TagEmbeddingRepository, TagRegistryRepository,
 };
 use tribal_domain::{
     EmbeddingErrorClass, ReindexEntityKind, ReindexRunId, ReindexRunState, ReindexTaskState,
@@ -385,4 +387,79 @@ async fn test_quarantine_record_is_idempotent_and_counts() {
         .await
         .expect("count");
     assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn test_find_tags_missing_embeddings_excludes_quarantined_tags() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let principal = PgPrincipalRepository
+        .insert(
+            &mut txn,
+            &a_new_principal()
+                .principal_key("user:tag-quar".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert principal");
+    let profile = ensure_genesis_profile(&mut txn, "test-model", 768).await;
+    let run = PgReindexRunRepository
+        .insert(
+            &mut txn,
+            &NewReindexRun::builder()
+                .target_profile_id(profile.id())
+                .epoch(profile.epoch())
+                .initiated_by_principal_id(principal.id())
+                .build(),
+        )
+        .await
+        .expect("insert run");
+
+    PgTagRegistryRepository
+        .batch_upsert(
+            &mut txn,
+            &["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()],
+        )
+        .await
+        .expect("seed tags");
+
+    // beta is embedded; gamma is permanently quarantined; only alpha is still
+    // genuinely missing. Without the quarantine exclusion, gamma would recur
+    // every pass and wedge the cutover.
+    PgTagEmbeddingRepository
+        .batch_upsert(
+            &mut txn,
+            &[NewTagEmbedding::builder()
+                .tag("beta".to_owned())
+                .embedding_profile_id(profile.id())
+                .model("test-model".to_owned())
+                .embedding(vec![0.1_f32; 768])
+                .build()],
+        )
+        .await
+        .expect("embed beta");
+    PgReindexQuarantineRepository
+        .record(
+            &mut txn,
+            &NewReindexQuarantine {
+                reindex_run_id: run.id(),
+                target_profile_id: profile.id(),
+                kind: ReindexEntityKind::Tag,
+                entity_ref: "gamma".to_owned(),
+                error_class: EmbeddingErrorClass::Permanent,
+                error_message: Some("poison".to_owned()),
+            },
+        )
+        .await
+        .expect("quarantine gamma");
+
+    let missing = PgTagEmbeddingRepository
+        .find_tags_missing_embeddings(&mut txn, profile.id())
+        .await
+        .expect("find_tags_missing_embeddings");
+    assert_eq!(
+        missing,
+        vec!["alpha"],
+        "the embedded tag and the quarantined tag are both excluded",
+    );
 }
