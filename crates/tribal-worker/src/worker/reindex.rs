@@ -29,7 +29,7 @@ use tribal_db::{
 use tribal_domain::{
     DistanceMetric, EmbeddingErrorClass, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose,
     KnowledgeItemId, PrincipalId, ProviderKind, ReindexEntityKind, ReindexRun, ReindexRunId,
-    ReindexRunState, ReindexTask, ReindexTaskId,
+    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState,
 };
 use tribal_inference::{
     BatchEmbeddingResult, EMBEDDING_PROBE_INPUT, EmbeddingProvider, EmbeddingRequest,
@@ -769,6 +769,16 @@ pub async fn drive_reindex_cycle(
         semaphore: &semaphore,
     };
     process_tasks(conn, &ctx, claimed_by).await?;
+    if run_dead_lettered(conn, run.id()).await? {
+        abort_run(
+            conn,
+            &run,
+            &building,
+            "a reindex task dead-lettered; rebuild required",
+        )
+        .await?;
+        return Ok(());
+    }
     build_partial_indexes(conn, &building).await?;
     catch_up_and_cutover(conn, &ctx).await?;
     Ok(())
@@ -822,6 +832,43 @@ async fn embed_pending_tags(
         }
     }
     Ok(transient)
+}
+
+/// Aborts a reindex run: fails the building profile (so it drops out of every
+/// set-difference and the next boot reconcile is a no-op) and moves the run to
+/// `aborted` with the reason. A stuck migration ends cleanly rather than
+/// looping forever; the operator restarts a fresh reindex once the cause is
+/// fixed.
+async fn abort_run(
+    conn: &mut PgConnection,
+    run: &ReindexRun,
+    building: &EmbeddingProfile,
+    reason: &str,
+) -> Result<(), DbError> {
+    PgEmbeddingProfileRepository
+        .mark_failed(conn, building.id())
+        .await?;
+    PgReindexRunRepository
+        .transition(
+            conn,
+            run.id(),
+            ReindexRunState::Running,
+            ReindexRunState::Aborted,
+            Some(reason),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Reports whether the run has a dead-lettered task: a transient failure that
+/// exhausted its retries. One such failure fails the run rather than looping
+/// the cutover forever.
+async fn run_dead_lettered(conn: &mut PgConnection, run_id: ReindexRunId) -> Result<bool, DbError> {
+    Ok(PgReindexTaskRepository
+        .count_by_state(conn, run_id)
+        .await?
+        .iter()
+        .any(|c| c.state == ReindexTaskState::DeadLetter && c.count > 0))
 }
 
 /// Re-probes the building provider and reports whether its geometry drifted from
@@ -894,18 +941,13 @@ async fn catch_up_and_cutover(
             // mid-build, leaving the profile holding two geometries. Abort
             // rather than activate a mixed space; the operator rebuilds.
             if probe_drifted(ctx).await {
-                PgEmbeddingProfileRepository
-                    .mark_failed(&mut txn, ctx.building.id())
-                    .await?;
-                PgReindexRunRepository
-                    .transition(
-                        &mut txn,
-                        ctx.run.id(),
-                        ReindexRunState::Running,
-                        ReindexRunState::Aborted,
-                        Some("probe digest drifted during build; rebuild required"),
-                    )
-                    .await?;
+                abort_run(
+                    &mut txn,
+                    ctx.run,
+                    ctx.building,
+                    "probe digest drifted during build; rebuild required",
+                )
+                .await?;
                 txn.commit().await.map_err(|e| DbError::QueryFailed {
                     context: "committing cutover abort".to_owned(),
                     source: e,
@@ -1078,6 +1120,100 @@ mod tests {
                 .expect("find_building")
                 .is_some(),
             "the building profile is still building",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dead_lettered_task_aborts_the_run() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let principal = insert_principal(&mut txn, "user:reindex-deadletter").await;
+        let ReindexCreationOutcome::Created(run) =
+            create_reindex_run(&mut txn, &a_target(), principal)
+                .await
+                .expect("create")
+        else {
+            panic!("expected a created run");
+        };
+        let building = PgEmbeddingProfileRepository
+            .find_building(&mut txn)
+            .await
+            .expect("find_building")
+            .expect("a building profile");
+        // The driver aborts a running run, so promote it as drive_reindex would.
+        PgReindexRunRepository
+            .transition(
+                &mut txn,
+                run.id(),
+                ReindexRunState::Queued,
+                ReindexRunState::Running,
+                None,
+            )
+            .await
+            .expect("promote");
+
+        assert!(
+            !run_dead_lettered(&mut txn, run.id()).await.expect("check"),
+            "no task has dead-lettered yet",
+        );
+
+        // Enrol a task and exhaust its transient retries (max_attempts is 8),
+        // the domain path to dead_letter. A past `available_at` keeps it
+        // claimable each round under the test transaction's frozen clock.
+        PgReindexTaskRepository
+            .upsert(
+                &mut txn,
+                &NewReindexTask::builder()
+                    .reindex_run_id(run.id())
+                    .kind(ReindexEntityKind::Item)
+                    .target_ref("range:a..b".to_owned())
+                    .build(),
+            )
+            .await
+            .expect("enrol");
+        for _ in 0..9 {
+            let claimed = PgReindexTaskRepository
+                .claim(&mut txn, 1, "test-reindex-worker")
+                .await
+                .expect("claim");
+            let task = claimed.first().expect("a claimable task");
+            PgReindexTaskRepository
+                .fail(
+                    &mut txn,
+                    task.id(),
+                    task.claim_token().expect("claim token"),
+                    Utc::now() - chrono::TimeDelta::hours(1),
+                    EmbeddingErrorClass::Transient,
+                    "transient",
+                )
+                .await
+                .expect("fail");
+        }
+        assert!(
+            run_dead_lettered(&mut txn, run.id()).await.expect("check"),
+            "the exhausted task has dead-lettered",
+        );
+
+        // Aborting fails the building profile and aborts the run.
+        abort_run(&mut txn, &run, &building, "a reindex task dead-lettered")
+            .await
+            .expect("abort");
+        assert!(
+            PgEmbeddingProfileRepository
+                .find_building(&mut txn)
+                .await
+                .expect("find_building")
+                .is_none(),
+            "the building profile is failed",
+        );
+        assert!(
+            PgReindexRunRepository
+                .find_live(&mut txn)
+                .await
+                .expect("find_live")
+                .is_none(),
+            "the run is aborted, no longer live",
         );
     }
 
