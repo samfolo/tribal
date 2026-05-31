@@ -38,6 +38,9 @@ mod prompt_version;
 #[path = "repositories/reference.rs"]
 mod reference;
 
+#[path = "repositories/reindex.rs"]
+mod reindex;
+
 #[path = "repositories/relation.rs"]
 mod relation;
 

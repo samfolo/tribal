@@ -21,6 +21,9 @@ mod principal;
 mod project;
 mod prompt_version;
 mod reference;
+mod reindex_quarantine;
+mod reindex_run;
+mod reindex_task;
 mod relation;
 mod retrieval_feedback;
 mod standing;
@@ -63,6 +66,13 @@ pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
 pub use project::{NewProject, PgProjectRepository, ProjectRepository};
 pub use prompt_version::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
 pub use reference::{NewReference, PgReferenceRepository, ReferenceRepository};
+pub use reindex_quarantine::{
+    NewReindexQuarantine, PgReindexQuarantineRepository, ReindexQuarantineRepository,
+};
+pub use reindex_run::{NewReindexRun, PgReindexRunRepository, ReindexRunRepository};
+pub use reindex_task::{
+    NewReindexTask, PgReindexTaskRepository, ReindexTaskRepository, ReindexTaskStateCount,
+};
 pub use relation::{
     NewKnowledgeItemRelation, PgRelationRepository, RelationRepository, TraversalDirection,
     TraversalNode, TraversalResponse,
