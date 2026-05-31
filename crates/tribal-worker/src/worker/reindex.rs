@@ -32,9 +32,10 @@ use tribal_domain::{
     ReindexRunState, ReindexTask, ReindexTaskId,
 };
 use tribal_inference::{
-    BatchEmbeddingResult, EmbeddingProvider, EmbeddingRequest, InferenceError, ProviderKey,
-    ProviderLimits, ProviderRegistry, ProviderRegistryError, RequestClass,
-    UnsupportedEmbeddingProvider, classify_embedding_error, make_embedding_provider,
+    BatchEmbeddingResult, EMBEDDING_PROBE_INPUT, EmbeddingProvider, EmbeddingRequest,
+    InferenceError, ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError,
+    RequestClass, UnsupportedEmbeddingProvider, classify_embedding_error, make_embedding_provider,
+    probe_digest,
 };
 
 // ---------------------------------------------------------------------------
@@ -823,10 +824,34 @@ async fn embed_pending_tags(
     Ok(transient)
 }
 
+/// Re-probes the building provider and reports whether its geometry drifted from
+/// the digest captured at build start. A profile with no captured digest cannot
+/// drift. A transient probe failure reports no drift, so a flaky probe does not
+/// abort a sound build; the next cutover re-probes.
+async fn probe_drifted(ctx: &ReindexCtx<'_>) -> bool {
+    let Some(stored) = ctx.building.probe_digest() else {
+        return false;
+    };
+    let mut result = embed_with_permit(
+        ctx.provider,
+        ctx.semaphore,
+        vec![EmbeddingRequest {
+            input: EMBEDDING_PROBE_INPUT.to_owned(),
+            purpose: EmbeddingPurpose::Query,
+        }],
+    )
+    .await;
+    match result.items.pop() {
+        Some(Ok(vector)) => probe_digest(&vector) != stored,
+        _ => false,
+    }
+}
+
 /// Drains the building set-difference (items and tags) lock-free, then under the
 /// exclusive cutover lock — whose acquisition drains every in-flight ingest
-/// commit holding the shared form — re-checks and, when nothing remains, flips
-/// the building profile to active and completes the run in one transaction.
+/// commit holding the shared form — re-probes for drift and, when nothing
+/// remains and the geometry held, flips the building profile to active and
+/// completes the run in one transaction.
 ///
 /// The flip is atomic against ingest: no commit can start while the exclusive
 /// lock is held, and the final check ran after the drain, so nothing
@@ -865,6 +890,29 @@ async fn catch_up_and_cutover(
             .await?
             .len();
         if items_left == 0 && tags_left == 0 {
+            // Re-probe before activating: a mutable model alias may have changed
+            // mid-build, leaving the profile holding two geometries. Abort
+            // rather than activate a mixed space; the operator rebuilds.
+            if probe_drifted(ctx).await {
+                PgEmbeddingProfileRepository
+                    .mark_failed(&mut txn, ctx.building.id())
+                    .await?;
+                PgReindexRunRepository
+                    .transition(
+                        &mut txn,
+                        ctx.run.id(),
+                        ReindexRunState::Running,
+                        ReindexRunState::Aborted,
+                        Some("probe digest drifted during build; rebuild required"),
+                    )
+                    .await?;
+                txn.commit().await.map_err(|e| DbError::QueryFailed {
+                    context: "committing cutover abort".to_owned(),
+                    source: e,
+                })?;
+                return Ok(false);
+            }
+
             PgEmbeddingProfileRepository
                 .mark_complete(&mut txn, ctx.building.id())
                 .await?;
@@ -1289,6 +1337,101 @@ mod tests {
                 .expect("find_live")
                 .is_none(),
             "the run is completed, no longer live",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cutover_aborts_when_the_probe_digest_drifts() {
+        let _guard = serial_lock().await;
+        let ctx_db = test_context().await;
+        let mut conn = ctx_db.raw_connection().await.expect("raw connection");
+        let mut txn = sqlx::Connection::begin(&mut conn)
+            .await
+            .expect("begin transaction");
+
+        let seed = Seed::new()
+            .define_principal("user", "user:reindex-drift")
+            .define_project("proj", "git@github.com:test/reindex-drift.git")
+            .set_embedding_model("mock-model", 768)
+            .as_principal("user")
+            .for_project("proj", |store| {
+                store.add_item("a", item(KnowledgeKind::Fact, "first"));
+            })
+            .execute(&mut txn)
+            .await;
+        let principal = seed.principal_id("user");
+
+        // The building's geometry was captured at build start as the digest of
+        // an all-0.5 probe; the provider now returns a different vector, as a
+        // model alias changed mid-build would.
+        let stored = probe_digest(&vec![0.5_f32; 768]);
+        let target = ReindexTarget {
+            probe_digest: Some(stored),
+            ..a_target()
+        };
+        let ReindexCreationOutcome::Created(_) = create_reindex_run(&mut txn, &target, principal)
+            .await
+            .expect("create")
+        else {
+            panic!("expected a created run");
+        };
+        let run = drive_reindex(&mut txn)
+            .await
+            .expect("drive")
+            .expect("a running run");
+        let building = PgEmbeddingProfileRepository
+            .find_building(&mut txn)
+            .await
+            .expect("find_building")
+            .expect("a building profile");
+
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(vec![0.9_f32; 768]), None)
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        let semaphore = Semaphore::new(4);
+        let ctx = ReindexCtx {
+            run: &run,
+            building: &building,
+            provider: provider.as_ref(),
+            semaphore: &semaphore,
+        };
+
+        process_tasks(&mut txn, &ctx, "test-reindex-worker")
+            .await
+            .expect("process tasks");
+        assert!(
+            !catch_up_and_cutover(&mut txn, &ctx).await.expect("cutover"),
+            "the cutover aborts on drift rather than completing the run",
+        );
+
+        // The drifted building profile is failed, never activated, and the run
+        // is aborted.
+        assert!(
+            PgEmbeddingProfileRepository
+                .find_building(&mut txn)
+                .await
+                .expect("find_building")
+                .is_none(),
+            "the building profile is no longer building",
+        );
+        assert!(
+            PgReindexRunRepository
+                .find_live(&mut txn)
+                .await
+                .expect("find_live")
+                .is_none(),
+            "the run is aborted, no longer live",
+        );
+        assert!(
+            PgEmbeddingProfileRepository
+                .find_active(&mut txn)
+                .await
+                .expect("find_active")
+                .is_none_or(|active| active.id() != building.id()),
+            "the drifted building profile was not activated",
         );
     }
 

@@ -32,8 +32,9 @@ pub use embedding_capabilities::{
 };
 pub use embedding_factory::{UnsupportedEmbeddingProvider, make_embedding_provider};
 pub use error::{InferenceError, classify_embedding_error};
+pub use http::EMBEDDING_PROBE_INPUT;
 #[cfg(feature = "test-helpers")]
-pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
+pub use http::INFERENCE_PROBE_INPUT;
 #[cfg(feature = "test-helpers")]
 pub use ollama::{
     CHAT_PATH as OLLAMA_CHAT_PATH, EMBED_PATH as OLLAMA_EMBED_PATH, TAGS_PATH as OLLAMA_TAGS_PATH,
