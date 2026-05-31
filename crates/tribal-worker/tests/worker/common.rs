@@ -83,6 +83,8 @@ pub(super) async fn setup_prerequisites(
     let seed_result = Seed::new()
         .define_project("proj", format!("git@github.com:test/worker-{suffix}.git"))
         .define_principal("user", format!("user:worker-test-{suffix}"))
+        // The triage stage resolves the active embedding profile, so seed one.
+        .set_embedding_model("mock-model", 768)
         .define_prompt_version("system-pv", a_new_prompt_version().build())
         .define_prompt_version(
             "user-pv",
