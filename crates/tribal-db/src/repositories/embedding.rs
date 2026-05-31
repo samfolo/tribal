@@ -98,8 +98,12 @@ pub trait EmbeddingRepository {
     ) -> Result<i64, DbError>;
 
     /// Returns up to `limit` knowledge item ids that need embedding under
-    /// `profile_id` (no embedding row and not quarantined), in id order, for
-    /// backfill enrolment.
+    /// `profile_id` (no embedding row and not quarantined), in id order, taking
+    /// only ids greater than `after` when given.
+    ///
+    /// `after` pages enrolment, which does not shrink the set (enrolling a task
+    /// does not embed the item); the catch-up sweep passes `None` and re-runs
+    /// the query as embedding shrinks the set from the front.
     ///
     /// # Errors
     ///
@@ -108,6 +112,7 @@ pub trait EmbeddingRepository {
         &self,
         conn: &mut PgConnection,
         profile_id: EmbeddingProfileId,
+        after: Option<KnowledgeItemId>,
         limit: i64,
     ) -> Result<Vec<KnowledgeItemId>, DbError>;
 }
@@ -243,6 +248,7 @@ impl EmbeddingRepository for PgEmbeddingRepository {
         &self,
         conn: &mut PgConnection,
         profile_id: EmbeddingProfileId,
+        after: Option<KnowledgeItemId>,
         limit: i64,
     ) -> Result<Vec<KnowledgeItemId>, DbError> {
         let rows = sqlx::query(
@@ -256,9 +262,11 @@ impl EmbeddingRepository for PgEmbeddingRepository {
                  WHERE q.target_profile_id = $1 AND q.kind = 'item' \
                    AND q.entity_ref = ki.id::text \
              ) \
-             ORDER BY ki.id LIMIT $2",
+             AND ($2::uuid IS NULL OR ki.id > $2::uuid) \
+             ORDER BY ki.id LIMIT $3",
         )
         .bind(profile_id.inner())
+        .bind(after.map(|id| *id.inner()))
         .bind(limit)
         .fetch_all(&mut *conn)
         .await
