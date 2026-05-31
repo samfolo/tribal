@@ -3,15 +3,16 @@
 //! Each command opens a command pool and drives the shared
 //! [`tribal_worker`] reindex services directly: `run` creates a queued run
 //! the running server's worker then drains, `cancel` aborts the live run, and
-//! `prune` reclaims superseded profiles. The create path builds and probes the
-//! target provider against a throwaway registry, so it needs no active profile.
+//! `prune` reclaims superseded profiles. The create path builds the target
+//! provider against a throwaway registry and, for a real run, probes its drift
+//! signal, so it needs no active profile.
 
 use std::io::{self, Write};
 
 use sqlx::PgPool;
 use tribal_config::TribalConfig;
 use tribal_db::{DbError, create_pool};
-use tribal_domain::LOCAL_PRINCIPAL_KEY;
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
 use tribal_inference::ProviderRegistry;
 use tribal_worker::{
     ReindexCancelOutcome, ReindexRunOutcome, ReindexRunRequest, ReindexRunStatus,
@@ -60,19 +61,24 @@ async fn run_async(config: &TribalConfig, request: ReindexRunRequest) -> Result<
     let registry = ProviderRegistry::new(std::iter::empty())
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|err| AppError::pool_acquire(POOL_NAME, "acquiring reindex connection", err))?;
-    let principal = find_or_create_principal(&mut conn, LOCAL_PRINCIPAL_KEY).await?;
-    drop(conn);
+    // A dry run creates no row and so needs no initiating principal; resolve it
+    // only on the create path, keeping the estimate genuinely read-only.
+    let principal_id = if request.dry_run {
+        PrincipalId::new()
+    } else {
+        let mut conn = pool.acquire().await.map_err(|err| {
+            AppError::pool_acquire(POOL_NAME, "acquiring reindex connection", err)
+        })?;
+        let principal = find_or_create_principal(&mut conn, LOCAL_PRINCIPAL_KEY).await?;
+        principal.id()
+    };
 
     let outcome = reindex_run(
         &pool,
         &registry,
         &config.credentials,
         &request,
-        principal.id(),
+        principal_id,
     )
     .await
     .map_err(|source| AppError::Reindex { source })?;
@@ -241,4 +247,51 @@ async fn commit(
             source,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use tribal_domain::{ProviderKind, ReindexRunId};
+
+    use super::*;
+
+    fn outcome(status: ReindexRunStatus, run_id: Option<ReindexRunId>) -> ReindexRunOutcome {
+        ReindexRunOutcome {
+            status,
+            run_id,
+            provider: ProviderKind::Ollama,
+            model: "nomic-embed-text:v1.5".to_owned(),
+            dimensions: 768,
+            normalised_base_url: "http://localhost:11434".to_owned(),
+            estimated_items: 3,
+            estimated_tags: 1,
+        }
+    }
+
+    fn render(status: ReindexRunStatus, run_id: Option<ReindexRunId>) -> String {
+        let mut buf = Vec::new();
+        render_run(&mut buf, &outcome(status, run_id)).expect("render");
+        String::from_utf8(buf).expect("utf8")
+    }
+
+    #[test]
+    fn test_render_run_covers_every_status() {
+        let id = ReindexRunId::new();
+        assert!(render(ReindexRunStatus::Plan, None).starts_with("plan:"));
+        assert!(
+            render(ReindexRunStatus::Created, Some(id))
+                .contains(&format!("created reindex run {id}"))
+        );
+        assert!(render(ReindexRunStatus::AlreadyLive, Some(id)).starts_with("already live:"));
+        assert!(render(ReindexRunStatus::Unchanged, None).starts_with("unchanged:"));
+        assert!(render(ReindexRunStatus::LockContended, None).starts_with("lock contended"));
+    }
+
+    #[test]
+    fn test_render_run_falls_back_for_a_created_status_without_a_run_id() {
+        // The producer never pairs Created/AlreadyLive with None, but the
+        // renderer degrades to the status label rather than panicking.
+        assert!(render(ReindexRunStatus::Created, None).starts_with("created:"));
+        assert!(render(ReindexRunStatus::AlreadyLive, None).starts_with("already_live:"));
+    }
 }

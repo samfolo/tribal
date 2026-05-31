@@ -96,7 +96,7 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
     };
 
     // The active provider's credential must resolve through the catalogue, or
-    // the next server boot fails closed (§5.7).
+    // the next server boot fails closed.
     if let Err(missing) = config
         .credentials
         .resolve_api_key(active.provider_kind(), active.normalised_base_url())
