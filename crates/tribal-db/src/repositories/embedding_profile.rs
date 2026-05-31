@@ -152,13 +152,13 @@ pub trait EmbeddingProfileRepository {
     /// Supersedes every prunable profile in one statement: all `failed`
     /// profiles and every `complete` profile below the active (highest-epoch
     /// `complete`) one. The active is never superseded. `completed_at` is
-    /// preserved, since prunable profiles already carry it. Returns the number
-    /// of profiles superseded.
+    /// preserved, since prunable profiles already carry it. Returns the epochs
+    /// of the superseded profiles, whose partial indexes the caller then drops.
     ///
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn supersede_prunable(&self, conn: &mut PgConnection) -> Result<u64, DbError>;
+    async fn supersede_prunable(&self, conn: &mut PgConnection) -> Result<Vec<i64>, DbError>;
 }
 
 /// Transitions a building profile to a terminal state, stamping `completed_at`.
@@ -298,24 +298,27 @@ impl EmbeddingProfileRepository for PgEmbeddingProfileRepository {
         .await
     }
 
-    async fn supersede_prunable(&self, conn: &mut PgConnection) -> Result<u64, DbError> {
+    async fn supersede_prunable(&self, conn: &mut PgConnection) -> Result<Vec<i64>, DbError> {
         // The active profile is the highest-epoch `complete` one; a `complete`
         // profile below it, and every `failed` profile, is prunable. Preserve
-        // `completed_at` (prunable profiles already carry it).
-        let result = sqlx::query(
+        // `completed_at` (prunable profiles already carry it). The returned
+        // epochs name the now-superseded profiles whose partial indexes the
+        // caller drops to reclaim their storage.
+        let epochs = sqlx::query_scalar(
             "UPDATE embedding_profiles SET state = 'superseded' \
              WHERE state = 'failed' \
                 OR (state = 'complete' \
                     AND epoch < (SELECT MAX(epoch) FROM embedding_profiles \
-                                 WHERE state = 'complete'))",
+                                 WHERE state = 'complete')) \
+             RETURNING epoch",
         )
-        .execute(&mut *conn)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
             context: "superseding prunable embedding profiles".to_owned(),
             source: e,
         })?;
-        Ok(result.rows_affected())
+        Ok(epochs)
     }
 }
 

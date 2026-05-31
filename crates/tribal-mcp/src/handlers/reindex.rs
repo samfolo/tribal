@@ -6,7 +6,8 @@ use rmcp::{
 };
 use tracing::Instrument;
 use tribal_db::{
-    DbError, EmbeddingProfileRepository, EmbeddingRepository, PgEmbeddingProfileRepository,
+    DbError, EmbeddingIndexRepository, EmbeddingProfileRepository, EmbeddingRepository,
+    EmbeddingTable, PgEmbeddingIndexRepository, PgEmbeddingProfileRepository,
     PgEmbeddingRepository, PgReindexRunRepository, PgTagEmbeddingRepository, ReindexRunRepository,
     TagEmbeddingRepository,
 };
@@ -404,6 +405,15 @@ impl TribalServerHandler {
             return Ok(db_err.into_mcp_error().into_call_tool_result());
         }
 
+        // Reclaim the superseded profiles' partial indexes outside the
+        // transaction (DROP INDEX CONCURRENTLY); the storage delete has already
+        // committed, so this is best-effort.
+        if !outcome.superseded_epochs.is_empty()
+            && let Ok(mut conn) = self.state.pool_worker.acquire().await
+        {
+            drop_superseded_indexes(&mut conn, &outcome.superseded_epochs).await;
+        }
+
         Ok(McpReindexPruneResponse {
             profiles_superseded: outcome.profiles_superseded,
             embeddings_deleted: outcome.embeddings_deleted,
@@ -445,11 +455,13 @@ async fn execute_reindex_cancel(
     Ok(ReindexCancelOutcome::Cancelled(run.id()))
 }
 
-/// The counts a prune reclaimed.
+/// The counts a prune reclaimed, plus the epochs whose partial indexes the
+/// caller drops after the transaction commits.
 struct ReindexPruneOutcome {
     profiles_superseded: u64,
     embeddings_deleted: u64,
     tag_embeddings_deleted: u64,
+    superseded_epochs: Vec<i64>,
 }
 
 /// Errors from the reindex prune service function.
@@ -473,16 +485,40 @@ impl IntoMcpError for ReindexPruneError {
 async fn execute_reindex_prune(
     conn: &mut sqlx::PgConnection,
 ) -> Result<ReindexPruneOutcome, ReindexPruneError> {
-    let profiles_superseded = PgEmbeddingProfileRepository
+    let superseded_epochs = PgEmbeddingProfileRepository
         .supersede_prunable(conn)
         .await?;
     let embeddings_deleted = PgEmbeddingRepository.delete_superseded(conn).await?;
     let tag_embeddings_deleted = PgTagEmbeddingRepository.delete_superseded(conn).await?;
     Ok(ReindexPruneOutcome {
-        profiles_superseded,
+        profiles_superseded: u64::try_from(superseded_epochs.len()).unwrap_or(u64::MAX),
         embeddings_deleted,
         tag_embeddings_deleted,
+        superseded_epochs,
     })
+}
+
+/// Drops the partial HNSW indexes of the superseded profiles, reclaiming their
+/// catalogue storage. Best-effort and outside the prune transaction, since
+/// `DROP INDEX CONCURRENTLY` cannot run in one; the supersede and row deletes
+/// have already committed, so a failed drop only leaves a dead, empty index for
+/// a later prune to retry.
+async fn drop_superseded_indexes(conn: &mut sqlx::PgConnection, epochs: &[i64]) {
+    for &epoch in epochs {
+        for table in [EmbeddingTable::Embeddings, EmbeddingTable::TagEmbeddings] {
+            if let Err(e) = PgEmbeddingIndexRepository
+                .drop_partial_hnsw(conn, table, epoch)
+                .await
+            {
+                tracing::warn!(
+                    epoch,
+                    table = table.as_str(),
+                    error = %e,
+                    "failed to drop a superseded profile's partial index; a later prune retries",
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
