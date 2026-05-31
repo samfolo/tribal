@@ -6,7 +6,7 @@ use tribal_config::{
     ConfigError, CredentialCatalogue, Diagnostics, StageInferenceConfig, TribalConfig,
     ValidationError,
 };
-use tribal_domain::{ApiKey, EmbeddingProfile, ProviderKind};
+use tribal_domain::{EmbeddingProfile, ProviderKind};
 use tribal_inference::{
     AnthropicInferenceProvider, EmbeddingProvider, InferenceError, InferenceProvider,
     OllamaEmbeddingProvider, OllamaInferenceProvider, OpenAiEmbeddingProvider,
@@ -135,20 +135,13 @@ fn resolve_embedding_credential<'a>(
     normalised_base_url: &str,
     credentials: &'a CredentialCatalogue,
 ) -> Result<&'a str, AppError> {
-    let api_key = credentials
-        .resolve(provider_kind, normalised_base_url)
-        .and_then(|(_, entry)| entry.api_key.as_ref())
-        .map_or("", ApiKey::as_str);
-
-    if provider_kind.requires_api_key() && api_key.is_empty() {
-        return Err(AppError::EmbeddingCredentialUnresolved {
-            provider: provider_kind,
-            base_url: normalised_base_url.to_owned(),
+    credentials
+        .resolve_api_key(provider_kind, normalised_base_url)
+        .map_err(|e| AppError::EmbeddingCredentialUnresolved {
+            provider: e.provider,
+            base_url: e.base_url,
             provider_upper: provider_kind.as_str().to_uppercase(),
-        });
-    }
-
-    Ok(api_key)
+        })
 }
 
 /// Constructs an inference provider for a single pipeline stage.

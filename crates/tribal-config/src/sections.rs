@@ -20,7 +20,9 @@ mod transport_kind;
 mod worker;
 
 pub use auth::{AuthConfig, MAX_TTL_HOURS};
-pub use credential_catalogue::{CredentialCatalogue, CredentialEntry, is_valid_connection_name};
+pub use credential_catalogue::{
+    CredentialCatalogue, CredentialEntry, MissingApiKey, is_valid_connection_name,
+};
 pub use credentials::{
     Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
     CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials,
