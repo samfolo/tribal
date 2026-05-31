@@ -709,6 +709,7 @@ async fn test_backfill_records_token_usage() {
         Seed::new()
             .define_project("proj", "git@github.com:test/backfill-token-usage.git")
             .define_principal("user", "user:backfill-token-usage")
+            .set_embedding_model("mock-model", 768)
             .define_tag("alpha")
             .define_tag("beta")
             .execute(&mut conn)

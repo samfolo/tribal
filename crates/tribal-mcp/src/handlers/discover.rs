@@ -524,7 +524,7 @@ mod tests {
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
         MockStandingRepository, a_knowledge_item, a_not_found, a_principal, a_project, a_reference,
-        a_standing, test_context,
+        a_standing, ensure_genesis_profile, test_context,
     };
 
     use super::*;
@@ -612,6 +612,9 @@ mod tests {
     ) -> Result<DiscoverResult, DiscoverError> {
         let ctx = test_context().await;
         let mut tx = ctx.begin_test().await.expect("begin");
+        // The handler resolves the active embedding profile; seed one so the
+        // mocked search runs against it.
+        ensure_genesis_profile(&mut tx, "mock-model", 768).await;
         execute_discover(&mut tx, repos, params).await
     }
 

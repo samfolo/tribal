@@ -790,6 +790,7 @@ async fn test_startup_backfill_embeds_missing_tags() {
         Seed::new()
             .define_project("proj", "git@github.com:test/backfill.git")
             .define_principal("user", "user:backfill")
+            .set_embedding_model("mock-model", 768)
             .define_tag("alpha")
             .define_tag("beta")
             .execute(&mut conn)
