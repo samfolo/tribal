@@ -12,13 +12,13 @@
     },
     "SimilarItemClassification": {
       "additionalProperties": false,
-      "description": "An independent assessment of one existing item's relationship to the candidate.",
+      "description": "An independent assessment of one existing claim's relationship to the candidate.",
       "properties": {
         "item": {
           "$ref": "#/definitions/TriageItemReference"
         },
         "justification": {
-          "description": "Why this assessment was chosen, grounded in the content of both items.",
+          "description": "Why this assessment was chosen, grounded in the content of both claims.",
           "type": "string"
         },
         "suggested_relation": {
@@ -36,7 +36,7 @@
       "anyOf": [
         {
           "additionalProperties": false,
-          "description": "The candidate records knowledge not already captured by an existing item. Default to this when the candidate adds any new context, or when uncertain.",
+          "description": "The candidate records knowledge not already captured by an existing claim. Default to this when the candidate adds any new context, or when uncertain.",
           "properties": {
             "decision": {
               "const": "created",
@@ -50,7 +50,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "The candidate restates an existing item, adding no meaningful new information. A candidate that contradicts an existing item is never a duplicate.",
+          "description": "The candidate restates an existing claim, adding no meaningful new information. A candidate that contradicts an existing claim is never a duplicate.",
           "properties": {
             "decision": {
               "const": "duplicate",
@@ -67,7 +67,7 @@
           "type": "object"
         }
       ],
-      "description": "Whether the candidate records new knowledge or duplicates an existing item."
+      "description": "Whether the candidate records new knowledge or duplicates an existing claim."
     },
     "TriageItemReference": {
       "additionalProperties": false,
@@ -88,13 +88,13 @@
       "type": "object"
     }
   },
-  "description": "The triage classification for a single candidate. Contains the novel/duplicate decision and independent per-item relationship assessments.",
+  "description": "The triage classification for a single candidate. Contains the novel/duplicate decision and independent per-claim relationship assessments.",
   "properties": {
     "outcome": {
       "$ref": "#/definitions/TriageDecision"
     },
     "similar_item_decisions": {
-      "description": "One assessment per provided similar item, each made independently of the novel/duplicate outcome.",
+      "description": "One assessment per provided similar claim, each made independently of the novel/duplicate outcome.",
       "items": {
         "$ref": "#/definitions/SimilarItemClassification"
       },
