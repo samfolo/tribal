@@ -10,6 +10,7 @@
 
 use reqwest::StatusCode;
 use thiserror::Error;
+use tribal_domain::EmbeddingErrorClass;
 
 use crate::http::{body_preview, is_retryable_status};
 
@@ -63,6 +64,26 @@ pub enum InferenceError {
         /// The actual response content (or a summary of it).
         actual: String,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Retry classification
+// ---------------------------------------------------------------------------
+
+/// Classifies an embedding error for the reindex retry path.
+///
+/// The variant already carries the retryable split the wire boundary made:
+/// [`InferenceError::ProviderUnavailable`] (429, 5xx, 529, network, timeout) is
+/// transient and retried; an [`InferenceError::EmbeddingFailed`] (400 shape,
+/// 401, 403, 404) or an unparseable response is permanent and quarantined.
+#[must_use]
+pub fn classify_embedding_error(error: &InferenceError) -> EmbeddingErrorClass {
+    match error {
+        InferenceError::ProviderUnavailable { .. } => EmbeddingErrorClass::Transient,
+        InferenceError::EmbeddingFailed { .. }
+        | InferenceError::LlmCallFailed { .. }
+        | InferenceError::ResponseParseFailed { .. } => EmbeddingErrorClass::Permanent,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +158,32 @@ pub(crate) fn map_json_parse_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_classify_embedding_error() {
+        assert_eq!(
+            classify_embedding_error(&InferenceError::ProviderUnavailable {
+                provider: "ollama".to_owned(),
+                reason: "HTTP 429".to_owned(),
+            }),
+            EmbeddingErrorClass::Transient,
+        );
+        assert_eq!(
+            classify_embedding_error(&InferenceError::EmbeddingFailed {
+                model: "m".to_owned(),
+                context: "HTTP 400".to_owned(),
+                source: None,
+            }),
+            EmbeddingErrorClass::Permanent,
+        );
+        assert_eq!(
+            classify_embedding_error(&InferenceError::ResponseParseFailed {
+                expected_shape: "x".to_owned(),
+                actual: "y".to_owned(),
+            }),
+            EmbeddingErrorClass::Permanent,
+        );
+    }
 
     #[test]
     fn test_display_provider_unavailable() {
