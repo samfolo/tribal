@@ -17,6 +17,9 @@ mod embedding_profile;
 #[path = "repositories/embedding.rs"]
 mod embedding;
 
+#[path = "repositories/embedding_index.rs"]
+mod embedding_index;
+
 #[path = "repositories/extraction_result.rs"]
 mod extraction_result;
 

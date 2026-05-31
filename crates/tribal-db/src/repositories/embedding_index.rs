@@ -94,6 +94,21 @@ pub trait EmbeddingIndexRepository {
         dimensions: u32,
         profile_id: EmbeddingProfileId,
     ) -> Result<(), DbError>;
+
+    /// Drops a per-profile partial HNSW index if it exists, used when pruning a
+    /// retired profile's tombstone.
+    ///
+    /// Must run outside a transaction (`DROP INDEX CONCURRENTLY`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn drop_partial_hnsw(
+        &self,
+        conn: &mut PgConnection,
+        table: EmbeddingTable,
+        epoch: i64,
+    ) -> Result<(), DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +188,15 @@ impl EmbeddingIndexRepository for PgEmbeddingIndexRepository {
 
         Ok(())
     }
+
+    async fn drop_partial_hnsw(
+        &self,
+        conn: &mut PgConnection,
+        table: EmbeddingTable,
+        epoch: i64,
+    ) -> Result<(), DbError> {
+        drop_index_concurrently(conn, &table.hnsw_index_name(epoch)).await
+    }
 }
 
 async fn drop_index_concurrently(conn: &mut PgConnection, index_name: &str) -> Result<(), DbError> {
@@ -180,7 +204,7 @@ async fn drop_index_concurrently(conn: &mut PgConnection, index_name: &str) -> R
         .execute(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
-            context: format!("dropping invalid index {index_name}"),
+            context: format!("dropping index {index_name}"),
             source: e,
         })?;
     Ok(())
