@@ -5,7 +5,7 @@ pub(super) use std::{sync::Arc, time::Duration};
 pub(super) use dashmap::DashMap;
 pub(super) use tokio_util::sync::CancellationToken;
 pub(super) use tribal_common::JobStateTxs;
-pub(super) use tribal_config::WorkerConfig;
+pub(super) use tribal_config::{CredentialCatalogue, WorkerConfig};
 pub(super) use tribal_db::{
     EmbeddingProfileRepository, ExtractionResultRepository, ItemObservationRepository,
     JobRepository, JobStatusTransition, KnowledgeItemRepository, NewReindexRun, NewTagEmbedding,
@@ -168,6 +168,8 @@ pub(super) fn build_test_worker(
         inference.clone(),
         inference,
         embedding,
+        Arc::new(DashMap::new()),
+        CredentialCatalogue::default(),
         key(RequestClass::Inference),
         key(RequestClass::Inference),
         key(RequestClass::Embedding),

@@ -17,5 +17,5 @@ pub use gauge_task::run_queue_health_gauges;
 pub use prompt::{reserved_keys, synthetic_validation_context};
 pub use worker::{
     Worker,
-    reindex::{ReindexCreationOutcome, ReindexTarget, create_reindex_run},
+    reindex::{EmbeddingProviderCache, ReindexCreationOutcome, ReindexTarget, create_reindex_run},
 };

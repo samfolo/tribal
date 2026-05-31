@@ -406,6 +406,8 @@ async fn bootstrap(
         Arc::clone(&triage_provider),
         Arc::clone(&relation_provider),
         Arc::clone(&embedding_provider),
+        Arc::new(DashMap::new()),
+        config.credentials.clone(),
         extraction_key.clone(),
         triage_key.clone(),
         embedding_key.clone(),
