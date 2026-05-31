@@ -1254,19 +1254,23 @@ async fn test_authorization_code_survives_transaction_rollback() {
 // ---------------------------------------------------------------------------
 
 fn extract_approve_href(html: &str) -> String {
-    // The consent page presents the redirect target as an `<a href>` the
-    // user clicks to authorise; the href carries the full target URL with
-    // its query string intact. Extract it to drive the exchange.
-    let start = html
-        .find(r#"<a id="approve" href=""#)
+    // The consent page presents the redirect target as the approve
+    // anchor's href; it carries the full target URL with its query string
+    // intact. Locate the href within that anchor (independent of the
+    // anchor's other attributes) to drive the exchange.
+    let anchor = html
+        .find(r#"class="approve""#)
         .expect("consent page approve anchor present");
-    let after = &html[start + r#"<a id="approve" href=""#.len()..];
+    let href_marker = r#"href=""#;
+    let href_rel = html[anchor..]
+        .find(href_marker)
+        .expect("approve anchor carries an href");
+    let start = anchor + href_rel + href_marker.len();
+    let after = &html[start..];
     let end = after.find('"').expect("approve href quoted");
-    decode_html_attribute(&after[..end])
-}
-
-fn decode_html_attribute(s: &str) -> String {
-    s.replace("&amp;", "&")
+    // The href is HTML-attribute-escaped; decode every entity form back
+    // to the raw redirect URL rather than special-casing the separator.
+    html_escape::decode_html_entities(&after[..end]).into_owned()
 }
 
 fn base64_encode(input: &str) -> String {
