@@ -7,7 +7,8 @@
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedback, RetrievalFeedbackId,
+    EmbeddingProfileId, FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedback,
+    RetrievalFeedbackId,
 };
 use typed_builder::TypedBuilder;
 
@@ -23,6 +24,7 @@ const COLUMNS: Columns = Columns(&[
     "trace_id",
     "query_text",
     "embedding_model",
+    "embedding_profile_id",
     "returned_item_ids",
     "explored_anchor_ids",
     "system_fingerprint_hash",
@@ -50,8 +52,10 @@ pub struct NewRetrievalFeedback {
     pub trace_id: String,
     /// The query text used in the retrieval session.
     pub query_text: String,
-    /// The embedding model used for the retrieval.
+    /// The embedding model used for the retrieval (denormalised lineage).
     pub embedding_model: String,
+    /// The embedding profile that produced the query vector.
+    pub embedding_profile_id: EmbeddingProfileId,
     /// Knowledge item IDs returned by the discovery query.
     #[builder(default)]
     pub returned_item_ids: Vec<KnowledgeItemId>,
@@ -131,10 +135,10 @@ impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
 
         let sql = format!(
             "INSERT INTO retrieval_feedback \
-                 (trace_id, query_text, embedding_model, \
+                 (trace_id, query_text, embedding_model, embedding_profile_id, \
                   returned_item_ids, explored_anchor_ids, \
                   system_fingerprint_hash, principal_id, rating, notes) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              RETURNING {COLUMNS}",
         );
 
@@ -142,6 +146,7 @@ impl RetrievalFeedbackRepository for PgRetrievalFeedbackRepository {
             .bind(&new.trace_id)
             .bind(&new.query_text)
             .bind(&new.embedding_model)
+            .bind(new.embedding_profile_id.inner())
             .bind(&returned_ids)
             .bind(&explored_ids)
             .bind(&new.system_fingerprint_hash)
@@ -194,6 +199,9 @@ fn map_retrieval_feedback_row(r: &sqlx::postgres::PgRow) -> RetrievalFeedback {
         .trace_id(r.get("trace_id"))
         .query_text(r.get("query_text"))
         .embedding_model(r.get("embedding_model"))
+        .embedding_profile_id(EmbeddingProfileId::from(
+            r.get::<uuid::Uuid, _>("embedding_profile_id"),
+        ))
         .returned_item_ids(
             r.get::<Vec<uuid::Uuid>, _>("returned_item_ids")
                 .into_iter()

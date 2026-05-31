@@ -9,7 +9,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedbackId};
+use crate::{
+    EmbeddingProfileId, FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedbackId,
+};
 
 /// User feedback on a retrieval session.
 ///
@@ -24,8 +26,10 @@ pub struct RetrievalFeedback {
     trace_id: String,
     /// The original discovery query (entry point).
     query_text: String,
-    /// Which embedding model was used for the query.
+    /// Which embedding model was used for the query (denormalised lineage).
     embedding_model: String,
+    /// The embedding profile that produced the query vector.
+    embedding_profile_id: EmbeddingProfileId,
     /// Items returned by the discovery query.
     #[builder(default)]
     returned_item_ids: Vec<KnowledgeItemId>,
@@ -64,6 +68,11 @@ impl RetrievalFeedback {
     /// Returns the embedding model used.
     pub fn embedding_model(&self) -> &str {
         &self.embedding_model
+    }
+
+    /// Returns the embedding profile that produced the query vector.
+    pub fn embedding_profile_id(&self) -> EmbeddingProfileId {
+        self.embedding_profile_id
     }
 
     /// Returns the returned item identifiers.
