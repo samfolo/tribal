@@ -171,10 +171,20 @@ impl TribalServerHandler {
         )
         .map_err(ReindexError::Provider)?;
 
-        let (estimated_items, estimated_tags) = self.estimate_corpus().await?;
-
-        let (outcome_label, run_id) = if request.dry_run {
-            ("plan", None)
+        // The estimate counts against the profile that holds the target
+        // geometry: a fresh build sees the whole corpus, an unchanged target or
+        // a live run sees only its remaining backlog. `None` means no run, so
+        // there is nothing to embed.
+        let (outcome_label, run_id, estimate_profile) = if request.dry_run {
+            let profile = self
+                .dry_run_estimate_profile(
+                    provider_kind,
+                    &normalised_base_url,
+                    &request.model,
+                    dimensions,
+                )
+                .await?;
+            ("plan", None, Some(profile))
         } else {
             let target = resolve_reindex_target(
                 provider.as_ref(),
@@ -202,13 +212,22 @@ impl TribalServerHandler {
             })?;
 
             match outcome {
-                ReindexCreationOutcome::Created(run) => ("created", Some(run.id().to_string())),
-                ReindexCreationOutcome::Unchanged(_) => ("unchanged", None),
-                ReindexCreationOutcome::AlreadyLive(run) => {
-                    ("already_live", Some(run.id().to_string()))
+                ReindexCreationOutcome::Created(run) => {
+                    let profile = run.target_profile_id();
+                    ("created", Some(run.id().to_string()), Some(profile))
                 }
-                ReindexCreationOutcome::LockContended => ("lock_contended", None),
+                ReindexCreationOutcome::AlreadyLive(run) => {
+                    let profile = run.target_profile_id();
+                    ("already_live", Some(run.id().to_string()), Some(profile))
+                }
+                ReindexCreationOutcome::Unchanged(_) => ("unchanged", None, None),
+                ReindexCreationOutcome::LockContended => ("lock_contended", None, None),
             }
+        };
+
+        let (estimated_items, estimated_tags) = match estimate_profile {
+            Some(profile) => self.estimate_corpus(profile).await?,
+            None => (0, 0),
         };
 
         Ok(McpReindexResponse {
@@ -224,28 +243,64 @@ impl TribalServerHandler {
         .into_call_tool_result())
     }
 
-    /// Counts the items and tags a fresh geometry must embed. A profile that
-    /// holds no embeddings yet sees the whole corpus, so a never-used id gives
-    /// the count without standing up the target profile.
-    async fn estimate_corpus(&self) -> Result<(u64, u64), ReindexError> {
+    /// Counts the items and tags still missing an embedding under `profile_id`,
+    /// the work the target geometry must still embed. A fresh, never-used id
+    /// sees the whole corpus; the active id sees only the un-embedded backlog
+    /// (roughly zero for a settled corpus), so an unchanged target estimates as
+    /// near-zero rather than a full re-embed.
+    async fn estimate_corpus(
+        &self,
+        profile_id: EmbeddingProfileId,
+    ) -> Result<(u64, u64), ReindexError> {
         let mut conn = self.state.pool_mcp.acquire().await.map_err(|e| {
             ReindexError::Db(DbError::QueryFailed {
                 context: "acquiring a connection for the reindex estimate".to_owned(),
                 source: e,
             })
         })?;
-        let probe_id = EmbeddingProfileId::new();
         let items = PgEmbeddingRepository
-            .count_items_without_embedding(&mut conn, probe_id)
+            .count_items_without_embedding(&mut conn, profile_id)
             .await?;
         let tags = PgTagEmbeddingRepository
-            .find_tags_missing_embeddings(&mut conn, probe_id)
+            .find_tags_missing_embeddings(&mut conn, profile_id)
             .await?
             .len();
         Ok((
             u64::try_from(items).unwrap_or(0),
             u64::try_from(tags).unwrap_or(u64::MAX),
         ))
+    }
+
+    /// The profile a network-free dry run estimates against. When the declared
+    /// identity already matches the active, the corpus is in this geometry and
+    /// the active's backlog is the honest estimate; otherwise a fresh geometry
+    /// must embed the whole corpus, which a never-used id counts.
+    async fn dry_run_estimate_profile(
+        &self,
+        provider_kind: ProviderKind,
+        normalised_base_url: &str,
+        model: &str,
+        dimensions: u32,
+    ) -> Result<EmbeddingProfileId, ReindexError> {
+        let mut conn = self.state.pool_mcp.acquire().await.map_err(|e| {
+            ReindexError::Db(DbError::QueryFailed {
+                context: "acquiring a connection to resolve the reindex estimate target".to_owned(),
+                source: e,
+            })
+        })?;
+        let active = PgEmbeddingProfileRepository.find_active(&mut conn).await?;
+        Ok(match active {
+            Some(active)
+                if active.provider_kind() == provider_kind
+                    && active.normalised_base_url() == normalised_base_url
+                    && active.model() == model
+                    && active.dimensions() == dimensions
+                    && active.distance_metric() == DistanceMetric::Cosine =>
+            {
+                active.id()
+            }
+            _ => EmbeddingProfileId::new(),
+        })
     }
 
     /// Handles the `tribal_reindex_cancel` tool call: aborts the live reindex
