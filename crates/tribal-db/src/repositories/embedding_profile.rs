@@ -133,6 +133,64 @@ pub trait EmbeddingProfileRepository {
         conn: &mut PgConnection,
         id: EmbeddingProfileId,
     ) -> Result<bool, DbError>;
+
+    /// Transitions a `building` profile to `failed`, stamping `completed_at`.
+    ///
+    /// Used when a reindex aborts or a transient failure dead-letters, and to
+    /// reconcile an orphan building profile on boot. Returns `true` if this call
+    /// performed the transition, `false` if the profile was not `building`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn mark_failed(
+        &self,
+        conn: &mut PgConnection,
+        id: EmbeddingProfileId,
+    ) -> Result<bool, DbError>;
+
+    /// Transitions a `failed` profile to `superseded`, stamping `completed_at`.
+    ///
+    /// Used by prune once a failed building profile's rows are removed. Returns
+    /// `true` if this call performed the transition, `false` if the profile was
+    /// not `failed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn mark_superseded(
+        &self,
+        conn: &mut PgConnection,
+        id: EmbeddingProfileId,
+    ) -> Result<bool, DbError>;
+}
+
+/// Transitions a profile from one state to a terminal state, stamping
+/// `completed_at`. Returns whether a row was transitioned (the guard `from`
+/// state did not match otherwise). Shared by [`mark_complete`], [`mark_failed`],
+/// and [`mark_superseded`].
+async fn transition_to_terminal(
+    conn: &mut PgConnection,
+    id: EmbeddingProfileId,
+    from: EmbeddingProfileState,
+    to: EmbeddingProfileState,
+    verb: &str,
+) -> Result<bool, DbError> {
+    let result = sqlx::query(
+        "UPDATE embedding_profiles SET state = $2, completed_at = now() \
+         WHERE id = $1 AND state = $3",
+    )
+    .bind(id.inner())
+    .bind(to.as_str())
+    .bind(from.as_str())
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| DbError::QueryFailed {
+        context: format!("{verb} embedding profile {id}"),
+        source: e,
+    })?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -219,19 +277,44 @@ impl EmbeddingProfileRepository for PgEmbeddingProfileRepository {
         conn: &mut PgConnection,
         id: EmbeddingProfileId,
     ) -> Result<bool, DbError> {
-        let result = sqlx::query(
-            "UPDATE embedding_profiles SET state = 'complete', completed_at = now() \
-             WHERE id = $1 AND state = 'building'",
+        transition_to_terminal(
+            conn,
+            id,
+            EmbeddingProfileState::Building,
+            EmbeddingProfileState::Complete,
+            "completing",
         )
-        .bind(id.inner())
-        .execute(&mut *conn)
         .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("completing embedding profile {id}"),
-            source: e,
-        })?;
+    }
 
-        Ok(result.rows_affected() > 0)
+    async fn mark_failed(
+        &self,
+        conn: &mut PgConnection,
+        id: EmbeddingProfileId,
+    ) -> Result<bool, DbError> {
+        transition_to_terminal(
+            conn,
+            id,
+            EmbeddingProfileState::Building,
+            EmbeddingProfileState::Failed,
+            "failing",
+        )
+        .await
+    }
+
+    async fn mark_superseded(
+        &self,
+        conn: &mut PgConnection,
+        id: EmbeddingProfileId,
+    ) -> Result<bool, DbError> {
+        transition_to_terminal(
+            conn,
+            id,
+            EmbeddingProfileState::Failed,
+            EmbeddingProfileState::Superseded,
+            "superseding",
+        )
+        .await
     }
 }
 
