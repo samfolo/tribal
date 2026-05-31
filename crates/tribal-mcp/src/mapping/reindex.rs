@@ -22,13 +22,16 @@ pub(crate) struct McpReindexRequest {
     /// The target endpoint; the provider's default when omitted.
     #[serde(default)]
     pub(crate) base_url: Option<String>,
+    /// When true, resolve and estimate the target without creating a run.
+    #[serde(default)]
+    pub(crate) dry_run: bool,
 }
 
 /// The MCP response for `tribal_reindex`.
 #[derive(Debug, Serialize)]
 pub(crate) struct McpReindexResponse {
-    /// The creation outcome: `created`, `unchanged`, `already_live`, or
-    /// `lock_contended`.
+    /// The outcome: `plan` for a dry run, otherwise `created`, `unchanged`,
+    /// `already_live`, or `lock_contended`.
     pub(crate) outcome: String,
     /// The run id, present for `created` and `already_live`.
     pub(crate) run_id: Option<String>,
@@ -40,6 +43,10 @@ pub(crate) struct McpReindexResponse {
     pub(crate) dimensions: u32,
     /// The resolved, normalised target endpoint.
     pub(crate) base_url: String,
+    /// The number of items the new geometry must embed.
+    pub(crate) estimated_items: u64,
+    /// The number of tags the new geometry must embed.
+    pub(crate) estimated_tags: u64,
 }
 
 impl IntoCallToolResult for McpReindexResponse {

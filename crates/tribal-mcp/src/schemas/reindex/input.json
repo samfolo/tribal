@@ -17,6 +17,10 @@
     "base_url": {
       "type": "string",
       "description": "The target endpoint. The provider's default when omitted."
+    },
+    "dry_run": {
+      "type": "boolean",
+      "description": "When true, resolve the target, validate its credential, and return the item and tag counts without creating a run."
     }
   },
   "required": ["provider", "model"],
