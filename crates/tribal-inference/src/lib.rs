@@ -5,6 +5,7 @@
 
 mod anthropic;
 mod capabilities;
+mod drift;
 mod embedding_capabilities;
 mod error;
 mod http;
@@ -24,6 +25,7 @@ pub use anthropic::MESSAGES_PATH as ANTHROPIC_MESSAGES_PATH;
 pub use capabilities::{
     MaxOutputTokensParam, ModelCapabilities, SamplingControl, StructuredOutputMode, resolve,
 };
+pub use drift::probe_digest;
 pub use embedding_capabilities::{
     DimensionResolutionError, EmbeddingCapabilities, resolve_dimensions, resolve_embedding,
 };
