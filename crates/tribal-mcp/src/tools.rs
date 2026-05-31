@@ -240,6 +240,17 @@ is at most one live run. Operator-only.",
         output_schema: include_str!("schemas/reindex_cancel/output.json"),
         required_scope: "tribal.embedding:execute",
     },
+    ToolEntry {
+        name: "tribal_reindex_prune",
+        title: "Tribal: Prune Reindexes",
+        description: "\
+Reclaim storage from past reindexes. Every non-active complete profile and \
+every failed profile is superseded, and their embeddings are deleted; the \
+active profile and run history are untouched. Operator-only.",
+        input_schema: include_str!("schemas/reindex_prune/input.json"),
+        output_schema: include_str!("schemas/reindex_prune/output.json"),
+        required_scope: "tribal.embedding:execute",
+    },
 ];
 
 // ---------------------------------------------------------------------------

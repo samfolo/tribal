@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "description": "The outcome of a reindex prune request.",
+  "properties": {
+    "profiles_superseded": {
+      "type": "integer",
+      "description": "The number of profiles transitioned to superseded."
+    },
+    "embeddings_deleted": {
+      "type": "integer",
+      "description": "The number of item embeddings deleted."
+    },
+    "tag_embeddings_deleted": {
+      "type": "integer",
+      "description": "The number of tag embeddings deleted."
+    }
+  },
+  "required": ["profiles_superseded", "embeddings_deleted", "tag_embeddings_deleted"]
+}

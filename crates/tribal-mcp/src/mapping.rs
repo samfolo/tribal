@@ -14,5 +14,5 @@ pub(crate) use knowledge::{
     McpExploreRequest, McpExploreResponse, McpGetItemEntry, McpGetItemRequest, McpGetItemResponse,
     McpKnowledgeItem, McpReference, McpRelationDirection, McpStanding,
 };
-pub(crate) use reindex::McpReindexCancelResponse;
+pub(crate) use reindex::{McpReindexCancelResponse, McpReindexPruneResponse};
 pub(crate) use session::{McpSetContextRequest, session_to_json, set_context_response};

@@ -163,6 +163,17 @@ pub trait EmbeddingProfileRepository {
         conn: &mut PgConnection,
         id: EmbeddingProfileId,
     ) -> Result<bool, DbError>;
+
+    /// Supersedes every prunable profile in one statement: all `failed`
+    /// profiles and every `complete` profile below the active (highest-epoch
+    /// `complete`) one. The active is never superseded. `completed_at` is
+    /// preserved, since prunable profiles already carry it. Returns the number
+    /// of profiles superseded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn supersede_prunable(&self, conn: &mut PgConnection) -> Result<u64, DbError>;
 }
 
 /// Transitions a profile from one state to a terminal state, stamping
@@ -315,6 +326,26 @@ impl EmbeddingProfileRepository for PgEmbeddingProfileRepository {
             "superseding",
         )
         .await
+    }
+
+    async fn supersede_prunable(&self, conn: &mut PgConnection) -> Result<u64, DbError> {
+        // The active profile is the highest-epoch `complete` one; a `complete`
+        // profile below it, and every `failed` profile, is prunable. Preserve
+        // `completed_at` (prunable profiles already carry it).
+        let result = sqlx::query(
+            "UPDATE embedding_profiles SET state = 'superseded' \
+             WHERE state = 'failed' \
+                OR (state = 'complete' \
+                    AND epoch < (SELECT MAX(epoch) FROM embedding_profiles \
+                                 WHERE state = 'complete'))",
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "superseding prunable embedding profiles".to_owned(),
+            source: e,
+        })?;
+        Ok(result.rows_affected())
     }
 }
 

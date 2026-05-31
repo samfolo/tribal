@@ -1336,5 +1336,40 @@
     },
     "required_scope": "tribal.embedding:execute",
     "title": "Tribal: Cancel Reindex"
+  },
+  {
+    "description": "Reclaim storage from past reindexes. Every non-active complete profile and every failed profile is superseded, and their embeddings are deleted; the active profile and run history are untouched. Operator-only.",
+    "input_schema": {
+      "additionalProperties": false,
+      "description": "Reclaim storage from superseded reindexes: supersede every non-active complete profile and every failed profile, then delete their embeddings. Takes no arguments.",
+      "properties": {},
+      "type": "object"
+    },
+    "name": "tribal_reindex_prune",
+    "output_schema": {
+      "description": "The outcome of a reindex prune request.",
+      "properties": {
+        "embeddings_deleted": {
+          "description": "The number of item embeddings deleted.",
+          "type": "integer"
+        },
+        "profiles_superseded": {
+          "description": "The number of profiles transitioned to superseded.",
+          "type": "integer"
+        },
+        "tag_embeddings_deleted": {
+          "description": "The number of tag embeddings deleted.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "profiles_superseded",
+        "embeddings_deleted",
+        "tag_embeddings_deleted"
+      ],
+      "type": "object"
+    },
+    "required_scope": "tribal.embedding:execute",
+    "title": "Tribal: Prune Reindexes"
   }
 ]

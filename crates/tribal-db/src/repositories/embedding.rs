@@ -131,6 +131,14 @@ pub trait EmbeddingRepository {
         after: Option<KnowledgeItemId>,
         limit: i64,
     ) -> Result<Vec<KnowledgeItemId>, DbError>;
+
+    /// Deletes every embedding belonging to a superseded profile, the
+    /// destructive half of prune. Returns the number of rows deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn delete_superseded(&self, conn: &mut PgConnection) -> Result<u64, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,5 +342,19 @@ impl EmbeddingRepository for PgEmbeddingRepository {
             .iter()
             .map(|r| KnowledgeItemId::from(r.get::<uuid::Uuid, _>("id")))
             .collect())
+    }
+
+    async fn delete_superseded(&self, conn: &mut PgConnection) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "DELETE FROM embeddings e USING embedding_profiles p \
+             WHERE e.embedding_profile_id = p.id AND p.state = 'superseded'",
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "deleting embeddings of superseded profiles".to_owned(),
+            source: e,
+        })?;
+        Ok(result.rows_affected())
     }
 }
