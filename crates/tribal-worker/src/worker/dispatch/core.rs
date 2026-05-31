@@ -153,6 +153,16 @@ impl Worker {
         &self.provider_registry
     }
 
+    /// Returns the cache of embedding providers built for reindex profiles.
+    pub(crate) fn embedding_providers(&self) -> &EmbeddingProviderCache {
+        &self.embedding_providers
+    }
+
+    /// Returns the embedding-credential catalogue.
+    pub(crate) fn credentials(&self) -> &CredentialCatalogue {
+        &self.credentials
+    }
+
     /// Returns a reference to the telemetry metric instruments.
     pub(crate) fn metrics(&self) -> &dyn MetricsRecorder {
         &self.metrics
