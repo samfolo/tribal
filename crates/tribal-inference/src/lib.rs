@@ -5,6 +5,7 @@
 
 mod anthropic;
 mod capabilities;
+mod embedding_capabilities;
 mod error;
 mod http;
 mod ollama;
@@ -23,6 +24,7 @@ pub use anthropic::MESSAGES_PATH as ANTHROPIC_MESSAGES_PATH;
 pub use capabilities::{
     MaxOutputTokensParam, ModelCapabilities, SamplingControl, StructuredOutputMode, resolve,
 };
+pub use embedding_capabilities::{EmbeddingCapabilities, resolve_embedding};
 pub use error::InferenceError;
 #[cfg(feature = "test-helpers")]
 pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
