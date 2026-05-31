@@ -50,6 +50,7 @@ pub(crate) const DISPATCHED_TOOLS: &[&str] = &[
     "tribal_get_item",
     "tribal_feedback",
     "tribal_job_status",
+    "tribal_reindex",
     "tribal_reindex_cancel",
     "tribal_reindex_prune",
 ];
@@ -453,6 +454,7 @@ impl ServerHandler for TribalServerHandler {
             "tribal_get_item" => self.handle_get_item(params, context).await,
             "tribal_feedback" => self.handle_feedback(params, context).await,
             "tribal_job_status" => self.handle_job_status(params, context).await,
+            "tribal_reindex" => self.handle_reindex(params, context).await,
             "tribal_reindex_cancel" => self.handle_reindex_cancel(params, context).await,
             "tribal_reindex_prune" => self.handle_reindex_prune(params, context).await,
             _ => Err(method_not_found(&request.name)),

@@ -229,6 +229,18 @@ with current status.",
         required_scope: "tribal.jobs:read",
     },
     ToolEntry {
+        name: "tribal_reindex",
+        title: "Tribal: Reindex Embeddings",
+        description: "\
+Start a reindex to a new embedding geometry, naming the target provider, \
+model, and dimension on the command. Reads and writes continue against the \
+active profile while the new space fills; the swap is atomic. An unchanged \
+target is a no-op. Operator-only; the worker drives the run to completion.",
+        input_schema: include_str!("schemas/reindex/input.json"),
+        output_schema: include_str!("schemas/reindex/output.json"),
+        required_scope: "tribal.embedding:execute",
+    },
+    ToolEntry {
         name: "tribal_reindex_cancel",
         title: "Tribal: Cancel Reindex",
         description: "\

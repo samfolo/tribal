@@ -432,6 +432,7 @@ async fn bootstrap(
         .inference_parameters(inference_parameters)
         .active_prompt_versions(Arc::new(RwLock::new(active_prompt_versions)))
         .provider_registry(registry)
+        .credentials(config.credentials.clone())
         .embedding_provider(embedding_provider)
         .extraction_provider(extraction_provider)
         .triage_provider(triage_provider)
