@@ -11,5 +11,6 @@ pub(crate) mod backoff;
 mod dispatch;
 pub(crate) mod heartbeat;
 pub(crate) mod reindex;
+pub mod reindex_ops;
 
 pub use dispatch::Worker;
