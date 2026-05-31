@@ -1,12 +1,65 @@
 //! Mapping types for the reindex operator tools.
 
 use rmcp::model::{CallToolResult, Content};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::IntoCallToolResult;
 
+const SERIALISE_REINDEX_RESPONSE: &str = "invariant: reindex response serialises";
 const SERIALISE_CANCEL_RESPONSE: &str = "invariant: reindex cancel response serialises";
 const SERIALISE_PRUNE_RESPONSE: &str = "invariant: reindex prune response serialises";
+
+/// The MCP request for `tribal_reindex`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct McpReindexRequest {
+    /// The target embedding provider (for example `"ollama"` or `"openai"`).
+    pub(crate) provider: String,
+    /// The target embedding model.
+    pub(crate) model: String,
+    /// The target vector dimension; resolved from the model when omitted.
+    #[serde(default)]
+    pub(crate) dimensions: Option<u32>,
+    /// The target endpoint; the provider's default when omitted.
+    #[serde(default)]
+    pub(crate) base_url: Option<String>,
+}
+
+/// The MCP response for `tribal_reindex`.
+#[derive(Debug, Serialize)]
+pub(crate) struct McpReindexResponse {
+    /// The creation outcome: `created`, `unchanged`, `already_live`, or
+    /// `lock_contended`.
+    pub(crate) outcome: String,
+    /// The run id, present for `created` and `already_live`.
+    pub(crate) run_id: Option<String>,
+    /// The resolved target provider.
+    pub(crate) provider: String,
+    /// The resolved target model.
+    pub(crate) model: String,
+    /// The resolved target dimension.
+    pub(crate) dimensions: u32,
+    /// The resolved, normalised target endpoint.
+    pub(crate) base_url: String,
+}
+
+impl IntoCallToolResult for McpReindexResponse {
+    fn into_call_tool_result(self) -> CallToolResult {
+        let text = match &self.run_id {
+            Some(id) => format!(
+                "Reindex {}: run {id} ({} {}, {} dims)",
+                self.outcome, self.provider, self.model, self.dimensions,
+            ),
+            None => format!(
+                "Reindex {}: {} {}, {} dims",
+                self.outcome, self.provider, self.model, self.dimensions,
+            ),
+        };
+        let structured = serde_json::to_value(&self).expect(SERIALISE_REINDEX_RESPONSE);
+        let mut result = CallToolResult::success(vec![Content::text(text)]);
+        result.structured_content = Some(structured);
+        result
+    }
+}
 
 /// The MCP response for `tribal_reindex_cancel`.
 #[derive(Debug, Serialize)]

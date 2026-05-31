@@ -1305,6 +1305,86 @@
     "title": "Tribal: Check Ingest Job Status"
   },
   {
+    "description": "Start a reindex to a new embedding geometry, naming the target provider, model, and dimension on the command. Reads and writes continue against the active profile while the new space fills; the swap is atomic. An unchanged target is a no-op. Operator-only; the worker drives the run to completion.",
+    "input_schema": {
+      "additionalProperties": false,
+      "description": "Start a reindex to a new embedding geometry. The target is named on the command, never read from config. Reads and writes continue against the active profile while the new space fills; the swap is atomic. Operator-only.",
+      "properties": {
+        "base_url": {
+          "description": "The target endpoint. The provider's default when omitted.",
+          "type": "string"
+        },
+        "dimensions": {
+          "description": "The target vector dimension. Resolved from the model when omitted.",
+          "type": "integer"
+        },
+        "model": {
+          "description": "The target embedding model.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "The target embedding provider, for example 'ollama' or 'openai'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "type": "object"
+    },
+    "name": "tribal_reindex",
+    "output_schema": {
+      "description": "The outcome of a reindex request.",
+      "properties": {
+        "base_url": {
+          "description": "The resolved, normalised target endpoint.",
+          "type": "string"
+        },
+        "dimensions": {
+          "description": "The resolved target dimension.",
+          "type": "integer"
+        },
+        "model": {
+          "description": "The resolved target model.",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "created: a new run was queued. unchanged: the target already matches the active profile. already_live: a run is already in progress. lock_contended: another create holds the single-flight lock; retry.",
+          "enum": [
+            "created",
+            "unchanged",
+            "already_live",
+            "lock_contended"
+          ],
+          "type": "string"
+        },
+        "provider": {
+          "description": "The resolved target provider.",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "The run id, present for created and already_live.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "outcome",
+        "run_id",
+        "provider",
+        "model",
+        "dimensions",
+        "base_url"
+      ],
+      "type": "object"
+    },
+    "required_scope": "tribal.embedding:execute",
+    "title": "Tribal: Reindex Embeddings"
+  },
+  {
     "description": "Cancel the live reindex run, if any. The run is aborted and its building profile is failed at the next task boundary; the active profile, and every read and write against it, is untouched. Reindex is single-flight, so there is at most one live run. Operator-only.",
     "input_schema": {
       "additionalProperties": false,
