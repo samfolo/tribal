@@ -7,7 +7,7 @@ use sqlx::PgConnection;
 use tracing::{debug, error, warn};
 use tribal_common::sha256_hex;
 use tribal_db::{AuthTokenRepository, DbError, PrincipalRepository};
-use tribal_domain::{LOCAL_PRINCIPAL_KEY, full_access_scopes};
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, stdio_principal_scopes};
 
 use crate::{
     error::{
@@ -192,7 +192,7 @@ impl Authenticator {
             Some(p) => Ok(AuthenticatedPrincipal::new(
                 p.id(),
                 p.principal_key().to_owned(),
-                full_access_scopes(),
+                stdio_principal_scopes(),
             )),
             None => Err(AuthError::LocalPrincipalMissing {
                 principal_key: LOCAL_PRINCIPAL_KEY.to_owned(),
