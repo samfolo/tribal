@@ -1,14 +1,15 @@
 use tribal_db::{
-    JobRepository, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
-    PgTokenUsageRepository, PrincipalRepository, ProjectRepository, TokenUsageRepository,
+    JobRepository, NewReindexRun, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
+    PgReindexRunRepository, PgTokenUsageRepository, PrincipalRepository, ProjectRepository,
+    ReindexRunRepository, TokenUsageRepository,
 };
 use tribal_domain::{
     EmbeddingPurpose, GitRemote, JobId, PipelineStage, PrincipalId, ProjectId, TokenUsageStage,
 };
 use tribal_test_utils::{
     a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
-    a_new_token_usage, insert_prompt_version, shift_timestamp_by_id, test_context,
-    upsert_system_fingerprint,
+    a_new_token_usage, ensure_genesis_profile, insert_prompt_version, shift_timestamp_by_id,
+    test_context, upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -263,4 +264,49 @@ async fn test_find_by_job_id_returns_empty_for_unknown() {
         .expect("find");
 
     assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn test_insert_attributes_embedding_usage_to_a_reindex_run() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgTokenUsageRepository;
+
+    // A reindex run for the foreign key, over its genesis profile and principal.
+    let principal = PgPrincipalRepository
+        .insert(
+            &mut txn,
+            &a_new_principal()
+                .principal_key("user:token-usage-reindex".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert principal");
+    let profile = ensure_genesis_profile(&mut txn, "reindex-model", 768).await;
+    let run = PgReindexRunRepository
+        .insert(
+            &mut txn,
+            &NewReindexRun::builder()
+                .target_profile_id(profile.id())
+                .epoch(profile.epoch())
+                .initiated_by_principal_id(principal.id())
+                .build(),
+        )
+        .await
+        .expect("insert run");
+
+    let new = a_new_token_usage()
+        .reindex_run_id(Some(run.id()))
+        .stage(TokenUsageStage::Embedding {
+            purpose: EmbeddingPurpose::Candidate,
+        })
+        .build();
+
+    let tu = repo.insert(&mut txn, &new).await.expect("insert");
+
+    assert_eq!(tu.reindex_run_id(), Some(run.id()));
+    assert!(tu.job_id().is_none());
+    assert!(tu.task_id().is_none());
+    assert_eq!(tu.stage(), PipelineStage::Embedding);
+    assert_eq!(tu.purpose(), Some(EmbeddingPurpose::Candidate));
 }
