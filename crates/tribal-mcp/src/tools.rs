@@ -228,6 +228,18 @@ with current status.",
         output_schema: include_str!("schemas/job_status/output.json"),
         required_scope: "tribal.jobs:read",
     },
+    ToolEntry {
+        name: "tribal_reindex_cancel",
+        title: "Tribal: Cancel Reindex",
+        description: "\
+Cancel the live reindex run, if any. The run is aborted and its building \
+profile is failed at the next task boundary; the active profile, and every \
+read and write against it, is untouched. Reindex is single-flight, so there \
+is at most one live run. Operator-only.",
+        input_schema: include_str!("schemas/reindex_cancel/input.json"),
+        output_schema: include_str!("schemas/reindex_cancel/output.json"),
+        required_scope: "tribal.embedding:execute",
+    },
 ];
 
 // ---------------------------------------------------------------------------

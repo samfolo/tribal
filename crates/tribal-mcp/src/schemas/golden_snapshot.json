@@ -1303,5 +1303,38 @@
     },
     "required_scope": "tribal.jobs:read",
     "title": "Tribal: Check Ingest Job Status"
+  },
+  {
+    "description": "Cancel the live reindex run, if any. The run is aborted and its building profile is failed at the next task boundary; the active profile, and every read and write against it, is untouched. Reindex is single-flight, so there is at most one live run. Operator-only.",
+    "input_schema": {
+      "additionalProperties": false,
+      "description": "Cancel the live reindex run, if any. Takes no arguments; reindex is single-flight, so there is at most one live run.",
+      "properties": {},
+      "type": "object"
+    },
+    "name": "tribal_reindex_cancel",
+    "output_schema": {
+      "description": "The outcome of a reindex cancel request.",
+      "properties": {
+        "cancelled": {
+          "description": "Whether a live run was transitioned to aborted.",
+          "type": "boolean"
+        },
+        "run_id": {
+          "description": "The aborted run's id, present only when a run was cancelled.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cancelled",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "required_scope": "tribal.embedding:execute",
+    "title": "Tribal: Cancel Reindex"
   }
 ]
