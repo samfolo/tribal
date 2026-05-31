@@ -17,13 +17,14 @@ use sqlx::PgConnection;
 use tokio::sync::Semaphore;
 use tribal_config::{CredentialCatalogue, MissingApiKey};
 use tribal_db::{
-    AdvisoryLockRepository, DbError, EmbeddingProfileRepository, EmbeddingRepository,
-    KnowledgeItemRepository, NewEmbedding, NewEmbeddingProfile, NewReindexQuarantine,
-    NewReindexRun, NewReindexTask, NewTagEmbedding, PgAdvisoryLockRepository,
-    PgEmbeddingProfileRepository, PgEmbeddingRepository, PgKnowledgeItemRepository,
-    PgReindexQuarantineRepository, PgReindexRunRepository, PgReindexTaskRepository,
-    PgTagEmbeddingRepository, ReindexQuarantineRepository, ReindexRunRepository,
-    ReindexTaskRepository, TagEmbeddingRepository, advisory_locks,
+    AdvisoryLockRepository, DbError, EmbeddingIndexRepository, EmbeddingProfileRepository,
+    EmbeddingRepository, EmbeddingTable, KnowledgeItemRepository, NewEmbedding,
+    NewEmbeddingProfile, NewReindexQuarantine, NewReindexRun, NewReindexTask, NewTagEmbedding,
+    PgAdvisoryLockRepository, PgEmbeddingIndexRepository, PgEmbeddingProfileRepository,
+    PgEmbeddingRepository, PgKnowledgeItemRepository, PgReindexQuarantineRepository,
+    PgReindexRunRepository, PgReindexTaskRepository, PgTagEmbeddingRepository,
+    ReindexQuarantineRepository, ReindexRunRepository, ReindexTaskRepository,
+    TagEmbeddingRepository, advisory_locks,
 };
 use tribal_domain::{
     DistanceMetric, EmbeddingErrorClass, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose,
@@ -767,7 +768,31 @@ pub async fn drive_reindex_cycle(
         semaphore: &semaphore,
     };
     process_tasks(conn, &ctx, claimed_by).await?;
+    build_partial_indexes(conn, &building).await?;
     catch_up_and_cutover(conn, &ctx).await?;
+    Ok(())
+}
+
+/// Builds the building profile's partial HNSW indexes once the backlog is
+/// loaded (build-after-load is pgvector's fast path). Idempotent and crash-safe
+/// via each index's three-way catalogue check; rows added afterwards by the
+/// catch-up sweep are maintained incrementally by the built index. Runs outside
+/// a transaction, as `CREATE INDEX CONCURRENTLY` requires.
+async fn build_partial_indexes(
+    conn: &mut PgConnection,
+    building: &EmbeddingProfile,
+) -> Result<(), DbError> {
+    for table in [EmbeddingTable::Embeddings, EmbeddingTable::TagEmbeddings] {
+        PgEmbeddingIndexRepository
+            .ensure_partial_hnsw(
+                conn,
+                table,
+                building.epoch(),
+                building.dimensions(),
+                building.id(),
+            )
+            .await?;
+    }
     Ok(())
 }
 
