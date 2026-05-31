@@ -4,8 +4,12 @@
 //! returning, so the operator sees every problem at once rather than
 //! fixing them one at a time.
 
-use std::net::SocketAddr;
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    net::SocketAddr,
+};
 
+use tribal_domain::{ProviderKind, normalise_endpoint_url};
 use url::Url;
 
 use crate::{
@@ -13,7 +17,8 @@ use crate::{
     error::ConfigError,
     sections::{
         MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
-        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, oauth_surface_is_routable,
+        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, is_valid_connection_name,
+        oauth_surface_is_routable,
     },
 };
 
@@ -76,6 +81,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_inference(config, &mut diags);
     validate_provider_limits(config, &mut diags);
     validate_api_key_presence(config, &mut diags);
+    validate_credentials(config, &mut diags);
     validate_discovery(config, &mut diags);
     validate_exploration(config, &mut diags);
     validate_telemetry(config, &mut diags);
@@ -401,6 +407,38 @@ fn validate_embedding(config: &TribalConfig, diags: &mut Diagnostics) {
         diags.push(ValidationError::EmbeddingProviderUnsupported {
             provider: config.embedding.provider,
         });
+    }
+}
+
+fn validate_credentials(config: &TribalConfig, diags: &mut Diagnostics) {
+    // Connection name seen for each resolved endpoint, used to reject two
+    // entries that would resolve to the same `(provider_kind, base_url)`.
+    let mut seen: HashMap<(ProviderKind, String), &str> = HashMap::new();
+
+    for (name, entry) in config.credentials.iter() {
+        if !is_valid_connection_name(name) {
+            diags.push(ValidationError::InvalidCredentialName {
+                name: name.to_owned(),
+            });
+        }
+
+        match normalise_endpoint_url(&entry.base_url) {
+            Ok(normalised) => match seen.entry((entry.provider_kind, normalised)) {
+                Entry::Occupied(first) => {
+                    diags.push(ValidationError::DuplicateCredentialEndpoint {
+                        first: (*first.get()).to_owned(),
+                        second: name.to_owned(),
+                    });
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(name);
+                }
+            },
+            Err(_) => diags.push(ValidationError::UrlMalformed {
+                field: ConfigPath::child("credentials", name).extend("base_url"),
+                value: entry.base_url.clone(),
+            }),
+        }
     }
 }
 
@@ -1321,6 +1359,61 @@ mod tests {
             d,
             ValidationError::BelowMin { field, min: 1, .. }
                 if field.as_str() == "embedding.dimensions",
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_well_formed_catalogue() {
+        let mut config = valid_config();
+        config.credentials = serde_yaml::from_str(
+            "openai_default:\n  provider_kind: openai\n  base_url: https://api.openai.com/v1\n  api_key: sk-test\n",
+        )
+        .unwrap();
+        // An otherwise-valid config plus a well-formed catalogue still validates.
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_connection_name() {
+        let mut config = valid_config();
+        config.credentials = serde_yaml::from_str(
+            "open-ai:\n  provider_kind: openai\n  base_url: https://api.openai.com/v1\n",
+        )
+        .unwrap();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::InvalidCredentialName { name } if name == "open-ai",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_catalogue_endpoint() {
+        let mut config = valid_config();
+        // Two names normalise to the same (ollama, http://localhost:11434).
+        config.credentials = serde_yaml::from_str(
+            "a:\n  provider_kind: ollama\n  base_url: http://localhost:11434\n\
+             b:\n  provider_kind: ollama\n  base_url: http://localhost:11434/\n",
+        )
+        .unwrap();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::DuplicateCredentialEndpoint { .. },
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_unparseable_catalogue_base_url() {
+        let mut config = valid_config();
+        config.credentials =
+            serde_yaml::from_str("bad:\n  provider_kind: ollama\n  base_url: \"not a url\"\n")
+                .unwrap();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "credentials.bad.base_url",
         )));
     }
 

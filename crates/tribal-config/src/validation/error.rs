@@ -323,6 +323,13 @@ pub enum ValidationError {
     /// `embedding.provider` is a provider that does not support
     /// embedding.  Renders the provider name in both clauses for clarity.
     EmbeddingProviderUnsupported { provider: ProviderKind },
+    /// A credential connection name does not match the `[a-z][a-z0-9_]*`
+    /// grammar required by the environment-override path.
+    InvalidCredentialName { name: String },
+    /// Two credential connections resolve to the same
+    /// `(provider_kind, normalised base URL)` endpoint, so resolution would
+    /// be ambiguous.
+    DuplicateCredentialEndpoint { first: String, second: String },
     /// `telemetry.file_export` requires `telemetry.enabled = true`.
     TelemetryFileExportRequiresEnabled,
 }
@@ -441,6 +448,19 @@ impl fmt::Display for ValidationError {
                 f,
                 "embedding.provider cannot be {provider}: \
                  {provider} does not provide an embedding API",
+            ),
+
+            Self::InvalidCredentialName { name } => write!(
+                f,
+                "credential connection name {name:?} is invalid: names must \
+                 match [a-z][a-z0-9_]* (lowercase, no hyphens)",
+            ),
+
+            Self::DuplicateCredentialEndpoint { first, second } => write!(
+                f,
+                "credential connections {first:?} and {second:?} resolve to \
+                 the same endpoint: each (provider_kind, base_url) must be \
+                 unique",
             ),
 
             Self::TelemetryFileExportRequiresEnabled => {
@@ -916,6 +936,28 @@ mod tests {
             "embedding.provider cannot be anthropic: \
              anthropic does not provide an embedding API",
         );
+    }
+
+    #[test]
+    fn test_display_invalid_credential_name() {
+        let err = ValidationError::InvalidCredentialName {
+            name: "open-ai".to_owned(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("\"open-ai\""), "got: {display}");
+        assert!(display.contains("[a-z][a-z0-9_]*"), "got: {display}");
+    }
+
+    #[test]
+    fn test_display_duplicate_credential_endpoint() {
+        let err = ValidationError::DuplicateCredentialEndpoint {
+            first: "a".to_owned(),
+            second: "b".to_owned(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("\"a\""), "got: {display}");
+        assert!(display.contains("\"b\""), "got: {display}");
+        assert!(display.contains("same endpoint"), "got: {display}");
     }
 
     #[test]
