@@ -1,12 +1,14 @@
 //! Configuration section types.
 
 mod auth;
+mod credential_catalogue;
 mod credentials;
 mod database;
 mod discovery;
 mod embedding;
 mod exploration;
 mod inference;
+mod init;
 mod limits;
 mod logging;
 mod oauth;
@@ -18,6 +20,7 @@ mod transport_kind;
 mod worker;
 
 pub use auth::{AuthConfig, MAX_TTL_HOURS};
+pub use credential_catalogue::{CredentialCatalogue, CredentialEntry};
 pub use credentials::{
     Auth, CREDENTIALS_PERMISSIONS_PERMISSIVE_PREFIX, CREDENTIALS_PERMISSIONS_PERMISSIVE_SUFFIX,
     CREDENTIALS_WRITE_FAILED_PREFIX, CREDENTIALS_WRITE_FAILED_SUFFIX, Credentials,
@@ -40,6 +43,7 @@ pub use exploration::{
     DEFAULT_MAX_LIMIT as DEFAULT_EXPLORATION_MAX_LIMIT, ExplorationConfig,
 };
 pub use inference::{InferenceConfig, StageInferenceConfig};
+pub use init::{InitConfig, InitEmbeddingConfig};
 pub use limits::{LimitsConfig, ProviderLimitsConfig};
 pub use logging::{LogFormat, LogOutput, LoggingConfig};
 pub use oauth::{

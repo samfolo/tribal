@@ -90,6 +90,10 @@ pub fn redact_secrets(yaml: &str) -> String {
         redact_path(&mut value, field.path());
     }
 
+    // The credential catalogue is a map of arbitrary connection names, so its
+    // secret paths cannot be a static `SecretField` list; walk the map.
+    redact_credentials_catalogue(&mut value);
+
     serde_yaml::to_string(&value).unwrap_or_else(|_| yaml.to_owned())
 }
 
@@ -116,6 +120,29 @@ fn redact_path(root: &mut serde_yaml::Value, path: &str) {
         && !leaf.is_sequence()
     {
         *leaf = serde_yaml::Value::String(REDACTED.to_owned());
+    }
+}
+
+/// Redacts every `credentials.<name>.api_key` in the catalogue map.
+///
+/// The catalogue keys are arbitrary connection names, so unlike the static
+/// [`SecretField`] paths this walks the map and redacts each entry's key.
+fn redact_credentials_catalogue(root: &mut serde_yaml::Value) {
+    let Some(catalogue) = root
+        .get_mut("credentials")
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    else {
+        return;
+    };
+
+    for (_name, entry) in catalogue.iter_mut() {
+        if let Some(api_key) = entry.get_mut("api_key")
+            && !api_key.is_null()
+            && !api_key.is_mapping()
+            && !api_key.is_sequence()
+        {
+            *api_key = serde_yaml::Value::String(REDACTED.to_owned());
+        }
     }
 }
 
@@ -156,6 +183,26 @@ embedding:
         assert!(!redacted.contains("sk-secret-triage"), "got: {redacted}");
         assert!(!redacted.contains("sk-secret-relation"), "got: {redacted}");
         assert!(!redacted.contains("sk-secret-embedding"), "got: {redacted}");
+    }
+
+    #[test]
+    fn test_redacts_every_catalogue_entry_api_key() {
+        let yaml = "\
+credentials:
+  openai_default:
+    provider_kind: openai
+    base_url: https://api.openai.com/v1
+    api_key: sk-secret-one
+  ollama_staged:
+    provider_kind: ollama
+    base_url: http://localhost:11434
+    api_key: sk-secret-two
+";
+        let redacted = redact_secrets(yaml);
+        assert!(!redacted.contains("sk-secret-one"), "got: {redacted}");
+        assert!(!redacted.contains("sk-secret-two"), "got: {redacted}");
+        // The non-secret endpoint fields survive.
+        assert!(redacted.contains("api.openai.com"), "got: {redacted}");
     }
 
     #[test]
