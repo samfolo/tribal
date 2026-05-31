@@ -1,7 +1,8 @@
 use chrono::Utc;
 use tribal_db::NewRetrievalFeedback;
 use tribal_domain::{
-    FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedback, RetrievalFeedbackId,
+    EmbeddingProfileId, FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedback,
+    RetrievalFeedbackId,
 };
 
 define_factory! {
@@ -11,6 +12,7 @@ define_factory! {
         trace_id: String = "00000000000000000000000000000001".to_owned(),
         query_text: String = "test query".to_owned(),
         embedding_model: String = "nomic-embed-text:v1.5".to_owned(),
+        embedding_profile_id: EmbeddingProfileId = EmbeddingProfileId::new(),
         returned_item_ids: Vec<KnowledgeItemId> = Vec::new(),
         explored_anchor_ids: Vec<KnowledgeItemId> = Vec::new(),
         system_fingerprint_hash: String = "a".repeat(64),
@@ -33,6 +35,7 @@ define_factory! {
         trace_id: String = "00000000000000000000000000000001".to_owned(),
         query_text: String = "test query".to_owned(),
         embedding_model: String = "nomic-embed-text:v1.5".to_owned(),
+        embedding_profile_id: EmbeddingProfileId = EmbeddingProfileId::new(),
         returned_item_ids: Vec<KnowledgeItemId> = Vec::new(),
         explored_anchor_ids: Vec<KnowledgeItemId> = Vec::new(),
         system_fingerprint_hash: String = "a".repeat(64),

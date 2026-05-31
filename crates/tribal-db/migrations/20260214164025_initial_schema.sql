@@ -426,17 +426,18 @@ CREATE TABLE auth_tokens (
 --------------------------------------------------------------------------------
 
 CREATE TABLE retrieval_feedback (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trace_id            TEXT NOT NULL,
-    query_text          TEXT NOT NULL,
-    embedding_model     TEXT NOT NULL,
-    returned_item_ids   UUID[] NOT NULL,
-    explored_anchor_ids UUID[] NOT NULL,
-    policy_version      TEXT,
-    principal_id        UUID NOT NULL REFERENCES principals(id),
-    rating              TEXT NOT NULL CHECK (rating IN ('positive', 'negative')),
-    notes               TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trace_id             TEXT NOT NULL,
+    query_text           TEXT NOT NULL,
+    embedding_model      TEXT NOT NULL,
+    embedding_profile_id UUID NOT NULL REFERENCES embedding_profiles(id),
+    returned_item_ids    UUID[] NOT NULL,
+    explored_anchor_ids  UUID[] NOT NULL,
+    policy_version       TEXT,
+    principal_id         UUID NOT NULL REFERENCES principals(id),
+    rating               TEXT NOT NULL CHECK (rating IN ('positive', 'negative')),
+    notes                TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 --------------------------------------------------------------------------------

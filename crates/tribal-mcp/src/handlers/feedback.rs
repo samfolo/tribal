@@ -8,7 +8,7 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tracing::Instrument;
-use tribal_db::DbError;
+use tribal_db::{DbError, EmbeddingProfileRepository, PgEmbeddingProfileRepository};
 use tribal_domain::{
     FeedbackRating, InferenceParameters, KnowledgeItemId, McpErrorCode, PrincipalId, span_attrs,
 };
@@ -37,7 +37,6 @@ const INVALID_RATING: &str = "rating must be \"positive\" or \"negative\"";
 struct FeedbackParams {
     trace_id: String,
     query_text: String,
-    embedding_model: String,
     returned_item_ids: Vec<KnowledgeItemId>,
     explored_anchor_ids: Vec<KnowledgeItemId>,
     principal_id: PrincipalId,
@@ -182,11 +181,9 @@ impl TribalServerHandler {
             .into_call_tool_result());
         };
 
-        // -- Embedding model --------------------------------------------------
-
-        let embedding_model = self.state.embedding_provider.identity().model.clone();
-
         // -- Build params and execute -----------------------------------------
+        // The embedding lineage (model and profile id) is read from the active
+        // profile inside `execute_feedback`, the single live source.
 
         let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
@@ -200,7 +197,6 @@ impl TribalServerHandler {
         let feedback_params = FeedbackParams {
             trace_id: request.trace_id,
             query_text: request.query_text,
-            embedding_model,
             returned_item_ids,
             explored_anchor_ids,
             principal_id,
@@ -266,12 +262,26 @@ async fn execute_feedback(
     )
     .await?;
 
+    // -- Embedding lineage ----------------------------------------------------
+    // The model and profile id are read from the same active profile, the live
+    // identity the query was embedded against; provisioning completes a genesis
+    // profile before serving, so its absence is a consistency fault.
+
+    let active_profile = PgEmbeddingProfileRepository
+        .find_active(conn)
+        .await?
+        .ok_or(DbError::NotFound {
+            entity: "embedding_profile",
+            id: "active".to_owned(),
+        })?;
+
     // -- Feedback record ------------------------------------------------------
 
     let new_feedback = tribal_db::NewRetrievalFeedback::builder()
         .trace_id(params.trace_id.to_ascii_lowercase())
         .query_text(params.query_text)
-        .embedding_model(params.embedding_model)
+        .embedding_model(active_profile.model().to_owned())
+        .embedding_profile_id(active_profile.id())
         .returned_item_ids(params.returned_item_ids)
         .explored_anchor_ids(params.explored_anchor_ids)
         .system_fingerprint_hash(fingerprint_hash)
@@ -303,7 +313,7 @@ mod tests {
     };
     use tribal_test_utils::{
         MockPromptVersionRepository, MockRetrievalFeedbackRepository, a_prompt_version,
-        a_retrieval_feedback, test_context,
+        a_retrieval_feedback, ensure_genesis_profile, test_context,
     };
 
     use super::*;
@@ -335,6 +345,8 @@ mod tests {
     ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
         let ctx = test_context().await;
         let mut tx = ctx.begin_test().await.expect("begin");
+        // `execute_feedback` reads the active profile for the embedding lineage.
+        ensure_genesis_profile(&mut tx, "nomic-embed-text:v1.5", 768).await;
         execute_feedback(&mut tx, repos, params).await
     }
 
@@ -342,7 +354,6 @@ mod tests {
         FeedbackParams {
             trace_id: "00000000000000000000000000000001".into(),
             query_text: "auth patterns".into(),
-            embedding_model: "mock-model".into(),
             returned_item_ids: vec![KnowledgeItemId::new()],
             explored_anchor_ids: Vec::new(),
             principal_id: PrincipalId::new(),
@@ -596,6 +607,10 @@ mod tests {
 
         let ctx = test_context().await;
         let pool = ctx.create_pool().await.expect("pool");
+        // The feedback path reads the active profile for the embedding lineage.
+        let mut conn = pool.acquire().await.expect("conn");
+        ensure_genesis_profile(&mut conn, "nomic-embed-text:v1.5", 768).await;
+        drop(conn);
         let handler = TestHandler::builder()
             .pool(pool)
             .repositories(repos)
