@@ -6,7 +6,7 @@ use tribal_config::{
     InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides, TransportKind,
     default_config_file_path,
 };
-use tribal_domain::ProviderKind;
+use tribal_domain::{ProviderKind, Scope, is_mintable_scope};
 
 use super::{flags::PersistableFlag, styles::STYLES};
 
@@ -685,6 +685,22 @@ pub enum TokenCommand {
     },
 }
 
+/// Clap value parser for `--scope`: parses a raw scope, then rejects any
+/// the CLI is not permitted to mint (root or uncatalogued `execute`).
+///
+/// Returns the message string clap renders as the value-validation error.
+fn parse_mintable_scope(raw: &str) -> Result<Scope, String> {
+    let scope = Scope::parse(raw).map_err(|err| err.to_string())?;
+    if is_mintable_scope(&scope) {
+        Ok(scope)
+    } else {
+        Err(format!(
+            "{raw:?} cannot be minted here; execute access is limited to {}",
+            Scope::EMBEDDING_EXECUTE,
+        ))
+    }
+}
+
 /// Arguments for `token create`.
 #[derive(Debug, Args)]
 pub struct TokenCreateArgs {
@@ -697,6 +713,12 @@ pub struct TokenCreateArgs {
     /// token only.
     #[arg(long, help_heading = "Token")]
     pub ttl: Option<u64>,
+
+    /// Scope to grant, repeatable. Each must be mintable: any read or
+    /// write scope, plus `tribal.embedding:execute`. When omitted, the
+    /// token receives full read and write access.
+    #[arg(long = "scope", value_name = "SCOPE", value_parser = parse_mintable_scope, help_heading = "Token")]
+    pub scope: Vec<Scope>,
 
     /// Database connection options.
     #[command(flatten)]
@@ -1361,6 +1383,7 @@ mod tests {
         let args = TokenCreateArgs {
             principal: Some("user:sam".into()),
             ttl: Some(24),
+            scope: Vec::new(),
             database: DatabaseArgs {
                 database_url: Some("postgres://h/db".into()),
             },
@@ -1375,10 +1398,37 @@ mod tests {
         let args = TokenCreateArgs {
             principal: None,
             ttl: None,
+            scope: Vec::new(),
             database: DatabaseArgs { database_url: None },
         };
         let overrides = args.into_cli_overrides();
         assert!(overrides.database.is_none());
+    }
+
+    #[test]
+    fn test_token_create_parses_repeated_mintable_scopes() {
+        let cli = Cli::try_parse_from([
+            "tribal",
+            "token",
+            "create",
+            "--scope",
+            "tribal:read",
+            "--scope",
+            "tribal.embedding:execute",
+        ])
+        .unwrap();
+        let Some(Command::Token(TokenCommand::Create { args })) = cli.command else {
+            panic!("expected token create");
+        };
+        let scopes: Vec<&str> = args.scope.iter().map(Scope::as_str).collect();
+        assert_eq!(scopes, ["tribal:read", "tribal.embedding:execute"]);
+    }
+
+    #[test]
+    fn test_token_create_rejects_unmintable_execute_scope() {
+        let err = Cli::try_parse_from(["tribal", "token", "create", "--scope", "tribal:execute"])
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
     }
 
     // -- Token list ---------------------------------------------------------

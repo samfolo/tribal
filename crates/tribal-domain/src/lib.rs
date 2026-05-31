@@ -138,7 +138,10 @@ pub use relation::{
     RelationSuggestion,
 };
 pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
-pub use scope::{Scope, ScopeParseError, full_access_scopes, is_authorised};
+pub use scope::{
+    Scope, ScopeParseError, full_access_scopes, is_authorised, is_mintable_scope,
+    stdio_principal_scopes,
+};
 pub use source_type::SourceType;
 pub use standing::{Standing, StandingBuilder};
 pub use system_fingerprint::{SystemFingerprint, SystemFingerprintBuilder};
