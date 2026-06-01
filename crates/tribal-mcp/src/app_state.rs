@@ -15,6 +15,7 @@ use tribal_config::{CredentialCatalogue, ServerConfig, WorkerConfig};
 use tribal_domain::{GitRemote, InferenceParameters, ProjectId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
 use tribal_telemetry::MetricsRecorder;
+use tribal_worker::EmbeddingProviderCache;
 use typed_builder::TypedBuilder;
 
 use crate::{server_handler::ActivePromptVersions, session::SessionProject};
@@ -108,6 +109,12 @@ pub struct AppState {
     /// reindex command resolves a target endpoint's key through it.
     #[builder(default)]
     pub(crate) credentials: CredentialCatalogue,
+
+    /// Embedding providers built per profile, shared with the worker. The
+    /// discover read path resolves the live provider from the active profile
+    /// through it, so a query embeds in the geometry it is searched against.
+    #[builder(default)]
+    pub(crate) embedding_providers: EmbeddingProviderCache,
 
     /// Embedding provider instance.
     pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
