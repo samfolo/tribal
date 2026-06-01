@@ -848,19 +848,27 @@ impl Worker {
     }
 
     /// Fails a building profile orphaned by a crashed run, once at boot.
+    ///
+    /// Runs in a transaction so reconcile holds the transaction-scoped
+    /// single-flight lock across its read-then-fail.
     async fn reindex_boot_reconcile(&self) {
-        let mut conn = match self.pool.acquire().await {
-            Ok(c) => c,
+        let mut txn = match self.pool.begin().await {
+            Ok(t) => t,
             Err(e) => {
-                tracing::warn!(error = %e, "reindex boot reconcile pool acquire failed");
+                tracing::warn!(error = %e, "reindex boot reconcile begin failed");
                 return;
             }
         };
-        match reconcile_orphan_building_profile(&mut conn).await {
-            Ok(true) => {
-                tracing::warn!("failed an orphan building profile left by a crashed reindex");
+        match reconcile_orphan_building_profile(&mut txn).await {
+            Ok(reconciled) => {
+                if let Err(e) = txn.commit().await {
+                    tracing::warn!(error = %e, "reindex boot reconcile commit failed");
+                    return;
+                }
+                if reconciled {
+                    tracing::warn!("failed an orphan building profile left by a crashed reindex");
+                }
             }
-            Ok(false) => {}
             Err(e) => tracing::warn!(error = %e, "reindex boot reconcile failed"),
         }
     }

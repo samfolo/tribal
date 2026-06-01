@@ -323,10 +323,12 @@ pub enum ReindexCancelOutcome {
 
 /// Aborts the live reindex run within a single transaction.
 ///
-/// The run transition is a compare-and-set on its current state, so a cutover
-/// that completes the run between the read and the write wins the race: the
-/// guard fails, nothing is cancelled, and the flip stands. The building profile
-/// is only failed when the run transition succeeded.
+/// Fails the profile before aborting the run so this transaction takes the
+/// `embedding_profiles` and `reindex_runs` row locks in the same order the
+/// worker's cutover and `fail_run` use (profile, then run); the opposite order
+/// let a cancel and an in-flight cutover deadlock on the two rows. Both writes
+/// are compare-and-set on their from-state, so a cutover that completes the
+/// profile and run first wins the race: both guards no-op and the flip stands.
 ///
 /// # Errors
 ///
@@ -338,6 +340,13 @@ pub async fn reindex_cancel(
         return Ok(ReindexCancelOutcome::NoLiveRun);
     };
 
+    // Profile first, then run: the CAS on `state = 'building'` no-ops when a
+    // cutover has already flipped the profile to complete, so failing it
+    // unconditionally here is safe and keeps the lock order consistent.
+    PgEmbeddingProfileRepository
+        .mark_failed(conn, run.target_profile_id())
+        .await?;
+
     let aborted = PgReindexRunRepository
         .transition(
             conn,
@@ -347,14 +356,11 @@ pub async fn reindex_cancel(
             Some(CANCEL_REASON),
         )
         .await?;
-    if !aborted {
-        return Ok(ReindexCancelOutcome::NoLiveRun);
+    if aborted {
+        Ok(ReindexCancelOutcome::Cancelled(run.id()))
+    } else {
+        Ok(ReindexCancelOutcome::NoLiveRun)
     }
-
-    PgEmbeddingProfileRepository
-        .mark_failed(conn, run.target_profile_id())
-        .await?;
-    Ok(ReindexCancelOutcome::Cancelled(run.id()))
 }
 
 // ---------------------------------------------------------------------------
