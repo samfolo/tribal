@@ -13,7 +13,7 @@ use tribal_domain::{ApiKey, ProviderKind, normalise_endpoint_url};
 use crate::{
     CliOverrides, LoggingConfig, TelemetryConfig, TribalConfig,
     env::{ENV_NESTED_SEPARATOR, ENV_PREFIX, public_mcp_url_override, standard_env_var_name},
-    error::ConfigError,
+    error::{ConfigError, RemovedEmbeddingSource},
     sections::PromptSource,
 };
 
@@ -107,6 +107,14 @@ pub fn load_config(
         figment = figment.merge(Serialized::defaults(value));
     }
 
+    // Detect the removed `embedding.*` shape before extraction so the operator
+    // sees a legible migration message naming `init.embedding` and the
+    // `credentials` catalogue, rather than the bare figment "unknown field"
+    // parse error `deny_unknown_fields` would otherwise surface.
+    if let Some(detected) = detect_removed_embedding_shape(expanded_path.as_ref()) {
+        return Err(ConfigError::RemovedEmbeddingShape { detected });
+    }
+
     figment = figment
         .merge(Yaml::file(expanded_path.as_ref()))
         .merge(nested_env)
@@ -168,6 +176,36 @@ fn insert_nested(map: &mut serde_json::Map<String, JsonValue>, parts: &[&str], v
             }
         }
     }
+}
+
+/// Env-var prefix for the removed top-level `embedding` section. The live
+/// genesis seed is `TRIBAL_INIT__EMBEDDING__*`, so the trailing `__` here is
+/// load-bearing: it matches only the removed flat shape, never the nested one.
+const REMOVED_EMBEDDING_ENV_PREFIX: &str = "TRIBAL_EMBEDDING__";
+
+/// Top-level YAML key for the removed flat `embedding` section.
+const REMOVED_EMBEDDING_YAML_KEY: &str = "embedding";
+
+/// Detects the removed flat `embedding` config shape, if present.
+///
+/// Returns the first removed input found: a `TRIBAL_EMBEDDING__*` environment
+/// variable, or a top-level `embedding:` mapping in the YAML config file. An
+/// unreadable or malformed YAML file is left for the figment loader to report
+/// as a parse error; this check only fires on an unambiguous removed shape.
+fn detect_removed_embedding_shape(yaml_path: &str) -> Option<RemovedEmbeddingSource> {
+    if let Some(name) = std::env::vars_os().find_map(|(key, _)| {
+        let key = key.to_string_lossy();
+        key.starts_with(REMOVED_EMBEDDING_ENV_PREFIX)
+            .then(|| key.into_owned())
+    }) {
+        return Some(RemovedEmbeddingSource::EnvVar { name });
+    }
+
+    let contents = std::fs::read_to_string(yaml_path).ok()?;
+    let mapping: serde_yaml::Mapping = serde_yaml::from_str(&contents).ok()?;
+    mapping
+        .contains_key(serde_yaml::Value::from(REMOVED_EMBEDDING_YAML_KEY))
+        .then_some(RemovedEmbeddingSource::YamlSection)
 }
 
 /// Restores `used_temp_dir_fallback` flags lost during serde roundtripping.
@@ -483,6 +521,80 @@ prompts:
             let path = jail.directory().join("tribal.yaml");
             let result = load_config(path.to_str().unwrap(), None, None);
             assert!(result.is_ok(), "stray env vars should be silently ignored");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_removed_embedding_yaml_shape_names_the_new_sections() {
+        Jail::expect_with(|jail| {
+            jail.create_file("tribal.yaml", "embedding:\n  api_key: sk-old\n")?;
+
+            let path = jail.directory().join("tribal.yaml");
+            let result = load_config(path.to_str().unwrap(), None, None);
+            let message = match result {
+                Err(ConfigError::RemovedEmbeddingShape { detected }) => {
+                    assert_eq!(detected, RemovedEmbeddingSource::YamlSection);
+                    ConfigError::RemovedEmbeddingShape { detected }.to_string()
+                }
+                other => panic!("expected RemovedEmbeddingShape, got {other:?}"),
+            };
+            assert!(
+                message.contains("init.embedding"),
+                "message must name init.embedding: {message}",
+            );
+            assert!(
+                message.contains("credentials"),
+                "message must name the credentials catalogue: {message}",
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_removed_embedding_env_var_names_the_new_sections() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TRIBAL_EMBEDDING__API_KEY", "sk-old");
+
+            let path = jail.directory().join("tribal.yaml");
+            let result = load_config(path.to_str().unwrap(), None, None);
+            let message = match result {
+                Err(ConfigError::RemovedEmbeddingShape { detected }) => {
+                    assert_eq!(
+                        detected,
+                        RemovedEmbeddingSource::EnvVar {
+                            name: "TRIBAL_EMBEDDING__API_KEY".to_owned(),
+                        },
+                    );
+                    ConfigError::RemovedEmbeddingShape { detected }.to_string()
+                }
+                other => panic!("expected RemovedEmbeddingShape, got {other:?}"),
+            };
+            assert!(
+                message.contains("init.embedding"),
+                "message must name init.embedding: {message}",
+            );
+            assert!(
+                message.contains("credentials"),
+                "message must name the credentials catalogue: {message}",
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_live_init_embedding_env_var_is_not_flagged_as_removed_shape() {
+        Jail::expect_with(|jail| {
+            // The nested genesis seed is the live shape and must not trip the
+            // removed-shape detector.
+            jail.set_env("TRIBAL_INIT__EMBEDDING__PROVIDER", "openai");
+
+            let path = jail.directory().join("tribal.yaml");
+            let result = load_config(path.to_str().unwrap(), None, None);
+            assert!(
+                !matches!(result, Err(ConfigError::RemovedEmbeddingShape { .. })),
+                "the live TRIBAL_INIT__EMBEDDING__* shape must not be flagged: {result:?}",
+            );
             Ok(())
         });
     }

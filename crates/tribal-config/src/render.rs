@@ -157,12 +157,12 @@ impl Persisted for CliOverrides {
             init: init.as_ref().map(|o| o.persisted(&config.init)),
             inference: inference.as_ref().map(|o| o.persisted(&config.inference)),
             telemetry: telemetry.as_ref().map(|o| o.persisted(&config.telemetry)),
-            // When the genesis embedding identity is pinned, persist the
-            // matching catalogue connection skeleton so the runtime has an
-            // entry to resolve the credential into.
-            credentials: init
-                .as_ref()
-                .and_then(|_| persisted_genesis_credentials(config)),
+            // Persist the matching catalogue connection skeleton whenever the
+            // resolved genesis provider requires a key, sourced from the
+            // resolved config rather than the CLI-override slot so an env- or
+            // Docker-driven bootstrap (which leaves the slot empty) still
+            // writes the entry the runtime resolves the credential into.
+            credentials: persisted_genesis_credentials(config),
         }
     }
 }
@@ -417,6 +417,46 @@ mod tests {
         config.init.embedding.provider = ProviderKind::Ollama;
 
         let overrides = embedding_overrides(Some(ProviderKind::Ollama), None);
+
+        let parsed = parse_yaml(&render_persisted_config(&config, &overrides).unwrap());
+        assert!(
+            parsed.get("credentials").is_none(),
+            "a keyless provider needs no catalogue entry: {parsed:?}",
+        );
+    }
+
+    #[test]
+    fn test_render_persisted_config_emits_skeleton_from_env_driven_seed() {
+        // The env- or Docker-driven bootstrap shape: the resolved config
+        // carries a key-requiring genesis provider, but the `init` CLI-override
+        // slot is empty because no `--init.embedding.*` flag was passed.
+        let mut config = TribalConfig::minimum_valid("postgres://h/db");
+        config.init.embedding.provider = ProviderKind::OpenAi;
+        let overrides = CliOverrides::default();
+
+        let parsed = parse_yaml(&render_persisted_config(&config, &overrides).unwrap());
+        let entry = parsed
+            .get("credentials")
+            .and_then(|c| c.get("openai_default"))
+            .expect("openai_default connection skeleton from the resolved seed");
+        assert_eq!(
+            entry.get("provider_kind").and_then(|p| p.as_str()),
+            Some("openai"),
+        );
+        assert!(entry.get("base_url").and_then(|u| u.as_str()).is_some());
+        assert!(
+            entry.get("api_key").is_none(),
+            "the key is never persisted: {parsed:?}",
+        );
+    }
+
+    #[test]
+    fn test_render_persisted_config_omits_skeleton_for_env_driven_keyless_seed() {
+        // A keyless genesis provider emits no skeleton even when sourced from
+        // the resolved config with an empty CLI-override slot.
+        let mut config = TribalConfig::minimum_valid("postgres://h/db");
+        config.init.embedding.provider = ProviderKind::Ollama;
+        let overrides = CliOverrides::default();
 
         let parsed = parse_yaml(&render_persisted_config(&config, &overrides).unwrap());
         assert!(

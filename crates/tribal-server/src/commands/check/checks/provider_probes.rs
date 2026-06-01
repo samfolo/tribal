@@ -31,13 +31,23 @@ impl CheckOutcome {
         provider: ProviderKind,
         error: String,
     ) -> Self {
+        // The embedding credential resolves through the catalogue, not an
+        // `init.embedding.api_key` field, so its probe failure routes to a
+        // remediation naming `init.embedding.base_url` and the catalogue
+        // credential rather than the removed `embedding.*` paths.
+        let remediation = match target {
+            ProviderStage::Embedding => CheckRemediation::FixEmbeddingProviderConfig { provider },
+            ProviderStage::Extraction | ProviderStage::Triage | ProviderStage::Relation => {
+                CheckRemediation::FixProviderConfig { target, provider }
+            }
+        };
         Self::Fail {
             detail: CheckDetail::ProviderProbeFailed {
                 target,
                 provider,
                 error,
             },
-            remediation: CheckRemediation::FixProviderConfig { target, provider },
+            remediation,
         }
     }
 }
@@ -153,6 +163,28 @@ mod tests {
                     provider: ProviderKind::Anthropic,
                 },
             } if error == "rate limit exceeded",
+        ));
+    }
+
+    #[test]
+    fn test_embedding_probe_failure_routes_to_the_catalogue_remediation() {
+        let outcome = CheckOutcome::provider_probe_failed(
+            ProviderStage::Embedding,
+            ProviderKind::OpenAi,
+            "connection refused".into(),
+        );
+        assert!(matches!(
+            &outcome,
+            CheckOutcome::Fail {
+                detail: CheckDetail::ProviderProbeFailed {
+                    target: ProviderStage::Embedding,
+                    provider: ProviderKind::OpenAi,
+                    error,
+                },
+                remediation: CheckRemediation::FixEmbeddingProviderConfig {
+                    provider: ProviderKind::OpenAi,
+                },
+            } if error == "connection refused",
         ));
     }
 }

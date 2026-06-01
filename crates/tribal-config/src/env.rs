@@ -45,8 +45,8 @@ pub const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
 pub const ENV_ANTHROPIC_API_KEY: &str = "ANTHROPIC_API_KEY";
 
 /// Builds the `TRIBAL_*` env var name a figment loader would honour
-/// for the given dot-separated config path. `embedding.provider`
-/// becomes `TRIBAL_EMBEDDING__PROVIDER`.
+/// for the given dot-separated config path. `init.embedding.provider`
+/// becomes `TRIBAL_INIT__EMBEDDING__PROVIDER`.
 ///
 /// User-facing messages that suggest exporting a particular env var
 /// should derive the name through this helper so the literal stays in
@@ -111,8 +111,8 @@ mod tests {
     #[test]
     fn test_env_var_for_path_uppercases_and_substitutes_separator() {
         assert_eq!(
-            env_var_for_path("embedding.provider"),
-            "TRIBAL_EMBEDDING__PROVIDER",
+            env_var_for_path("init.embedding.provider"),
+            "TRIBAL_INIT__EMBEDDING__PROVIDER",
         );
         assert_eq!(
             env_var_for_path("inference.extraction.provider"),

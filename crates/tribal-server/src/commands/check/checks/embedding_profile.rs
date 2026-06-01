@@ -7,6 +7,7 @@
 //! profile is informational state, never a warning, because the seed is stale
 //! by design once a corpus exists.
 
+use tribal_config::MissingApiKeyKind;
 use tribal_db::{
     EmbeddingProfileRepository, PgEmbeddingProfileRepository, PgReindexQuarantineRepository,
     PgReindexRunRepository, ReindexQuarantineRepository, ReindexRunRepository,
@@ -44,10 +45,24 @@ impl CheckOutcome {
     pub(in crate::commands::check) fn embedding_credential_unresolved(
         provider: ProviderKind,
         base_url: String,
+        kind: MissingApiKeyKind,
     ) -> Self {
+        // The detail names the endpoint either way; the remediation differs by
+        // whether an entry exists to fill: add the connection, or set the key
+        // on the one that is already there.
+        let remediation = match kind {
+            MissingApiKeyKind::NoMatchingEntry => {
+                CheckRemediation::AddEmbeddingCredential { provider }
+            }
+            MissingApiKeyKind::EmptyKey => CheckRemediation::SetEmbeddingCredentialKey { provider },
+        };
         Self::Fail {
-            detail: CheckDetail::EmbeddingCredentialUnresolved { provider, base_url },
-            remediation: CheckRemediation::AddEmbeddingCredential { provider },
+            detail: CheckDetail::EmbeddingCredentialUnresolved {
+                provider,
+                base_url,
+                kind,
+            },
+            remediation,
         }
     }
 
@@ -101,7 +116,11 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
         .credentials
         .resolve_api_key(active.provider_kind(), active.normalised_base_url())
     {
-        return CheckOutcome::embedding_credential_unresolved(missing.provider, missing.base_url);
+        return CheckOutcome::embedding_credential_unresolved(
+            missing.provider,
+            missing.base_url,
+            missing.kind,
+        );
     }
 
     let live_run = match PgReindexRunRepository.find_live(&mut conn).await {
@@ -190,20 +209,60 @@ mod tests {
     }
 
     #[test]
-    fn test_unresolvable_credential_is_a_fail_naming_the_connection() {
+    fn test_no_matching_entry_is_a_fail_telling_the_operator_to_add_the_connection() {
         let outcome = CheckOutcome::embedding_credential_unresolved(
             ProviderKind::OpenAi,
             "https://api.openai.com:443".into(),
+            MissingApiKeyKind::NoMatchingEntry,
         );
-        let CheckOutcome::Fail {
-            detail,
-            remediation,
-        } = outcome
-        else {
-            panic!("expected a fail");
+        let (detail, remediation) = match outcome {
+            CheckOutcome::Fail {
+                detail,
+                remediation,
+            } => (detail, remediation),
+            other => panic!("expected a fail, got {other:?}"),
         };
         assert!(detail.render().contains("https://api.openai.com:443"));
+        assert!(detail.render().contains("no catalogue entry matches"));
+        assert!(matches!(
+            remediation,
+            CheckRemediation::AddEmbeddingCredential {
+                provider: ProviderKind::OpenAi,
+            },
+        ));
         assert!(remediation.render().contains("openai_default"));
+    }
+
+    #[test]
+    fn test_empty_key_is_a_fail_telling_the_operator_to_set_the_existing_key() {
+        let outcome = CheckOutcome::embedding_credential_unresolved(
+            ProviderKind::OpenAi,
+            "https://api.openai.com:443".into(),
+            MissingApiKeyKind::EmptyKey,
+        );
+        let (detail, remediation) = match outcome {
+            CheckOutcome::Fail {
+                detail,
+                remediation,
+            } => (detail, remediation),
+            other => panic!("expected a fail, got {other:?}"),
+        };
+        assert!(detail.render().contains("empty api_key"));
+        assert!(matches!(
+            remediation,
+            CheckRemediation::SetEmbeddingCredentialKey {
+                provider: ProviderKind::OpenAi,
+            },
+        ));
+        let rendered = remediation.render();
+        assert!(
+            rendered.contains("exists but has no key"),
+            "should point at the existing entry: {rendered}",
+        );
+        assert!(
+            rendered.contains("credentials.openai_default.api_key"),
+            "{rendered}"
+        );
     }
 
     #[test]

@@ -44,9 +44,11 @@ pub struct CliOverrides {
     /// Credential catalogue skeleton, synthesised only during persistence.
     ///
     /// No CLI flag populates this; [`crate::render_persisted_config`] fills it
-    /// with the genesis `<provider>_default` connection when a key-requiring
-    /// embedding provider is seeded, so the runtime has a catalogue entry to
-    /// resolve the credential into. The key itself is never persisted.
+    /// with the genesis `<provider>_default` connection whenever the resolved
+    /// genesis provider requires a key, independent of whether that seed came
+    /// from a CLI flag, the environment, or YAML, so the runtime has a
+    /// catalogue entry to resolve the credential into. The key itself is never
+    /// persisted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<BTreeMap<String, PersistedCredentialEntry>>,
 }
