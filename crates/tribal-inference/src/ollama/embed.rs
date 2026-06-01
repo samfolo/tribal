@@ -135,6 +135,11 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
         &self.identity
     }
 
+    async fn revision_token(&self) -> String {
+        super::tags::resolve_revision_token(&self.client, &self.base_url, &self.identity.model)
+            .await
+    }
+
     async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, InferenceError> {
         if request.input.is_empty() {
             return Err(InferenceError::EmbeddingFailed {
@@ -748,6 +753,25 @@ mod tests {
         assert!(
             matches!(err, InferenceError::ResponseParseFailed { .. }),
             "expected ResponseParseFailed, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_revision_token_resolves_the_models_digest() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(TAGS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [{ "name": "nomic-embed-text:v1.5", "digest": "sha256:cafe" }],
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server, 768);
+        assert_eq!(
+            provider.revision_token().await,
+            "sha256:cafe",
+            "the provider resolves its model's content-addressed digest from /api/tags",
         );
     }
 }

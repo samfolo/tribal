@@ -43,11 +43,18 @@ pub enum ScopeParseError {
 pub struct Scope(String);
 
 impl Scope {
-    /// Root read scope — grants read access to all resources.
+    /// Root read scope: grants read access to all resources.
     pub const FULL_ACCESS_READ: &str = "tribal:read";
 
-    /// Root write scope — grants write access to all resources.
+    /// Root write scope: grants write access to all resources.
     pub const FULL_ACCESS_WRITE: &str = "tribal:write";
+
+    /// The narrow execute scope gating reindex, cancel, and prune.
+    ///
+    /// Always granted as this specific scope, never root `tribal:execute`
+    /// (which dot-boundary satisfaction would let satisfy every future
+    /// `tribal.*:execute`).
+    pub const EMBEDDING_EXECUTE: &str = "tribal.embedding:execute";
 
     /// Parses and validates a raw scope string.
     ///
@@ -150,13 +157,52 @@ pub fn is_authorised(granted: &[Scope], required: &Scope) -> bool {
 /// # Panics
 ///
 /// Panics if the hard-coded root scope literals are invalid. The values
-/// are known-good constants — this is an invariant, not a runtime risk.
+/// are known-good constants (an invariant, not a runtime risk).
 #[must_use]
 pub fn full_access_scopes() -> Vec<Scope> {
     vec![
         Scope::parse(Scope::FULL_ACCESS_READ).expect(EXPECT_HARDCODED_SCOPE),
         Scope::parse(Scope::FULL_ACCESS_WRITE).expect(EXPECT_HARDCODED_SCOPE),
     ]
+}
+
+/// Returns the scopes granted to the stdio local principal.
+///
+/// [`full_access_scopes`] plus the narrow [`Scope::EMBEDDING_EXECUTE`], because
+/// the stdio principal already holds the binary and the database.
+/// `full_access_scopes` itself stays read+write, so bootstrap and
+/// `tribal token create` defaults are unchanged.
+///
+/// # Panics
+///
+/// Panics if the hard-coded scope literals are invalid (an invariant).
+#[must_use]
+pub fn stdio_principal_scopes() -> Vec<Scope> {
+    let mut scopes = full_access_scopes();
+    scopes.push(Scope::parse(Scope::EMBEDDING_EXECUTE).expect(EXPECT_HARDCODED_SCOPE));
+    scopes
+}
+
+/// The single source of execute scopes the CLI may mint. Today this is
+/// exactly the embedding-execute scope.
+///
+/// This is what stops `tribal token create` minting root `tribal:execute`
+/// (which the grammar now parses) or any uncatalogued `tribal.*:execute`;
+/// future operator scopes are added here deliberately.
+const MINTABLE_EXECUTE_SCOPES: &[&str] = &[Scope::EMBEDDING_EXECUTE];
+
+/// Returns `true` if `tribal token create` is permitted to mint `scope`.
+///
+/// Read and write scopes are always mintable; an execute scope is mintable only
+/// if it appears in [`MINTABLE_EXECUTE_SCOPES`], so root and uncatalogued
+/// execute scopes are rejected.
+#[must_use]
+pub fn is_mintable_scope(scope: &Scope) -> bool {
+    if scope.as_str().ends_with(":execute") {
+        MINTABLE_EXECUTE_SCOPES.contains(&scope.as_str())
+    } else {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +215,7 @@ pub fn full_access_scopes() -> Vec<Scope> {
 /// an operation. The resource path must start with the tribal prefix,
 /// contain only lowercase ASCII letters and dots, must not start or end
 /// with a dot, and must not contain consecutive dots. The operation must
-/// be `read` or `write`.
+/// be `read`, `write`, or `execute` (`admin` stays reserved).
 fn is_valid_scope(raw: &str) -> bool {
     let Some((resource, operation)) = raw.split_once(':') else {
         return false;
@@ -180,7 +226,7 @@ fn is_valid_scope(raw: &str) -> bool {
         return false;
     }
 
-    if !matches!(operation, "read" | "write") {
+    if !matches!(operation, "read" | "write" | "execute") {
         return false;
     }
 
@@ -392,5 +438,70 @@ mod tests {
         assert_eq!(scopes.len(), 2);
         assert_eq!(scopes[0].as_str(), Scope::FULL_ACCESS_READ);
         assert_eq!(scopes[1].as_str(), Scope::FULL_ACCESS_WRITE);
+    }
+
+    // -- execute operation -------------------------------------------------
+
+    #[test]
+    fn test_execute_operation_parses_and_admin_stays_rejected() {
+        assert!(Scope::parse("tribal.embedding:execute").is_ok());
+        assert!(Scope::parse("tribal:execute").is_ok());
+        assert!(Scope::parse("tribal:admin").is_err());
+    }
+
+    #[test]
+    fn test_embedding_execute_satisfies_itself_only() {
+        let granted = Scope::parse(Scope::EMBEDDING_EXECUTE).unwrap();
+        let required = Scope::parse("tribal.embedding:execute").unwrap();
+        assert!(granted.satisfies(&required));
+        // Read/write never satisfy an execute requirement (operation differs).
+        for full in full_access_scopes() {
+            assert!(
+                !full.satisfies(&required),
+                "{full} must not satisfy execute"
+            );
+        }
+    }
+
+    #[test]
+    fn test_stdio_principal_scopes_adds_execute() {
+        let scopes = stdio_principal_scopes();
+        assert_eq!(scopes.len(), 3);
+        assert!(scopes.iter().any(|s| s.as_str() == Scope::FULL_ACCESS_READ));
+        assert!(
+            scopes
+                .iter()
+                .any(|s| s.as_str() == Scope::FULL_ACCESS_WRITE)
+        );
+        assert!(
+            scopes
+                .iter()
+                .any(|s| s.as_str() == Scope::EMBEDDING_EXECUTE)
+        );
+    }
+
+    #[test]
+    fn test_mintable_scope_allows_read_write_and_catalogued_execute() {
+        for raw in [
+            "tribal:read",
+            "tribal:write",
+            "tribal.knowledge:read",
+            Scope::EMBEDDING_EXECUTE,
+        ] {
+            let scope = Scope::parse(raw).unwrap();
+            assert!(is_mintable_scope(&scope), "{raw} should be mintable");
+        }
+    }
+
+    #[test]
+    fn test_mintable_scope_rejects_root_and_uncatalogued_execute() {
+        for raw in [
+            "tribal:execute",
+            "tribal.jobs:execute",
+            "tribal.reindex:execute",
+        ] {
+            let scope = Scope::parse(raw).unwrap();
+            assert!(!is_mintable_scope(&scope), "{raw} must not be mintable");
+        }
     }
 }

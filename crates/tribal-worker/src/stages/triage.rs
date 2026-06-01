@@ -10,11 +10,11 @@ use tribal_db::{
     PgTriageResultRepository, SemanticSearchParams, SemanticSearchResult, TriageResultRepository,
 };
 use tribal_domain::{
-    Candidate, Confidence, EmbeddingPurpose, Job, JobId, KnowledgeItemId, SourceType,
-    StageParameters, TagRegistryEntry, Task, span_attrs,
+    Candidate, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId, KnowledgeItemId,
+    SourceType, StageParameters, TagRegistryEntry, Task, span_attrs,
 };
 use tribal_inference::{
-    EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
+    EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
 };
 
 use super::{StageCommit, StageOutput, TriageCommitDecision, record_prompt_version_ids};
@@ -46,12 +46,19 @@ pub(crate) struct TriageContext<'a> {
     pub tag_registry: Vec<TagRegistryEntry>,
 }
 
+/// The candidate's pre-embedded vector and the active profile it was produced
+/// against, carried together into the novel commit decision so the profile id
+/// reaches the commit's flip-check.
+struct CandidateEmbedding<'a> {
+    vector: Vec<f32>,
+    profile: &'a EmbeddingProfile,
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const EXPECT_TRIAGE_INFERENCE_KEY: &str = "triage inference key registered at startup";
-const EXPECT_TRIAGE_EMBEDDING_KEY: &str = "triage embedding key registered at startup";
 
 // ---------------------------------------------------------------------------
 // Triage accessors
@@ -83,18 +90,6 @@ impl Worker {
         self.provider_registry()
             .semaphore(self.triage_inference_key())
             .expect(EXPECT_TRIAGE_INFERENCE_KEY)
-    }
-
-    /// Returns the triage embedding semaphore from the provider registry.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the triage embedding key is not registered in the
-    /// provider registry.
-    pub(crate) fn triage_embedding_semaphore(&self) -> &Arc<Semaphore> {
-        self.provider_registry()
-            .semaphore(self.triage_embedding_key())
-            .expect(EXPECT_TRIAGE_EMBEDDING_KEY)
     }
 }
 
@@ -177,12 +172,24 @@ impl Worker {
                 ctx.job.triage_user_prompt_version_id(),
             );
 
+            // Resolve the active profile and a provider matching its geometry
+            // once, so the candidate embedding, the similar-item search, and tag
+            // resolution all target the same active space, and the producing
+            // profile id reaches the commit's flip-check.
+            let (active_profile, embedding_provider, embedding_semaphore) =
+                self.resolve_active_embedding(STAGE_TRIAGE).await?;
+
             let embedding_response = self
-                .embed_candidate(ctx.candidate.content(), deadline)
+                .embed_candidate(
+                    ctx.candidate.content(),
+                    &embedding_provider,
+                    &embedding_semaphore,
+                    deadline,
+                )
                 .await?;
 
             let search_results = self
-                .search_similar_items(&embedding_response.vector, ctx.job)
+                .search_similar_items(&embedding_response.vector, &active_profile, ctx.job)
                 .await?;
 
             let similar_items: Vec<SimilarItemContext> = search_results
@@ -240,8 +247,8 @@ impl Worker {
                         self.pool(),
                         ctx.candidate.suggested_tags(),
                         &ctx.tag_registry,
-                        self.embedding_provider(),
-                        self.triage_embedding_semaphore(),
+                        &embedding_provider,
+                        &embedding_semaphore,
                         &self.triage_embedding_key().to_string(),
                         self.config().tag_similarity_threshold,
                         deadline,
@@ -258,7 +265,10 @@ impl Worker {
                 &resolved_outcome,
                 &classification.similar_item_decisions,
                 &search_results,
-                embedding_vector,
+                CandidateEmbedding {
+                    vector: embedding_vector,
+                    profile: &active_profile,
+                },
                 resolved_tags,
             );
 
@@ -365,9 +375,10 @@ impl Worker {
     async fn embed_candidate(
         &self,
         content: &str,
+        provider: &Arc<dyn EmbeddingProvider>,
+        semaphore: &Arc<Semaphore>,
         deadline: tokio::time::Instant,
     ) -> Result<EmbeddingResponse, StageError> {
-        let semaphore = self.triage_embedding_semaphore();
         let provider_key = self.triage_embedding_key().to_string();
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let semaphore_start = Instant::now();
@@ -386,15 +397,14 @@ impl Worker {
         };
 
         let provider_start = Instant::now();
-        let response = self
-            .embedding_provider()
+        let response = provider
             .embed(request)
             .await
             .map_err(|e| StageError::Provider {
                 context: "triage embedding call".into(),
                 source: e,
             })?;
-        let identity = self.embedding_provider().identity();
+        let identity = provider.identity();
         self.metrics().record_provider_call(
             &identity.name,
             &identity.model,
@@ -409,6 +419,7 @@ impl Worker {
     async fn search_similar_items(
         &self,
         embedding: &[f32],
+        profile: &EmbeddingProfile,
         job: &Job,
     ) -> Result<Vec<SemanticSearchResult>, StageError> {
         let span = tracing::info_span!(
@@ -425,7 +436,8 @@ impl Worker {
 
             let params = SemanticSearchParams::builder()
                 .query_embedding(embedding.to_vec())
-                .embedding_model(self.embedding_provider().identity().model.clone())
+                .embedding_profile_id(profile.id())
+                .dimensions(profile.dimensions())
                 .project_id(Some(job.project_id()))
                 .limit(self.config().triage_search_limit)
                 .build();
@@ -542,7 +554,7 @@ impl Worker {
         outcome: &ResolvedTriageOutcome,
         similar_item_decisions: &[SimilarItemClassification],
         search_results: &[SemanticSearchResult],
-        embedding_vector: Vec<f32>,
+        embedding: CandidateEmbedding<'_>,
         resolved_tags: Option<ResolvedTags>,
     ) -> StageCommit {
         let similar_item_decisions = build_similar_item_decisions(
@@ -579,12 +591,11 @@ impl Worker {
                         .build(),
                 );
 
-                let embedding_identity = self.embedding_provider().identity();
-
                 TriageCommitDecision::Novel {
                     knowledge_item,
-                    embedding_vector,
-                    embedding_model: embedding_identity.model.clone(),
+                    embedding_vector: embedding.vector,
+                    embedding_model: embedding.profile.model().to_owned(),
+                    embedding_profile_id: embedding.profile.id(),
                     suggested_references: ctx.candidate.suggested_references().to_vec(),
                     new_tags: tag_data.new_tags,
                     resolved_tags: tag_data.resolved,

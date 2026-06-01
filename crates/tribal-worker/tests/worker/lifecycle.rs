@@ -25,7 +25,7 @@ async fn test_retry_path_increments_retry_count() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None);
+    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None).await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -95,7 +95,7 @@ async fn test_dead_letter_path_transitions_task_and_job() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), config, None, None);
+    let worker = build_test_worker(pool.clone(), token.clone(), config, None, None).await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -200,7 +200,7 @@ async fn test_concurrency_limit_respected() {
     }
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), config, None, None);
+    let worker = build_test_worker(pool, token.clone(), config, None, None).await;
 
     let worker_handle = {
         let w = Arc::clone(&worker);
@@ -265,7 +265,7 @@ async fn test_reclaim_sweep_requeues_stale_heartbeat_task() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None);
+    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None).await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -329,7 +329,7 @@ async fn test_reclaim_sweep_dead_letters_exhausted_task() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), config, None, None);
+    let worker = build_test_worker(pool.clone(), token.clone(), config, None, None).await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -402,7 +402,7 @@ async fn test_startup_reclaim_recovers_orphaned_task() {
 
     let config = test_config();
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), config, None, None);
+    let worker = build_test_worker(pool, token.clone(), config, None, None).await;
 
     // Call startup_reclaim directly — no worker loop needed.
     let reclaimed = worker.startup_reclaim().await.expect("startup reclaim");
@@ -495,7 +495,8 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
         config,
         Some(inference as Arc<dyn InferenceProvider>),
         None,
-    );
+    )
+    .await;
 
     let start = std::time::Instant::now();
 

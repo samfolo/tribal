@@ -55,6 +55,34 @@ pub fn sha256_hex(content: &str) -> String {
     format!("{digest:x}")
 }
 
+/// Computes an embedding profile's stable fingerprint over its declared
+/// identity tuple plus the revision token.
+///
+/// The result is a non-unique handle for logs and the CLI, deterministic for a
+/// given identity. It is a separate canonicalisation from the system
+/// fingerprint and is never compared against it. Provisioning and the reindex
+/// worker both derive a profile's `fingerprint_hash` through here so the value
+/// is single-sourced.
+#[must_use]
+pub fn embedding_profile_fingerprint(
+    provider_kind: &str,
+    normalised_base_url: &str,
+    model: &str,
+    dimensions: u32,
+    distance_metric: &str,
+    revision_token: &str,
+) -> String {
+    let canonical = format!(
+        "provider_kind={provider_kind}\n\
+         base_url={normalised_base_url}\n\
+         model={model}\n\
+         dimensions={dimensions}\n\
+         distance_metric={distance_metric}\n\
+         revision_token={revision_token}"
+    );
+    sha256_hex(&canonical)
+}
+
 // ---------------------------------------------------------------------------
 // Jitter
 // ---------------------------------------------------------------------------

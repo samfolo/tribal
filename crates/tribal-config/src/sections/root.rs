@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    auth::AuthConfig, database::DatabaseConfig, discovery::DiscoveryConfig,
-    embedding::EmbeddingConfig, exploration::ExplorationConfig, inference::InferenceConfig,
-    limits::LimitsConfig, logging::LoggingConfig, oauth::OAuthConfig, prompts::PromptsConfig,
-    server::ServerConfig, telemetry::TelemetryConfig, worker::WorkerConfig,
+    auth::AuthConfig, credential_catalogue::CredentialCatalogue, database::DatabaseConfig,
+    discovery::DiscoveryConfig, exploration::ExplorationConfig, inference::InferenceConfig,
+    init::InitConfig, limits::LimitsConfig, logging::LoggingConfig, oauth::OAuthConfig,
+    prompts::PromptsConfig, server::ServerConfig, telemetry::TelemetryConfig, worker::WorkerConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -56,9 +56,14 @@ pub struct TribalConfig {
     #[serde(default)]
     pub worker: WorkerConfig,
 
-    /// Embedding provider settings.
+    /// Fresh-system genesis seed values (applied only when first creating a
+    /// corpus).
     #[serde(default)]
-    pub embedding: EmbeddingConfig,
+    pub init: InitConfig,
+
+    /// Named embedding credential connections, resolved by endpoint.
+    #[serde(default)]
+    pub credentials: CredentialCatalogue,
 
     /// Per-stage inference settings.
     #[serde(default)]
@@ -126,7 +131,8 @@ impl Default for TribalConfig {
             auth: AuthConfig::default(),
             oauth: OAuthConfig::default(),
             worker: WorkerConfig::default(),
-            embedding: EmbeddingConfig::default(),
+            init: InitConfig::default(),
+            credentials: CredentialCatalogue::default(),
             inference: InferenceConfig::default(),
             limits: LimitsConfig::default(),
             prompts: PromptsConfig::default(),

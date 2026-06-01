@@ -3,7 +3,8 @@
 use tribal::TokenStrategy;
 use tribal_common::sha256_hex;
 use tribal_config::{
-    CliOverrides, ENV_OPENAI_API_KEY, EmbeddingCliOverrides, TelemetryCliOverrides, TransportKind,
+    CliOverrides, ENV_OPENAI_API_KEY, EmbeddingCliOverrides, InitCliOverrides,
+    TelemetryCliOverrides, TransportKind,
 };
 use tribal_db::{
     AuthTokenRepository, PgAuthTokenRepository, PgPrincipalRepository, PrincipalRepository,
@@ -226,75 +227,81 @@ async fn test_bootstrap_with_explicit_principal_provisions_both() {
 }
 
 // ---------------------------------------------------------------------------
-// Validation: OpenAI embedding provider without an API key
+// Genesis seed: OpenAI embedding provider without an API key
 // ---------------------------------------------------------------------------
 
-/// Selecting the OpenAI embedding provider with no API key must
-/// surface the canonical validation literal verbatim. Drives the
-/// full cascade so a regression in the figment overlay or the
-/// validate rule would surface here.
+/// Builds genesis-seed overrides pinning the OpenAI embedding provider.
+fn openai_embedding_overrides(model: Option<&str>) -> CliOverrides {
+    CliOverrides {
+        init: Some(InitCliOverrides {
+            embedding: Some(EmbeddingCliOverrides {
+                provider: Some(ProviderKind::OpenAi),
+                model: model.map(str::to_owned),
+            }),
+        }),
+        ..CliOverrides::default()
+    }
+}
+
+/// Seeding the OpenAI embedding provider with no API key now bootstraps
+/// successfully: the genesis identity is persisted alongside a keyless
+/// `openai_default` catalogue skeleton, and the credential is resolved
+/// fail-closed at boot, not at bootstrap.
 #[tokio::test]
-async fn test_bootstrap_validation_rejects_openai_without_key() {
+async fn test_bootstrap_openai_without_key_persists_a_keyless_skeleton() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
     let env = TestEnv::new();
     let _api_key_guard = EnvGuard::remove(ENV_OPENAI_API_KEY);
 
-    let overrides = CliOverrides {
-        embedding: Some(EmbeddingCliOverrides {
-            provider: Some(ProviderKind::OpenAi),
-            model: None,
-        }),
-        ..CliOverrides::default()
-    };
-
-    let err = run_bootstrap(
+    run_bootstrap(
         ctx,
         &env.config_path,
-        overrides,
+        openai_embedding_overrides(None),
         None,
         TransportKind::Stdio,
         true,
     )
     .await
-    .expect_err("openai without key must fail");
+    .expect("openai embedding bootstraps; the credential resolves at boot");
 
-    let display = err.to_string();
+    let written = tokio::fs::read_to_string(&env.config_path)
+        .await
+        .expect("read config");
     assert!(
-        display.contains("embedding.api_key is required when embedding.provider is openai"),
-        "missing canonical literal in: {display}",
+        written.contains("provider: openai"),
+        "genesis seed persisted: {written}",
+    );
+    assert!(
+        written.contains("openai_default"),
+        "catalogue skeleton persisted: {written}",
+    );
+    assert!(
+        !written.contains("api_key"),
+        "the key is never persisted: {written}",
     );
 }
 
-/// Same canonical literal, driven through standalone `tribal setup`
-/// directly so a regression that moved `validate(&config)` out of
-/// `setup::run_async` (and into bootstrap) would still surface here.
+/// The same through standalone `tribal setup`: with no embedding api-key
+/// validation gate left, a keyless OpenAI seed no longer fails the setup
+/// path.
 #[tokio::test]
-async fn test_setup_validation_rejects_openai_without_key() {
+async fn test_setup_openai_without_key_succeeds() {
     let _lock = serial_lock().await;
     let ctx = test_context().await;
     let _pool = fresh_db(ctx).await;
     let env = TestEnv::new();
     let _api_key_guard = EnvGuard::remove(ENV_OPENAI_API_KEY);
 
-    let overrides = CliOverrides {
-        embedding: Some(EmbeddingCliOverrides {
-            provider: Some(ProviderKind::OpenAi),
-            model: None,
-        }),
-        ..CliOverrides::default()
-    };
-
-    let err = run_setup(ctx, &env.config_path, overrides, None)
-        .await
-        .expect_err("openai without key must fail");
-
-    let display = err.to_string();
-    assert!(
-        display.contains("embedding.api_key is required when embedding.provider is openai"),
-        "missing canonical literal in: {display}",
-    );
+    run_setup(
+        ctx,
+        &env.config_path,
+        openai_embedding_overrides(None),
+        None,
+    )
+    .await
+    .expect("openai embedding sets up; the credential resolves at boot");
 }
 
 // ---------------------------------------------------------------------------
@@ -315,9 +322,11 @@ async fn test_bootstrap_persists_then_leaves_file_unchanged_on_second_run() {
     let _api_key_guard = EnvGuard::set(ENV_OPENAI_API_KEY, "test-key");
 
     let overrides = CliOverrides {
-        embedding: Some(EmbeddingCliOverrides {
-            provider: Some(ProviderKind::OpenAi),
-            model: Some("text-embedding-3-small".into()),
+        init: Some(InitCliOverrides {
+            embedding: Some(EmbeddingCliOverrides {
+                provider: Some(ProviderKind::OpenAi),
+                model: Some("text-embedding-3-small".into()),
+            }),
         }),
         telemetry: Some(TelemetryCliOverrides {
             otlp_endpoint: Some("http://localhost:4317".into()),

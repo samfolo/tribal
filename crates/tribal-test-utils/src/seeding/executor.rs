@@ -13,9 +13,10 @@ use indexmap::IndexMap;
 use sqlx::PgConnection;
 use tracing::{debug, warn};
 use tribal_db::{
-    EmbeddingRepository, ItemObservationRepository, KnowledgeItemRepository, NewEmbedding,
-    NewItemObservation, NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject,
-    NewPromptVersion, NewReference, NewTagEmbedding, PgEmbeddingRepository,
+    EmbeddingProfileRepository, EmbeddingRepository, ItemObservationRepository,
+    KnowledgeItemRepository, NewEmbedding, NewEmbeddingProfile, NewItemObservation,
+    NewKnowledgeItem, NewKnowledgeItemRelation, NewPrincipal, NewProject, NewPromptVersion,
+    NewReference, NewTagEmbedding, PgEmbeddingProfileRepository, PgEmbeddingRepository,
     PgItemObservationRepository, PgKnowledgeItemRepository, PgPrincipalRepository,
     PgProjectRepository, PgPromptVersionRepository, PgReferenceRepository, PgRelationRepository,
     PgTagEmbeddingRepository, PgTagRegistryRepository, PrincipalRepository, ProjectRepository,
@@ -23,8 +24,9 @@ use tribal_db::{
     TagRegistryRepository,
 };
 use tribal_domain::{
-    EmbeddingId, EpisodeId, GitRemote, ItemObservationId, KnowledgeItemId, PrincipalId, ProjectId,
-    PromptVersionId, ReferenceId, RelationBatchId, RelationId, RelationKind,
+    EmbeddingId, EmbeddingProfileId, EpisodeId, GitRemote, ItemObservationId, KnowledgeItemId,
+    PrincipalId, ProjectId, PromptVersionId, ProviderKind, ReferenceId, RelationBatchId,
+    RelationId, RelationKind,
 };
 
 use super::{
@@ -54,6 +56,9 @@ struct ExecutionState {
     embedding_model: Option<String>,
     embedding_dimensions: Option<usize>,
     embedding_group_assigner: Option<EmbeddingGroupAssigner>,
+    // The genesis profile created when the embedding model is set; every seeded
+    // embedding is keyed to it.
+    embedding_profile_id: Option<EmbeddingProfileId>,
 
     // Episode label → generated UUID
     episodes: HashMap<String, EpisodeId>,
@@ -98,6 +103,7 @@ impl ExecutionState {
             embedding_model: None,
             embedding_dimensions: None,
             embedding_group_assigner: None,
+            embedding_profile_id: None,
             episodes: HashMap::new(),
             base_epoch: Utc::now().trunc_subsecs(6) - Duration::hours(24),
             accumulated_offset: Duration::zero(),
@@ -167,7 +173,7 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
             }
 
             SeedCommand::SetEmbeddingModel { model, dimensions } => {
-                handle_set_embedding_model(i, model, *dimensions, &mut state);
+                handle_set_embedding_model(i, model, *dimensions, &mut state, conn).await;
                 i += 1;
             }
 
@@ -354,11 +360,12 @@ async fn handle_create_principal(
     state.principals.insert(label.to_owned(), principal.id());
 }
 
-fn handle_set_embedding_model(
+async fn handle_set_embedding_model(
     idx: usize,
     model: &str,
     dimensions: usize,
     state: &mut ExecutionState,
+    conn: &mut PgConnection,
 ) {
     assert!(
         dimensions != 0,
@@ -380,9 +387,41 @@ fn handle_set_embedding_model(
 
     debug!("seed[{idx}]: SetEmbeddingModel model={model:?} dimensions={dimensions}");
 
-    state.embedding_model = Some(model.to_owned());
+    // Reuse the active profile when one already exists; the harness may have
+    // seeded the genesis from init.embedding so its endpoint matches the live
+    // embedding identity. Otherwise create a default-endpoint genesis, mirroring
+    // first-boot provisioning. The seeded embeddings key against, and take their
+    // dimension from, whichever profile is active.
+    let profile = if let Some(existing) = PgEmbeddingProfileRepository
+        .find_active(&mut *conn)
+        .await
+        .expect("seed: find active profile")
+    {
+        existing
+    } else {
+        let new_profile = NewEmbeddingProfile::builder()
+            .provider_kind(ProviderKind::Ollama)
+            .normalised_base_url(ProviderKind::DEFAULT_OLLAMA_BASE_URL.to_owned())
+            .model(model.to_owned())
+            .dimensions(u32::try_from(dimensions).expect("dimensions fit in u32"))
+            .fingerprint_hash(format!("seed:{model}:{dimensions}"))
+            .build();
+        let inserted = PgEmbeddingProfileRepository
+            .insert(&mut *conn, &new_profile)
+            .await
+            .expect("seed: insert genesis profile");
+        PgEmbeddingProfileRepository
+            .mark_complete(&mut *conn, inserted.id())
+            .await
+            .expect("seed: complete genesis profile");
+        inserted
+    };
+
+    let dimensions = usize::try_from(profile.dimensions()).expect("dimensions fit in usize");
+    state.embedding_model = Some(profile.model().to_owned());
     state.embedding_dimensions = Some(dimensions);
     state.embedding_group_assigner = Some(EmbeddingGroupAssigner::new(dimensions));
+    state.embedding_profile_id = Some(profile.id());
 }
 
 fn handle_switch_principal(idx: usize, label: &str, state: &ExecutionState) {
@@ -520,6 +559,9 @@ async fn handle_define_tag_with_embedding(
         );
     });
     let dimensions = state.embedding_dimensions.unwrap();
+    let profile_id = state
+        .embedding_profile_id
+        .expect("seed: set_embedding_model() must run before tag embeddings");
     let assigner = state.embedding_group_assigner.as_mut().unwrap();
 
     debug!("seed[{idx}]: DefineTagWithEmbedding tag={tag:?} model={model:?}");
@@ -535,8 +577,8 @@ async fn handle_define_tag_with_embedding(
 
     let new_tag_embedding = NewTagEmbedding::builder()
         .tag(tag.to_owned())
+        .embedding_profile_id(profile_id)
         .model(model.clone())
-        .dimensions(u32::try_from(dimensions).expect("dimensions fit in u32"))
         .embedding(vector.clone())
         .build();
 
@@ -936,6 +978,9 @@ async fn process_scope_embeddings(
         );
     });
     let dimensions = state.embedding_dimensions.unwrap();
+    let profile_id = state
+        .embedding_profile_id
+        .expect("seed: set_embedding_model() must run before item embeddings");
     let assigner = state.embedding_group_assigner.as_mut().unwrap();
 
     for item in pending {
@@ -956,8 +1001,8 @@ async fn process_scope_embeddings(
 
         let new_embedding = NewEmbedding::builder()
             .knowledge_item_id(ki_id)
+            .embedding_profile_id(profile_id)
             .model(model.clone())
-            .dimensions(u32::try_from(dimensions).expect("dimensions fit in u32"))
             .embedding(vector)
             .build();
 

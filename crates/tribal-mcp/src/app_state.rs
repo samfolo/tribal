@@ -11,10 +11,11 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
-use tribal_config::{ServerConfig, WorkerConfig};
+use tribal_config::{CredentialCatalogue, ServerConfig, WorkerConfig};
 use tribal_domain::{GitRemote, InferenceParameters, ProjectId};
 use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
 use tribal_telemetry::MetricsRecorder;
+use tribal_worker::EmbeddingProviderCache;
 use typed_builder::TypedBuilder;
 
 use crate::{server_handler::ActivePromptVersions, session::SessionProject};
@@ -103,6 +104,17 @@ pub struct AppState {
     // -- Providers -----------------------------------------------------------
     /// Provider registry (semaphores and HTTP clients).
     pub(crate) provider_registry: Arc<ProviderRegistry>,
+
+    /// Embedding credential catalogue, keyed by `(provider_kind, base_url)`. The
+    /// reindex command resolves a target endpoint's key through it.
+    #[builder(default)]
+    pub(crate) credentials: CredentialCatalogue,
+
+    /// Embedding providers built per profile, shared with the worker. The
+    /// discover read path resolves the live provider from the active profile
+    /// through it, so a query embeds in the geometry it is searched against.
+    #[builder(default)]
+    pub(crate) embedding_providers: EmbeddingProviderCache,
 
     /// Embedding provider instance.
     pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,

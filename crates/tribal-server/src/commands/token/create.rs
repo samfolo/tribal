@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use tribal_auth::issue_token;
 use tribal_config::DatabaseConfig;
 use tribal_db::PgAuthTokenRepository;
-use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, full_access_scopes};
+use tribal_domain::{BearerToken, LOCAL_PRINCIPAL_KEY, Scope, full_access_scopes};
 
 use super::output;
 use crate::{
@@ -39,6 +39,7 @@ const POOL_NAME: &str = "token-create";
 pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), AppError> {
     let principal = args.principal.take();
     let ttl = args.ttl;
+    let scopes = resolve_token_scopes(std::mem::take(&mut args.scope));
     let cli_overrides = args.into_cli_overrides();
     let config = prepare_config(config_path, cli_overrides, &DATABASE_COMMAND_DEFAULTS)?;
 
@@ -60,12 +61,24 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
     rt.block_on(run_async(
         &config.database,
         &principal_key,
+        scopes,
         &audience,
         expires_at,
         &mut stdout,
         &mut stderr,
     ))?;
     Ok(())
+}
+
+/// Resolves the scopes to grant: the explicitly-requested set, or full
+/// read and write access when none were given. Clap has already rejected
+/// any scope the CLI may not mint, so the requested set is used verbatim.
+fn resolve_token_scopes(requested: Vec<Scope>) -> Vec<Scope> {
+    if requested.is_empty() {
+        full_access_scopes()
+    } else {
+        requested
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +96,7 @@ pub(crate) fn run(config_path: &str, mut args: TokenCreateArgs) -> Result<(), Ap
 pub async fn run_async(
     db_config: &DatabaseConfig,
     principal_key: &str,
+    scopes: Vec<Scope>,
     audience: &str,
     expires_at: DateTime<Utc>,
     out_stdout: &mut dyn Write,
@@ -109,7 +123,7 @@ pub async fn run_async(
         &mut conn,
         &PgAuthTokenRepository,
         principal.id(),
-        full_access_scopes(),
+        scopes,
         audience.to_owned(),
         expires_at,
     )

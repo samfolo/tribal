@@ -1,0 +1,6 @@
+{
+  "type": "object",
+  "description": "Cancel the live reindex run, if any. Takes no arguments; reindex is single-flight, so there is at most one live run.",
+  "properties": {},
+  "additionalProperties": false
+}

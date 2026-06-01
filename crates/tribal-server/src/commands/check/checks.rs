@@ -10,6 +10,7 @@ mod binary_uniqueness;
 mod config_parse;
 mod config_validate;
 mod database_reachable;
+mod embedding_profile;
 mod migrations_current;
 mod project_resolution;
 mod provider_probes;

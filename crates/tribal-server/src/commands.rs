@@ -13,6 +13,7 @@ pub(crate) mod common;
 pub(crate) mod config;
 mod mcp_config;
 pub(crate) mod project;
+pub(crate) mod reindex;
 mod serve;
 pub(crate) mod setup;
 pub(crate) mod token;

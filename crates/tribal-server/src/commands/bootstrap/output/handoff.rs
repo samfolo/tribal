@@ -183,7 +183,7 @@ mod tests {
 
     use tribal_config::{
         Auth, CliOverrides, DEFAULT_BIND_ADDRESS, EmbeddingCliOverrides, InferenceCliOverrides,
-        InferenceStageCliOverrides, TelemetryCliOverrides,
+        InferenceStageCliOverrides, InitCliOverrides, TelemetryCliOverrides,
     };
     use tribal_domain::{Project, ProviderKind};
     use tribal_test_utils::{
@@ -226,9 +226,11 @@ mod tests {
     /// snapshots representative without ballooning to all nine flags.
     fn fixture_overrides() -> CliOverrides {
         CliOverrides {
-            embedding: Some(EmbeddingCliOverrides {
-                provider: Some(ProviderKind::OpenAi),
-                model: Some("text-embedding-3-small".into()),
+            init: Some(InitCliOverrides {
+                embedding: Some(EmbeddingCliOverrides {
+                    provider: Some(ProviderKind::OpenAi),
+                    model: Some("text-embedding-3-small".into()),
+                }),
             }),
             inference: Some(InferenceCliOverrides {
                 extraction: Some(InferenceStageCliOverrides {

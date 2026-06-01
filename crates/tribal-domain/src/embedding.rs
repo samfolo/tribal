@@ -1,19 +1,20 @@
 //! Embedding entity — vector representations of knowledge items.
 //!
-//! Multiple embeddings per item are allowed (different models). The
-//! system config has an `active_embedding_model`; all queries filter
-//! by the active model to enable zero-downtime migration.
+//! Each row belongs to exactly one embedding profile and is written once
+//! per `(knowledge_item, profile)`. The `model` is denormalised lineage;
+//! the profile is the identity key. Reads filter by the active profile so a
+//! model migration is a zero-downtime reindex.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{EmbeddingId, KnowledgeItemId};
+use crate::{EmbeddingId, EmbeddingProfileId, KnowledgeItemId};
 
 /// A vector embedding of a knowledge item's content.
 ///
-/// Produced by the embedding model during triage. Multiple embeddings
-/// per item are supported for model migration.
+/// Produced by the embedding model during triage and keyed by the profile
+/// that produced it. `dimensions` is derived from the stored vector on read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
 #[allow(clippy::struct_field_names)]
 pub struct Embedding {
@@ -21,7 +22,10 @@ pub struct Embedding {
     id: EmbeddingId,
     /// The knowledge item this embedding represents.
     knowledge_item_id: KnowledgeItemId,
-    /// The embedding model name (e.g. `"nomic-embed-text:v1.5"`).
+    /// The embedding profile that produced this vector.
+    embedding_profile_id: EmbeddingProfileId,
+    /// The embedding model name (denormalised lineage, e.g.
+    /// `"nomic-embed-text:v1.5"`).
     model: String,
     /// The number of dimensions in the embedding vector.
     dimensions: u32,
@@ -40,6 +44,11 @@ impl Embedding {
     /// Returns the knowledge item this embedding represents.
     pub fn knowledge_item_id(&self) -> KnowledgeItemId {
         self.knowledge_item_id
+    }
+
+    /// Returns the embedding profile that produced this vector.
+    pub fn embedding_profile_id(&self) -> EmbeddingProfileId {
+        self.embedding_profile_id
     }
 
     /// Returns the embedding model name.

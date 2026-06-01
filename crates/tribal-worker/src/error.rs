@@ -152,10 +152,7 @@ mod tests {
             (
                 StageError::Provider {
                     context: "extraction".into(),
-                    source: tribal_inference::InferenceError::ProviderUnavailable {
-                        provider: "test".into(),
-                        reason: "down".into(),
-                    },
+                    source: tribal_inference::InferenceError::provider_unavailable("test", "down"),
                 },
                 TaskErrorKind::ProviderError,
             ),

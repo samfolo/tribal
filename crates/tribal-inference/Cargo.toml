@@ -19,6 +19,7 @@ tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
 
+tribal-common.workspace = true
 tribal-domain.workspace = true
 
 [dev-dependencies]

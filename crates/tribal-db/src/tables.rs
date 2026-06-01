@@ -12,6 +12,7 @@
 /// catch omissions.
 pub const APPLICATION_TABLES: &[&str] = &[
     "auth_tokens",
+    "embedding_profiles",
     "embeddings",
     "extraction_results",
     "item_external_references",
@@ -24,6 +25,9 @@ pub const APPLICATION_TABLES: &[&str] = &[
     "principals",
     "projects",
     "prompt_versions",
+    "reindex_quarantine",
+    "reindex_runs",
+    "reindex_tasks",
     "retrieval_feedback",
     "system_fingerprints",
     "tag_embeddings",

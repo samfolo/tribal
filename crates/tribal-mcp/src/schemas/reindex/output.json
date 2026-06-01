@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "description": "The outcome of a reindex request.",
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": ["plan", "created", "unchanged", "already_live", "lock_contended"],
+      "description": "plan: a dry run; no run was created. created: a new run was queued. unchanged: the target already matches the active profile. already_live: a run is already in progress. lock_contended: another create holds the single-flight lock; retry."
+    },
+    "run_id": {
+      "type": ["string", "null"],
+      "description": "The run id, present for created and already_live."
+    },
+    "provider": { "type": "string", "description": "The resolved target provider." },
+    "model": { "type": "string", "description": "The resolved target model." },
+    "dimensions": { "type": "integer", "description": "The resolved target dimension." },
+    "base_url": { "type": "string", "description": "The resolved, normalised target endpoint." },
+    "estimated_items": { "type": "integer", "description": "The number of items the new geometry must embed." },
+    "estimated_tags": { "type": "integer", "description": "The number of tags the new geometry must embed." }
+  },
+  "required": ["outcome", "run_id", "provider", "model", "dimensions", "base_url", "estimated_items", "estimated_tags"]
+}

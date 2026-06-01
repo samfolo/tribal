@@ -7,27 +7,24 @@
 
 use sqlx::PgConnection;
 use tribal_db::{
-    ExtractionResultRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,
-    NewPromptVersion, NewSystemFingerprint, PgExtractionResultRepository, PgJobRepository,
-    PgKnowledgeItemRepository, PgPromptVersionRepository, PgSystemFingerprintRepository,
-    PgTaskRepository, PgTriageResultRepository, PromptVersionRepository,
-    SystemFingerprintRepository, TaskRepository, TriageResultRepository,
+    EmbeddingProfileRepository, EmbeddingRepository, ExtractionResultRepository, JobRepository,
+    JobStatusTransition, KnowledgeItemRepository, NewEmbeddingProfile, NewPromptVersion,
+    NewSystemFingerprint, PgEmbeddingProfileRepository, PgEmbeddingRepository,
+    PgExtractionResultRepository, PgJobRepository, PgKnowledgeItemRepository,
+    PgPromptVersionRepository, PgSystemFingerprintRepository, PgTaskRepository,
+    PgTriageResultRepository, PromptVersionRepository, SystemFingerprintRepository, TaskRepository,
+    TriageResultRepository,
 };
 use tribal_domain::{
-    Candidate, JobId, JobStatus, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
-    RelationBatchId, RelationHint, RelationKind, TaskId, TaskStatus, TaskType, TriageOutcome,
+    Candidate, EmbeddingProfile, EmbeddingProfileId, JobId, JobStatus, KnowledgeItemId,
+    PrincipalId, ProjectId, PromptVersionId, ProviderKind, RelationBatchId, RelationHint,
+    RelationKind, TaskId, TaskStatus, TaskType, TriageOutcome,
 };
 
 use crate::{
     a_new_extraction_result, a_new_job, a_new_knowledge_item, a_new_system_fingerprint, a_new_task,
     a_new_triage_result_created, candidates_json, relation_hints_json,
 };
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const EMBEDDING_DIMENSIONS_EXCEED_I32: &str = "embedding dimensions exceed i32";
 
 // ---------------------------------------------------------------------------
 // insert_prompt_version
@@ -82,10 +79,149 @@ pub async fn upsert_system_fingerprint(
 // insert_embedding
 // ---------------------------------------------------------------------------
 
-/// Inserts a test embedding for a knowledge item.
+/// Ensures a `complete` genesis embedding profile exists and returns it.
 ///
-/// No production repository exposes direct embedding insertion — this
-/// uses raw SQL.
+/// Reuses the active profile when one is present, otherwise creates a profile
+/// from the given model and dimension and completes it, mirroring first-boot
+/// provisioning so embedding inserts have a profile to key against.
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn ensure_genesis_profile(
+    conn: &mut PgConnection,
+    model: &str,
+    dimensions: u32,
+) -> EmbeddingProfile {
+    ensure_genesis_profile_with_endpoint(
+        conn,
+        ProviderKind::Ollama,
+        model,
+        dimensions,
+        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+    )
+    .await
+}
+
+/// Ensures an active genesis profile with a specific provider and endpoint.
+///
+/// Like [`ensure_genesis_profile`] but parameterised over the provider kind and
+/// already-normalised base URL, for harnesses whose live embedding identity is
+/// not the Ollama default (so the seeded genesis matches what the server's
+/// provider builder will construct from it).
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn ensure_genesis_profile_with_endpoint(
+    conn: &mut PgConnection,
+    provider_kind: ProviderKind,
+    model: &str,
+    dimensions: u32,
+    normalised_base_url: &str,
+) -> EmbeddingProfile {
+    if let Some(profile) = PgEmbeddingProfileRepository
+        .find_active(&mut *conn)
+        .await
+        .expect("setup: find active profile")
+    {
+        return profile;
+    }
+
+    let new_profile = NewEmbeddingProfile::builder()
+        .provider_kind(provider_kind)
+        .normalised_base_url(normalised_base_url.to_owned())
+        .model(model.to_owned())
+        .dimensions(dimensions)
+        .fingerprint_hash(format!("setup:{model}:{dimensions}"))
+        .build();
+    let profile = PgEmbeddingProfileRepository
+        .insert(&mut *conn, &new_profile)
+        .await
+        .expect("setup: insert genesis profile");
+    PgEmbeddingProfileRepository
+        .mark_complete(&mut *conn, profile.id())
+        .await
+        .expect("setup: complete genesis profile");
+    PgEmbeddingProfileRepository
+        .find_active(&mut *conn)
+        .await
+        .expect("setup: re-read active profile")
+        .expect("setup: active profile present after completion")
+}
+
+/// Inserts a fresh `complete` embedding profile and returns its id.
+///
+/// Unlike [`ensure_genesis_profile`] this always creates a new profile, for
+/// tests that need two distinct profiles to exercise profile isolation.
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn create_complete_profile(
+    conn: &mut PgConnection,
+    model: &str,
+    dimensions: u32,
+) -> EmbeddingProfileId {
+    let new_profile = NewEmbeddingProfile::builder()
+        .provider_kind(ProviderKind::Ollama)
+        .normalised_base_url(ProviderKind::DEFAULT_OLLAMA_BASE_URL.to_owned())
+        .model(model.to_owned())
+        .dimensions(dimensions)
+        .fingerprint_hash(format!("setup:{model}:{dimensions}"))
+        .build();
+    let profile = PgEmbeddingProfileRepository
+        .insert(&mut *conn, &new_profile)
+        .await
+        .expect("setup: insert complete profile");
+    PgEmbeddingProfileRepository
+        .mark_complete(&mut *conn, profile.id())
+        .await
+        .expect("setup: complete profile");
+    profile.id()
+}
+
+/// Finds a knowledge item's embedding under the active profile.
+///
+/// A drop-in for tests that previously looked up by model: it resolves the
+/// active profile and queries by its id, preserving the `Result<Option<_>>`
+/// shape of [`EmbeddingRepository::find_by_knowledge_item_id`].
+///
+/// # Errors
+///
+/// Returns the underlying [`tribal_db::DbError`] when the query fails.
+///
+/// # Panics
+///
+/// Panics if there is no active profile.
+pub async fn find_active_embedding(
+    conn: &mut PgConnection,
+    knowledge_item_id: KnowledgeItemId,
+) -> Result<Option<tribal_domain::Embedding>, tribal_db::DbError> {
+    let profile_id = active_embedding_profile(conn).await.id();
+    PgEmbeddingRepository
+        .find_by_knowledge_item_id(conn, knowledge_item_id, profile_id)
+        .await
+}
+
+/// Returns the active embedding profile, panicking if none exists.
+///
+/// # Panics
+///
+/// Panics if there is no active profile or the query fails.
+pub async fn active_embedding_profile(conn: &mut PgConnection) -> EmbeddingProfile {
+    PgEmbeddingProfileRepository
+        .find_active(&mut *conn)
+        .await
+        .expect("setup: find active profile")
+        .expect("setup: an active embedding profile must exist")
+}
+
+/// Inserts a test embedding for a knowledge item, ensuring a genesis profile
+/// exists and keying the row to it.
+///
+/// No production repository exposes direct embedding insertion; this uses raw
+/// SQL.
 ///
 /// # Panics
 ///
@@ -96,15 +232,33 @@ pub async fn insert_embedding(
     model: &str,
     vector: Vec<f32>,
 ) {
-    let dimensions = i32::try_from(vector.len()).expect(EMBEDDING_DIMENSIONS_EXCEED_I32);
-    let pgvec = pgvector::Vector::from(vector);
+    let dimensions = u32::try_from(vector.len()).expect("embedding dimensions exceed u32");
+    let profile_id = ensure_genesis_profile(&mut *conn, model, dimensions)
+        .await
+        .id();
+    insert_embedding_for_profile(conn, knowledge_item_id, profile_id, model, vector).await;
+}
+
+/// Inserts a test embedding keyed to an explicit profile.
+///
+/// # Panics
+///
+/// Panics if the database query fails.
+pub async fn insert_embedding_for_profile(
+    conn: &mut PgConnection,
+    knowledge_item_id: KnowledgeItemId,
+    embedding_profile_id: EmbeddingProfileId,
+    model: &str,
+    vector: Vec<f32>,
+) {
+    let pgvec = pgvector::HalfVector::from_f32_slice(&vector);
     sqlx::query(
-        "INSERT INTO embeddings (knowledge_item_id, model, dimensions, embedding) \
+        "INSERT INTO embeddings (knowledge_item_id, embedding_profile_id, model, embedding) \
          VALUES ($1, $2, $3, $4)",
     )
     .bind(knowledge_item_id.inner())
+    .bind(embedding_profile_id.inner())
     .bind(model)
-    .bind(dimensions)
     .bind(pgvec)
     .execute(&mut *conn)
     .await
@@ -234,6 +388,9 @@ pub async fn seed_triage_job(
         !candidates.is_empty(),
         "seed_triage_job requires at least one candidate",
     );
+    // The triage commit path writes embeddings against the active profile, so a
+    // genesis profile must exist. Idempotent: reuses one a `Seed` already made.
+    ensure_genesis_profile(conn, "mock-model", 768).await;
     let batch_size = u32::try_from(candidates.len()).expect("candidate count fits u32");
 
     let fingerprint_hash = upsert_system_fingerprint(

@@ -2,14 +2,11 @@
 
 use sqlx::PgPool;
 use tribal_common::random_duration_in_range;
-use tribal_db::{MigrationRepository, PgMigrationRepository};
+use tribal_db::{MigrationRepository, PgMigrationRepository, advisory_locks};
 
 use super::{
     POOL_NAME_MCP,
-    constants::{
-        ADVISORY_LOCK_ID, MIGRATION_MAX_ATTEMPTS, MIGRATION_RETRY_SLEEP_MAX,
-        MIGRATION_RETRY_SLEEP_MIN,
-    },
+    constants::{MIGRATION_MAX_ATTEMPTS, MIGRATION_RETRY_SLEEP_MAX, MIGRATION_RETRY_SLEEP_MIN},
 };
 use crate::error::AppError;
 
@@ -55,7 +52,7 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
             .map_err(|e| AppError::pool_acquire(POOL_NAME_MCP, "migration", e))?;
 
         let acquired = repo
-            .try_advisory_lock(&mut conn, ADVISORY_LOCK_ID)
+            .try_advisory_lock(&mut conn, advisory_locks::MIGRATION)
             .await
             .map_err(|source| AppError::Database { source })?;
 
@@ -69,7 +66,7 @@ pub(crate) async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
 
             // Release the lock on the original session, then drop.
             match repo
-                .release_advisory_lock(&mut lock_conn, ADVISORY_LOCK_ID)
+                .release_advisory_lock(&mut lock_conn, advisory_locks::MIGRATION)
                 .await
             {
                 Ok(true) => {}

@@ -2,6 +2,7 @@ mod error;
 mod feedback;
 mod job;
 mod knowledge;
+mod reindex;
 mod session;
 
 pub(crate) use feedback::{McpFeedbackRequest, McpFeedbackResponse};
@@ -12,5 +13,8 @@ pub(crate) use knowledge::{
     McpDiscoverRequest, McpDiscoverResponse, McpDiscoveryResult, McpExplorationResult,
     McpExploreRequest, McpExploreResponse, McpGetItemEntry, McpGetItemRequest, McpGetItemResponse,
     McpKnowledgeItem, McpReference, McpRelationDirection, McpStanding,
+};
+pub(crate) use reindex::{
+    McpReindexCancelResponse, McpReindexPruneResponse, McpReindexRequest, McpReindexResponse,
 };
 pub(crate) use session::{McpSetContextRequest, session_to_json, set_context_response};

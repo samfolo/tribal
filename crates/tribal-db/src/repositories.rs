@@ -5,9 +5,12 @@
 //! `&mut PgConnection` as an explicit executor parameter, keeping
 //! repositories pool-agnostic.
 
+mod advisory_lock;
 mod auth_token;
 mod common;
 mod embedding;
+mod embedding_index;
+mod embedding_profile;
 mod extraction_result;
 mod item_observation;
 mod job;
@@ -19,6 +22,9 @@ mod principal;
 mod project;
 mod prompt_version;
 mod reference;
+mod reindex_quarantine;
+mod reindex_run;
+mod reindex_task;
 mod relation;
 mod retrieval_feedback;
 mod standing;
@@ -30,9 +36,16 @@ mod token_usage;
 mod triage_result;
 mod triage_similar_item_decision;
 
+pub use advisory_lock::{AdvisoryLockRepository, PgAdvisoryLockRepository};
 pub use auth_token::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 pub use common::cursor::encode_cursor;
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
+pub use embedding_index::{
+    EmbeddingIndexRepository, EmbeddingTable, IndexState, PgEmbeddingIndexRepository,
+};
+pub use embedding_profile::{
+    EmbeddingProfileRepository, NewEmbeddingProfile, PgEmbeddingProfileRepository,
+};
 pub use extraction_result::{
     ExtractionResultRepository, NewExtractionResult, PgExtractionResultRepository,
 };
@@ -55,6 +68,13 @@ pub use principal::{NewPrincipal, PgPrincipalRepository, PrincipalRepository};
 pub use project::{NewProject, PgProjectRepository, ProjectRepository};
 pub use prompt_version::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
 pub use reference::{NewReference, PgReferenceRepository, ReferenceRepository};
+pub use reindex_quarantine::{
+    NewReindexQuarantine, PgReindexQuarantineRepository, ReindexQuarantineRepository,
+};
+pub use reindex_run::{NewReindexRun, PgReindexRunRepository, ReindexRunRepository};
+pub use reindex_task::{
+    NewReindexTask, PgReindexTaskRepository, ReindexTaskRepository, ReindexTaskStateCount,
+};
 pub use relation::{
     NewKnowledgeItemRelation, PgRelationRepository, RelationRepository, TraversalDirection,
     TraversalNode, TraversalResponse,

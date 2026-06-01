@@ -11,11 +11,15 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    Confidence, EpisodeId, KnowledgeItem, KnowledgeItemId, KnowledgeKind, PrincipalId, ProjectId,
+    Confidence, EmbeddingProfileId, EpisodeId, KnowledgeItem, KnowledgeItemId, KnowledgeKind,
+    PrincipalId, ProjectId,
 };
 use typed_builder::TypedBuilder;
 
-use super::common::cursor::{decode_cursor, encode_cursor};
+use super::common::{
+    cursor::{decode_cursor, encode_cursor},
+    halfvec::to_halfvec,
+};
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
@@ -128,8 +132,11 @@ pub struct NewKnowledgeItem {
 pub struct SemanticSearchParams {
     /// The pre-computed query embedding vector.
     pub query_embedding: Vec<f32>,
-    /// The embedding model name to search against.
-    pub embedding_model: String,
+    /// The embedding profile to search against (the active profile).
+    pub embedding_profile_id: EmbeddingProfileId,
+    /// The profile's vector dimension, inlined into the `halfvec` cast so it
+    /// matches the partial index expression.
+    pub dimensions: u32,
     /// Optional project filter.
     #[builder(default)]
     pub project_id: Option<ProjectId>,
@@ -150,7 +157,9 @@ pub struct SemanticSearchParams {
     pub include_superseded: bool,
     /// Maximum number of results to return.
     pub limit: u32,
-    /// Cursor for pagination (hex-encoded similarity + item id).
+    /// Cursor for pagination (hex-encoded similarity, item id, and the issuing
+    /// embedding profile id). A cursor whose profile is not this search's active
+    /// profile is rejected as invalid-after-migration.
     #[builder(default)]
     pub cursor: Option<String>,
 }
@@ -429,9 +438,26 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         conn: &mut PgConnection,
         params: &SemanticSearchParams,
     ) -> Result<SemanticSearchResponse, DbError> {
-        let cursor_values = params.cursor.as_deref().map(decode_cursor).transpose()?;
+        // A cursor carries the profile it was issued against. Reject one whose
+        // profile is not the active search profile (a cutover flipped the active
+        // mid-pagination), rather than applying its distance against an
+        // incomparable geometry; the client restarts from the first page.
+        let cursor_values = match params.cursor.as_deref() {
+            Some(cursor) => {
+                let (similarity, id, cursor_profile_id) = decode_cursor(cursor)?;
+                if cursor_profile_id != *params.embedding_profile_id.inner() {
+                    return Err(DbError::InvalidCursor {
+                        detail: "cursor was issued against a superseded embedding \
+                                 profile; restart pagination from the first page"
+                            .to_owned(),
+                    });
+                }
+                Some((similarity, id))
+            }
+            None => None,
+        };
 
-        let query_vector = pgvector::Vector::from(params.query_embedding.clone());
+        let query_vector = to_halfvec(&params.query_embedding);
         let limit = params.limit as usize;
 
         // First attempt: K = limit × 5.
@@ -445,9 +471,13 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
             let results: Vec<SemanticSearchResult> = filtered.into_iter().take(limit).collect();
             let has_more = filtered_count > limit || candidate_count == k;
             let next_cursor = if has_more {
-                results
-                    .last()
-                    .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+                results.last().map(|r| {
+                    encode_cursor(
+                        r.similarity,
+                        *r.item.id().inner(),
+                        *params.embedding_profile_id.inner(),
+                    )
+                })
             } else {
                 None
             };
@@ -471,9 +501,13 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         let has_more = results.len() >= limit
             && (filtered_wide_count > limit || candidate_count_wide == k_wide);
         let next_cursor = if has_more {
-            results
-                .last()
-                .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+            results.last().map(|r| {
+                encode_cursor(
+                    r.similarity,
+                    *r.item.id().inner(),
+                    *params.embedding_profile_id.inner(),
+                )
+            })
         } else {
             None
         };
@@ -501,21 +535,31 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
 async fn fetch_candidates(
     conn: &mut PgConnection,
     params: &SemanticSearchParams,
-    query_vector: &pgvector::Vector,
+    query_vector: &pgvector::HalfVector,
     cursor_values: Option<(f64, uuid::Uuid)>,
     k: usize,
 ) -> Result<Vec<SemanticSearchResult>, DbError> {
-    let mut sql = String::from(
+    // The profile UUID and dimension are inlined as literals (the UUID rendered
+    // from a typed value, never untrusted text) so the query predicate implies
+    // the partial index predicate and the cast matches the index expression,
+    // both required for the per-profile partial HNSW index to be pickable. The
+    // similarity vector stays a bind parameter, keeping the prepared-statement
+    // cache warm across queries against the same active profile.
+    let profile = params.embedding_profile_id.inner();
+    let dims = params.dimensions;
+    let distance = format!("e.embedding::halfvec({dims}) <=> $1::halfvec({dims})");
+
+    let mut sql = format!(
         r"
         SELECT
             ki.id, ki.project_id, ki.principal_id, ki.kind, ki.content,
             ki.tags, ki.confidence, ki.claim_context, ki.source_context,
             ki.episode_id, ki.capture_commit, ki.capture_branch, ki.created_at,
-            1.0 - (e.embedding <=> $1::vector) AS similarity
+            1.0 - ({distance}) AS similarity
         FROM knowledge_items ki
         INNER JOIN embeddings e ON e.knowledge_item_id = ki.id
-        WHERE e.model = $2
-        ",
+        WHERE e.embedding_profile_id = '{profile}'::uuid
+        "
     );
 
     // Superseded-item exclusion (only committed supersedes relations count).
@@ -532,7 +576,7 @@ async fn fetch_candidates(
         );
     }
 
-    let mut param_idx: u32 = 3;
+    let mut param_idx: u32 = 2;
 
     // Cursor-based pagination (compares on raw distance, ascending).
     if cursor_values.is_some() {
@@ -541,8 +585,8 @@ async fn fetch_candidates(
             sql,
             r"
             AND (
-                (e.embedding <=> $1::vector) > ${param_idx}
-                OR ((e.embedding <=> $1::vector) = ${param_idx} AND ki.id > ${id_idx})
+                ({distance}) > ${param_idx}
+                OR (({distance}) = ${param_idx} AND ki.id > ${id_idx})
             )
             ",
         )
@@ -554,16 +598,15 @@ async fn fetch_candidates(
     write!(
         sql,
         r"
-        ORDER BY e.embedding <=> $1::vector ASC, ki.id ASC
+        ORDER BY {distance} ASC, ki.id ASC
         LIMIT ${param_idx}
         "
     )
     .expect(STRING_WRITE_INFALLIBLE);
 
-    // Bind parameters.
-    let mut query = sqlx::query(&sql)
-        .bind(query_vector)
-        .bind(&params.embedding_model);
+    // Bind parameters. $1 is the query vector; the profile and dimension are
+    // inlined above, so the model bind is gone and the cursor and limit shift up.
+    let mut query = sqlx::query(&sql).bind(query_vector);
 
     // Cursor stores similarity; convert to distance for the WHERE clause.
     if let Some((cursor_sim, cursor_id)) = cursor_values {

@@ -9,8 +9,9 @@ use tribal_domain::{
 };
 use tribal_test_utils::{
     a_new_job, a_new_knowledge_item, a_new_principal, a_new_project, a_new_prompt_version,
-    a_new_system_fingerprint, insert_committed_relation, insert_embedding, insert_prompt_version,
-    set_timestamp, test_context, upsert_system_fingerprint,
+    a_new_system_fingerprint, active_embedding_profile, ensure_genesis_profile,
+    insert_committed_relation, insert_embedding, insert_prompt_version, set_timestamp,
+    test_context, upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -402,9 +403,11 @@ async fn test_semantic_search_returns_results_ordered_by_similarity() {
     }
 
     // Query embedding favours index 0 > 1 > 2.
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_query_embedding())
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .limit(10)
         .build();
 
@@ -456,9 +459,11 @@ async fn test_semantic_search_filters_by_project_id() {
         .expect("insert b");
     insert_embedding(&mut txn, item_b.id(), EMBEDDING_MODEL, make_embedding(0)).await;
 
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .project_id(Some(project_a))
         .limit(10)
         .build();
@@ -514,9 +519,11 @@ async fn test_semantic_search_filters_by_kinds() {
     )
     .await;
 
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .kinds(Some(vec![KnowledgeKind::Fact]))
         .limit(10)
         .build();
@@ -567,9 +574,11 @@ async fn test_semantic_search_filters_by_tags_and_semantics() {
     insert_embedding(&mut txn, one_tag.id(), EMBEDDING_MODEL, make_embedding(0)).await;
 
     // Filter requires BOTH "rust" AND "testing" (AND semantics).
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .tags(Some(vec!["rust".to_owned(), "testing".to_owned()]))
         .limit(10)
         .build();
@@ -630,9 +639,11 @@ async fn test_semantic_search_filters_by_time_range_from() {
     .await;
 
     // Only items after cutoff (excludes the backdated early item).
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .time_range_from(Some(cutoff))
         .limit(10)
         .build();
@@ -693,9 +704,11 @@ async fn test_semantic_search_filters_by_time_range_to() {
     .await;
 
     // Only items before cutoff (excludes the forwarded late item).
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .time_range_to(Some(cutoff))
         .limit(10)
         .build();
@@ -745,9 +758,11 @@ async fn test_semantic_search_excludes_superseded_items() {
 
     insert_supersedes_relation(&mut txn, source.id(), target.id(), principal_id, project_id).await;
 
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .limit(10)
         .build();
 
@@ -800,9 +815,11 @@ async fn test_semantic_search_includes_superseded_when_flag_set() {
 
     insert_supersedes_relation(&mut txn, source.id(), target.id(), principal_id, project_id).await;
 
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .include_superseded(true)
         .limit(10)
         .build();
@@ -848,9 +865,11 @@ async fn test_semantic_search_cursor_pagination() {
     query_emb[4] = 0.1;
 
     // First page: limit 2.
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(query_emb.clone())
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .limit(2)
         .build();
 
@@ -868,7 +887,8 @@ async fn test_semantic_search_cursor_pagination() {
     // Second page using cursor.
     let params2 = SemanticSearchParams::builder()
         .query_embedding(query_emb)
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .cursor(page1.next_cursor)
         .limit(2)
         .build();
@@ -904,9 +924,11 @@ async fn test_semantic_search_no_next_cursor_when_no_more_results() {
     let item = repo.insert(&mut txn, &new).await.expect("insert");
     insert_embedding(&mut txn, item.id(), EMBEDDING_MODEL, make_embedding(0)).await;
 
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .limit(10)
         .build();
 
@@ -935,9 +957,11 @@ async fn test_semantic_search_no_next_cursor_when_total_equals_limit() {
     insert_embedding(&mut txn, item.id(), EMBEDDING_MODEL, make_embedding(0)).await;
 
     // Limit exactly matches the number of items — no more pages exist.
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .limit(1)
         .build();
 
@@ -958,10 +982,15 @@ async fn test_semantic_search_invalid_cursor_returns_error() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
     let repo = PgKnowledgeItemRepository;
+    // The cursor decode fails before the profile is read; a genesis profile is
+    // still needed so the params can name the active profile.
+    ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, 768).await;
 
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .cursor(Some("not-a-valid-cursor".to_owned()))
         .limit(10)
         .build();
@@ -992,9 +1021,11 @@ async fn test_semantic_search_exact_true_when_enough_results() {
         insert_embedding(&mut txn, item.id(), EMBEDDING_MODEL, make_embedding(0)).await;
     }
 
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .limit(2)
         .build();
 
@@ -1022,9 +1053,11 @@ async fn test_semantic_search_exact_false_when_insufficient_results() {
     let item = repo.insert(&mut txn, &new).await.expect("insert");
     insert_embedding(&mut txn, item.id(), EMBEDDING_MODEL, make_embedding(0)).await;
 
+    let profile = active_embedding_profile(&mut txn).await;
     let params = SemanticSearchParams::builder()
         .query_embedding(make_embedding(0))
-        .embedding_model(EMBEDDING_MODEL.to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .limit(5)
         .build();
 

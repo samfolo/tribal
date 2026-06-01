@@ -86,7 +86,8 @@ async fn test_extraction_records_token_usage() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -202,7 +203,8 @@ async fn assert_extraction_with_trace_context(trace_context: Option<String>, lab
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -304,7 +306,8 @@ async fn test_triage_novel_records_token_usage() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -419,8 +422,7 @@ async fn test_triage_duplicate_records_token_usage() {
     let system_pv_id = seed_result.prompt_version_id("system-pv");
     let user_pv_id = seed_result.prompt_version_id("user-pv");
 
-    let seeded_embedding = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut conn, ki_id, "mock-model")
+    let seeded_embedding = find_active_embedding(&mut conn, ki_id)
         .await
         .expect("find seeded embedding")
         .expect("seeded embedding should exist");
@@ -468,7 +470,8 @@ async fn test_triage_duplicate_records_token_usage() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -587,7 +590,8 @@ async fn test_relation_records_token_usage() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -669,7 +673,8 @@ async fn test_token_usage_records_retry_attempt() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -710,6 +715,7 @@ async fn test_backfill_records_token_usage() {
         Seed::new()
             .define_project("proj", "git@github.com:test/backfill-token-usage.git")
             .define_principal("user", "user:backfill-token-usage")
+            .set_embedding_model("mock-model", 768)
             .define_tag("alpha")
             .define_tag("beta")
             .execute(&mut conn)
@@ -724,7 +730,7 @@ async fn test_backfill_records_token_usage() {
     );
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding));
+    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding)).await;
 
     worker.startup().await.expect("startup");
 

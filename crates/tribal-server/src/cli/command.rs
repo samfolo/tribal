@@ -3,10 +3,10 @@
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use tribal_config::{
     CliOverrides, DatabaseCliOverrides, EmbeddingCliOverrides, InferenceCliOverrides,
-    InferenceStageCliOverrides, ServerCliOverrides, TelemetryCliOverrides, TransportKind,
-    default_config_file_path,
+    InferenceStageCliOverrides, InitCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
+    TransportKind, default_config_file_path,
 };
-use tribal_domain::ProviderKind;
+use tribal_domain::{ProviderKind, Scope, is_mintable_scope};
 
 use super::{flags::PersistableFlag, styles::STYLES};
 
@@ -150,6 +150,10 @@ pub enum Command {
         #[command(flatten)]
         args: McpConfigArgs,
     },
+
+    /// Migrate the embedding space: run, cancel, or prune a reindex.
+    #[command(subcommand, display_order = 8)]
+    Reindex(ReindexCommand),
 }
 
 // ---------------------------------------------------------------------------
@@ -316,13 +320,15 @@ pub struct ProviderArgs {
 impl ProviderArgs {
     /// Builds [`CliOverrides`] from explicitly-passed CLI flags.
     ///
-    /// Each subtree (`embedding`, `inference.*`) is populated only when at
+    /// Each subtree (`init.embedding`, `inference.*`) is populated only when at
     /// least one of its flags was supplied, so absent flags never mask
     /// lower-precedence layers.
     pub fn into_cli_overrides(self) -> CliOverrides {
-        let embedding = match (self.embedding_provider, self.embedding_model) {
+        let init = match (self.embedding_provider, self.embedding_model) {
             (None, None) => None,
-            (provider, model) => Some(EmbeddingCliOverrides { provider, model }),
+            (provider, model) => Some(InitCliOverrides {
+                embedding: Some(EmbeddingCliOverrides { provider, model }),
+            }),
         };
 
         let extraction = inference_stage_overrides(
@@ -347,7 +353,7 @@ impl ProviderArgs {
         };
 
         CliOverrides {
-            embedding,
+            init,
             inference,
             ..CliOverrides::default()
         }
@@ -493,9 +499,11 @@ impl BootstrapArgs {
         CliOverrides {
             server,
             database: database.database,
-            embedding: provider.embedding,
+            init: provider.init,
             inference: provider.inference,
             telemetry: telemetry.telemetry,
+            // Synthesised only at persistence time, never from flags.
+            credentials: None,
         }
     }
 }
@@ -685,6 +693,22 @@ pub enum TokenCommand {
     },
 }
 
+/// Clap value parser for `--scope`: parses a raw scope, then rejects any
+/// the CLI is not permitted to mint (root or uncatalogued `execute`).
+///
+/// Returns the message string clap renders as the value-validation error.
+fn parse_mintable_scope(raw: &str) -> Result<Scope, String> {
+    let scope = Scope::parse(raw).map_err(|err| err.to_string())?;
+    if is_mintable_scope(&scope) {
+        Ok(scope)
+    } else {
+        Err(format!(
+            "{raw:?} cannot be minted here; execute access is limited to {}",
+            Scope::EMBEDDING_EXECUTE,
+        ))
+    }
+}
+
 /// Arguments for `token create`.
 #[derive(Debug, Args)]
 pub struct TokenCreateArgs {
@@ -697,6 +721,12 @@ pub struct TokenCreateArgs {
     /// token only.
     #[arg(long, help_heading = "Token")]
     pub ttl: Option<u64>,
+
+    /// Scope to grant, repeatable. Each must be mintable: any read or
+    /// write scope, plus `tribal.embedding:execute`. When omitted, the
+    /// token receives full read and write access.
+    #[arg(long = "scope", value_name = "SCOPE", value_parser = parse_mintable_scope, help_heading = "Token")]
+    pub scope: Vec<Scope>,
 
     /// Database connection options.
     #[command(flatten)]
@@ -769,6 +799,66 @@ impl TokenRevokeAllArgs {
     pub fn into_cli_overrides(self) -> CliOverrides {
         self.database.into_cli_overrides()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Reindex
+// ---------------------------------------------------------------------------
+
+/// Reindex (embedding-space migration) subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ReindexCommand {
+    /// Create a reindex run that migrates the corpus to a new embedding
+    /// identity. Use `--dry-run` to estimate cost without spending.
+    Run {
+        /// Arguments for the reindex run.
+        #[command(flatten)]
+        args: ReindexRunArgs,
+    },
+
+    /// Cancel the live reindex run, if any.
+    Cancel {
+        /// Database connection options.
+        #[command(flatten)]
+        args: DatabaseArgs,
+    },
+
+    /// Supersede the prunable profiles and reclaim their storage.
+    Prune {
+        /// Database connection options.
+        #[command(flatten)]
+        args: DatabaseArgs,
+    },
+}
+
+/// Arguments for `reindex run`.
+#[derive(Debug, Args)]
+pub struct ReindexRunArgs {
+    /// Target embedding provider.
+    #[arg(long, value_parser = clap::value_parser!(ProviderKind), help_heading = "Reindex")]
+    pub provider: ProviderKind,
+
+    /// Target embedding model.
+    #[arg(long, help_heading = "Reindex")]
+    pub model: String,
+
+    /// Target output dimension. When omitted, the provider/model native
+    /// dimension is resolved.
+    #[arg(long, help_heading = "Reindex")]
+    pub dimensions: Option<u32>,
+
+    /// Target endpoint base URL. When omitted, the provider's canonical
+    /// endpoint is used.
+    #[arg(long = "base-url", help_heading = "Reindex")]
+    pub base_url: Option<String>,
+
+    /// Estimate the cost (item and tag counts) without creating a run.
+    #[arg(long, help_heading = "Reindex")]
+    pub dry_run: bool,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,7 +1208,7 @@ mod tests {
     fn test_provider_args_into_cli_overrides_no_flags() {
         let parsed = ProviderArgsHarness::try_parse_from(std::iter::empty::<&str>()).unwrap();
         let overrides = parsed.args.into_cli_overrides();
-        assert!(overrides.embedding.is_none());
+        assert!(overrides.init.is_none());
         assert!(overrides.inference.is_none());
     }
 
@@ -1133,7 +1223,8 @@ mod tests {
         .unwrap();
         let overrides = parsed.args.into_cli_overrides();
 
-        let embedding = overrides.embedding.expect("embedding subtree populated");
+        let init = overrides.init.expect("init subtree populated");
+        let embedding = init.embedding.expect("embedding subtree populated");
         assert_eq!(embedding.provider, Some(ProviderKind::OpenAi));
         assert!(embedding.model.is_none());
 
@@ -1357,10 +1448,64 @@ mod tests {
     }
 
     #[test]
+    fn test_reindex_run_parses_all_flags() {
+        let cli = Cli::try_parse_from([
+            "tribal",
+            "reindex",
+            "run",
+            "--provider",
+            "openai",
+            "--model",
+            "text-embedding-3-small",
+            "--dimensions",
+            "1536",
+            "--base-url",
+            "https://api.openai.com",
+            "--dry-run",
+            "-d",
+            "postgres://h/db",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Reindex(ReindexCommand::Run { ref args }))
+            if args.provider == ProviderKind::OpenAi
+                && args.model == "text-embedding-3-small"
+                && args.dimensions == Some(1536)
+                && args.base_url.as_deref() == Some("https://api.openai.com")
+                && args.dry_run
+                && args.database.database_url.as_deref() == Some("postgres://h/db")
+        ));
+    }
+
+    #[test]
+    fn test_reindex_run_requires_provider_and_model() {
+        assert!(Cli::try_parse_from(["tribal", "reindex", "run", "--provider", "openai"]).is_err());
+        assert!(Cli::try_parse_from(["tribal", "reindex", "run", "--model", "m"]).is_err());
+    }
+
+    #[test]
+    fn test_reindex_cancel_and_prune_parse() {
+        assert!(matches!(
+            Cli::try_parse_from(["tribal", "reindex", "cancel"])
+                .unwrap()
+                .command,
+            Some(Command::Reindex(ReindexCommand::Cancel { .. })),
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["tribal", "reindex", "prune"])
+                .unwrap()
+                .command,
+            Some(Command::Reindex(ReindexCommand::Prune { .. })),
+        ));
+    }
+
+    #[test]
     fn test_token_create_into_cli_overrides_maps_database_url() {
         let args = TokenCreateArgs {
             principal: Some("user:sam".into()),
             ttl: Some(24),
+            scope: Vec::new(),
             database: DatabaseArgs {
                 database_url: Some("postgres://h/db".into()),
             },
@@ -1375,10 +1520,37 @@ mod tests {
         let args = TokenCreateArgs {
             principal: None,
             ttl: None,
+            scope: Vec::new(),
             database: DatabaseArgs { database_url: None },
         };
         let overrides = args.into_cli_overrides();
         assert!(overrides.database.is_none());
+    }
+
+    #[test]
+    fn test_token_create_parses_repeated_mintable_scopes() {
+        let cli = Cli::try_parse_from([
+            "tribal",
+            "token",
+            "create",
+            "--scope",
+            "tribal:read",
+            "--scope",
+            "tribal.embedding:execute",
+        ])
+        .unwrap();
+        let Some(Command::Token(TokenCommand::Create { args })) = cli.command else {
+            panic!("expected token create");
+        };
+        let scopes: Vec<&str> = args.scope.iter().map(Scope::as_str).collect();
+        assert_eq!(scopes, ["tribal:read", "tribal.embedding:execute"]);
+    }
+
+    #[test]
+    fn test_token_create_rejects_unmintable_execute_scope() {
+        let err = Cli::try_parse_from(["tribal", "token", "create", "--scope", "tribal:execute"])
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
     }
 
     // -- Token list ---------------------------------------------------------

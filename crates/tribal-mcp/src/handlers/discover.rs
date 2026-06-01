@@ -9,12 +9,16 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tracing::Instrument;
-use tribal_db::{DbError, SemanticSearchParams, encode_cursor};
-use tribal_domain::{
-    EmbeddingPurpose, KnowledgeItemId, KnowledgeKind, McpErrorCode, PrincipalId, ProjectId,
-    Reference, Standing, span_attrs,
+use tribal_db::{
+    DbError, EmbeddingProfileRepository, PgEmbeddingProfileRepository, SemanticSearchParams,
+    encode_cursor,
 };
-use tribal_inference::EmbeddingRequest;
+use tribal_domain::{
+    EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, KnowledgeItemId, KnowledgeKind,
+    McpErrorCode, PrincipalId, ProjectId, Reference, Standing, span_attrs,
+};
+use tribal_inference::{EmbeddingRequest, EmbeddingResponse, InferenceError};
+use tribal_worker::build_target_provider;
 
 use super::common::acquire_connection;
 use crate::{
@@ -68,6 +72,7 @@ struct DiscoverResult {
     applied_project_id: Option<ProjectId>,
     project_name: Option<String>,
     embedding_model: String,
+    embedding_profile_id: EmbeddingProfileId,
 }
 
 /// Service-boundary error for [`execute_discover`].
@@ -107,13 +112,94 @@ impl TribalServerHandler {
         self.apply_discover(params).instrument(span).await
     }
 
+    /// Resolves the live embedding provider from the active profile and embeds
+    /// the query against it, so the query lands in the geometry it is searched
+    /// against rather than the boot-time provider's. Returns the active profile
+    /// (the search and the next cursor bind to it) and the embedding response,
+    /// or an error `CallToolResult` to return verbatim.
+    ///
+    /// The active profile is read on a short-lived connection that is released
+    /// before the embedding network call, so a pool connection is never held
+    /// idle across it.
+    async fn embed_query_against_active(
+        &self,
+        query: &str,
+    ) -> Result<(EmbeddingProfile, EmbeddingResponse), CallToolResult> {
+        let active_profile = {
+            let mut conn = acquire_connection(
+                &self.state.pool_mcp,
+                self.config.pool_name,
+                &self.state.metrics,
+            )
+            .await?;
+            match PgEmbeddingProfileRepository.find_active(&mut conn).await {
+                Ok(Some(profile)) => profile,
+                Ok(None) => {
+                    return Err(DbError::NotFound {
+                        entity: "embedding_profile",
+                        id: "active".to_owned(),
+                    }
+                    .into_mcp_error()
+                    .into_call_tool_result());
+                }
+                Err(e) => return Err(e.into_mcp_error().into_call_tool_result()),
+            }
+        };
+
+        let (provider, semaphore) = build_target_provider(
+            &self.state.provider_registry,
+            &self.state.embedding_providers,
+            &self.state.credentials,
+            &active_profile,
+        )
+        .map_err(|e| {
+            InferenceError::provider_unavailable(
+                active_profile.provider_kind().to_string(),
+                e.to_string(),
+            )
+            .into_mcp_error()
+            .into_call_tool_result()
+        })?;
+
+        let _permit = {
+            let sem_start = Instant::now();
+            let permit = Arc::clone(&semaphore)
+                .acquire_owned()
+                .await
+                .expect("embedding semaphore closed");
+            self.state.metrics.record_semaphore_acquire(
+                &self.state.embedding_key.to_string(),
+                sem_start.elapsed(),
+            );
+            permit
+        };
+
+        let provider_start = Instant::now();
+        let embedding_response = provider
+            .embed(EmbeddingRequest {
+                input: query.to_owned(),
+                purpose: EmbeddingPurpose::Query,
+            })
+            .await
+            .map_err(|e| e.into_mcp_error().into_call_tool_result())?;
+        let identity = provider.identity();
+        self.state.metrics.record_provider_call(
+            &identity.name,
+            &identity.model,
+            "discover",
+            provider_start.elapsed(),
+        );
+
+        Ok((active_profile, embedding_response))
+    }
+
     /// Core logic for `tribal_discover`, separated from the outer handler
     /// so it can be tested without a `Peer<RoleServer>`.
     ///
     /// Parses the request, validates and resolves a project ID (if supplied),
-    /// embeds the query, then delegates to [`execute_discover`] for all
-    /// domain logic. Embedding is performed before pool acquisition so
-    /// a connection is not held idle during the network call.
+    /// resolves the live provider from the active profile and embeds the query
+    /// against it (see [`Self::embed_query_against_active`]), then delegates to
+    /// [`execute_discover`] for all domain logic.
     ///
     /// Domain errors are returned as error `CallToolResult` values via
     /// `IntoMcpError` / `IntoCallToolResult`. Only protocol-level errors
@@ -150,47 +236,11 @@ impl TribalServerHandler {
             tracing::Span::current().record(span_attrs::PROJECT_ID, tracing::field::display(pid));
         }
 
-        let semaphore = self
-            .state
-            .provider_registry
-            .semaphore(&self.state.embedding_key)
-            .cloned();
-
-        let _permit = if let Some(ref sem) = semaphore {
-            let sem_start = Instant::now();
-            let permit = Arc::clone(sem)
-                .acquire_owned()
-                .await
-                .expect("embedding semaphore closed");
-            self.state.metrics.record_semaphore_acquire(
-                &self.state.embedding_key.to_string(),
-                sem_start.elapsed(),
-            );
-            Some(permit)
-        } else {
-            None
-        };
-
-        let provider_start = Instant::now();
-        let embedding_response = match self
-            .state
-            .embedding_provider
-            .embed(EmbeddingRequest {
-                input: request.query.clone(),
-                purpose: EmbeddingPurpose::Query,
-            })
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
-        };
-        let identity = self.state.embedding_provider.identity();
-        self.state.metrics.record_provider_call(
-            &identity.name,
-            &identity.model,
-            "discover",
-            provider_start.elapsed(),
-        );
+        let (active_profile, embedding_response) =
+            match self.embed_query_against_active(&request.query).await {
+                Ok(resolved) => resolved,
+                Err(call_result) => return Ok(call_result),
+            };
 
         let embedding_model = embedding_response.usage.model.clone();
 
@@ -223,7 +273,14 @@ impl TribalServerHandler {
             cursor: request.cursor,
         };
 
-        let result = match execute_discover(&mut conn, &self.repositories, discover_params).await {
+        let result = match execute_discover(
+            &mut conn,
+            &self.repositories,
+            &active_profile,
+            discover_params,
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
         };
@@ -250,6 +307,7 @@ impl TribalServerHandler {
             next_cursor: result.next_cursor,
             applied_project_id: result.applied_project_id.map(|id| id.to_string()),
             embedding_model: result.embedding_model,
+            embedding_profile_id: result.embedding_profile_id.to_string(),
             trace_id,
             exact: result.exact,
             query: request.query,
@@ -329,6 +387,7 @@ fn resolve_project_scope(
 async fn execute_discover(
     conn: &mut PgConnection,
     repositories: &ConnectionRepositories,
+    active_profile: &EmbeddingProfile,
     params: DiscoverParams,
 ) -> Result<DiscoverResult, DiscoverError> {
     let project_name = match (params.project_id, params.project_name) {
@@ -339,9 +398,12 @@ async fn execute_discover(
         (_, name) => name,
     };
 
+    // The adapter resolved the active profile and embedded the query against its
+    // geometry; the search and the next cursor bind to that same profile.
     let search_params = SemanticSearchParams::builder()
         .query_embedding(params.query_embedding)
-        .embedding_model(params.embedding_model.clone())
+        .embedding_profile_id(active_profile.id())
+        .dimensions(active_profile.dimensions())
         .project_id(params.project_id)
         .kinds(params.kinds)
         .tags(params.tags)
@@ -383,10 +445,13 @@ async fn execute_discover(
     let has_more = truncated || (!threshold_cut_tail && search_response.next_cursor.is_some());
 
     let next_cursor = if has_more {
-        search_response
-            .results
-            .last()
-            .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+        search_response.results.last().map(|r| {
+            encode_cursor(
+                r.similarity,
+                *r.item.id().inner(),
+                *active_profile.id().inner(),
+            )
+        })
     } else {
         None
     };
@@ -405,6 +470,7 @@ async fn execute_discover(
             applied_project_id: params.project_id,
             project_name,
             embedding_model: params.embedding_model,
+            embedding_profile_id: active_profile.id(),
         });
     }
 
@@ -490,6 +556,7 @@ async fn execute_discover(
         applied_project_id: params.project_id,
         project_name,
         embedding_model: params.embedding_model,
+        embedding_profile_id: active_profile.id(),
     })
 }
 
@@ -499,17 +566,21 @@ async fn execute_discover(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use rmcp::model::ErrorCode;
     use tribal_db::SemanticSearchResponse;
-    use tribal_domain::ReferenceKind;
-    use tribal_inference::{EmbeddingProvider, InferenceError};
+    use tribal_domain::{ProviderKind, ReferenceKind};
+    use tribal_inference::{
+        EmbeddingProvider, InferenceError, ProviderIdentity, ProviderKey, ProviderLimits,
+        RequestClass,
+    };
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
-        MockStandingRepository, a_knowledge_item, a_not_found, a_principal, a_project, a_reference,
-        a_standing, test_context,
+        MockStandingRepository, TestContext, a_knowledge_item, a_not_found, a_principal, a_project,
+        a_reference, a_standing, an_embedding_response, create_complete_profile,
+        ensure_genesis_profile, test_context,
     };
 
     use super::*;
@@ -597,7 +668,15 @@ mod tests {
     ) -> Result<DiscoverResult, DiscoverError> {
         let ctx = test_context().await;
         let mut tx = ctx.begin_test().await.expect("begin");
-        execute_discover(&mut tx, repos, params).await
+        // The handler resolves the active embedding profile; seed one and read
+        // it back so the mocked search runs against it.
+        ensure_genesis_profile(&mut tx, "mock-model", 768).await;
+        let active_profile = PgEmbeddingProfileRepository
+            .find_active(&mut tx)
+            .await
+            .expect("find active")
+            .expect("genesis profile seeded");
+        execute_discover(&mut tx, repos, &active_profile, params).await
     }
 
     // -- Project scope resolution -----------------------------------------
@@ -860,7 +939,11 @@ mod tests {
 
         let result = call_execute(&repos, default_params()).await.unwrap();
 
-        let expected_cursor = encode_cursor(0.9, *item.id().inner());
+        let expected_cursor = encode_cursor(
+            0.9,
+            *item.id().inner(),
+            *result.embedding_profile_id.inner(),
+        );
         assert_eq!(
             result.next_cursor.as_deref(),
             Some(expected_cursor.as_str())
@@ -1035,7 +1118,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_embedding_provider_failure_returns_error() {
-        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+        // The read path resolves the provider from the active profile, so seed
+        // one in a dedicated database and bind a failing provider to it; the
+        // embed error must surface as an internal error result. A dummy pool
+        // would instead fail at find_active, with an environment-dependent code.
+        let ctx = TestContext::new().await.expect("dedicated test database");
+        let pool = ctx.pool().clone();
+        let active = {
+            let mut seed = ctx.raw_connection().await.expect("seed connection");
+            ensure_genesis_profile(&mut seed, "model-a", 768).await
+        };
+
+        let failing: Arc<dyn EmbeddingProvider> = Arc::new(
             MockEmbeddingProvider::builder()
                 .on_embed_error(
                     || InferenceError::EmbeddingFailed {
@@ -1047,7 +1141,28 @@ mod tests {
                 )
                 .build(),
         );
-        let handler = TestHandler::builder().embedding_provider(provider).build();
+
+        let handler = TestHandler::builder().pool(pool).build();
+        handler
+            .state
+            .provider_registry
+            .register_building(
+                ProviderKey::new(
+                    ProviderKind::Ollama.to_string(),
+                    ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+                    RequestClass::Embedding,
+                )
+                .expect("embedding provider key"),
+                &ProviderLimits {
+                    max_in_flight: 1,
+                    request_timeout: Duration::from_secs(5),
+                },
+            )
+            .expect("register the embedding endpoint");
+        handler
+            .state
+            .embedding_providers
+            .insert(active.id(), failing);
 
         let result = handler
             .apply_discover(serde_json::json!({"query": "test"}))
@@ -1211,5 +1326,112 @@ mod tests {
         assert_eq!(result.items.len(), 5);
         assert!(result.next_cursor.is_some());
         assert!(!result.exact);
+    }
+
+    // -- Adapter: live-identity seam across a cutover (§5.7) ------------------
+
+    /// Builds a mock embedding provider tagged with `model` that returns
+    /// `vector` once, for inserting into the per-profile provider cache.
+    fn profile_provider(model: &str, vector: Vec<f32>) -> Arc<dyn EmbeddingProvider> {
+        Arc::new(
+            MockEmbeddingProvider::builder()
+                .with_identity(ProviderIdentity {
+                    name: "ollama".into(),
+                    model: model.into(),
+                })
+                .on_embed(an_embedding_response(vector), None)
+                .build(),
+        )
+    }
+
+    /// Calls the private live-identity embed seam, panicking with a clear
+    /// message if it returns an error `CallToolResult` (opaque to assert on).
+    async fn embed_active(
+        handler: &TribalServerHandler,
+        query: &str,
+    ) -> (EmbeddingProfile, EmbeddingResponse) {
+        match handler.embed_query_against_active(query).await {
+            Ok(resolved) => resolved,
+            Err(call_result) => {
+                panic!("embed_query_against_active returned an error result: {call_result:?}")
+            }
+        }
+    }
+
+    /// `tribal_discover` resolves the embedding provider from the active profile
+    /// on every call, so a live cutover embeds the query against the
+    /// newly-active profile's geometry rather than the boot-time provider.
+    ///
+    /// This is the regression guard for the §5.7 read-path gap: the per-area
+    /// suites all passed while discover still embedded against the static
+    /// boot-time provider, because the discrepancy surfaces only once the active
+    /// profile changes under a running server. The test flips the active profile
+    /// between two embed calls and asserts each call binds to the profile live at
+    /// that moment.
+    #[tokio::test]
+    async fn test_discover_embeds_against_the_active_profile_across_a_cutover() {
+        // This test commits embedding-profile rows, and the handler reads the
+        // global active profile on its own pool connection, so committed state
+        // would otherwise leak into the parallel suite's transaction-rollback
+        // tests. A dedicated database (its own container) isolates it entirely:
+        // no shared pool, no committed-state leakage, so no serial lock or
+        // truncation is needed. A single raw connection seeds it.
+        let ctx = TestContext::new().await.expect("dedicated test database");
+        let pool = ctx.pool().clone();
+        let mut seed = ctx.raw_connection().await.expect("seed connection");
+
+        let handler = TestHandler::builder().pool(pool).build();
+
+        // Both profiles share the Ollama default endpoint, so a single dynamic
+        // registration supplies the semaphore the read path resolves on a cache
+        // hit for either profile.
+        handler
+            .state
+            .provider_registry
+            .register_building(
+                ProviderKey::new(
+                    ProviderKind::Ollama.to_string(),
+                    ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+                    RequestClass::Embedding,
+                )
+                .expect("embedding provider key"),
+                &ProviderLimits {
+                    max_in_flight: 1,
+                    request_timeout: Duration::from_secs(5),
+                },
+            )
+            .expect("register the shared embedding endpoint");
+
+        // -- Profile A: the genesis active profile ----------------------------
+        let profile_a = ensure_genesis_profile(&mut seed, "model-a", 768).await;
+        handler.state.embedding_providers.insert(
+            profile_a.id(),
+            profile_provider("model-a", vec![1.0, 0.0, 0.0]),
+        );
+
+        let (resolved_a, response_a) = embed_active(&handler, "where is auth handled").await;
+        assert_eq!(resolved_a.id(), profile_a.id());
+        assert_eq!(resolved_a.model(), "model-a");
+        assert_eq!(response_a.vector, vec![1.0, 0.0, 0.0]);
+
+        // -- Cut over to profile B (higher epoch, now active) -----------------
+        let profile_b_id = create_complete_profile(&mut seed, "model-b", 768).await;
+        handler.state.embedding_providers.insert(
+            profile_b_id,
+            profile_provider("model-b", vec![0.0, 1.0, 0.0]),
+        );
+
+        let (resolved_b, response_b) = embed_active(&handler, "where is auth handled").await;
+        assert_eq!(
+            resolved_b.id(),
+            profile_b_id,
+            "after the cutover the read path must bind to the newly-active profile",
+        );
+        assert_eq!(resolved_b.model(), "model-b");
+        assert_eq!(
+            response_b.vector,
+            vec![0.0, 1.0, 0.0],
+            "the query must embed against the active profile's geometry, not the prior one",
+        );
     }
 }

@@ -15,4 +15,16 @@ mod worker;
 pub use error::WorkerError;
 pub use gauge_task::run_queue_health_gauges;
 pub use prompt::{reserved_keys, synthetic_validation_context};
-pub use worker::Worker;
+pub use worker::{
+    Worker,
+    reindex::{
+        EmbeddingProviderCache, ReindexCreationOutcome, ReindexTarget, TargetProviderError,
+        build_provider_for_identity, build_target_provider, create_reindex_run,
+        resolve_reindex_target,
+    },
+    reindex_ops::{
+        ReindexCancelOutcome, ReindexOpError, ReindexPruneOutcome, ReindexResolution,
+        ReindexRunOutcome, ReindexRunRequest, drop_superseded_indexes, reindex_cancel,
+        reindex_prune, reindex_run,
+    },
+};

@@ -2,19 +2,24 @@
 
 use std::sync::Arc;
 
+use tokio::sync::Semaphore;
 use tribal_db::{
-    NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
-    NewTriageSimilarItemDecision, PgPromptVersionRepository, PgSystemFingerprintRepository,
-    PgTagRegistryRepository, PromptVersionRepository, SystemFingerprintRepository,
-    TagRegistryRepository,
+    EmbeddingProfileRepository, NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
+    NewTriageSimilarItemDecision, PgEmbeddingProfileRepository, PgPromptVersionRepository,
+    PgSystemFingerprintRepository, PgTagRegistryRepository, PromptVersionRepository,
+    SystemFingerprintRepository, TagRegistryRepository,
 };
 use tribal_domain::{
-    ProjectId, PromptVersion, PromptVersionId, SuggestedReference, SystemFingerprint,
-    TagRegistryEntry, span_attrs,
+    EmbeddingProfile, EmbeddingProfileId, ProjectId, PromptVersion, PromptVersionId,
+    SuggestedReference, SystemFingerprint, TagRegistryEntry, span_attrs,
 };
-use tribal_inference::{EmbeddingProvider, Usage};
+use tribal_inference::{EmbeddingProvider, InferenceError, Usage};
 
-use crate::{error::StageError, tag_resolution::NewTagWithEmbedding, worker::Worker};
+use crate::{
+    error::StageError,
+    tag_resolution::NewTagWithEmbedding,
+    worker::{Worker, reindex::build_target_provider},
+};
 
 // ---------------------------------------------------------------------------
 // StageOutput
@@ -72,7 +77,7 @@ pub(crate) enum StageCommit {
 /// fields like `knowledge_item_id` are only available after INSERT
 /// RETURNING inside the commit transaction.
 pub(crate) enum TriageCommitDecision {
-    /// Novel candidate — create a new knowledge item with embedding and references.
+    /// Novel candidate: create a new knowledge item with embedding and references.
     Novel {
         /// The knowledge item to insert.
         knowledge_item: Box<NewKnowledgeItem>,
@@ -80,6 +85,11 @@ pub(crate) enum TriageCommitDecision {
         embedding_vector: Vec<f32>,
         /// The embedding model used.
         embedding_model: String,
+        /// The active profile the candidate was embedded against. The commit
+        /// flip-check compares it to the active read under the cutover lock, so
+        /// a cutover between the pre-embed and the write re-embeds rather than
+        /// storing an old-space vector under the new profile.
+        embedding_profile_id: EmbeddingProfileId,
         /// References suggested by the extraction stage.
         suggested_references: Vec<SuggestedReference>,
         /// New tags with pre-computed embedding vectors for storage.
@@ -87,13 +97,52 @@ pub(crate) enum TriageCommitDecision {
         /// Tags resolved to existing entries, for `usage_count` increment.
         resolved_tags: Vec<String>,
     },
-    /// Duplicate candidate — record an observation against the matched item.
+    /// Duplicate candidate: record an observation against the matched item.
     Duplicate {
         /// The observation to insert.
         observation: NewItemObservation,
     },
-    /// Idempotency skip — result already exists for this `(job_id, batch_index)`.
+    /// Idempotency skip: result already exists for this `(job_id, batch_index)`.
     NoOp,
+}
+
+// ---------------------------------------------------------------------------
+// Active embedding profile
+// ---------------------------------------------------------------------------
+
+/// Loads the active embedding profile against the given connection.
+///
+/// Reads and writes embed against the active profile, so the read site, the
+/// commit transaction, and tag resolution all resolve it through here. Taking
+/// an explicit connection lets the commit path resolve it inside the
+/// transaction's snapshot. First-boot provisioning completes a genesis profile
+/// before the worker serves any task, so its absence is a consistency fault,
+/// not an expected outcome.
+///
+/// # Errors
+///
+/// Returns [`StageError::Database`] on query failure or when no profile is
+/// active.
+pub(crate) async fn load_active_embedding_profile(
+    conn: &mut sqlx::PgConnection,
+    stage: &str,
+) -> Result<EmbeddingProfile, StageError> {
+    PgEmbeddingProfileRepository
+        .find_active(conn)
+        .await
+        .map_err(|e| StageError::Database {
+            stage: stage.into(),
+            context: "loading active embedding profile".into(),
+            source: e,
+        })?
+        .ok_or_else(|| StageError::Database {
+            stage: stage.into(),
+            context: "no active embedding profile".into(),
+            source: tribal_db::DbError::NotFound {
+                entity: "embedding_profile",
+                id: "active".to_owned(),
+            },
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -121,9 +170,53 @@ pub(crate) fn record_prompt_version_ids(
 // ---------------------------------------------------------------------------
 
 impl Worker {
-    /// Returns a reference to the embedding provider.
-    pub(crate) fn embedding_provider(&self) -> &Arc<dyn EmbeddingProvider> {
-        &self.embedding_provider
+    /// Resolves the active embedding profile together with a provider matching
+    /// its geometry, so a live read or write embeds in the space it targets
+    /// rather than the boot-time provider's.
+    ///
+    /// The returned profile id is the producing identity carried to the commit,
+    /// whose flip-check compares it against the active read under the cutover
+    /// lock. The provider is resolved through the per-profile cache, so the
+    /// common no-flip path is a cache hit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StageError::Database`] if the active profile cannot be read, or
+    /// [`StageError::Provider`] if its provider cannot be built or its
+    /// credential resolved.
+    pub(crate) async fn resolve_active_embedding(
+        &self,
+        stage: &str,
+    ) -> Result<(EmbeddingProfile, Arc<dyn EmbeddingProvider>, Arc<Semaphore>), StageError> {
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: stage.into(),
+                context: "acquiring connection for the active embedding profile".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
+        let active = load_active_embedding_profile(&mut conn, stage).await?;
+        drop(conn);
+
+        let (provider, semaphore) = build_target_provider(
+            self.provider_registry(),
+            self.embedding_providers(),
+            self.credentials(),
+            &active,
+        )
+        .map_err(|source| StageError::Provider {
+            context: "resolving the active profile's embedding provider".into(),
+            source: InferenceError::provider_unavailable(
+                active.provider_kind().to_string(),
+                source.to_string(),
+            ),
+        })?;
+        Ok((active, provider, semaphore))
     }
 }
 

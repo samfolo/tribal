@@ -24,10 +24,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tribal_common::{clamp_to_i32, clamp_to_u32};
 use tribal_db::{
-    NewTagEmbedding, NewTokenUsage, PgTagEmbeddingRepository, PgTokenUsageRepository,
-    TagEmbeddingRepository, TokenUsageRepository,
+    EmbeddingProfileRepository, NewTagEmbedding, NewTokenUsage, PgEmbeddingProfileRepository,
+    PgTagEmbeddingRepository, PgTokenUsageRepository, TagEmbeddingRepository, TokenUsageRepository,
 };
-use tribal_domain::{EmbeddingPurpose, TokenUsageStage};
+use tribal_domain::{EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, TokenUsageStage};
 use tribal_inference::{EmbeddingProvider, EmbeddingRequest, EmbeddingUsage};
 
 use crate::error::SEMAPHORE_CLOSED;
@@ -118,7 +118,20 @@ impl BackfillProcessor {
         );
 
         async {
-            let missing = match self.fetch_missing_tags().await {
+            let profile = match self.fetch_active_profile().await {
+                Ok(profile) => profile,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to resolve active embedding profile for backfill");
+                    return BackfillOutcome {
+                        processed: 0,
+                        skipped: 0,
+                        total: 0,
+                        cancelled: false,
+                    };
+                }
+            };
+
+            let missing = match self.fetch_missing_tags(profile.id()).await {
                 Ok(tags) => tags,
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to query tags missing embeddings");
@@ -161,7 +174,8 @@ impl BackfillProcessor {
                     tokio::time::sleep(INTER_BATCH_DELAY).await;
                 }
 
-                let (batch_ok, batch_skip) = self.embed_and_store_batch(chunk).await;
+                let (batch_ok, batch_skip) =
+                    self.embed_and_store_batch(chunk, profile.id()).await;
 
                 processed += batch_ok;
                 skipped += batch_skip;
@@ -189,9 +203,33 @@ impl BackfillProcessor {
 // ---------------------------------------------------------------------------
 
 impl BackfillProcessor {
-    /// Fetches tags from the registry that have no embedding for the
-    /// active model.
-    async fn fetch_missing_tags(&self) -> Result<Vec<String>, tribal_db::DbError> {
+    /// Resolves the active embedding profile, the target the backfill embeds
+    /// into.
+    async fn fetch_active_profile(&self) -> Result<EmbeddingProfile, tribal_db::DbError> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| tribal_db::DbError::QueryFailed {
+                context: "acquiring connection for active profile query".into(),
+                source: e,
+            })?;
+
+        PgEmbeddingProfileRepository
+            .find_active(&mut conn)
+            .await?
+            .ok_or(tribal_db::DbError::NotFound {
+                entity: "embedding_profile",
+                id: "active".to_owned(),
+            })
+    }
+
+    /// Fetches tags from the registry that have no embedding for the given
+    /// profile.
+    async fn fetch_missing_tags(
+        &self,
+        profile_id: EmbeddingProfileId,
+    ) -> Result<Vec<String>, tribal_db::DbError> {
         let mut conn = self
             .pool
             .acquire()
@@ -202,13 +240,17 @@ impl BackfillProcessor {
             })?;
 
         PgTagEmbeddingRepository
-            .find_tags_missing_embeddings(&mut conn, self.model())
+            .find_tags_missing_embeddings(&mut conn, profile_id)
             .await
     }
 
     /// Embeds each tag in the batch, collects successes, then upserts
     /// them all in one go.  Returns `(successes, failures)`.
-    async fn embed_and_store_batch(&self, tags: &[String]) -> (u32, u32) {
+    async fn embed_and_store_batch(
+        &self,
+        tags: &[String],
+        profile_id: EmbeddingProfileId,
+    ) -> (u32, u32) {
         let mut embeddings = Vec::with_capacity(tags.len());
         let mut usages = Vec::with_capacity(tags.len());
         let mut failures: u32 = 0;
@@ -220,12 +262,11 @@ impl BackfillProcessor {
 
             match self.embed_tag(tag).await {
                 Ok(response) => {
-                    let dimensions = response.vector.len();
                     embeddings.push(
                         NewTagEmbedding::builder()
                             .tag(tag.clone())
+                            .embedding_profile_id(profile_id)
                             .model(self.model().to_owned())
-                            .dimensions(clamp_to_u32(dimensions))
                             .embedding(response.vector)
                             .build(),
                     );
@@ -286,10 +327,10 @@ impl BackfillProcessor {
         })
         .await
         .unwrap_or_else(|_| {
-            Err(tribal_inference::InferenceError::ProviderUnavailable {
-                provider: self.embedding_provider.identity().name.clone(),
-                reason: format!("backfill embed timed out after {EMBED_TIMEOUT:?}"),
-            })
+            Err(tribal_inference::InferenceError::provider_unavailable(
+                self.embedding_provider.identity().name.clone(),
+                format!("backfill embed timed out after {EMBED_TIMEOUT:?}"),
+            ))
         })
     }
 

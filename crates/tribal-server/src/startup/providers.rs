@@ -3,13 +3,15 @@
 use std::{sync::Arc, time::Duration};
 
 use tribal_config::{
-    ConfigError, Diagnostics, EmbeddingConfig, StageInferenceConfig, TribalConfig, ValidationError,
+    ConfigError, CredentialCatalogue, Diagnostics, StageInferenceConfig, TribalConfig,
+    ValidationError,
 };
-use tribal_domain::ProviderKind;
+use tribal_domain::{EmbeddingProfile, ProviderKind};
 use tribal_inference::{
     AnthropicInferenceProvider, EmbeddingProvider, InferenceError, InferenceProvider,
     OllamaEmbeddingProvider, OllamaInferenceProvider, OpenAiEmbeddingProvider,
     OpenAiInferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
+    make_embedding_provider,
 };
 
 use crate::error::AppError;
@@ -27,19 +29,25 @@ const ANTHROPIC_EMBEDDING_UNSUPPORTED: &str =
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Builds the [`ProviderRegistry`] from the application configuration.
+/// Builds the [`ProviderRegistry`] from the active profile and the inference
+/// configuration.
 ///
 /// Creates one `(ProviderKey, ProviderLimits)` entry for each distinct
-/// (provider kind, base URL, request class) combination across the
-/// embedding and inference configurations.
-pub(crate) fn build_provider_registry(config: &TribalConfig) -> Result<ProviderRegistry, AppError> {
+/// (provider kind, base URL, request class) combination: the embedding entry
+/// comes from the **active profile** (the live embedding identity), the
+/// inference entries from per-stage config.
+pub(crate) fn build_provider_registry(
+    config: &TribalConfig,
+    active_profile: &EmbeddingProfile,
+) -> Result<ProviderRegistry, AppError> {
     let mut entries: Vec<(ProviderKey, ProviderLimits)> = Vec::new();
 
-    // Embedding provider entry.
+    // Embedding provider entry, from the active profile's endpoint.
+    let embedding_base_url = active_profile.normalised_base_url().to_owned();
     add_entry(
         &mut entries,
-        config.embedding.provider,
-        config.embedding.base_url.as_ref(),
+        active_profile.provider_kind(),
+        Some(&embedding_base_url),
         RequestClass::Embedding,
         config,
     )?;
@@ -62,53 +70,78 @@ pub(crate) fn build_provider_registry(config: &TribalConfig) -> Result<ProviderR
     ProviderRegistry::new(entries).map_err(|source| AppError::ProviderRegistry { source })
 }
 
-/// Constructs the embedding provider from configuration.
+/// Constructs the live embedding provider from the active profile.
 ///
-/// Returns the boxed provider and the registry key for semaphore lookups.
-/// Calls [`probe_embedding_provider`] before construction — logs a
-/// warning on failure but does not fail startup.
+/// The provider identity (kind, model, dimensions, endpoint) comes from the
+/// active profile; the credential resolves through the catalogue by
+/// `(provider_kind, normalised_base_url)`. Boot fails closed when a provider
+/// that requires a key has none in the catalogue. Returns the boxed provider
+/// and the registry key for semaphore lookups. Calls
+/// [`probe_embedding_provider`] before construction; logs a warning on
+/// failure but does not fail startup.
 pub(crate) async fn build_embedding_provider(
     registry: &ProviderRegistry,
-    config: &EmbeddingConfig,
+    profile: &EmbeddingProfile,
+    credentials: &CredentialCatalogue,
 ) -> Result<(Arc<dyn EmbeddingProvider>, ProviderKey), AppError> {
-    let url = resolve_base_url(config.provider, config.base_url.as_ref());
-    let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Embedding)
+    let provider_kind = profile.provider_kind();
+    let url = profile.normalised_base_url();
+    let key = ProviderKey::new(provider_kind.to_string(), url, RequestClass::Embedding)
         .map_err(|source| AppError::ProviderRegistry { source })?;
 
     let client = get_client(registry, &key)?.clone();
+    let api_key = resolve_embedding_credential(provider_kind, url, credentials)?;
 
-    if let Err(e) = probe_embedding_provider(client.clone(), config).await {
+    if let Err(e) = probe_embedding_provider(
+        client.clone(),
+        provider_kind,
+        profile.model(),
+        profile.dimensions(),
+        url,
+        api_key,
+    )
+    .await
+    {
         tracing::warn!(%e, "embedding model probe failed (non-fatal)");
     }
 
-    let provider: Arc<dyn EmbeddingProvider> = match config.provider {
-        ProviderKind::Ollama => Arc::new(OllamaEmbeddingProvider::new(
-            client,
-            &url,
-            &config.model,
-            config.dimensions,
-        )),
-        ProviderKind::OpenAi => Arc::new(OpenAiEmbeddingProvider::new(
-            client,
-            &url,
-            &config.model,
-            api_key_str(config.api_key.as_ref()),
-            config.dimensions,
-        )),
-        ProviderKind::Anthropic => {
-            return Err(AppError::Config {
-                source: ConfigError::ValidationFailed {
-                    diagnostics: Diagnostics::from(vec![
-                        ValidationError::EmbeddingProviderUnsupported {
-                            provider: ProviderKind::Anthropic,
-                        },
-                    ]),
-                },
-            });
-        }
-    };
+    let provider = make_embedding_provider(
+        provider_kind,
+        client,
+        url,
+        profile.model(),
+        profile.dimensions(),
+        api_key,
+    )
+    .map_err(|e| AppError::Config {
+        source: ConfigError::ValidationFailed {
+            diagnostics: Diagnostics::from(vec![ValidationError::EmbeddingProviderUnsupported {
+                provider: e.provider,
+            }]),
+        },
+    })?;
 
     Ok((provider, key))
+}
+
+/// Resolves the active embedding provider's API key from the catalogue,
+/// failing closed when a provider that requires a key has none.
+///
+/// Ollama needs no key, so an absent entry resolves to an empty key. For a
+/// key-requiring provider, an absent entry or empty key is a fatal
+/// [`AppError::EmbeddingCredentialUnresolved`] naming the missing connection.
+fn resolve_embedding_credential<'a>(
+    provider_kind: ProviderKind,
+    normalised_base_url: &str,
+    credentials: &'a CredentialCatalogue,
+) -> Result<&'a str, AppError> {
+    credentials
+        .resolve_api_key(provider_kind, normalised_base_url)
+        .map_err(|e| AppError::EmbeddingCredentialUnresolved {
+            provider: e.provider,
+            base_url: e.base_url,
+            provider_upper: provider_kind.as_str().to_uppercase(),
+        })
 }
 
 /// Constructs an inference provider for a single pipeline stage.
@@ -149,35 +182,35 @@ pub(crate) async fn build_inference_provider(
     Ok((provider, key))
 }
 
-/// Probes the configured embedding model by constructing the matching
-/// concrete provider and calling its `probe_model` method.
+/// Probes an embedding model by constructing the matching concrete provider
+/// and calling its `probe_model` method.
+///
+/// Takes the resolved identity fields directly so both the boot path (from the
+/// active profile) and `tribal check` (from config) can drive it without
+/// fabricating a profile.
 pub(crate) async fn probe_embedding_provider(
     client: reqwest::Client,
-    config: &EmbeddingConfig,
+    provider_kind: ProviderKind,
+    model: &str,
+    dimensions: u32,
+    base_url: &str,
+    api_key: &str,
 ) -> Result<(), InferenceError> {
-    let url = resolve_base_url(config.provider, config.base_url.as_ref());
-
-    match config.provider {
+    match provider_kind {
         ProviderKind::Ollama => {
-            OllamaEmbeddingProvider::new(client, &url, &config.model, config.dimensions)
+            OllamaEmbeddingProvider::new(client, base_url, model, dimensions)
                 .probe_model()
                 .await
         }
         ProviderKind::OpenAi => {
-            OpenAiEmbeddingProvider::new(
-                client,
-                &url,
-                &config.model,
-                api_key_str(config.api_key.as_ref()),
-                config.dimensions,
-            )
-            .probe_model()
-            .await
+            OpenAiEmbeddingProvider::new(client, base_url, model, api_key, dimensions)
+                .probe_model()
+                .await
         }
-        ProviderKind::Anthropic => Err(InferenceError::ProviderUnavailable {
-            provider: ProviderKind::Anthropic.to_string(),
-            reason: ANTHROPIC_EMBEDDING_UNSUPPORTED.to_owned(),
-        }),
+        ProviderKind::Anthropic => Err(InferenceError::provider_unavailable(
+            ProviderKind::Anthropic.to_string(),
+            ANTHROPIC_EMBEDDING_UNSUPPORTED,
+        )),
     }
 }
 
@@ -276,7 +309,7 @@ fn get_client<'a>(
 
 /// Resolves the base URL for a provider, falling back to the provider's
 /// default when no explicit URL is configured.
-fn resolve_base_url(provider: ProviderKind, config_url: Option<&String>) -> String {
+pub(super) fn resolve_base_url(provider: ProviderKind, config_url: Option<&String>) -> String {
     config_url
         .map_or(provider.default_base_url(), String::as_str)
         .to_owned()
@@ -333,27 +366,21 @@ mod tests {
 
     // -- probe_embedding_provider --------------------------------------------
 
-    fn ollama_embedding_config(base_url: String) -> EmbeddingConfig {
-        EmbeddingConfig {
-            provider: ProviderKind::Ollama,
-            model: "nomic-embed-text:v1.5".into(),
-            dimensions: 3,
-            base_url: Some(base_url),
-            api_key: None,
-        }
-    }
-
     #[tokio::test]
     async fn test_probe_embedding_provider_short_circuits_for_anthropic() {
         // No mock server: if the Anthropic arm attempted a network
         // call this would surface as a connection error, not the
         // synchronous ProviderUnavailable the arm returns.
-        let mut config = ollama_embedding_config("http://127.0.0.1:0".into());
-        config.provider = ProviderKind::Anthropic;
-
-        let err = probe_embedding_provider(reqwest::Client::new(), &config)
-            .await
-            .expect_err("Anthropic embedding must reject without a network call");
+        let err = probe_embedding_provider(
+            reqwest::Client::new(),
+            ProviderKind::Anthropic,
+            "nomic-embed-text:v1.5",
+            3,
+            "http://127.0.0.1:0",
+            "",
+        )
+        .await
+        .expect_err("Anthropic embedding must reject without a network call");
         assert!(
             matches!(
                 err,
@@ -377,14 +404,49 @@ mod tests {
             .mount(&server)
             .await;
 
-        let config = ollama_embedding_config(server.uri());
-        let err = probe_embedding_provider(reqwest::Client::new(), &config)
-            .await
-            .expect_err("probe should fail when endpoint returns 5xx");
+        let err = probe_embedding_provider(
+            reqwest::Client::new(),
+            ProviderKind::Ollama,
+            "nomic-embed-text:v1.5",
+            3,
+            &server.uri(),
+            "",
+        )
+        .await
+        .expect_err("probe should fail when endpoint returns 5xx");
         assert!(
             matches!(err, InferenceError::ProviderUnavailable { .. }),
             "expected ProviderUnavailable, got {err:?}"
         );
+    }
+
+    #[test]
+    fn test_resolve_embedding_credential_fails_closed_for_keyless_cloud_provider() {
+        // OpenAI requires a key; an empty catalogue resolves to the
+        // fail-closed error naming the connection.
+        let err = resolve_embedding_credential(
+            ProviderKind::OpenAi,
+            "https://api.openai.com:443/v1",
+            &CredentialCatalogue::default(),
+        )
+        .expect_err("a keyless cloud provider must fail closed");
+        assert!(matches!(
+            err,
+            AppError::EmbeddingCredentialUnresolved { provider, .. }
+                if provider == ProviderKind::OpenAi
+        ));
+    }
+
+    #[test]
+    fn test_resolve_embedding_credential_allows_keyless_ollama() {
+        let credentials = CredentialCatalogue::default();
+        let key = resolve_embedding_credential(
+            ProviderKind::Ollama,
+            "http://localhost:11434",
+            &credentials,
+        )
+        .expect("ollama needs no key");
+        assert_eq!(key, "");
     }
 
     // -- probe_inference_provider --------------------------------------------

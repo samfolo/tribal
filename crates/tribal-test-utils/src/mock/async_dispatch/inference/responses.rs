@@ -52,12 +52,32 @@ pub fn an_embedding_response(vector: Vec<f32>) -> EmbeddingResponse {
     }
 }
 
-/// Produces a closure returning [`InferenceError::ProviderUnavailable`].
+/// Produces a closure returning a statusless [`InferenceError::ProviderUnavailable`]
+/// (the network/timeout shape, which classifies as plain transient).
 pub fn a_provider_unavailable(reason: impl Into<String>) -> InferenceErrorFactory {
     let reason = reason.into();
+    Box::new(move || InferenceError::provider_unavailable("mock", reason.clone()))
+}
+
+/// Produces a closure returning a rate-limited (HTTP 429)
+/// [`InferenceError::ProviderUnavailable`] carrying the given `Retry-After` delay.
+pub fn a_rate_limited(retry_after: Duration) -> InferenceErrorFactory {
     Box::new(move || InferenceError::ProviderUnavailable {
         provider: "mock".to_owned(),
-        reason: reason.clone(),
+        reason: "HTTP 429".to_owned(),
+        status: Some(429),
+        retry_after: Some(retry_after),
+    })
+}
+
+/// Produces a closure returning an overloaded (HTTP 529)
+/// [`InferenceError::ProviderUnavailable`].
+pub fn an_overloaded() -> InferenceErrorFactory {
+    Box::new(|| InferenceError::ProviderUnavailable {
+        provider: "mock".to_owned(),
+        reason: "HTTP 529".to_owned(),
+        status: Some(529),
+        retry_after: None,
     })
 }
 
@@ -137,8 +157,34 @@ mod tests {
         let err = a_provider_unavailable("down")();
         assert!(matches!(
             err,
-            InferenceError::ProviderUnavailable { ref provider, ref reason }
+            InferenceError::ProviderUnavailable {
+                ref provider,
+                ref reason,
+                status: None,
+                retry_after: None,
+            }
             if provider == "mock" && reason == "down"
+        ));
+
+        let err = a_rate_limited(Duration::from_secs(30))();
+        assert!(matches!(
+            err,
+            InferenceError::ProviderUnavailable {
+                status: Some(429),
+                retry_after: Some(delay),
+                ..
+            }
+            if delay == Duration::from_secs(30)
+        ));
+
+        let err = an_overloaded()();
+        assert!(matches!(
+            err,
+            InferenceError::ProviderUnavailable {
+                status: Some(529),
+                retry_after: None,
+                ..
+            }
         ));
 
         let err = an_llm_call_failure("llama3", "timeout")();
