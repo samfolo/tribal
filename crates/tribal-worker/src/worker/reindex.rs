@@ -1143,8 +1143,7 @@ fn quarantine_exceeds_cap(run: &ReindexRun) -> bool {
     let Some(enumerated) = run.items_enumerated() else {
         return false;
     };
-    u64::from(run.items_quarantined()) * u64::from(REINDEX_QUARANTINE_CAP_DIVISOR)
-        > u64::from(enumerated)
+    run.items_quarantined() * i64::from(REINDEX_QUARANTINE_CAP_DIVISOR) > i64::from(enumerated)
 }
 
 /// Reports whether the run has a dead-lettered task: a transient failure that

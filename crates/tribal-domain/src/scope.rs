@@ -43,10 +43,10 @@ pub enum ScopeParseError {
 pub struct Scope(String);
 
 impl Scope {
-    /// Root read scope — grants read access to all resources.
+    /// Root read scope: grants read access to all resources.
     pub const FULL_ACCESS_READ: &str = "tribal:read";
 
-    /// Root write scope — grants write access to all resources.
+    /// Root write scope: grants write access to all resources.
     pub const FULL_ACCESS_WRITE: &str = "tribal:write";
 
     /// The narrow execute scope gating reindex, cancel, and prune.
@@ -157,7 +157,7 @@ pub fn is_authorised(granted: &[Scope], required: &Scope) -> bool {
 /// # Panics
 ///
 /// Panics if the hard-coded root scope literals are invalid. The values
-/// are known-good constants — this is an invariant, not a runtime risk.
+/// are known-good constants (an invariant, not a runtime risk).
 #[must_use]
 pub fn full_access_scopes() -> Vec<Scope> {
     vec![

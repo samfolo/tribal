@@ -162,6 +162,36 @@ async fn test_run_tallies_accumulate() {
     assert_eq!(run.tags_embedded(), 10);
 }
 
+/// The cumulative embedded tallies are BIGINT, so a corpus reindexed across many
+/// catch-up passes can sum past the INT ceiling without overflowing.
+#[tokio::test]
+async fn test_embedded_tallies_exceed_int_ceiling() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let run_id = setup_run(&mut txn, "bigint").await;
+
+    // Two passes of 1.5B each sum to 3B, past the 2.147B INT ceiling.
+    let pass: u32 = 1_500_000_000;
+    PgReindexRunRepository
+        .bump_embedded(&mut txn, run_id, pass, pass)
+        .await
+        .expect("bump");
+    PgReindexRunRepository
+        .bump_embedded(&mut txn, run_id, pass, pass)
+        .await
+        .expect("bump");
+
+    let run = PgReindexRunRepository
+        .find_by_id(&mut txn, run_id)
+        .await
+        .expect("find")
+        .expect("run");
+    let expected = i64::from(pass) * 2;
+    assert!(expected > i64::from(i32::MAX), "test must exceed the INT ceiling");
+    assert_eq!(run.items_embedded(), expected);
+    assert_eq!(run.tags_embedded(), expected);
+}
+
 // ---------------------------------------------------------------------------
 // Task lease
 // ---------------------------------------------------------------------------

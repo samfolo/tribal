@@ -103,12 +103,12 @@ pub struct ReindexRun {
     initiated_by_principal_id: PrincipalId,
     #[builder(default)]
     items_enumerated: Option<u32>,
-    items_embedded: u32,
+    items_embedded: i64,
     #[builder(default)]
     tags_enumerated: Option<u32>,
-    tags_embedded: u32,
-    items_quarantined: u32,
-    tags_quarantined: u32,
+    tags_embedded: i64,
+    items_quarantined: i64,
+    tags_quarantined: i64,
     #[builder(default)]
     error_message: Option<String>,
     #[builder(default)]
@@ -155,9 +155,9 @@ impl ReindexRun {
         self.items_enumerated
     }
 
-    /// Returns the count of item rows present for the profile.
+    /// Returns the cumulative count of item rows embedded across every pass.
     #[must_use]
-    pub fn items_embedded(&self) -> u32 {
+    pub fn items_embedded(&self) -> i64 {
         self.items_embedded
     }
 
@@ -167,21 +167,21 @@ impl ReindexRun {
         self.tags_enumerated
     }
 
-    /// Returns the count of tag rows present for the profile.
+    /// Returns the cumulative count of tag rows embedded across every pass.
     #[must_use]
-    pub fn tags_embedded(&self) -> u32 {
+    pub fn tags_embedded(&self) -> i64 {
         self.tags_embedded
     }
 
-    /// Returns the count of permanently-quarantined items.
+    /// Returns the cumulative count of permanently-quarantined items.
     #[must_use]
-    pub fn items_quarantined(&self) -> u32 {
+    pub fn items_quarantined(&self) -> i64 {
         self.items_quarantined
     }
 
-    /// Returns the count of permanently-quarantined tags.
+    /// Returns the cumulative count of permanently-quarantined tags.
     #[must_use]
-    pub fn tags_quarantined(&self) -> u32 {
+    pub fn tags_quarantined(&self) -> i64 {
         self.tags_quarantined
     }
 
