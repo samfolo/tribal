@@ -187,7 +187,10 @@ async fn test_embedded_tallies_exceed_int_ceiling() {
         .expect("find")
         .expect("run");
     let expected = i64::from(pass) * 2;
-    assert!(expected > i64::from(i32::MAX), "test must exceed the INT ceiling");
+    assert!(
+        expected > i64::from(i32::MAX),
+        "test must exceed the INT ceiling"
+    );
     assert_eq!(run.items_embedded(), expected);
     assert_eq!(run.tags_embedded(), expected);
 }

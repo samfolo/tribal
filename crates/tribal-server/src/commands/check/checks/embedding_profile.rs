@@ -262,7 +262,8 @@ mod tests {
             .dimensions(1024)
             .build();
 
-        let drift = genesis_drift(&genesis, &active).expect("a same-model endpoint and dimension migration must report drift");
+        let drift = genesis_drift(&genesis, &active)
+            .expect("a same-model endpoint and dimension migration must report drift");
         assert!(drift.contains("ollama/nomic-embed-text:v1.5"), "{drift}");
         assert!(drift.contains("localhost:11434"), "endpoint axis: {drift}");
         assert!(drift.contains("768d"), "dimension axis: {drift}");
