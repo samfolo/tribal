@@ -48,41 +48,56 @@ pub struct ReindexRunRequest {
     pub dry_run: bool,
 }
 
-/// How a create request resolved against the latest profile.
+/// How a create request resolved against the latest profile. The run-bearing
+/// variants own their run id, so a created or resumed run always has one and an
+/// outcome carrying a run id without a creating resolution is unrepresentable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReindexRunStatus {
+pub enum ReindexResolution {
     /// A dry run; no run was created.
     Plan,
     /// A new building profile and queued run were created.
-    Created,
+    Created {
+        /// The created run.
+        run_id: ReindexRunId,
+    },
     /// A matching live run already existed and was resumed.
-    AlreadyLive,
+    AlreadyLive {
+        /// The resumed run.
+        run_id: ReindexRunId,
+    },
     /// The target already matches the active profile; nothing to do.
     Unchanged,
     /// Another invocation held the single-flight lock.
     LockContended,
 }
 
-impl ReindexRunStatus {
-    /// The stable wire/CLI label for this status.
+impl ReindexResolution {
+    /// The stable wire/CLI label for this resolution.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Plan => "plan",
-            Self::Created => "created",
-            Self::AlreadyLive => "already_live",
+            Self::Created { .. } => "created",
+            Self::AlreadyLive { .. } => "already_live",
             Self::Unchanged => "unchanged",
             Self::LockContended => "lock_contended",
+        }
+    }
+
+    /// The run this resolution created or resumed, when one applies.
+    #[must_use]
+    pub fn run_id(self) -> Option<ReindexRunId> {
+        match self {
+            Self::Created { run_id } | Self::AlreadyLive { run_id } => Some(run_id),
+            Self::Plan | Self::Unchanged | Self::LockContended => None,
         }
     }
 }
 
 /// The resolved target and pre-flight estimate of a create request.
 pub struct ReindexRunOutcome {
-    /// How the request resolved.
-    pub status: ReindexRunStatus,
-    /// The created or resumed run, when one applies.
-    pub run_id: Option<ReindexRunId>,
+    /// How the request resolved, owning the run id when one applies.
+    pub resolution: ReindexResolution,
     /// The resolved target provider.
     pub provider: ProviderKind,
     /// The resolved target model.
@@ -161,7 +176,7 @@ pub async fn reindex_run(
     )
     .map_err(ReindexOpError::Provider)?;
 
-    let (status, run_id, estimate_profile) = if request.dry_run {
+    let (resolution, estimate_profile) = if request.dry_run {
         let mut conn = acquire(pool, "resolving the reindex estimate target").await?;
         let profile = dry_run_estimate_profile(
             &mut conn,
@@ -171,7 +186,7 @@ pub async fn reindex_run(
             dimensions,
         )
         .await?;
-        (ReindexRunStatus::Plan, None, Some(profile))
+        (ReindexResolution::Plan, Some(profile))
     } else {
         let target = resolve_reindex_target(
             built.as_ref(),
@@ -200,17 +215,15 @@ pub async fn reindex_run(
 
         match outcome {
             ReindexCreationOutcome::Created(run) => (
-                ReindexRunStatus::Created,
-                Some(run.id()),
+                ReindexResolution::Created { run_id: run.id() },
                 Some(run.target_profile_id()),
             ),
             ReindexCreationOutcome::AlreadyLive(run) => (
-                ReindexRunStatus::AlreadyLive,
-                Some(run.id()),
+                ReindexResolution::AlreadyLive { run_id: run.id() },
                 Some(run.target_profile_id()),
             ),
-            ReindexCreationOutcome::Unchanged(_) => (ReindexRunStatus::Unchanged, None, None),
-            ReindexCreationOutcome::LockContended => (ReindexRunStatus::LockContended, None, None),
+            ReindexCreationOutcome::Unchanged(_) => (ReindexResolution::Unchanged, None),
+            ReindexCreationOutcome::LockContended => (ReindexResolution::LockContended, None),
         }
     };
 
@@ -223,8 +236,7 @@ pub async fn reindex_run(
     };
 
     Ok(ReindexRunOutcome {
-        status,
-        run_id,
+        resolution,
         provider,
         model: request.model.clone(),
         dimensions,
