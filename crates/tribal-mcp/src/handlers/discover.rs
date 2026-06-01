@@ -14,8 +14,8 @@ use tribal_db::{
     encode_cursor,
 };
 use tribal_domain::{
-    EmbeddingPurpose, KnowledgeItemId, KnowledgeKind, McpErrorCode, PrincipalId, ProjectId,
-    Reference, Standing, span_attrs,
+    EmbeddingProfileId, EmbeddingPurpose, KnowledgeItemId, KnowledgeKind, McpErrorCode,
+    PrincipalId, ProjectId, Reference, Standing, span_attrs,
 };
 use tribal_inference::EmbeddingRequest;
 
@@ -71,6 +71,7 @@ struct DiscoverResult {
     applied_project_id: Option<ProjectId>,
     project_name: Option<String>,
     embedding_model: String,
+    embedding_profile_id: EmbeddingProfileId,
 }
 
 /// Service-boundary error for [`execute_discover`].
@@ -253,6 +254,7 @@ impl TribalServerHandler {
             next_cursor: result.next_cursor,
             applied_project_id: result.applied_project_id.map(|id| id.to_string()),
             embedding_model: result.embedding_model,
+            embedding_profile_id: result.embedding_profile_id.to_string(),
             trace_id,
             exact: result.exact,
             query: request.query,
@@ -398,10 +400,13 @@ async fn execute_discover(
     let has_more = truncated || (!threshold_cut_tail && search_response.next_cursor.is_some());
 
     let next_cursor = if has_more {
-        search_response
-            .results
-            .last()
-            .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+        search_response.results.last().map(|r| {
+            encode_cursor(
+                r.similarity,
+                *r.item.id().inner(),
+                *active_profile.id().inner(),
+            )
+        })
     } else {
         None
     };
@@ -420,6 +425,7 @@ async fn execute_discover(
             applied_project_id: params.project_id,
             project_name,
             embedding_model: params.embedding_model,
+            embedding_profile_id: active_profile.id(),
         });
     }
 
@@ -505,6 +511,7 @@ async fn execute_discover(
         applied_project_id: params.project_id,
         project_name,
         embedding_model: params.embedding_model,
+        embedding_profile_id: active_profile.id(),
     })
 }
 
@@ -878,7 +885,11 @@ mod tests {
 
         let result = call_execute(&repos, default_params()).await.unwrap();
 
-        let expected_cursor = encode_cursor(0.9, *item.id().inner());
+        let expected_cursor = encode_cursor(
+            0.9,
+            *item.id().inner(),
+            *result.embedding_profile_id.inner(),
+        );
         assert_eq!(
             result.next_cursor.as_deref(),
             Some(expected_cursor.as_str())
