@@ -339,8 +339,9 @@ mod tests {
         FeedbackRating, InferenceParameters, KnowledgeItemId, PrincipalId, ProjectId,
     };
     use tribal_test_utils::{
-        MockPromptVersionRepository, MockRetrievalFeedbackRepository, a_new_embedding_profile,
-        a_prompt_version, a_retrieval_feedback, ensure_genesis_profile, test_context,
+        MockPromptVersionRepository, MockRetrievalFeedbackRepository, TestContext,
+        a_new_embedding_profile, a_prompt_version, a_retrieval_feedback, ensure_genesis_profile,
+        test_context,
     };
 
     use super::*;
@@ -759,10 +760,13 @@ mod tests {
         let mut repos = repos_for_feedback(feedback);
         configure_fingerprint_mocks(&mut repos, &active_prompts);
 
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("pool");
-        // The feedback path reads the active profile for the embedding lineage.
-        let mut conn = pool.acquire().await.expect("conn");
+        // The feedback path reads the active profile for the embedding lineage,
+        // so this test commits a genesis profile. A dedicated database isolates
+        // it, keeping that committed profile out of the parallel suite's
+        // global-state tests (prune, feedback provenance).
+        let ctx = TestContext::new().await.expect("dedicated test database");
+        let pool = ctx.pool().clone();
+        let mut conn = ctx.raw_connection().await.expect("conn");
         ensure_genesis_profile(&mut conn, "nomic-embed-text:v1.5", 768).await;
         drop(conn);
         let handler = TestHandler::builder()
