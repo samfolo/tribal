@@ -30,6 +30,11 @@ pub(crate) struct McpFeedbackRequest {
     pub(crate) explored_anchor_ids: Option<Vec<String>>,
     pub(crate) rating: String,
     pub(crate) notes: Option<String>,
+    /// The `embedding_profile_id` from the discover response this feedback
+    /// rates, carried back so the lineage records the profile that produced
+    /// the results. Absent when the client does not echo it.
+    #[serde(default)]
+    pub(crate) embedding_profile_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
