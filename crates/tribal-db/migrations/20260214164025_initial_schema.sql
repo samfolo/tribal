@@ -132,6 +132,36 @@ CREATE TABLE embeddings (
     CONSTRAINT chk_nonzero_vector CHECK (l2_norm(embedding) > 0)
 );
 
+-- The bare halfvec column cannot itself bind a stored vector's width to its
+-- profile's declared dimensions, so without a guard a wrong-width row (a
+-- provider bug, a misconfigured dimension override) would be accepted and then
+-- poison the profile's partial HNSW index build and every read cast to that
+-- dimension, in a store with no row delete. This trigger makes the dimension
+-- invariant a database fact on every embedding-writing path. The function is
+-- generic over any table with (embedding, embedding_profile_id) columns, so
+-- tag_embeddings reuses it.
+CREATE FUNCTION assert_embedding_matches_profile_dimension() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    declared INT;
+BEGIN
+    SELECT dimensions INTO declared
+        FROM embedding_profiles
+        WHERE id = NEW.embedding_profile_id;
+    IF vector_dims(NEW.embedding) <> declared THEN
+        RAISE EXCEPTION
+            'embedding dimension % does not match embedding_profile % declared dimension %',
+            vector_dims(NEW.embedding), NEW.embedding_profile_id, declared
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_embeddings_dimension
+    BEFORE INSERT ON embeddings
+    FOR EACH ROW EXECUTE FUNCTION assert_embedding_matches_profile_dimension();
+
 --------------------------------------------------------------------------------
 -- item_external_references: append-only
 --------------------------------------------------------------------------------

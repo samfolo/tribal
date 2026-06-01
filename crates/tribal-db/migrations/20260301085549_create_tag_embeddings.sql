@@ -17,3 +17,9 @@ CREATE TABLE tag_embeddings (
 );
 
 CREATE INDEX idx_tag_embeddings_profile ON tag_embeddings (embedding_profile_id);
+
+-- Reuse the embeddings dimension guard (see the initial schema): reject a tag
+-- embedding whose width does not match its profile's declared dimensions.
+CREATE TRIGGER trg_tag_embeddings_dimension
+    BEFORE INSERT ON tag_embeddings
+    FOR EACH ROW EXECUTE FUNCTION assert_embedding_matches_profile_dimension();
