@@ -394,10 +394,10 @@ async fn test_relation_stage_idempotency_skip() {
     let inference: Arc<MockInferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "inference should not be called".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable(
+                    "mock",
+                    "inference should not be called",
+                )
             })))
             .build(),
     );

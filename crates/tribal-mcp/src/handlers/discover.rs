@@ -153,10 +153,10 @@ impl TribalServerHandler {
             &active_profile,
         )
         .map_err(|e| {
-            InferenceError::ProviderUnavailable {
-                provider: active_profile.provider_kind().to_string(),
-                reason: e.to_string(),
-            }
+            InferenceError::provider_unavailable(
+                active_profile.provider_kind().to_string(),
+                e.to_string(),
+            )
             .into_mcp_error()
             .into_call_tool_result()
         })?;

@@ -327,10 +327,10 @@ impl BackfillProcessor {
         })
         .await
         .unwrap_or_else(|_| {
-            Err(tribal_inference::InferenceError::ProviderUnavailable {
-                provider: self.embedding_provider.identity().name.clone(),
-                reason: format!("backfill embed timed out after {EMBED_TIMEOUT:?}"),
-            })
+            Err(tribal_inference::InferenceError::provider_unavailable(
+                self.embedding_provider.identity().name.clone(),
+                format!("backfill embed timed out after {EMBED_TIMEOUT:?}"),
+            ))
         })
     }
 

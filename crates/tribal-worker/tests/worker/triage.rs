@@ -678,10 +678,10 @@ async fn test_triage_idempotency_skip() {
     let embedding: Arc<MockEmbeddingProvider> = Arc::new(
         MockEmbeddingProvider::builder()
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "embedding should not be called".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable(
+                    "mock",
+                    "embedding should not be called",
+                )
             })))
             .build(),
     );
@@ -967,10 +967,10 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
     let embedding: Arc<MockEmbeddingProvider> = Arc::new(
         MockEmbeddingProvider::builder()
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "backfill should not embed already-embedded tags".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable(
+                    "mock",
+                    "backfill should not embed already-embedded tags",
+                )
             })))
             .build(),
     );
@@ -1049,10 +1049,10 @@ async fn test_triage_exact_match_skips_tag_embedding() {
         MockEmbeddingProvider::builder()
             .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "tag resolution should not call embedding provider".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable(
+                    "mock",
+                    "tag resolution should not call embedding provider",
+                )
             })))
             .build(),
     );
@@ -1171,10 +1171,10 @@ async fn test_triage_tag_resolution_provider_failure_retries() {
         MockEmbeddingProvider::builder()
             .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "simulated tag embedding failure".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable(
+                    "mock",
+                    "simulated tag embedding failure",
+                )
             })))
             .build(),
     );
@@ -1537,10 +1537,7 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
         MockInferenceProvider::builder()
             .on_complete(a_completion_response(triage_novel_response_json()), None)
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "force dead-letter".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable("mock", "force dead-letter")
             })))
             .build(),
     );

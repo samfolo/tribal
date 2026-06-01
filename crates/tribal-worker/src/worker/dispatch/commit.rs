@@ -309,12 +309,11 @@ impl Worker {
                                     return Err(StageError::Provider {
                                         context: "re-embedding against the flipped active profile"
                                             .to_owned(),
-                                        source: InferenceError::ProviderUnavailable {
-                                            provider: active.provider_kind().to_string(),
-                                            reason: "the active profile flipped repeatedly during \
-                                                     one commit"
-                                                .to_owned(),
-                                        },
+                                        source: InferenceError::provider_unavailable(
+                                            active.provider_kind().to_string(),
+                                            "the active profile flipped repeatedly during one \
+                                             commit",
+                                        ),
                                     });
                                 }
                                 let (vector, tag_vectors, usages) = reembed_against_active(
@@ -744,10 +743,10 @@ async fn reembed_against_active(
         build_target_provider(reembed.registry, reembed.cache, reembed.credentials, active)
             .map_err(|e| StageError::Provider {
                 context: "resolving the flipped active profile's provider".to_owned(),
-                source: InferenceError::ProviderUnavailable {
-                    provider: active.provider_kind().to_string(),
-                    reason: e.to_string(),
-                },
+                source: InferenceError::provider_unavailable(
+                    active.provider_kind().to_string(),
+                    e.to_string(),
+                ),
             })?;
     let _permit = semaphore
         .acquire()

@@ -124,10 +124,7 @@ pub(super) fn build_test_worker(
         Arc::new(
             MockInferenceProvider::builder()
                 .on_exhaust(tribal_test_utils::ExhaustBehaviour::Error(Box::new(|| {
-                    tribal_inference::InferenceError::ProviderUnavailable {
-                        provider: "mock".into(),
-                        reason: "test stub".into(),
-                    }
+                    tribal_inference::InferenceError::provider_unavailable("mock", "test stub")
                 })))
                 .build(),
         )

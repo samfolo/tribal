@@ -14,6 +14,6 @@ pub use provider::{
     MockEmbeddingProviderBuilder, MockInferenceProvider, MockInferenceProviderBuilder,
 };
 pub use responses::{
-    a_completion_response, a_parse_failure, a_provider_unavailable, an_embedding_failure,
-    an_embedding_response, an_llm_call_failure,
+    a_completion_response, a_parse_failure, a_provider_unavailable, a_rate_limited,
+    an_embedding_failure, an_embedding_response, an_llm_call_failure, an_overloaded,
 };

@@ -38,7 +38,7 @@ use tribal_inference::{
     BatchEmbeddingResult, EMBEDDING_PROBE_INPUT, EmbeddingProvider, EmbeddingRequest,
     EmbeddingUsage, InferenceError, ProviderKey, ProviderLimits, ProviderRegistry,
     ProviderRegistryError, RequestClass, UnsupportedEmbeddingProvider, classify_embedding_error,
-    make_embedding_provider, probe_digest,
+    embedding_retry_after, make_embedding_provider, probe_digest,
 };
 
 // ---------------------------------------------------------------------------
@@ -359,7 +359,7 @@ pub async fn drive_reindex(conn: &mut PgConnection) -> Result<Option<ReindexRun>
 
 /// Built embedding providers keyed by profile id, shared across the worker.
 ///
-/// The `ProviderKey` registry keys clients and rate-limit semaphores by
+/// The `ProviderKey` registry keys clients and concurrency semaphores by
 /// endpoint, so it cannot distinguish two profiles on one endpoint that differ
 /// only by model or dimension; this cache holds the model/dimension-specific
 /// built provider per profile. The reindex driver populates it for the building
@@ -406,11 +406,11 @@ pub enum ReindexError {
 }
 
 /// Builds the embedding provider for a profile, caching it by profile id, and
-/// resolves its endpoint's rate-limit semaphore.
+/// resolves its endpoint's concurrency semaphore.
 ///
 /// Registers the endpoint in the registry if it is new (a no-op for an
 /// endpoint the active providers already cover, so a model-change reindex
-/// shares their client and rate-limit budget), resolves the credential
+/// shares their client and concurrency budget), resolves the credential
 /// fail-closed, and constructs the provider. A second call for the same profile
 /// returns the cached provider.
 ///
@@ -452,11 +452,11 @@ fn embedding_key(kind: ProviderKind, url: &str) -> Result<ProviderKey, ProviderR
     ProviderKey::new(kind.to_string(), url, RequestClass::Embedding)
 }
 
-/// Builds an embedding provider and its endpoint rate-limit semaphore from a
+/// Builds an embedding provider and its endpoint concurrency semaphore from a
 /// target identity, with no per-profile cache.
 ///
 /// Registers the endpoint if new (a no-op when the active providers already
-/// cover it, so a model-change reindex shares their client and rate-limit
+/// cover it, so a model-change reindex shares their client and concurrency
 /// budget), resolves the credential fail-closed, and constructs the provider.
 /// [`build_target_provider`] wraps this with the per-profile cache.
 ///
@@ -569,8 +569,22 @@ fn retry_at(attempt: u32) -> DateTime<Utc> {
     Utc::now() + chrono::TimeDelta::seconds(secs)
 }
 
-/// Embeds a batch while holding one endpoint rate-limit permit, so a reindex
-/// shares the endpoint's budget with live ingest rather than monopolising it.
+/// The time a retryable task becomes claimable again. A rate-limited or
+/// overloaded provider that supplied a `Retry-After` is honoured directly;
+/// otherwise (and for plain transient failures) the capped exponential backoff
+/// applies.
+fn retry_at_for(signal: &RetrySignal, attempt: u32) -> DateTime<Utc> {
+    match signal.retry_after {
+        Some(delay) => {
+            Utc::now() + chrono::TimeDelta::from_std(delay).unwrap_or(chrono::TimeDelta::MAX)
+        }
+        None => retry_at(attempt),
+    }
+}
+
+/// Embeds a batch while holding one endpoint concurrency permit, so a reindex
+/// shares the endpoint's in-flight budget with live ingest rather than
+/// monopolising it.
 async fn embed_with_permit(
     provider: &dyn EmbeddingProvider,
     semaphore: &Semaphore,
@@ -609,7 +623,7 @@ async fn record_reindex_usage(
 }
 
 /// The per-cycle context every task in one drive cycle shares: the run, its
-/// building profile, and that profile's provider and rate-limit semaphore.
+/// building profile, and that profile's provider and concurrency semaphore.
 struct ReindexCtx<'a> {
     run: &'a ReindexRun,
     building: &'a EmbeddingProfile,
@@ -648,11 +662,21 @@ async fn quarantine(
 }
 
 /// A failed embed: a dimension mismatch or a permanent-class error quarantines
-/// the entity; a transient-class error is surfaced so the batch retries. Shared
+/// the entity; a retryable-class error is surfaced so the batch retries. Shared
 /// by the item and tag paths, neither of which carries a success here.
 enum EmbedFailure {
     Quarantine(String),
-    Transient(String),
+    Retry(RetrySignal),
+}
+
+/// A retryable embed failure's durable retry inputs: its error class (recorded
+/// in `reindex_tasks.last_error_class`) and any `Retry-After` the provider
+/// asked for, which overrides the exponential backoff for the rate-limited and
+/// overloaded classes.
+struct RetrySignal {
+    class: EmbeddingErrorClass,
+    retry_after: Option<Duration>,
+    message: String,
 }
 
 /// Classifies one embed result against the building geometry, distinguishing a
@@ -677,9 +701,13 @@ fn classify_embedding(
         ))),
         Err(e) => Err(match classify_embedding_error(&e) {
             EmbeddingErrorClass::Permanent => EmbedFailure::Quarantine(e.to_string()),
-            EmbeddingErrorClass::Transient
+            class @ (EmbeddingErrorClass::Transient
             | EmbeddingErrorClass::RateLimited
-            | EmbeddingErrorClass::Overloaded => EmbedFailure::Transient(e.to_string()),
+            | EmbeddingErrorClass::Overloaded) => EmbedFailure::Retry(RetrySignal {
+                class,
+                retry_after: embedding_retry_after(&e),
+                message: e.to_string(),
+            }),
         }),
     }
 }
@@ -704,13 +732,13 @@ fn classify_item_embedding(
 
 /// Embeds the next set-difference batch into the building profile: writes the
 /// successes (`ON CONFLICT DO NOTHING`), quarantines permanent failures, and
-/// advances the run tallies. Returns a transient failure's message, if any item
+/// advances the run tallies. Returns a retryable failure's signal, if any item
 /// should be retried. The shared core of backfill processing, the catch-up
 /// sweep, and the cutover's final sweep.
 async fn embed_pending_batch(
     conn: &mut PgConnection,
     ctx: &ReindexCtx<'_>,
-) -> Result<Option<String>, DbError> {
+) -> Result<Option<RetrySignal>, DbError> {
     let ids = PgEmbeddingRepository
         .find_items_without_embedding(conn, ctx.building.id(), None, BACKFILL_RANGE_WIDTH)
         .await?;
@@ -737,7 +765,7 @@ async fn embed_pending_batch(
 
     let mut rows = Vec::new();
     let mut quarantined = 0u32;
-    let mut transient = None;
+    let mut retry: Option<RetrySignal> = None;
     for (item, res) in items.iter().zip(result.items) {
         match classify_item_embedding(item.id(), ctx.building, res) {
             ItemOutcome::Embedded(row) => rows.push(row),
@@ -754,8 +782,8 @@ async fn embed_pending_batch(
                     quarantined += 1;
                 }
             }
-            ItemOutcome::Failed(EmbedFailure::Transient(message)) => {
-                transient.get_or_insert(message);
+            ItemOutcome::Failed(EmbedFailure::Retry(signal)) => {
+                retry.get_or_insert(signal);
             }
         }
     }
@@ -777,7 +805,7 @@ async fn embed_pending_batch(
             .await?;
     }
 
-    Ok(transient)
+    Ok(retry)
 }
 
 /// Embeds one backfill batch and resolves the task: completes it when the batch
@@ -790,15 +818,15 @@ async fn process_item_batch(
     attempt: u32,
     claim_token: uuid::Uuid,
 ) -> Result<(), DbError> {
-    if let Some(message) = embed_pending_batch(conn, ctx).await? {
+    if let Some(signal) = embed_pending_batch(conn, ctx).await? {
         PgReindexTaskRepository
             .fail(
                 conn,
                 task_id,
                 claim_token,
-                retry_at(attempt),
-                EmbeddingErrorClass::Transient,
-                &message,
+                retry_at_for(&signal, attempt),
+                signal.class,
+                &signal.message,
             )
             .await?;
     } else {
@@ -810,14 +838,14 @@ async fn process_item_batch(
 }
 
 /// Embeds a single tag into the building profile, writing it on success,
-/// quarantining a permanent failure, and returning a transient failure's
-/// message for the caller to retry. The shared core of tag-task processing and
-/// the catch-up/cutover tag sweep.
+/// quarantining a permanent failure, and returning a retryable failure's signal
+/// for the caller to retry. The shared core of tag-task processing and the
+/// catch-up/cutover tag sweep.
 async fn embed_one_tag(
     conn: &mut PgConnection,
     ctx: &ReindexCtx<'_>,
     tag: &str,
-) -> Result<Option<String>, DbError> {
+) -> Result<Option<RetrySignal>, DbError> {
     let request = EmbeddingRequest {
         input: tag.to_owned(),
         purpose: EmbeddingPurpose::Tag,
@@ -826,7 +854,11 @@ async fn embed_one_tag(
     record_reindex_usage(conn, ctx.run.id(), EmbeddingPurpose::Tag, &result.usage).await;
 
     let Some(result) = result.items.pop() else {
-        return Ok(Some("embedding returned no result".to_owned()));
+        return Ok(Some(RetrySignal {
+            class: EmbeddingErrorClass::Transient,
+            retry_after: None,
+            message: "embedding returned no result".to_owned(),
+        }));
     };
 
     let failure = match classify_embedding(ctx.building, result) {
@@ -859,7 +891,7 @@ async fn embed_one_tag(
             }
             Ok(None)
         }
-        EmbedFailure::Transient(message) => Ok(Some(message)),
+        EmbedFailure::Retry(signal) => Ok(Some(signal)),
     }
 }
 
@@ -873,15 +905,15 @@ async fn process_tag(
     attempt: u32,
     claim_token: uuid::Uuid,
 ) -> Result<(), DbError> {
-    if let Some(message) = embed_one_tag(conn, ctx, tag).await? {
+    if let Some(signal) = embed_one_tag(conn, ctx, tag).await? {
         PgReindexTaskRepository
             .fail(
                 conn,
                 task_id,
                 claim_token,
-                retry_at(attempt),
-                EmbeddingErrorClass::Transient,
-                &message,
+                retry_at_for(&signal, attempt),
+                signal.class,
+                &signal.message,
             )
             .await?;
     } else {
@@ -1052,21 +1084,21 @@ async fn build_partial_indexes(
 const REINDEX_CUTOVER_MAX_PASSES: u32 = 1024;
 
 /// Embeds every tag currently missing the building embedding, returning a
-/// transient failure's message if one occurred.
+/// retryable failure's signal if one occurred.
 async fn embed_pending_tags(
     conn: &mut PgConnection,
     ctx: &ReindexCtx<'_>,
-) -> Result<Option<String>, DbError> {
+) -> Result<Option<RetrySignal>, DbError> {
     let tags = PgTagEmbeddingRepository
         .find_tags_missing_embeddings(conn, ctx.building.id())
         .await?;
-    let mut transient = None;
+    let mut retry: Option<RetrySignal> = None;
     for tag in tags {
-        if let Some(message) = embed_one_tag(conn, ctx, &tag).await? {
-            transient.get_or_insert(message);
+        if let Some(signal) = embed_one_tag(conn, ctx, &tag).await? {
+            retry.get_or_insert(signal);
         }
     }
-    Ok(transient)
+    Ok(retry)
 }
 
 /// Fails a reindex run: fails the building profile (so it drops out of every
@@ -1216,8 +1248,8 @@ async fn catch_up_and_cutover(
     let mut prev_remaining: Option<i64> = None;
     for _ in 0..REINDEX_CUTOVER_MAX_PASSES {
         // Lock-free: embed whatever the set-difference currently holds, keeping
-        // any transient failure's signal for the stall check below.
-        let transient = {
+        // any retryable failure's signal for the stall check below.
+        let retry = {
             let items = embed_pending_batch(conn, ctx).await?;
             let tags = embed_pending_tags(conn, ctx).await?;
             items.or(tags)
@@ -1244,12 +1276,13 @@ async fn catch_up_and_cutover(
         // exclusive lock once the backlog looks drained.
         let remaining = count_remaining(conn, ctx.building).await?;
         if remaining != 0 {
-            // No progress since the last pass and a transient is in play: yield
-            // to the next cycle rather than spinning the full pass budget.
-            if transient.is_some() && prev_remaining == Some(remaining) {
+            // No progress since the last pass and a retryable failure is in
+            // play: yield to the next cycle rather than spinning the full pass
+            // budget.
+            if retry.is_some() && prev_remaining == Some(remaining) {
                 tracing::warn!(
                     remaining,
-                    "reindex catch-up stalled on a transient failure; yielding to the next cycle",
+                    "reindex catch-up stalled on a retryable failure; yielding to the next cycle",
                 );
                 return Ok(false);
             }
@@ -1345,8 +1378,9 @@ mod tests {
     use tribal_inference::{EmbeddingResponse, ProviderIdentity};
     use tribal_test_utils::{
         EmbeddingMatcher, ExhaustBehaviour, MockEmbeddingProvider, Seed, a_new_embedding_profile,
-        a_new_knowledge_item, a_new_principal, a_provider_unavailable, an_embedding_profile,
-        an_embedding_response, item, serial_lock, test_context, truncate_all_tables,
+        a_new_knowledge_item, a_new_principal, a_provider_unavailable, a_rate_limited,
+        an_embedding_profile, an_embedding_response, an_overloaded, item, serial_lock,
+        test_context, truncate_all_tables,
     };
 
     use super::*;
@@ -1835,6 +1869,145 @@ mod tests {
             failed.state(),
             ReindexRunState::Failed,
             "a dead-lettered task fails the run, not aborts it",
+        );
+    }
+
+    /// Creates a running run, its building profile, and one claimed tag task,
+    /// ready to drive through `process_tag`.
+    async fn a_claimed_tag_task(
+        conn: &mut PgConnection,
+        key: &str,
+    ) -> (ReindexRun, EmbeddingProfile, ReindexTask) {
+        let principal = insert_principal(conn, key).await;
+        let ReindexCreationOutcome::Created(run) = create_reindex_run(conn, &a_target(), principal)
+            .await
+            .expect("create")
+        else {
+            panic!("expected a created run");
+        };
+        let building = PgEmbeddingProfileRepository
+            .find_building(conn)
+            .await
+            .expect("find_building")
+            .expect("a building profile");
+        PgReindexRunRepository
+            .transition(
+                conn,
+                run.id(),
+                ReindexRunState::Queued,
+                ReindexRunState::Running,
+                None,
+            )
+            .await
+            .expect("promote");
+        PgReindexTaskRepository
+            .upsert(
+                conn,
+                &NewReindexTask::builder()
+                    .reindex_run_id(run.id())
+                    .kind(ReindexEntityKind::Tag)
+                    .target_ref("tag:rust".to_owned())
+                    .build(),
+            )
+            .await
+            .expect("enrol");
+        let task = PgReindexTaskRepository
+            .claim(conn, run.id(), 1, "test-reindex-worker")
+            .await
+            .expect("claim")
+            .into_iter()
+            .next()
+            .expect("a claimable task");
+        (run, building, task)
+    }
+
+    #[tokio::test]
+    async fn test_rate_limited_failure_records_the_class_and_honours_retry_after() {
+        let _guard = serial_lock().await;
+        let ctx_db = test_context().await;
+        let mut txn = ctx_db.begin_test().await.expect("begin_test");
+        let (run, building, task) = a_claimed_tag_task(&mut txn, "user:reindex-rate-limited").await;
+
+        // The provider rate-limits with a 90-second Retry-After, longer than any
+        // exponential-backoff step, so the threaded delay is distinguishable.
+        let retry_after = Duration::from_secs(90);
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed_error(a_rate_limited(retry_after), None)
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        let semaphore = Semaphore::new(1);
+        let ctx = ReindexCtx {
+            run: &run,
+            building: &building,
+            provider: provider.as_ref(),
+            semaphore: &semaphore,
+        };
+
+        let before = Utc::now();
+        process_one(&mut txn, &ctx, &task).await.expect("process");
+
+        let failed = PgReindexTaskRepository
+            .find_by_id(&mut txn, task.id())
+            .await
+            .expect("find_by_id")
+            .expect("the task");
+        assert_eq!(
+            failed.last_error_class(),
+            Some(EmbeddingErrorClass::RateLimited),
+            "a 429 records the rate-limited class",
+        );
+        assert_eq!(failed.state(), ReindexTaskState::Pending, "it retries");
+        let delay = failed.available_at() - before;
+        assert!(
+            delay >= chrono::TimeDelta::seconds(80) && delay <= chrono::TimeDelta::seconds(100),
+            "available_at honours the ~90s Retry-After, not the backoff; got {delay}",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_overloaded_failure_records_the_overloaded_class() {
+        let _guard = serial_lock().await;
+        let ctx_db = test_context().await;
+        let mut txn = ctx_db.begin_test().await.expect("begin_test");
+        let (run, building, task) = a_claimed_tag_task(&mut txn, "user:reindex-overloaded").await;
+
+        // A 529 with no Retry-After falls back to the exponential backoff.
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed_error(an_overloaded(), None)
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        let semaphore = Semaphore::new(1);
+        let ctx = ReindexCtx {
+            run: &run,
+            building: &building,
+            provider: provider.as_ref(),
+            semaphore: &semaphore,
+        };
+
+        let before = Utc::now();
+        process_one(&mut txn, &ctx, &task).await.expect("process");
+
+        let failed = PgReindexTaskRepository
+            .find_by_id(&mut txn, task.id())
+            .await
+            .expect("find_by_id")
+            .expect("the task");
+        assert_eq!(
+            failed.last_error_class(),
+            Some(EmbeddingErrorClass::Overloaded),
+            "a 529 records the overloaded class",
+        );
+        assert_eq!(failed.state(), ReindexTaskState::Pending, "it retries");
+        // The claimed task is on its first attempt (attempt 0), so the backoff is
+        // 2^0 = 1 second, well under the 90s a Retry-After would have set.
+        let delay = failed.available_at() - before;
+        assert!(
+            delay <= chrono::TimeDelta::seconds(10),
+            "without a Retry-After the bounded backoff applies; got {delay}",
         );
     }
 

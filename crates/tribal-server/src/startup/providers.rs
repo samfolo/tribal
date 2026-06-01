@@ -207,10 +207,10 @@ pub(crate) async fn probe_embedding_provider(
                 .probe_model()
                 .await
         }
-        ProviderKind::Anthropic => Err(InferenceError::ProviderUnavailable {
-            provider: ProviderKind::Anthropic.to_string(),
-            reason: ANTHROPIC_EMBEDDING_UNSUPPORTED.to_owned(),
-        }),
+        ProviderKind::Anthropic => Err(InferenceError::provider_unavailable(
+            ProviderKind::Anthropic.to_string(),
+            ANTHROPIC_EMBEDDING_UNSUPPORTED,
+        )),
     }
 }
 
