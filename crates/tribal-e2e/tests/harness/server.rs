@@ -356,7 +356,7 @@ impl TestHarness {
         // and the server's first-boot provisioning reuse it.
         seed_genesis_from_init(&pool, &config).await;
 
-        // 6–7. Seed data (graph path or manual path)
+        // 6-7. Seed data (graph path or manual path)
         let mut raw_conn = ctx.raw_connection().await.expect("raw connection for seed");
 
         let (cli_project, labels) = if let Some(graph_fn) = setup.graph_fn {

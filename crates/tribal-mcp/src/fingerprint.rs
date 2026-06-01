@@ -124,11 +124,12 @@ pub(crate) struct PipelineProviderIdentities {
 /// embedding dimension.
 ///
 /// Each stage's sampling parameters are resolved through the capability layer
-/// so the fingerprint records the effective post-reconcile shape — a stage
+/// so the fingerprint records the effective post-reconcile shape: a stage
 /// whose model samples adaptively records `temperature` as unset, matching
-/// what the wire layer sends — rather than the raw configured value. The
-/// embedding dimension is the active profile's, not a config value, so the
-/// fingerprint reports the true geometry after a reindex changes it.
+/// what the wire layer sends, rather than the raw configured value. The
+/// embedding dimension is the active profile's, supplied by the caller rather
+/// than read from config, so it records the resolved geometry rather than the
+/// configured default.
 #[must_use]
 pub fn build_inference_parameters(
     config: &TribalConfig,
