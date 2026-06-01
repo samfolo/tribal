@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-01
+
+This release makes the embedding geometry configurable and adds zero-downtime reindexing. It revises the initial database schema, so there is no in-place upgrade from 0.2.x: provision a fresh database.
+
+### Added
+
+- Configurable embedding geometry. The embedding model, dimension, and provider endpoint are now config-driven rather than fixed at 768 dimensions. Each activation is recorded in an append-only log of embedding profiles, the active profile is derived from that log, embeddings are stored as `halfvec`, and a database trigger enforces that every stored vector matches its profile's declared dimension.
+- `tribal reindex`, a zero-downtime migration of the embedding space to a new model or dimension. It runs as a background, single-flight, crash-safe catch-up that embeds the corpus into a new profile and cuts over atomically, exposed as `run` (with `--dry-run` to estimate cost), `cancel`, and `prune`. `tribal check` now reports the active embedding profile.
+
+### Changed
+
+- The worker pipeline prompts are reframed around tacit knowledge (the reasoning, the rejected alternatives, and the bounding constraints behind a decision) rather than a generic knowledge base, and the model-facing vocabulary is unified on "claim". The few-shot examples and the structured-output guards are unchanged.
+
 ## [0.2.5] - 2026-05-30
 
 ### Added
@@ -64,7 +77,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Docker Compose provider configuration through `.env`, letting the containerised path target a cloud provider (OpenAI, Anthropic) instead of only a local Ollama.
 
-[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tribal-memory/tribal/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/tribal-memory/tribal/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/tribal-memory/tribal/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/tribal-memory/tribal/compare/v0.2.2...v0.2.3
