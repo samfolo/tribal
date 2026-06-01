@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-01
+
+This release makes the embedding geometry configurable and adds zero-downtime reindexing of the embedding space. It is a breaking release: the initial database schema is revised for the embedding-profile model and the embedding configuration keys have moved, so there is no in-place upgrade from 0.2.x. Provision a fresh database and update the configuration (see Changed).
+
+### Added
+
+- Configurable embedding geometry. The embedding model, output dimension, and provider endpoint are config-driven rather than fixed at 768 dimensions. Each activation is recorded in an append-only log of embedding profiles; the active profile is derived from that log and is the live identity for every read and write. Embeddings are stored as `halfvec`, and a database trigger rejects any vector whose dimension does not match its profile.
+- `tribal reindex`, a zero-downtime migration of the embedding space to a new model, dimension, or endpoint. The run is a background, single-flight, crash-safe catch-up that embeds the corpus into a new profile while reads and writes continue against the active one, then cuts over atomically; an unchanged target is a no-op. The CLI exposes `run` (`--provider` and `--model`, optional `--dimensions` and `--base-url`, with `--dry-run` to estimate the item and tag counts before spending), `cancel`, and `prune` (supersede the non-active and failed profiles and reclaim their storage). `tribal check` now reports the active embedding profile.
+- The same three reindex operations as operator MCP tools (`tribal_reindex`, `tribal_reindex_cancel`, `tribal_reindex_prune`), so an authorised agent can drive a migration without shell access.
+- A narrow `tribal.embedding:execute` OAuth scope that gates the reindex tools, and a repeatable `--scope` flag on `tribal token create` to mint scoped tokens. Read and write scopes plus `tribal.embedding:execute` are mintable; root and uncatalogued execute scopes are refused. The local stdio principal is granted the scope automatically, so bootstrap and the `tribal token create` defaults are unchanged (full read and write).
+
+### Changed
+
+- The embedding configuration has moved. The flat `[embedding]` section is replaced by `init.embedding`, a genesis seed applied only when a corpus is first created (once the corpus exists the active profile is the live identity, so later edits to `init` are inert and `tribal check` reports any divergence as informational state), and by a `credentials` catalogue that binds a named `(provider, base_url)` endpoint to an API key so a migrated corpus keeps its key reachable. Environment overrides are renamed to match: `TRIBAL_EMBEDDING__*` becomes `TRIBAL_INIT__EMBEDDING__*`, and a catalogue key is set with `TRIBAL_CREDENTIALS__<NAME>__API_KEY`. The Docker Compose and `.env.example` samples are updated accordingly.
+- `tribal_discover` results now carry `embedding_profile_id`, the active profile that produced them, and `tribal_feedback` accepts it so the local retrieval-feedback log records the producing profile. A discover pagination cursor is bound to the embedding profile that issued it.
+- The worker pipeline prompts are reframed around tacit knowledge (the reasoning, the rejected alternatives, and the bounding constraints behind a decision) rather than a generic knowledge base, and the model-facing vocabulary is unified on "claim". The few-shot examples and the structured-output guards are unchanged.
+- The Docker Compose Postgres image is pinned to `pgvector/pgvector:0.8.2-pg17`, the minimum that provides the `halfvec` operations the embedding store now relies on.
+
 ## [0.2.5] - 2026-05-30
 
 ### Added
@@ -64,7 +82,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Docker Compose provider configuration through `.env`, letting the containerised path target a cloud provider (OpenAI, Anthropic) instead of only a local Ollama.
 
-[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/tribal-memory/tribal/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tribal-memory/tribal/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/tribal-memory/tribal/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/tribal-memory/tribal/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/tribal-memory/tribal/compare/v0.2.2...v0.2.3
