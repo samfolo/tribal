@@ -206,11 +206,13 @@ pub async fn create_reindex_run(
 /// Reports whether a target's declared identity (the config-re-derivable tuple,
 /// excluding the drift signals) matches an existing profile.
 fn declared_identity_matches(target: &ReindexTarget, profile: &EmbeddingProfile) -> bool {
-    target.provider_kind == profile.provider_kind()
-        && target.normalised_base_url == profile.normalised_base_url()
-        && target.model == profile.model()
-        && target.dimensions == profile.dimensions()
-        && target.distance_metric == profile.distance_metric()
+    profile.matches_geometry(
+        target.provider_kind,
+        &target.normalised_base_url,
+        &target.model,
+        target.dimensions,
+        target.distance_metric,
+    )
 }
 
 /// Reports whether a target matches an existing profile closely enough that a

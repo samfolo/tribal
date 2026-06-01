@@ -139,6 +139,24 @@ impl EmbeddingProfile {
         self.distance_metric
     }
 
+    /// Reports whether this profile's declared geometry (the config-re-derivable
+    /// tuple, excluding the drift signals) matches the given identity.
+    #[must_use]
+    pub fn matches_geometry(
+        &self,
+        provider_kind: ProviderKind,
+        normalised_base_url: &str,
+        model: &str,
+        dimensions: u32,
+        distance_metric: DistanceMetric,
+    ) -> bool {
+        self.provider_kind() == provider_kind
+            && self.normalised_base_url() == normalised_base_url
+            && self.model() == model
+            && self.dimensions() == dimensions
+            && self.distance_metric() == distance_metric
+    }
+
     /// Returns the provider revision signal (empty when none).
     #[must_use]
     pub fn revision_token(&self) -> &str {
