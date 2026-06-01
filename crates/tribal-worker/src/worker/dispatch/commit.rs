@@ -18,8 +18,8 @@ use tribal_db::{
     TriageResultRepository, TriageSimilarItemDecisionRepository, advisory_locks,
 };
 use tribal_domain::{
-    EmbeddingProfile, EmbeddingPurpose, Job, JobId, JobOutcome, JobState, JobStatus,
-    KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
+    EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, Job, JobId, JobOutcome, JobState,
+    JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
 };
 use tribal_inference::{EmbeddingRequest, InferenceError, ProviderRegistry, Usage};
 
@@ -39,6 +39,16 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 impl Worker {
+    /// The dependencies the commit path needs to re-embed an item and its tags
+    /// against a profile a cutover freshly activated.
+    fn reembed_deps(&self) -> ReembedDeps<'_> {
+        ReembedDeps {
+            registry: self.provider_registry(),
+            cache: self.embedding_providers(),
+            credentials: self.credentials(),
+        }
+    }
+
     /// Commits domain effects produced by a successful stage.
     pub(crate) async fn commit_domain_effects(
         &self,
@@ -243,6 +253,7 @@ impl Worker {
                     knowledge_item,
                     embedding_vector,
                     embedding_model,
+                    embedding_profile_id,
                     suggested_references,
                     new_tags,
                     resolved_tags,
@@ -251,14 +262,11 @@ impl Worker {
                     // flips the active profile between the pre-embed and the
                     // write, so a provider call never spans the commit
                     // transaction or holds the shared cutover lock.
-                    let reembed = ReembedDeps {
-                        registry: self.provider_registry(),
-                        cache: self.embedding_providers(),
-                        credentials: self.credentials(),
-                    };
+                    let reembed = self.reembed_deps();
                     let mut embedding = NovelEmbedding {
                         vector: embedding_vector,
                         model: embedding_model,
+                        producing_profile_id: embedding_profile_id,
                         tag_vectors: new_tags.iter().map(|t| t.embedding.clone()).collect(),
                     };
                     let mut attempts = 0u32;
@@ -325,6 +333,7 @@ impl Worker {
                                 embedding = NovelEmbedding {
                                     vector,
                                     model: active.model().to_owned(),
+                                    producing_profile_id: active.id(),
                                     tag_vectors,
                                 };
                             }
@@ -791,6 +800,9 @@ struct NovelEmbedding {
     vector: Vec<f32>,
     /// The model that produced these vectors.
     model: String,
+    /// The profile the vectors were produced against; the commit flip-check
+    /// compares it to the active read under the cutover lock.
+    producing_profile_id: EmbeddingProfileId,
     /// The novel tags' vectors, in `new_tags` order.
     tag_vectors: Vec<Vec<f32>>,
 }
@@ -850,12 +862,13 @@ async fn commit_novel(
     let profile_id = active.id();
 
     // If a cutover flipped the active between the pre-embed and now, the
-    // pre-embedded vector is for the superseded geometry. Signal the caller to
-    // re-embed against the new active and retry, rather than embedding here: a
-    // provider call must never hold this lock or the open transaction.
-    let flipped = active.model() != embedding.model
-        || u32::try_from(embedding.vector.len()).map_or(true, |len| len != active.dimensions());
-    if flipped {
+    // pre-embedded vector is for the superseded profile's geometry. Compare
+    // profile identity, not (model, dimension): two profiles can share a model
+    // and width yet hold different geometries (a different endpoint or
+    // revision), so a name-and-width match is not an identity match. Signal the
+    // caller to re-embed against the new active and retry, rather than embedding
+    // here: a provider call must never hold this lock or the open transaction.
+    if active.id() != embedding.producing_profile_id {
         return Ok(CommitNovelOutcome::Reembed(active));
     }
 
@@ -1179,10 +1192,12 @@ mod tests {
         );
     }
 
-    /// When the active a cutover has since flipped no longer matches the
-    /// pre-embedded vector's model or dimension, `commit_novel` writes nothing
-    /// and returns the new active for the caller to re-embed against, so a
-    /// provider call never spans the open transaction or the cutover lock.
+    /// When the active a cutover has since flipped is not the profile the
+    /// pre-embed was produced against, `commit_novel` writes nothing and returns
+    /// the new active for the caller to re-embed against, so a provider call
+    /// never spans the open transaction or the cutover lock. The check is on
+    /// profile identity, so it catches a flip even when the model and dimension
+    /// are unchanged.
     #[tokio::test]
     async fn test_commit_novel_signals_reembed_when_the_active_flipped() {
         let ctx = test_context().await;
@@ -1218,10 +1233,16 @@ mod tests {
             .principal_id(principal)
             .build();
 
-        // The pre-embed names a model a cutover has since superseded.
-        let model_flipped = NovelEmbedding {
+        let active = active_embedding_profile(&mut txn).await;
+
+        // Two profiles can share a model and width yet be distinct geometries (a
+        // different endpoint or revision). The pre-embed names a producing
+        // profile the active is not, even though the model and dimension still
+        // match, so identity, not (model, dimension), must drive the re-embed.
+        let produced_elsewhere = NovelEmbedding {
             vector: vec![0.1_f32; 768],
-            model: "superseded-model".to_owned(),
+            model: active.model().to_owned(),
+            producing_profile_id: EmbeddingProfileId::new(),
             tag_vectors: vec![],
         };
         let outcome = commit_novel(
@@ -1230,35 +1251,7 @@ mod tests {
             project,
             0,
             &new_item,
-            &model_flipped,
-            &[],
-            &[],
-            &[],
-        )
-        .await
-        .expect("commit_novel");
-        let CommitNovelOutcome::Reembed(returned) = outcome else {
-            panic!("expected a re-embed signal for the flipped active");
-        };
-        assert_eq!(
-            returned.model(),
-            "new-model",
-            "the signal carries the new active for the caller to re-embed against",
-        );
-
-        // A dimension mismatch against the active is signalled the same way.
-        let dim_flipped = NovelEmbedding {
-            vector: vec![0.5_f32; 512],
-            model: "new-model".to_owned(),
-            tag_vectors: vec![],
-        };
-        let outcome = commit_novel(
-            &mut txn,
-            job_id,
-            project,
-            0,
-            &new_item,
-            &dim_flipped,
+            &produced_elsewhere,
             &[],
             &[],
             &[],
@@ -1266,18 +1259,20 @@ mod tests {
         .await
         .expect("commit_novel");
         assert!(
-            matches!(outcome, CommitNovelOutcome::Reembed(_)),
-            "a dimension mismatch signals a re-embed too",
+            matches!(&outcome, CommitNovelOutcome::Reembed(reembed_target) if reembed_target.id() == active.id()),
+            "a non-active producing profile re-embeds against the active",
         );
 
-        // The signal precedes every insert, so nothing was written.
-        let uncommitted = PgEmbeddingRepository
-            .find_items_without_embedding(&mut txn, EmbeddingProfileId::new(), None, 10)
+        // The signal precedes every insert, so this job recorded no triage
+        // result. Scoping the check to the job keeps it free of items other
+        // tests commit concurrently to the shared database.
+        let result = PgTriageResultRepository
+            .find_by_job_id_and_batch_index(&mut txn, job_id, 0)
             .await
-            .expect("find items");
+            .expect("find triage result");
         assert!(
-            uncommitted.is_empty(),
-            "a re-embed signal writes no knowledge item",
+            result.is_none(),
+            "a re-embed signal writes no triage result",
         );
     }
 
@@ -1323,6 +1318,7 @@ mod tests {
         let embedding = NovelEmbedding {
             vector: vec![0.5_f32; 768],
             model: "new-model".to_owned(),
+            producing_profile_id: active.id(),
             tag_vectors: vec![],
         };
         let outcome = commit_novel(
@@ -1343,13 +1339,20 @@ mod tests {
             "a matching embedding is committed",
         );
 
-        let item_ids = PgEmbeddingRepository
-            .find_items_without_embedding(&mut txn, EmbeddingProfileId::new(), None, 10)
+        // Resolve the committed item through this job's triage result rather
+        // than a global item scan, so the assertion sees only this test's write
+        // and not items other tests commit concurrently.
+        let result = PgTriageResultRepository
+            .find_by_job_id_and_batch_index(&mut txn, job_id, 0)
             .await
-            .expect("find items");
-        assert_eq!(item_ids.len(), 1, "the committed item is the only one");
+            .expect("find triage result")
+            .expect("the novel commit records a triage result");
+        let item_id = match result.outcome() {
+            TriageOutcome::Created { item_id } => *item_id,
+            other => panic!("a novel commit records a Created outcome, got {other:?}"),
+        };
         let stored = PgEmbeddingRepository
-            .find_by_knowledge_item_id(&mut txn, item_ids[0], active.id())
+            .find_by_knowledge_item_id(&mut txn, item_id, active.id())
             .await
             .expect("find embedding")
             .expect("the committed item is embedded under the active");
