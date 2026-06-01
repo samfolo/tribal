@@ -19,7 +19,7 @@ use tribal_common::JobStateTxs;
 use tribal_config::{PromptSource, TribalConfig};
 use tribal_mcp::{AppState, build_inference_parameters};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
-use tribal_worker::{Worker, WorkerError};
+use tribal_worker::{EmbeddingProviderCache, Worker, WorkerError};
 
 use crate::{
     error::AppError,
@@ -399,6 +399,11 @@ async fn bootstrap(
 
     let registry = Arc::new(registry);
 
+    // Shared between the worker (re-embed on cutover) and the MCP read path
+    // (resolve the live provider from the active profile), so a provider built
+    // for a profile is reused across both.
+    let embedding_providers: EmbeddingProviderCache = Arc::new(DashMap::new());
+
     let worker = Arc::new(Worker::new(
         pool_worker.clone(),
         Arc::clone(&registry),
@@ -406,7 +411,7 @@ async fn bootstrap(
         Arc::clone(&triage_provider),
         Arc::clone(&relation_provider),
         Arc::clone(&embedding_provider),
-        Arc::new(DashMap::new()),
+        Arc::clone(&embedding_providers),
         config.credentials.clone(),
         extraction_key.clone(),
         triage_key.clone(),
@@ -433,6 +438,7 @@ async fn bootstrap(
         .active_prompt_versions(Arc::new(RwLock::new(active_prompt_versions)))
         .provider_registry(registry)
         .credentials(config.credentials.clone())
+        .embedding_providers(embedding_providers)
         .embedding_provider(embedding_provider)
         .extraction_provider(extraction_provider)
         .triage_provider(triage_provider)

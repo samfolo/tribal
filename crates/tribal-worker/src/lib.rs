@@ -19,7 +19,8 @@ pub use worker::{
     Worker,
     reindex::{
         EmbeddingProviderCache, ReindexCreationOutcome, ReindexTarget, TargetProviderError,
-        build_provider_for_identity, create_reindex_run, resolve_reindex_target,
+        build_provider_for_identity, build_target_provider, create_reindex_run,
+        resolve_reindex_target,
     },
     reindex_ops::{
         ReindexCancelOutcome, ReindexOpError, ReindexPruneOutcome, ReindexRunOutcome,
