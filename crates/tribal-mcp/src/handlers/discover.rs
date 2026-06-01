@@ -566,17 +566,21 @@ async fn execute_discover(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use rmcp::model::ErrorCode;
     use tribal_db::SemanticSearchResponse;
-    use tribal_domain::ReferenceKind;
-    use tribal_inference::{EmbeddingProvider, InferenceError};
+    use tribal_domain::{ProviderKind, ReferenceKind};
+    use tribal_inference::{
+        EmbeddingProvider, InferenceError, ProviderIdentity, ProviderKey, ProviderLimits,
+        RequestClass,
+    };
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
         MockStandingRepository, a_knowledge_item, a_not_found, a_principal, a_project, a_reference,
-        a_standing, ensure_genesis_profile, test_context,
+        a_standing, an_embedding_response, create_complete_profile, ensure_genesis_profile,
+        serial_lock, test_context, truncate_all_tables,
     };
 
     use super::*;
@@ -1290,5 +1294,121 @@ mod tests {
         assert_eq!(result.items.len(), 5);
         assert!(result.next_cursor.is_some());
         assert!(!result.exact);
+    }
+
+    // -- Adapter: live-identity seam across a cutover (§5.7) ------------------
+
+    /// Builds a mock embedding provider tagged with `model` that returns
+    /// `vector` once, for inserting into the per-profile provider cache.
+    fn profile_provider(model: &str, vector: Vec<f32>) -> Arc<dyn EmbeddingProvider> {
+        Arc::new(
+            MockEmbeddingProvider::builder()
+                .with_identity(ProviderIdentity {
+                    name: "ollama".into(),
+                    model: model.into(),
+                })
+                .on_embed(an_embedding_response(vector), None)
+                .build(),
+        )
+    }
+
+    /// Calls the private live-identity embed seam, panicking with a clear
+    /// message if it returns an error `CallToolResult` (opaque to assert on).
+    async fn embed_active(
+        handler: &TribalServerHandler,
+        query: &str,
+    ) -> (EmbeddingProfile, EmbeddingResponse) {
+        match handler.embed_query_against_active(query).await {
+            Ok(resolved) => resolved,
+            Err(call_result) => {
+                panic!("embed_query_against_active returned an error result: {call_result:?}")
+            }
+        }
+    }
+
+    /// `tribal_discover` resolves the embedding provider from the active profile
+    /// on every call, so a live cutover embeds the query against the
+    /// newly-active profile's geometry rather than the boot-time provider.
+    ///
+    /// This is the regression guard for the §5.7 read-path gap: the per-area
+    /// suites all passed while discover still embedded against the static
+    /// boot-time provider, because the discrepancy surfaces only once the active
+    /// profile changes under a running server. The test flips the active profile
+    /// between two embed calls and asserts each call binds to the profile live at
+    /// that moment.
+    #[tokio::test]
+    async fn test_discover_embeds_against_the_active_profile_across_a_cutover() {
+        // Commits embedding-profile rows and reads the global active profile, so
+        // it serialises against other committed-pool tests and clears the table
+        // at both ends.
+        let _serial = serial_lock().await;
+        let pool = test_context().await.pool().clone();
+        {
+            let mut conn = pool.acquire().await.expect("acquire connection");
+            truncate_all_tables(&mut conn).await;
+        }
+
+        let handler = TestHandler::builder().pool(pool.clone()).build();
+
+        // Both profiles share the Ollama default endpoint, so a single dynamic
+        // registration supplies the semaphore the read path resolves on a cache
+        // hit for either profile.
+        handler
+            .state
+            .provider_registry
+            .register_building(
+                ProviderKey::new(
+                    ProviderKind::Ollama.to_string(),
+                    ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+                    RequestClass::Embedding,
+                )
+                .expect("embedding provider key"),
+                &ProviderLimits {
+                    max_in_flight: 1,
+                    request_timeout: Duration::from_secs(5),
+                },
+            )
+            .expect("register the shared embedding endpoint");
+
+        // -- Profile A: the genesis active profile ----------------------------
+        let profile_a = {
+            let mut conn = pool.acquire().await.expect("acquire connection");
+            ensure_genesis_profile(&mut conn, "model-a", 768).await
+        };
+        handler.state.embedding_providers.insert(
+            profile_a.id(),
+            profile_provider("model-a", vec![1.0, 0.0, 0.0]),
+        );
+
+        let (resolved_a, response_a) = embed_active(&handler, "where is auth handled").await;
+        assert_eq!(resolved_a.id(), profile_a.id());
+        assert_eq!(resolved_a.model(), "model-a");
+        assert_eq!(response_a.vector, vec![1.0, 0.0, 0.0]);
+
+        // -- Cut over to profile B (higher epoch, now active) -----------------
+        let profile_b_id = {
+            let mut conn = pool.acquire().await.expect("acquire connection");
+            create_complete_profile(&mut conn, "model-b", 768).await
+        };
+        handler.state.embedding_providers.insert(
+            profile_b_id,
+            profile_provider("model-b", vec![0.0, 1.0, 0.0]),
+        );
+
+        let (resolved_b, response_b) = embed_active(&handler, "where is auth handled").await;
+        assert_eq!(
+            resolved_b.id(),
+            profile_b_id,
+            "after the cutover the read path must bind to the newly-active profile",
+        );
+        assert_eq!(resolved_b.model(), "model-b");
+        assert_eq!(
+            response_b.vector,
+            vec![0.0, 1.0, 0.0],
+            "the query must embed against the active profile's geometry, not the prior one",
+        );
+
+        let mut conn = pool.acquire().await.expect("acquire connection");
+        truncate_all_tables(&mut conn).await;
     }
 }
