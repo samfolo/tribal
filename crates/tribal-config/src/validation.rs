@@ -9,7 +9,7 @@ use std::{
     net::SocketAddr,
 };
 
-use tribal_domain::{ProviderKind, normalise_endpoint_url};
+use tribal_domain::{MAX_EMBEDDING_DIMENSIONS, ProviderKind, normalise_endpoint_url};
 use url::Url;
 
 use crate::{
@@ -400,12 +400,22 @@ fn validate_init(config: &TribalConfig, diags: &mut Diagnostics) {
     );
 
     // `dimensions` is optional: `None` resolves through the embedding
-    // service's native-dimension chain at provisioning, so only an explicit
-    // zero is invalid.
-    if init.dimensions == Some(0) {
-        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+    // service's native-dimension chain at provisioning. An explicit value is
+    // bounded by the same `1..=MAX_EMBEDDING_DIMENSIONS` window the storage
+    // CHECK enforces, so a grossly out-of-range seed is caught at config time
+    // rather than far from the source at provisioning.
+    match init.dimensions {
+        Some(0) => diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
             "init.embedding.dimensions",
-        )));
+        ))),
+        Some(dimensions) if dimensions > MAX_EMBEDDING_DIMENSIONS => {
+            diags.push(ValidationError::AboveMax {
+                field: ConfigPath::from_static("init.embedding.dimensions"),
+                value: u64::from(dimensions),
+                limit: u64::from(MAX_EMBEDDING_DIMENSIONS),
+            });
+        }
+        Some(_) | None => {}
     }
 
     if !init.provider.supports_embedding() {
@@ -1360,6 +1370,28 @@ mod tests {
         let mut config = valid_config();
         // `None` resolves through the native-dimension chain at provisioning.
         config.init.embedding.dimensions = None;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_above_max_embedding_dimensions() {
+        let mut config = valid_config();
+        config.init.embedding.dimensions = Some(MAX_EMBEDDING_DIMENSIONS + 1);
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::AboveMax { field, value, limit }
+                if field.as_str() == "init.embedding.dimensions"
+                    && *value == u64::from(MAX_EMBEDDING_DIMENSIONS) + 1
+                    && *limit == u64::from(MAX_EMBEDDING_DIMENSIONS),
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_max_embedding_dimensions() {
+        let mut config = valid_config();
+        // The ceiling itself is admissible; only strictly-above is rejected.
+        config.init.embedding.dimensions = Some(MAX_EMBEDDING_DIMENSIONS);
         assert!(validate(&config).is_ok());
     }
 

@@ -15,7 +15,7 @@
 //! resolves to [`EmbeddingCapabilities::UNKNOWN`] and falls back to the
 //! caller-supplied dimension and a default-send posture.
 
-use tribal_domain::ProviderKind;
+use tribal_domain::{MAX_EMBEDDING_DIMENSIONS, ProviderKind};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -133,11 +133,6 @@ pub fn resolve_embedding(provider: ProviderKind, model: &str) -> EmbeddingCapabi
 // ---------------------------------------------------------------------------
 // Dimension resolution
 // ---------------------------------------------------------------------------
-
-/// The largest embedding dimensionality Tribal stores: pgvector's `halfvec`
-/// HNSW ceiling. The `dimensions <= 4000` CHECK in the initial schema mirrors
-/// this; the two cannot share a literal because the constraint is SQL.
-pub const MAX_EMBEDDING_DIMENSIONS: u32 = 4000;
 
 /// The output dimensionality of an embedding target could not be resolved.
 #[derive(Debug, thiserror::Error)]

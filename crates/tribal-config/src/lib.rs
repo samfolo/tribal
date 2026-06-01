@@ -31,7 +31,7 @@ pub use env::{
     ENV_OPENAI_API_KEY, ENV_PREFIX, ENV_PROJECT_ID, ENV_PUBLIC_MCP_URL, env_var_for_path,
     public_mcp_url_override, standard_env_var_name,
 };
-pub use error::ConfigError;
+pub use error::{ConfigError, RemovedEmbeddingSource};
 pub use loader::load_config;
 pub use paths::{
     CREDENTIALS_FILENAME, ConfigDirError, TRIBAL_DIRECTORY_NAME, default_config_file_path,
@@ -51,10 +51,10 @@ pub use sections::{
     InferenceConfig, InitConfig, InitEmbeddingConfig, LimitsConfig, LoadedCredentials, LogFormat,
     LogOutput, LoggingConfig, MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_LIFECYCLE_DURATION_MS,
     MAX_OVERFETCH_MULTIPLIER, MAX_TTL_HOURS, MIN_AUTHORIZATION_CODE_TTL_SECONDS, MissingApiKey,
-    OAuthConfig, PromptSource, PromptsConfig, ProviderLimitsConfig, ServerConfig, SseConfig,
-    StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig, VERSION, WorkerConfig,
-    advertised_oauth_host, oauth_onboarding_is_url_only, oauth_surface_is_routable,
-    read_credentials, write_credentials,
+    MissingApiKeyKind, OAuthConfig, PromptSource, PromptsConfig, ProviderLimitsConfig,
+    ServerConfig, SseConfig, StageInferenceConfig, TelemetryConfig, TransportKind, TribalConfig,
+    VERSION, WorkerConfig, advertised_oauth_host, oauth_onboarding_is_url_only,
+    oauth_surface_is_routable, read_credentials, write_credentials,
 };
 pub use validation::{
     ComputedFloor, ConfigPath, Diagnostics, Endpoint, FieldValue, Inclusion, NumericRange,

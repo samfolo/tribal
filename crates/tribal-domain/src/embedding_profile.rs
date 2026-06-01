@@ -10,6 +10,12 @@ use typed_builder::TypedBuilder;
 
 use crate::{EmbeddingProfileId, ProviderKind};
 
+/// The largest embedding dimensionality Tribal stores: pgvector's `halfvec`
+/// HNSW ceiling. The `dimensions <= 4000` CHECK in the initial schema migration
+/// mirrors this value; the two cannot share a literal because the constraint is
+/// SQL, so a change here must be matched in the migration.
+pub const MAX_EMBEDDING_DIMENSIONS: u32 = 4000;
+
 /// Lifecycle state of an embedding profile.
 ///
 /// `building → complete` on a successful reindex (the profile becomes active),

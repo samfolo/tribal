@@ -99,6 +99,7 @@ pub use embedding::{Embedding, EmbeddingBuilder};
 pub use embedding_error_class::EmbeddingErrorClass;
 pub use embedding_profile::{
     DistanceMetric, EmbeddingProfile, EmbeddingProfileBuilder, EmbeddingProfileState,
+    MAX_EMBEDDING_DIMENSIONS,
 };
 pub use embedding_purpose::EmbeddingPurpose;
 pub use endpoint_url::{EndpointUrlError, normalise_endpoint_url};

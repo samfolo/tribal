@@ -27,14 +27,38 @@ use tribal_domain::{ApiKey, ProviderKind, normalise_endpoint_url};
 // Credential resolution error
 // ---------------------------------------------------------------------------
 
-/// A provider that requires an API key has none in the catalogue.
+/// A provider that requires an API key has none usable in the catalogue.
+///
+/// `kind` distinguishes the two fail-closed shapes the diagnostic must name
+/// differently: no catalogue entry matches the endpoint at all, versus an entry
+/// matches but its `api_key` is absent or blank.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("{provider} at {base_url} requires an API key, but the catalogue has none")]
+#[error("{provider} at {base_url} requires an API key, but {kind}")]
 pub struct MissingApiKey {
     /// The provider kind whose endpoint lacks a key.
     pub provider: ProviderKind,
     /// The normalised endpoint the lookup targeted.
     pub base_url: String,
+    /// Which fail-closed shape this is.
+    pub kind: MissingApiKeyKind,
+}
+
+/// Which fail-closed shape a [`MissingApiKey`] represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingApiKeyKind {
+    /// No catalogue entry matches the endpoint's `(provider_kind, base_url)`.
+    NoMatchingEntry,
+    /// A catalogue entry matches, but its `api_key` is absent or whitespace.
+    EmptyKey,
+}
+
+impl std::fmt::Display for MissingApiKeyKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoMatchingEntry => f.write_str("no catalogue entry matches"),
+            Self::EmptyKey => f.write_str("the matching catalogue entry has an empty key"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -126,15 +150,24 @@ impl CredentialCatalogue {
         provider_kind: ProviderKind,
         normalised_base_url: &str,
     ) -> Result<&str, MissingApiKey> {
-        let api_key = self
-            .resolve(provider_kind, normalised_base_url)
+        let matched = self.resolve(provider_kind, normalised_base_url);
+        let api_key = matched
             .and_then(|(_, entry)| entry.api_key.as_ref())
             .map_or("", ApiKey::as_str);
 
         if provider_kind.requires_api_key() && api_key.is_empty() {
+            // Distinguish "no entry to fill" from "entry present, key blank" so
+            // the fail-closed diagnostic names the right remediation: add the
+            // connection versus set the key on the existing one.
+            let kind = if matched.is_some() {
+                MissingApiKeyKind::EmptyKey
+            } else {
+                MissingApiKeyKind::NoMatchingEntry
+            };
             return Err(MissingApiKey {
                 provider: provider_kind,
                 base_url: normalised_base_url.to_owned(),
+                kind,
             });
         }
 
@@ -279,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_api_key_fails_closed_for_a_keyless_required_provider() {
+    fn test_resolve_api_key_fails_closed_with_no_matching_entry() {
         let catalogue = CredentialCatalogue::default();
         let normalised = normalise_endpoint_url("https://api.openai.com/v1").unwrap();
         assert_eq!(
@@ -287,6 +320,24 @@ mod tests {
             Err(MissingApiKey {
                 provider: ProviderKind::OpenAi,
                 base_url: normalised,
+                kind: MissingApiKeyKind::NoMatchingEntry,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_resolve_api_key_fails_closed_when_the_matching_entry_has_no_key() {
+        // The endpoint matches an entry, but that entry carries no `api_key`.
+        let catalogue = catalogue_yaml(
+            "openai_default:\n  provider_kind: openai\n  base_url: https://api.openai.com/v1\n",
+        );
+        let normalised = normalise_endpoint_url("https://api.openai.com/v1").unwrap();
+        assert_eq!(
+            catalogue.resolve_api_key(ProviderKind::OpenAi, &normalised),
+            Err(MissingApiKey {
+                provider: ProviderKind::OpenAi,
+                base_url: normalised,
+                kind: MissingApiKeyKind::EmptyKey,
             }),
         );
     }

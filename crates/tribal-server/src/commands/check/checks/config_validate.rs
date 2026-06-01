@@ -94,12 +94,12 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
             state.skip_mask = SkipMask::from_validation_errors(diagnostics.as_slice());
             CheckOutcome::config_validate_failed(diagnostics)
         }
-        Err(err @ (ConfigError::Load { .. } | ConfigError::Render { .. })) => {
-            // validate() only emits ValidationFailed; Load and Render
-            // originate from load_config (already run in config_parse).
-            // This branch reaches only via implementation bug — log
-            // loudly so the operator can correlate the empty-hint Fail
-            // with the underlying cause.
+        Err(err) => {
+            // validate() only emits ValidationFailed; the load-time variants
+            // (parse, render, removed-shape) originate from load_config,
+            // already run in config_parse. This branch reaches only via an
+            // implementation bug, so log loudly so the operator can correlate
+            // the empty-hint Fail with the underlying cause.
             tracing::error!(
                 error = %err,
                 "config_validate: unexpected ConfigError variant from validate()",

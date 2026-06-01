@@ -8,7 +8,9 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tribal_config::{Diagnostics, ProviderStage, ValidationError, standard_env_var_name};
+use tribal_config::{
+    Diagnostics, MissingApiKeyKind, ProviderStage, ValidationError, standard_env_var_name,
+};
 use tribal_domain::{ProjectId, ProviderKind, ReindexRunState};
 
 use crate::error::FIRST_RUN_REQUIRED;
@@ -212,9 +214,11 @@ pub(in crate::commands::check) enum CheckDetail {
     },
     /// The active profile's provider endpoint has no resolvable credential in
     /// the catalogue, the fail-closed condition the next server boot trips.
+    /// `kind` distinguishes "no entry matches" from "entry present, key empty".
     EmbeddingCredentialUnresolved {
         provider: ProviderKind,
         base_url: String,
+        kind: MissingApiKeyKind,
     },
     /// A reindex run is live and/or items are quarantined out of the active
     /// space, conditions that warrant operator attention.
@@ -477,10 +481,11 @@ impl CheckDetail {
                 *dimensions,
                 genesis_drift.as_deref(),
             ),
-            Self::EmbeddingCredentialUnresolved { provider, base_url } => format!(
-                "the active embedding profile expects credentials for {provider} at {base_url}; \
-                 no catalogue entry resolves"
-            ),
+            Self::EmbeddingCredentialUnresolved {
+                provider,
+                base_url,
+                kind,
+            } => render_embedding_credential_unresolved(*provider, base_url, *kind),
             Self::EmbeddingReindexAttention {
                 live_run,
                 quarantined,
@@ -508,6 +513,22 @@ fn render_embedding_profile_live(
         ),
         None => base,
     }
+}
+
+/// Renders the credential-unresolved detail, naming the endpoint and the cause
+/// that distinguishes a missing entry from an entry with an empty key.
+fn render_embedding_credential_unresolved(
+    provider: ProviderKind,
+    base_url: &str,
+    kind: MissingApiKeyKind,
+) -> String {
+    let cause = match kind {
+        MissingApiKeyKind::NoMatchingEntry => "no catalogue entry matches",
+        MissingApiKeyKind::EmptyKey => "the matching catalogue entry has an empty api_key",
+    };
+    format!(
+        "the active embedding profile expects credentials for {provider} at {base_url}; {cause}"
+    )
 }
 
 /// Renders the reindex-attention warning, joining the live-run and
@@ -583,9 +604,17 @@ pub(in crate::commands::check) enum CheckRemediation {
         target: ProviderStage,
         provider: ProviderKind,
     },
+    /// The genesis-embedding probe failed; name `init.embedding.base_url`
+    /// (the genesis endpoint) and the catalogue credential that backs it,
+    /// because the embedding credential resolves through the catalogue, not
+    /// an `init.embedding.api_key` field.
+    FixEmbeddingProviderConfig { provider: ProviderKind },
     /// Add a catalogue credential for the active embedding provider's
     /// endpoint so the next server boot resolves it.
     AddEmbeddingCredential { provider: ProviderKind },
+    /// A catalogue entry already matches the active endpoint, but its `api_key`
+    /// is empty; set the key on the existing connection rather than adding one.
+    SetEmbeddingCredentialKey { provider: ProviderKind },
     /// Inspect the live reindex run and any quarantined items.
     InspectReindexRun,
 }
@@ -660,16 +689,27 @@ impl CheckRemediation {
                 };
                 format!("{head}, or run `tribal serve` to see the underlying startup probe warning")
             }
-            Self::AddEmbeddingCredential { provider } => {
+            Self::FixEmbeddingProviderConfig { provider } => {
+                let base_url_path = ProviderStage::Embedding.section_path().extend("base_url");
+                format!(
+                    "check `{base_url_path}` and {}, or run `tribal serve` to see the \
+                     underlying startup probe warning",
+                    embedding_credential_phrase(*provider),
+                )
+            }
+            Self::AddEmbeddingCredential { provider } => embedding_credential_phrase(*provider),
+            Self::SetEmbeddingCredentialKey { provider } => {
                 let connection = format!("{provider}_default");
                 let path = format!("credentials.{connection}.api_key");
                 match standard_env_var_name(*provider) {
                     Some(standard) => format!(
-                        "set `{path}` (or export `TRIBAL_CREDENTIALS__{}__API_KEY` / `{standard}`) \
-                         so the active profile's endpoint resolves",
+                        "the `{connection}` connection exists but has no key; set `{path}` (or \
+                         export `TRIBAL_CREDENTIALS__{}__API_KEY` / `{standard}`)",
                         connection.to_uppercase()
                     ),
-                    None => format!("add `credentials.{connection}` for the active endpoint"),
+                    None => format!(
+                        "the `{connection}` connection exists but has no key; set its `api_key`"
+                    ),
                 }
             }
             Self::InspectReindexRun => {
@@ -678,6 +718,22 @@ impl CheckRemediation {
                     .into()
             }
         }
+    }
+}
+
+/// Renders the "set the catalogue credential" phrase shared by the
+/// embedding-credential remediations, naming the `<provider>_default`
+/// connection and the env-override paths that satisfy it.
+fn embedding_credential_phrase(provider: ProviderKind) -> String {
+    let connection = format!("{provider}_default");
+    let path = format!("credentials.{connection}.api_key");
+    match standard_env_var_name(provider) {
+        Some(standard) => format!(
+            "set `{path}` (or export `TRIBAL_CREDENTIALS__{}__API_KEY` / `{standard}`) so the \
+             endpoint resolves",
+            connection.to_uppercase()
+        ),
+        None => format!("add `credentials.{connection}` for the endpoint"),
     }
 }
 
@@ -720,6 +776,26 @@ mod tests {
         assert_eq!(
             remediation.render(),
             "inspect /etc/tribal/config.yaml for syntax errors"
+        );
+    }
+
+    #[test]
+    fn test_fix_embedding_provider_config_names_the_live_sections_not_the_removed_ones() {
+        let rendered = CheckRemediation::FixEmbeddingProviderConfig {
+            provider: ProviderKind::OpenAi,
+        }
+        .render();
+        assert!(
+            rendered.contains("init.embedding.base_url"),
+            "should name the genesis endpoint field: {rendered}",
+        );
+        assert!(
+            rendered.contains("credentials.openai_default.api_key"),
+            "should name the catalogue credential: {rendered}",
+        );
+        assert!(
+            !rendered.contains("embedding.api_key") && !rendered.contains("TRIBAL_EMBEDDING__"),
+            "must not name the removed embedding.* shape: {rendered}",
         );
     }
 }
