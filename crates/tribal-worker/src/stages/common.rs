@@ -211,10 +211,10 @@ impl Worker {
         )
         .map_err(|source| StageError::Provider {
             context: "resolving the active profile's embedding provider".into(),
-            source: InferenceError::ProviderUnavailable {
-                provider: active.provider_kind().to_string(),
-                reason: source.to_string(),
-            },
+            source: InferenceError::provider_unavailable(
+                active.provider_kind().to_string(),
+                source.to_string(),
+            ),
         })?;
         Ok((active, provider, semaphore))
     }

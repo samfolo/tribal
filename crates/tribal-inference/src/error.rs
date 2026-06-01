@@ -8,11 +8,13 @@
 //! status classification, and body truncation are consistent across all
 //! provider implementations.
 
+use std::time::Duration;
+
 use reqwest::StatusCode;
 use thiserror::Error;
 use tribal_domain::EmbeddingErrorClass;
 
-use crate::http::{body_preview, is_retryable_status};
+use crate::http::{OVERLOADED_STATUS, body_preview, is_retryable_status};
 
 /// Errors produced by the inference layer.
 ///
@@ -29,6 +31,15 @@ pub enum InferenceError {
         provider: String,
         /// Human-readable description of why the provider is unavailable.
         reason: String,
+        /// The HTTP status that produced this error, when it came from a
+        /// non-success response (rather than a network or body-read failure).
+        /// Drives the embedding retry classifier's `RateLimited`/`Overloaded`
+        /// split.
+        status: Option<u16>,
+        /// The `Retry-After` delay the provider asked for, parsed from the
+        /// header's delta-seconds form. The reindex retry path uses it for a
+        /// rate-limited or overloaded task's `available_at`.
+        retry_after: Option<Duration>,
     },
 
     /// An embedding generation call failed.
@@ -66,23 +77,55 @@ pub enum InferenceError {
     },
 }
 
+impl InferenceError {
+    /// Constructs a [`InferenceError::ProviderUnavailable`] carrying no HTTP
+    /// status or `Retry-After`, for the call sites that report unavailability
+    /// from outside the wire boundary (a registry lookup, a timeout, a
+    /// synchronous "unsupported" rejection).
+    #[must_use]
+    pub fn provider_unavailable(provider: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::ProviderUnavailable {
+            provider: provider.into(),
+            reason: reason.into(),
+            status: None,
+            retry_after: None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Retry classification
 // ---------------------------------------------------------------------------
 
 /// Classifies an embedding error for the reindex retry path.
 ///
-/// The variant already carries the retryable split the wire boundary made:
-/// [`InferenceError::ProviderUnavailable`] (429, 5xx, 529, network, timeout) is
-/// transient and retried; an [`InferenceError::EmbeddingFailed`] (400 shape,
-/// 401, 403, 404) or an unparseable response is permanent and quarantined.
+/// A retryable [`InferenceError::ProviderUnavailable`] splits by the HTTP status
+/// it carries: 429 is [`EmbeddingErrorClass::RateLimited`], 529 is
+/// [`EmbeddingErrorClass::Overloaded`], and any other status or a statusless
+/// network/timeout failure is [`EmbeddingErrorClass::Transient`]. An
+/// [`InferenceError::EmbeddingFailed`] (400 shape, 401, 403, 404) or an
+/// unparseable response is [`EmbeddingErrorClass::Permanent`] and quarantined.
 #[must_use]
 pub fn classify_embedding_error(error: &InferenceError) -> EmbeddingErrorClass {
     match error {
-        InferenceError::ProviderUnavailable { .. } => EmbeddingErrorClass::Transient,
+        InferenceError::ProviderUnavailable { status, .. } => match status {
+            Some(429) => EmbeddingErrorClass::RateLimited,
+            Some(OVERLOADED_STATUS) => EmbeddingErrorClass::Overloaded,
+            _ => EmbeddingErrorClass::Transient,
+        },
         InferenceError::EmbeddingFailed { .. }
         | InferenceError::LlmCallFailed { .. }
         | InferenceError::ResponseParseFailed { .. } => EmbeddingErrorClass::Permanent,
+    }
+}
+
+/// Extracts the `Retry-After` delay a [`InferenceError::ProviderUnavailable`]
+/// carries, when one was parsed from the wire response.
+#[must_use]
+pub fn embedding_retry_after(error: &InferenceError) -> Option<Duration> {
+    match error {
+        InferenceError::ProviderUnavailable { retry_after, .. } => *retry_after,
+        _ => None,
     }
 }
 
@@ -92,9 +135,11 @@ pub fn classify_embedding_error(error: &InferenceError) -> EmbeddingErrorClass {
 
 /// Maps a non-success HTTP status to an [`InferenceError`].
 ///
-/// Retryable statuses (429, 5xx, 529) produce [`InferenceError::ProviderUnavailable`].
-/// All other statuses delegate to `non_retryable` for the caller to
-/// choose the appropriate variant (`EmbeddingFailed` or `LlmCallFailed`).
+/// Retryable statuses (429, 5xx, 529) produce [`InferenceError::ProviderUnavailable`],
+/// carrying the status and any parsed `Retry-After` delay so the embedding retry
+/// classifier can distinguish rate-limited and overloaded from plain transient.
+/// All other statuses delegate to `non_retryable` for the caller to choose the
+/// appropriate variant (`EmbeddingFailed` or `LlmCallFailed`).
 pub(crate) fn map_http_error(
     status: StatusCode,
     body: &str,
@@ -113,6 +158,8 @@ pub(crate) fn map_http_error(
         InferenceError::ProviderUnavailable {
             provider: provider.to_owned(),
             reason: context,
+            status: Some(status.as_u16()),
+            retry_after: parse_retry_after(extra),
         }
     } else {
         tracing::warn!(%status, provider, "provider returned non-retryable error");
@@ -120,21 +167,28 @@ pub(crate) fn map_http_error(
     }
 }
 
+/// Parses a `Retry-After` value from the metadata pairs into a [`Duration`].
+///
+/// Only the delta-seconds form is honoured (the form every provider we call
+/// sends); an HTTP-date value yields `None` and falls back to the caller's
+/// exponential backoff, while still appearing in the free-text reason.
+fn parse_retry_after(extra: &[(&str, &str)]) -> Option<Duration> {
+    extra
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("Retry-After"))
+        .and_then(|(_, value)| value.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
 /// Maps a `reqwest` send failure to [`InferenceError::ProviderUnavailable`].
 pub(crate) fn map_send_error(e: &reqwest::Error, provider: &str) -> InferenceError {
     tracing::warn!(error = %e, "request failed");
-    InferenceError::ProviderUnavailable {
-        provider: provider.to_owned(),
-        reason: e.to_string(),
-    }
+    InferenceError::provider_unavailable(provider, e.to_string())
 }
 
 /// Maps a response body read failure to [`InferenceError::ProviderUnavailable`].
 pub(crate) fn map_body_read_error(e: &reqwest::Error, provider: &str) -> InferenceError {
-    InferenceError::ProviderUnavailable {
-        provider: provider.to_owned(),
-        reason: format!("failed to read response body: {e}"),
-    }
+    InferenceError::provider_unavailable(provider, format!("failed to read response body: {e}"))
 }
 
 /// Maps a JSON deserialisation failure to [`InferenceError::ResponseParseFailed`].
@@ -161,11 +215,12 @@ mod tests {
 
     #[test]
     fn test_classify_embedding_error() {
+        // A statusless provider-unavailable (network/timeout) is plain transient.
         assert_eq!(
-            classify_embedding_error(&InferenceError::ProviderUnavailable {
-                provider: "ollama".to_owned(),
-                reason: "HTTP 429".to_owned(),
-            }),
+            classify_embedding_error(&InferenceError::provider_unavailable(
+                "ollama",
+                "connection refused",
+            )),
             EmbeddingErrorClass::Transient,
         );
         assert_eq!(
@@ -186,11 +241,64 @@ mod tests {
     }
 
     #[test]
-    fn test_display_provider_unavailable() {
+    fn test_classify_embedding_error_429_is_rate_limited() {
+        assert_eq!(
+            classify_embedding_error(&InferenceError::ProviderUnavailable {
+                provider: "openai".to_owned(),
+                reason: "HTTP 429".to_owned(),
+                status: Some(429),
+                retry_after: Some(Duration::from_secs(30)),
+            }),
+            EmbeddingErrorClass::RateLimited,
+        );
+    }
+
+    #[test]
+    fn test_classify_embedding_error_529_is_overloaded() {
+        assert_eq!(
+            classify_embedding_error(&InferenceError::ProviderUnavailable {
+                provider: "anthropic".to_owned(),
+                reason: "HTTP 529".to_owned(),
+                status: Some(529),
+                retry_after: None,
+            }),
+            EmbeddingErrorClass::Overloaded,
+        );
+    }
+
+    #[test]
+    fn test_classify_embedding_error_other_5xx_is_transient() {
+        assert_eq!(
+            classify_embedding_error(&InferenceError::ProviderUnavailable {
+                provider: "openai".to_owned(),
+                reason: "HTTP 503".to_owned(),
+                status: Some(503),
+                retry_after: None,
+            }),
+            EmbeddingErrorClass::Transient,
+        );
+    }
+
+    #[test]
+    fn test_embedding_retry_after_returns_the_parsed_delay() {
         let err = InferenceError::ProviderUnavailable {
-            provider: "ollama".to_owned(),
-            reason: "connection refused".to_owned(),
+            provider: "openai".to_owned(),
+            reason: "HTTP 429".to_owned(),
+            status: Some(429),
+            retry_after: Some(Duration::from_secs(45)),
         };
+        assert_eq!(embedding_retry_after(&err), Some(Duration::from_secs(45)));
+    }
+
+    #[test]
+    fn test_embedding_retry_after_is_none_without_a_header() {
+        let err = InferenceError::provider_unavailable("ollama", "connection refused");
+        assert_eq!(embedding_retry_after(&err), None);
+    }
+
+    #[test]
+    fn test_display_provider_unavailable() {
+        let err = InferenceError::provider_unavailable("ollama", "connection refused");
         assert_eq!(
             err.to_string(),
             "provider ollama unavailable: connection refused"
@@ -405,11 +513,17 @@ mod tests {
         assert!(
             matches!(
                 err,
-                InferenceError::ProviderUnavailable { ref reason, .. }
+                InferenceError::ProviderUnavailable {
+                    ref reason,
+                    status: Some(429),
+                    retry_after: Some(delay),
+                    ..
+                }
                 if reason.contains("429")
                     && reason.contains("; Retry-After: 30")
+                    && delay == Duration::from_secs(30)
             ),
-            "expected ProviderUnavailable with extra metadata, got {err:?}"
+            "expected ProviderUnavailable with status, parsed Retry-After, and metadata, got {err:?}"
         );
     }
 

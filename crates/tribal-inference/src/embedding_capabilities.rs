@@ -45,6 +45,10 @@ pub struct EmbeddingCapabilities {
     /// A courtesy client-side request-rate ceiling, in requests per minute.
     /// Absent where the limit is account-tier-dependent (cloud) or
     /// effectively unbounded (local); the provider 429 is the backstop.
+    ///
+    /// Informational and planning-only until a token bucket reads it; today the
+    /// provider's 429 (classified `RateLimited`, honouring `Retry-After`) is the
+    /// sole rate-limit enforcement.
     pub requests_per_minute: Option<u32>,
 
     /// Published cost per million input tokens in US dollars, when known.
@@ -100,16 +104,6 @@ const EMBEDDING_CAPABILITIES: &[(ProviderKind, &str, EmbeddingCapabilities)] = &
             batch_max_size: Some(OPENAI_EMBED_BATCH_MAX),
             requests_per_minute: None,
             cost_per_million_tokens: Some(0.13),
-        },
-    ),
-    (
-        ProviderKind::OpenAi,
-        "text-embedding-ada-002",
-        EmbeddingCapabilities {
-            native_dimensions: Some(1536),
-            batch_max_size: Some(OPENAI_EMBED_BATCH_MAX),
-            requests_per_minute: None,
-            cost_per_million_tokens: Some(0.10),
         },
     ),
 ];
@@ -241,10 +235,6 @@ mod tests {
         assert_eq!(
             resolve_embedding(ProviderKind::OpenAi, "text-embedding-3-large").native_dimensions,
             Some(3072),
-        );
-        assert_eq!(
-            resolve_embedding(ProviderKind::OpenAi, "text-embedding-ada-002").native_dimensions,
-            Some(1536),
         );
     }
 

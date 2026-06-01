@@ -31,7 +31,7 @@ pub use embedding_capabilities::{
     DimensionResolutionError, EmbeddingCapabilities, resolve_dimensions, resolve_embedding,
 };
 pub use embedding_factory::{UnsupportedEmbeddingProvider, make_embedding_provider};
-pub use error::{InferenceError, classify_embedding_error};
+pub use error::{InferenceError, classify_embedding_error, embedding_retry_after};
 pub use http::EMBEDDING_PROBE_INPUT;
 #[cfg(feature = "test-helpers")]
 pub use http::INFERENCE_PROBE_INPUT;
