@@ -7,12 +7,12 @@
 //! profile is informational state, never a warning, because the seed is stale
 //! by design once a corpus exists.
 
-use tribal_config::MissingApiKeyKind;
+use tribal_config::{InitEmbeddingConfig, MissingApiKeyKind};
 use tribal_db::{
     EmbeddingProfileRepository, PgEmbeddingProfileRepository, PgReindexQuarantineRepository,
     PgReindexRunRepository, ReindexQuarantineRepository, ReindexRunRepository,
 };
-use tribal_domain::{ProviderKind, ReindexRunState};
+use tribal_domain::{EmbeddingProfile, ProviderKind, ReindexRunState, normalise_endpoint_url};
 
 use super::{
     state::CheckState,
@@ -141,10 +141,7 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
     }
 
     // Genesis-vs-active divergence is informational state, never a warning.
-    let genesis = &config.init.embedding;
-    let genesis_drift = (genesis.provider != active.provider_kind()
-        || genesis.model != active.model())
-    .then(|| format!("{}/{}", genesis.provider, genesis.model));
+    let genesis_drift = genesis_drift(&config.init.embedding, &active);
 
     CheckOutcome::embedding_profile_live(
         active.provider_kind(),
@@ -154,8 +151,48 @@ pub(in crate::commands::check) async fn act(state: &mut CheckState) -> CheckOutc
     )
 }
 
+/// Reports the genesis seed identity when any geometry axis (provider, model,
+/// endpoint, or dimension) no longer matches the live active profile, so the
+/// note keeps every divergent axis in the config file honest, not just provider
+/// and model.
+///
+/// The endpoint compares normalised forms, falling back to the raw genesis URL
+/// if it cannot be canonicalised (an unparseable seed is itself a divergence
+/// worth surfacing). A genesis dimension of `None` pins nothing, so it never
+/// counts as a dimension divergence.
+fn genesis_drift(genesis: &InitEmbeddingConfig, active: &EmbeddingProfile) -> Option<String> {
+    let genesis_base_url = genesis
+        .base_url
+        .as_deref()
+        .unwrap_or_else(|| genesis.provider.default_base_url());
+    let genesis_normalised = normalise_endpoint_url(genesis_base_url);
+    let endpoint_differs = match &genesis_normalised {
+        Ok(normalised) => normalised != active.normalised_base_url(),
+        Err(_) => genesis_base_url != active.normalised_base_url(),
+    };
+
+    let diverges = genesis.provider != active.provider_kind()
+        || genesis.model != active.model()
+        || endpoint_differs
+        || genesis.dimensions.is_some_and(|d| d != active.dimensions());
+    if !diverges {
+        return None;
+    }
+
+    let endpoint = genesis_normalised.unwrap_or_else(|_| genesis_base_url.to_owned());
+    let dimensions = genesis
+        .dimensions
+        .map_or_else(|| "native".to_owned(), |d| format!("{d}d"));
+    Some(format!(
+        "{}/{} at {endpoint} ({dimensions})",
+        genesis.provider, genesis.model
+    ))
+}
+
 #[cfg(test)]
 mod tests {
+    use tribal_test_utils::an_embedding_profile;
+
     use super::*;
 
     #[test]
@@ -206,6 +243,67 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("informational"), "{rendered}");
+    }
+
+    #[test]
+    fn test_genesis_drift_reports_endpoint_and_dimension_axes_after_a_migration() {
+        // Genesis: Ollama at the default host, dimension pinned to 768.
+        let genesis = InitEmbeddingConfig {
+            provider: ProviderKind::Ollama,
+            model: "nomic-embed-text:v1.5".to_owned(),
+            dimensions: Some(768),
+            base_url: Some("http://localhost:11434".to_owned()),
+        };
+        // Active: same provider and model, migrated to a new host and dimension.
+        let active = an_embedding_profile()
+            .provider_kind(ProviderKind::Ollama)
+            .model("nomic-embed-text:v1.5".to_owned())
+            .normalised_base_url("http://new-host:11434".to_owned())
+            .dimensions(1024)
+            .build();
+
+        let drift = genesis_drift(&genesis, &active).expect("a same-model endpoint and dimension migration must report drift");
+        assert!(drift.contains("ollama/nomic-embed-text:v1.5"), "{drift}");
+        assert!(drift.contains("localhost:11434"), "endpoint axis: {drift}");
+        assert!(drift.contains("768d"), "dimension axis: {drift}");
+    }
+
+    #[test]
+    fn test_genesis_drift_is_absent_when_every_axis_matches() {
+        let genesis = InitEmbeddingConfig {
+            provider: ProviderKind::Ollama,
+            model: "nomic-embed-text:v1.5".to_owned(),
+            dimensions: Some(768),
+            base_url: Some("http://localhost:11434".to_owned()),
+        };
+        let active = an_embedding_profile()
+            .provider_kind(ProviderKind::Ollama)
+            .model("nomic-embed-text:v1.5".to_owned())
+            .normalised_base_url("http://localhost:11434".to_owned())
+            .dimensions(768)
+            .build();
+
+        assert!(genesis_drift(&genesis, &active).is_none());
+    }
+
+    #[test]
+    fn test_genesis_drift_ignores_an_unpinned_genesis_dimension() {
+        // A genesis dimension of None pins nothing, so the active dimension on
+        // its own is not a divergence.
+        let genesis = InitEmbeddingConfig {
+            provider: ProviderKind::Ollama,
+            model: "nomic-embed-text:v1.5".to_owned(),
+            dimensions: None,
+            base_url: Some("http://localhost:11434".to_owned()),
+        };
+        let active = an_embedding_profile()
+            .provider_kind(ProviderKind::Ollama)
+            .model("nomic-embed-text:v1.5".to_owned())
+            .normalised_base_url("http://localhost:11434".to_owned())
+            .dimensions(1024)
+            .build();
+
+        assert!(genesis_drift(&genesis, &active).is_none());
     }
 
     #[test]

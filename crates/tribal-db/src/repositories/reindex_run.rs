@@ -289,8 +289,8 @@ impl ReindexRunRepository for PgReindexRunRepository {
              WHERE id = $1",
         )
         .bind(id.inner())
-        .bind(i32::try_from(items_delta).expect(COUNT_EXCEEDS_I32))
-        .bind(i32::try_from(tags_delta).expect(COUNT_EXCEEDS_I32))
+        .bind(i64::from(items_delta))
+        .bind(i64::from(tags_delta))
         .execute(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
@@ -314,8 +314,8 @@ impl ReindexRunRepository for PgReindexRunRepository {
              WHERE id = $1",
         )
         .bind(id.inner())
-        .bind(i32::try_from(items_delta).expect(COUNT_EXCEEDS_I32))
-        .bind(i32::try_from(tags_delta).expect(COUNT_EXCEEDS_I32))
+        .bind(i64::from(items_delta))
+        .bind(i64::from(tags_delta))
         .execute(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
@@ -346,13 +346,11 @@ fn map_reindex_run_row(r: &sqlx::postgres::PgRow) -> ReindexRun {
             r.get::<uuid::Uuid, _>("initiated_by_principal_id"),
         ))
         .items_enumerated(map_count(r, "items_enumerated"))
-        .items_embedded(u32::try_from(r.get::<i32, _>("items_embedded")).expect(EPOCH_OVERFLOW))
+        .items_embedded(r.get::<i64, _>("items_embedded"))
         .tags_enumerated(map_count(r, "tags_enumerated"))
-        .tags_embedded(u32::try_from(r.get::<i32, _>("tags_embedded")).expect(EPOCH_OVERFLOW))
-        .items_quarantined(
-            u32::try_from(r.get::<i32, _>("items_quarantined")).expect(EPOCH_OVERFLOW),
-        )
-        .tags_quarantined(u32::try_from(r.get::<i32, _>("tags_quarantined")).expect(EPOCH_OVERFLOW))
+        .tags_embedded(r.get::<i64, _>("tags_embedded"))
+        .items_quarantined(r.get::<i64, _>("items_quarantined"))
+        .tags_quarantined(r.get::<i64, _>("tags_quarantined"))
         .error_message(r.get::<Option<String>, _>("error_message"))
         .trace_context(r.get::<Option<String>, _>("trace_context"))
         .started_at(r.get("started_at"))

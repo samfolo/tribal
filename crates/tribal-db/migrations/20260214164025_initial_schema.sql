@@ -340,12 +340,18 @@ CREATE TABLE reindex_runs (
                                    CHECK (state IN ('queued', 'running', 'completed',
                                                     'superseded', 'aborted', 'failed')),
     initiated_by_principal_id  UUID NOT NULL REFERENCES principals(id),
+    -- The *_enumerated columns are single backlog snapshots, so INT suffices.
+    -- The *_embedded and *_quarantined columns are cumulative tallies summed
+    -- across every catch-up pass, so they can exceed the corpus size and must be
+    -- BIGINT to stay clear of the INT ceiling at scale. Editing the initial
+    -- schema is the branch convention: databases are recreated, there are no
+    -- users.
     items_enumerated           INT,
-    items_embedded             INT NOT NULL DEFAULT 0,
+    items_embedded             BIGINT NOT NULL DEFAULT 0,
     tags_enumerated            INT,
-    tags_embedded              INT NOT NULL DEFAULT 0,
-    items_quarantined          INT NOT NULL DEFAULT 0,
-    tags_quarantined           INT NOT NULL DEFAULT 0,
+    tags_embedded              BIGINT NOT NULL DEFAULT 0,
+    items_quarantined          BIGINT NOT NULL DEFAULT 0,
+    tags_quarantined           BIGINT NOT NULL DEFAULT 0,
     error_message              TEXT,
     trace_context              TEXT CHECK (trace_context IS NULL OR char_length(trace_context) <= 128),
     started_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
