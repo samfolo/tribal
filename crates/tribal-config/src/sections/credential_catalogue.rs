@@ -101,6 +101,16 @@ pub struct CredentialEntry {
     pub api_key: Option<ApiKey>,
 }
 
+impl CredentialEntry {
+    /// Reports whether this entry names the given endpoint. An entry whose
+    /// stored `base_url` fails to normalise cannot match a valid target (startup
+    /// validation rejects such entries).
+    fn matches_endpoint(&self, provider_kind: ProviderKind, normalised_base_url: &str) -> bool {
+        self.provider_kind == provider_kind
+            && normalise_endpoint_url(&self.base_url).as_deref().ok() == Some(normalised_base_url)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CredentialCatalogue
 // ---------------------------------------------------------------------------
@@ -126,10 +136,9 @@ impl CredentialCatalogue {
         normalised_base_url: &str,
     ) -> Option<(&str, &CredentialEntry)> {
         self.0.iter().find_map(|(name, entry)| {
-            let matches = entry.provider_kind == provider_kind
-                && normalise_endpoint_url(&entry.base_url).as_deref().ok()
-                    == Some(normalised_base_url);
-            matches.then_some((name.as_str(), entry))
+            entry
+                .matches_endpoint(provider_kind, normalised_base_url)
+                .then_some((name.as_str(), entry))
         })
     }
 
@@ -205,10 +214,7 @@ impl CredentialCatalogue {
         api_key: ApiKey,
     ) {
         for entry in self.0.values_mut() {
-            if entry.api_key.is_none()
-                && entry.provider_kind == provider_kind
-                && normalise_endpoint_url(&entry.base_url).as_deref().ok()
-                    == Some(normalised_base_url)
+            if entry.api_key.is_none() && entry.matches_endpoint(provider_kind, normalised_base_url)
             {
                 entry.api_key = Some(api_key);
                 return;

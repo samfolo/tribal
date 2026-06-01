@@ -281,11 +281,13 @@ async fn dry_run_estimate_profile(
     let active = PgEmbeddingProfileRepository.find_active(conn).await?;
     Ok(match active {
         Some(active)
-            if active.provider_kind() == provider
-                && active.normalised_base_url() == normalised_base_url
-                && active.model() == model
-                && active.dimensions() == dimensions
-                && active.distance_metric() == DistanceMetric::Cosine =>
+            if active.matches_geometry(
+                provider,
+                normalised_base_url,
+                model,
+                dimensions,
+                DistanceMetric::Cosine,
+            ) =>
         {
             active.id()
         }
