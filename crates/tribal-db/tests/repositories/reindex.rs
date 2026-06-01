@@ -197,7 +197,7 @@ async fn test_task_claim_and_complete() {
         .expect("upsert");
 
     let claimed = PgReindexTaskRepository
-        .claim(&mut txn, 10, "worker-1")
+        .claim(&mut txn, run_id, 10, "worker-1")
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 1);
@@ -209,7 +209,7 @@ async fn test_task_claim_and_complete() {
     // A second claim finds nothing more.
     assert!(
         PgReindexTaskRepository
-            .claim(&mut txn, 10, "worker-2")
+            .claim(&mut txn, run_id, 10, "worker-2")
             .await
             .expect("claim")
             .is_empty()
@@ -231,6 +231,56 @@ async fn test_task_claim_and_complete() {
 }
 
 #[tokio::test]
+async fn test_claim_is_scoped_to_its_run_and_skips_a_prior_runs_leftover() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    // An older run enrols a task, then aborts, leaving the task pending. Single-
+    // flight requires the older run to be terminal before a newer one is live.
+    let older = setup_run(&mut txn, "older").await;
+    PgReindexTaskRepository
+        .upsert(&mut txn, &item_task(older, "item:leftover"))
+        .await
+        .expect("enrol older task");
+    assert!(
+        PgReindexRunRepository
+            .transition(
+                &mut txn,
+                older,
+                ReindexRunState::Queued,
+                ReindexRunState::Aborted,
+                Some("aborted"),
+            )
+            .await
+            .expect("abort older run"),
+    );
+
+    // A newer run with its own task.
+    let newer = setup_run(&mut txn, "newer").await;
+    PgReindexTaskRepository
+        .upsert(&mut txn, &item_task(newer, "item:current"))
+        .await
+        .expect("enrol newer task");
+
+    // Claiming with the newer run's id never returns the older run's leftover.
+    let claimed = PgReindexTaskRepository
+        .claim(&mut txn, newer, 10, "worker")
+        .await
+        .expect("claim");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "only the newer run's own task is claimable"
+    );
+    assert_eq!(
+        claimed[0].target_ref(),
+        "item:current",
+        "the claim is scoped to the newer run, not the prior run's leftover",
+    );
+    assert_eq!(claimed[0].reindex_run_id(), newer);
+}
+
+#[tokio::test]
 async fn test_task_fail_requeues_then_dead_letters() {
     let ctx = test_context().await;
     let mut txn = ctx.begin_test().await.expect("begin_test");
@@ -248,7 +298,7 @@ async fn test_task_fail_requeues_then_dead_letters() {
     let mut state = ReindexTaskState::Pending;
     for round in 0..9 {
         let claimed = PgReindexTaskRepository
-            .claim(&mut txn, 1, "worker")
+            .claim(&mut txn, run_id, 1, "worker")
             .await
             .expect("claim");
         assert_eq!(claimed.len(), 1, "round {round}: should be claimable");
@@ -280,7 +330,7 @@ async fn test_task_fail_requeues_then_dead_letters() {
     // Dead-lettered tasks are no longer claimable.
     assert!(
         PgReindexTaskRepository
-            .claim(&mut txn, 1, "worker")
+            .claim(&mut txn, run_id, 1, "worker")
             .await
             .expect("claim")
             .is_empty()
@@ -300,7 +350,7 @@ async fn test_task_count_by_state() {
             .expect("upsert");
     }
     let claimed = PgReindexTaskRepository
-        .claim(&mut txn, 1, "worker")
+        .claim(&mut txn, run_id, 1, "worker")
         .await
         .expect("claim");
     PgReindexTaskRepository
