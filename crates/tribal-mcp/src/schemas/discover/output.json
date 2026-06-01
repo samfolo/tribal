@@ -18,6 +18,10 @@
       "type": "string",
       "description": "Which embedding model was used for this query."
     },
+    "embedding_profile_id": {
+      "type": "string",
+      "description": "The active embedding profile that produced these results. Cursors and feedback are bound to it; a reindex changes it."
+    },
     "trace_id": {
       "type": "string",
       "description": "Trace ID for this retrieval. Pass to tribal_feedback to rate this session."
@@ -27,7 +31,7 @@
       "description": "True if all matching results are included. False if truncated by limit."
     }
   },
-  "required": ["items", "next_cursor", "applied_project_id", "embedding_model", "exact", "trace_id"],
+  "required": ["items", "next_cursor", "applied_project_id", "embedding_model", "embedding_profile_id", "exact", "trace_id"],
   "$defs": {
     "discovery_result": {
       "type": "object",

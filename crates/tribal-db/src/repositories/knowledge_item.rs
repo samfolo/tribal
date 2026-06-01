@@ -157,7 +157,9 @@ pub struct SemanticSearchParams {
     pub include_superseded: bool,
     /// Maximum number of results to return.
     pub limit: u32,
-    /// Cursor for pagination (hex-encoded similarity + item id).
+    /// Cursor for pagination (hex-encoded similarity, item id, and the issuing
+    /// embedding profile id). A cursor whose profile is not this search's active
+    /// profile is rejected as invalid-after-migration.
     #[builder(default)]
     pub cursor: Option<String>,
 }
@@ -436,7 +438,24 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         conn: &mut PgConnection,
         params: &SemanticSearchParams,
     ) -> Result<SemanticSearchResponse, DbError> {
-        let cursor_values = params.cursor.as_deref().map(decode_cursor).transpose()?;
+        // A cursor carries the profile it was issued against. Reject one whose
+        // profile is not the active search profile (a cutover flipped the active
+        // mid-pagination), rather than applying its distance against an
+        // incomparable geometry; the client restarts from the first page.
+        let cursor_values = match params.cursor.as_deref() {
+            Some(cursor) => {
+                let (similarity, id, cursor_profile_id) = decode_cursor(cursor)?;
+                if cursor_profile_id != *params.embedding_profile_id.inner() {
+                    return Err(DbError::InvalidCursor {
+                        detail: "cursor was issued against a superseded embedding \
+                                 profile; restart pagination from the first page"
+                            .to_owned(),
+                    });
+                }
+                Some((similarity, id))
+            }
+            None => None,
+        };
 
         let query_vector = to_halfvec(&params.query_embedding);
         let limit = params.limit as usize;
@@ -452,9 +471,13 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
             let results: Vec<SemanticSearchResult> = filtered.into_iter().take(limit).collect();
             let has_more = filtered_count > limit || candidate_count == k;
             let next_cursor = if has_more {
-                results
-                    .last()
-                    .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+                results.last().map(|r| {
+                    encode_cursor(
+                        r.similarity,
+                        *r.item.id().inner(),
+                        *params.embedding_profile_id.inner(),
+                    )
+                })
             } else {
                 None
             };
@@ -478,9 +501,13 @@ impl KnowledgeItemRepository for PgKnowledgeItemRepository {
         let has_more = results.len() >= limit
             && (filtered_wide_count > limit || candidate_count_wide == k_wide);
         let next_cursor = if has_more {
-            results
-                .last()
-                .map(|r| encode_cursor(r.similarity, *r.item.id().inner()))
+            results.last().map(|r| {
+                encode_cursor(
+                    r.similarity,
+                    *r.item.id().inner(),
+                    *params.embedding_profile_id.inner(),
+                )
+            })
         } else {
             None
         };
