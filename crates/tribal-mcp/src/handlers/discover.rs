@@ -1118,7 +1118,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_embedding_provider_failure_returns_error() {
-        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+        // The read path resolves the provider from the active profile, so seed
+        // one in a dedicated database and bind a failing provider to it; the
+        // embed error must surface as an internal error result. A dummy pool
+        // would instead fail at find_active, with an environment-dependent code.
+        let ctx = TestContext::new().await.expect("dedicated test database");
+        let pool = ctx.pool().clone();
+        let active = {
+            let mut seed = ctx.raw_connection().await.expect("seed connection");
+            ensure_genesis_profile(&mut seed, "model-a", 768).await
+        };
+
+        let failing: Arc<dyn EmbeddingProvider> = Arc::new(
             MockEmbeddingProvider::builder()
                 .on_embed_error(
                     || InferenceError::EmbeddingFailed {
@@ -1130,7 +1141,28 @@ mod tests {
                 )
                 .build(),
         );
-        let handler = TestHandler::builder().embedding_provider(provider).build();
+
+        let handler = TestHandler::builder().pool(pool).build();
+        handler
+            .state
+            .provider_registry
+            .register_building(
+                ProviderKey::new(
+                    ProviderKind::Ollama.to_string(),
+                    ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+                    RequestClass::Embedding,
+                )
+                .expect("embedding provider key"),
+                &ProviderLimits {
+                    max_in_flight: 1,
+                    request_timeout: Duration::from_secs(5),
+                },
+            )
+            .expect("register the embedding endpoint");
+        handler
+            .state
+            .embedding_providers
+            .insert(active.id(), failing);
 
         let result = handler
             .apply_discover(serde_json::json!({"query": "test"}))
