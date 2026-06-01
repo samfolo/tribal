@@ -243,7 +243,20 @@ const BACKFILL_RANGE_WIDTH: i64 = 256;
 /// would drive it is gone), so it is failed on boot and drops out of every
 /// set-difference. Returns whether one was reconciled; a building profile a live
 /// run still owns is left untouched.
+///
+/// Holds the single-flight lock across the read-then-fail, mirroring
+/// [`create_reindex_run`], so a concurrent create cannot commit a new building
+/// profile and live run between the `find_building` and `find_live` reads and
+/// strand this orphan. The lock is transaction-scoped, so the caller must run
+/// this inside a transaction; a contended lock means a create is in flight and
+/// owns the building profile, so there is nothing to reconcile.
 pub async fn reconcile_orphan_building_profile(conn: &mut PgConnection) -> Result<bool, DbError> {
+    if !PgAdvisoryLockRepository
+        .try_acquire_exclusive_xact(conn, advisory_locks::REINDEX_SINGLE_FLIGHT)
+        .await?
+    {
+        return Ok(false);
+    }
     let Some(building) = PgEmbeddingProfileRepository.find_building(conn).await? else {
         return Ok(false);
     };
@@ -1115,18 +1128,34 @@ async fn fail_run(
     building: &EmbeddingProfile,
     reason: &str,
 ) -> Result<(), DbError> {
+    // Fail the profile and the run atomically so a crash between the two writes
+    // cannot wedge the run live with a failed profile, which would block every
+    // future reindex create until an operator cancels. Profile-then-run keeps the
+    // lock order consistent with the cutover and cancel paths. Called both on a
+    // bare connection (the top-level failure paths) and inside the cutover
+    // transaction (the drift path), where this nests as a savepoint.
+    let mut txn = sqlx::Connection::begin(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "beginning the reindex fail transaction".to_owned(),
+            source: e,
+        })?;
     PgEmbeddingProfileRepository
-        .mark_failed(conn, building.id())
+        .mark_failed(&mut txn, building.id())
         .await?;
     PgReindexRunRepository
         .transition(
-            conn,
+            &mut txn,
             run.id(),
             ReindexRunState::Running,
             ReindexRunState::Failed,
             Some(reason),
         )
         .await?;
+    txn.commit().await.map_err(|e| DbError::QueryFailed {
+        context: "committing the reindex fail transaction".to_owned(),
+        source: e,
+    })?;
     tracing::warn!(run_id = %run.id(), reason, "reindex run failed");
     Ok(())
 }
@@ -1337,9 +1366,21 @@ async fn catch_up_and_cutover(
                 return Ok(false);
             }
 
-            PgEmbeddingProfileRepository
+            // The flip is a compare-and-set on `state = 'building'`. If it
+            // no-ops, an operator cancel won the race and failed the profile (it
+            // takes the same row locks in the same order), so the flip must not
+            // stand and must not be reported as an activation: roll back and let
+            // the next cycle find no building profile.
+            let flipped = PgEmbeddingProfileRepository
                 .mark_complete(&mut txn, ctx.building.id())
                 .await?;
+            if !flipped {
+                txn.rollback().await.map_err(|e| DbError::QueryFailed {
+                    context: "rolling back a cutover the cancel won".to_owned(),
+                    source: e,
+                })?;
+                return Ok(false);
+            }
             PgReindexRunRepository
                 .transition(
                     &mut txn,
