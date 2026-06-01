@@ -27,6 +27,10 @@
     "notes": {
       "type": "string",
       "description": "Optional reasoning. What was good or what was missing?"
+    },
+    "embedding_profile_id": {
+      "type": "string",
+      "description": "The embedding_profile_id from the tribal_discover response being rated, so the lineage records the profile that produced the results."
     }
   },
   "required": ["trace_id", "query_text", "returned_item_ids", "rating"],

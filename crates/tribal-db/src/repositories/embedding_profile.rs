@@ -105,6 +105,18 @@ pub trait EmbeddingProfileRepository {
         conn: &mut PgConnection,
     ) -> Result<Option<EmbeddingProfile>, DbError>;
 
+    /// Returns the profile with the given id, or `None` if no such profile
+    /// exists (e.g. it was pruned).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_id(
+        &self,
+        conn: &mut PgConnection,
+        id: EmbeddingProfileId,
+    ) -> Result<Option<EmbeddingProfile>, DbError>;
+
     /// Returns the highest-epoch `building` profile, or `None`.
     ///
     /// Single-flight makes at most one `building` profile live at a time;
@@ -244,6 +256,25 @@ impl EmbeddingProfileRepository for PgEmbeddingProfileRepository {
         .await
         .map_err(|e| DbError::QueryFailed {
             context: "finding active embedding profile".to_owned(),
+            source: e,
+        })?;
+
+        Ok(row.as_ref().map(map_embedding_profile_row))
+    }
+
+    async fn find_by_id(
+        &self,
+        conn: &mut PgConnection,
+        id: EmbeddingProfileId,
+    ) -> Result<Option<EmbeddingProfile>, DbError> {
+        let row = sqlx::query(&format!(
+            "SELECT {COLUMNS} FROM embedding_profiles WHERE id = $1"
+        ))
+        .bind(id.inner())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("finding embedding profile {id}"),
             source: e,
         })?;
 
