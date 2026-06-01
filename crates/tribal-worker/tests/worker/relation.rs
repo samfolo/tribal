@@ -53,7 +53,8 @@ async fn test_relation_stage_commits_relations_and_completes_job() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -303,7 +304,8 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -410,7 +412,8 @@ async fn test_relation_stage_idempotency_skip() {
         test_config(),
         Some(inference as Arc<dyn InferenceProvider>),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -477,7 +480,8 @@ async fn test_relation_parse_failure() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -576,7 +580,8 @@ async fn test_relation_stage_all_edges_dropped() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })

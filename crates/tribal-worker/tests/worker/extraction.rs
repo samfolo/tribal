@@ -45,7 +45,8 @@ async fn test_extraction_happy_path() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -130,7 +131,8 @@ async fn test_extraction_zero_candidates() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -211,7 +213,8 @@ async fn test_extraction_capping() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), config, Some(inference), None);
+    let worker =
+        build_test_worker(pool.clone(), token.clone(), config, Some(inference), None).await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -303,7 +306,8 @@ async fn test_extraction_parse_failure() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })

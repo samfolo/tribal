@@ -86,7 +86,8 @@ async fn test_extraction_records_token_usage() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -202,7 +203,8 @@ async fn assert_extraction_with_trace_context(trace_context: Option<String>, lab
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -304,7 +306,8 @@ async fn test_triage_novel_records_token_usage() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -467,7 +470,8 @@ async fn test_triage_duplicate_records_token_usage() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -586,7 +590,8 @@ async fn test_relation_records_token_usage() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -668,7 +673,8 @@ async fn test_token_usage_records_retry_attempt() {
         test_config(),
         Some(inference),
         None,
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -724,7 +730,7 @@ async fn test_backfill_records_token_usage() {
     );
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding));
+    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding)).await;
 
     worker.startup().await.expect("startup");
 
