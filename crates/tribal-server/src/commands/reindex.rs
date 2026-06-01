@@ -15,7 +15,7 @@ use tribal_db::{DbError, create_pool};
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
 use tribal_inference::ProviderRegistry;
 use tribal_worker::{
-    ReindexCancelOutcome, ReindexRunOutcome, ReindexRunRequest, ReindexRunStatus,
+    ReindexCancelOutcome, ReindexResolution, ReindexRunOutcome, ReindexRunRequest,
     drop_superseded_indexes, reindex_cancel, reindex_prune, reindex_run,
 };
 
@@ -95,24 +95,21 @@ fn render_run(out: &mut dyn Write, outcome: &ReindexRunOutcome) -> Result<(), Ap
         "{} item(s) and {} tag(s) to embed",
         outcome.estimated_items, outcome.estimated_tags,
     );
-    let line = match (outcome.status, &outcome.run_id) {
-        (ReindexRunStatus::Plan, _) => {
+    let line = match outcome.resolution {
+        ReindexResolution::Plan => {
             format!("plan: reindex {target} would embed {estimate}")
         }
-        (ReindexRunStatus::Created, Some(id)) => {
-            format!("created reindex run {id} for {target}: {estimate}")
+        ReindexResolution::Created { run_id } => {
+            format!("created reindex run {run_id} for {target}: {estimate}")
         }
-        (ReindexRunStatus::AlreadyLive, Some(id)) => {
-            format!("already live: reindex run {id} is resuming {target}: {estimate}")
+        ReindexResolution::AlreadyLive { run_id } => {
+            format!("already live: reindex run {run_id} is resuming {target}: {estimate}")
         }
-        (ReindexRunStatus::Unchanged, _) => {
+        ReindexResolution::Unchanged => {
             format!("unchanged: the corpus already uses {target}")
         }
-        (ReindexRunStatus::LockContended, _) => {
+        ReindexResolution::LockContended => {
             "lock contended: another reindex is starting; retry shortly".to_owned()
-        }
-        (ReindexRunStatus::Created | ReindexRunStatus::AlreadyLive, None) => {
-            format!("{}: {target}: {estimate}", outcome.status.label())
         }
     };
     writeln!(out, "{line}").map_err(|source| AppError::Io {
@@ -255,10 +252,9 @@ mod tests {
 
     use super::*;
 
-    fn outcome(status: ReindexRunStatus, run_id: Option<ReindexRunId>) -> ReindexRunOutcome {
+    fn outcome(resolution: ReindexResolution) -> ReindexRunOutcome {
         ReindexRunOutcome {
-            status,
-            run_id,
+            resolution,
             provider: ProviderKind::Ollama,
             model: "nomic-embed-text:v1.5".to_owned(),
             dimensions: 768,
@@ -268,30 +264,22 @@ mod tests {
         }
     }
 
-    fn render(status: ReindexRunStatus, run_id: Option<ReindexRunId>) -> String {
+    fn render(resolution: ReindexResolution) -> String {
         let mut buf = Vec::new();
-        render_run(&mut buf, &outcome(status, run_id)).expect("render");
+        render_run(&mut buf, &outcome(resolution)).expect("render");
         String::from_utf8(buf).expect("utf8")
     }
 
     #[test]
-    fn test_render_run_covers_every_status() {
+    fn test_render_run_covers_every_resolution() {
         let id = ReindexRunId::new();
-        assert!(render(ReindexRunStatus::Plan, None).starts_with("plan:"));
+        assert!(render(ReindexResolution::Plan).starts_with("plan:"));
         assert!(
-            render(ReindexRunStatus::Created, Some(id))
+            render(ReindexResolution::Created { run_id: id })
                 .contains(&format!("created reindex run {id}"))
         );
-        assert!(render(ReindexRunStatus::AlreadyLive, Some(id)).starts_with("already live:"));
-        assert!(render(ReindexRunStatus::Unchanged, None).starts_with("unchanged:"));
-        assert!(render(ReindexRunStatus::LockContended, None).starts_with("lock contended"));
-    }
-
-    #[test]
-    fn test_render_run_falls_back_for_a_created_status_without_a_run_id() {
-        // The producer never pairs Created/AlreadyLive with None, but the
-        // renderer degrades to the status label rather than panicking.
-        assert!(render(ReindexRunStatus::Created, None).starts_with("created:"));
-        assert!(render(ReindexRunStatus::AlreadyLive, None).starts_with("already_live:"));
+        assert!(render(ReindexResolution::AlreadyLive { run_id: id }).starts_with("already live:"));
+        assert!(render(ReindexResolution::Unchanged).starts_with("unchanged:"));
+        assert!(render(ReindexResolution::LockContended).starts_with("lock contended"));
     }
 }

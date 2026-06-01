@@ -106,8 +106,8 @@ impl TribalServerHandler {
         .await?;
 
         Ok(McpReindexResponse {
-            outcome: outcome.status.label().to_owned(),
-            run_id: outcome.run_id.map(|id| id.to_string()),
+            outcome: outcome.resolution.label().to_owned(),
+            run_id: outcome.resolution.run_id().map(|id| id.to_string()),
             provider: outcome.provider.as_str().to_owned(),
             model: outcome.model,
             dimensions: outcome.dimensions,
