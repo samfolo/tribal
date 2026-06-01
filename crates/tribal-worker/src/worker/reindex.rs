@@ -934,7 +934,7 @@ async fn process_tasks(
 ) -> Result<(), DbError> {
     loop {
         let tasks = PgReindexTaskRepository
-            .claim(conn, REINDEX_TASK_CLAIM_LIMIT, claimed_by)
+            .claim(conn, ctx.run.id(), REINDEX_TASK_CLAIM_LIMIT, claimed_by)
             .await?;
         if tasks.is_empty() {
             return Ok(());
@@ -1126,23 +1126,36 @@ async fn run_dead_lettered(conn: &mut PgConnection, run_id: ReindexRunId) -> Res
         .any(|c| c.state == ReindexTaskState::DeadLetter && c.count > 0))
 }
 
-/// Re-probes the building provider and reports whether its geometry drifted from
-/// the signals captured at build start: a provider-native revision token change
-/// (compared only when the provider exposes one), or a probe-digest change as a
-/// cross-provider backstop. A profile with neither captured signal cannot drift.
-/// A transient probe failure reports no drift, so a flaky probe does not fail a
-/// sound build; the next cutover re-probes.
+/// The outcome of a pre-cutover drift re-probe. `Unavailable` is distinct from
+/// `Stable`: a probe that could not run has not verified the geometry, so the
+/// caller must not activate on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeOutcome {
+    /// The captured signals still match: the geometry is verified unchanged.
+    Stable,
+    /// A revision token or probe digest changed: the geometry drifted mid-build.
+    Drifted,
+    /// The probe endpoint could not be reached, so drift could not be ruled out.
+    Unavailable,
+}
+
+/// Re-probes the building provider against the signals captured at build start:
+/// a provider-native revision token change (compared only when the provider
+/// exposes one), or a probe-digest change as a cross-provider backstop. A
+/// profile with neither captured signal is [`ProbeOutcome::Stable`]. A failed
+/// probe is [`ProbeOutcome::Unavailable`], distinct from a verified-stable one,
+/// so an unreachable endpoint at cutover defers activation rather than passing.
 ///
 /// Both checks are provider network calls, so this must run lock-free, never
 /// while the exclusive cutover lock is held.
-async fn probe_drifted(ctx: &ReindexCtx<'_>) -> bool {
+async fn probe_drifted(ctx: &ReindexCtx<'_>) -> ProbeOutcome {
     let resolved_token = ctx.provider.revision_token().await;
     if !resolved_token.is_empty() && resolved_token != ctx.building.revision_token() {
-        return true;
+        return ProbeOutcome::Drifted;
     }
 
     let Some(stored) = ctx.building.probe_digest() else {
-        return false;
+        return ProbeOutcome::Stable;
     };
     let mut result = embed_with_permit(
         ctx.provider,
@@ -1154,8 +1167,9 @@ async fn probe_drifted(ctx: &ReindexCtx<'_>) -> bool {
     )
     .await;
     match result.items.pop() {
-        Some(Ok(vector)) => probe_digest(&vector) != stored,
-        _ => false,
+        Some(Ok(vector)) if probe_digest(&vector) == stored => ProbeOutcome::Stable,
+        Some(Ok(_)) => ProbeOutcome::Drifted,
+        _ => ProbeOutcome::Unavailable,
     }
 }
 
@@ -1189,7 +1203,8 @@ async fn count_remaining(
 /// is atomic against ingest because no commit can start while the lock is held
 /// and the final check ran after the drain. Returns whether the run completed;
 /// it fails the run on drift or a quarantine-cap breach, and yields without
-/// flipping when a transient stalls convergence.
+/// flipping when a transient stalls convergence or the drift re-probe endpoint
+/// is unavailable (the geometry stays unverified).
 ///
 /// # Errors
 ///
@@ -1245,7 +1260,19 @@ async fn catch_up_and_cutover(
         // Re-probe before the lock: a mutable model alias may have changed
         // mid-build, leaving the profile holding two geometries. A provider call
         // must never span the exclusive cutover lock, so it happens here.
-        let drifted = probe_drifted(ctx).await;
+        let probe = probe_drifted(ctx).await;
+
+        // An unreachable endpoint leaves the geometry unverified, so activation
+        // would flip to a profile that may hold two geometries. Yield without
+        // flipping; the run stays live for the next cycle to re-probe once the
+        // endpoint recovers.
+        if probe == ProbeOutcome::Unavailable {
+            tracing::warn!(
+                "reindex cutover could not verify the building provider's geometry: the probe \
+                 endpoint was unavailable; yielding to the next cycle to retry",
+            );
+            return Ok(false);
+        }
 
         // Under the exclusive lock no ingest can commit, so the set-difference
         // measured here is final.
@@ -1261,7 +1288,7 @@ async fn catch_up_and_cutover(
             .await?;
         let remaining_locked = count_remaining(&mut txn, ctx.building).await?;
         if remaining_locked == 0 {
-            if drifted {
+            if probe == ProbeOutcome::Drifted {
                 fail_run(
                     &mut txn,
                     ctx.run,
@@ -1317,7 +1344,7 @@ mod tests {
     use tribal_domain::{KnowledgeKind, ReindexRunState};
     use tribal_inference::{EmbeddingResponse, ProviderIdentity};
     use tribal_test_utils::{
-        ExhaustBehaviour, MockEmbeddingProvider, Seed, a_new_embedding_profile,
+        EmbeddingMatcher, ExhaustBehaviour, MockEmbeddingProvider, Seed, a_new_embedding_profile,
         a_new_knowledge_item, a_new_principal, a_provider_unavailable, an_embedding_profile,
         an_embedding_response, item, serial_lock, test_context, truncate_all_tables,
     };
@@ -1757,7 +1784,7 @@ mod tests {
             .expect("enrol");
         for _ in 0..9 {
             let claimed = PgReindexTaskRepository
-                .claim(&mut txn, 1, "test-reindex-worker")
+                .claim(&mut txn, run.id(), 1, "test-reindex-worker")
                 .await
                 .expect("claim");
             let task = claimed.first().expect("a claimable task");
@@ -2172,6 +2199,112 @@ mod tests {
                 .expect("find_active")
                 .is_none_or(|active| active.id() != building.id()),
             "the drifted building profile was not activated",
+        );
+    }
+
+    /// The set-difference is drained (the build is complete) but the pre-cutover
+    /// drift re-probe endpoint is unavailable, so the geometry cannot be
+    /// verified. The cutover must not activate on an unverified probe: it yields
+    /// without flipping, leaving the building profile unmarked and the run live.
+    #[tokio::test]
+    async fn test_cutover_does_not_activate_when_the_probe_endpoint_is_unavailable() {
+        let _guard = serial_lock().await;
+        let ctx_db = test_context().await;
+        let mut conn = ctx_db.raw_connection().await.expect("raw connection");
+        let mut txn = sqlx::Connection::begin(&mut conn)
+            .await
+            .expect("begin transaction");
+
+        let seed = Seed::new()
+            .define_principal("user", "user:reindex-probe-unavail")
+            .define_project("proj", "git@github.com:test/reindex-probe-unavail.git")
+            .set_embedding_model("mock-model", 768)
+            .as_principal("user")
+            .for_project("proj", |store| {
+                store.add_item("a", item(KnowledgeKind::Fact, "first"));
+            })
+            .execute(&mut txn)
+            .await;
+        let principal = seed.principal_id("user");
+
+        // The build captured a probe digest at start, so the pre-cutover re-probe
+        // is exercised rather than short-circuited.
+        let target = ReindexTarget {
+            probe_digest: Some(probe_digest(&vec![0.5_f32; 768])),
+            ..a_target()
+        };
+        let ReindexCreationOutcome::Created(_) = create_reindex_run(&mut txn, &target, principal)
+            .await
+            .expect("create")
+        else {
+            panic!("expected a created run");
+        };
+        let run = drive_reindex(&mut txn)
+            .await
+            .expect("drive")
+            .expect("a running run");
+        let building = PgEmbeddingProfileRepository
+            .find_building(&mut txn)
+            .await
+            .expect("find_building")
+            .expect("a building profile");
+
+        // Backfill embeds (Candidate purpose) succeed so the set-difference
+        // drains; the drift re-probe (Query purpose) fails, standing in for an
+        // endpoint that goes unavailable at the final safety check.
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .when(EmbeddingMatcher::has_purpose(EmbeddingPurpose::Query))
+                .respond_with_error(a_provider_unavailable("probe endpoint down"), None)
+                .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        let semaphore = Semaphore::new(4);
+        let ctx = ReindexCtx {
+            run: &run,
+            building: &building,
+            provider: provider.as_ref(),
+            semaphore: &semaphore,
+        };
+
+        process_tasks(&mut txn, &ctx, "test-reindex-worker")
+            .await
+            .expect("process tasks");
+        assert_eq!(
+            count_remaining(&mut txn, &building)
+                .await
+                .expect("count_remaining"),
+            0,
+            "the build is complete; only the probe is unavailable",
+        );
+        assert!(
+            !catch_up_and_cutover(&mut txn, &ctx).await.expect("cutover"),
+            "an unavailable probe yields without flipping rather than activating",
+        );
+
+        // The building profile is never marked complete and the run stays live
+        // for the next cycle to re-probe once the endpoint recovers.
+        let still_building = PgEmbeddingProfileRepository
+            .find_building(&mut txn)
+            .await
+            .expect("find_building")
+            .expect("the building profile remains building");
+        assert_eq!(still_building.id(), building.id());
+        let live = PgReindexRunRepository
+            .find_live(&mut txn)
+            .await
+            .expect("find_live")
+            .expect("the run is still live");
+        assert_eq!(live.id(), run.id());
+        assert_eq!(live.state(), ReindexRunState::Running);
+        assert!(
+            PgEmbeddingProfileRepository
+                .find_active(&mut txn)
+                .await
+                .expect("find_active")
+                .is_none_or(|active| active.id() != building.id()),
+            "the unverified building profile was not activated",
         );
     }
 

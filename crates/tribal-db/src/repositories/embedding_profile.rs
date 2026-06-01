@@ -171,6 +171,17 @@ pub trait EmbeddingProfileRepository {
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
     async fn supersede_prunable(&self, conn: &mut PgConnection) -> Result<Vec<i64>, DbError>;
+
+    /// Returns the epochs of every `superseded` profile whose partial HNSW index
+    /// still exists in either embedding table. This is the full set still
+    /// eligible for index cleanup: newly superseded epochs plus any whose prior
+    /// drop failed and whose dead index lingers, so a later prune retries it
+    /// rather than only re-attempting the freshly-transitioned set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn prunable_index_epochs(&self, conn: &mut PgConnection) -> Result<Vec<i64>, DbError>;
 }
 
 /// Transitions a building profile to a terminal state, stamping `completed_at`.
@@ -347,6 +358,28 @@ impl EmbeddingProfileRepository for PgEmbeddingProfileRepository {
         .await
         .map_err(|e| DbError::QueryFailed {
             context: "superseding prunable embedding profiles".to_owned(),
+            source: e,
+        })?;
+        Ok(epochs)
+    }
+
+    async fn prunable_index_epochs(&self, conn: &mut PgConnection) -> Result<Vec<i64>, DbError> {
+        // A superseded profile is eligible for index cleanup while either of its
+        // partial HNSW indexes still exists. `to_regclass` resolves the
+        // epoch-named index (see `EmbeddingTable::hnsw_index_name`) to NULL when
+        // absent, so an epoch whose drops all succeeded drops out of the set and
+        // one whose drop failed remains, which is what lets a later prune retry.
+        let epochs = sqlx::query_scalar(
+            "SELECT epoch FROM embedding_profiles \
+             WHERE state = 'superseded' \
+               AND (to_regclass('idx_embeddings_hnsw_epoch' || epoch) IS NOT NULL \
+                 OR to_regclass('idx_tag_embeddings_hnsw_epoch' || epoch) IS NOT NULL) \
+             ORDER BY epoch",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "finding prunable superseded index epochs".to_owned(),
             source: e,
         })?;
         Ok(epochs)

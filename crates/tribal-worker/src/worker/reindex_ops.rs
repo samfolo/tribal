@@ -350,32 +350,43 @@ pub async fn reindex_cancel(
 /// The counts a prune reclaimed, plus the epochs whose partial indexes the
 /// caller drops after the transaction commits.
 pub struct ReindexPruneOutcome {
-    /// Profiles transitioned to superseded.
+    /// Profiles transitioned to superseded by this prune.
     pub profiles_superseded: u64,
     /// Embedding rows deleted.
     pub embeddings_deleted: u64,
     /// Tag-embedding rows deleted.
     pub tag_embeddings_deleted: u64,
-    /// The superseded profiles' epochs, whose partial indexes are dropped
-    /// after the prune transaction commits.
+    /// Every superseded epoch whose partial index still exists, so it is dropped
+    /// after the prune transaction commits. This spans the epochs this prune
+    /// freshly superseded plus any earlier-superseded epoch whose prior drop
+    /// failed and whose dead index lingers, so a later prune retries it.
     pub superseded_epochs: Vec<i64>,
 }
 
 /// Supersedes every prunable profile and deletes their embeddings within a
 /// single transaction. Supersede precedes delete, so the delete's join sees the
 /// freshly-superseded profiles; the active profile and its rows are untouched.
+/// The drop-eligible epochs are then re-derived from the superseded profiles
+/// whose index still exists, so a prior failed drop is retried rather than lost.
 ///
 /// # Errors
 ///
 /// Returns [`DbError`] on a database error.
 pub async fn reindex_prune(conn: &mut sqlx::PgConnection) -> Result<ReindexPruneOutcome, DbError> {
-    let superseded_epochs = PgEmbeddingProfileRepository
+    let newly_superseded = PgEmbeddingProfileRepository
         .supersede_prunable(conn)
         .await?;
     let embeddings_deleted = PgEmbeddingRepository.delete_superseded(conn).await?;
     let tag_embeddings_deleted = PgTagEmbeddingRepository.delete_superseded(conn).await?;
+    // Drive index cleanup from every superseded epoch whose index still exists,
+    // not just the freshly-transitioned set: a prior prune's failed drop leaves
+    // a profile already superseded, so the supersede transition no longer
+    // re-emits it, yet its dead index must still be reclaimed.
+    let superseded_epochs = PgEmbeddingProfileRepository
+        .prunable_index_epochs(conn)
+        .await?;
     Ok(ReindexPruneOutcome {
-        profiles_superseded: u64::try_from(superseded_epochs.len()).unwrap_or(u64::MAX),
+        profiles_superseded: u64::try_from(newly_superseded.len()).unwrap_or(u64::MAX),
         embeddings_deleted,
         tag_embeddings_deleted,
         superseded_epochs,
@@ -402,5 +413,97 @@ pub async fn drop_superseded_indexes(conn: &mut sqlx::PgConnection, epochs: &[i6
                 );
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use tribal_test_utils::{
+        a_new_embedding_profile, serial_lock, test_context, truncate_all_tables,
+    };
+
+    use super::*;
+
+    /// A failed index drop is retried by a later prune. The supersede transition
+    /// only re-emits freshly-transitioned profiles, so once a profile is
+    /// superseded its dead index would otherwise linger forever; prune instead
+    /// drives cleanup from every superseded profile whose index still exists, so
+    /// the second prune still targets the epoch left behind by the failed drop.
+    /// Against a live database, since a real partial index must exist to enumerate.
+    #[tokio::test]
+    async fn test_prune_retries_a_superseded_profiles_lingering_index() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        // CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction, so use
+        // a committed raw connection; truncate cleans the committed rows at the
+        // end (every reindex worker test serialises on the same lock).
+        let mut conn = ctx.raw_connection().await.expect("raw connection");
+        let table = EmbeddingTable::Embeddings;
+
+        // A lower-epoch complete profile (prunable) below a higher-epoch complete
+        // one (the active, never superseded).
+        let prunable = PgEmbeddingProfileRepository
+            .insert(&mut conn, &a_new_embedding_profile().build())
+            .await
+            .expect("insert prunable");
+        PgEmbeddingProfileRepository
+            .mark_complete(&mut conn, prunable.id())
+            .await
+            .expect("complete prunable");
+        let active = PgEmbeddingProfileRepository
+            .insert(&mut conn, &a_new_embedding_profile().build())
+            .await
+            .expect("insert active");
+        PgEmbeddingProfileRepository
+            .mark_complete(&mut conn, active.id())
+            .await
+            .expect("complete active");
+        let epoch = PgEmbeddingProfileRepository
+            .find_by_id(&mut conn, prunable.id())
+            .await
+            .expect("find prunable")
+            .expect("the prunable profile")
+            .epoch();
+
+        // Build the prunable profile's partial index, the one whose drop will be
+        // simulated as failing.
+        PgEmbeddingIndexRepository
+            .ensure_partial_hnsw(&mut conn, table, epoch, 768, prunable.id())
+            .await
+            .expect("build the prunable profile's index");
+
+        // The first prune supersedes the prunable profile and targets its epoch.
+        let first = reindex_prune(&mut conn).await.expect("first prune");
+        assert!(
+            first.superseded_epochs.contains(&epoch),
+            "the first prune targets the freshly-superseded profile's index",
+        );
+
+        // Simulate the drop having failed by leaving the index in place. The
+        // second prune transitions nothing new, yet must still target the epoch
+        // because its index lingers.
+        let second = reindex_prune(&mut conn).await.expect("second prune");
+        assert_eq!(
+            second.profiles_superseded, 0,
+            "the already-superseded profile is not transitioned again",
+        );
+        assert!(
+            second.superseded_epochs.contains(&epoch),
+            "the failed drop is retried: the lingering index keeps the epoch targeted",
+        );
+
+        // Once the index is actually dropped, a later prune no longer targets it.
+        drop_superseded_indexes(&mut conn, &[epoch]).await;
+        let third = reindex_prune(&mut conn).await.expect("third prune");
+        assert!(
+            !third.superseded_epochs.contains(&epoch),
+            "a dropped index removes the epoch from the prunable set",
+        );
+
+        truncate_all_tables(&mut conn).await;
     }
 }

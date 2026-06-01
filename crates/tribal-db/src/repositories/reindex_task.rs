@@ -108,7 +108,9 @@ pub trait ReindexTaskRepository {
         id: ReindexTaskId,
     ) -> Result<Option<ReindexTask>, DbError>;
 
-    /// Atomically claims up to `limit` available `pending` tasks for the owner.
+    /// Atomically claims up to `limit` available `pending` tasks for the owner,
+    /// scoped to `reindex_run_id` so a later run never claims a prior aborted
+    /// run's leftover pending tasks.
     ///
     /// # Errors
     ///
@@ -116,6 +118,7 @@ pub trait ReindexTaskRepository {
     async fn claim(
         &self,
         conn: &mut PgConnection,
+        reindex_run_id: ReindexRunId,
         limit: u32,
         claimed_by: &str,
     ) -> Result<Vec<ReindexTask>, DbError>;
@@ -211,13 +214,15 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
     async fn claim(
         &self,
         conn: &mut PgConnection,
+        reindex_run_id: ReindexRunId,
         limit: u32,
         claimed_by: &str,
     ) -> Result<Vec<ReindexTask>, DbError> {
         let sql = format!(
             "WITH claimable AS ( \
                  SELECT id FROM reindex_tasks \
-                 WHERE state = 'pending' AND available_at <= now() \
+                 WHERE reindex_run_id = $3 \
+                   AND state = 'pending' AND available_at <= now() \
                  ORDER BY available_at, created_at \
                  LIMIT $1 \
                  FOR UPDATE SKIP LOCKED \
@@ -238,10 +243,11 @@ impl ReindexTaskRepository for PgReindexTaskRepository {
         let rows = sqlx::query(&sql)
             .bind(i64::from(limit))
             .bind(claimed_by)
+            .bind(reindex_run_id.inner())
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
-                context: format!("claiming up to {limit} reindex tasks"),
+                context: format!("claiming up to {limit} reindex tasks for run {reindex_run_id}"),
                 source: e,
             })?;
 
