@@ -18,8 +18,8 @@ pub(super) use tribal_db::{
 };
 pub(super) use tribal_domain::{
     EmbeddingPurpose, JobOutcome, JobStatus, KnowledgeKind, PipelineStage, PrincipalId, ProjectId,
-    PromptVersionId, RelationBatchId, SourceType, TaskErrorKind, TaskStatus, TaskType,
-    TriageOutcome,
+    PromptVersionId, ProviderKind, RelationBatchId, SourceType, TaskErrorKind, TaskStatus,
+    TaskType, TriageOutcome,
 };
 pub(super) use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry,
@@ -43,7 +43,7 @@ pub(super) use tribal_test_utils::{
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
     upsert_system_fingerprint,
 };
-pub(super) use tribal_worker::Worker;
+pub(super) use tribal_worker::{EmbeddingProviderCache, Worker};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -113,7 +113,7 @@ pub(super) async fn setup_prerequisites(
 /// When `inference` or `embedding` is `None`, a default mock is used.
 /// The default inference mock returns errors on exhaustion (rather than
 /// panicking) so the extraction stub's provider call is handled cleanly.
-pub(super) fn build_test_worker(
+pub(super) async fn build_test_worker(
     pool: sqlx::PgPool,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
@@ -136,25 +136,49 @@ pub(super) fn build_test_worker(
         ProviderKey::new("mock", "http://localhost:9999", class).expect("valid provider key")
     };
 
+    // The triage stage resolves the embedding provider from the active profile
+    // via `build_target_provider`, keyed on the profile's `(provider_kind,
+    // normalised_base_url)` (the seeded genesis is the Ollama default). Register
+    // that endpoint so the cache-hit semaphore resolves, then wire the mock into
+    // the per-profile cache below; otherwise the worker would build a dead real
+    // provider against the Ollama default endpoint.
+    let embedding_endpoint = ProviderKey::new(
+        ProviderKind::Ollama.to_string(),
+        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+        RequestClass::Embedding,
+    )
+    .expect("valid embedding endpoint key");
+
+    let limits = || ProviderLimits {
+        max_in_flight: 10,
+        request_timeout: Duration::from_secs(30),
+    };
+
     let registry = Arc::new(
         ProviderRegistry::new(vec![
-            (
-                key(RequestClass::Inference),
-                ProviderLimits {
-                    max_in_flight: 10,
-                    request_timeout: Duration::from_secs(30),
-                },
-            ),
-            (
-                key(RequestClass::Embedding),
-                ProviderLimits {
-                    max_in_flight: 10,
-                    request_timeout: Duration::from_secs(30),
-                },
-            ),
+            (key(RequestClass::Inference), limits()),
+            (key(RequestClass::Embedding), limits()),
+            (embedding_endpoint, limits()),
         ])
         .expect("valid registry"),
     );
+
+    // Resolve the active profile (the seeded genesis) and bind the mock to it, so
+    // the triage stage's per-call provider resolution returns the mock.
+    let embedding_providers: EmbeddingProviderCache = Arc::new(DashMap::new());
+    {
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("acquire connection for embedding wiring");
+        if let Some(active) = PgEmbeddingProfileRepository
+            .find_active(&mut conn)
+            .await
+            .expect("find active profile")
+        {
+            embedding_providers.insert(active.id(), embedding.clone());
+        }
+    }
 
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
@@ -165,7 +189,7 @@ pub(super) fn build_test_worker(
         inference.clone(),
         inference,
         embedding,
-        Arc::new(DashMap::new()),
+        embedding_providers,
         CredentialCatalogue::default(),
         key(RequestClass::Inference),
         key(RequestClass::Inference),

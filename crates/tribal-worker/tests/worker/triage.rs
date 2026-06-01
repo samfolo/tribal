@@ -63,7 +63,8 @@ async fn test_triage_novel_path() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -219,7 +220,8 @@ async fn test_triage_novel_commits_with_a_live_reindex() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -350,7 +352,8 @@ async fn test_triage_duplicate_path() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -478,7 +481,8 @@ async fn test_triage_duplicate_out_of_range_downgrades_to_novel() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -574,7 +578,8 @@ async fn test_triage_parse_failure() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -694,7 +699,8 @@ async fn test_triage_idempotency_skip() {
         test_config(),
         None,
         Some(embedding as Arc<dyn EmbeddingProvider>),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -818,7 +824,8 @@ async fn test_triage_novel_semantic_tag_resolution() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -925,7 +932,7 @@ async fn test_startup_backfill_embeds_missing_tags() {
     );
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding));
+    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding)).await;
 
     worker.startup().await.expect("startup");
 
@@ -983,7 +990,8 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
         test_config(),
         None,
         Some(embedding as Arc<dyn EmbeddingProvider>),
-    );
+    )
+    .await;
 
     worker.startup().await.expect("startup");
 
@@ -1072,7 +1080,8 @@ async fn test_triage_exact_match_skips_tag_embedding() {
         test_config(),
         Some(inference),
         Some(embedding as Arc<dyn EmbeddingProvider>),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1193,7 +1202,8 @@ async fn test_triage_tag_resolution_provider_failure_retries() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1319,7 +1329,8 @@ async fn test_triage_semantic_match_determinism() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1430,7 +1441,8 @@ async fn test_triage_fan_in_all_complete() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1549,7 +1561,8 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
         config,
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1661,7 +1674,8 @@ async fn test_triage_fan_in_multi_task_exactly_one_relation() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1753,7 +1767,7 @@ async fn test_heal_stuck_triaging_job() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None);
+    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None).await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1839,7 +1853,8 @@ async fn test_triage_fan_in_single_candidate_batch() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
