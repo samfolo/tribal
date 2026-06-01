@@ -578,9 +578,9 @@ mod tests {
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
-        MockStandingRepository, a_knowledge_item, a_not_found, a_principal, a_project, a_reference,
-        a_standing, an_embedding_response, create_complete_profile, ensure_genesis_profile,
-        serial_lock, test_context, truncate_all_tables,
+        MockStandingRepository, TestContext, a_knowledge_item, a_not_found, a_principal, a_project,
+        a_reference, a_standing, an_embedding_response, create_complete_profile,
+        ensure_genesis_profile, test_context,
     };
 
     use super::*;
@@ -1338,17 +1338,17 @@ mod tests {
     /// that moment.
     #[tokio::test]
     async fn test_discover_embeds_against_the_active_profile_across_a_cutover() {
-        // Commits embedding-profile rows and reads the global active profile, so
-        // it serialises against other committed-pool tests and clears the table
-        // at both ends.
-        let _serial = serial_lock().await;
-        let pool = test_context().await.pool().clone();
-        {
-            let mut conn = pool.acquire().await.expect("acquire connection");
-            truncate_all_tables(&mut conn).await;
-        }
+        // This test commits embedding-profile rows, and the handler reads the
+        // global active profile on its own pool connection, so committed state
+        // would otherwise leak into the parallel suite's transaction-rollback
+        // tests. A dedicated database (its own container) isolates it entirely:
+        // no shared pool, no committed-state leakage, so no serial lock or
+        // truncation is needed. A single raw connection seeds it.
+        let ctx = TestContext::new().await.expect("dedicated test database");
+        let pool = ctx.pool().clone();
+        let mut seed = ctx.raw_connection().await.expect("seed connection");
 
-        let handler = TestHandler::builder().pool(pool.clone()).build();
+        let handler = TestHandler::builder().pool(pool).build();
 
         // Both profiles share the Ollama default endpoint, so a single dynamic
         // registration supplies the semaphore the read path resolves on a cache
@@ -1371,10 +1371,7 @@ mod tests {
             .expect("register the shared embedding endpoint");
 
         // -- Profile A: the genesis active profile ----------------------------
-        let profile_a = {
-            let mut conn = pool.acquire().await.expect("acquire connection");
-            ensure_genesis_profile(&mut conn, "model-a", 768).await
-        };
+        let profile_a = ensure_genesis_profile(&mut seed, "model-a", 768).await;
         handler.state.embedding_providers.insert(
             profile_a.id(),
             profile_provider("model-a", vec![1.0, 0.0, 0.0]),
@@ -1386,10 +1383,7 @@ mod tests {
         assert_eq!(response_a.vector, vec![1.0, 0.0, 0.0]);
 
         // -- Cut over to profile B (higher epoch, now active) -----------------
-        let profile_b_id = {
-            let mut conn = pool.acquire().await.expect("acquire connection");
-            create_complete_profile(&mut conn, "model-b", 768).await
-        };
+        let profile_b_id = create_complete_profile(&mut seed, "model-b", 768).await;
         handler.state.embedding_providers.insert(
             profile_b_id,
             profile_provider("model-b", vec![0.0, 1.0, 0.0]),
@@ -1407,8 +1401,5 @@ mod tests {
             vec![0.0, 1.0, 0.0],
             "the query must embed against the active profile's geometry, not the prior one",
         );
-
-        let mut conn = pool.acquire().await.expect("acquire connection");
-        truncate_all_tables(&mut conn).await;
     }
 }
