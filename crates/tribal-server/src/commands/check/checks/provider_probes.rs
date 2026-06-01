@@ -70,9 +70,15 @@ pub(in crate::commands::check) async fn act(
     // inference stages read their own config block directly.
     let (provider, result) = match target {
         ProviderStage::Embedding => probe_live_embedding(state).await,
-        ProviderStage::Extraction => probe_inference_stage(state, &config(state).inference.extraction).await,
-        ProviderStage::Triage => probe_inference_stage(state, &config(state).inference.triage).await,
-        ProviderStage::Relation => probe_inference_stage(state, &config(state).inference.relation).await,
+        ProviderStage::Extraction => {
+            probe_inference_stage(state, &config(state).inference.extraction).await
+        }
+        ProviderStage::Triage => {
+            probe_inference_stage(state, &config(state).inference.triage).await
+        }
+        ProviderStage::Relation => {
+            probe_inference_stage(state, &config(state).inference.relation).await
+        }
     };
     match result {
         Ok(()) => CheckOutcome::provider_probe_passed(target, provider),
