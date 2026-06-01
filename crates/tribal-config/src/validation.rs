@@ -4,8 +4,12 @@
 //! returning, so the operator sees every problem at once rather than
 //! fixing them one at a time.
 
-use std::net::SocketAddr;
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    net::SocketAddr,
+};
 
+use tribal_domain::{MAX_EMBEDDING_DIMENSIONS, ProviderKind, normalise_endpoint_url};
 use url::Url;
 
 use crate::{
@@ -13,7 +17,8 @@ use crate::{
     error::ConfigError,
     sections::{
         MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_OAUTH_ACCESS_TOKEN_TTL_HOURS,
-        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, oauth_surface_is_routable,
+        MIN_AUTHORIZATION_CODE_TTL_SECONDS, TransportKind, TribalConfig, is_valid_connection_name,
+        oauth_surface_is_routable,
     },
 };
 
@@ -72,10 +77,11 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_oauth(config, &mut diags);
     validate_worker(config, &mut diags);
     validate_pool_sizing(config, &mut diags);
-    validate_embedding(config, &mut diags);
+    validate_init(config, &mut diags);
     validate_inference(config, &mut diags);
     validate_provider_limits(config, &mut diags);
     validate_api_key_presence(config, &mut diags);
+    validate_credentials(config, &mut diags);
     validate_discovery(config, &mut diags);
     validate_exploration(config, &mut diags);
     validate_telemetry(config, &mut diags);
@@ -384,23 +390,70 @@ fn validate_model_id(field: ConfigPath, model: &str, diags: &mut Diagnostics) {
     }
 }
 
-fn validate_embedding(config: &TribalConfig, diags: &mut Diagnostics) {
+fn validate_init(config: &TribalConfig, diags: &mut Diagnostics) {
+    let init = &config.init.embedding;
+
     validate_model_id(
-        ConfigPath::from_static("embedding.model"),
-        &config.embedding.model,
+        ConfigPath::from_static("init.embedding.model"),
+        &init.model,
         diags,
     );
 
-    if config.embedding.dimensions == 0 {
-        diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
-            "embedding.dimensions",
-        )));
+    // `dimensions` is optional: `None` resolves through the embedding
+    // service's native-dimension chain at provisioning. An explicit value is
+    // bounded by the same `1..=MAX_EMBEDDING_DIMENSIONS` window the storage
+    // CHECK enforces, so a grossly out-of-range seed is caught at config time
+    // rather than far from the source at provisioning.
+    match init.dimensions {
+        Some(0) => diags.push(ValidationError::must_be_positive(ConfigPath::from_static(
+            "init.embedding.dimensions",
+        ))),
+        Some(dimensions) if dimensions > MAX_EMBEDDING_DIMENSIONS => {
+            diags.push(ValidationError::AboveMax {
+                field: ConfigPath::from_static("init.embedding.dimensions"),
+                value: u64::from(dimensions),
+                limit: u64::from(MAX_EMBEDDING_DIMENSIONS),
+            });
+        }
+        Some(_) | None => {}
     }
 
-    if !config.embedding.provider.supports_embedding() {
+    if !init.provider.supports_embedding() {
         diags.push(ValidationError::EmbeddingProviderUnsupported {
-            provider: config.embedding.provider,
+            provider: init.provider,
         });
+    }
+}
+
+fn validate_credentials(config: &TribalConfig, diags: &mut Diagnostics) {
+    // Connection name seen for each resolved endpoint, used to reject two
+    // entries that would resolve to the same `(provider_kind, base_url)`.
+    let mut seen: HashMap<(ProviderKind, String), &str> = HashMap::new();
+
+    for (name, entry) in config.credentials.iter() {
+        if !is_valid_connection_name(name) {
+            diags.push(ValidationError::InvalidCredentialName {
+                name: name.to_owned(),
+            });
+        }
+
+        match normalise_endpoint_url(&entry.base_url) {
+            Ok(normalised) => match seen.entry((entry.provider_kind, normalised)) {
+                Entry::Occupied(first) => {
+                    diags.push(ValidationError::DuplicateCredentialEndpoint {
+                        first: (*first.get()).to_owned(),
+                        second: name.to_owned(),
+                    });
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(name);
+                }
+            },
+            Err(_) => diags.push(ValidationError::UrlMalformed {
+                field: ConfigPath::child("credentials", name).extend("base_url"),
+                value: entry.base_url.clone(),
+            }),
+        }
     }
 }
 
@@ -494,21 +547,9 @@ fn validate_provider_limits(config: &TribalConfig, diags: &mut Diagnostics) {
 }
 
 fn validate_api_key_presence(config: &TribalConfig, diags: &mut Diagnostics) {
-    let embedding_provider = config.embedding.provider;
-    // Skip the api-key check for embedding providers that are
-    // unsupported anyway — `validate_embedding` already emits
-    // `EmbeddingProviderUnsupported`, so a parallel "set the api key"
-    // remediation would only mislead the operator.
-    if embedding_provider.supports_embedding()
-        && embedding_provider.requires_api_key()
-        && config.embedding.api_key.is_none()
-    {
-        diags.push(ValidationError::MissingApiKey {
-            stage: ProviderStage::Embedding,
-            provider: embedding_provider,
-        });
-    }
-
+    // The embedding credential is not checked here: it lives in the catalogue
+    // keyed by the live active provider's endpoint, resolved fail-closed at
+    // boot and by `tribal check`, not against the genesis seed at config time.
     let stages = [
         (ProviderStage::Extraction, &config.inference.extraction),
         (ProviderStage::Triage, &config.inference.triage),
@@ -1315,36 +1356,109 @@ mod tests {
     #[test]
     fn test_validate_rejects_zero_embedding_dimensions() {
         let mut config = valid_config();
-        config.embedding.dimensions = 0;
+        config.init.embedding.dimensions = Some(0);
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::BelowMin { field, min: 1, .. }
-                if field.as_str() == "embedding.dimensions",
+                if field.as_str() == "init.embedding.dimensions",
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_unset_embedding_dimensions() {
+        let mut config = valid_config();
+        // `None` resolves through the native-dimension chain at provisioning.
+        config.init.embedding.dimensions = None;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_above_max_embedding_dimensions() {
+        let mut config = valid_config();
+        config.init.embedding.dimensions = Some(MAX_EMBEDDING_DIMENSIONS + 1);
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::AboveMax { field, value, limit }
+                if field.as_str() == "init.embedding.dimensions"
+                    && *value == u64::from(MAX_EMBEDDING_DIMENSIONS) + 1
+                    && *limit == u64::from(MAX_EMBEDDING_DIMENSIONS),
+        )));
+    }
+
+    #[test]
+    fn test_validate_accepts_max_embedding_dimensions() {
+        let mut config = valid_config();
+        // The ceiling itself is admissible; only strictly-above is rejected.
+        config.init.embedding.dimensions = Some(MAX_EMBEDDING_DIMENSIONS);
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_well_formed_catalogue() {
+        let mut config = valid_config();
+        config.credentials = serde_yaml::from_str(
+            "openai_default:\n  provider_kind: openai\n  base_url: https://api.openai.com/v1\n  api_key: sk-test\n",
+        )
+        .unwrap();
+        // An otherwise-valid config plus a well-formed catalogue still validates.
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_connection_name() {
+        let mut config = valid_config();
+        config.credentials = serde_yaml::from_str(
+            "open-ai:\n  provider_kind: openai\n  base_url: https://api.openai.com/v1\n",
+        )
+        .unwrap();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::InvalidCredentialName { name } if name == "open-ai",
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_catalogue_endpoint() {
+        let mut config = valid_config();
+        // Two names normalise to the same (ollama, http://localhost:11434).
+        config.credentials = serde_yaml::from_str(
+            "a:\n  provider_kind: ollama\n  base_url: http://localhost:11434\n\
+             b:\n  provider_kind: ollama\n  base_url: http://localhost:11434/\n",
+        )
+        .unwrap();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::DuplicateCredentialEndpoint { .. },
+        )));
+    }
+
+    #[test]
+    fn test_validate_rejects_unparseable_catalogue_base_url() {
+        let mut config = valid_config();
+        config.credentials =
+            serde_yaml::from_str("bad:\n  provider_kind: ollama\n  base_url: \"not a url\"\n")
+                .unwrap();
+        let diags = diagnostics_for(&config);
+        assert!(any(&diags, |d| matches!(
+            d,
+            ValidationError::UrlMalformed { field, .. }
+                if field.as_str() == "credentials.bad.base_url",
         )));
     }
 
     #[test]
     fn test_validate_rejects_anthropic_embedding_provider() {
         let mut config = valid_config();
-        config.embedding.provider = ProviderKind::Anthropic;
-        config.embedding.api_key = None;
+        config.init.embedding.provider = ProviderKind::Anthropic;
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::EmbeddingProviderUnsupported {
                 provider: ProviderKind::Anthropic
-            },
-        )));
-        // `Anthropic` is unsupported for embedding, so a parallel
-        // "set the api key" remediation would mislead the operator.
-        // `validate_api_key_presence` must skip the embedding stage
-        // when the chosen provider is unsupported.
-        assert!(!any(&diags, |d| matches!(
-            d,
-            ValidationError::MissingApiKey {
-                stage: ProviderStage::Embedding,
-                ..
             },
         )));
     }
@@ -1414,13 +1528,13 @@ mod tests {
     #[test]
     fn test_validate_rejects_missing_api_key_for_cloud_provider() {
         let mut config = valid_config();
-        config.embedding.provider = ProviderKind::OpenAi;
-        config.embedding.api_key = None;
+        config.inference.extraction.provider = ProviderKind::OpenAi;
+        config.inference.extraction.api_key = None;
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
             ValidationError::MissingApiKey {
-                stage: ProviderStage::Embedding,
+                stage: ProviderStage::Extraction,
                 provider: ProviderKind::OpenAi,
             },
         )));
@@ -1429,8 +1543,6 @@ mod tests {
     #[test]
     fn test_validate_emits_one_missing_api_key_per_stage() {
         let mut config = valid_config();
-        config.embedding.provider = ProviderKind::OpenAi;
-        config.embedding.api_key = None;
         config.inference.extraction.provider = ProviderKind::OpenAi;
         config.inference.extraction.api_key = None;
         config.inference.triage.provider = ProviderKind::OpenAi;
@@ -1440,7 +1552,6 @@ mod tests {
 
         let diags = diagnostics_for(&config);
         for stage in [
-            ProviderStage::Embedding,
             ProviderStage::Extraction,
             ProviderStage::Triage,
             ProviderStage::Relation,
@@ -1599,11 +1710,11 @@ mod tests {
     #[test]
     fn test_validate_rejects_empty_embedding_model() {
         let mut config = valid_config();
-        config.embedding.model = String::new();
+        config.init.embedding.model = String::new();
         let diags = diagnostics_for(&config);
         assert!(any(&diags, |d| matches!(
             d,
-            ValidationError::Empty { field } if field.as_str() == "embedding.model",
+            ValidationError::Empty { field } if field.as_str() == "init.embedding.model",
         )));
     }
 

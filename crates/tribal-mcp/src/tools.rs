@@ -228,6 +228,41 @@ with current status.",
         output_schema: include_str!("schemas/job_status/output.json"),
         required_scope: "tribal.jobs:read",
     },
+    ToolEntry {
+        name: "tribal_reindex",
+        title: "Tribal: Reindex Embeddings",
+        description: "\
+Start a reindex to a new embedding geometry, naming the target provider, \
+model, and dimension on the command. Reads and writes continue against the \
+active profile while the new space fills; the swap is atomic. An unchanged \
+target is a no-op. Operator-only; the worker drives the run to completion.",
+        input_schema: include_str!("schemas/reindex/input.json"),
+        output_schema: include_str!("schemas/reindex/output.json"),
+        required_scope: "tribal.embedding:execute",
+    },
+    ToolEntry {
+        name: "tribal_reindex_cancel",
+        title: "Tribal: Cancel Reindex",
+        description: "\
+Cancel the live reindex run, if any. The run is aborted and its building \
+profile is failed at the next task boundary; the active profile, and every \
+read and write against it, is untouched. Reindex is single-flight, so there \
+is at most one live run. Operator-only.",
+        input_schema: include_str!("schemas/reindex_cancel/input.json"),
+        output_schema: include_str!("schemas/reindex_cancel/output.json"),
+        required_scope: "tribal.embedding:execute",
+    },
+    ToolEntry {
+        name: "tribal_reindex_prune",
+        title: "Tribal: Prune Reindexes",
+        description: "\
+Reclaim storage from past reindexes. Every non-active complete profile and \
+every failed profile is superseded, and their embeddings are deleted; the \
+active profile and run history are untouched. Operator-only.",
+        input_schema: include_str!("schemas/reindex_prune/input.json"),
+        output_schema: include_str!("schemas/reindex_prune/output.json"),
+        required_scope: "tribal.embedding:execute",
+    },
 ];
 
 // ---------------------------------------------------------------------------

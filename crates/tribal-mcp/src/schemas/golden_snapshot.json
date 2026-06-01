@@ -458,6 +458,10 @@
           "description": "Which embedding model was used for this query.",
           "type": "string"
         },
+        "embedding_profile_id": {
+          "description": "The active embedding profile that produced these results. Cursors and feedback are bound to it; a reindex changes it.",
+          "type": "string"
+        },
         "exact": {
           "description": "True if all matching results are included. False if truncated by limit.",
           "type": "boolean"
@@ -485,6 +489,7 @@
         "next_cursor",
         "applied_project_id",
         "embedding_model",
+        "embedding_profile_id",
         "exact",
         "trace_id"
       ],
@@ -1139,6 +1144,10 @@
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "embedding_profile_id": {
+          "description": "The embedding_profile_id from the tribal_discover response being rated, so the lineage records the profile that produced the results.",
+          "type": "string"
+        },
         "explored_anchor_ids": {
           "description": "IDs of items used as anchors in tribal_explore calls during the session.",
           "items": {
@@ -1303,5 +1312,170 @@
     },
     "required_scope": "tribal.jobs:read",
     "title": "Tribal: Check Ingest Job Status"
+  },
+  {
+    "description": "Start a reindex to a new embedding geometry, naming the target provider, model, and dimension on the command. Reads and writes continue against the active profile while the new space fills; the swap is atomic. An unchanged target is a no-op. Operator-only; the worker drives the run to completion.",
+    "input_schema": {
+      "additionalProperties": false,
+      "description": "Start a reindex to a new embedding geometry. The target is named on the command, never read from config. Reads and writes continue against the active profile while the new space fills; the swap is atomic. Operator-only.",
+      "properties": {
+        "base_url": {
+          "description": "The target endpoint. The provider's default when omitted.",
+          "type": "string"
+        },
+        "dimensions": {
+          "description": "The target vector dimension, between 1 and the halfvec storage ceiling of 4000. Resolved from the model when omitted.",
+          "maximum": 4000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "dry_run": {
+          "description": "When true, resolve the target, validate its credential, and return the item and tag counts without creating a run.",
+          "type": "boolean"
+        },
+        "model": {
+          "description": "The target embedding model.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "The target embedding provider, for example 'ollama' or 'openai'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "type": "object"
+    },
+    "name": "tribal_reindex",
+    "output_schema": {
+      "description": "The outcome of a reindex request.",
+      "properties": {
+        "base_url": {
+          "description": "The resolved, normalised target endpoint.",
+          "type": "string"
+        },
+        "dimensions": {
+          "description": "The resolved target dimension.",
+          "type": "integer"
+        },
+        "estimated_items": {
+          "description": "The number of items the new geometry must embed.",
+          "type": "integer"
+        },
+        "estimated_tags": {
+          "description": "The number of tags the new geometry must embed.",
+          "type": "integer"
+        },
+        "model": {
+          "description": "The resolved target model.",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "plan: a dry run; no run was created. created: a new run was queued. unchanged: the target already matches the active profile. already_live: a run is already in progress. lock_contended: another create holds the single-flight lock; retry.",
+          "enum": [
+            "plan",
+            "created",
+            "unchanged",
+            "already_live",
+            "lock_contended"
+          ],
+          "type": "string"
+        },
+        "provider": {
+          "description": "The resolved target provider.",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "The run id, present for created and already_live.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "outcome",
+        "run_id",
+        "provider",
+        "model",
+        "dimensions",
+        "base_url",
+        "estimated_items",
+        "estimated_tags"
+      ],
+      "type": "object"
+    },
+    "required_scope": "tribal.embedding:execute",
+    "title": "Tribal: Reindex Embeddings"
+  },
+  {
+    "description": "Cancel the live reindex run, if any. The run is aborted and its building profile is failed at the next task boundary; the active profile, and every read and write against it, is untouched. Reindex is single-flight, so there is at most one live run. Operator-only.",
+    "input_schema": {
+      "additionalProperties": false,
+      "description": "Cancel the live reindex run, if any. Takes no arguments; reindex is single-flight, so there is at most one live run.",
+      "properties": {},
+      "type": "object"
+    },
+    "name": "tribal_reindex_cancel",
+    "output_schema": {
+      "description": "The outcome of a reindex cancel request.",
+      "properties": {
+        "cancelled": {
+          "description": "Whether a live run was transitioned to aborted.",
+          "type": "boolean"
+        },
+        "run_id": {
+          "description": "The aborted run's id, present only when a run was cancelled.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cancelled",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "required_scope": "tribal.embedding:execute",
+    "title": "Tribal: Cancel Reindex"
+  },
+  {
+    "description": "Reclaim storage from past reindexes. Every non-active complete profile and every failed profile is superseded, and their embeddings are deleted; the active profile and run history are untouched. Operator-only.",
+    "input_schema": {
+      "additionalProperties": false,
+      "description": "Reclaim storage from superseded reindexes: supersede every non-active complete profile and every failed profile, then delete their embeddings. Takes no arguments.",
+      "properties": {},
+      "type": "object"
+    },
+    "name": "tribal_reindex_prune",
+    "output_schema": {
+      "description": "The outcome of a reindex prune request.",
+      "properties": {
+        "embeddings_deleted": {
+          "description": "The number of item embeddings deleted.",
+          "type": "integer"
+        },
+        "profiles_superseded": {
+          "description": "The number of profiles transitioned to superseded.",
+          "type": "integer"
+        },
+        "tag_embeddings_deleted": {
+          "description": "The number of tag embeddings deleted.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "profiles_superseded",
+        "embeddings_deleted",
+        "tag_embeddings_deleted"
+      ],
+      "type": "object"
+    },
+    "required_scope": "tribal.embedding:execute",
+    "title": "Tribal: Prune Reindexes"
   }
 ]

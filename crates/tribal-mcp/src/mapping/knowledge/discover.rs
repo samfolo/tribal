@@ -82,6 +82,9 @@ pub(crate) struct McpDiscoverResponse {
     /// Required + nullable — always present in serialised JSON.
     pub(crate) applied_project_id: Option<String>,
     pub(crate) embedding_model: String,
+    /// The active embedding profile that produced these results. Cursors and
+    /// feedback are bound to it; a reindex changes it.
+    pub(crate) embedding_profile_id: String,
     pub(crate) trace_id: String,
     pub(crate) exact: bool,
     /// The original query text — used by `IntoCallToolResult` for the
@@ -193,6 +196,7 @@ mod tests {
             next_cursor: None,
             applied_project_id: None,
             embedding_model: "text-embedding-3-small".into(),
+            embedding_profile_id: "eprof_test".into(),
             trace_id: "trace123".into(),
             exact: true,
             query: "test".into(),
@@ -219,6 +223,7 @@ mod tests {
             next_cursor: None,
             applied_project_id: Some("proj_abc".into()),
             embedding_model: "m".into(),
+            embedding_profile_id: "eprof_test".into(),
             trace_id: "t".into(),
             exact: true,
             query: "auth patterns".into(),
@@ -237,6 +242,7 @@ mod tests {
             next_cursor: None,
             applied_project_id: None,
             embedding_model: "m".into(),
+            embedding_profile_id: "eprof_test".into(),
             trace_id: "t".into(),
             exact: true,
             query: "auth patterns".into(),
@@ -257,6 +263,7 @@ mod tests {
             next_cursor: None,
             applied_project_id: Some("proj_abc".into()),
             embedding_model: "m".into(),
+            embedding_profile_id: "eprof_test".into(),
             trace_id: "t".into(),
             exact: true,
             query: "auth".into(),

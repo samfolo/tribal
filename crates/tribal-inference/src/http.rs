@@ -15,8 +15,9 @@ use crate::CompletionUsage;
 /// error context strings.
 const BODY_PREVIEW_LIMIT: usize = 200;
 
-/// Anthropic's overloaded status code, semantically equivalent to 503.
-const ANTHROPIC_OVERLOADED: u16 = 529;
+/// The overloaded status code (`Anthropic`'s, semantically equivalent to 503);
+/// the embedding retry classifier maps it to its own `Overloaded` class.
+pub(crate) const OVERLOADED_STATUS: u16 = 529;
 
 /// Default `max_tokens` for completion probe requests.
 pub(crate) const PROBE_MAX_TOKENS: u32 = 8;
@@ -35,11 +36,11 @@ pub const EMBEDDING_PROBE_INPUT: &str = "tribal probe";
 /// retryable error.
 ///
 /// Retryable statuses: 429 (Too Many Requests), 5xx (server errors),
-/// and 529 (Anthropic overloaded).
+/// and 529 (overloaded).
 pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()
-        || status.as_u16() == ANTHROPIC_OVERLOADED
+        || status.as_u16() == OVERLOADED_STATUS
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +133,7 @@ mod tests {
         assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
         assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
         assert!(is_retryable_status(
-            StatusCode::from_u16(ANTHROPIC_OVERLOADED).unwrap()
+            StatusCode::from_u16(OVERLOADED_STATUS).unwrap()
         ));
     }
 

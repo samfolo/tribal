@@ -1,4 +1,8 @@
-use tribal_config::{PromptSource, TribalConfig};
+use sqlx::PgPool;
+use tribal_config::{CredentialEntry, DEFAULT_EMBEDDING_DIMENSIONS, PromptSource, TribalConfig};
+use tribal_domain::{ProviderKind, normalise_endpoint_url};
+use tribal_inference::resolve_dimensions;
+use tribal_test_utils::ensure_genesis_profile_with_endpoint;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,7 +61,10 @@ pub fn test_config(
     config.database.pool_worker_max_connections = POOL_WORKER_MAX_CONNECTIONS;
 
     // -- Providers -----------------------------------------------------------
-    config.embedding.base_url = Some(embedding_url.to_owned());
+    // The genesis seed points the embedding identity at the wiremock; a
+    // concrete dimension keeps the synthetic mock vectors deterministic.
+    config.init.embedding.base_url = Some(embedding_url.to_owned());
+    config.init.embedding.dimensions = Some(DEFAULT_EMBEDDING_DIMENSIONS);
     config.inference.extraction.base_url = Some(extraction_url.to_owned());
     config.inference.triage.base_url = Some(triage_url.to_owned());
     config.inference.relation.base_url = Some(relation_url.to_owned());
@@ -89,4 +96,61 @@ pub fn test_config(
     config.logging.include_llm_content = true;
 
     config
+}
+
+/// Switches the genesis embedding identity to OpenAI for an E2E test and
+/// registers the matching `openai_default` catalogue credential.
+///
+/// The runtime resolves the live embedding identity from the active profile
+/// (seeded from `init.embedding`) and its credential from the catalogue, so a
+/// test exercising the OpenAI path sets both here, in its config override,
+/// against the embedding wiremock the harness already mounted.
+pub fn use_openai_embedding(config: &mut TribalConfig, api_key: &str) {
+    config.init.embedding.provider = ProviderKind::OpenAi;
+    let base_url = config
+        .init
+        .embedding
+        .base_url
+        .clone()
+        .unwrap_or_else(|| ProviderKind::OpenAi.default_base_url().to_owned());
+    config.credentials.insert(
+        "openai_default".to_owned(),
+        CredentialEntry {
+            provider_kind: ProviderKind::OpenAi,
+            base_url,
+            api_key: Some(api_key.parse().expect("test fixture api key is valid")),
+        },
+    );
+}
+
+/// Seeds the genesis embedding profile from `init.embedding` so the seed graph
+/// and the server's first-boot provisioning both reuse it.
+///
+/// Called after the config is resolved (so `init.embedding` reflects the test's
+/// final embedding identity) and before the seed runs, the resulting active
+/// profile carries the test's wiremock endpoint, which the server's provider
+/// builder constructs against.
+pub async fn seed_genesis_from_init(pool: &PgPool, config: &TribalConfig) {
+    let init = &config.init.embedding;
+    let base_url = init
+        .base_url
+        .clone()
+        .unwrap_or_else(|| init.provider.default_base_url().to_owned());
+    let normalised =
+        normalise_endpoint_url(&base_url).expect("init.embedding.base_url must normalise");
+    let dimensions = resolve_dimensions(init.provider, &init.model, init.dimensions)
+        .expect("init.embedding dimensions must resolve");
+
+    let mut conn = pool
+        .acquire()
+        .await
+        .expect("acquire connection for genesis");
+    ensure_genesis_profile_with_endpoint(
+        &mut conn,
+        init.provider,
+        &init.model,
+        dimensions,
+        &normalised,
+    )
+    .await;
 }

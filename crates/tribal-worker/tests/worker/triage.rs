@@ -63,7 +63,8 @@ async fn test_triage_novel_path() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -110,8 +111,7 @@ async fn test_triage_novel_path() {
     );
 
     // Verify embedding was created.
-    let emb = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut conn, ki_id, "mock-model")
+    let emb = find_active_embedding(&mut conn, ki_id)
         .await
         .expect("find embedding");
     assert!(emb.is_some(), "embedding should exist for mock-model");
@@ -137,6 +137,127 @@ async fn test_triage_novel_path() {
     assert!(
         tag_names.contains(&"performance"),
         "tag registry should contain 'performance': {tag_names:?}",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Verifies the novel commit path while a reindex is live: with a queued reindex
+/// run present, the commit takes the shared cutover lock yet still completes,
+/// writing its embedding against the active profile rather than the building
+/// target. The drain the lock enables is exercised by the cutover race tests;
+/// here the contract is that an uncontended live reindex leaves the ingest
+/// path's outcome unchanged.
+#[tokio::test]
+async fn test_triage_novel_commits_with_a_live_reindex() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "triage-novel-reindex").await;
+
+    // Stand up a building profile and a queued reindex run so the commit path
+    // sees a live reindex and takes the shared cutover lock. The building
+    // profile is a higher epoch but not yet complete, so the active profile is
+    // still the genesis the embedding is written against.
+    {
+        let mut conn = raw_conn(ctx).await;
+        let building = PgEmbeddingProfileRepository
+            .insert(&mut conn, &a_new_embedding_profile().build())
+            .await
+            .expect("insert building profile");
+        PgReindexRunRepository
+            .insert(
+                &mut conn,
+                &NewReindexRun::builder()
+                    .target_profile_id(building.id())
+                    .epoch(building.epoch())
+                    .initiated_by_principal_id(principal_id)
+                    .build(),
+            )
+            .await
+            .expect("insert reindex run");
+    }
+
+    let candidates = vec![
+        a_candidate()
+            .content("Rust has zero-cost abstractions".to_owned())
+            .suggested_tags(vec!["rust".to_owned()])
+            .build(),
+    ];
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_triage_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+            &candidates,
+        )
+        .await
+    };
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(triage_novel_response_json()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    assert_eq!(
+        task.status(),
+        TaskStatus::Completed,
+        "novel commit completes while a reindex is live",
+    );
+
+    let mut conn = raw_conn(ctx).await;
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+    let TriageOutcome::Created { item_id } = triage_result.outcome() else {
+        panic!(
+            "expected Created outcome, got {:?}",
+            triage_result.outcome()
+        );
+    };
+
+    // The embedding is written against the active profile, never the building
+    // target (which carries no rows until the catch-up sweep fills it).
+    let emb = find_active_embedding(&mut conn, *item_id)
+        .await
+        .expect("find embedding");
+    assert!(
+        emb.is_some(),
+        "embedding is written against the active profile",
     );
 
     teardown(ctx).await;
@@ -182,8 +303,7 @@ async fn test_triage_duplicate_path() {
 
     // Read the deterministic embedding vector back from the database so
     // the mock provider can return the same vector for cosine similarity.
-    let seeded_embedding = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut conn, ki_id, "mock-model")
+    let seeded_embedding = find_active_embedding(&mut conn, ki_id)
         .await
         .expect("find seeded embedding")
         .expect("seeded embedding should exist");
@@ -232,7 +352,8 @@ async fn test_triage_duplicate_path() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -310,8 +431,7 @@ async fn test_triage_duplicate_out_of_range_downgrades_to_novel() {
     let system_pv_id = seed_result.prompt_version_id("system-pv");
     let user_pv_id = seed_result.prompt_version_id("user-pv");
 
-    let seeded_embedding = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut conn, existing_id, "mock-model")
+    let seeded_embedding = find_active_embedding(&mut conn, existing_id)
         .await
         .expect("find seeded embedding")
         .expect("seeded embedding should exist");
@@ -361,7 +481,8 @@ async fn test_triage_duplicate_out_of_range_downgrades_to_novel() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -457,7 +578,8 @@ async fn test_triage_parse_failure() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -561,10 +683,10 @@ async fn test_triage_idempotency_skip() {
     let embedding: Arc<MockEmbeddingProvider> = Arc::new(
         MockEmbeddingProvider::builder()
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "embedding should not be called".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable(
+                    "mock",
+                    "embedding should not be called",
+                )
             })))
             .build(),
     );
@@ -577,7 +699,8 @@ async fn test_triage_idempotency_skip() {
         test_config(),
         None,
         Some(embedding as Arc<dyn EmbeddingProvider>),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -701,7 +824,8 @@ async fn test_triage_novel_semantic_tag_resolution() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -762,8 +886,9 @@ async fn test_triage_novel_semantic_tag_resolution() {
     );
 
     // New tag "performance" should have an embedding in tag_embeddings.
+    let profile_id = active_embedding_profile(&mut conn).await.id();
     let missing = PgTagEmbeddingRepository
-        .find_tags_missing_embeddings(&mut conn, "mock-model")
+        .find_tags_missing_embeddings(&mut conn, profile_id)
         .await
         .expect("find missing");
     assert!(
@@ -792,6 +917,7 @@ async fn test_startup_backfill_embeds_missing_tags() {
         Seed::new()
             .define_project("proj", "git@github.com:test/backfill.git")
             .define_principal("user", "user:backfill")
+            .set_embedding_model("mock-model", 768)
             .define_tag("alpha")
             .define_tag("beta")
             .execute(&mut conn)
@@ -806,13 +932,14 @@ async fn test_startup_backfill_embeds_missing_tags() {
     );
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding));
+    let worker = build_test_worker(pool, token.clone(), test_config(), None, Some(embedding)).await;
 
     worker.startup().await.expect("startup");
 
     let mut conn = raw_conn(ctx).await;
+    let profile_id = active_embedding_profile(&mut conn).await.id();
     let missing = PgTagEmbeddingRepository
-        .find_tags_missing_embeddings(&mut conn, "mock-model")
+        .find_tags_missing_embeddings(&mut conn, profile_id)
         .await
         .expect("find missing");
     assert!(
@@ -847,10 +974,10 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
     let embedding: Arc<MockEmbeddingProvider> = Arc::new(
         MockEmbeddingProvider::builder()
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "backfill should not embed already-embedded tags".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable(
+                    "mock",
+                    "backfill should not embed already-embedded tags",
+                )
             })))
             .build(),
     );
@@ -863,7 +990,8 @@ async fn test_startup_backfill_skips_already_embedded_tags() {
         test_config(),
         None,
         Some(embedding as Arc<dyn EmbeddingProvider>),
-    );
+    )
+    .await;
 
     worker.startup().await.expect("startup");
 
@@ -929,10 +1057,10 @@ async fn test_triage_exact_match_skips_tag_embedding() {
         MockEmbeddingProvider::builder()
             .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "tag resolution should not call embedding provider".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable(
+                    "mock",
+                    "tag resolution should not call embedding provider",
+                )
             })))
             .build(),
     );
@@ -952,7 +1080,8 @@ async fn test_triage_exact_match_skips_tag_embedding() {
         test_config(),
         Some(inference),
         Some(embedding as Arc<dyn EmbeddingProvider>),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1051,10 +1180,10 @@ async fn test_triage_tag_resolution_provider_failure_retries() {
         MockEmbeddingProvider::builder()
             .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "simulated tag embedding failure".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable(
+                    "mock",
+                    "simulated tag embedding failure",
+                )
             })))
             .build(),
     );
@@ -1073,7 +1202,8 @@ async fn test_triage_tag_resolution_provider_failure_retries() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1115,10 +1245,13 @@ async fn test_triage_semantic_match_determinism() {
         Seed::new()
             .define_project("tag-proj", "git@github.com:test/determinism.git")
             .define_principal("tag-user", "user:determinism")
+            .set_embedding_model("mock-model", 768)
             .define_tag("alpha")
             .define_tag("beta")
             .execute(&mut conn)
             .await;
+
+        let profile_id = active_embedding_profile(&mut conn).await.id();
 
         // Insert identical embeddings for both tags.
         let embedding_vec = make_test_embedding(0);
@@ -1128,14 +1261,14 @@ async fn test_triage_semantic_match_determinism() {
                 &[
                     NewTagEmbedding::builder()
                         .tag("alpha".to_owned())
+                        .embedding_profile_id(profile_id)
                         .model("mock-model".to_owned())
-                        .dimensions(768)
                         .embedding(embedding_vec.clone())
                         .build(),
                     NewTagEmbedding::builder()
                         .tag("beta".to_owned())
+                        .embedding_profile_id(profile_id)
                         .model("mock-model".to_owned())
-                        .dimensions(768)
                         .embedding(embedding_vec)
                         .build(),
                 ],
@@ -1196,7 +1329,8 @@ async fn test_triage_semantic_match_determinism() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1307,7 +1441,8 @@ async fn test_triage_fan_in_all_complete() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1414,10 +1549,7 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
         MockInferenceProvider::builder()
             .on_complete(a_completion_response(triage_novel_response_json()), None)
             .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
-                tribal_inference::InferenceError::ProviderUnavailable {
-                    provider: "mock".into(),
-                    reason: "force dead-letter".into(),
-                }
+                tribal_inference::InferenceError::provider_unavailable("mock", "force dead-letter")
             })))
             .build(),
     );
@@ -1429,7 +1561,8 @@ async fn test_triage_fan_in_mixed_complete_and_dead_letter() {
         config,
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1541,7 +1674,8 @@ async fn test_triage_fan_in_multi_task_exactly_one_relation() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1633,7 +1767,7 @@ async fn test_heal_stuck_triaging_job() {
     };
 
     let token = CancellationToken::new();
-    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None);
+    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None).await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -1719,7 +1853,8 @@ async fn test_triage_fan_in_single_candidate_batch() {
         test_config(),
         Some(inference),
         Some(embedding),
-    );
+    )
+    .await;
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })

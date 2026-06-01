@@ -5,7 +5,7 @@ use tribal_db::{
 use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedbackId};
 use tribal_test_utils::{
     a_new_principal, a_new_prompt_version, a_new_retrieval_feedback, a_new_system_fingerprint,
-    insert_prompt_version, test_context, upsert_system_fingerprint,
+    ensure_genesis_profile, insert_prompt_version, test_context, upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -51,8 +51,11 @@ async fn test_insert_returns_populated_retrieval_feedback() {
     )
     .await;
 
+    let profile = ensure_genesis_profile(&mut txn, "nomic-embed-text:v1.5", 768).await;
+
     let new = a_new_retrieval_feedback()
         .principal_id(principal_id)
+        .embedding_profile_id(profile.id())
         .rating(FeedbackRating::Negative)
         .notes(Some("not relevant".to_owned()))
         .build();
@@ -63,6 +66,7 @@ async fn test_insert_returns_populated_retrieval_feedback() {
     assert_eq!(fb.trace_id(), "00000000000000000000000000000001");
     assert_eq!(fb.query_text(), "test query");
     assert_eq!(fb.embedding_model(), "nomic-embed-text:v1.5");
+    assert_eq!(fb.embedding_profile_id(), profile.id());
     assert!(fb.returned_item_ids().is_empty());
     assert!(fb.explored_anchor_ids().is_empty());
     let hash = fb.system_fingerprint_hash();
@@ -94,11 +98,13 @@ async fn test_insert_with_populated_uuid_arrays() {
     )
     .await;
 
+    let profile = ensure_genesis_profile(&mut txn, "nomic-embed-text:v1.5", 768).await;
     let returned = vec![KnowledgeItemId::new(), KnowledgeItemId::new()];
     let explored = vec![KnowledgeItemId::new()];
 
     let new = a_new_retrieval_feedback()
         .principal_id(principal_id)
+        .embedding_profile_id(profile.id())
         .returned_item_ids(returned.clone())
         .explored_anchor_ids(explored.clone())
         .build();
@@ -130,8 +136,10 @@ async fn test_insert_with_empty_arrays() {
     )
     .await;
 
+    let profile = ensure_genesis_profile(&mut txn, "nomic-embed-text:v1.5", 768).await;
     let new = a_new_retrieval_feedback()
         .principal_id(principal_id)
+        .embedding_profile_id(profile.id())
         .build();
 
     let fb = repo.insert(&mut txn, &new).await.expect("insert");
@@ -165,11 +173,13 @@ async fn test_find_by_id_returns_retrieval_feedback() {
     )
     .await;
 
+    let profile = ensure_genesis_profile(&mut txn, "nomic-embed-text:v1.5", 768).await;
     let fb = repo
         .insert(
             &mut txn,
             &a_new_retrieval_feedback()
                 .principal_id(principal_id)
+                .embedding_profile_id(profile.id())
                 .build(),
         )
         .await

@@ -215,10 +215,7 @@ mod tests {
 
     #[test]
     fn test_provider_unavailable_maps_to_internal() {
-        let err = InferenceError::ProviderUnavailable {
-            provider: "ollama".to_owned(),
-            reason: "connection refused".to_owned(),
-        };
+        let err = InferenceError::provider_unavailable("ollama", "connection refused");
         let mcp = err.into_mcp_error();
         assert_eq!(mcp.code, McpErrorCode::Internal);
         assert!(mcp.message.contains("ollama"));

@@ -5,20 +5,21 @@ pub(super) use std::{sync::Arc, time::Duration};
 pub(super) use dashmap::DashMap;
 pub(super) use tokio_util::sync::CancellationToken;
 pub(super) use tribal_common::JobStateTxs;
-pub(super) use tribal_config::WorkerConfig;
+pub(super) use tribal_config::{CredentialCatalogue, WorkerConfig};
 pub(super) use tribal_db::{
-    EmbeddingRepository, ExtractionResultRepository, ItemObservationRepository, JobRepository,
-    JobStatusTransition, KnowledgeItemRepository, NewTagEmbedding, PgEmbeddingRepository,
-    PgExtractionResultRepository, PgItemObservationRepository, PgJobRepository,
-    PgKnowledgeItemRepository, PgReferenceRepository, PgRelationRepository,
-    PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository, PgTokenUsageRepository,
-    PgTriageResultRepository, ReferenceRepository, RelationRepository, TagEmbeddingRepository,
-    TagRegistryRepository, TaskRepository, TokenUsageRepository, TriageResultRepository,
+    EmbeddingProfileRepository, ExtractionResultRepository, ItemObservationRepository,
+    JobRepository, JobStatusTransition, KnowledgeItemRepository, NewReindexRun, NewTagEmbedding,
+    PgEmbeddingProfileRepository, PgExtractionResultRepository, PgItemObservationRepository,
+    PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository, PgReindexRunRepository,
+    PgRelationRepository, PgTagEmbeddingRepository, PgTagRegistryRepository, PgTaskRepository,
+    PgTokenUsageRepository, PgTriageResultRepository, ReferenceRepository, ReindexRunRepository,
+    RelationRepository, TagEmbeddingRepository, TagRegistryRepository, TaskRepository,
+    TokenUsageRepository, TriageResultRepository,
 };
 pub(super) use tribal_domain::{
     EmbeddingPurpose, JobOutcome, JobStatus, KnowledgeKind, PipelineStage, PrincipalId, ProjectId,
-    PromptVersionId, RelationBatchId, SourceType, TaskErrorKind, TaskStatus, TaskType,
-    TriageOutcome,
+    PromptVersionId, ProviderKind, RelationBatchId, SourceType, TaskErrorKind, TaskStatus,
+    TaskType, TriageOutcome,
 };
 pub(super) use tribal_inference::{
     EmbeddingProvider, InferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry,
@@ -27,21 +28,22 @@ pub(super) use tribal_inference::{
 pub(super) use tribal_telemetry::noop_recorder;
 pub(super) use tribal_test_utils::{
     ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, MockProviderOptions, Seed,
-    TestContext, a_candidate, a_completion_response, a_new_extraction_result, a_new_job,
-    a_new_knowledge_item, a_new_prompt_version, a_new_system_fingerprint, a_new_task,
-    a_new_triage_result_created, a_new_triage_result_duplicate, a_relation_hint,
+    TestContext, a_candidate, a_completion_response, a_new_embedding_profile,
+    a_new_extraction_result, a_new_job, a_new_knowledge_item, a_new_prompt_version,
+    a_new_system_fingerprint, a_new_task, a_new_triage_result_created,
+    a_new_triage_result_duplicate, a_relation_hint, active_embedding_profile,
     an_embedding_response, backdate_task_heartbeat, candidates_json,
     duration::{
         CLAIM_SETTLE, EARLY_ABORT_BOUND, HEARTBEAT_DETECT, LONG_PROVIDER_DELAY, MULTI_CYCLE_SETTLE,
         POLL_INTERVAL, POLL_SETTLE, STALE_HEARTBEAT_BACKDATE,
     },
-    item,
+    find_active_embedding, item,
     polling::{poll_job_status, poll_task_status, poll_until},
     seed_extraction_job, seed_multiple_triage_tasks, seed_relation_job, seed_triage_job,
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
     upsert_system_fingerprint,
 };
-pub(super) use tribal_worker::Worker;
+pub(super) use tribal_worker::{EmbeddingProviderCache, Worker};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -83,6 +85,8 @@ pub(super) async fn setup_prerequisites(
     let seed_result = Seed::new()
         .define_project("proj", format!("git@github.com:test/worker-{suffix}.git"))
         .define_principal("user", format!("user:worker-test-{suffix}"))
+        // The triage stage resolves the active embedding profile, so seed one.
+        .set_embedding_model("mock-model", 768)
         .define_prompt_version("system-pv", a_new_prompt_version().build())
         .define_prompt_version(
             "user-pv",
@@ -109,7 +113,7 @@ pub(super) async fn setup_prerequisites(
 /// When `inference` or `embedding` is `None`, a default mock is used.
 /// The default inference mock returns errors on exhaustion (rather than
 /// panicking) so the extraction stub's provider call is handled cleanly.
-pub(super) fn build_test_worker(
+pub(super) async fn build_test_worker(
     pool: sqlx::PgPool,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
@@ -120,10 +124,7 @@ pub(super) fn build_test_worker(
         Arc::new(
             MockInferenceProvider::builder()
                 .on_exhaust(tribal_test_utils::ExhaustBehaviour::Error(Box::new(|| {
-                    tribal_inference::InferenceError::ProviderUnavailable {
-                        provider: "mock".into(),
-                        reason: "test stub".into(),
-                    }
+                    tribal_inference::InferenceError::provider_unavailable("mock", "test stub")
                 })))
                 .build(),
         )
@@ -135,25 +136,49 @@ pub(super) fn build_test_worker(
         ProviderKey::new("mock", "http://localhost:9999", class).expect("valid provider key")
     };
 
+    // The triage stage resolves the embedding provider from the active profile
+    // via `build_target_provider`, keyed on the profile's `(provider_kind,
+    // normalised_base_url)` (the seeded genesis is the Ollama default). Register
+    // that endpoint so the cache-hit semaphore resolves, then wire the mock into
+    // the per-profile cache below; otherwise the worker would build a dead real
+    // provider against the Ollama default endpoint.
+    let embedding_endpoint = ProviderKey::new(
+        ProviderKind::Ollama.to_string(),
+        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+        RequestClass::Embedding,
+    )
+    .expect("valid embedding endpoint key");
+
+    let limits = || ProviderLimits {
+        max_in_flight: 10,
+        request_timeout: Duration::from_secs(30),
+    };
+
     let registry = Arc::new(
         ProviderRegistry::new(vec![
-            (
-                key(RequestClass::Inference),
-                ProviderLimits {
-                    max_in_flight: 10,
-                    request_timeout: Duration::from_secs(30),
-                },
-            ),
-            (
-                key(RequestClass::Embedding),
-                ProviderLimits {
-                    max_in_flight: 10,
-                    request_timeout: Duration::from_secs(30),
-                },
-            ),
+            (key(RequestClass::Inference), limits()),
+            (key(RequestClass::Embedding), limits()),
+            (embedding_endpoint, limits()),
         ])
         .expect("valid registry"),
     );
+
+    // Resolve the active profile (the seeded genesis) and bind the mock to it, so
+    // the triage stage's per-call provider resolution returns the mock.
+    let embedding_providers: EmbeddingProviderCache = Arc::new(DashMap::new());
+    {
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("acquire connection for embedding wiring");
+        if let Some(active) = PgEmbeddingProfileRepository
+            .find_active(&mut conn)
+            .await
+            .expect("find active profile")
+        {
+            embedding_providers.insert(active.id(), embedding.clone());
+        }
+    }
 
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
@@ -164,6 +189,8 @@ pub(super) fn build_test_worker(
         inference.clone(),
         inference,
         embedding,
+        embedding_providers,
+        CredentialCatalogue::default(),
         key(RequestClass::Inference),
         key(RequestClass::Inference),
         key(RequestClass::Embedding),

@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, TaskId, TaskType, TokenUsageId,
+    EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, ReindexRunId, TaskId, TaskType,
+    TokenUsageId,
 };
 
 /// A token usage record for a single LLM or embedding call.
@@ -26,6 +27,10 @@ pub struct TokenUsage {
     /// The task this usage belongs to.
     #[builder(default)]
     task_id: Option<TaskId>,
+    /// The reindex run this usage belongs to (set only for reindex backfill
+    /// and catch-up embedding, null otherwise).
+    #[builder(default)]
+    reindex_run_id: Option<ReindexRunId>,
     /// The attempt number within the task (starts at 0).
     attempt: i32,
     /// Which pipeline stage produced this usage record.
@@ -76,6 +81,11 @@ impl TokenUsage {
     /// Returns the task identifier, if applicable.
     pub fn task_id(&self) -> Option<TaskId> {
         self.task_id
+    }
+
+    /// Returns the reindex run identifier, if applicable.
+    pub fn reindex_run_id(&self) -> Option<ReindexRunId> {
+        self.reindex_run_id
     }
 
     /// Returns the attempt number.

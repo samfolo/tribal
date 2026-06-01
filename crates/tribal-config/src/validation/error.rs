@@ -14,7 +14,7 @@ use crate::env::env_var_for_path;
 // ConfigPath
 // ---------------------------------------------------------------------------
 
-/// Dot-separated YAML config path (e.g. `embedding.api_key`).
+/// Dot-separated YAML config path (e.g. `inference.triage.api_key`).
 ///
 /// Wraps `Cow<'static, str>` so static literals and runtime-composed
 /// paths share one type.
@@ -63,8 +63,8 @@ impl ConfigPath {
     }
 
     /// Returns the `TRIBAL_*` env var name a figment loader would
-    /// honour for this path — e.g. `embedding.api_key` →
-    /// `TRIBAL_EMBEDDING__API_KEY`.  Forwards to
+    /// honour for this path (e.g. `inference.triage.api_key` becomes
+    /// `TRIBAL_INFERENCE__TRIAGE__API_KEY`).  Forwards to
     /// [`env_var_for_path`](crate::env::env_var_for_path), which owns
     /// the dot-to-`__` + uppercase transform.
     #[must_use]
@@ -226,10 +226,15 @@ impl ProviderStage {
     /// Config path of the section under [`TribalConfig`] —
     /// e.g. `"inference.extraction"`.  Single source of truth that
     /// the other path-bearing methods derive from.
+    ///
+    /// The embedding genesis seed lives under `init.embedding`; its
+    /// credential resolves through the catalogue rather than an
+    /// `init.embedding.api_key` field, so [`Self::api_key_path`] is not a
+    /// live config field for the embedding stage.
     #[must_use]
     pub fn section_path(self) -> ConfigPath {
         ConfigPath::from_static(match self {
-            Self::Embedding => "embedding",
+            Self::Embedding => "init.embedding",
             Self::Extraction => "inference.extraction",
             Self::Triage => "inference.triage",
             Self::Relation => "inference.relation",
@@ -323,6 +328,13 @@ pub enum ValidationError {
     /// `embedding.provider` is a provider that does not support
     /// embedding.  Renders the provider name in both clauses for clarity.
     EmbeddingProviderUnsupported { provider: ProviderKind },
+    /// A credential connection name does not match the `[a-z][a-z0-9_]*`
+    /// grammar required by the environment-override path.
+    InvalidCredentialName { name: String },
+    /// Two credential connections resolve to the same
+    /// `(provider_kind, normalised base URL)` endpoint, so resolution would
+    /// be ambiguous.
+    DuplicateCredentialEndpoint { first: String, second: String },
     /// `telemetry.file_export` requires `telemetry.enabled = true`.
     TelemetryFileExportRequiresEnabled,
 }
@@ -443,6 +455,19 @@ impl fmt::Display for ValidationError {
                  {provider} does not provide an embedding API",
             ),
 
+            Self::InvalidCredentialName { name } => write!(
+                f,
+                "credential connection name {name:?} is invalid: names must \
+                 match [a-z][a-z0-9_]* (lowercase, no hyphens)",
+            ),
+
+            Self::DuplicateCredentialEndpoint { first, second } => write!(
+                f,
+                "credential connections {first:?} and {second:?} resolve to \
+                 the same endpoint: each (provider_kind, base_url) must be \
+                 unique",
+            ),
+
             Self::TelemetryFileExportRequiresEnabled => {
                 f.write_str("telemetry.file_export requires telemetry.enabled to be true")
             }
@@ -550,10 +575,9 @@ mod tests {
 
     #[test]
     fn test_provider_stage_api_key_paths() {
-        assert_eq!(
-            ProviderStage::Embedding.api_key_path().as_str(),
-            "embedding.api_key",
-        );
+        // The embedding credential is catalogue-resolved, not a live
+        // `init.embedding.api_key` field; the inference stages keep a real
+        // per-stage key path.
         assert_eq!(
             ProviderStage::Extraction.api_key_path().as_str(),
             "inference.extraction.api_key",
@@ -572,7 +596,7 @@ mod tests {
     fn test_provider_stage_provider_paths() {
         assert_eq!(
             ProviderStage::Embedding.provider_path().as_str(),
-            "embedding.provider",
+            "init.embedding.provider",
         );
         assert_eq!(
             ProviderStage::Extraction.provider_path().as_str(),
@@ -592,7 +616,7 @@ mod tests {
     fn test_provider_stage_section_paths() {
         assert_eq!(
             ProviderStage::Embedding.section_path().as_str(),
-            "embedding"
+            "init.embedding",
         );
         assert_eq!(
             ProviderStage::Extraction.section_path().as_str(),
@@ -819,11 +843,10 @@ mod tests {
 
     #[test]
     fn test_display_missing_api_key_per_stage() {
+        // The embedding stage is omitted: its credential is catalogue-resolved,
+        // so `MissingApiKey` is never produced for it (the fail-closed
+        // diagnostic names the catalogue instead).
         for (stage, expected) in [
-            (
-                ProviderStage::Embedding,
-                "embedding.api_key is required when embedding.provider is openai",
-            ),
             (
                 ProviderStage::Extraction,
                 "inference.extraction.api_key is required when \
@@ -916,6 +939,28 @@ mod tests {
             "embedding.provider cannot be anthropic: \
              anthropic does not provide an embedding API",
         );
+    }
+
+    #[test]
+    fn test_display_invalid_credential_name() {
+        let err = ValidationError::InvalidCredentialName {
+            name: "open-ai".to_owned(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("\"open-ai\""), "got: {display}");
+        assert!(display.contains("[a-z][a-z0-9_]*"), "got: {display}");
+    }
+
+    #[test]
+    fn test_display_duplicate_credential_endpoint() {
+        let err = ValidationError::DuplicateCredentialEndpoint {
+            first: "a".to_owned(),
+            second: "b".to_owned(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("\"a\""), "got: {display}");
+        assert!(display.contains("\"b\""), "got: {display}");
+        assert!(display.contains("same endpoint"), "got: {display}");
     }
 
     #[test]

@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "description": "Start a reindex to a new embedding geometry. The target is named on the command, never read from config. Reads and writes continue against the active profile while the new space fills; the swap is atomic. Operator-only.",
+  "properties": {
+    "provider": {
+      "type": "string",
+      "description": "The target embedding provider, for example 'ollama' or 'openai'."
+    },
+    "model": {
+      "type": "string",
+      "description": "The target embedding model."
+    },
+    "dimensions": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4000,
+      "description": "The target vector dimension, between 1 and the halfvec storage ceiling of 4000. Resolved from the model when omitted."
+    },
+    "base_url": {
+      "type": "string",
+      "description": "The target endpoint. The provider's default when omitted."
+    },
+    "dry_run": {
+      "type": "boolean",
+      "description": "When true, resolve the target, validate its credential, and return the item and tag counts without creating a run."
+    }
+  },
+  "required": ["provider", "model"],
+  "additionalProperties": false
+}

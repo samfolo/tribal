@@ -7,6 +7,8 @@
 //! The same shape doubles as the on-disk projection that
 //! [`crate::render_persisted_config`] writes during `tribal bootstrap`.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use tribal_domain::ProviderKind;
 
@@ -27,9 +29,9 @@ pub struct CliOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseCliOverrides>,
 
-    /// Embedding-stage CLI overrides.
+    /// Genesis-seed CLI overrides (`init.embedding`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub embedding: Option<EmbeddingCliOverrides>,
+    pub init: Option<InitCliOverrides>,
 
     /// Inference-stage CLI overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,6 +40,17 @@ pub struct CliOverrides {
     /// Telemetry CLI overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryCliOverrides>,
+
+    /// Credential catalogue skeleton, synthesised only during persistence.
+    ///
+    /// No CLI flag populates this; [`crate::render_persisted_config`] fills it
+    /// with the genesis `<provider>_default` connection whenever the resolved
+    /// genesis provider requires a key, independent of whether that seed came
+    /// from a CLI flag, the environment, or YAML, so the runtime has a
+    /// catalogue entry to resolve the credential into. The key itself is never
+    /// persisted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<BTreeMap<String, PersistedCredentialEntry>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +77,16 @@ pub struct DatabaseCliOverrides {
     pub url: Option<String>,
 }
 
-/// Embedding-stage CLI flag overrides.
+/// Genesis-seed CLI flag overrides, serialised under `init`.
+#[derive(Debug, Clone, Serialize)]
+pub struct InitCliOverrides {
+    /// Genesis embedding identity override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<EmbeddingCliOverrides>,
+}
+
+/// Genesis embedding-identity CLI flag overrides, serialised under
+/// `init.embedding`.
 #[derive(Debug, Clone, Serialize)]
 pub struct EmbeddingCliOverrides {
     /// Provider override from `--embedding-provider`.
@@ -74,6 +96,18 @@ pub struct EmbeddingCliOverrides {
     /// Model name override from `--embedding-model`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+}
+
+/// A persisted credential-catalogue entry skeleton: the endpoint identity
+/// without its key. Serialise-only; the runtime deserialises it back into a
+/// [`crate::CredentialEntry`] whose `api_key` defaults to absent.
+#[derive(Debug, Clone, Serialize)]
+pub struct PersistedCredentialEntry {
+    /// The provider kind this connection serves.
+    pub provider_kind: ProviderKind,
+
+    /// The endpoint base URL.
+    pub base_url: String,
 }
 
 /// Inference-stage CLI flag overrides.

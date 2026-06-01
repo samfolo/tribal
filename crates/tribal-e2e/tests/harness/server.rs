@@ -41,7 +41,7 @@ use wiremock::{
 };
 
 use super::{
-    config::test_config,
+    config::{seed_genesis_from_init, test_config},
     diagnostics::{DiagnosticContext, ServerDiagnostic},
     mocks::{
         envelope::{
@@ -333,7 +333,30 @@ impl TestHarness {
         let mut setup = HarnessSetup::new();
         setup_fn(&mut setup);
 
-        // 5–6. Seed data (graph path or manual path)
+        // 5. Build config (before seeding so the genesis profile the seed
+        // attaches embeddings to matches the live embedding identity the
+        // server's provider builder constructs from).
+        let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");
+        let mut config = test_config(
+            ctx.database_url(),
+            &embedding_server.uri(),
+            &extraction_server.uri(),
+            &triage_server.uri(),
+            &relation_server.uri(),
+            prompts_dir.path().to_str().expect("prompts dir to str"),
+        );
+
+        if let Some(config_override) = setup.config_override.take() {
+            config_override(&mut config);
+        }
+
+        validate(&config).expect("E2E test config must pass validation");
+
+        // Seed the genesis profile from init.embedding so both the seed below
+        // and the server's first-boot provisioning reuse it.
+        seed_genesis_from_init(&pool, &config).await;
+
+        // 6-7. Seed data (graph path or manual path)
         let mut raw_conn = ctx.raw_connection().await.expect("raw connection for seed");
 
         let (cli_project, labels) = if let Some(graph_fn) = setup.graph_fn {
@@ -400,25 +423,7 @@ impl TestHarness {
             (cli_project, labels)
         };
 
-        // 7. Build config
-        let prompts_dir = tempfile::tempdir().expect("create prompts tempdir");
-        let mut config = test_config(
-            ctx.database_url(),
-            &embedding_server.uri(),
-            &extraction_server.uri(),
-            &triage_server.uri(),
-            &relation_server.uri(),
-            prompts_dir.path().to_str().expect("prompts dir to str"),
-        );
-
-        if let Some(config_override) = setup.config_override {
-            config_override(&mut config);
-        }
-
-        // 8. Validate
-        validate(&config).expect("E2E test config must pass validation");
-
-        // 9. Mount infrastructure mocks
+        // 8. Mount infrastructure mocks
         mount_infrastructure_mocks(
             &config,
             &embedding_server,
@@ -676,7 +681,7 @@ impl TestHarness {
                 ServerDiagnostic {
                     name: "embedding",
                     server: &self.embedding_server,
-                    provider: self.config.embedding.provider,
+                    provider: self.config.init.embedding.provider,
                     request_class: RequestClass::Embedding,
                 },
                 ServerDiagnostic {
@@ -894,14 +899,24 @@ async fn mount_infrastructure_mocks(
     triage_server: &MockServer,
     relation_server: &MockServer,
 ) {
-    let embedding_provider = config.embedding.provider;
+    let embedding_provider = config.init.embedding.provider;
 
     // -- Embedding server ----------------------------------------------------
     if let Some(tags_endpoint) = tags_path(embedding_provider) {
-        mount_tags(embedding_server, tags_endpoint, &config.embedding.model).await;
+        mount_tags(
+            embedding_server,
+            tags_endpoint,
+            &config.init.embedding.model,
+        )
+        .await;
     }
 
-    let vector = fixed_embedding_vector(config.embedding.dimensions);
+    let dimensions = config
+        .init
+        .embedding
+        .dimensions
+        .expect("E2E test config sets a concrete embedding dimension");
+    let vector = fixed_embedding_vector(dimensions);
     let embed_response = wrap_embedding(&vector, embedding_provider);
     let embedding_endpoint = embed_path(embedding_provider);
 

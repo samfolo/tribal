@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "description": "The outcome of a reindex cancel request.",
+  "properties": {
+    "cancelled": {
+      "type": "boolean",
+      "description": "Whether a live run was transitioned to aborted."
+    },
+    "run_id": {
+      "type": ["string", "null"],
+      "description": "The aborted run's id, present only when a run was cancelled."
+    }
+  },
+  "required": ["cancelled", "run_id"]
+}

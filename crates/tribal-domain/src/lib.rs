@@ -50,7 +50,10 @@ mod bearer_token;
 mod candidate;
 mod discovery;
 mod embedding;
+mod embedding_error_class;
+mod embedding_profile;
 mod embedding_purpose;
+mod endpoint_url;
 mod error_code;
 mod extraction_result;
 mod feedback_rating;
@@ -73,6 +76,7 @@ mod redacted_secret;
 mod redaction;
 mod reference;
 mod reference_kind;
+mod reindex;
 mod relation;
 mod retrieval_feedback;
 mod scope;
@@ -92,16 +96,23 @@ pub use bearer_token::{BearerToken, BearerTokenParseError};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use embedding::{Embedding, EmbeddingBuilder};
+pub use embedding_error_class::EmbeddingErrorClass;
+pub use embedding_profile::{
+    DistanceMetric, EmbeddingProfile, EmbeddingProfileBuilder, EmbeddingProfileState,
+    MAX_EMBEDDING_DIMENSIONS,
+};
 pub use embedding_purpose::EmbeddingPurpose;
+pub use endpoint_url::{EndpointUrlError, normalise_endpoint_url};
 pub use error_code::McpErrorCode;
 pub use extraction_result::{ExtractionResult, ExtractionResultBuilder};
 pub use feedback_rating::FeedbackRating;
 pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
-    AuthTokenId, EmbeddingId, EpisodeId, ExtractionResultId, IdParseError, ItemObservationId,
-    JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId, ReferenceId, RelationBatchId,
-    RelationId, RetrievalFeedbackId, SessionId, SystemFingerprintId, TaskId, TokenUsageId,
-    TriageResultId, TriageSimilarItemDecisionId,
+    AuthTokenId, EmbeddingId, EmbeddingProfileId, EpisodeId, ExtractionResultId, IdParseError,
+    ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
+    ReferenceId, ReindexRunId, ReindexTaskId, RelationBatchId, RelationId, RetrievalFeedbackId,
+    SessionId, SystemFingerprintId, TaskId, TokenUsageId, TriageResultId,
+    TriageSimilarItemDecisionId,
 };
 pub use inference_parameters::{
     EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
@@ -121,12 +132,19 @@ pub use provider_kind::ProviderKind;
 pub use redaction::REDACTED;
 pub use reference::{Reference, ReferenceBuilder};
 pub use reference_kind::ReferenceKind;
+pub use reindex::{
+    ReindexEntityKind, ReindexRun, ReindexRunBuilder, ReindexRunState, ReindexTask,
+    ReindexTaskBuilder, ReindexTaskState,
+};
 pub use relation::{
     KnowledgeItemRelation, KnowledgeItemRelationBuilder, RelationHintType, RelationKind,
     RelationSuggestion,
 };
 pub use retrieval_feedback::{RetrievalFeedback, RetrievalFeedbackBuilder};
-pub use scope::{Scope, ScopeParseError, full_access_scopes, is_authorised};
+pub use scope::{
+    Scope, ScopeParseError, full_access_scopes, is_authorised, is_mintable_scope,
+    stdio_principal_scopes,
+};
 pub use source_type::SourceType;
 pub use standing::{Standing, StandingBuilder};
 pub use system_fingerprint::{SystemFingerprint, SystemFingerprintBuilder};

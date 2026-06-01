@@ -107,12 +107,27 @@ pub enum AppError {
         source: sqlx::migrate::MigrateError,
     },
 
+    /// First-boot provisioning advisory lock could not be acquired.
+    #[error("could not acquire provisioning lock after {attempts} attempts")]
+    ProvisioningLockFailed {
+        /// Number of lock attempts made.
+        attempts: u32,
+    },
+
     /// Provider registry construction failed.
     #[error("{source}")]
     ProviderRegistry {
         /// The underlying registry construction error.
         #[source]
         source: ProviderRegistryError,
+    },
+
+    /// A `tribal reindex` operator command failed.
+    #[error("{source}")]
+    Reindex {
+        /// The underlying reindex operation error.
+        #[source]
+        source: tribal_worker::ReindexOpError,
     },
 
     /// Prompt file I/O failed.
@@ -313,6 +328,25 @@ pub enum AppError {
     ConfigInvariant {
         /// Description of the violated invariant.
         reason: String,
+    },
+
+    /// The active embedding profile's provider requires a credential that
+    /// no catalogue entry supplies, so the server cannot embed and refuses
+    /// to start (fail-closed). The message names the connection an operator
+    /// must add.
+    #[error(
+        "active embedding profile expects credentials for {provider} at {base_url}, \
+         but no catalogue entry supplies a key; add `credentials.{provider}_default` \
+         with that provider_kind/base_url and an api_key, or set \
+         TRIBAL_CREDENTIALS__{provider_upper}_DEFAULT__API_KEY"
+    )]
+    EmbeddingCredentialUnresolved {
+        /// The active profile's provider kind.
+        provider: tribal_domain::ProviderKind,
+        /// The active profile's normalised base URL.
+        base_url: String,
+        /// The upper-cased provider kind for the env-var hint.
+        provider_upper: String,
     },
 }
 
@@ -624,6 +658,25 @@ mod tests {
     fn test_display_worker_death() {
         let err = AppError::WorkerDeath;
         assert_eq!(err.to_string(), "worker died unexpectedly");
+    }
+
+    #[test]
+    fn test_display_embedding_credential_unresolved() {
+        let err = AppError::EmbeddingCredentialUnresolved {
+            provider: tribal_domain::ProviderKind::OpenAi,
+            base_url: "https://api.openai.com:443/v1".to_owned(),
+            provider_upper: "OPENAI".to_owned(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("openai"), "got: {display}");
+        assert!(
+            display.contains("https://api.openai.com:443/v1"),
+            "got: {display}",
+        );
+        assert!(
+            display.contains("TRIBAL_CREDENTIALS__OPENAI_DEFAULT__API_KEY"),
+            "got: {display}",
+        );
     }
 
     #[test]

@@ -19,7 +19,7 @@ use tribal_common::JobStateTxs;
 use tribal_config::{PromptSource, TribalConfig};
 use tribal_mcp::{AppState, build_inference_parameters};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
-use tribal_worker::{Worker, WorkerError};
+use tribal_worker::{EmbeddingProviderCache, Worker, WorkerError};
 
 use crate::{
     error::AppError,
@@ -27,7 +27,7 @@ use crate::{
         POOL_NAME_MCP, POOL_NAME_WORKER, build_embedding_provider, build_inference_provider,
         build_provider_registry, check_first_run, create_pool_with_retry, ensure_prompt_files,
         generate_instance_id, init_prompt_watcher, load_prompts, load_prompts_embedded,
-        resolve_project, run_migrations,
+        provision_genesis, read_active_profile, resolve_project, run_migrations,
     },
 };
 
@@ -351,6 +351,10 @@ async fn bootstrap(
     check_first_run(&pool_mcp).await?;
     run_migrations(&pool_mcp).await?;
 
+    // -- First-boot provisioning ---------------------------------------------
+
+    provision_genesis(&pool_mcp, config).await?;
+
     // -- Instance identity ---------------------------------------------------
 
     let instance_id = generate_instance_id();
@@ -368,10 +372,13 @@ async fn bootstrap(
 
     // -- Providers -----------------------------------------------------------
 
-    let registry = build_provider_registry(config)?;
+    // The active profile (seeded by provisioning) is the live embedding
+    // identity; the registry and provider are built from it, not from config.
+    let active_profile = read_active_profile(&pool_mcp).await?;
+    let registry = build_provider_registry(config, &active_profile)?;
 
     let (embedding_provider, embedding_key) =
-        build_embedding_provider(&registry, &config.embedding).await?;
+        build_embedding_provider(&registry, &active_profile, &config.credentials).await?;
 
     let (extraction_provider, extraction_key) =
         build_inference_provider(&registry, &config.inference.extraction).await?;
@@ -392,6 +399,11 @@ async fn bootstrap(
 
     let registry = Arc::new(registry);
 
+    // Shared between the worker (re-embed on cutover) and the MCP read path
+    // (resolve the live provider from the active profile), so a provider built
+    // for a profile is reused across both.
+    let embedding_providers: EmbeddingProviderCache = Arc::new(DashMap::new());
+
     let worker = Arc::new(Worker::new(
         pool_worker.clone(),
         Arc::clone(&registry),
@@ -399,6 +411,8 @@ async fn bootstrap(
         Arc::clone(&triage_provider),
         Arc::clone(&relation_provider),
         Arc::clone(&embedding_provider),
+        Arc::clone(&embedding_providers),
+        config.credentials.clone(),
         extraction_key.clone(),
         triage_key.clone(),
         embedding_key.clone(),
@@ -413,7 +427,7 @@ async fn bootstrap(
 
     // -- AppState assembly ---------------------------------------------------
 
-    let inference_parameters = build_inference_parameters(config);
+    let inference_parameters = build_inference_parameters(config, active_profile.dimensions());
 
     let base = AppState::builder()
         .pool_mcp(pool_mcp)
@@ -423,6 +437,8 @@ async fn bootstrap(
         .inference_parameters(inference_parameters)
         .active_prompt_versions(Arc::new(RwLock::new(active_prompt_versions)))
         .provider_registry(registry)
+        .credentials(config.credentials.clone())
+        .embedding_providers(embedding_providers)
         .embedding_provider(embedding_provider)
         .extraction_provider(extraction_provider)
         .triage_provider(triage_provider)

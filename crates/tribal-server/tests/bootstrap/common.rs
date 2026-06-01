@@ -14,7 +14,7 @@ use tribal::{
     mcp_config_async, prepare_config, setup_async, token_create_async,
 };
 use tribal_config::{CliOverrides, ConfigPersistence, TransportKind, TribalConfig, load_config};
-use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY};
+use tribal_domain::{BearerToken, GitRemote, LOCAL_PRINCIPAL_KEY, full_access_scopes};
 use tribal_test_utils::{TestContext, truncate_all_tables};
 use tribal_ui::Theme;
 
@@ -324,6 +324,7 @@ pub(crate) async fn run_token_create(
     let bearer_token = token_create_async(
         &merged.database,
         principal_key.unwrap_or(LOCAL_PRINCIPAL_KEY),
+        full_access_scopes(),
         "",
         expires_at,
         &mut stdout,

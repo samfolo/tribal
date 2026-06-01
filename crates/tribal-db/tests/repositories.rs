@@ -5,11 +5,20 @@
 //! [`TestTransaction`](tribal_test_utils::TestTransaction) for isolation
 //! via transaction rollback.
 
+#[path = "repositories/advisory_lock.rs"]
+mod advisory_lock;
+
 #[path = "repositories/auth_token.rs"]
 mod auth_token;
 
+#[path = "repositories/embedding_profile.rs"]
+mod embedding_profile;
+
 #[path = "repositories/embedding.rs"]
 mod embedding;
+
+#[path = "repositories/embedding_index.rs"]
+mod embedding_index;
 
 #[path = "repositories/extraction_result.rs"]
 mod extraction_result;
@@ -37,6 +46,9 @@ mod prompt_version;
 
 #[path = "repositories/reference.rs"]
 mod reference;
+
+#[path = "repositories/reindex.rs"]
+mod reindex;
 
 #[path = "repositories/relation.rs"]
 mod relation;

@@ -45,6 +45,9 @@ impl EmbeddingGroupAssigner {
         let entry = self.groups.entry(group.to_owned()).or_insert_with(|| {
             let mut hasher = FnvHasher::default();
             group.hash(&mut hasher);
+            // Hash bucketed into a small dimension index; truncating the 64-bit
+            // hash before the modulo only changes which deterministic bucket a
+            // group lands in, which is immaterial for synthetic test vectors.
             #[allow(clippy::cast_possible_truncation)]
             let dim_index = (hasher.finish() as usize) % dims;
             (dim_index, 0)
@@ -76,6 +79,8 @@ pub(crate) fn make_group_embedding(
     if position_in_group > 0 {
         let noise_dim = (dominant + position_in_group) % dimensions;
         if noise_dim != dominant {
+            // A small integer position scaled into an f32 perturbation; the
+            // positions are tiny, so there is no meaningful precision loss.
             #[allow(clippy::cast_precision_loss)]
             let perturbation = 0.01 * (position_in_group as f32);
             v[noise_dim] = perturbation;

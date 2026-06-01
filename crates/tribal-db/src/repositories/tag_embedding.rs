@@ -1,23 +1,25 @@
 //! Tag embedding repository: trait definition and Postgres implementation.
 //!
-//! Stores embedding vectors for tag registry entries, enabling pgvector
-//! semantic similarity search during tag resolution.  Uses raw
-//! `sqlx::query()` because `pgvector::Vector` is not handled by the
-//! compile-time `sqlx::query!` macro.
+//! Stores embedding vectors for tag registry entries, keyed by the embedding
+//! profile that produced them, enabling pgvector semantic similarity search
+//! during tag resolution. The similarity query inlines the active profile's
+//! UUID and dimension as literals so the per-profile partial `halfvec` HNSW
+//! index is planner-pickable. Uses raw `sqlx::query()` because
+//! `pgvector::HalfVector` is not handled by the compile-time `sqlx::query!`
+//! macro.
 
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
-use tribal_domain::TagSimilarityResult;
+use tribal_domain::{EmbeddingProfileId, TagSimilarityResult};
 
-use super::common::columns::Columns;
+use super::common::{columns::Columns, halfvec::to_halfvec};
 use crate::DbError;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const INSERT_COLUMNS: Columns = Columns(&["tag", "model", "dimensions", "embedding"]);
-const DIMENSIONS_EXCEEDS_I32: &str = "dimensions exceeds i32::MAX";
+const INSERT_COLUMNS: Columns = Columns(&["tag", "embedding_profile_id", "model", "embedding"]);
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -28,10 +30,10 @@ const DIMENSIONS_EXCEEDS_I32: &str = "dimensions exceeds i32::MAX";
 pub struct NewTagEmbedding {
     /// The canonical tag string (must already exist in `tag_registry`).
     pub tag: String,
-    /// The embedding model name.
+    /// The embedding profile that produced this vector.
+    pub embedding_profile_id: EmbeddingProfileId,
+    /// The embedding model name (denormalised lineage).
     pub model: String,
-    /// The number of dimensions in the embedding vector.
-    pub dimensions: u32,
     /// The embedding vector.
     pub embedding: Vec<f32>,
 }
@@ -42,12 +44,13 @@ pub struct NewTagEmbedding {
 
 /// Data access operations for tag embeddings.
 ///
-/// All methods take `&mut PgConnection` as an explicit executor,
-/// keeping the repository pool-agnostic.
+/// All methods take `&mut PgConnection` as an explicit executor, keeping the
+/// repository pool-agnostic.
 #[async_trait]
 pub trait TagEmbeddingRepository {
-    /// Inserts tag embeddings with `ON CONFLICT (tag, model) DO NOTHING`
-    /// semantics for concurrent-safe upserts.
+    /// Inserts tag embeddings with
+    /// `ON CONFLICT (tag, embedding_profile_id) DO NOTHING` semantics for
+    /// concurrent-safe upserts.
     ///
     /// An empty input slice returns without issuing a query.
     ///
@@ -60,11 +63,13 @@ pub trait TagEmbeddingRepository {
         embeddings: &[NewTagEmbedding],
     ) -> Result<(), DbError>;
 
-    /// Returns tags whose embeddings are similar to the given vector,
-    /// filtered to results at or above the threshold.
+    /// Returns tags whose embeddings, within the given profile, are similar to
+    /// the query vector at or above the threshold.
     ///
     /// Results are ordered for deterministic selection: `similarity`
     /// descending, then `usage_count` descending, then `tag` alphabetically.
+    /// `dimensions` must be the profile's dimension so the cast matches its
+    /// partial index.
     ///
     /// # Errors
     ///
@@ -73,13 +78,17 @@ pub trait TagEmbeddingRepository {
         &self,
         conn: &mut PgConnection,
         embedding: &[f32],
-        model: &str,
+        embedding_profile_id: EmbeddingProfileId,
+        dimensions: u32,
         threshold: f64,
         limit: u32,
     ) -> Result<Vec<TagSimilarityResult>, DbError>;
 
     /// Returns tag names from the registry that have no embedding for the
-    /// given model.  Used by the startup backfill step.
+    /// given profile and are not quarantined against it. The profile-keyed
+    /// set-difference driving backfill and the reindex tag sweep; excluding
+    /// quarantined tags is what lets the sweep converge past a permanently
+    /// failing tag.
     ///
     /// # Errors
     ///
@@ -87,8 +96,16 @@ pub trait TagEmbeddingRepository {
     async fn find_tags_missing_embeddings(
         &self,
         conn: &mut PgConnection,
-        model: &str,
+        embedding_profile_id: EmbeddingProfileId,
     ) -> Result<Vec<String>, DbError>;
+
+    /// Deletes every tag embedding belonging to a superseded profile, the
+    /// destructive half of prune. Returns the number of rows deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn delete_superseded(&self, conn: &mut PgConnection) -> Result<u64, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,27 +129,27 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
         }
 
         let mut tags = Vec::with_capacity(embeddings.len());
+        let mut profile_ids = Vec::with_capacity(embeddings.len());
         let mut models = Vec::with_capacity(embeddings.len());
-        let mut dimensions = Vec::with_capacity(embeddings.len());
         let mut vectors = Vec::with_capacity(embeddings.len());
 
         for e in embeddings {
             tags.push(e.tag.as_str());
+            profile_ids.push(*e.embedding_profile_id.inner());
             models.push(e.model.as_str());
-            dimensions.push(i32::try_from(e.dimensions).expect(DIMENSIONS_EXCEEDS_I32));
-            vectors.push(pgvector::Vector::from(e.embedding.clone()));
+            vectors.push(to_halfvec(&e.embedding));
         }
 
         let sql = format!(
             "INSERT INTO tag_embeddings ({INSERT_COLUMNS}) \
-             SELECT * FROM UNNEST($1::text[], $2::text[], $3::int[], $4::vector[]) \
-             ON CONFLICT (tag, model) DO NOTHING"
+             SELECT * FROM UNNEST($1::text[], $2::uuid[], $3::text[], $4::halfvec[]) \
+             ON CONFLICT (tag, embedding_profile_id) DO NOTHING"
         );
 
         sqlx::query(&sql)
             .bind(&tags)
+            .bind(&profile_ids)
             .bind(&models)
-            .bind(&dimensions)
             .bind(&vectors)
             .execute(&mut *conn)
             .await
@@ -148,35 +165,42 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
         &self,
         conn: &mut PgConnection,
         embedding: &[f32],
-        model: &str,
+        embedding_profile_id: EmbeddingProfileId,
+        dimensions: u32,
         threshold: f64,
         limit: u32,
     ) -> Result<Vec<TagSimilarityResult>, DbError> {
-        let query_vector = pgvector::Vector::from(embedding.to_vec());
-
-        let rows = sqlx::query(
+        // The profile UUID and dimension are inlined as literals (the UUID
+        // rendered from a typed value, never untrusted text) so the query
+        // predicate implies the partial index predicate and the cast matches
+        // the index expression, both conditions for the partial HNSW index to
+        // be pickable. The similarity vector stays a bind parameter.
+        let profile = embedding_profile_id.inner();
+        let distance = format!("te.embedding::halfvec({dimensions}) <=> $1::halfvec({dimensions})");
+        let sql = format!(
             "SELECT te.tag, \
-                    1.0 - (te.embedding <=> $1::vector) AS similarity, \
+                    1.0 - ({distance}) AS similarity, \
                     tr.usage_count \
              FROM tag_embeddings te \
              INNER JOIN tag_registry tr ON tr.tag = te.tag \
-             WHERE te.model = $2 \
-               AND 1.0 - (te.embedding <=> $1::vector) >= $3 \
-             ORDER BY te.embedding <=> $1::vector ASC, \
+             WHERE te.embedding_profile_id = '{profile}'::uuid \
+               AND 1.0 - ({distance}) >= $2 \
+             ORDER BY {distance} ASC, \
                       tr.usage_count DESC, \
                       te.tag ASC \
-             LIMIT $4",
-        )
-        .bind(query_vector)
-        .bind(model)
-        .bind(threshold)
-        .bind(i64::from(limit))
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: "tag embedding similarity search".to_owned(),
-            source: e,
-        })?;
+             LIMIT $3"
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(to_halfvec(embedding))
+            .bind(threshold)
+            .bind(i64::from(limit))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "tag embedding similarity search".to_owned(),
+                source: e,
+            })?;
 
         Ok(rows.iter().map(map_tag_similarity_row).collect())
     }
@@ -184,17 +208,22 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
     async fn find_tags_missing_embeddings(
         &self,
         conn: &mut PgConnection,
-        model: &str,
+        embedding_profile_id: EmbeddingProfileId,
     ) -> Result<Vec<String>, DbError> {
         let rows = sqlx::query(
             "SELECT tr.tag \
              FROM tag_registry tr \
              LEFT JOIN tag_embeddings te \
-                 ON te.tag = tr.tag AND te.model = $1 \
+                 ON te.tag = tr.tag AND te.embedding_profile_id = $1 \
              WHERE te.tag IS NULL \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM reindex_quarantine q \
+                 WHERE q.target_profile_id = $1 AND q.kind = 'tag' \
+                   AND q.entity_ref = tr.tag \
+             ) \
              ORDER BY tr.tag",
         )
-        .bind(model)
+        .bind(embedding_profile_id.inner())
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
@@ -203,6 +232,20 @@ impl TagEmbeddingRepository for PgTagEmbeddingRepository {
         })?;
 
         Ok(rows.iter().map(|r| r.get("tag")).collect())
+    }
+
+    async fn delete_superseded(&self, conn: &mut PgConnection) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "DELETE FROM tag_embeddings te USING embedding_profiles p \
+             WHERE te.embedding_profile_id = p.id AND p.state = 'superseded'",
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "deleting tag embeddings of superseded profiles".to_owned(),
+            source: e,
+        })?;
+        Ok(result.rows_affected())
     }
 }
 

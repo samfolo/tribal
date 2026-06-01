@@ -120,20 +120,27 @@ pub(crate) struct PipelineProviderIdentities {
 // Construction helpers
 // ---------------------------------------------------------------------------
 
-/// Builds [`InferenceParameters`] from the resolved configuration.
+/// Builds [`InferenceParameters`] from the resolved configuration and the live
+/// embedding dimension.
 ///
 /// Each stage's sampling parameters are resolved through the capability layer
-/// so the fingerprint records the effective post-reconcile shape — a stage
+/// so the fingerprint records the effective post-reconcile shape: a stage
 /// whose model samples adaptively records `temperature` as unset, matching
-/// what the wire layer sends — rather than the raw configured value.
+/// what the wire layer sends, rather than the raw configured value. The
+/// embedding dimension is the active profile's, supplied by the caller rather
+/// than read from config, so it records the resolved geometry rather than the
+/// configured default.
 #[must_use]
-pub fn build_inference_parameters(config: &TribalConfig) -> InferenceParameters {
+pub fn build_inference_parameters(
+    config: &TribalConfig,
+    embedding_dimensions: u32,
+) -> InferenceParameters {
     InferenceParameters {
         extraction: stage_parameters(PromptStage::Extraction, &config.inference.extraction),
         triage: stage_parameters(PromptStage::Triage, &config.inference.triage),
         relation: stage_parameters(PromptStage::Relation, &config.inference.relation),
         embedding: EmbeddingParameters {
-            dimensions: config.embedding.dimensions,
+            dimensions: embedding_dimensions,
         },
         pipeline: PipelineParameters {
             max_candidates_per_job: config.worker.max_candidates_per_job,
@@ -350,6 +357,7 @@ pub(crate) async fn compute_and_upsert_fingerprint(
 #[cfg(test)]
 mod tests {
     use tribal_common::SHA256_HEX_LENGTH;
+    use tribal_config::DEFAULT_EMBEDDING_DIMENSIONS;
     use tribal_domain::ProviderKind;
 
     use super::*;
@@ -516,7 +524,7 @@ mod tests {
         // The default config uses an Ollama (sampling-configurable) model, so
         // the configured sampling values pass through unchanged.
         let config = TribalConfig::default();
-        let params = build_inference_parameters(&config);
+        let params = build_inference_parameters(&config, DEFAULT_EMBEDDING_DIMENSIONS);
 
         assert_eq!(
             params.extraction.temperature,
@@ -526,7 +534,7 @@ mod tests {
             params.extraction.max_tokens,
             config.inference.extraction.max_tokens
         );
-        assert_eq!(params.embedding.dimensions, config.embedding.dimensions);
+        assert_eq!(params.embedding.dimensions, DEFAULT_EMBEDDING_DIMENSIONS);
         assert_eq!(
             params.pipeline.max_candidates_per_job,
             config.worker.max_candidates_per_job
@@ -545,7 +553,7 @@ mod tests {
         config.inference.extraction.temperature = Some(0.7);
         config.inference.extraction.max_tokens = Some(512);
 
-        let params = build_inference_parameters(&config);
+        let params = build_inference_parameters(&config, DEFAULT_EMBEDDING_DIMENSIONS);
 
         assert_eq!(params.extraction.temperature, None);
         assert_eq!(params.extraction.max_tokens, Some(512));

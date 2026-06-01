@@ -10,7 +10,7 @@ use tribal_db::{
     AuthTokenRepository, NewAuthToken, NewPrincipal, PgAuthTokenRepository, PgPrincipalRepository,
     PrincipalRepository,
 };
-use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, full_access_scopes};
+use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId, full_access_scopes, stdio_principal_scopes};
 use tribal_test_utils::{
     MockAuthTokenRepository, MockPrincipalRepository, TEST_PRINCIPAL_KEY, a_not_found, a_principal,
     a_query_failed, an_auth_token, test_context,
@@ -402,7 +402,8 @@ async fn test_resolve_stdio_principal_success() {
 
     assert_eq!(result.principal_id(), principal_id);
     assert_eq!(result.principal_key(), LOCAL_PRINCIPAL_KEY);
-    assert_eq!(result.scopes(), full_access_scopes());
+    // The stdio local principal additionally holds the execute scope.
+    assert_eq!(result.scopes(), stdio_principal_scopes());
 }
 
 #[tokio::test]

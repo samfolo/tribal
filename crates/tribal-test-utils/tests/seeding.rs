@@ -7,10 +7,10 @@
 
 use chrono::Duration;
 use tribal_db::{
-    EmbeddingRepository, ItemObservationRepository, JobRepository, KnowledgeItemRepository,
-    PgEmbeddingRepository, PgItemObservationRepository, PgJobRepository, PgKnowledgeItemRepository,
-    PgReferenceRepository, PgRelationRepository, PgTagRegistryRepository, ReferenceRepository,
-    RelationRepository, SemanticSearchParams, TagRegistryRepository,
+    ItemObservationRepository, JobRepository, KnowledgeItemRepository, PgItemObservationRepository,
+    PgJobRepository, PgKnowledgeItemRepository, PgReferenceRepository, PgRelationRepository,
+    PgTagRegistryRepository, ReferenceRepository, RelationRepository, SemanticSearchParams,
+    TagRegistryRepository,
 };
 use tribal_domain::{
     KnowledgeKind::{Fact, Heuristic},
@@ -18,7 +18,9 @@ use tribal_domain::{
     RelationKind::{Supersedes, Supports},
     SourceType,
 };
-use tribal_test_utils::{Seed, item, scenarios, test_context};
+use tribal_test_utils::{
+    Seed, active_embedding_profile, find_active_embedding, item, scenarios, test_context,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -87,14 +89,12 @@ async fn test_seed_with_items_and_embeddings() {
         .await;
 
     // Both items should have embeddings.
-    let emb_a = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut txn, result.item_id("a"), "test-model")
+    let emb_a = find_active_embedding(&mut txn, result.item_id("a"))
         .await
         .expect("query")
         .expect("embedding for 'a' should exist");
 
-    let emb_b = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut txn, result.item_id("b"), "test-model")
+    let emb_b = find_active_embedding(&mut txn, result.item_id("b"))
         .await
         .expect("query")
         .expect("embedding for 'b' should exist");
@@ -322,18 +322,15 @@ async fn test_seed_embedding_groups_produce_similar_vectors() {
         .execute(&mut txn)
         .await;
 
-    let emb_a = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut txn, result.item_id("a"), "test-model")
+    let emb_a = find_active_embedding(&mut txn, result.item_id("a"))
         .await
         .expect("query")
         .expect("embedding a");
-    let emb_b = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut txn, result.item_id("b"), "test-model")
+    let emb_b = find_active_embedding(&mut txn, result.item_id("b"))
         .await
         .expect("query")
         .expect("embedding b");
-    let emb_c = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut txn, result.item_id("c"), "test-model")
+    let emb_c = find_active_embedding(&mut txn, result.item_id("c"))
         .await
         .expect("query")
         .expect("embedding c");
@@ -363,8 +360,7 @@ async fn test_seed_skip_embed_item_has_no_embedding() {
         .execute(&mut txn)
         .await;
 
-    let emb = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut txn, result.item_id("skipped"), "test-model")
+    let emb = find_active_embedding(&mut txn, result.item_id("skipped"))
         .await
         .expect("query");
 
@@ -681,16 +677,17 @@ async fn test_supersession_scenario_excludes_superseded_from_search() {
     let result = scenarios::supersession_scenario().execute(&mut txn).await;
 
     // Use the superseded item's own embedding as the query vector.
-    let emb = PgEmbeddingRepository
-        .find_by_knowledge_item_id(&mut txn, result.item_id("original-fact"), "test-model")
+    let emb = find_active_embedding(&mut txn, result.item_id("original-fact"))
         .await
         .expect("query")
         .expect("embedding should exist");
+    let profile = active_embedding_profile(&mut txn).await;
 
     // Default: include_superseded = false.
     let params = SemanticSearchParams::builder()
         .query_embedding(emb.embedding().to_vec())
-        .embedding_model("test-model".to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .limit(10)
         .build();
 
@@ -717,7 +714,8 @@ async fn test_supersession_scenario_excludes_superseded_from_search() {
     // With include_superseded = true, superseded items appear.
     let params_incl = SemanticSearchParams::builder()
         .query_embedding(emb.embedding().to_vec())
-        .embedding_model("test-model".to_owned())
+        .embedding_profile_id(profile.id())
+        .dimensions(profile.dimensions())
         .include_superseded(true)
         .limit(10)
         .build();

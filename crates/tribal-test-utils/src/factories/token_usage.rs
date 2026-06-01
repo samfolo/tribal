@@ -1,7 +1,8 @@
 use chrono::Utc;
 use tribal_db::NewTokenUsage;
 use tribal_domain::{
-    JobId, PipelineStage, PromptVersionId, TaskId, TokenUsage, TokenUsageId, TokenUsageStage,
+    JobId, PipelineStage, PromptVersionId, ReindexRunId, TaskId, TokenUsage, TokenUsageId,
+    TokenUsageStage,
 };
 
 define_factory! {
@@ -10,6 +11,7 @@ define_factory! {
         id: TokenUsageId = TokenUsageId::new(),
         job_id: Option<JobId> = None,
         task_id: Option<TaskId> = None,
+        reindex_run_id: Option<ReindexRunId> = None,
         attempt: i32 = 0,
         stage: PipelineStage = PipelineStage::Extraction,
         purpose: Option<tribal_domain::EmbeddingPurpose> = None,
@@ -39,6 +41,7 @@ define_factory! {
     pub struct NewTokenUsageFactory for NewTokenUsage {
         job_id: Option<JobId> = None,
         task_id: Option<TaskId> = None,
+        reindex_run_id: Option<ReindexRunId> = None,
         attempt: i32 = 0,
         stage: TokenUsageStage = TokenUsageStage::Extraction,
         provider: String = "test-provider".to_owned(),

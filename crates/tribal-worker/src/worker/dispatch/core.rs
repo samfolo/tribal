@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use sqlx::PgPool;
@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tribal_common::{JobStateTxs, POOL_NAME_WORKER, clamp_to_i32, clamp_to_u32};
-use tribal_config::WorkerConfig;
+use tribal_config::{CredentialCatalogue, WorkerConfig};
 use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository,
     PgPrincipalRepository, PgTaskRepository, PgTokenUsageRepository, PrincipalRepository,
@@ -34,8 +34,15 @@ use crate::{
         backfill::BackfillProcessor,
         backoff::BACKOFF_CAP_SECS,
         heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
+        reindex::{EmbeddingProviderCache, drive_reindex_cycle, reconcile_orphan_building_profile},
     },
 };
+
+/// Cadence at which the reindex loop polls for a live run to drive. A reindex is
+/// a rare, operator-initiated event, so this is a fixed liveness-detection
+/// interval rather than a tuned throughput knob; once a run is live, the driver
+/// runs it through to completion without waiting on this poll.
+const REINDEX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Worker
@@ -53,6 +60,12 @@ pub struct Worker {
     pub(crate) triage_provider: Arc<dyn InferenceProvider>,
     pub(crate) relation_provider: Arc<dyn InferenceProvider>,
     pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
+    /// Embedding providers built for reindex building profiles, keyed by profile
+    /// id. The reindex driver populates it; the commit path reads it.
+    embedding_providers: EmbeddingProviderCache,
+    /// The embedding-credential catalogue, used to resolve a reindex target
+    /// provider's credential fail-closed.
+    credentials: CredentialCatalogue,
     pub(crate) extraction_key: ProviderKey,
     pub(crate) triage_inference_key: ProviderKey,
     pub(crate) triage_embedding_key: ProviderKey,
@@ -82,6 +95,8 @@ impl Worker {
         triage_provider: Arc<dyn InferenceProvider>,
         relation_provider: Arc<dyn InferenceProvider>,
         embedding_provider: Arc<dyn EmbeddingProvider>,
+        embedding_providers: EmbeddingProviderCache,
+        credentials: CredentialCatalogue,
         extraction_key: ProviderKey,
         triage_inference_key: ProviderKey,
         triage_embedding_key: ProviderKey,
@@ -100,6 +115,8 @@ impl Worker {
             triage_provider,
             relation_provider,
             embedding_provider,
+            embedding_providers,
+            credentials,
             extraction_key,
             triage_inference_key,
             triage_embedding_key,
@@ -134,6 +151,16 @@ impl Worker {
     /// Returns a reference to the provider registry.
     pub(crate) fn provider_registry(&self) -> &Arc<ProviderRegistry> {
         &self.provider_registry
+    }
+
+    /// Returns the cache of embedding providers built for reindex profiles.
+    pub(crate) fn embedding_providers(&self) -> &EmbeddingProviderCache {
+        &self.embedding_providers
+    }
+
+    /// Returns the embedding-credential catalogue.
+    pub(crate) fn credentials(&self) -> &CredentialCatalogue {
+        &self.credentials
     }
 
     /// Returns a reference to the telemetry metric instruments.
@@ -255,10 +282,16 @@ impl Worker {
             reclaim_worker.run_reclaim_loop().await;
         });
 
+        let reindex_worker = Arc::clone(self);
+        let reindex_handle = tokio::spawn(async move {
+            reindex_worker.run_reindex_loop().await;
+        });
+
         loop {
             tokio::select! {
                 () = self.cancellation_token.cancelled() => {
                     reclaim_handle.abort();
+                    reindex_handle.abort();
                     tracing::info!(instance_id = %self.instance_id, "worker cancelled, draining in-flight tasks");
                     while in_flight.join_next().await.is_some() {}
                     return Err(WorkerError::Cancelled);
@@ -535,7 +568,7 @@ impl Worker {
     /// Best-effort: logs a warning on failure without failing the task.
     /// Uses a freshly acquired connection from the pool (not the domain
     /// commit transaction) so recording is independent of task outcome.
-    async fn record_token_usage(&self, job: &Job, task: &Task, usage: &Usage) {
+    pub(super) async fn record_token_usage(&self, job: &Job, task: &Task, usage: &Usage) {
         let mut conn = match self.pool().acquire().await {
             Ok(c) => c,
             Err(e) => {
@@ -771,6 +804,72 @@ impl Worker {
                     tracing::warn!(error = %e, "reclaim sweep failed");
                 }
             }
+        }
+    }
+
+    /// Drives the single live reindex run: reconciles an orphan building profile
+    /// on boot, then polls for a live run to promote and enrol. Sibling to the
+    /// reclaim loop, it returns on cancellation.
+    async fn run_reindex_loop(&self) {
+        self.reindex_boot_reconcile().await;
+
+        let mut ticker = tokio::time::interval(REINDEX_POLL_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await; // skip the immediate first tick
+
+        loop {
+            tokio::select! {
+                () = self.cancellation_token.cancelled() => {
+                    return;
+                }
+                _ = ticker.tick() => {}
+            }
+
+            let mut conn = match self.pool.acquire().await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "reindex loop pool acquire failed");
+                    continue;
+                }
+            };
+
+            if let Err(e) = drive_reindex_cycle(
+                &mut conn,
+                &self.provider_registry,
+                &self.embedding_providers,
+                &self.credentials,
+                &self.instance_id,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "reindex drive cycle failed");
+            }
+        }
+    }
+
+    /// Fails a building profile orphaned by a crashed run, once at boot.
+    ///
+    /// Runs in a transaction so reconcile holds the transaction-scoped
+    /// single-flight lock across its read-then-fail.
+    async fn reindex_boot_reconcile(&self) {
+        let mut txn = match self.pool.begin().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(error = %e, "reindex boot reconcile begin failed");
+                return;
+            }
+        };
+        match reconcile_orphan_building_profile(&mut txn).await {
+            Ok(reconciled) => {
+                if let Err(e) = txn.commit().await {
+                    tracing::warn!(error = %e, "reindex boot reconcile commit failed");
+                    return;
+                }
+                if reconciled {
+                    tracing::warn!("failed an orphan building profile left by a crashed reindex");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "reindex boot reconcile failed"),
         }
     }
 }

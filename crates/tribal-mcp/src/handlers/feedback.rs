@@ -8,9 +8,10 @@ use rmcp::{
 };
 use sqlx::PgConnection;
 use tracing::Instrument;
-use tribal_db::DbError;
+use tribal_db::{DbError, EmbeddingProfileRepository, PgEmbeddingProfileRepository};
 use tribal_domain::{
-    FeedbackRating, InferenceParameters, KnowledgeItemId, McpErrorCode, PrincipalId, span_attrs,
+    EmbeddingProfileId, FeedbackRating, InferenceParameters, KnowledgeItemId, McpErrorCode,
+    PrincipalId, span_attrs,
 };
 
 use super::common::begin_transaction;
@@ -37,12 +38,14 @@ const INVALID_RATING: &str = "rating must be \"positive\" or \"negative\"";
 struct FeedbackParams {
     trace_id: String,
     query_text: String,
-    embedding_model: String,
     returned_item_ids: Vec<KnowledgeItemId>,
     explored_anchor_ids: Vec<KnowledgeItemId>,
     principal_id: PrincipalId,
     rating: FeedbackRating,
     notes: Option<String>,
+    /// The profile that produced the rated results, echoed by the client from
+    /// the discover response. `None` when the client did not carry it back.
+    embedding_profile_id: Option<EmbeddingProfileId>,
     active_prompts: ActivePromptVersions,
     build_version: Arc<str>,
     provider_identities: PipelineProviderIdentities,
@@ -182,11 +185,20 @@ impl TribalServerHandler {
             .into_call_tool_result());
         };
 
-        // -- Embedding model --------------------------------------------------
+        // -- Validate embedding_profile_id (optional) -------------------------
 
-        let embedding_model = self.state.embedding_provider.identity().model.clone();
+        let embedding_profile_id = match &request.embedding_profile_id {
+            Some(raw) => match EmbeddingProfileId::from_str(raw) {
+                Ok(id) => Some(id),
+                Err(e) => return Ok(e.into_mcp_error().into_call_tool_result()),
+            },
+            None => None,
+        };
 
         // -- Build params and execute -----------------------------------------
+        // The embedding lineage (model and profile id) is resolved inside
+        // `execute_feedback`: the client-supplied producing profile when given
+        // and still resolvable, otherwise the active profile.
 
         let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
@@ -200,12 +212,12 @@ impl TribalServerHandler {
         let feedback_params = FeedbackParams {
             trace_id: request.trace_id,
             query_text: request.query_text,
-            embedding_model,
             returned_item_ids,
             explored_anchor_ids,
             principal_id,
             rating,
             notes: request.notes,
+            embedding_profile_id,
             active_prompts,
             build_version: Arc::clone(&self.state.build_version),
             provider_identities,
@@ -266,12 +278,37 @@ async fn execute_feedback(
     )
     .await?;
 
+    // -- Embedding lineage ----------------------------------------------------
+    // The model and profile id record the profile that produced the rated
+    // results: the client-supplied producing profile when it is given and still
+    // resolves, otherwise the active profile. A producing profile that no longer
+    // resolves (pruned, or a stale id) falls back to active, as does the absence
+    // of any id. Provisioning completes a genesis profile before serving, so an
+    // absent active profile is a consistency fault.
+
+    let producing_profile = match params.embedding_profile_id {
+        Some(id) => PgEmbeddingProfileRepository.find_by_id(conn, id).await?,
+        None => None,
+    };
+
+    let profile = match producing_profile {
+        Some(profile) => profile,
+        None => PgEmbeddingProfileRepository
+            .find_active(conn)
+            .await?
+            .ok_or(DbError::NotFound {
+                entity: "embedding_profile",
+                id: "active".to_owned(),
+            })?,
+    };
+
     // -- Feedback record ------------------------------------------------------
 
     let new_feedback = tribal_db::NewRetrievalFeedback::builder()
         .trace_id(params.trace_id.to_ascii_lowercase())
         .query_text(params.query_text)
-        .embedding_model(params.embedding_model)
+        .embedding_model(profile.model().to_owned())
+        .embedding_profile_id(profile.id())
         .returned_item_ids(params.returned_item_ids)
         .explored_anchor_ids(params.explored_anchor_ids)
         .system_fingerprint_hash(fingerprint_hash)
@@ -302,8 +339,9 @@ mod tests {
         FeedbackRating, InferenceParameters, KnowledgeItemId, PrincipalId, ProjectId,
     };
     use tribal_test_utils::{
-        MockPromptVersionRepository, MockRetrievalFeedbackRepository, a_prompt_version,
-        a_retrieval_feedback, test_context,
+        MockPromptVersionRepository, MockRetrievalFeedbackRepository, TestContext,
+        a_new_embedding_profile, a_prompt_version, a_retrieval_feedback, ensure_genesis_profile,
+        test_context,
     };
 
     use super::*;
@@ -335,6 +373,8 @@ mod tests {
     ) -> Result<tribal_domain::RetrievalFeedback, FeedbackError> {
         let ctx = test_context().await;
         let mut tx = ctx.begin_test().await.expect("begin");
+        // `execute_feedback` reads the active profile for the embedding lineage.
+        ensure_genesis_profile(&mut tx, "nomic-embed-text:v1.5", 768).await;
         execute_feedback(&mut tx, repos, params).await
     }
 
@@ -342,12 +382,12 @@ mod tests {
         FeedbackParams {
             trace_id: "00000000000000000000000000000001".into(),
             query_text: "auth patterns".into(),
-            embedding_model: "mock-model".into(),
             returned_item_ids: vec![KnowledgeItemId::new()],
             explored_anchor_ids: Vec::new(),
             principal_id: PrincipalId::new(),
             rating: FeedbackRating::Positive,
             notes: None,
+            embedding_profile_id: None,
             active_prompts: test_active_prompt_versions(),
             build_version: Arc::from("test-build"),
             provider_identities: test_provider_identities(),
@@ -414,6 +454,108 @@ mod tests {
         configure_fingerprint_mocks(&mut repos, &params.active_prompts);
 
         call_execute(&repos, params).await.expect("should succeed");
+    }
+
+    // -- Service: embedding lineage ----------------------------------------
+
+    /// With no `embedding_profile_id` supplied, the lineage records the active
+    /// profile (the existing fallback behaviour).
+    #[tokio::test]
+    async fn test_execute_feedback_records_active_profile_when_id_absent() {
+        let feedback = a_retrieval_feedback().build();
+
+        let ctx = test_context().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
+        ensure_genesis_profile(&mut tx, "active-model:v1", 768).await;
+        // Bind the expectation to the profile the handler resolves as active in
+        // this transaction, rather than assuming the seeded genesis is the
+        // highest-epoch profile in a database other tests also write to.
+        let active = PgEmbeddingProfileRepository
+            .find_active(&mut tx)
+            .await
+            .expect("find active")
+            .expect("an active profile");
+        let active_id = active.id();
+        let active_model = active.model().to_owned();
+
+        let mut repos = test_repositories();
+        repos.retrieval_feedback = Arc::new(
+            MockRetrievalFeedbackRepository::builder()
+                .when_insert(move |new_fb| {
+                    new_fb.embedding_profile_id == active_id
+                        && new_fb.embedding_model == active_model
+                })
+                .respond_with(feedback, None)
+                .build(),
+        );
+        // `default_params` carries no `embedding_profile_id`, so the lineage
+        // resolves through the active-profile fallback.
+        let params = default_params();
+        configure_fingerprint_mocks(&mut repos, &params.active_prompts);
+
+        execute_feedback(&mut tx, &repos, params)
+            .await
+            .expect("should record the active profile");
+    }
+
+    /// When the client carries back the producing `embedding_profile_id`, the
+    /// lineage records that profile's id and model, not the active one. The
+    /// genesis profile is seeded active, then a second profile is inserted so it
+    /// becomes the new active; the (now non-active) genesis is passed through.
+    #[tokio::test]
+    async fn test_execute_feedback_records_producing_profile_when_id_present() {
+        let feedback = a_retrieval_feedback().build();
+
+        let ctx = test_context().await;
+        let mut tx = ctx.begin_test().await.expect("begin");
+
+        // Genesis is active first; capture its id and model.
+        let producing = ensure_genesis_profile(&mut tx, "producing-model:v1", 768).await;
+        let producing_id = producing.id();
+
+        // Insert a second complete profile via the repository. Its higher epoch
+        // makes it the new active, so `producing` is no longer active.
+        let second = PgEmbeddingProfileRepository
+            .insert(
+                &mut tx,
+                &a_new_embedding_profile()
+                    .model("active-model:v2".to_owned())
+                    .build(),
+            )
+            .await
+            .expect("insert second profile");
+        PgEmbeddingProfileRepository
+            .mark_complete(&mut tx, second.id())
+            .await
+            .expect("complete second profile");
+
+        // Sanity: the active profile is now the second one, not the producer.
+        let active = PgEmbeddingProfileRepository
+            .find_active(&mut tx)
+            .await
+            .expect("find active")
+            .expect("an active profile");
+        assert_ne!(active.id(), producing_id);
+
+        let mut repos = test_repositories();
+        repos.retrieval_feedback = Arc::new(
+            MockRetrievalFeedbackRepository::builder()
+                .when_insert(move |new_fb| {
+                    new_fb.embedding_profile_id == producing_id
+                        && new_fb.embedding_model == "producing-model:v1"
+                })
+                .respond_with(feedback, None)
+                .build(),
+        );
+        let params = FeedbackParams {
+            embedding_profile_id: Some(producing_id),
+            ..default_params()
+        };
+        configure_fingerprint_mocks(&mut repos, &params.active_prompts);
+
+        execute_feedback(&mut tx, &repos, params)
+            .await
+            .expect("should record the producing profile");
     }
 
     #[tokio::test]
@@ -555,6 +697,30 @@ mod tests {
         assert_eq!(structured["code"], "invalid_argument");
     }
 
+    #[tokio::test]
+    async fn test_apply_feedback_malformed_embedding_profile_id_returns_application_error() {
+        let handler = TestHandler::builder().build();
+
+        let ki_id = KnowledgeItemId::new().to_string();
+        let result = handler
+            .apply_feedback(
+                serde_json::json!({
+                    "trace_id": "00000000000000000000000000000001",
+                    "query_text": "auth patterns",
+                    "returned_item_ids": [ki_id],
+                    "rating": "positive",
+                    "embedding_profile_id": "not-a-profile-id",
+                }),
+                PrincipalId::new(),
+            )
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
+        assert_eq!(structured["code"], "invalid_argument");
+    }
+
     /// `lazy_pool` cannot open connections, so the call fails at the
     /// pool acquisition phase. We assert `is_error` to confirm validation
     /// passed and the error originates from the pool, not from input
@@ -594,8 +760,15 @@ mod tests {
         let mut repos = repos_for_feedback(feedback);
         configure_fingerprint_mocks(&mut repos, &active_prompts);
 
-        let ctx = test_context().await;
-        let pool = ctx.create_pool().await.expect("pool");
+        // The feedback path reads the active profile for the embedding lineage,
+        // so this test commits a genesis profile. A dedicated database isolates
+        // it, keeping that committed profile out of the parallel suite's
+        // global-state tests (prune, feedback provenance).
+        let ctx = TestContext::new().await.expect("dedicated test database");
+        let pool = ctx.pool().clone();
+        let mut conn = ctx.raw_connection().await.expect("conn");
+        ensure_genesis_profile(&mut conn, "nomic-embed-text:v1.5", 768).await;
+        drop(conn);
         let handler = TestHandler::builder()
             .pool(pool)
             .repositories(repos)

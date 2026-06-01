@@ -16,7 +16,10 @@ use tribal_domain::{EmbeddingPurpose, TagRegistryEntry, span_attrs};
 use tribal_inference::{EmbeddingProvider, EmbeddingRequest, Usage};
 use tribal_telemetry::MetricsRecorder;
 
-use crate::error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError};
+use crate::{
+    error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError},
+    stages::load_active_embedding_profile,
+};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -37,8 +40,6 @@ pub(crate) struct NewTagWithEmbedding {
     pub tag: String,
     /// The embedding vector.
     pub embedding: Vec<f32>,
-    /// The number of dimensions in the embedding vector.
-    pub dimensions: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +101,6 @@ pub(crate) async fn resolve_tags(
 
     async {
         let tag_count = suggested_tags.len();
-        let model = &embedding_provider.identity().model;
         let registry_tags: HashSet<&str> = registry.iter().map(TagRegistryEntry::tag).collect();
 
         let mut seen_resolved: HashSet<String> = HashSet::with_capacity(tag_count);
@@ -128,56 +128,78 @@ pub(crate) async fn resolve_tags(
         let mut semantic_match_count: u32 = 0;
         let mut best_similarity: Option<f64> = None;
 
-        for tag in &unmatched {
-            let embedding_response = embed_tag(
-                tag,
-                embedding_provider,
-                semaphore,
-                deadline,
-                provider_key,
-                metrics,
-            )
-            .await?;
-
-            usages.push(Usage::Embedding {
-                usage: embedding_response.usage,
-                purpose: EmbeddingPurpose::Tag,
-            });
-
+        // Tag similarity matches against the active profile; resolved once, and
+        // only when there are unmatched tags to search against.
+        let active_profile = if unmatched.is_empty() {
+            None
+        } else {
             let mut conn = pool.acquire().await.map_err(|e| StageError::Database {
                 stage: STAGE_TRIAGE.into(),
-                context: "acquiring connection for tag similarity search".into(),
+                context: "acquiring connection for active embedding profile".into(),
                 source: tribal_db::DbError::QueryFailed {
                     context: "pool acquire".into(),
                     source: e,
                 },
             })?;
+            Some(load_active_embedding_profile(&mut conn, STAGE_TRIAGE).await?)
+        };
 
-            let matches = PgTagEmbeddingRepository
-                .similarity_search(&mut conn, &embedding_response.vector, model, threshold, 1)
-                .await
-                .map_err(|e| StageError::Database {
+        if let Some(profile) = &active_profile {
+            for tag in &unmatched {
+                let embedding_response = embed_tag(
+                    tag,
+                    embedding_provider,
+                    semaphore,
+                    deadline,
+                    provider_key,
+                    metrics,
+                )
+                .await?;
+
+                usages.push(Usage::Embedding {
+                    usage: embedding_response.usage,
+                    purpose: EmbeddingPurpose::Tag,
+                });
+
+                let mut conn = pool.acquire().await.map_err(|e| StageError::Database {
                     stage: STAGE_TRIAGE.into(),
-                    context: "tag embedding similarity search".into(),
-                    source: e,
+                    context: "acquiring connection for tag similarity search".into(),
+                    source: tribal_db::DbError::QueryFailed {
+                        context: "pool acquire".into(),
+                        source: e,
+                    },
                 })?;
 
-            if let Some(best) = matches.first() {
-                let sim = best.similarity();
-                best_similarity = Some(best_similarity.map_or(sim, |prev: f64| prev.max(sim)));
-                semantic_match_count += 1;
-                let canonical = best.tag().to_owned();
-                if seen_resolved.insert(canonical.clone()) {
-                    resolved.push(canonical);
+                let matches = PgTagEmbeddingRepository
+                    .similarity_search(
+                        &mut conn,
+                        &embedding_response.vector,
+                        profile.id(),
+                        profile.dimensions(),
+                        threshold,
+                        1,
+                    )
+                    .await
+                    .map_err(|e| StageError::Database {
+                        stage: STAGE_TRIAGE.into(),
+                        context: "tag embedding similarity search".into(),
+                        source: e,
+                    })?;
+
+                if let Some(best) = matches.first() {
+                    let sim = best.similarity();
+                    best_similarity = Some(best_similarity.map_or(sim, |prev: f64| prev.max(sim)));
+                    semantic_match_count += 1;
+                    let canonical = best.tag().to_owned();
+                    if seen_resolved.insert(canonical.clone()) {
+                        resolved.push(canonical);
+                    }
+                } else {
+                    new_tags.push(NewTagWithEmbedding {
+                        tag: tag.clone(),
+                        embedding: embedding_response.vector,
+                    });
                 }
-            } else {
-                let dimensions = embedding_response.vector.len();
-                new_tags.push(NewTagWithEmbedding {
-                    tag: tag.clone(),
-                    embedding: embedding_response.vector,
-                    dimensions: u32::try_from(dimensions)
-                        .expect("embedding dimensions exceeds u32::MAX"),
-                });
             }
         }
 
