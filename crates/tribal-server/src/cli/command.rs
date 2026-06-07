@@ -809,7 +809,8 @@ impl TokenRevokeAllArgs {
 #[derive(Debug, Subcommand)]
 pub enum ReindexCommand {
     /// Create a reindex run that migrates the corpus to a new embedding
-    /// identity. Use `--dry-run` to estimate cost without spending.
+    /// identity; a running server's worker drives it to completion. Use
+    /// `--dry-run` to estimate the work (item and tag counts) first.
     Run {
         /// Arguments for the reindex run.
         #[command(flatten)]
@@ -852,7 +853,7 @@ pub struct ReindexRunArgs {
     #[arg(long = "base-url", help_heading = "Reindex")]
     pub base_url: Option<String>,
 
-    /// Estimate the cost (item and tag counts) without creating a run.
+    /// Report how many items and tags would be re-embedded, without creating a run.
     #[arg(long, help_heading = "Reindex")]
     pub dry_run: bool,
 

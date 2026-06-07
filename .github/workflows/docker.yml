@@ -192,3 +192,75 @@ jobs:
       - name: Inspect image
         run: |
           docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"
+
+  publish-mcp-registry:
+    name: Publish to the MCP Registry
+    needs: [validate-tag, merge]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    # The registry is in preview; never let a registry hiccup or a CLI
+    # regression turn a successful build-and-push into a red tagged release. The
+    # "Report the registry outcome" step surfaces a failed publish as a run
+    # warning so it is not silent. Drop continue-on-error and that step once the
+    # registry leaves preview.
+    continue-on-error: true
+    permissions:
+      contents: read
+      # OIDC lets mcp-publisher prove this repo owns the io.github.tribal-memory
+      # namespace; no stored secret is needed.
+      id-token: write
+    env:
+      VERSION: ${{ needs.validate-tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      # Stamp the release version into the metadata so the registry entry can
+      # never drift from the tag: server.version and the image tag in the OCI
+      # identifier both follow VERSION. An OCI package must not carry a package
+      # `version` field (the registry rejects it; the version lives in the
+      # identifier tag). The committed identifier tag is just a default; this
+      # overwrites it at publish time.
+      - name: Stamp the release version into server.json
+        run: |
+          jq --arg v "$VERSION" '
+            .version = $v
+            | .packages[0].identifier |= sub(":[^:]+$"; ":\($v)")
+          ' server.json > server.json.tmp && mv server.json.tmp server.json
+          echo "Publishing at $VERSION:"; jq -r '.version, .packages[0].identifier' server.json
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Install mcp-publisher (Sigstore-verified)
+        env:
+          MCP_PUBLISHER_VERSION: v1.7.9
+        run: |
+          # Pinned version, verified against the release's Sigstore bundle:
+          # cosign confirms the binary's bytes and that the registry's release
+          # workflow signed it via GitHub OIDC, rather than trusting a bare TLS
+          # download. Bump the version deliberately.
+          asset="mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz"
+          base="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl -fsSL -O "${base}/${asset}"
+          curl -fsSL -O "${base}/${asset}.sigstore.json"
+          cosign verify-blob \
+            --bundle "${asset}.sigstore.json" \
+            --certificate-identity-regexp '^https://github\.com/modelcontextprotocol/registry/\.github/workflows/release\.yml@refs/tags/v.+$' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            "${asset}"
+          tar xzf "${asset}" mcp-publisher
+      - name: Validate server.json
+        run: ./mcp-publisher validate server.json
+      - name: Authenticate via GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+      - name: Publish to the MCP Registry
+        id: publish
+        # The registry pulls the public GHCR image to verify the ownership label,
+        # so the package must stay public.
+        run: ./mcp-publisher publish
+      - name: Report the registry outcome
+        if: always()
+        run: |
+          if [ "${{ steps.publish.outcome }}" = "success" ]; then
+            echo "MCP Registry: published ${VERSION}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=MCP Registry publish failed::Image shipped for ${VERSION}; the registry entry was NOT updated. See this job's log."
+            echo "MCP Registry: publish did not succeed for ${VERSION}. The image is published; the registry entry was not updated." >> "$GITHUB_STEP_SUMMARY"
+          fi
