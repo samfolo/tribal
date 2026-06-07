@@ -23,8 +23,9 @@
 //!   `oneOf`/`allOf`-with-`$ref` rewritten away, but optionals left omitted from
 //!   `required` (the subset accepts optional-by-omission) and `$ref` annotations
 //!   retained. Both enforce the schema by compiling it to a grammar (Anthropic
-//!   server-side, Ollama through llama.cpp), which rejects the single-element
-//!   `allOf`-with-`$ref` and `oneOf` enum forms `schemars` emits, so the subset
+//!   server-side, Ollama through llama.cpp), which cannot compile the
+//!   single-element `allOf`-with-`$ref` and `oneOf` enum forms `schemars` emits
+//!   (Anthropic rejects them; llama.cpp emits malformed output), so the subset
 //!   serves both and no per-request flag is sent.
 //!
 //! # Provenance
@@ -36,6 +37,7 @@
 //!
 //! - `OpenAI`: <https://platform.openai.com/docs/guides/structured-outputs>
 //! - `Anthropic`: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs>
+//! - `Ollama` (llama.cpp grammar builder): <https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md>
 //!
 //! A subset can drift as a provider extends support; the documented live probe
 //! and issue reports are the safety net for that drift.
@@ -116,6 +118,13 @@ fn apply_openai_strict(mut schema: Value) -> Value {
 
 /// Normalises a schema into the grammar-based structured-output subset shared by
 /// `Anthropic` and `Ollama` (llama.cpp). See the module-level Provenance note.
+///
+/// A constraint this transform relies on but does not itself enforce: llama.cpp's
+/// grammar builder mis-generates when a `$ref` targets a definition emitted later
+/// in `definitions` that itself nests a `$ref` (Ollama issue #8444). `schemars`
+/// emits `definitions` alphabetically, so the response schemas stay safe by
+/// keeping every forward-referenced definition a leaf (an enum or an all-scalar
+/// object); a dialect test guards that shape.
 fn apply_grammar_subset(mut schema: Value) -> Value {
     strip_unsupported_keywords(&mut schema);
     unwrap_described_refs(&mut schema);
