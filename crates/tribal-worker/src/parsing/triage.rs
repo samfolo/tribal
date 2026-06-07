@@ -4,6 +4,7 @@ use serde::Deserialize;
 use tribal_domain::RelationSuggestion;
 use tribal_inference::CompletionResponse;
 
+use super::deserialise;
 use crate::error::StageError;
 
 // ---------------------------------------------------------------------------
@@ -157,7 +158,7 @@ pub(crate) struct SimilarItemClassification {
 pub(crate) fn parse_triage_response(
     response: &CompletionResponse,
 ) -> Result<TriageClassification, StageError> {
-    serde_json::from_str::<TriageClassification>(&response.text).map_err(|e| StageError::Parse {
+    deserialise::tolerant::<TriageClassification>(&response.text).map_err(|e| StageError::Parse {
         context: format!("deserialising triage classification: {e}"),
         raw_response: Some(response.text.clone()),
     })

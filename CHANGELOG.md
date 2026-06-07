@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Pipeline responses wrapped in a Markdown code fence now parse. The extraction, triage, and relation stages deserialise strictly first and retry once with the fence stripped only when that fails, so a provider that ignores the structured-output schema and fences its JSON no longer dead-letters, while a valid payload — including one whose strings contain backticks — is never altered. ([#195](https://github.com/tribal-memory/tribal/issues/195))
+
 ## [0.3.0] - 2026-06-01
 
 This release makes the embedding geometry configurable and adds zero-downtime reindexing of the embedding space. It is a breaking release: the initial database schema is revised for the embedding-profile model and the embedding configuration keys have moved, so there is no in-place upgrade from 0.2.x. Provision a fresh database and update the configuration (see Changed).

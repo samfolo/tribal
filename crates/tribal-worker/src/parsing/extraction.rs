@@ -4,6 +4,7 @@ use serde::Deserialize;
 use tribal_domain::{Candidate, RelationHint};
 use tribal_inference::CompletionResponse;
 
+use super::deserialise;
 use crate::error::StageError;
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,7 @@ pub(crate) struct ExtractionOutput {
 pub(crate) fn parse_extraction_response(
     response: &CompletionResponse,
 ) -> Result<ExtractionOutput, StageError> {
-    serde_json::from_str::<ExtractionOutput>(&response.text).map_err(|e| StageError::Parse {
+    deserialise::tolerant::<ExtractionOutput>(&response.text).map_err(|e| StageError::Parse {
         context: format!("deserialising extraction output: {e}"),
         raw_response: Some(response.text.clone()),
     })
