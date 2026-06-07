@@ -346,14 +346,13 @@ mod tests {
 
     use super::*;
     use crate::test_utils::{
-        TestHandler, configure_fingerprint_mocks, first_text_content, test_active_prompt_versions,
-        test_provider_identities, test_repositories,
+        NO_STRUCTURED_CONTENT, TestHandler, configure_fingerprint_mocks, first_text_content,
+        test_active_prompt_versions, test_provider_identities, test_repositories,
     };
 
     // -- Constants ---------------------------------------------------------
 
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
-    const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
 
     // -- Helpers -----------------------------------------------------------
 

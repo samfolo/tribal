@@ -250,7 +250,7 @@ mod tests {
     use tribal_test_utils::{a_new_embedding_profile, a_new_principal, test_context};
 
     use super::*;
-    use crate::test_utils::{TestHandler, first_text_content};
+    use crate::test_utils::{NO_STRUCTURED_CONTENT, TestHandler, first_text_content};
 
     #[tokio::test]
     async fn test_reindex_cancel_aborts_the_live_run() {
@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         assert!(
             result.structured_content.is_none(),
-            "error results carry no structured content"
+            "{NO_STRUCTURED_CONTENT}"
         );
         assert!(first_text_content(&result).contains("unknown embedding provider"));
     }
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         assert!(
             result.structured_content.is_none(),
-            "error results carry no structured content"
+            "{NO_STRUCTURED_CONTENT}"
         );
         assert!(first_text_content(&result).contains("resolving the target provider"));
     }

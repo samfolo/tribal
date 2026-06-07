@@ -160,6 +160,14 @@ pub(crate) fn session_with_project() -> SessionContext {
 }
 
 // ---------------------------------------------------------------------------
+// Assertion messages
+// ---------------------------------------------------------------------------
+
+/// Assertion message for the shared error-result invariant: error results
+/// carry their message in the text content and omit `structured_content`.
+pub(crate) const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
+
+// ---------------------------------------------------------------------------
 // first_text_content
 // ---------------------------------------------------------------------------
 

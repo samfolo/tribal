@@ -474,14 +474,13 @@ mod tests {
     use super::*;
     use crate::{
         config::HandlerConfig,
-        test_utils::{TestHandler, first_text_content, test_repositories},
+        test_utils::{NO_STRUCTURED_CONTENT, TestHandler, first_text_content, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
 
     const STRUCTURED_CONTENT: &str = "structured_content must be present";
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
-    const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
 
     // -- Helpers -----------------------------------------------------------
 
