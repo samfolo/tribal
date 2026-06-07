@@ -11,20 +11,21 @@
 //! accommodated by adding one arm to [`apply_dialect`]; existing call sites are
 //! unchanged.
 //!
-//! Three policies:
+//! Two policies:
 //!
-//! - **`OpenAI`**: every object closed (`additionalProperties: false`) and
-//!   all-required, optionals expressed as a nullable type union, internally
-//!   tagged enums rewritten from `oneOf` to `anyOf` with a `const` discriminator,
-//!   string enums collapsed to a single `enum`, `$ref` reduced to a bare
-//!   reference (the subset rejects sibling keywords on `$ref`), and the
+//! - **`OpenAI`** (strict subset): every object closed (`additionalProperties:
+//!   false`) and all-required, optionals expressed as a nullable type union,
+//!   internally tagged enums rewritten from `oneOf` to `anyOf` with a `const`
+//!   discriminator, string enums collapsed to a single `enum`, `$ref` reduced to
+//!   a bare reference (the subset rejects sibling keywords on `$ref`), and the
 //!   validation leaf keywords the subset rejects stripped.
-//! - **`Anthropic`**: every object closed and `oneOf`/`allOf`-with-`$ref`
-//!   rewritten away, but optionals left omitted from `required` (the subset
-//!   accepts optional-by-omission) and `$ref` annotations retained. Enforcement
-//!   is grammar-based, so no per-request flag is sent.
-//! - **`Ollama`**: identity. The local llama.cpp path accepts the canonical
-//!   schema unchanged.
+//! - **`Anthropic` and `Ollama`** (grammar subset): every object closed and
+//!   `oneOf`/`allOf`-with-`$ref` rewritten away, but optionals left omitted from
+//!   `required` (the subset accepts optional-by-omission) and `$ref` annotations
+//!   retained. Both enforce the schema by compiling it to a grammar (Anthropic
+//!   server-side, Ollama through llama.cpp), which rejects the single-element
+//!   `allOf`-with-`$ref` and `oneOf` enum forms `schemars` emits, so the subset
+//!   serves both and no per-request flag is sent.
 //!
 //! # Provenance
 //!
@@ -91,14 +92,12 @@ const FORBIDDEN_VALIDATION_KEYWORDS: &[&str] = &[
 /// Rewrites a canonical `schemars` schema into the dialect `provider`'s
 /// structured-output endpoint accepts.
 ///
-/// `Ollama` accepts the canonical schema unchanged; the cloud providers each
-/// have their own transform. A provider that shares a policy reuses the same
-/// transform function.
+/// The grammar-based backends (`Anthropic` and `Ollama`) share one transform;
+/// `OpenAI`'s strict subset has its own.
 #[must_use]
 pub fn apply_dialect(provider: ProviderKind, schema: Value) -> Value {
     match provider {
-        ProviderKind::Ollama => schema,
-        ProviderKind::Anthropic => apply_anthropic_subset(schema),
+        ProviderKind::Anthropic | ProviderKind::Ollama => apply_grammar_subset(schema),
         ProviderKind::OpenAi => apply_openai_strict(schema),
     }
 }
@@ -115,9 +114,9 @@ fn apply_openai_strict(mut schema: Value) -> Value {
     schema
 }
 
-/// Normalises a schema into the `Anthropic` structured-output subset. See the
-/// module-level Provenance note for the subset reference.
-fn apply_anthropic_subset(mut schema: Value) -> Value {
+/// Normalises a schema into the grammar-based structured-output subset shared by
+/// `Anthropic` and `Ollama` (llama.cpp). See the module-level Provenance note.
+fn apply_grammar_subset(mut schema: Value) -> Value {
     strip_unsupported_keywords(&mut schema);
     unwrap_described_refs(&mut schema);
     rewrite_enums(&mut schema);
@@ -677,14 +676,59 @@ mod tests {
         apply_dialect(ProviderKind::Anthropic, schema)
     }
 
+    fn apply_ollama(schema: Value) -> Value {
+        apply_dialect(ProviderKind::Ollama, schema)
+    }
+
     #[test]
-    fn test_ollama_dialect_is_identity() {
+    fn test_ollama_shares_the_grammar_subset_with_anthropic() {
+        let schema = representative_schema();
+        assert_eq!(apply_ollama(schema.clone()), apply_anthropic(schema));
+    }
+
+    #[test]
+    fn test_ollama_rewrites_described_ref_and_enum() {
+        // llama.cpp's grammar builder compiles neither a described `$ref` wrapped
+        // in `allOf` nor the `oneOf` enum forms; the subset rewrites both away.
         let schema = json!({
             "type": "object",
-            "properties": { "name": { "type": "string" } },
-            "oneOf": [{ "enum": ["a"], "type": "string" }],
+            "properties": {
+                "kind": {
+                    "description": "the kind of knowledge this item records",
+                    "allOf": [{ "$ref": "#/definitions/KnowledgeKind" }],
+                },
+            },
+            "required": ["kind"],
+            "definitions": {
+                "KnowledgeKind": {
+                    "oneOf": [
+                        { "enum": ["fact"], "type": "string" },
+                        { "enum": ["heuristic"], "type": "string" },
+                    ],
+                },
+            },
         });
-        assert_eq!(apply_dialect(ProviderKind::Ollama, schema.clone()), schema);
+        let result = apply_ollama(schema);
+
+        let kind = &result["properties"]["kind"];
+        assert_eq!(kind["$ref"], json!("#/definitions/KnowledgeKind"));
+        assert_eq!(
+            kind["description"],
+            json!("the kind of knowledge this item records")
+        );
+        assert!(kind.get("allOf").is_none());
+        assert_eq!(
+            result["definitions"]["KnowledgeKind"],
+            json!({ "type": "string", "enum": ["fact", "heuristic"] })
+        );
+        assert_dialect_invariants(&result, false);
+    }
+
+    #[test]
+    fn test_ollama_dialect_is_idempotent() {
+        let once = apply_ollama(representative_schema());
+        let twice = apply_ollama(once.clone());
+        assert_eq!(once, twice);
     }
 
     #[test]

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Ollama structured-output ingestion. The Ollama JSON Schema dialect now shares the grammar subset with Anthropic, rewriting the single-element `allOf`-with-`$ref` and `oneOf` enum forms `schemars` emits into shapes llama.cpp's grammar builder compiles. The extraction, triage, and relation stages no longer dead-letter with a parse error against local models. ([#195](https://github.com/tribal-memory/tribal/issues/195))
+
 ## [0.3.0] - 2026-06-01
 
 This release makes the embedding geometry configurable and adds zero-downtime reindexing of the embedding space. It is a breaking release: the initial database schema is revised for the embedding-profile model and the embedding configuration keys have moved, so there is no in-place upgrade from 0.2.x. Provision a fresh database and update the configuration (see Changed).
