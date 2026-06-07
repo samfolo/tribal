@@ -109,6 +109,43 @@ fn test_anthropic_dialect_relation_snapshot() {
 }
 
 // ---------------------------------------------------------------------------
+// Ollama dialect snapshots
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ollama_dialect_extraction_snapshot() {
+    let schema = apply_dialect(ProviderKind::Ollama, canonical_schema::<ExtractionOutput>());
+    assert_dialect_invariants(&schema, false);
+    assert_json_snapshot!(
+        &schema,
+        "src/parsing/snapshots/dialect/ollama/extraction_output.json"
+    );
+}
+
+#[test]
+fn test_ollama_dialect_triage_snapshot() {
+    let schema = apply_dialect(
+        ProviderKind::Ollama,
+        canonical_schema::<TriageClassification>(),
+    );
+    assert_dialect_invariants(&schema, false);
+    assert_json_snapshot!(
+        &schema,
+        "src/parsing/snapshots/dialect/ollama/triage_classification.json"
+    );
+}
+
+#[test]
+fn test_ollama_dialect_relation_snapshot() {
+    let schema = apply_dialect(ProviderKind::Ollama, canonical_schema::<RelationOutput>());
+    assert_dialect_invariants(&schema, false);
+    assert_json_snapshot!(
+        &schema,
+        "src/parsing/snapshots/dialect/ollama/relation_output.json"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Instance validation
 // ---------------------------------------------------------------------------
 
@@ -135,6 +172,27 @@ fn test_anthropic_triage_schema_validates_created_instance() {
     assert!(
         validator.is_valid(&created_triage_instance()),
         "the subset triage schema must accept a correct created instance"
+    );
+}
+
+#[test]
+fn test_ollama_extraction_schema_validates_a_candidate_instance() {
+    // The transformed schema must compile and accept a well-formed extraction
+    // output, the shape llama.cpp's grammar then constrains generation to.
+    let schema = apply_dialect(ProviderKind::Ollama, canonical_schema::<ExtractionOutput>());
+    let validator = Validator::new(&schema).expect("transformed schema compiles");
+    let instance = json!({
+        "candidates": [{
+            "content": "The rate limiter threshold was raised to 500 and never reverted.",
+            "kind": "fact",
+            "suggested_tags": ["api rate limiting"],
+            "suggested_references": [],
+        }],
+        "relation_hints": [],
+    });
+    assert!(
+        validator.is_valid(&instance),
+        "the grammar-subset extraction schema must accept a correct instance"
     );
 }
 

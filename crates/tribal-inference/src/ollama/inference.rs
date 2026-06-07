@@ -494,6 +494,8 @@ mod tests {
         let server = MockServer::start().await;
         let schema =
             serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
+        // Ollama receives the grammar-subset dialect of the caller schema.
+        let expected_format = apply_dialect(ProviderKind::Ollama, schema.clone());
 
         Mock::given(method("POST"))
             .and(path(CHAT_PATH))
@@ -501,7 +503,7 @@ mod tests {
                 "model": "llama3.2:3b",
                 "messages": [{"role": "user", "content": "test"}],
                 "stream": false,
-                "format": schema.clone(),
+                "format": expected_format,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
             .expect(1)
