@@ -19,12 +19,22 @@
       },
       "runtimeHint": "docker",
       "runtimeArguments": [
-        { "type": "named", "name": "-p", "value": "8725:8725" }
+        { "type": "named", "name": "-p", "value": "127.0.0.1:8725:8725" }
       ],
       "environmentVariables": [
         {
           "name": "TRIBAL_DATABASE__URL",
-          "description": "Postgres (pgvector) connection string. Tribal is self-hosted; you provide the database (the docker-compose path bundles one).",
+          "description": "Postgres (pgvector) connection string. Tribal is self-hosted; you provide the database. The supported, complete deployment is docker-compose.yml.",
+          "isRequired": true
+        },
+        {
+          "name": "TRIBAL_PROJECT_REMOTE",
+          "description": "First-run only: the git remote that identifies the project bootstrapped on first start.",
+          "isRequired": true
+        },
+        {
+          "name": "TRIBAL_PROJECT_NAME",
+          "description": "First-run only: the name of the project bootstrapped on first start.",
           "isRequired": true
         },
         {
