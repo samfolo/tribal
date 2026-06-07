@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use rmcp::{
-    model::{Extensions as RmcpExtensions, Meta, RequestId},
+    model::{CallToolResult, Extensions as RmcpExtensions, Meta, RawContent, RequestId},
     service::{RequestContext, RoleServer, serve_directly_with_ct},
 };
 use sqlx::PgPool;
@@ -157,6 +157,26 @@ pub(crate) fn session_with_project() -> SessionContext {
             .expect("valid test git remote"),
     };
     SessionContext::new(Some(project))
+}
+
+// ---------------------------------------------------------------------------
+// first_text_content
+// ---------------------------------------------------------------------------
+
+/// Returns the first text content block of a [`CallToolResult`] as `&str`.
+///
+/// Error results carry their message in the text `content` rather than in
+/// `structured_content`, so error-path tests read the message through this
+/// helper to assert on which error occurred.
+///
+/// # Panics
+///
+/// Panics if there is no content or the first block is not a text block.
+pub(crate) fn first_text_content(result: &CallToolResult) -> &str {
+    let RawContent::Text(text) = &result.content.first().expect("content present").raw else {
+        panic!("expected the first content block to be text");
+    };
+    &text.text
 }
 
 // ---------------------------------------------------------------------------

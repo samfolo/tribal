@@ -270,7 +270,7 @@ impl TribalServerHandler {
             original_limit: limit,
             overfetch_limit: limit.saturating_mul(self.config.discovery.overfetch_multiplier),
             similarity_threshold: self.config.discovery.similarity_threshold,
-            cursor: request.cursor,
+            cursor: normalise_cursor(request.cursor),
         };
 
         let result = match execute_discover(
@@ -321,6 +321,15 @@ impl TribalServerHandler {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Normalises an incoming pagination cursor: a present-but-empty (or blank)
+/// cursor is treated as absent (first page) rather than handed to the strict
+/// 48-hex validator. Some harnesses auto-fill an optional `cursor` with `""`
+/// instead of omitting it; treating that as "no cursor" keeps the first-page
+/// path working while real tokens stay strictly validated.
+fn normalise_cursor(cursor: Option<String>) -> Option<String> {
+    cursor.filter(|c| !c.trim().is_empty())
+}
 
 /// Resolved project scope for a discover query.
 enum ProjectScope {
@@ -586,13 +595,13 @@ mod tests {
     use super::*;
     use crate::{
         config::HandlerConfig,
-        test_utils::{TestHandler, test_repositories},
+        test_utils::{TestHandler, first_text_content, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
 
-    const STRUCTURED_CONTENT: &str = "structured_content must be present";
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
+    const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
 
     // -- Helpers -----------------------------------------------------------
 
@@ -875,6 +884,20 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn test_normalise_cursor_treats_empty_or_blank_as_first_page() {
+        // A harness that auto-fills the optional cursor with "" must not trip
+        // the strict 48-hex validator; empty or blank normalises to first page,
+        // while a real token is passed through untouched.
+        assert_eq!(normalise_cursor(None), None);
+        assert_eq!(normalise_cursor(Some(String::new())), None);
+        assert_eq!(normalise_cursor(Some("   ".into())), None);
+        assert_eq!(
+            normalise_cursor(Some("realtoken".into())).as_deref(),
+            Some("realtoken"),
+        );
+    }
+
     #[tokio::test]
     async fn test_filters_passed_to_search_params() {
         let from = Utc::now();
@@ -1070,8 +1093,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("limit must be between"));
     }
 
     #[tokio::test]
@@ -1085,8 +1111,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("limit must be between"));
     }
 
     #[tokio::test]
@@ -1100,8 +1129,11 @@ mod tests {
             .expect("should return Ok with error result, not Err");
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     #[tokio::test]
@@ -1170,8 +1202,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "internal");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("embedding generation failed"));
     }
 
     // -- Service: overfetch behaviour ----------------------------------------

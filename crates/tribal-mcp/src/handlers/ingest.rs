@@ -316,14 +316,14 @@ mod tests {
 
     use super::*;
     use crate::test_utils::{
-        TestHandler, configure_fingerprint_mocks, session_with_project,
+        TestHandler, configure_fingerprint_mocks, first_text_content, session_with_project,
         test_active_prompt_versions, test_provider_identities, test_repositories,
     };
 
     // -- Constants ---------------------------------------------------------
 
-    const STRUCTURED_CONTENT: &str = "structured_content must be present";
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
+    const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
 
     // -- Helpers -----------------------------------------------------------
 
@@ -376,8 +376,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "failed_precondition");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains(NO_PROJECT));
     }
 
     #[tokio::test]
@@ -394,15 +397,19 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     /// With a session project set and no `project_id` in the request, the
     /// handler should resolve the session project and continue past the
     /// precondition check. `lazy_pool` cannot open connections, so the
-    /// call fails at the pool phase — we assert the error is NOT
-    /// `failed_precondition` to confirm project resolution succeeded.
+    /// call fails at the pool phase — we assert the error message is NOT the
+    /// missing-project precondition message to confirm project resolution
+    /// succeeded and the failure originates downstream at the pool.
     #[tokio::test]
     async fn test_apply_ingest_uses_session_project_when_request_omits_it() {
         let handler = TestHandler::builder()
@@ -418,10 +425,20 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_ne!(
-            structured["code"], "failed_precondition",
-            "session project should be used when request omits project_id",
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+
+        let message = first_text_content(&result);
+        assert!(
+            !message.contains(NO_PROJECT),
+            "session project should be used when request omits project_id: {message}",
+        );
+        // The failure must come from the pool layer downstream of resolution.
+        assert!(
+            message.contains("pool") || message.contains("query failed"),
+            "error should originate from the pool, not the precondition check: {message}",
         );
     }
 

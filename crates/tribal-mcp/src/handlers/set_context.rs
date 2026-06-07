@@ -177,13 +177,14 @@ mod tests {
     use crate::{
         server_handler::ConnectionRepositories,
         session::SessionProject,
-        test_utils::{TestHandler, test_repositories},
+        test_utils::{TestHandler, first_text_content, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
 
     const STRUCTURED_CONTENT: &str = "structured_content must be present";
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
+    const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
 
     // -- Helpers -----------------------------------------------------------
 
@@ -432,9 +433,11 @@ mod tests {
 
         assert!(!mutated);
         assert_eq!(result.is_error, Some(true));
-
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     #[tokio::test]
@@ -451,9 +454,11 @@ mod tests {
 
         assert!(!mutated);
         assert_eq!(result.is_error, Some(true));
-
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("invalid UUID"));
     }
 
     #[tokio::test]

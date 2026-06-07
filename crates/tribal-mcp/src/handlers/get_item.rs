@@ -353,12 +353,13 @@ mod tests {
     };
 
     use super::*;
-    use crate::test_utils::{TestHandler, test_repositories};
+    use crate::test_utils::{TestHandler, first_text_content, test_repositories};
 
     // -- Constants ---------------------------------------------------------
 
     const STRUCTURED_CONTENT: &str = "structured_content must be present";
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
+    const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
 
     // -- Helpers -----------------------------------------------------------
 
@@ -720,14 +721,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
         assert!(
-            structured["message"]
-                .as_str()
-                .unwrap()
-                .contains("at least 1")
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
         );
+        assert!(first_text_content(&result).contains("at least 1"));
     }
 
     #[tokio::test]
@@ -744,14 +742,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
         assert!(
-            structured["message"]
-                .as_str()
-                .unwrap()
-                .contains("at most 20")
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
         );
+        assert!(first_text_content(&result).contains("at most 20"));
     }
 
     #[tokio::test]
@@ -765,8 +760,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     #[tokio::test]
