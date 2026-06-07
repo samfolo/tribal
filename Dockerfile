@@ -40,5 +40,9 @@ RUN apt-get update \
 COPY --from=builder /app/target/release/tribal /usr/local/bin/tribal
 COPY --chmod=0755 scripts/tribal-entrypoint /usr/local/bin/tribal-entrypoint
 USER tribal:tribal
+# MCP Registry ownership: this value must equal server.json's `name`, so the
+# registry can verify we own the published image (see server.json + the
+# publish-mcp-registry job in .github/workflows/docker.yml).
+LABEL io.modelcontextprotocol.server.name="io.github.tribal-memory/tribal"
 EXPOSE 8725
 ENTRYPOINT ["/usr/local/bin/tribal-entrypoint"]
