@@ -199,7 +199,10 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     # The registry is in preview; never let a registry hiccup or a CLI
-    # regression turn a successful build-and-push into a red tagged release.
+    # regression turn a successful build-and-push into a red tagged release. The
+    # "Report the registry outcome" step surfaces a failed publish as a run
+    # warning so it is not silent. Drop continue-on-error and that step once the
+    # registry leaves preview.
     continue-on-error: true
     permissions:
       contents: read
@@ -233,6 +236,16 @@ jobs:
       - name: Authenticate via GitHub OIDC
         run: ./mcp-publisher login github-oidc
       - name: Publish to the MCP Registry
+        id: publish
         # The registry pulls the public GHCR image to verify the ownership label,
         # so the package must stay public.
         run: ./mcp-publisher publish
+      - name: Report the registry outcome
+        if: always()
+        run: |
+          if [ "${{ steps.publish.outcome }}" = "success" ]; then
+            echo "MCP Registry: published ${VERSION}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=MCP Registry publish failed::Image shipped for ${VERSION}; the registry entry was NOT updated. See this job's log."
+            echo "MCP Registry: publish did not succeed for ${VERSION}. The image is published; the registry entry was not updated." >> "$GITHUB_STEP_SUMMARY"
+          fi
