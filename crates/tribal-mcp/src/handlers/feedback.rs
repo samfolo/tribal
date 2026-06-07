@@ -346,14 +346,14 @@ mod tests {
 
     use super::*;
     use crate::test_utils::{
-        TestHandler, configure_fingerprint_mocks, test_active_prompt_versions,
+        TestHandler, configure_fingerprint_mocks, first_text_content, test_active_prompt_versions,
         test_provider_identities, test_repositories,
     };
 
     // -- Constants ---------------------------------------------------------
 
-    const STRUCTURED_CONTENT: &str = "structured_content must be present";
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
+    const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
 
     // -- Helpers -----------------------------------------------------------
 
@@ -428,8 +428,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains(tribal_telemetry::INVALID_TRACE_ID));
     }
 
     /// Verifies that an uppercase `trace_id` is normalised to lowercase
@@ -577,8 +580,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains(tribal_telemetry::INVALID_TRACE_ID));
     }
 
     #[tokio::test]
@@ -600,8 +606,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains(EMPTY_QUERY_TEXT));
     }
 
     #[tokio::test]
@@ -622,8 +631,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains(EMPTY_RETURNED_ITEMS));
     }
 
     #[tokio::test]
@@ -645,8 +657,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     #[tokio::test]
@@ -670,8 +685,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     #[tokio::test]
@@ -693,8 +711,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains(INVALID_RATING));
     }
 
     #[tokio::test]
@@ -717,14 +738,17 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     /// `lazy_pool` cannot open connections, so the call fails at the
-    /// pool acquisition phase. We assert `is_error` to confirm validation
-    /// passed and the error originates from the pool, not from input
-    /// validation.
+    /// transaction-begin phase. We assert the error message is a downstream
+    /// pool/connection failure rather than any input-validation message, which
+    /// confirms validation passed and the error originates from the pool.
     #[tokio::test]
     async fn test_apply_feedback_lazy_pool_fails_after_validation() {
         let handler = TestHandler::builder().build();
@@ -744,11 +768,22 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_ne!(
-            structured["code"], "invalid_argument",
-            "error should originate from pool, not input validation",
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
         );
+
+        let message = first_text_content(&result);
+        // The error must come from the pool layer, not input validation: the
+        // transaction-begin failure surfaces as either a pool-exhaustion or a
+        // query-failed message, never one of the validation messages.
+        assert!(
+            message.contains("pool") || message.contains("query failed"),
+            "error should originate from the pool, not input validation: {message}",
+        );
+        assert!(!message.contains(EMPTY_QUERY_TEXT));
+        assert!(!message.contains(EMPTY_RETURNED_ITEMS));
+        assert!(!message.contains(INVALID_RATING));
     }
 
     #[tokio::test]
