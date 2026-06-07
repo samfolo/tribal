@@ -226,11 +226,26 @@ jobs:
             | .packages[0].identifier |= sub(":[^:]+$"; ":\($v)")
           ' server.json > server.json.tmp && mv server.json.tmp server.json
           echo "Publishing at $VERSION:"; jq -r '.version, .packages[0].identifier' server.json
-      - name: Install mcp-publisher
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Install mcp-publisher (Sigstore-verified)
+        env:
+          MCP_PUBLISHER_VERSION: v1.7.9
         run: |
-          # Pinned, not `latest`: the CLI ships fast and a regression has broken
-          # valid publishes before. Bump deliberately.
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          # Pinned version, verified against the release's Sigstore bundle:
+          # cosign confirms the binary's bytes and that the registry's release
+          # workflow signed it via GitHub OIDC, rather than trusting a bare TLS
+          # download. Bump the version deliberately.
+          asset="mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz"
+          base="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl -fsSL -O "${base}/${asset}"
+          curl -fsSL -O "${base}/${asset}.sigstore.json"
+          cosign verify-blob \
+            --bundle "${asset}.sigstore.json" \
+            --certificate-identity-regexp '^https://github\.com/modelcontextprotocol/registry/\.github/workflows/release\.yml@refs/tags/v.+$' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            "${asset}"
+          tar xzf "${asset}" mcp-publisher
       - name: Validate server.json
         run: ./mcp-publisher validate server.json
       - name: Authenticate via GitHub OIDC
