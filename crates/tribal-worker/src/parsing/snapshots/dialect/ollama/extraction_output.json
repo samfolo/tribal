@@ -1,0 +1,128 @@
+{
+  "additionalProperties": false,
+  "definitions": {
+    "Candidate": {
+      "additionalProperties": false,
+      "description": "A single self-contained knowledge item extracted from the input.",
+      "properties": {
+        "content": {
+          "description": "The captured tacit knowledge as one self-contained, atomic claim. Include the reasoning, constraints, or rejected alternatives when they are part of the knowledge being captured.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/KnowledgeKind",
+          "description": "The kind of knowledge this item records."
+        },
+        "suggested_references": {
+          "description": "External anchors the item refers to, used to connect it to related knowledge even when wording differs.",
+          "items": {
+            "$ref": "#/definitions/SuggestedReference"
+          },
+          "type": "array"
+        },
+        "suggested_tags": {
+          "description": "Categorisation tags for the item.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "content",
+        "kind",
+        "suggested_tags"
+      ],
+      "type": "object"
+    },
+    "KnowledgeKind": {
+      "description": "The kind of knowledge captured.",
+      "enum": [
+        "fact",
+        "heuristic",
+        "procedure",
+        "decision_record"
+      ],
+      "type": "string"
+    },
+    "RelationHint": {
+      "additionalProperties": false,
+      "description": "A relation between two candidates in this batch, referenced by their array indices.",
+      "properties": {
+        "hint_type": {
+          "$ref": "#/definitions/RelationHintType",
+          "description": "The type of relation hinted at."
+        },
+        "source_index": {
+          "description": "Index of the source candidate in the batch.",
+          "type": "integer"
+        },
+        "target_index": {
+          "description": "Index of the target candidate in the batch.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hint_type",
+        "source_index",
+        "target_index"
+      ],
+      "type": "object"
+    },
+    "RelationHintType": {
+      "description": "How two candidates relate within this batch. Currently `derived_from`: the source candidate was produced using the target candidate as input or premise.",
+      "enum": [
+        "derived_from"
+      ],
+      "type": "string"
+    },
+    "SuggestedReference": {
+      "additionalProperties": false,
+      "description": "An external anchor a candidate refers to (a URL, file path, code symbol, or concept) that can connect items even when their wording differs.",
+      "properties": {
+        "description": {
+          "description": "Optional human-readable context for the anchor.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reference_type": {
+          "description": "What kind of anchor this is. Use one of `file_path`, `url`, `symbol`, or `concept`.",
+          "type": "string"
+        },
+        "value": {
+          "description": "The anchor itself: the URL, path, symbol, or concept.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference_type",
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Extracted knowledge items and optional intra-batch relationship hints.",
+  "properties": {
+    "candidates": {
+      "description": "Knowledge items extracted from the input, each an atomic, self-contained claim. Empty when the input contains no extractable knowledge.",
+      "items": {
+        "$ref": "#/definitions/Candidate"
+      },
+      "type": "array"
+    },
+    "relation_hints": {
+      "description": "Derivation links between candidates in this batch. Empty unless one candidate is genuinely derived from another.",
+      "items": {
+        "$ref": "#/definitions/RelationHint"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "candidates"
+  ],
+  "title": "ExtractionOutput",
+  "type": "object"
+}

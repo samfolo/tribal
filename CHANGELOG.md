@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Pipeline responses wrapped in a Markdown code fence now parse. The extraction, triage, and relation stages deserialise strictly first and retry once with the fence stripped only when that fails, so a provider that ignores the structured-output schema and fences its JSON no longer dead-letters, while a valid payload — including one whose strings contain backticks — is never altered. ([#195](https://github.com/tribal-memory/tribal/issues/195))
+- Ollama structured-output ingestion. The Ollama JSON Schema dialect now shares the grammar subset with Anthropic, rewriting the single-element `allOf`-with-`$ref` and `oneOf` enum forms `schemars` emits into shapes llama.cpp's grammar builder compiles. The extraction, triage, and relation stages no longer dead-letter with a parse error against local models. ([#195](https://github.com/tribal-memory/tribal/issues/195))
+- Pipeline responses wrapped in a Markdown code fence now parse. The extraction, triage, and relation stages deserialise strictly first and retry once with the fence stripped only when that fails, so a provider that ignores the structured-output schema and fences its JSON no longer dead-letters, while a valid payload, including one whose strings contain backticks, is never altered. ([#195](https://github.com/tribal-memory/tribal/issues/195))
 
 ## [0.3.0] - 2026-06-01
 
