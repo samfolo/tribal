@@ -6,6 +6,7 @@ use serde::Deserialize;
 use tribal_domain::RelationKind;
 use tribal_inference::CompletionResponse;
 
+use super::deserialise;
 use crate::error::StageError;
 
 // ---------------------------------------------------------------------------
@@ -139,7 +140,7 @@ pub(crate) fn parse_relation_response(
     response: &CompletionResponse,
 ) -> Result<RelationOutput, StageError> {
     let raw: RawRelationOutput =
-        serde_json::from_str(&response.text).map_err(|e| StageError::Parse {
+        deserialise::tolerant(&response.text).map_err(|e| StageError::Parse {
             context: format!("deserialising relation output: {e}"),
             raw_response: Some(response.text.clone()),
         })?;
