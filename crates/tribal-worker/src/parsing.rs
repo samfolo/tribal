@@ -1,5 +1,6 @@
 //! Response parsing for pipeline stages.
 
+mod deserialise;
 mod extraction;
 mod relation;
 mod triage;
