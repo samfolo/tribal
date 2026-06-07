@@ -2,8 +2,8 @@
 //!
 //! A model that does not honour the structured-output schema may wrap its JSON
 //! in a Markdown code fence. [`tolerant`] parses strictly first and unwraps a
-//! fence only when that parse fails, so a payload that is already valid JSON —
-//! including one whose string values contain backticks — is never altered.
+//! fence only when that parse fails, so a payload that is already valid JSON,
+//! including one whose string values contain backticks, is never altered.
 
 use serde::de::DeserializeOwned;
 
