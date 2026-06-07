@@ -353,13 +353,14 @@ mod tests {
     };
 
     use super::*;
-    use crate::test_utils::{TestHandler, first_text_content, test_repositories};
+    use crate::test_utils::{
+        NO_STRUCTURED_CONTENT, TestHandler, first_text_content, test_repositories,
+    };
 
     // -- Constants ---------------------------------------------------------
 
     const STRUCTURED_CONTENT: &str = "structured_content must be present";
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
-    const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
 
     // -- Helpers -----------------------------------------------------------
 
@@ -746,7 +747,7 @@ mod tests {
             result.structured_content.is_none(),
             "{NO_STRUCTURED_CONTENT}"
         );
-        assert!(first_text_content(&result).contains("at most 20"));
+        assert!(first_text_content(&result).contains(&format!("at most {MAX_ITEM_IDS}")));
     }
 
     #[tokio::test]

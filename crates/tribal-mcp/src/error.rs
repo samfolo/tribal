@@ -58,9 +58,14 @@ pub trait IntoMcpError {
 // IntoCallToolResult
 // ---------------------------------------------------------------------------
 
-/// Converts a value into an rmcp `CallToolResult` following the structured
-/// content convention: every response includes both a `content` text block
-/// and a `structured_content` JSON value.
+/// Converts a value into an rmcp `CallToolResult`.
+///
+/// A success mapping includes a `content` text summary and a `structured_content`
+/// value conforming to the tool's output schema. An error mapping
+/// ([`McpToolError`]) carries the message in the `content` text block with
+/// `is_error` set and no `structured_content`, because a tool's output schema
+/// describes only the success shape and a strict harness validates any returned
+/// structured content against it.
 pub trait IntoCallToolResult {
     fn into_call_tool_result(self) -> CallToolResult;
 }
@@ -140,6 +145,13 @@ mod tests {
 
         assert_eq!(result.is_error, Some(true));
         assert_eq!(result.content.len(), 1);
+
+        // The message lives in the text content; it is the only client-visible
+        // error payload, so it must carry the error verbatim.
+        assert_eq!(
+            crate::test_utils::first_text_content(&result),
+            "No job found with ID job_abc"
+        );
 
         // Error results must omit structured content: a strict harness validates
         // any structured content against the tool's success output schema, so an

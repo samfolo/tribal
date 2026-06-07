@@ -324,9 +324,9 @@ impl TribalServerHandler {
 
 /// Normalises an incoming pagination cursor: a present-but-empty (or blank)
 /// cursor is treated as absent (first page) rather than handed to the strict
-/// 48-hex validator. Some harnesses auto-fill an optional `cursor` with `""`
-/// instead of omitting it; treating that as "no cursor" keeps the first-page
-/// path working while real tokens stay strictly validated.
+/// cursor validator (`decode_cursor`). Some harnesses auto-fill an optional
+/// `cursor` with `""` instead of omitting it; treating that as "no cursor"
+/// keeps the first-page path working while real tokens stay strictly validated.
 fn normalise_cursor(cursor: Option<String>) -> Option<String> {
     cursor.filter(|c| !c.trim().is_empty())
 }
@@ -595,13 +595,12 @@ mod tests {
     use super::*;
     use crate::{
         config::HandlerConfig,
-        test_utils::{TestHandler, first_text_content, test_repositories},
+        test_utils::{NO_STRUCTURED_CONTENT, TestHandler, first_text_content, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
 
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
-    const NO_STRUCTURED_CONTENT: &str = "error results carry no structured content";
 
     // -- Helpers -----------------------------------------------------------
 
@@ -887,8 +886,9 @@ mod tests {
     #[test]
     fn test_normalise_cursor_treats_empty_or_blank_as_first_page() {
         // A harness that auto-fills the optional cursor with "" must not trip
-        // the strict 48-hex validator; empty or blank normalises to first page,
-        // while a real token is passed through untouched.
+        // the strict cursor validator (`decode_cursor`); empty or blank
+        // normalises to first page, while a real token is passed through
+        // untouched.
         assert_eq!(normalise_cursor(None), None);
         assert_eq!(normalise_cursor(Some(String::new())), None);
         assert_eq!(normalise_cursor(Some("   ".into())), None);
@@ -1207,6 +1207,69 @@ mod tests {
             "{NO_STRUCTURED_CONTENT}"
         );
         assert!(first_text_content(&result).contains("embedding generation failed"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_cursor_reaches_search_as_first_page() {
+        // End-to-end wiring guard for `normalise_cursor`: a harness that
+        // auto-fills the optional cursor with "" must reach the search as a
+        // first-page request (`cursor.is_none()`), not as a raw "" that the
+        // strict validator would reject. The search mock only responds when the
+        // cursor arrives absent, so a regression would surface as a missing
+        // response rather than a silent pass.
+        let ctx = TestContext::new().await.expect("dedicated test database");
+        let pool = ctx.pool().clone();
+        let active = {
+            let mut seed = ctx.raw_connection().await.expect("seed connection");
+            ensure_genesis_profile(&mut seed, "model-a", 768).await
+        };
+
+        let mut repos = test_repositories();
+        repos.knowledge_item = Arc::new(
+            MockKnowledgeItemRepository::builder()
+                .when_semantic_search(|params| params.cursor.is_none())
+                .respond_with(a_search_response(vec![]), None)
+                .build(),
+        );
+
+        let handler = TestHandler::builder()
+            .pool(pool)
+            .repositories(repos)
+            .build();
+        handler
+            .state
+            .provider_registry
+            .register_building(
+                ProviderKey::new(
+                    ProviderKind::Ollama.to_string(),
+                    ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+                    RequestClass::Embedding,
+                )
+                .expect("embedding provider key"),
+                &ProviderLimits {
+                    max_in_flight: 1,
+                    request_timeout: Duration::from_secs(5),
+                },
+            )
+            .expect("register the embedding endpoint");
+        handler
+            .state
+            .embedding_providers
+            .insert(active.id(), profile_provider("model-a", test_vector()));
+
+        // The search mock only responds when the cursor arrives absent, so a
+        // successful result is itself the proof that "" normalised to a
+        // first-page request before reaching the search.
+        let result = handler
+            .apply_discover(serde_json::json!({"query": "test", "cursor": ""}))
+            .await
+            .expect(NO_PROTOCOL_ERROR);
+
+        assert_ne!(result.is_error, Some(true));
+        assert!(
+            result.structured_content.is_some(),
+            "a successful discover result carries structured content"
+        );
     }
 
     // -- Service: overfetch behaviour ----------------------------------------
