@@ -58,24 +58,27 @@ pub trait IntoMcpError {
 // IntoCallToolResult
 // ---------------------------------------------------------------------------
 
-/// Converts a value into an rmcp `CallToolResult` following the structured
-/// content convention: every response includes both a `content` text block
-/// and a `structured_content` JSON value.
+/// Converts a value into an rmcp `CallToolResult`.
+///
+/// A success mapping includes a `content` text summary and a `structured_content`
+/// value conforming to the tool's output schema. An error mapping
+/// ([`McpToolError`]) carries the message in the `content` text block with
+/// `is_error` set and no `structured_content`, because a tool's output schema
+/// describes only the success shape and a strict harness validates any returned
+/// structured content against it.
 pub trait IntoCallToolResult {
     fn into_call_tool_result(self) -> CallToolResult;
 }
 
 impl IntoCallToolResult for McpToolError {
     fn into_call_tool_result(self) -> CallToolResult {
-        let structured = serde_json::json!({
-            "code": self.code,
-            "message": self.message,
-            "details": self.details,
-        });
-
-        let mut result = CallToolResult::error(vec![Content::text(&self.message)]);
-        result.structured_content = Some(structured);
-        result
+        // Error results carry the message in the text content and `is_error`
+        // only; they deliberately omit `structured_content`. A tool declares a
+        // success output schema, and a strict harness validates ANY returned
+        // structured content against it, so an error-shaped payload would fail
+        // that validation and mask the real message. MCP has no error output
+        // schema, so the text content is the portable channel.
+        CallToolResult::error(vec![Content::text(&self.message)])
     }
 }
 
@@ -143,11 +146,20 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         assert_eq!(result.content.len(), 1);
 
-        let structured = result
-            .structured_content
-            .expect("structured_content is present");
-        assert_eq!(structured["code"], "not_found");
-        assert_eq!(structured["message"], "No job found with ID job_abc");
+        // The message lives in the text content; it is the only client-visible
+        // error payload, so it must carry the error verbatim.
+        assert_eq!(
+            crate::test_utils::first_text_content(&result),
+            "No job found with ID job_abc"
+        );
+
+        // Error results must omit structured content: a strict harness validates
+        // any structured content against the tool's success output schema, so an
+        // error-shaped payload there would mask the real message.
+        assert!(
+            result.structured_content.is_none(),
+            "error results must not carry structured content"
+        );
     }
 
     #[test]

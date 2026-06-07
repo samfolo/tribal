@@ -349,7 +349,7 @@ mod tests {
     use super::*;
     use crate::{
         polling::{ImmediatePollScheduler, YieldingPollScheduler},
-        test_utils::{TestHandler, test_repositories},
+        test_utils::{NO_STRUCTURED_CONTENT, TestHandler, first_text_content, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
@@ -358,6 +358,21 @@ mod tests {
     const NO_PROTOCOL_ERROR: &str = "should not return a protocol error";
 
     // -- Helpers -----------------------------------------------------------
+
+    /// Asserts that a `wait_seconds` value was accepted: the error result must
+    /// come from the downstream pool layer (`lazy_pool` cannot connect), not
+    /// from the `wait_seconds` validation check.
+    fn assert_accepted_wait_seconds(result: &CallToolResult, message: &str) {
+        let text = first_text_content(result);
+        assert!(
+            !text.contains("wait_seconds must be between"),
+            "{message}: {text}",
+        );
+        assert!(
+            text.contains("pool") || text.contains("query failed"),
+            "error should originate from the pool, not wait_seconds validation: {text}",
+        );
+    }
 
     async fn call_execute(
         repos: &ConnectionRepositories,
@@ -420,8 +435,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     #[tokio::test]
@@ -437,15 +455,18 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("wait_seconds must be between"));
     }
 
     /// With `wait_seconds=30` (the upper boundary), the handler should
     /// pass validation and proceed to the pool phase. `lazy_pool` cannot
     /// open connections, so the call fails at pool acquisition — we assert
-    /// the error is NOT `invalid_argument` to confirm the boundary is
-    /// accepted.
+    /// the error message is NOT the `wait_seconds` validation message to confirm
+    /// the boundary is accepted and the failure originates at the pool.
     #[tokio::test]
     async fn test_apply_job_status_wait_seconds_at_boundary_30_accepted() {
         let handler = TestHandler::builder().build();
@@ -459,11 +480,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_ne!(
-            structured["code"], "invalid_argument",
-            "wait_seconds=30 should be accepted",
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
         );
+        assert_accepted_wait_seconds(&result, "wait_seconds=30 should be accepted");
     }
 
     /// With `wait_seconds=0`, the handler should pass validation and
@@ -481,11 +502,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_ne!(
-            structured["code"], "invalid_argument",
-            "wait_seconds=0 should be accepted",
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
         );
+        assert_accepted_wait_seconds(&result, "wait_seconds=0 should be accepted");
     }
 
     /// With `wait_seconds` absent from the request, the handler should
@@ -503,11 +524,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_ne!(
-            structured["code"], "invalid_argument",
-            "absent wait_seconds should be accepted",
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
         );
+        assert_accepted_wait_seconds(&result, "absent wait_seconds should be accepted");
     }
 
     // -- Service: happy paths ----------------------------------------------
@@ -725,8 +746,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "not_found");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("job not found"));
     }
 
     // -- Polling behaviour -------------------------------------------------
