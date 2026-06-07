@@ -1,0 +1,78 @@
+{
+  "additionalProperties": false,
+  "definitions": {
+    "IngestionRelationKind": {
+      "description": "How the source claim relates to the target claim.",
+      "enum": [
+        "supports",
+        "contradicts",
+        "derived_from"
+      ],
+      "type": "string"
+    },
+    "RelationEdge": {
+      "additionalProperties": false,
+      "description": "A directed relationship between two claims.",
+      "properties": {
+        "justification": {
+          "description": "Why this relationship holds, grounded in the content of both claims.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "relation_type": {
+          "$ref": "#/definitions/IngestionRelationKind",
+          "description": "How the source relates to the target."
+        },
+        "source": {
+          "$ref": "#/definitions/RelationTarget",
+          "description": "The claim asserting the relationship."
+        },
+        "target": {
+          "$ref": "#/definitions/RelationTarget",
+          "description": "The claim the relationship is asserted about."
+        }
+      },
+      "required": [
+        "relation_type",
+        "source",
+        "target"
+      ],
+      "type": "object"
+    },
+    "RelationTarget": {
+      "additionalProperties": false,
+      "description": "A reference to a knowledge item by its context index.",
+      "properties": {
+        "context_index": {
+          "type": "integer"
+        },
+        "kind": {
+          "const": "context_index",
+          "type": "string"
+        }
+      },
+      "required": [
+        "context_index",
+        "kind"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "The relationship edges to create. Empty when no genuine relationship holds between the claims.",
+  "properties": {
+    "relations": {
+      "description": "Directed edges, each connecting a source claim to a target claim. Only edges grounded in the content of both claims.",
+      "items": {
+        "$ref": "#/definitions/RelationEdge"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "relations"
+  ],
+  "title": "RelationOutput",
+  "type": "object"
+}
