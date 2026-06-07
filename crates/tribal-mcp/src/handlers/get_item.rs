@@ -353,7 +353,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::test_utils::{TestHandler, test_repositories};
+    use crate::test_utils::{
+        NO_STRUCTURED_CONTENT, TestHandler, first_text_content, test_repositories,
+    };
 
     // -- Constants ---------------------------------------------------------
 
@@ -720,14 +722,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
         assert!(
-            structured["message"]
-                .as_str()
-                .unwrap()
-                .contains("at least 1")
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
         );
+        assert!(first_text_content(&result).contains("at least 1"));
     }
 
     #[tokio::test]
@@ -744,14 +743,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
         assert!(
-            structured["message"]
-                .as_str()
-                .unwrap()
-                .contains("at most 20")
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
         );
+        assert!(first_text_content(&result).contains(&format!("at most {MAX_ITEM_IDS}")));
     }
 
     #[tokio::test]
@@ -765,8 +761,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     #[tokio::test]

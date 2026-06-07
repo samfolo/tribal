@@ -474,7 +474,7 @@ mod tests {
     use super::*;
     use crate::{
         config::HandlerConfig,
-        test_utils::{TestHandler, test_repositories},
+        test_utils::{NO_STRUCTURED_CONTENT, TestHandler, first_text_content, test_repositories},
     };
 
     // -- Constants ---------------------------------------------------------
@@ -1264,8 +1264,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("expected prefix"));
     }
 
     #[tokio::test]
@@ -1279,8 +1282,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("invalid direction 'sideways'"));
     }
 
     #[tokio::test]
@@ -1294,8 +1300,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("invalid relation type 'causes'"));
     }
 
     #[tokio::test]
@@ -1309,8 +1318,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("depth must be between"));
     }
 
     #[tokio::test]
@@ -1325,8 +1337,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("depth must be between"));
     }
 
     #[tokio::test]
@@ -1340,8 +1355,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("limit must be between"));
     }
 
     #[tokio::test]
@@ -1356,8 +1374,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains("limit must be between"));
     }
 
     #[tokio::test]
@@ -1541,8 +1562,11 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains(tribal_telemetry::INVALID_SESSION_TRACE_ID));
     }
 
     #[tokio::test]
@@ -1559,7 +1583,10 @@ mod tests {
             .expect(NO_PROTOCOL_ERROR);
 
         assert_eq!(result.is_error, Some(true));
-        let structured = result.structured_content.expect(STRUCTURED_CONTENT);
-        assert_eq!(structured["code"], "invalid_argument");
+        assert!(
+            result.structured_content.is_none(),
+            "{NO_STRUCTURED_CONTENT}"
+        );
+        assert!(first_text_content(&result).contains(tribal_telemetry::INVALID_SESSION_TRACE_ID));
     }
 }
