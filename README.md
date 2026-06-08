@@ -4,15 +4,15 @@
   </a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/tribal-memory/tribal/releases"><img src="https://img.shields.io/github/v/release/tribal-memory/tribal?label=release" alt="Release"></a>
-  <a href="https://github.com/tribal-memory/tribal/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tribal-memory/tribal/ci.yml?branch=main" alt="Build"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Elastic--2.0-blue" alt="License"></a>
-  <a href="https://github.com/tribal-memory/tribal/pkgs/container/tribal"><img src="https://img.shields.io/badge/docker-ghcr.io%2Ftribal--memory%2Ftribal-blue" alt="Docker"></a>
-  <a href="https://github.com/tribal-memory/homebrew-tap"><img src="https://img.shields.io/badge/homebrew-tribal--memory%2Fhomebrew--tap-blue" alt="Homebrew"></a>
-</p>
+# Tribal
 
 Semantic compression for project knowledge.
+
+[![Release](https://img.shields.io/github/v/release/tribal-memory/tribal?label=release)](https://github.com/tribal-memory/tribal/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/tribal-memory/tribal/ci.yml?branch=main)](https://github.com/tribal-memory/tribal/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Elastic--2.0-blue)](LICENSE)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Ftribal--memory%2Ftribal-blue)](https://github.com/tribal-memory/tribal/pkgs/container/tribal)
+[![Homebrew](https://img.shields.io/badge/homebrew-tribal--memory%2Fhomebrew--tap-blue)](https://github.com/tribal-memory/homebrew-tap)
 
 Tribal captures the engineering knowledge that does not get written down in code or tickets. The reasoning behind a load-bearing decision, the heuristic someone keeps reaching for, the breakthrough that closed a gnarly bug. It runs as a Model Context Protocol server, ingests text on demand, and exposes a graph of items connected by what they support, contradict, or refine. Your agent harness talks to it the same way it talks to any other MCP tool.
 
