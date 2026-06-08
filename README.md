@@ -9,7 +9,7 @@
 Semantic compression for project knowledge.
 
 [![Release](https://img.shields.io/github/v/release/tribal-memory/tribal?label=release)](https://github.com/tribal-memory/tribal/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/tribal-memory/tribal/ci.yml?branch=main)](https://github.com/tribal-memory/tribal/actions/workflows/ci.yml)
+[![Build](https://github.com/tribal-memory/tribal/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tribal-memory/tribal/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Elastic--2.0-blue)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io%2Ftribal--memory%2Ftribal-blue)](https://github.com/tribal-memory/tribal/pkgs/container/tribal)
 [![Homebrew](https://img.shields.io/badge/homebrew-tribal--memory%2Fhomebrew--tap-blue)](https://github.com/tribal-memory/homebrew-tap)
