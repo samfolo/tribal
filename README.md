@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/tribal-memory/tribal/releases"><img src="https://img.shields.io/github/v/release/tribal-memory/tribal?label=release" alt="Release"></a>
-  <a href="https://github.com/tribal-memory/tribal/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tribal-memory/tribal/ci.yml?branch=main&amp;label=build" alt="Build"></a>
+  <a href="https://github.com/tribal-memory/tribal/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tribal-memory/tribal/ci.yml?branch=main" alt="Build"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Elastic--2.0-blue" alt="License"></a>
   <a href="https://github.com/tribal-memory/tribal/pkgs/container/tribal"><img src="https://img.shields.io/badge/docker-ghcr.io%2Ftribal--memory%2Ftribal-blue" alt="Docker"></a>
   <a href="https://github.com/tribal-memory/homebrew-tap"><img src="https://img.shields.io/badge/homebrew-tribal--memory%2Fhomebrew--tap-blue" alt="Homebrew"></a>
