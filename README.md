@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://tribal.build">
+    <img src=".github/banner.png" alt="Tribal: semantic memory served over MCP" width="100%">
+  </a>
+</p>
+
 # Tribal
 
 Semantic compression for project knowledge.
