@@ -17,9 +17,9 @@ use tribal_db::{
 };
 use tribal_domain::{
     Candidate, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
-    RelationKind, Task, TriageOutcome, TriageResult, TriageSimilarItemDecision, span_attrs,
+    RelationKind, Task, TriageOutcome, TriageResult, TriageSimilarItemDecision, Usage, span_attrs,
 };
-use tribal_inference::{InferenceProvider, ProviderKey, Usage};
+use tribal_inference::{InferenceProvider, ProviderKey};
 
 use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{

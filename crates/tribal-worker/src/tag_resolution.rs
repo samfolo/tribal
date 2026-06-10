@@ -12,8 +12,8 @@ use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{PgTagEmbeddingRepository, TagEmbeddingRepository};
-use tribal_domain::{EmbeddingPurpose, TagRegistryEntry, span_attrs};
-use tribal_inference::{EmbeddingProvider, EmbeddingRequest, Usage};
+use tribal_domain::{EmbeddingPurpose, TagRegistryEntry, Usage, span_attrs};
+use tribal_inference::{EmbeddingProvider, EmbeddingRequest};
 use tribal_telemetry::MetricsRecorder;
 
 use crate::{

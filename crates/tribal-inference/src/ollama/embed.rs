@@ -8,11 +8,10 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::{EmbeddingPurpose, span_attrs};
+use tribal_domain::{EmbeddingPurpose, EmbeddingUsage, span_attrs};
 
 use crate::{
-    EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage, InferenceError,
-    ProviderIdentity,
+    EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InferenceError, ProviderIdentity,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
     http::{EMBEDDING_PROBE_INPUT, latency_ms, normalise_base_url},
     validation::validate_embeddings,

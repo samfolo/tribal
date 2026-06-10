@@ -32,13 +32,14 @@ use tribal_db::{
 use tribal_domain::{
     DistanceMetric, EmbeddingErrorClass, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose,
     KnowledgeItemId, PrincipalId, ProviderKind, ReindexEntityKind, ReindexRun, ReindexRunId,
-    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, TokenUsageStage, span_attrs,
+    EmbeddingUsage, ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState,
+    TokenUsageStage, span_attrs,
 };
 use tribal_inference::{
     BatchEmbeddingResult, EMBEDDING_PROBE_INPUT, EmbeddingProvider, EmbeddingRequest,
-    EmbeddingUsage, InferenceError, ProviderKey, ProviderLimits, ProviderRegistry,
-    ProviderRegistryError, RequestClass, UnsupportedEmbeddingProvider, classify_embedding_error,
-    embedding_retry_after, make_embedding_provider, probe_digest,
+    InferenceError, ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError,
+    RequestClass, UnsupportedEmbeddingProvider, classify_embedding_error, embedding_retry_after,
+    make_embedding_provider, probe_digest,
 };
 
 // ---------------------------------------------------------------------------

@@ -9,12 +9,12 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
+use tribal_domain::{CompletionResponse, EmbeddingUsage};
 
 use crate::{
     error::InferenceError,
     request::{CompletionRequest, EmbeddingRequest},
-    response::{CompletionResponse, EmbeddingResponse},
-    usage::EmbeddingUsage,
+    response::EmbeddingResponse,
 };
 
 // ---------------------------------------------------------------------------

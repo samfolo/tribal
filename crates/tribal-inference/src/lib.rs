@@ -17,7 +17,6 @@ mod registry;
 mod request;
 mod response;
 mod schema_dialect;
-mod usage;
 mod validation;
 
 pub use anthropic::AnthropicInferenceProvider;
@@ -48,8 +47,7 @@ pub use registry::{
     ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError, RequestClass,
 };
 pub use request::{CompletionRequest, EmbeddingRequest, Message, ResponseFormat, Role};
-pub use response::{CompletionResponse, EmbeddingResponse};
+pub use response::EmbeddingResponse;
 pub use schema_dialect::apply_dialect;
 #[cfg(feature = "test-helpers")]
 pub use schema_dialect::assert_dialect_invariants;
-pub use usage::{CompletionUsage, EmbeddingUsage, Usage};

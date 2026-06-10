@@ -1,12 +1,12 @@
 //! Token usage and latency types for inference calls.
 //!
 //! These types are produced by provider implementations alongside
-//! responses and consumed downstream by the worker for persisting
-//! `TokenUsage` records.
+//! responses and consumed downstream for ledger persistence as
+//! [`TokenUsage`](crate::TokenUsage) records.
 
 use std::time::Duration;
 
-use tribal_domain::EmbeddingPurpose;
+use crate::EmbeddingPurpose;
 
 /// Token usage and latency for an LLM completion call.
 #[derive(Debug, Clone, PartialEq, Eq)]

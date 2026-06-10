@@ -7,9 +7,8 @@
 
 use std::time::Duration;
 
-use tribal_inference::{
-    CompletionResponse, CompletionUsage, EmbeddingResponse, EmbeddingUsage, InferenceError,
-};
+use tribal_domain::{CompletionResponse, CompletionUsage, EmbeddingUsage};
+use tribal_inference::{EmbeddingResponse, InferenceError};
 
 use crate::mock::async_dispatch::core::ErrorFactory;
 
