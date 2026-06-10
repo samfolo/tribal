@@ -8,7 +8,10 @@ use tribal_db::{
 use tribal_domain::{Job, JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskType};
 
 use super::Worker;
-use crate::{error::StageError, worker::backoff::backoff_duration};
+use crate::{
+    error::StageError,
+    worker::{backoff::backoff_duration, coupling},
+};
 
 // ---------------------------------------------------------------------------
 // FailureOutcome
@@ -151,7 +154,7 @@ impl Worker {
                 .completed_at(Some(Utc::now()))
                 .build();
             PgJobRepository
-                .update_status(&mut txn, task.job_id(), &transition)
+                .update_status_if_live(&mut txn, task.job_id(), &transition)
                 .await?;
         }
 
@@ -160,9 +163,7 @@ impl Worker {
         // and advance the job to Relating.
         let fan_in_fired = outcome.is_dead_lettered
             && task.task_type() == TaskType::Triage
-            && self
-                .triage_fan_in(&mut txn, task.job_id(), task.id())
-                .await?;
+            && coupling::triage_fan_in(&mut txn, task.job_id(), task.id()).await?;
 
         txn.commit()
             .await

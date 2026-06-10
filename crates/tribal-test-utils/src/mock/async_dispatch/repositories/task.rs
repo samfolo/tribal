@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use tribal_db::{NewTask, ReclaimOutcome, TaskRepository, TaskStatusCount};
-use tribal_domain::{JobId, Task, TaskErrorKind, TaskId, TaskStatus, TaskType};
+use tribal_domain::{JobId, Task, TaskErrorKind, TaskId, TaskType};
 
 use super::mock_repository;
 
@@ -24,8 +24,12 @@ mock_repository! {
             (id: TaskId, claim_token: uuid::Uuid, max_retries: u32, available_at: DateTime<Utc>, error_kind: TaskErrorKind, error_message: &str) { (id, claim_token, max_retries, available_at, error_kind, error_message.to_owned()) };
         reclaim_stale((u32, u32, u32, TaskErrorKind, String, Option<u32>) => ReclaimOutcome)
             (timeout_seconds: u32, max_retries: u32, limit: u32, error_kind: TaskErrorKind, error_message: &str, flat_backoff_seconds: Option<u32>) { (timeout_seconds, max_retries, limit, error_kind, error_message.to_owned(), flat_backoff_seconds) };
-        count_siblings_by_status((JobId, TaskType, Vec<TaskStatus>, TaskId) => i64)
-            (job_id: JobId, task_type: TaskType, statuses: &[TaskStatus], exclude_task_id: TaskId) { (job_id, task_type, statuses.to_vec(), exclude_task_id) };
+        count_live_siblings((JobId, TaskType, TaskId) => i64)
+            (job_id: JobId, task_type: TaskType, exclude_task_id: TaskId) { (job_id, task_type, exclude_task_id) };
+        block((TaskId, uuid::Uuid) => u64)
+            (id: TaskId, claim_token: uuid::Uuid) { (id, claim_token) };
+        requeue_from_blocked(TaskId => u64)
+            (id: TaskId) { id };
         upsert(NewTask => u64)
             (new_task: &NewTask) { new_task.clone() };
         count_by_status(() => Vec<TaskStatusCount>)

@@ -461,7 +461,7 @@ pub async fn seed_triage_job(
         .status(JobStatus::Triaging)
         .build();
     PgJobRepository
-        .update_status(conn, job_id, &transition)
+        .update_status_if_live(conn, job_id, &transition)
         .await
         .expect("setup: transition job to triaging");
 
@@ -578,7 +578,7 @@ pub async fn seed_multiple_triage_tasks(
         .status(JobStatus::Triaging)
         .build();
     PgJobRepository
-        .update_status(conn, job_id, &transition)
+        .update_status_if_live(conn, job_id, &transition)
         .await
         .expect("setup: transition job to triaging");
 
@@ -767,7 +767,7 @@ pub async fn seed_relation_job(
         .status(JobStatus::Triaging)
         .build();
     PgJobRepository
-        .update_status(conn, job_id, &triaging)
+        .update_status_if_live(conn, job_id, &triaging)
         .await
         .expect("setup: transition job to triaging");
 
@@ -780,7 +780,7 @@ pub async fn seed_relation_job(
         .status(JobStatus::Relating)
         .build();
     PgJobRepository
-        .update_status(conn, job_id, &relating)
+        .update_status_if_live(conn, job_id, &relating)
         .await
         .expect("setup: transition job to relating");
 

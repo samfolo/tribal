@@ -216,7 +216,7 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
             .expect("setup: update batch size");
 
         PgJobRepository
-            .update_status(
+            .update_status_if_live(
                 &mut conn,
                 job_id,
                 &JobStatusTransition::builder()
@@ -262,7 +262,7 @@ async fn test_relation_stage_all_duplicates_empty_outcome() {
         }
 
         PgJobRepository
-            .update_status(
+            .update_status_if_live(
                 &mut conn,
                 job_id,
                 &JobStatusTransition::builder()

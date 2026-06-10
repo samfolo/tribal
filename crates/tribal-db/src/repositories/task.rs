@@ -21,6 +21,11 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// The claim scan's ordering — the named policy point for claim fairness.
+/// Today it is strictly oldest-available-first; a fairness policy would
+/// replace this constant, never an inline ORDER BY.
+const CLAIM_ORDERING: &str = "available_at, created_at";
+
 const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
@@ -240,8 +245,11 @@ pub trait TaskRepository {
         flat_backoff_seconds: Option<u32>,
     ) -> Result<ReclaimOutcome, DbError>;
 
-    /// Counts sibling tasks of the given type and statuses for a job,
-    /// excluding the specified task.
+    /// Counts a job's live (NOT-in-terminal) sibling tasks of the given
+    /// type, excluding the specified task. A blocked sibling counts as
+    /// live by construction: the predicate is derived from
+    /// [`TaskStatus::is_terminal`], never an enumeration of live
+    /// statuses.
     ///
     /// The exclusion is a defensive guard for callers that run this
     /// check within the same transaction that transitions the excluded
@@ -252,14 +260,41 @@ pub trait TaskRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn count_siblings_by_status(
+    async fn count_live_siblings(
         &self,
         conn: &mut PgConnection,
         job_id: JobId,
         task_type: TaskType,
-        statuses: &[TaskStatus],
         exclude_task_id: TaskId,
     ) -> Result<i64, DbError>;
+
+    /// Moves a claimed task to `blocked`, clearing its lease in the same
+    /// statement: the row drives a suspended thread and holds no worker
+    /// slot until resolution re-queues it. Claim-token guarded; returns
+    /// the affected row count (zero means the lease was lost).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn block(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError>;
+
+    /// Re-queues a blocked task, immediately available: the resolve
+    /// transaction's task half. Returns the affected row count (zero
+    /// means the row was not blocked).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn requeue_from_blocked(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+    ) -> Result<u64, DbError>;
 
     /// Inserts a task idempotently using `ON CONFLICT DO NOTHING`.
     ///
@@ -396,7 +431,7 @@ impl TaskRepository for PgTaskRepository {
             "WITH claimable AS ( \
                  SELECT id FROM tasks \
                  WHERE status = 'queued' AND available_at <= now() \
-                 ORDER BY available_at, created_at \
+                 ORDER BY {CLAIM_ORDERING} \
                  LIMIT $1 \
                  FOR UPDATE SKIP LOCKED \
              ) \
@@ -606,33 +641,81 @@ impl TaskRepository for PgTaskRepository {
         })
     }
 
-    async fn count_siblings_by_status(
+    async fn count_live_siblings(
         &self,
         conn: &mut PgConnection,
         job_id: JobId,
         task_type: TaskType,
-        statuses: &[TaskStatus],
         exclude_task_id: TaskId,
     ) -> Result<i64, DbError> {
-        let status_strings: Vec<&str> = statuses.iter().map(TaskStatus::as_str).collect();
+        let terminal: Vec<&str> = TaskStatus::ALL
+            .iter()
+            .filter(|status| status.is_terminal())
+            .map(TaskStatus::as_str)
+            .collect();
 
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM tasks \
              WHERE job_id = $1 \
                AND task_type = $2 \
-               AND status = ANY($3::text[]) \
+               AND NOT (status = ANY($3::text[])) \
                AND id != $4",
         )
         .bind(job_id.inner())
         .bind(task_type.as_str())
-        .bind(&status_strings)
+        .bind(&terminal)
         .bind(exclude_task_id.inner())
         .fetch_one(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
-            context: format!("counting {task_type} siblings for job {job_id}"),
+            context: format!("counting live {task_type} siblings for job {job_id}"),
             source: e,
         })
+    }
+
+    async fn block(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET status = 'blocked', claim_token = NULL, claimed_by = NULL, \
+                 claimed_at = NULL, heartbeat_at = NULL, updated_at = now() \
+             WHERE id = $1 AND claim_token = $2 AND status = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("blocking task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn requeue_from_blocked(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET status = 'queued', available_at = now(), updated_at = now() \
+             WHERE id = $1 AND status = 'blocked'",
+        )
+        .bind(id.inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("re-queueing blocked task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
     }
 
     async fn upsert(&self, conn: &mut PgConnection, new_task: &NewTask) -> Result<u64, DbError> {

@@ -34,6 +34,7 @@ use crate::{
         stage_attribution,
     },
     tag_resolution::NewTagWithEmbedding,
+    worker::coupling,
 };
 
 // ---------------------------------------------------------------------------
@@ -152,7 +153,7 @@ impl Worker {
             };
 
             PgJobRepository
-                .update_status(&mut txn, task.job_id(), &job_transition)
+                .update_status_if_live(&mut txn, task.job_id(), &job_transition)
                 .await
                 .map_err(|e| stage_db_error(STAGE_EXTRACTION, "transitioning job status", e))?;
 
@@ -426,7 +427,7 @@ impl Worker {
             return Err(StageError::OwnershipLost);
         }
 
-        self.triage_fan_in(txn, job_id, task.id())
+        coupling::triage_fan_in(txn, job_id, task.id())
             .await
             .map_err(|e| stage_db_error(STAGE_TRIAGE, "triage fan-in", e))
     }
@@ -611,7 +612,7 @@ impl Worker {
             .build();
 
         PgJobRepository
-            .update_status(txn, job_id, &transition)
+            .update_status_if_live(txn, job_id, &transition)
             .await
             .map_err(|e| stage_db_error(STAGE_RELATION, "transitioning job to completed", e))?;
 
@@ -631,73 +632,6 @@ impl Worker {
         );
         tracing::Span::current().record(span_attrs::RELATIONS_COMMITTED, relations_count);
         tracing::Span::current().record(span_attrs::RELATIONS_SKIPPED, skipped);
-
-        Ok(true)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Triage fan-in
-// ---------------------------------------------------------------------------
-
-impl Worker {
-    /// Checks whether all triage siblings are terminal and, if so,
-    /// creates the relation task and transitions the job to `Relating`.
-    ///
-    /// Must be called within an active transaction.  The
-    /// `current_task_id` is excluded from the sibling count as a
-    /// defensive guard; its updated status is visible on the same
-    /// connection but has not yet been committed to other transactions.
-    ///
-    /// Returns `true` if the fan-in fired (relation task creation was
-    /// attempted), `false` if non-terminal siblings remain.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError`] on database errors.
-    pub(super) async fn triage_fan_in(
-        &self,
-        txn: &mut sqlx::PgConnection,
-        job_id: JobId,
-        current_task_id: tribal_domain::TaskId,
-    ) -> Result<bool, tribal_db::DbError> {
-        let remaining = PgTaskRepository
-            .count_siblings_by_status(
-                txn,
-                job_id,
-                tribal_domain::TaskType::Triage,
-                &[
-                    tribal_domain::TaskStatus::Queued,
-                    tribal_domain::TaskStatus::Claimed,
-                ],
-                current_task_id,
-            )
-            .await?;
-
-        if remaining > 0 {
-            return Ok(false);
-        }
-
-        let new_task = tribal_db::NewTask::builder()
-            .job_id(job_id)
-            .task_type(tribal_domain::TaskType::Relation)
-            .build();
-
-        let rows_affected = PgTaskRepository.upsert(txn, &new_task).await?;
-
-        if rows_affected > 0 {
-            tracing::info!(job_id = %job_id, "relation task created (triage fan-in)");
-        } else {
-            tracing::debug!(job_id = %job_id, "relation task already exists for job");
-        }
-
-        let transition = JobStatusTransition::builder()
-            .status(JobStatus::Relating)
-            .build();
-
-        PgJobRepository
-            .update_status(txn, job_id, &transition)
-            .await?;
 
         Ok(true)
     }
