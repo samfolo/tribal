@@ -18,6 +18,16 @@
 //! ```
 
 // ---------------------------------------------------------------------------
+// OpenTelemetry plumbing
+// ---------------------------------------------------------------------------
+
+/// Span field name that `tracing-opentelemetry` maps onto the exported span
+/// name. `tracing` span names are static strings, so a dynamic span name
+/// (such as the GenAI conventions' `{operation} {model}` form) is recorded
+/// through this field instead.
+pub const OTEL_NAME: &str = "otel.name";
+
+// ---------------------------------------------------------------------------
 // Core identifiers
 // ---------------------------------------------------------------------------
 
@@ -58,7 +68,8 @@ pub const EMBEDDING_DIMENSIONS: &str = "tribal.embedding.dimensions";
 /// Span field name for embedding request latency in milliseconds.
 pub const EMBEDDING_LATENCY_MS: &str = "tribal.embedding.latency_ms";
 
-/// Span field name for the embedding purpose (`"candidate"`, `"query"`, or `"tag"`).
+/// Span field name for the embedding purpose (`"candidate"`, `"query"`,
+/// `"tag"`, or `"probe"`).
 pub const EMBEDDING_PURPOSE: &str = "tribal.embedding.purpose";
 
 // ---------------------------------------------------------------------------
@@ -108,6 +119,19 @@ pub const LLM_SYSTEM_PROMPT_VERSION_ID: &str = "tribal.llm.system_prompt_version
 
 /// Span field name for the user prompt version identifier used in the LLM call.
 pub const LLM_USER_PROMPT_VERSION_ID: &str = "tribal.llm.user_prompt_version_id";
+
+// ---------------------------------------------------------------------------
+// Pipeline attribution
+// ---------------------------------------------------------------------------
+
+/// Span field name for the pipeline stage a call is attributed to.
+pub const STAGE: &str = "tribal.stage";
+
+/// Span field name for the system prompt version used in an inference call.
+pub const SYSTEM_PROMPT_VERSION_ID: &str = "tribal.prompt.system_version_id";
+
+/// Span field name for the user prompt version used in an inference call.
+pub const USER_PROMPT_VERSION_ID: &str = "tribal.prompt.user_version_id";
 
 // ---------------------------------------------------------------------------
 // Worker spans
