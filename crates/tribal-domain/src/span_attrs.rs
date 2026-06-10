@@ -23,7 +23,7 @@
 
 /// Span field name that `tracing-opentelemetry` maps onto the exported span
 /// name. `tracing` span names are static strings, so a dynamic span name
-/// (such as the GenAI conventions' `{operation} {model}` form) is recorded
+/// (such as the `GenAI` conventions' `{operation} {model}` form) is recorded
 /// through this field instead.
 pub const OTEL_NAME: &str = "otel.name";
 
