@@ -1,6 +1,6 @@
 //! Handler for `tribal_discover` — semantic search across the knowledge base.
 
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
+use std::{collections::HashMap, str::FromStr};
 
 use chrono::{DateTime, Utc};
 use rmcp::{
@@ -17,8 +17,9 @@ use tribal_domain::{
     EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, KnowledgeItemId, KnowledgeKind,
     McpErrorCode, PrincipalId, ProjectId, Reference, Standing, span_attrs,
 };
-use tribal_inference::{EmbeddingRequest, EmbeddingResponse, InferenceError};
-use tribal_worker::build_target_provider;
+use tribal_inference::{
+    EmbeddingRequest, EmbeddingResponse, EmbeddingTarget, PermitWait, UsageAttribution,
+};
 
 use super::common::acquire_connection;
 use crate::{
@@ -146,49 +147,20 @@ impl TribalServerHandler {
             }
         };
 
-        let (provider, semaphore) = build_target_provider(
-            &self.state.provider_registry,
-            &self.state.embedding_providers,
-            &self.state.credentials,
-            &active_profile,
-        )
-        .map_err(|e| {
-            InferenceError::provider_unavailable(
-                active_profile.provider_kind().to_string(),
-                e.to_string(),
+        let embedding_response = self
+            .state
+            .facade
+            .embed(
+                &EmbeddingTarget::from(&active_profile),
+                EmbeddingRequest {
+                    input: query.to_owned(),
+                    purpose: EmbeddingPurpose::Query,
+                },
+                PermitWait::Unbounded,
+                &UsageAttribution::default(),
             )
-            .into_mcp_error()
-            .into_call_tool_result()
-        })?;
-
-        let _permit = {
-            let sem_start = Instant::now();
-            let permit = Arc::clone(&semaphore)
-                .acquire_owned()
-                .await
-                .expect("embedding semaphore closed");
-            self.state.metrics.record_semaphore_acquire(
-                &self.state.embedding_key.to_string(),
-                sem_start.elapsed(),
-            );
-            permit
-        };
-
-        let provider_start = Instant::now();
-        let embedding_response = provider
-            .embed(EmbeddingRequest {
-                input: query.to_owned(),
-                purpose: EmbeddingPurpose::Query,
-            })
             .await
             .map_err(|e| e.into_mcp_error().into_call_tool_result())?;
-        let identity = provider.identity();
-        self.state.metrics.record_provider_call(
-            &identity.name,
-            &identity.model,
-            "discover",
-            provider_start.elapsed(),
-        );
 
         Ok((active_profile, embedding_response))
     }
@@ -575,14 +547,13 @@ async fn execute_discover(
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::sync::Arc;
 
     use rmcp::model::ErrorCode;
     use tribal_db::SemanticSearchResponse;
-    use tribal_domain::{ProviderKind, ReferenceKind};
+    use tribal_domain::ReferenceKind;
     use tribal_inference::{
-        EmbeddingProvider, InferenceError, ProviderIdentity, ProviderKey, ProviderLimits,
-        RequestClass,
+        EmbeddingProvider, InferenceError, ProviderIdentity,
     };
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
@@ -1175,26 +1146,7 @@ mod tests {
         );
 
         let handler = TestHandler::builder().pool(pool).build();
-        handler
-            .state
-            .provider_registry
-            .register_building(
-                ProviderKey::new(
-                    ProviderKind::Ollama.to_string(),
-                    ProviderKind::DEFAULT_OLLAMA_BASE_URL,
-                    RequestClass::Embedding,
-                )
-                .expect("embedding provider key"),
-                &ProviderLimits {
-                    max_in_flight: 1,
-                    request_timeout: Duration::from_secs(5),
-                },
-            )
-            .expect("register the embedding endpoint");
-        handler
-            .state
-            .embedding_providers
-            .insert(active.id(), failing);
+        handler.state.facade.inject_embedding_provider(active.id(), failing);
 
         let result = handler
             .apply_discover(serde_json::json!({"query": "test"}))
@@ -1236,26 +1188,7 @@ mod tests {
             .pool(pool)
             .repositories(repos)
             .build();
-        handler
-            .state
-            .provider_registry
-            .register_building(
-                ProviderKey::new(
-                    ProviderKind::Ollama.to_string(),
-                    ProviderKind::DEFAULT_OLLAMA_BASE_URL,
-                    RequestClass::Embedding,
-                )
-                .expect("embedding provider key"),
-                &ProviderLimits {
-                    max_in_flight: 1,
-                    request_timeout: Duration::from_secs(5),
-                },
-            )
-            .expect("register the embedding endpoint");
-        handler
-            .state
-            .embedding_providers
-            .insert(active.id(), profile_provider("model-a", test_vector()));
+        handler.state.facade.inject_embedding_provider(active.id(), profile_provider("model-a", test_vector()));
 
         // The search mock only responds when the cursor arrives absent, so a
         // successful result is itself the proof that "" normalised to a
@@ -1480,29 +1413,9 @@ mod tests {
 
         let handler = TestHandler::builder().pool(pool).build();
 
-        // Both profiles share the Ollama default endpoint, so a single dynamic
-        // registration supplies the semaphore the read path resolves on a cache
-        // hit for either profile.
-        handler
-            .state
-            .provider_registry
-            .register_building(
-                ProviderKey::new(
-                    ProviderKind::Ollama.to_string(),
-                    ProviderKind::DEFAULT_OLLAMA_BASE_URL,
-                    RequestClass::Embedding,
-                )
-                .expect("embedding provider key"),
-                &ProviderLimits {
-                    max_in_flight: 1,
-                    request_timeout: Duration::from_secs(5),
-                },
-            )
-            .expect("register the shared embedding endpoint");
-
         // -- Profile A: the genesis active profile ----------------------------
         let profile_a = ensure_genesis_profile(&mut seed, "model-a", 768).await;
-        handler.state.embedding_providers.insert(
+        handler.state.facade.inject_embedding_provider(
             profile_a.id(),
             profile_provider("model-a", vec![1.0, 0.0, 0.0]),
         );
@@ -1514,7 +1427,7 @@ mod tests {
 
         // -- Cut over to profile B (higher epoch, now active) -----------------
         let profile_b_id = create_complete_profile(&mut seed, "model-b", 768).await;
-        handler.state.embedding_providers.insert(
+        handler.state.facade.inject_embedding_provider(
             profile_b_id,
             profile_provider("model-b", vec![0.0, 1.0, 0.0]),
         );
