@@ -5532,6 +5532,7 @@ name = "tribal-inference"
 version = "0.3.1"
 dependencies = [
  "async-trait",
+ "dashmap",
  "futures-util",
  "reqwest 0.13.2",
  "serde",
@@ -5599,6 +5600,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tribal-config",
+ "tribal-domain",
 ]
 
 [[package]]

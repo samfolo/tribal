@@ -11,6 +11,7 @@ test-helpers = []
 
 [dependencies]
 async-trait.workspace = true
+dashmap.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true

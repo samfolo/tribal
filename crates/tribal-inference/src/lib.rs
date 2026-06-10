@@ -9,7 +9,9 @@ mod drift;
 mod embedding_capabilities;
 mod embedding_factory;
 mod error;
+mod facade;
 mod http;
+mod ledger;
 mod ollama;
 mod openai;
 mod provider;
@@ -32,9 +34,16 @@ pub use embedding_capabilities::{
 };
 pub use embedding_factory::{UnsupportedEmbeddingProvider, make_embedding_provider};
 pub use error::{InferenceError, classify_embedding_error, embedding_retry_after};
+pub use facade::{
+    CompletionStageSpec, CompletionStageSpecs, CredentialError, EmbeddingCredentialResolver,
+    EmbeddingTarget, FacadeBuildError, InferenceFacade, PermitWait,
+};
+#[cfg(feature = "test-helpers")]
+pub use facade::{InjectedCompletion, InjectedEmbedding, InjectedProviders, KeylessCredentialResolver};
 pub use http::EMBEDDING_PROBE_INPUT;
 #[cfg(feature = "test-helpers")]
 pub use http::INFERENCE_PROBE_INPUT;
+pub use ledger::{LedgerSink, NoopLedgerSink, UsageAttribution};
 #[cfg(feature = "test-helpers")]
 pub use ollama::{
     CHAT_PATH as OLLAMA_CHAT_PATH, EMBED_PATH as OLLAMA_EMBED_PATH, TAGS_PATH as OLLAMA_TAGS_PATH,
