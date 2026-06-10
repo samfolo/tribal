@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::{EmbeddingPurpose, EmbeddingUsage, span_attrs};
+use tribal_domain::{EmbeddingPurpose, EmbeddingUsage, gen_ai, span_attrs};
 
 use crate::{
     EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InferenceError, ProviderIdentity,
@@ -156,13 +156,14 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
         }
 
         let span = tracing::info_span!(
-            "tribal.embedding.generate",
-            { span_attrs::EMBEDDING_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::EMBEDDING_MODEL } = %self.identity.model,
+            "embeddings",
+            { span_attrs::OTEL_NAME } = %format!("{} {}", gen_ai::OPERATION_EMBEDDINGS, self.identity.model),
+            { gen_ai::OPERATION_NAME } = gen_ai::OPERATION_EMBEDDINGS,
+            { gen_ai::PROVIDER_NAME } = PROVIDER_NAME,
+            { gen_ai::REQUEST_MODEL } = %self.identity.model,
             { span_attrs::EMBEDDING_PURPOSE } = %request.purpose,
-            { span_attrs::EMBEDDING_TOKENS } = tracing::field::Empty,
-            { span_attrs::EMBEDDING_DIMENSIONS } = tracing::field::Empty,
-            { span_attrs::EMBEDDING_LATENCY_MS } = tracing::field::Empty,
+            { gen_ai::USAGE_INPUT_TOKENS } = tracing::field::Empty,
+            { gen_ai::EMBEDDINGS_DIMENSION_COUNT } = tracing::field::Empty,
         );
 
         async {
@@ -228,9 +229,8 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             let latency_ms = latency_ms(latency);
 
             let current = tracing::Span::current();
-            current.record(span_attrs::EMBEDDING_TOKENS, total_tokens);
-            current.record(span_attrs::EMBEDDING_DIMENSIONS, self.expected_dimensions);
-            current.record(span_attrs::EMBEDDING_LATENCY_MS, latency_ms);
+            current.record(gen_ai::USAGE_INPUT_TOKENS, total_tokens);
+            current.record(gen_ai::EMBEDDINGS_DIMENSION_COUNT, self.expected_dimensions);
 
             tracing::debug!(
                 tokens = total_tokens,
