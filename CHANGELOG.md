@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- The `token_usage` ledger now records every billable call, closing accidental gaps: discover query embeddings, provider probes (boot, `tribal check`, and reindex target resolution, attributed under a new `probe` stage and embedding purpose), and calls whose pipeline attempt later failed are all ledgered; previously these spent tokens invisibly. ([#206](https://github.com/tribal-memory/tribal/issues/206))
+- The `token_usage` ledger now records every billable call, closing accidental gaps: discover query embeddings, provider probes (boot, `tribal check`, and reindex target resolution, attributed under a new `probe` stage and embedding purpose), and calls whose pipeline attempt later failed are all ledgered; previously these spent tokens invisibly. Rows written outside a pipeline job, such as reindex and backfill embeds, now carry the live trace identity rather than none, so their spend joins to traces. ([#206](https://github.com/tribal-memory/tribal/issues/206))
 
 ## [0.3.1] - 2026-06-07
 
