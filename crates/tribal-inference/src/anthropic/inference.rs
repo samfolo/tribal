@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::{CompletionResponse, CompletionUsage, ProviderKind, span_attrs};
+use tribal_domain::{CompletionResponse, CompletionUsage, ProviderKind, gen_ai, span_attrs};
 
 use crate::{
     CompletionRequest, InferenceError, InferenceProvider, Message, ProviderIdentity,
@@ -186,7 +186,7 @@ impl AnthropicInferenceProvider {
     ) -> Result<reqwest::Response, InferenceError> {
         let body = build_request(&self.identity.model, request, mode);
         if let Some(temperature) = body.temperature {
-            tracing::Span::current().record(span_attrs::LLM_TEMPERATURE, f64::from(temperature));
+            tracing::Span::current().record(gen_ai::REQUEST_TEMPERATURE, f64::from(temperature));
         }
         let url = format!("{}{MESSAGES_PATH}", self.base_url);
         let http_response = self
@@ -233,16 +233,16 @@ impl InferenceProvider for AnthropicInferenceProvider {
         }
 
         let span = tracing::info_span!(
-            "tribal.llm.call",
-            { span_attrs::LLM_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::LLM_MODEL } = %self.identity.model,
-            { span_attrs::LLM_TOKENS_INPUT } = tracing::field::Empty,
-            { span_attrs::LLM_TOKENS_OUTPUT } = tracing::field::Empty,
-            { span_attrs::LLM_TOKENS_TOTAL } = tracing::field::Empty,
-            { span_attrs::LLM_LATENCY_MS } = tracing::field::Empty,
-            { span_attrs::LLM_TEMPERATURE } = tracing::field::Empty,
-            { span_attrs::LLM_TOKENS_CACHE_READ } = tracing::field::Empty,
-            { span_attrs::LLM_TOKENS_CACHE_WRITE } = tracing::field::Empty,
+            "chat",
+            { span_attrs::OTEL_NAME } = %format!("{} {}", gen_ai::OPERATION_CHAT, self.identity.model),
+            { gen_ai::OPERATION_NAME } = gen_ai::OPERATION_CHAT,
+            { gen_ai::PROVIDER_NAME } = PROVIDER_NAME,
+            { gen_ai::REQUEST_MODEL } = %self.identity.model,
+            { gen_ai::REQUEST_TEMPERATURE } = tracing::field::Empty,
+            { gen_ai::USAGE_INPUT_TOKENS } = tracing::field::Empty,
+            { gen_ai::USAGE_OUTPUT_TOKENS } = tracing::field::Empty,
+            { gen_ai::USAGE_CACHE_READ_INPUT_TOKENS } = tracing::field::Empty,
+            { gen_ai::USAGE_CACHE_CREATION_INPUT_TOKENS } = tracing::field::Empty,
         );
 
         async {

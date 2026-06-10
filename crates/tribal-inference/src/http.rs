@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use reqwest::StatusCode;
-use tribal_domain::{CompletionUsage, span_attrs};
+use tribal_domain::{CompletionUsage, gen_ai};
 
 use crate::{
     InferenceError,
@@ -139,12 +139,16 @@ pub(crate) fn record_completion_usage(usage: &CompletionUsage) {
     let latency_ms = latency_ms(usage.latency);
 
     let current = tracing::Span::current();
-    current.record(span_attrs::LLM_TOKENS_INPUT, usage.input_tokens);
-    current.record(span_attrs::LLM_TOKENS_OUTPUT, usage.output_tokens);
-    current.record(span_attrs::LLM_TOKENS_TOTAL, usage.total_tokens);
-    current.record(span_attrs::LLM_LATENCY_MS, latency_ms);
-    current.record(span_attrs::LLM_TOKENS_CACHE_READ, usage.cache_read_tokens);
-    current.record(span_attrs::LLM_TOKENS_CACHE_WRITE, usage.cache_write_tokens);
+    current.record(gen_ai::USAGE_INPUT_TOKENS, usage.input_tokens);
+    current.record(gen_ai::USAGE_OUTPUT_TOKENS, usage.output_tokens);
+    current.record(
+        gen_ai::USAGE_CACHE_READ_INPUT_TOKENS,
+        usage.cache_read_tokens,
+    );
+    current.record(
+        gen_ai::USAGE_CACHE_CREATION_INPUT_TOKENS,
+        usage.cache_write_tokens,
+    );
 
     tracing::debug!(
         input_tokens = usage.input_tokens,
