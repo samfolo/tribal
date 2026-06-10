@@ -42,4 +42,7 @@ pub(in crate::commands::check) struct CheckState {
     pub skip_mask: SkipMask,
     /// Populated by `database_reachable` on success.
     pub pool: Option<PgPool>,
+    /// Built lazily by the first provider probe from the parsed config
+    /// and whatever pool the database step produced.
+    pub facade: Option<std::sync::Arc<tribal_inference::InferenceFacade>>,
 }
