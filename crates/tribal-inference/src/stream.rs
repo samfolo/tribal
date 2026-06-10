@@ -23,9 +23,8 @@ use crate::{
 /// Items are deltas followed by exactly one terminal
 /// [`InferenceEvent::Completed`], or an error that ends the stream. The
 /// stream is fused: nothing follows the terminal event or an error.
-pub type InferenceEventStream = std::pin::Pin<
-    Box<dyn Stream<Item = Result<InferenceEvent, InferenceError>> + Send + 'static>,
->;
+pub type InferenceEventStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<InferenceEvent, InferenceError>> + Send + 'static>>;
 
 /// Which wire transport a request body is built for.
 ///
@@ -111,7 +110,8 @@ impl SseAssembler {
             return Some(std::mem::take(&mut self.data).join("\n"));
         }
         if let Some(rest) = line.strip_prefix("data:") {
-            self.data.push(rest.strip_prefix(' ').unwrap_or(rest).to_owned());
+            self.data
+                .push(rest.strip_prefix(' ').unwrap_or(rest).to_owned());
         }
         None
     }
@@ -170,49 +170,52 @@ where
         finished: false,
     };
 
-    Box::pin(futures_util::stream::unfold(state, |mut state| async move {
-        loop {
-            if state.finished {
-                return None;
-            }
-            if let Some(item) = state.pending.pop_front() {
-                if item.is_err() || matches!(item, Ok(InferenceEvent::Completed { .. })) {
-                    state.finished = true;
-                    state.pending.clear();
+    Box::pin(futures_util::stream::unfold(
+        state,
+        |mut state| async move {
+            loop {
+                if state.finished {
+                    return None;
                 }
-                return Some((item, state));
-            }
+                if let Some(item) = state.pending.pop_front() {
+                    if item.is_err() || matches!(item, Ok(InferenceEvent::Completed { .. })) {
+                        state.finished = true;
+                        state.pending.clear();
+                    }
+                    return Some((item, state));
+                }
 
-            match state.body.next().await {
-                Some(Ok(chunk)) => {
-                    state.framer.push(chunk.as_ref());
-                    while let Some(line) = state.framer.next_line() {
-                        if !state.feed_line(line) {
-                            break;
+                match state.body.next().await {
+                    Some(Ok(chunk)) => {
+                        state.framer.push(chunk.as_ref());
+                        while let Some(line) = state.framer.next_line() {
+                            if !state.feed_line(line) {
+                                break;
+                            }
+                        }
+                    }
+                    Some(Err(error)) => {
+                        state
+                            .pending
+                            .push_back(Err(map_body_read_error(&error, state.provider)));
+                    }
+                    None => {
+                        if let Some(line) = state.framer.take_remainder() {
+                            state.feed_line(line);
+                        }
+                        let outcome = state.translator.on_end();
+                        state.extend_pending(outcome);
+                        // The next pending drain returns the terminal or the
+                        // error; an empty drain on a misbehaving translator
+                        // would loop forever without this.
+                        if state.pending.is_empty() {
+                            return None;
                         }
                     }
                 }
-                Some(Err(error)) => {
-                    state
-                        .pending
-                        .push_back(Err(map_body_read_error(&error, state.provider)));
-                }
-                None => {
-                    if let Some(line) = state.framer.take_remainder() {
-                        state.feed_line(line);
-                    }
-                    let outcome = state.translator.on_end();
-                    state.extend_pending(outcome);
-                    // The next pending drain returns the terminal or the
-                    // error; an empty drain on a misbehaving translator
-                    // would loop forever without this.
-                    if state.pending.is_empty() {
-                        return None;
-                    }
-                }
             }
-        }
-    }))
+        },
+    ))
 }
 
 struct DriveState<S, T> {
@@ -520,9 +523,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_drive_lines_invalid_utf8_errors() {
-        let body = futures_util::stream::iter(vec![Ok::<_, reqwest::Error>(vec![
-            0xFF, 0xFE, b'\n',
-        ])]);
+        let body =
+            futures_util::stream::iter(vec![Ok::<_, reqwest::Error>(vec![0xFF, 0xFE, b'\n'])]);
         let stream = drive_lines(body, ScriptedTranslator::new(), "scripted");
 
         let events: Vec<_> = stream.collect().await;

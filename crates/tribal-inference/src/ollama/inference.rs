@@ -109,7 +109,6 @@ impl OllamaInferenceProvider {
         }
     }
 
-
     /// Builds and sends one `/api/chat` request for the given wire mode,
     /// enforcing a success status.
     async fn send_chat(
@@ -914,7 +913,4 @@ mod tests {
     }
 
     // -- Probe tests ---------------------------------------------------------
-
-
-
 }

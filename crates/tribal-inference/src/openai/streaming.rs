@@ -97,7 +97,10 @@ impl OpenAiStreamTranslator {
         }
     }
 
-    fn on_chunk(&mut self, chunk: OpenAiStreamChunk) -> Result<Vec<InferenceEvent>, InferenceError> {
+    fn on_chunk(
+        &mut self,
+        chunk: OpenAiStreamChunk,
+    ) -> Result<Vec<InferenceEvent>, InferenceError> {
         if let Some(error) = chunk.error {
             return Err(InferenceError::LlmCallFailed {
                 model: self.identity.model.clone(),

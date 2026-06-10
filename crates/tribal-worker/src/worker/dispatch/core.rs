@@ -690,8 +690,7 @@ impl Worker {
                 }
             };
 
-            if let Err(e) = drive_reindex_cycle(&mut conn, &self.facade, &self.instance_id).await
-            {
+            if let Err(e) = drive_reindex_cycle(&mut conn, &self.facade, &self.instance_id).await {
                 tracing::warn!(error = %e, "reindex drive cycle failed");
             }
         }

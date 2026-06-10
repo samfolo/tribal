@@ -271,5 +271,4 @@ mod tests {
             .expect("ollama needs no key");
         assert_eq!(key, "");
     }
-
 }

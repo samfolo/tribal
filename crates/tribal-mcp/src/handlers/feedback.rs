@@ -11,7 +11,7 @@ use tracing::Instrument;
 use tribal_db::{DbError, EmbeddingProfileRepository, PgEmbeddingProfileRepository};
 use tribal_domain::{
     EmbeddingProfileId, FeedbackRating, InferenceParameters, KnowledgeItemId, McpErrorCode,
-    PrincipalId, span_attrs, TaskType,
+    PrincipalId, TaskType, span_attrs,
 };
 
 use super::common::begin_transaction;
@@ -203,9 +203,21 @@ impl TribalServerHandler {
         let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
         let provider_identities = PipelineProviderIdentities {
-            extraction: self.state.facade.completion_identity(TaskType::Extraction).clone(),
-            triage: self.state.facade.completion_identity(TaskType::Triage).clone(),
-            relation: self.state.facade.completion_identity(TaskType::Relation).clone(),
+            extraction: self
+                .state
+                .facade
+                .completion_identity(TaskType::Extraction)
+                .clone(),
+            triage: self
+                .state
+                .facade
+                .completion_identity(TaskType::Triage)
+                .clone(),
+            relation: self
+                .state
+                .facade
+                .completion_identity(TaskType::Relation)
+                .clone(),
             embedding: self.state.embedding_identity.clone(),
         };
 

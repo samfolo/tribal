@@ -138,7 +138,6 @@ impl OpenAiInferenceProvider {
         }
     }
 
-
     /// Builds and sends one `/v1/chat/completions` request for the given
     /// wire mode, enforcing a success status. Records the effective
     /// (post-reconcile) temperature on the current span so the span
@@ -731,7 +730,6 @@ mod tests {
         let _ = provider.complete(request).await.unwrap();
     }
 
-
     #[test]
     fn test_probe_and_ingest_agree_on_admissible_fields_for_reasoning_model() {
         // Probe and ingest share `build_request`, so a reasoning identity
@@ -757,8 +755,10 @@ mod tests {
             response_format: None,
         };
 
-        let probe_body = serde_json::to_value(build_request("o3", &probe, WireMode::Buffered)).unwrap();
-        let ingest_body = serde_json::to_value(build_request("o3", &ingest, WireMode::Buffered)).unwrap();
+        let probe_body =
+            serde_json::to_value(build_request("o3", &probe, WireMode::Buffered)).unwrap();
+        let ingest_body =
+            serde_json::to_value(build_request("o3", &ingest, WireMode::Buffered)).unwrap();
         let probe_keys: BTreeSet<&String> = probe_body.as_object().unwrap().keys().collect();
         let ingest_keys: BTreeSet<&String> = ingest_body.as_object().unwrap().keys().collect();
 
@@ -1141,6 +1141,4 @@ mod tests {
     }
 
     // -- Probe tests ---------------------------------------------------------
-
-
 }

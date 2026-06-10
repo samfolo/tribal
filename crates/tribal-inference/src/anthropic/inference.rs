@@ -138,7 +138,6 @@ impl AnthropicInferenceProvider {
         }
     }
 
-
     /// Builds and sends one `/v1/messages` request for the given wire
     /// mode, enforcing a success status. Records the effective
     /// (post-reconcile) temperature on the current span so the span
@@ -571,8 +570,15 @@ mod tests {
             response_format: None,
         };
 
-        let probe_body = serde_json::to_value(build_request("claude-opus-4-7", &probe, WireMode::Buffered)).unwrap();
-        let ingest_body = serde_json::to_value(build_request("claude-opus-4-7", &ingest, WireMode::Buffered)).unwrap();
+        let probe_body =
+            serde_json::to_value(build_request("claude-opus-4-7", &probe, WireMode::Buffered))
+                .unwrap();
+        let ingest_body = serde_json::to_value(build_request(
+            "claude-opus-4-7",
+            &ingest,
+            WireMode::Buffered,
+        ))
+        .unwrap();
         let probe_keys: BTreeSet<&String> = probe_body.as_object().unwrap().keys().collect();
         let ingest_keys: BTreeSet<&String> = ingest_body.as_object().unwrap().keys().collect();
 
@@ -1258,8 +1264,4 @@ mod tests {
     }
 
     // -- Probe tests ---------------------------------------------------------
-
-
-
-
 }

@@ -37,7 +37,9 @@ pub use facade::{
     EmbeddingCredentialResolver, EmbeddingTarget, FacadeBuildError, InferenceFacade, PermitWait,
 };
 #[cfg(feature = "test-helpers")]
-pub use facade::{InjectedCompletion, InjectedEmbedding, InjectedProviders, KeylessCredentialResolver};
+pub use facade::{
+    InjectedCompletion, InjectedEmbedding, InjectedProviders, KeylessCredentialResolver,
+};
 #[cfg(feature = "test-helpers")]
 pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};
 pub use ledger::{LedgerSink, NoopLedgerSink, UsageAttribution};

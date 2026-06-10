@@ -139,7 +139,12 @@ impl Worker {
             let attribution = stage_attribution(ctx.job, task);
 
             let embedding_response = self
-                .embed_candidate(ctx.candidate.content(), &embedding_target, deadline, &attribution)
+                .embed_candidate(
+                    ctx.candidate.content(),
+                    &embedding_target,
+                    deadline,
+                    &attribution,
+                )
                 .await?;
 
             let search_results = self

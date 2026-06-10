@@ -102,7 +102,13 @@ pub(crate) async fn ensure_success(
         .map(|v| vec![("Retry-After", v)])
         .unwrap_or_default();
 
-    Err(map_http_error(status, &body, provider, &extra, on_client_error))
+    Err(map_http_error(
+        status,
+        &body,
+        provider,
+        &extra,
+        on_client_error,
+    ))
 }
 
 // ---------------------------------------------------------------------------

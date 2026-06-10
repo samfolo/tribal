@@ -96,8 +96,13 @@ impl TribalServerHandler {
             base_url: request.base_url,
             dry_run: request.dry_run,
         };
-        let outcome = reindex_run(&self.state.pool_worker, &self.state.facade, &req, principal_id)
-            .await?;
+        let outcome = reindex_run(
+            &self.state.pool_worker,
+            &self.state.facade,
+            &req,
+            principal_id,
+        )
+        .await?;
 
         Ok(McpReindexResponse {
             outcome: outcome.resolution.label().to_owned(),

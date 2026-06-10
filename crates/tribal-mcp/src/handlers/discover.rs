@@ -552,9 +552,7 @@ mod tests {
     use rmcp::model::ErrorCode;
     use tribal_db::SemanticSearchResponse;
     use tribal_domain::ReferenceKind;
-    use tribal_inference::{
-        EmbeddingProvider, InferenceError, ProviderIdentity,
-    };
+    use tribal_inference::{EmbeddingProvider, InferenceError, ProviderIdentity};
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockKnowledgeItemRepository,
         MockPrincipalRepository, MockProjectRepository, MockReferenceRepository,
@@ -1146,7 +1144,10 @@ mod tests {
         );
 
         let handler = TestHandler::builder().pool(pool).build();
-        handler.state.facade.inject_embedding_provider(active.id(), failing);
+        handler
+            .state
+            .facade
+            .inject_embedding_provider(active.id(), failing);
 
         let result = handler
             .apply_discover(serde_json::json!({"query": "test"}))
@@ -1188,7 +1189,10 @@ mod tests {
             .pool(pool)
             .repositories(repos)
             .build();
-        handler.state.facade.inject_embedding_provider(active.id(), profile_provider("model-a", test_vector()));
+        handler
+            .state
+            .facade
+            .inject_embedding_provider(active.id(), profile_provider("model-a", test_vector()));
 
         // The search mock only responds when the cursor arrives absent, so a
         // successful result is itself the proof that "" normalised to a

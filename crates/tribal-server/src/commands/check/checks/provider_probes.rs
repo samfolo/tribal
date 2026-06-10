@@ -121,7 +121,8 @@ fn ensure_facade(state: &mut CheckState) -> Result<Arc<InferenceFacade>, String>
     if let Some(facade) = &state.facade {
         return Ok(Arc::clone(facade));
     }
-    let facade = build_check_facade(config(state), state.pool.clone()).map_err(|e| e.to_string())?;
+    let facade =
+        build_check_facade(config(state), state.pool.clone()).map_err(|e| e.to_string())?;
     state.facade = Some(Arc::clone(&facade));
     Ok(facade)
 }
