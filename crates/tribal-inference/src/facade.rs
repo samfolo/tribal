@@ -171,8 +171,22 @@ pub struct CompletionStageSpecs {
 }
 
 // ---------------------------------------------------------------------------
-// Build error
+// Errors
 // ---------------------------------------------------------------------------
+
+/// One input of an [`InferenceFacade::embed_group`] call failed.
+///
+/// Carries the failing input's position so the caller can attribute the
+/// failure precisely (the group's inputs usually have distinct roles).
+#[derive(Debug, thiserror::Error)]
+#[error("group embed failed at input {index}: {source}")]
+pub struct EmbedGroupError {
+    /// The position of the failing input within the group.
+    pub index: usize,
+    /// The underlying failure.
+    #[source]
+    pub source: InferenceError,
+}
 
 /// The façade could not be constructed.
 #[derive(Debug, thiserror::Error)]
@@ -248,6 +262,14 @@ impl InferenceFacade {
             credentials,
             sink,
         })
+    }
+
+    /// Returns the provider identity bound to a pipeline stage, for
+    /// callers that record provenance (which provider and model produced
+    /// an artefact) without making a call.
+    #[must_use]
+    pub fn completion_identity(&self, stage: TaskType) -> &crate::ProviderIdentity {
+        self.binding(stage).provider.identity()
     }
 
     fn binding(&self, stage: TaskType) -> &CompletionBinding {
@@ -391,21 +413,27 @@ impl InferenceFacade {
     ///
     /// # Errors
     ///
-    /// As [`embed`](Self::embed); the first failing input fails the group.
+    /// Returns [`EmbedGroupError`] naming the first failing input; its
+    /// source follows [`embed`](Self::embed)'s error mapping.
     pub async fn embed_group(
         &self,
         target: &EmbeddingTarget,
         requests: Vec<EmbeddingRequest>,
         wait: PermitWait,
         attribution: &UsageAttribution,
-    ) -> Result<Vec<EmbeddingResponse>, InferenceError> {
-        let resolved = self.resolve_embedding(target)?;
-        let _permit = self.acquire(&resolved.key, wait).await?;
+    ) -> Result<Vec<EmbeddingResponse>, EmbedGroupError> {
+        let on_setup = |source: InferenceError| EmbedGroupError { index: 0, source };
+        let resolved = self.resolve_embedding(target).map_err(on_setup)?;
+        let _permit = self.acquire(&resolved.key, wait).await.map_err(on_setup)?;
 
         let mut responses = Vec::with_capacity(requests.len());
-        for request in requests {
+        for (index, request) in requests.into_iter().enumerate() {
             let purpose = request.purpose;
-            let response = resolved.provider.embed(request).await?;
+            let response = resolved
+                .provider
+                .embed(request)
+                .await
+                .map_err(|source| EmbedGroupError { index, source })?;
             self.record_embedding(&response.usage, purpose, attribution)
                 .await;
             responses.push(response);
@@ -445,6 +473,21 @@ impl InferenceFacade {
         self.record_embedding(&result.usage, purpose, attribution)
             .await;
         Ok(result)
+    }
+
+    /// Resolves and caches an embedding target's provider without making a
+    /// wire call: keys the endpoint, registers it if new, and validates the
+    /// credential fail-closed.
+    ///
+    /// For callers that must surface a misconfigured target before starting
+    /// work that would otherwise fail mid-flight.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InferenceError::ProviderUnavailable`] when the target
+    /// cannot be keyed, registered, credentialed, or constructed.
+    pub fn prepare_embedding_target(&self, target: &EmbeddingTarget) -> Result<(), InferenceError> {
+        self.resolve_embedding(target).map(|_| ())
     }
 
     /// Resolves the provider-native revision token for an embedding target:
@@ -520,6 +563,19 @@ impl InferenceFacade {
             )
         })?;
 
+        // Registration precedes the cache check so a cached provider's
+        // permits always resolve, however the cache entry arrived; an
+        // endpoint already registered (boot or earlier resolution) is a
+        // no-op.
+        self.registry
+            .register_building(key.clone(), &DEFAULT_DYNAMIC_EMBEDDING_LIMITS)
+            .map_err(|e| {
+                InferenceError::provider_unavailable(
+                    target.provider.to_string(),
+                    format!("registering the embedding endpoint: {e}"),
+                )
+            })?;
+
         if let Some(cached) = target
             .profile_id
             .and_then(|id| self.embedding_cache.get(&id).map(|p| p.value().clone()))
@@ -530,14 +586,6 @@ impl InferenceFacade {
             });
         }
 
-        self.registry
-            .register_building(key.clone(), &DEFAULT_DYNAMIC_EMBEDDING_LIMITS)
-            .map_err(|e| {
-                InferenceError::provider_unavailable(
-                    target.provider.to_string(),
-                    format!("registering the embedding endpoint: {e}"),
-                )
-            })?;
         let client = self.registry.resolve_client(&key).ok_or_else(|| {
             InferenceError::provider_unavailable(
                 target.provider.to_string(),
@@ -779,6 +827,17 @@ pub struct InjectedProviders {
 
 #[cfg(any(test, feature = "test-helpers"))]
 impl InferenceFacade {
+    /// Binds a prebuilt embedding provider to a profile id in the
+    /// per-profile cache, so a test can route a profile at a scripted
+    /// provider after construction.
+    pub fn inject_embedding_provider(
+        &self,
+        profile_id: EmbeddingProfileId,
+        provider: Arc<dyn EmbeddingProvider>,
+    ) {
+        self.embedding_cache.insert(profile_id, provider);
+    }
+
     /// Test-only constructor injecting prebuilt providers beneath the
     /// façade, so tests drive the real policy surface (permits, accounting,
     /// caching) over scripted providers.
