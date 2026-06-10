@@ -1,4 +1,4 @@
-//! OpenTelemetry GenAI semantic-convention names.
+//! OpenTelemetry `GenAI` semantic-convention names.
 //!
 //! Every `gen_ai.*` string Tribal emits lives in this module, pinned against
 //! the semantic-conventions registry at v1.36.0 (stability: Development).
