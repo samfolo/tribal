@@ -29,7 +29,7 @@ use crate::{
         check_first_run, completion_stage_specs, create_pool_with_retry, ensure_prompt_files,
         generate_instance_id, init_prompt_watcher, load_prompts, load_prompts_embedded,
         probe_startup_providers, provision_genesis, read_active_profile, resolve_project,
-        run_migrations,
+        run_migrations, validate_embedding_identity,
     },
 };
 
@@ -397,6 +397,12 @@ async fn bootstrap(
         name: active_profile.provider_kind().to_string(),
         model: active_profile.model().to_owned(),
     };
+
+    // Boot fails closed when the active embedding identity is unusable (a
+    // missing cloud credential, a provider kind with no embedding API):
+    // booting past it would dead-letter every ingest and fail every
+    // discover with only a warn line to explain why.
+    validate_embedding_identity(&facade, config, &active_profile)?;
 
     probe_startup_providers(&facade, &active_profile).await;
 

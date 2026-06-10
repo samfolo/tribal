@@ -133,6 +133,38 @@ impl EmbeddingCredentialResolver for CatalogueCredentialResolver {
     }
 }
 
+/// Validates the active embedding identity fail-closed at boot: a
+/// key-requiring provider with no catalogue credential, or a provider
+/// kind with no embedding API, aborts startup with the endpoint named
+/// rather than booting into a server whose every ingest and discover
+/// fails.
+///
+/// # Errors
+///
+/// Returns [`AppError::EmbeddingCredentialUnresolved`] for a missing
+/// credential and [`AppError::ProviderSetup`] for an identity the façade
+/// cannot serve.
+pub(crate) fn validate_embedding_identity(
+    facade: &InferenceFacade,
+    config: &TribalConfig,
+    active_profile: &EmbeddingProfile,
+) -> Result<(), AppError> {
+    let provider = active_profile.provider_kind();
+    config
+        .credentials
+        .resolve_api_key(provider, active_profile.normalised_base_url())
+        .map_err(|e| AppError::EmbeddingCredentialUnresolved {
+            provider: e.provider,
+            base_url: e.base_url.clone(),
+            provider_upper: provider.as_str().to_uppercase(),
+        })?;
+    facade
+        .prepare_embedding_target(&EmbeddingTarget::from(active_profile))
+        .map_err(|e| AppError::ProviderSetup {
+            context: e.to_string(),
+        })
+}
+
 /// Probes every configured provider through the façade at startup: the
 /// three stage completions and the active embedding profile. Probe
 /// failures are logged but never fail boot — a provider may be down at
