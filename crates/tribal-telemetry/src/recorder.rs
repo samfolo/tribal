@@ -9,11 +9,42 @@
 use std::{sync::Arc, time::Duration};
 
 use opentelemetry::KeyValue;
+use tribal_domain::{gen_ai, span_attrs};
 
 use crate::metrics::{
     LABEL_MODEL, LABEL_OUTCOME, LABEL_POOL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE,
     LABEL_TASK_TYPE, Metrics,
 };
+
+// ---------------------------------------------------------------------------
+// Records
+// ---------------------------------------------------------------------------
+
+/// One GenAI client operation, as the duration and token-usage histograms
+/// record it.
+///
+/// `operation` and the attribute keys follow the GenAI client metric
+/// conventions; `stage` and `purpose` are Tribal's own pipeline
+/// attribution, carried as additional attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InferenceOperationRecord<'a> {
+    /// The GenAI operation name value (`chat` or `embeddings`).
+    pub operation: &'a str,
+    /// The provider name.
+    pub provider: &'a str,
+    /// The model named in the request.
+    pub model: &'a str,
+    /// The pipeline stage the call is attributed to.
+    pub stage: &'a str,
+    /// The embedding purpose, for embedding operations.
+    pub purpose: Option<&'a str>,
+    /// Wall-clock duration of the call.
+    pub duration: Duration,
+    /// Input (prompt) token count.
+    pub input_tokens: u64,
+    /// Output (completion) token count.
+    pub output_tokens: u64,
+}
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -33,6 +64,10 @@ pub trait MetricsRecorder: Send + Sync {
 
     /// Records provider (LLM/embedding) call latency.
     fn record_provider_call(&self, provider: &str, model: &str, stage: &str, elapsed: Duration);
+
+    /// Records one GenAI client operation: its duration in seconds and
+    /// its token counts classed by type.
+    fn record_inference_operation(&self, record: &InferenceOperationRecord<'_>);
 
     /// Records a successfully committed task.
     fn record_task_completed(&self, task_type: &str, duration_ms: f64);
@@ -69,6 +104,10 @@ impl<T: MetricsRecorder + ?Sized> MetricsRecorder for Arc<T> {
 
     fn record_provider_call(&self, provider: &str, model: &str, stage: &str, elapsed: Duration) {
         (**self).record_provider_call(provider, model, stage, elapsed);
+    }
+
+    fn record_inference_operation(&self, record: &InferenceOperationRecord<'_>) {
+        (**self).record_inference_operation(record);
     }
 
     fn record_task_completed(&self, task_type: &str, duration_ms: f64) {
@@ -144,6 +183,41 @@ impl MetricsRecorder for OtelMetricsRecorder {
         );
     }
 
+    fn record_inference_operation(&self, record: &InferenceOperationRecord<'_>) {
+        let mut attributes = vec![
+            KeyValue::new(gen_ai::OPERATION_NAME, record.operation.to_owned()),
+            KeyValue::new(gen_ai::PROVIDER_NAME, record.provider.to_owned()),
+            KeyValue::new(gen_ai::REQUEST_MODEL, record.model.to_owned()),
+            KeyValue::new(span_attrs::STAGE, record.stage.to_owned()),
+        ];
+        if let Some(purpose) = record.purpose {
+            attributes.push(KeyValue::new(
+                span_attrs::EMBEDDING_PURPOSE,
+                purpose.to_owned(),
+            ));
+        }
+
+        self.metrics
+            .gen_ai_operation_duration
+            .record(record.duration.as_secs_f64(), &attributes);
+
+        attributes.push(KeyValue::new(
+            gen_ai::TOKEN_TYPE,
+            gen_ai::TOKEN_TYPE_INPUT.to_owned(),
+        ));
+        self.metrics
+            .gen_ai_token_usage
+            .record(record.input_tokens, &attributes);
+
+        let last = attributes
+            .last_mut()
+            .expect("the token-type attribute was just pushed");
+        *last = KeyValue::new(gen_ai::TOKEN_TYPE, gen_ai::TOKEN_TYPE_OUTPUT.to_owned());
+        self.metrics
+            .gen_ai_token_usage
+            .record(record.output_tokens, &attributes);
+    }
+
     fn record_task_completed(&self, task_type: &str, task_duration_ms: f64) {
         let attr = KeyValue::new(LABEL_TASK_TYPE, task_type.to_owned());
         self.metrics
@@ -206,6 +280,7 @@ impl MetricsRecorder for NoopMetricsRecorder {
         _elapsed: Duration,
     ) {
     }
+    fn record_inference_operation(&self, _record: &InferenceOperationRecord<'_>) {}
     fn record_task_completed(&self, _task_type: &str, _duration_ms: f64) {}
     fn record_task_retried(&self, _task_type: &str) {}
     fn record_task_dead_lettered(&self, _task_type: &str) {}
@@ -239,6 +314,31 @@ mod tests {
         recorder.record_job_completed("success", Some(1200.0));
         recorder.record_job_completed("failure", None);
         recorder.set_queue_gauge("extraction", "queued", 5);
+    }
+
+    #[test]
+    fn test_inference_operation_record_accepts_both_shapes() {
+        let recorder = OtelMetricsRecorder::new(Metrics::noop());
+        recorder.record_inference_operation(&InferenceOperationRecord {
+            operation: "chat",
+            provider: "anthropic",
+            model: "claude",
+            stage: "triage",
+            purpose: None,
+            duration: Duration::from_millis(120),
+            input_tokens: 10,
+            output_tokens: 5,
+        });
+        recorder.record_inference_operation(&InferenceOperationRecord {
+            operation: "embeddings",
+            provider: "ollama",
+            model: "nomic-embed-text:v1.5",
+            stage: "embedding",
+            purpose: Some("query"),
+            duration: Duration::from_millis(8),
+            input_tokens: 3,
+            output_tokens: 0,
+        });
     }
 
     #[test]
