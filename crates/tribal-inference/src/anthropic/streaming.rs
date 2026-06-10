@@ -256,8 +256,8 @@ mod tests {
 
     use super::super::inference::MESSAGES_PATH;
     use crate::{
-        AnthropicInferenceProvider, CompletionRequest, InferenceProvider, Message, Role,
-        collect_completion,
+        CompletionRequest, InferenceProvider, Message, Role,
+        anthropic::AnthropicInferenceProvider, collect_completion,
     };
     use tribal_domain::InferenceEvent;
 

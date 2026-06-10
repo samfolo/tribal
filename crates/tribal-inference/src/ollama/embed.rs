@@ -8,12 +8,12 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::{EmbeddingPurpose, EmbeddingUsage, gen_ai, span_attrs};
+use tribal_domain::{EmbeddingUsage, gen_ai, span_attrs};
 
 use crate::{
     EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InferenceError, ProviderIdentity,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
-    http::{EMBEDDING_PROBE_INPUT, latency_ms, normalise_base_url},
+    http::{latency_ms, normalise_base_url},
     validation::validate_embeddings,
 };
 
@@ -84,44 +84,6 @@ impl OllamaEmbeddingProvider {
         }
     }
 
-    /// Validates model availability and dimension configuration.
-    ///
-    /// Sends a best-effort GET to `/api/tags` to check whether the
-    /// configured model is locally available, then embeds the canonical
-    /// string `"tribal probe"` and validates the returned vector length
-    /// against `expected_dimensions`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InferenceError::ProviderUnavailable`] if Ollama cannot
-    /// be reached.  Returns [`InferenceError::ResponseParseFailed`] if
-    /// the returned vector length does not match expectations.
-    pub async fn probe_model(&self) -> Result<(), InferenceError> {
-        let span = tracing::info_span!(
-            "tribal.embedding.probe",
-            { span_attrs::EMBEDDING_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::EMBEDDING_MODEL } = %self.identity.model,
-        );
-
-        async {
-            super::tags::check_tags(&self.client, &self.base_url, &self.identity.model).await;
-
-            let request = EmbeddingRequest {
-                input: EMBEDDING_PROBE_INPUT.to_owned(),
-                purpose: EmbeddingPurpose::Candidate,
-            };
-            let _response = self.embed(request).await?;
-
-            tracing::info!(
-                dimensions = self.expected_dimensions,
-                "model {} probe succeeded",
-                self.identity.model,
-            );
-            Ok(())
-        }
-        .instrument(span)
-        .await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -661,99 +623,9 @@ mod tests {
 
     // -- Probe tests --------------------------------------------------------
 
-    #[tokio::test]
-    async fn test_probe_model_success() {
-        let server = MockServer::start().await;
 
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [{"name": "nomic-embed-text:v1.5"}],
-            })))
-            .mount(&server)
-            .await;
 
-        Mock::given(method("POST"))
-            .and(path(EMBED_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)))
-            .mount(&server)
-            .await;
 
-        let provider = setup(&server, 3);
-        provider.probe_model().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_tags_failure_continues() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path(EMBED_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server, 3);
-        provider.probe_model().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_embed_failure_propagates() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [],
-            })))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path(EMBED_PATH))
-            .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server, 3);
-        let err = provider.probe_model().await.unwrap_err();
-        assert!(
-            matches!(err, InferenceError::ProviderUnavailable { .. }),
-            "expected ProviderUnavailable, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_dimension_mismatch_propagates() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [{"name": "nomic-embed-text:v1.5"}],
-            })))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path(EMBED_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(5)))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server, 3);
-        let err = provider.probe_model().await.unwrap_err();
-        assert!(
-            matches!(err, InferenceError::ResponseParseFailed { .. }),
-            "expected ResponseParseFailed, got {err:?}"
-        );
-    }
 
     #[tokio::test]
     async fn test_revision_token_resolves_the_models_digest() {
