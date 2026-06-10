@@ -33,11 +33,12 @@ pub struct UnsupportedEmbeddingProvider {
 pub(crate) fn ensure_embedding_support(
     provider_kind: ProviderKind,
 ) -> Result<(), UnsupportedEmbeddingProvider> {
-    match provider_kind {
-        ProviderKind::Ollama | ProviderKind::OpenAi => Ok(()),
-        ProviderKind::Anthropic => Err(UnsupportedEmbeddingProvider {
-            provider: ProviderKind::Anthropic,
-        }),
+    if provider_kind.supports_embedding() {
+        Ok(())
+    } else {
+        Err(UnsupportedEmbeddingProvider {
+            provider: provider_kind,
+        })
     }
 }
 
