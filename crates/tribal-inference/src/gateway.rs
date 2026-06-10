@@ -1,7 +1,7 @@
-//! The inference façade: the one internal port every completion and
+//! The inference gateway: the one internal port every completion and
 //! embedding request routes through.
 //!
-//! The façade owns the policy that call sites must not carry themselves:
+//! The gateway owns the policy that call sites must not carry themselves:
 //! credential resolution for both the per-stage completion endpoints and
 //! the embedding endpoints, provider construction and caching, concurrency
 //! permits, span emission, and accounting through the [`LedgerSink`].
@@ -179,7 +179,7 @@ pub struct CompletionStageSpecs {
 // Errors
 // ----------------------------------------------------------------------------
 
-/// An [`InferenceFacade::embed_group`] call failed.
+/// An [`InferenceGateway::embed_group`] call failed.
 ///
 /// Distinguishes a failure before any input was attempted from one
 /// input's failure, carrying the latter's position so the caller can
@@ -208,9 +208,9 @@ pub enum EmbedGroupError {
     },
 }
 
-/// The façade could not be constructed.
+/// The gateway could not be constructed.
 #[derive(Debug, thiserror::Error)]
-pub enum FacadeBuildError {
+pub enum GatewayBuildError {
     /// A stage's completion endpoint could not be keyed.
     #[error("keying the {stage} completion endpoint: {source}")]
     CompletionEndpoint {
@@ -230,7 +230,7 @@ pub enum FacadeBuildError {
 }
 
 // ----------------------------------------------------------------------------
-// InferenceFacade
+// InferenceGateway
 // ----------------------------------------------------------------------------
 
 /// One completion endpoint, bound: the built provider and its registry key.
@@ -246,7 +246,7 @@ struct ResolvedEmbedding {
 }
 
 /// The internal port for every completion and embedding request.
-pub struct InferenceFacade {
+pub struct InferenceGateway {
     registry: ProviderRegistry,
     extraction: CompletionBinding,
     triage: CompletionBinding,
@@ -256,20 +256,20 @@ pub struct InferenceFacade {
     sink: Arc<dyn LedgerSink>,
 }
 
-impl InferenceFacade {
-    /// Builds the façade: keys each stage endpoint, constructs its
+impl InferenceGateway {
+    /// Builds the gateway: keys each stage endpoint, constructs its
     /// provider from the spec, and takes ownership of the registry.
     ///
     /// # Errors
     ///
-    /// Returns [`FacadeBuildError`] when a stage endpoint cannot be keyed
+    /// Returns [`GatewayBuildError`] when a stage endpoint cannot be keyed
     /// or the registry holds no client for it.
     pub fn new(
         registry: ProviderRegistry,
         stages: &CompletionStageSpecs,
         credentials: Arc<dyn EmbeddingCredentialResolver>,
         sink: Arc<dyn LedgerSink>,
-    ) -> Result<Self, FacadeBuildError> {
+    ) -> Result<Self, GatewayBuildError> {
         let extraction = build_binding(&registry, TaskType::Extraction, &stages.extraction)?;
         let triage = build_binding(&registry, TaskType::Triage, &stages.triage)?;
         let relation = build_binding(&registry, TaskType::Relation, &stages.relation)?;
@@ -785,16 +785,16 @@ fn build_binding(
     registry: &ProviderRegistry,
     stage: TaskType,
     spec: &CompletionStageSpec,
-) -> Result<CompletionBinding, FacadeBuildError> {
+) -> Result<CompletionBinding, GatewayBuildError> {
     let key = ProviderKey::new(
         spec.provider.to_string(),
         &spec.base_url,
         RequestClass::Inference,
     )
-    .map_err(|source| FacadeBuildError::CompletionEndpoint { stage, source })?;
+    .map_err(|source| GatewayBuildError::CompletionEndpoint { stage, source })?;
     let client = registry
         .resolve_client(&key)
-        .ok_or_else(|| FacadeBuildError::MissingClient { key: key.clone() })?;
+        .ok_or_else(|| GatewayBuildError::MissingClient { key: key.clone() })?;
 
     let provider: Arc<dyn InferenceProvider> = match spec.provider {
         ProviderKind::Ollama => Arc::new(OllamaInferenceProvider::new(
@@ -867,7 +867,7 @@ pub struct InjectedEmbedding {
     pub provider: Arc<dyn EmbeddingProvider>,
 }
 
-/// The full set of injected parts for [`InferenceFacade::with_providers`].
+/// The full set of injected parts for [`InferenceGateway::with_providers`].
 #[cfg(any(test, feature = "test-helpers"))]
 pub struct InjectedProviders {
     /// The registry holding semaphores for every injected key.
@@ -890,7 +890,7 @@ pub struct InjectedProviders {
 impl InjectedProviders {
     /// One inference provider serving all three stages under one key, an
     /// empty-catalogue credential resolver, and the given embeddings and
-    /// sink: the common shape of a test façade.
+    /// sink: the common shape of a test gateway.
     #[must_use]
     pub fn uniform(
         registry: ProviderRegistry,
@@ -918,7 +918,7 @@ impl InjectedProviders {
 }
 
 #[cfg(any(test, feature = "test-helpers"))]
-impl InferenceFacade {
+impl InferenceGateway {
     /// Binds a prebuilt embedding provider to a profile id in the
     /// per-profile cache, so a test can route a profile at a scripted
     /// provider after construction.
@@ -931,11 +931,11 @@ impl InferenceFacade {
     }
 
     /// Test-only constructor injecting prebuilt providers beneath the
-    /// façade, so tests drive the real policy surface (permits, accounting,
+    /// gateway, so tests drive the real policy surface (permits, accounting,
     /// caching) over scripted providers.
     #[must_use]
     pub fn with_providers(parts: InjectedProviders) -> Self {
-        let facade = Self {
+        let gateway = Self {
             registry: parts.registry,
             extraction: CompletionBinding {
                 provider: parts.extraction.provider,
@@ -954,11 +954,11 @@ impl InferenceFacade {
             sink: parts.sink,
         };
         for injected in parts.embeddings {
-            facade
+            gateway
                 .embedding_cache
                 .insert(injected.profile_id, injected.provider);
         }
-        facade
+        gateway
     }
 }
 
@@ -1153,7 +1153,7 @@ mod tests {
     // -- Fixture assembly ----------------------------------------------------
 
     struct Fixture {
-        facade: InferenceFacade,
+        gateway: InferenceGateway,
         inference: Arc<ScriptedInference>,
         sink: Arc<RecordingSink>,
         profile_id: EmbeddingProfileId,
@@ -1190,7 +1190,7 @@ mod tests {
         let sink = Arc::new(RecordingSink::default());
         let profile_id = EmbeddingProfileId::new();
 
-        let facade = InferenceFacade::with_providers(InjectedProviders::uniform(
+        let gateway = InferenceGateway::with_providers(InjectedProviders::uniform(
             registry,
             Arc::clone(&inference) as Arc<dyn InferenceProvider>,
             stage_key(),
@@ -1202,7 +1202,7 @@ mod tests {
         ));
 
         Fixture {
-            facade,
+            gateway,
             inference,
             sink,
             profile_id,
@@ -1249,7 +1249,7 @@ mod tests {
         let attribution = an_attribution();
 
         fixture
-            .facade
+            .gateway
             .complete(
                 TaskType::Triage,
                 a_request(),
@@ -1274,7 +1274,7 @@ mod tests {
         let fixture = a_fixture(1);
 
         fixture
-            .facade
+            .gateway
             .complete(
                 TaskType::Extraction,
                 a_request(),
@@ -1293,7 +1293,7 @@ mod tests {
         let fixture = a_fixture(1);
 
         fixture
-            .facade
+            .gateway
             .probe_completion(TaskType::Relation, &UsageAttribution::default())
             .await
             .unwrap();
@@ -1309,7 +1309,7 @@ mod tests {
         let target = an_embedding_target(&fixture);
 
         fixture
-            .facade
+            .gateway
             .embed(
                 &target,
                 EmbeddingRequest {
@@ -1347,7 +1347,7 @@ mod tests {
         let target = an_embedding_target(&fixture);
 
         let response = fixture
-            .facade
+            .gateway
             .probe_embedding(&target, &UsageAttribution::default())
             .await
             .unwrap();
@@ -1368,7 +1368,7 @@ mod tests {
         let target = an_embedding_target(&fixture);
 
         let responses = fixture
-            .facade
+            .gateway
             .embed_group(
                 &target,
                 vec![
@@ -1413,7 +1413,7 @@ mod tests {
         let target = an_embedding_target(&fixture);
 
         let result = fixture
-            .facade
+            .gateway
             .embed_many(
                 &target,
                 vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
@@ -1443,7 +1443,7 @@ mod tests {
         let fixture = a_fixture(1);
 
         fixture
-            .facade
+            .gateway
             .complete(
                 TaskType::Extraction,
                 a_request(),
@@ -1463,7 +1463,7 @@ mod tests {
         let attribution = an_attribution();
 
         let stream = fixture
-            .facade
+            .gateway
             .complete_stream(
                 TaskType::Extraction,
                 a_request(),
@@ -1490,13 +1490,13 @@ mod tests {
     async fn test_stream_owns_its_permit_until_dropped() {
         let fixture = a_fixture(1);
         let semaphore = fixture
-            .facade
+            .gateway
             .registry
             .resolve_semaphore(&stage_key())
             .unwrap();
 
         let stream = fixture
-            .facade
+            .gateway
             .complete_stream(
                 TaskType::Extraction,
                 a_request(),
@@ -1523,13 +1523,13 @@ mod tests {
     async fn test_stream_releases_its_permit_on_the_terminal_event() {
         let fixture = a_fixture(1);
         let semaphore = fixture
-            .facade
+            .gateway
             .registry
             .resolve_semaphore(&stage_key())
             .unwrap();
 
         let mut stream = fixture
-            .facade
+            .gateway
             .complete_stream(
                 TaskType::Extraction,
                 a_request(),
@@ -1560,14 +1560,14 @@ mod tests {
     async fn test_bounded_wait_times_out_as_permit_timeout() {
         let fixture = a_fixture(1);
         let semaphore = fixture
-            .facade
+            .gateway
             .registry
             .resolve_semaphore(&stage_key())
             .unwrap();
         let held = Arc::clone(&semaphore).acquire_owned().await.unwrap();
 
         let err = fixture
-            .facade
+            .gateway
             .complete(
                 TaskType::Extraction,
                 a_request(),
@@ -1596,7 +1596,7 @@ mod tests {
     #[tokio::test]
     async fn test_embed_unknown_profile_builds_and_caches_the_provider() {
         let fixture = a_fixture(1);
-        // A fresh profile id: not in the cache, so the façade builds the
+        // A fresh profile id: not in the cache, so the gateway builds the
         // real provider from the target identity (no wire call is made;
         // construction alone proves resolution).
         let target = EmbeddingTarget {
@@ -1607,11 +1607,11 @@ mod tests {
             profile_id: Some(EmbeddingProfileId::new()),
         };
 
-        let resolved = fixture.facade.resolve_embedding(&target).unwrap();
+        let resolved = fixture.gateway.resolve_embedding(&target).unwrap();
         assert_eq!(resolved.provider.identity().model, "nomic-embed-text:v1.5");
         assert!(
             fixture
-                .facade
+                .gateway
                 .embedding_cache
                 .contains_key(&target.profile_id.unwrap()),
             "the built provider is cached by profile id"
@@ -1630,7 +1630,7 @@ mod tests {
         };
 
         let err = fixture
-            .facade
+            .gateway
             .embed(
                 &target,
                 EmbeddingRequest {
@@ -1688,7 +1688,7 @@ mod tests {
         .unwrap();
         let sink = Arc::new(RecordingSink::default());
 
-        let facade = InferenceFacade::new(
+        let gateway = InferenceGateway::new(
             registry,
             &CompletionStageSpecs {
                 extraction: spec.clone(),
@@ -1698,9 +1698,9 @@ mod tests {
             Arc::new(EmptyCredentialResolver),
             Arc::clone(&sink) as Arc<dyn LedgerSink>,
         )
-        .expect("the façade builds from registered endpoints");
+        .expect("the gateway builds from registered endpoints");
 
-        facade
+        gateway
             .probe_completion(TaskType::Triage, &UsageAttribution::default())
             .await
             .expect("the probe succeeds against the mock");
@@ -1748,7 +1748,7 @@ mod tests {
 
         let registry = ProviderRegistry::new(Vec::new()).unwrap();
         let inference = Arc::new(ScriptedInference::new());
-        let facade = InferenceFacade::with_providers(InjectedProviders {
+        let gateway = InferenceGateway::with_providers(InjectedProviders {
             registry,
             extraction: InjectedCompletion {
                 provider: Arc::clone(&inference) as Arc<dyn InferenceProvider>,
@@ -1774,7 +1774,7 @@ mod tests {
             base_url: "https://api.openai.com/v1".to_owned(),
             profile_id: None,
         };
-        let err = facade
+        let err = gateway
             .resolve_embedding(&target)
             .err()
             .expect("a failing credential resolver must fail resolution");

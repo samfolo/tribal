@@ -19,7 +19,7 @@ use tribal_db::{
     PgTaskRepository, PrincipalRepository, TaskRepository,
 };
 use tribal_domain::{Job, JobId, JobState, JobStatus, Task, TaskType, span_attrs};
-use tribal_inference::InferenceFacade;
+use tribal_inference::InferenceGateway;
 use tribal_telemetry::MetricsRecorder;
 
 use crate::{
@@ -51,7 +51,7 @@ const REINDEX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub struct Worker {
     pool: PgPool,
     /// The one port every completion and embedding call routes through.
-    facade: Arc<InferenceFacade>,
+    gateway: Arc<InferenceGateway>,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
     include_llm_content: bool,
@@ -72,7 +72,7 @@ impl Worker {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: PgPool,
-        facade: Arc<InferenceFacade>,
+        gateway: Arc<InferenceGateway>,
         cancellation_token: CancellationToken,
         config: WorkerConfig,
         include_llm_content: bool,
@@ -82,7 +82,7 @@ impl Worker {
     ) -> Self {
         Self {
             pool,
-            facade,
+            gateway,
             cancellation_token,
             config,
             include_llm_content,
@@ -110,9 +110,9 @@ impl Worker {
         &self.pool
     }
 
-    /// Returns a reference to the inference façade.
-    pub(crate) fn facade(&self) -> &Arc<InferenceFacade> {
-        &self.facade
+    /// Returns a reference to the inference gateway.
+    pub(crate) fn gateway(&self) -> &Arc<InferenceGateway> {
+        &self.gateway
     }
 
     /// Returns a reference to the telemetry metric instruments.
@@ -173,7 +173,7 @@ impl Worker {
     async fn run_startup_backfills(&self) {
         let processor = BackfillProcessor::new(
             self.pool.clone(),
-            Arc::clone(&self.facade),
+            Arc::clone(&self.gateway),
             self.cancellation_token.clone(),
         );
 
@@ -690,7 +690,7 @@ impl Worker {
                 }
             };
 
-            if let Err(e) = drive_reindex_cycle(&mut conn, &self.facade, &self.instance_id).await {
+            if let Err(e) = drive_reindex_cycle(&mut conn, &self.gateway, &self.instance_id).await {
                 tracing::warn!(error = %e, "reindex drive cycle failed");
             }
         }

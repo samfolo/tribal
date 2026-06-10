@@ -31,7 +31,7 @@ use tribal_domain::{
     ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, span_attrs,
 };
 use tribal_inference::{
-    EmbeddingTarget, InferenceError, InferenceFacade, PermitWait, UsageAttribution,
+    EmbeddingTarget, InferenceError, InferenceGateway, PermitWait, UsageAttribution,
     classify_embedding_error, embedding_retry_after, probe_digest,
 };
 
@@ -391,14 +391,14 @@ pub enum ReindexError {
 /// Returns [`InferenceError`] when the target cannot be resolved or the probe
 /// embedding call fails.
 pub async fn resolve_reindex_target(
-    facade: &InferenceFacade,
+    gateway: &InferenceGateway,
     target: &EmbeddingTarget,
     distance_metric: DistanceMetric,
 ) -> Result<ReindexTarget, InferenceError> {
-    let response = facade
+    let response = gateway
         .probe_embedding(target, &UsageAttribution::default())
         .await?;
-    let revision_token = facade.revision_token(target).await?;
+    let revision_token = gateway.revision_token(target).await?;
     let fingerprint_hash = embedding_profile_fingerprint(
         target.provider.as_str(),
         &target.base_url,
@@ -470,11 +470,11 @@ fn retry_at_for(signal: &RetrySignal, attempt: u32) -> DateTime<Utc> {
 }
 
 /// The per-cycle context every task in one drive cycle shares: the run, its
-/// building profile, the façade, and the run's ledger attribution.
+/// building profile, the gateway, and the run's ledger attribution.
 struct ReindexCtx<'a> {
     run: &'a ReindexRun,
     building: &'a EmbeddingProfile,
-    facade: &'a InferenceFacade,
+    gateway: &'a InferenceGateway,
     target: EmbeddingTarget,
     attribution: UsageAttribution,
 }
@@ -608,7 +608,7 @@ async fn embed_pending_batch(
     let items = PgKnowledgeItemRepository.find_by_ids(conn, &ids).await?;
     let inputs = items.iter().map(|item| item.content().to_owned()).collect();
     let result = match ctx
-        .facade
+        .gateway
         .embed_many(
             &ctx.target,
             inputs,
@@ -706,7 +706,7 @@ async fn embed_one_tag(
     tag: &str,
 ) -> Result<Option<RetrySignal>, DbError> {
     let mut result = match ctx
-        .facade
+        .gateway
         .embed_many(
             &ctx.target,
             vec![tag.to_owned()],
@@ -854,7 +854,7 @@ async fn process_tasks(
 /// processing fails.
 pub async fn drive_reindex_cycle(
     conn: &mut PgConnection,
-    facade: &InferenceFacade,
+    gateway: &InferenceGateway,
     claimed_by: &str,
 ) -> Result<(), ReindexError> {
     let Some(run) = drive_reindex(conn).await? else {
@@ -874,11 +874,11 @@ pub async fn drive_reindex_cycle(
     );
     async {
         let target = EmbeddingTarget::from(&building);
-        facade.prepare_embedding_target(&target)?;
+        gateway.prepare_embedding_target(&target)?;
         let ctx = ReindexCtx {
             run: &run,
             building: &building,
-            facade,
+            gateway,
             target,
             attribution: UsageAttribution {
                 reindex_run_id: Some(run.id()),
@@ -1066,7 +1066,7 @@ enum ProbeOutcome {
 /// Both checks are provider network calls, so this must run lock-free, never
 /// while the exclusive cutover lock is held.
 async fn probe_drifted(ctx: &ReindexCtx<'_>) -> ProbeOutcome {
-    let Ok(resolved_token) = ctx.facade.revision_token(&ctx.target).await else {
+    let Ok(resolved_token) = ctx.gateway.revision_token(&ctx.target).await else {
         return ProbeOutcome::Unavailable;
     };
     if !resolved_token.is_empty() && resolved_token != ctx.building.revision_token() {
@@ -1077,7 +1077,7 @@ async fn probe_drifted(ctx: &ReindexCtx<'_>) -> ProbeOutcome {
         return ProbeOutcome::Stable;
     };
     match ctx
-        .facade
+        .gateway
         .probe_embedding(&ctx.target, &ctx.attribution)
         .await
     {
@@ -1286,12 +1286,12 @@ mod tests {
 
     use super::*;
 
-    /// A façade serving `provider` for `building`'s endpoint, with the
+    /// A gateway serving `provider` for `building`'s endpoint, with the
     /// completion stages bound to unreachable stubs.
-    fn a_test_facade(
+    fn a_test_gateway(
         building: &EmbeddingProfile,
         provider: Arc<dyn EmbeddingProvider>,
-    ) -> InferenceFacade {
+    ) -> InferenceGateway {
         let stub: Arc<dyn tribal_inference::InferenceProvider> = Arc::new(
             MockInferenceProvider::builder()
                 .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
@@ -1318,7 +1318,7 @@ mod tests {
         ])
         .expect("registry");
 
-        InferenceFacade::with_providers(InjectedProviders::uniform(
+        InferenceGateway::with_providers(InjectedProviders::uniform(
             registry,
             stub,
             inference_key,
@@ -1330,16 +1330,16 @@ mod tests {
         ))
     }
 
-    /// The per-cycle context over a test façade, attributed to `run`.
+    /// The per-cycle context over a test gateway, attributed to `run`.
     fn a_reindex_ctx<'a>(
         run: &'a ReindexRun,
         building: &'a EmbeddingProfile,
-        facade: &'a InferenceFacade,
+        gateway: &'a InferenceGateway,
     ) -> ReindexCtx<'a> {
         ReindexCtx {
             run,
             building,
-            facade,
+            gateway,
             target: EmbeddingTarget::from(building),
             attribution: UsageAttribution {
                 reindex_run_id: Some(run.id()),
@@ -1631,16 +1631,16 @@ mod tests {
                 .build(),
         );
         // The target the probe resolves has no profile row yet; route the
-        // mock through the cache of a profile-bearing twin so the façade
+        // mock through the cache of a profile-bearing twin so the gateway
         // serves it, then probe the profile-less target's identity.
         let building = an_embedding_profile().build();
-        let facade = a_test_facade(&building, mock);
+        let gateway = a_test_gateway(&building, mock);
         let target = EmbeddingTarget {
             profile_id: Some(building.id()),
             ..EmbeddingTarget::from(&building)
         };
 
-        let target = resolve_reindex_target(&facade, &target, DistanceMetric::Cosine)
+        let target = resolve_reindex_target(&gateway, &target, DistanceMetric::Cosine)
             .await
             .expect("resolve target");
 
@@ -1904,8 +1904,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let facade = a_test_facade(&building, Arc::clone(&provider));
-        let ctx = a_reindex_ctx(&run, &building, &facade);
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         let before = Utc::now();
         process_one(&mut txn, &ctx, &task).await.expect("process");
@@ -1942,8 +1942,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let facade = a_test_facade(&building, Arc::clone(&provider));
-        let ctx = a_reindex_ctx(&run, &building, &facade);
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         let before = Utc::now();
         process_one(&mut txn, &ctx, &task).await.expect("process");
@@ -2078,8 +2078,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let facade = a_test_facade(&building, Arc::clone(&provider));
-        let ctx = a_reindex_ctx(&run, &building, &facade);
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
         process_tasks(&mut txn, &ctx, "test-reindex-worker")
             .await
             .expect("process tasks");
@@ -2154,8 +2154,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let facade = a_test_facade(&building, Arc::clone(&provider));
-        let ctx = a_reindex_ctx(&run, &building, &facade);
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         process_tasks(&mut txn, &ctx, "test-reindex-worker")
             .await
@@ -2245,8 +2245,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let facade = a_test_facade(&building, Arc::clone(&provider));
-        let ctx = a_reindex_ctx(&run, &building, &facade);
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         process_tasks(&mut txn, &ctx, "test-reindex-worker")
             .await
@@ -2352,8 +2352,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let facade = a_test_facade(&building, Arc::clone(&provider));
-        let ctx = a_reindex_ctx(&run, &building, &facade);
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         process_tasks(&mut txn, &ctx, "test-reindex-worker")
             .await
@@ -2440,8 +2440,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::Error(a_provider_unavailable("transient")))
                 .build(),
         );
-        let facade = a_test_facade(&building, Arc::clone(&provider));
-        let ctx = a_reindex_ctx(&run, &building, &facade);
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         assert!(
             !catch_up_and_cutover(&mut setup, &ctx)
@@ -2524,8 +2524,8 @@ mod tests {
             vector: vector.clone(),
             observed_exclusive_held: Arc::clone(&observed),
         });
-        let facade = a_test_facade(&building, Arc::clone(&provider));
-        let ctx = a_reindex_ctx(&run, &building, &facade);
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         process_tasks(&mut setup, &ctx, "test-reindex-worker")
             .await
@@ -2620,8 +2620,8 @@ mod tests {
         );
         let mut conn_b = ctx_db.raw_connection().await.expect("cutover connection");
         let handle = tokio::spawn(async move {
-            let facade = a_test_facade(&building, Arc::clone(&provider));
-            let ctx = a_reindex_ctx(&run, &building, &facade);
+            let gateway = a_test_gateway(&building, Arc::clone(&provider));
+            let ctx = a_reindex_ctx(&run, &building, &gateway);
             catch_up_and_cutover(&mut conn_b, &ctx).await
         });
 

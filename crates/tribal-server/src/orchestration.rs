@@ -17,7 +17,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{PromptSource, TribalConfig};
-use tribal_inference::{InferenceFacade, ProviderIdentity};
+use tribal_inference::{InferenceGateway, ProviderIdentity};
 use tribal_mcp::{AppState, build_inference_parameters};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
 use tribal_worker::{PgLedgerSink, Worker, WorkerError};
@@ -379,11 +379,11 @@ async fn bootstrap(
     let active_profile = read_active_profile(&pool_mcp).await?;
     let registry = build_provider_registry(config, &active_profile)?;
 
-    // The façade owns provider construction, credentials, permits, and
+    // The gateway owns provider construction, credentials, permits, and
     // accounting; the ledger sink writes through the worker pool.
     let sink = Arc::new(PgLedgerSink::new(pool_worker.clone(), metrics.clone()));
-    let facade = Arc::new(
-        InferenceFacade::new(
+    let gateway = Arc::new(
+        InferenceGateway::new(
             registry,
             &completion_stage_specs(config),
             Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
@@ -402,9 +402,9 @@ async fn bootstrap(
     // missing cloud credential, a provider kind with no embedding API):
     // booting past it would dead-letter every ingest and fail every
     // discover with only a warn line to explain why.
-    validate_embedding_identity(&facade, config, &active_profile)?;
+    validate_embedding_identity(&gateway, config, &active_profile)?;
 
-    probe_startup_providers(&facade, &active_profile).await;
+    probe_startup_providers(&gateway, &active_profile).await;
 
     // -- Project resolution --------------------------------------------------
 
@@ -416,7 +416,7 @@ async fn bootstrap(
 
     let worker = Arc::new(Worker::new(
         pool_worker.clone(),
-        Arc::clone(&facade),
+        Arc::clone(&gateway),
         cancellation_token.clone(),
         config.worker.clone(),
         config.logging.include_llm_content,
@@ -436,7 +436,7 @@ async fn bootstrap(
         .build_version(Arc::from(env!("TRIBAL_GIT_DESCRIBE")))
         .inference_parameters(inference_parameters)
         .active_prompt_versions(Arc::new(RwLock::new(active_prompt_versions)))
-        .facade(facade)
+        .gateway(gateway)
         .embedding_identity(embedding_identity)
         .worker_config(config.worker.clone())
         .server_config(Arc::new(config.server.clone()))

@@ -6,7 +6,7 @@ use tribal_db::{NewExtractionResult, NewTask};
 use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
 use tribal_inference::PermitWait;
 
-use super::{StageCommit, map_facade_error, record_prompt_version_ids, stage_attribution};
+use super::{StageCommit, map_gateway_error, record_prompt_version_ids, stage_attribution};
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
     error::{STAGE_EXTRACTION, StageError},
@@ -127,7 +127,7 @@ impl Worker {
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
-                .facade()
+                .gateway()
                 .complete(
                     TaskType::Extraction,
                     request,
@@ -135,7 +135,7 @@ impl Worker {
                     &stage_attribution(ctx.job, ctx.task),
                 )
                 .await
-                .map_err(|e| map_facade_error("extraction LLM call", e))?;
+                .map_err(|e| map_gateway_error("extraction LLM call", e))?;
 
             if include_llm_content {
                 tracing::debug!(

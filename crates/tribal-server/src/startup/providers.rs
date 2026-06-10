@@ -6,7 +6,7 @@ use tribal_config::{CredentialCatalogue, StageInferenceConfig, TribalConfig};
 use tribal_domain::{EmbeddingProfile, ProviderKind, TaskType};
 use tribal_inference::{
     CompletionStageSpec, CompletionStageSpecs, CredentialError, EmbeddingCredentialResolver,
-    EmbeddingTarget, InferenceFacade, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
+    EmbeddingTarget, InferenceGateway, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
     UsageAttribution,
 };
 
@@ -65,7 +65,7 @@ pub(crate) fn build_provider_registry(
 
 /// Builds a [`ProviderRegistry`] from the inference configuration alone,
 /// for commands that run without reading an active profile. Embedding
-/// endpoints register dynamically when the façade first resolves them.
+/// endpoints register dynamically when the gateway first resolves them.
 pub(crate) fn build_command_registry(config: &TribalConfig) -> Result<ProviderRegistry, AppError> {
     let mut entries: Vec<(ProviderKey, ProviderLimits)> = Vec::new();
     for stage in &[
@@ -84,7 +84,7 @@ pub(crate) fn build_command_registry(config: &TribalConfig) -> Result<ProviderRe
     ProviderRegistry::new(entries).map_err(|source| AppError::ProviderRegistry { source })
 }
 
-/// Translates the per-stage inference configuration into the façade's
+/// Translates the per-stage inference configuration into the gateway's
 /// completion specifications, resolving each stage's base URL and key.
 pub(crate) fn completion_stage_specs(config: &TribalConfig) -> CompletionStageSpecs {
     CompletionStageSpecs {
@@ -103,7 +103,7 @@ fn completion_stage_spec(config: &StageInferenceConfig) -> CompletionStageSpec {
     }
 }
 
-/// The façade's embedding credential resolver, backed by the config
+/// The gateway's embedding credential resolver, backed by the config
 /// catalogue: fail-closed for key-requiring providers, empty for
 /// providers that need none.
 pub(crate) struct CatalogueCredentialResolver {
@@ -140,17 +140,17 @@ impl EmbeddingCredentialResolver for CatalogueCredentialResolver {
 /// fails.
 ///
 /// The credential pre-check is skipped for a kind with no embedding API,
-/// mirroring the façade's structural-before-credential ordering: such an
+/// mirroring the gateway's structural-before-credential ordering: such an
 /// identity fails on the missing API, not on a credential no key could
 /// remedy.
 ///
 /// # Errors
 ///
 /// Returns [`AppError::EmbeddingCredentialUnresolved`] for a missing
-/// credential and [`AppError::ProviderSetup`] for an identity the façade
+/// credential and [`AppError::ProviderSetup`] for an identity the gateway
 /// cannot serve.
 pub(crate) fn validate_embedding_identity(
-    facade: &InferenceFacade,
+    gateway: &InferenceGateway,
     config: &TribalConfig,
     active_profile: &EmbeddingProfile,
 ) -> Result<(), AppError> {
@@ -166,23 +166,23 @@ pub(crate) fn validate_embedding_identity(
                 provider_upper: provider.as_str().to_uppercase(),
             })?;
     }
-    facade
+    gateway
         .prepare_embedding_target(&EmbeddingTarget::from(active_profile))
         .map_err(|e| AppError::ProviderSetup {
             context: e.to_string(),
         })
 }
 
-/// Probes every configured provider through the façade at startup: the
+/// Probes every configured provider through the gateway at startup: the
 /// three stage completions and the active embedding profile. Probe
 /// failures are logged but never fail boot — a provider may be down at
 /// start and healthy by the first task.
 pub(crate) async fn probe_startup_providers(
-    facade: &InferenceFacade,
+    gateway: &InferenceGateway,
     active_profile: &EmbeddingProfile,
 ) {
     for stage in [TaskType::Extraction, TaskType::Triage, TaskType::Relation] {
-        if let Err(e) = facade
+        if let Err(e) = gateway
             .probe_completion(stage, &UsageAttribution::default())
             .await
         {
@@ -190,7 +190,7 @@ pub(crate) async fn probe_startup_providers(
         }
     }
 
-    if let Err(e) = facade
+    if let Err(e) = gateway
         .probe_embedding(
             &EmbeddingTarget::from(active_profile),
             &UsageAttribution::default(),
@@ -320,40 +320,40 @@ mod tests {
 
     // -- validate_embedding_identity -------------------------------------------
 
-    fn a_facade(config: &TribalConfig) -> InferenceFacade {
+    fn a_gateway(config: &TribalConfig) -> InferenceGateway {
         let registry = build_command_registry(config).expect("a registry from default config");
-        InferenceFacade::new(
+        InferenceGateway::new(
             registry,
             &completion_stage_specs(config),
             Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
             Arc::new(NoopLedgerSink),
         )
-        .expect("a façade from registered endpoints")
+        .expect("a gateway from registered endpoints")
     }
 
     #[test]
     fn test_validate_embedding_identity_allows_keyless_ollama() {
         let config = TribalConfig::default();
-        let facade = a_facade(&config);
+        let gateway = a_gateway(&config);
         let active = an_embedding_profile()
             .provider_kind(ProviderKind::Ollama)
             .normalised_base_url("http://localhost:11434".to_owned())
             .build();
 
-        validate_embedding_identity(&facade, &config, &active)
+        validate_embedding_identity(&gateway, &config, &active)
             .expect("a keyless ollama identity boots");
     }
 
     #[test]
     fn test_validate_embedding_identity_fails_closed_without_a_credential() {
         let config = TribalConfig::default();
-        let facade = a_facade(&config);
+        let gateway = a_gateway(&config);
         let active = an_embedding_profile()
             .provider_kind(ProviderKind::OpenAi)
             .normalised_base_url("https://api.openai.com:443/v1".to_owned())
             .build();
 
-        let err = validate_embedding_identity(&facade, &config, &active)
+        let err = validate_embedding_identity(&gateway, &config, &active)
             .expect_err("a keyless cloud identity must abort boot");
         assert!(matches!(
             err,

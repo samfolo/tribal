@@ -16,7 +16,7 @@ use sqlx::PgPool;
 use tribal_config::TribalConfig;
 use tribal_db::{DbError, create_pool};
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
-use tribal_inference::InferenceFacade;
+use tribal_inference::InferenceGateway;
 use tribal_worker::{
     PgLedgerSink, ReindexCancelOutcome, ReindexResolution, ReindexRunOutcome, ReindexRunRequest,
     drop_superseded_indexes, reindex_cancel, reindex_prune, reindex_run,
@@ -62,14 +62,14 @@ async fn run_async(config: &TribalConfig, request: ReindexRunRequest) -> Result<
 
     // The create path registers the target endpoint dynamically and probes it
     // once, so a command registry with no active-profile entry suffices. The
-    // probe is a real, billable call, so the façade ledgers it; the command
+    // probe is a real, billable call, so the gateway ledgers it; the command
     // has no metrics pipeline, so the sink records rows alone.
     let registry = build_command_registry(config)?;
     let sink = Arc::new(PgLedgerSink::new(
         pool.clone(),
         tribal_telemetry::noop_recorder(),
     ));
-    let facade = InferenceFacade::new(
+    let gateway = InferenceGateway::new(
         registry,
         &completion_stage_specs(config),
         Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
@@ -91,7 +91,7 @@ async fn run_async(config: &TribalConfig, request: ReindexRunRequest) -> Result<
         principal.id()
     };
 
-    let outcome = reindex_run(&pool, &facade, &request, principal_id)
+    let outcome = reindex_run(&pool, &gateway, &request, principal_id)
         .await
         .map_err(|source| AppError::Reindex { source })?;
 

@@ -13,12 +13,12 @@ use tracing::Instrument;
 use tribal_db::{PgTagEmbeddingRepository, TagEmbeddingRepository};
 use tribal_domain::{EmbeddingPurpose, TagRegistryEntry, span_attrs};
 use tribal_inference::{
-    EmbeddingRequest, EmbeddingTarget, InferenceFacade, PermitWait, UsageAttribution,
+    EmbeddingRequest, EmbeddingTarget, InferenceGateway, PermitWait, UsageAttribution,
 };
 
 use crate::{
     error::{STAGE_TRIAGE, StageError},
-    stages::{load_active_embedding_profile, map_facade_error},
+    stages::{load_active_embedding_profile, map_gateway_error},
 };
 
 // ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ pub(crate) async fn resolve_tags(
     pool: &PgPool,
     suggested_tags: &[String],
     registry: &[TagRegistryEntry],
-    facade: &InferenceFacade,
+    gateway: &InferenceGateway,
     embedding_target: &EmbeddingTarget,
     threshold: f64,
     deadline: tokio::time::Instant,
@@ -140,7 +140,7 @@ pub(crate) async fn resolve_tags(
         if let Some(profile) = &active_profile {
             for tag in &unmatched {
                 let embedding_response =
-                    embed_tag(tag, facade, embedding_target, deadline, attribution).await?;
+                    embed_tag(tag, gateway, embedding_target, deadline, attribution).await?;
 
                 let mut conn = pool.acquire().await.map_err(|e| StageError::Database {
                     stage: STAGE_TRIAGE.into(),
@@ -205,10 +205,10 @@ pub(crate) async fn resolve_tags(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Embeds a single tag through the façade.
+/// Embeds a single tag through the gateway.
 async fn embed_tag(
     tag: &str,
-    facade: &InferenceFacade,
+    gateway: &InferenceGateway,
     embedding_target: &EmbeddingTarget,
     deadline: tokio::time::Instant,
     attribution: &UsageAttribution,
@@ -218,7 +218,7 @@ async fn embed_tag(
         purpose: EmbeddingPurpose::Tag,
     };
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-    facade
+    gateway
         .embed(
             embedding_target,
             request,
@@ -226,7 +226,7 @@ async fn embed_tag(
             attribution,
         )
         .await
-        .map_err(|e| map_facade_error(&format!("tag embedding call for {tag:?}"), e))
+        .map_err(|e| map_gateway_error(&format!("tag embedding call for {tag:?}"), e))
 }
 
 // ---------------------------------------------------------------------------

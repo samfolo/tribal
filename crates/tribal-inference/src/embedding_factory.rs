@@ -22,7 +22,7 @@ pub struct UnsupportedEmbeddingProvider {
 
 /// Rejects a provider kind with no embedding API.
 ///
-/// The structural check runs before credential resolution in the façade, so
+/// The structural check runs before credential resolution in the gateway, so
 /// a keyless target on an unsupported kind reports the missing API rather
 /// than a missing credential no key could remedy.
 ///
