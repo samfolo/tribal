@@ -19,5 +19,8 @@ pub use propagation::{
     is_valid_trace_id, parent_span_from_trace_id, parent_span_from_traceparent,
     trace_id_from_traceparent,
 };
-pub use recorder::{MetricsRecorder, NoopMetricsRecorder, OtelMetricsRecorder, noop_recorder};
+pub use recorder::{
+    InferenceOperationRecord, MetricsRecorder, NoopMetricsRecorder, OtelMetricsRecorder,
+    noop_recorder,
+};
 pub use subscriber::init_subscriber;

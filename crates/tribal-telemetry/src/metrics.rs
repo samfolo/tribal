@@ -6,6 +6,7 @@
 
 use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, MeterProvider};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
+use tribal_domain::gen_ai;
 
 // ---------------------------------------------------------------------------
 // Metric name constants
@@ -79,6 +80,12 @@ pub struct Metrics {
     pub task_duration_ms: Histogram<f64>,
     /// Provider call latency, labelled by `provider`, `model`, `stage`.
     pub provider_call_ms: Histogram<f64>,
+    /// Token counts per request, classed by `gen_ai.token.type`. Unit:
+    /// `{token}`, per the GenAI client conventions.
+    pub gen_ai_token_usage: Histogram<u64>,
+    /// Client operation duration. Unit: seconds, per the GenAI client
+    /// conventions.
+    pub gen_ai_operation_duration: Histogram<f64>,
 }
 
 impl Metrics {
@@ -97,6 +104,14 @@ impl Metrics {
             job_duration_ms: meter.f64_histogram(JOB_DURATION_MS).build(),
             task_duration_ms: meter.f64_histogram(TASK_DURATION_MS).build(),
             provider_call_ms: meter.f64_histogram(PROVIDER_CALL_MS).build(),
+            gen_ai_token_usage: meter
+                .u64_histogram(gen_ai::CLIENT_TOKEN_USAGE)
+                .with_unit("{token}")
+                .build(),
+            gen_ai_operation_duration: meter
+                .f64_histogram(gen_ai::CLIENT_OPERATION_DURATION)
+                .with_unit("s")
+                .build(),
         }
     }
 
