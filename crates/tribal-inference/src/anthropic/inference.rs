@@ -12,14 +12,11 @@ use tracing::Instrument;
 use tribal_domain::{CompletionResponse, CompletionUsage, ProviderKind, gen_ai, span_attrs};
 
 use crate::{
-    CompletionRequest, InferenceError, InferenceProvider, Message, ProviderIdentity,
-    ResponseFormat, Role, apply_dialect,
+    CompletionRequest, InferenceError, InferenceProvider, ProviderIdentity, ResponseFormat,
+    apply_dialect,
     capabilities::{reconcile_temperature, resolve},
     error::{map_body_read_error, map_json_parse_error, map_send_error},
-    http::{
-        INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, ensure_success, normalise_base_url,
-        record_completion_usage,
-    },
+    http::{ensure_success, normalise_base_url, record_completion_usage},
     stream::{InferenceEventStream, WireMode, drive_event_stream},
 };
 
@@ -141,39 +138,6 @@ impl AnthropicInferenceProvider {
         }
     }
 
-    /// Validates API key and model access by sending a trivial completion.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InferenceError::ProviderUnavailable`] if the provider
-    /// cannot be reached.  Returns [`InferenceError::LlmCallFailed`] if
-    /// the API key or model is rejected.
-    pub async fn probe_model(&self) -> Result<(), InferenceError> {
-        let span = tracing::info_span!(
-            "tribal.llm.probe",
-            { span_attrs::LLM_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::LLM_MODEL } = %self.identity.model,
-        );
-
-        async {
-            let request = CompletionRequest {
-                system: None,
-                messages: vec![Message {
-                    role: Role::User,
-                    content: INFERENCE_PROBE_INPUT.to_owned(),
-                }],
-                temperature: Some(0.0),
-                max_tokens: Some(PROBE_MAX_TOKENS),
-                response_format: None,
-            };
-            let _response = self.complete(request).await?;
-
-            tracing::info!("model {} probe succeeded", self.identity.model);
-            Ok(())
-        }
-        .instrument(span)
-        .await
-    }
 
     /// Builds and sends one `/v1/messages` request for the given wire
     /// mode, enforcing a success status. Records the effective
@@ -396,6 +360,10 @@ mod tests {
     };
 
     use super::*;
+    use crate::{
+        Message, Role,
+        http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS},
+    };
 
     fn a_request(content: &str) -> CompletionRequest {
         CompletionRequest {
@@ -1291,79 +1259,7 @@ mod tests {
 
     // -- Probe tests ---------------------------------------------------------
 
-    #[tokio::test]
-    async fn test_probe_model_success() {
-        let server = MockServer::start().await;
 
-        Mock::given(method("POST"))
-            .and(path(MESSAGES_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
-            .mount(&server)
-            .await;
 
-        let provider = setup(&server);
-        provider.probe_model().await.unwrap();
-    }
 
-    #[tokio::test]
-    async fn test_probe_model_completion_failure_propagates() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path(MESSAGES_PATH))
-            .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        let err = provider.probe_model().await.unwrap_err();
-        assert!(
-            matches!(err, InferenceError::ProviderUnavailable { .. }),
-            "expected ProviderUnavailable, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_auth_401_returns_llm_call_failed() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path(MESSAGES_PATH))
-            .respond_with(ResponseTemplate::new(401).set_body_string("invalid api key"))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        let err = provider.probe_model().await.unwrap_err();
-        assert!(
-            matches!(
-                err,
-                InferenceError::LlmCallFailed { ref context, .. }
-                if context.contains("401")
-            ),
-            "expected LlmCallFailed with 401 status, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_auth_403_returns_llm_call_failed() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path(MESSAGES_PATH))
-            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        let err = provider.probe_model().await.unwrap_err();
-        assert!(
-            matches!(
-                err,
-                InferenceError::LlmCallFailed { ref context, .. }
-                if context.contains("403")
-            ),
-            "expected LlmCallFailed with 403 status, got {err:?}"
-        );
-    }
 }

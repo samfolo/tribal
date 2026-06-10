@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use tribal_domain::ProviderKind;
 
-use crate::{EmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider};
+use crate::{EmbeddingProvider, ollama::OllamaEmbeddingProvider, openai::OpenAiEmbeddingProvider};
 
 /// A provider kind that has no embedding API was requested.
 #[derive(Debug, thiserror::Error)]
-#[error("{provider} does not provide an embedding API")]
+#[error("{provider} does not provide an embedding API; use Ollama or OpenAI for embeddings")]
 pub struct UnsupportedEmbeddingProvider {
     /// The unsupported provider kind.
     pub provider: ProviderKind,

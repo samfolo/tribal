@@ -28,13 +28,15 @@ use tribal_domain::{
 };
 
 use crate::{
-    AnthropicInferenceProvider, BatchEmbeddingResult, CompletionRequest, EmbeddingProvider,
-    EmbeddingRequest, InferenceError, InferenceProvider, Message, OllamaInferenceProvider,
-    OpenAiInferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError,
-    RequestClass, Role,
+    BatchEmbeddingResult, CompletionRequest, EmbeddingProvider, EmbeddingRequest, InferenceError,
+    InferenceProvider, Message, ProviderKey, ProviderLimits, ProviderRegistry,
+    ProviderRegistryError, RequestClass, Role,
+    anthropic::AnthropicInferenceProvider,
+    embedding_factory::make_embedding_provider,
     http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, latency_ms},
     ledger::{LedgerSink, UsageAttribution},
-    make_embedding_provider,
+    ollama::OllamaInferenceProvider,
+    openai::OpenAiInferenceProvider,
     response::EmbeddingResponse,
     stream::InferenceEventStream,
 };
@@ -1509,6 +1511,87 @@ mod tests {
             InferenceError::ProviderUnavailable { ref provider, ref reason, .. }
                 if provider == "anthropic" && reason.contains("does not provide an embedding API")
         ));
+    }
+
+    #[tokio::test]
+    async fn test_new_builds_providers_and_probe_sends_the_canonical_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model": "llama3",
+                "message": {"role": "assistant", "content": "OK"},
+                "done": true,
+                "prompt_eval_count": 4,
+                "eval_count": 2,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let spec = CompletionStageSpec {
+            provider: ProviderKind::Ollama,
+            model: "llama3".to_owned(),
+            base_url: server.uri(),
+            api_key: String::new(),
+        };
+        let key = ProviderKey::new(
+            spec.provider.to_string(),
+            &spec.base_url,
+            RequestClass::Inference,
+        )
+        .unwrap();
+        let registry = ProviderRegistry::new(vec![(
+            key,
+            ProviderLimits {
+                max_in_flight: 1,
+                request_timeout: Duration::from_secs(5),
+            },
+        )])
+        .unwrap();
+        let sink = Arc::new(RecordingSink::default());
+
+        let facade = InferenceFacade::new(
+            registry,
+            &CompletionStageSpecs {
+                extraction: spec.clone(),
+                triage: spec.clone(),
+                relation: spec,
+            },
+            Arc::new(KeylessCredentialResolver),
+            Arc::clone(&sink) as Arc<dyn LedgerSink>,
+        )
+        .expect("the façade builds from registered endpoints");
+
+        facade
+            .probe_completion(TaskType::Triage, &UsageAttribution::default())
+            .await
+            .expect("the probe succeeds against the mock");
+
+        // The canonical probe request reached the wire (and the tags
+        // pre-check stayed best-effort: its 404 did not fail the probe).
+        let request = &server.received_requests().await.unwrap()
+            [usize::from(server.received_requests().await.unwrap().len() > 1)];
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(
+            body["messages"][0]["content"],
+            serde_json::json!(crate::http::INFERENCE_PROBE_INPUT),
+        );
+        assert_eq!(
+            body["options"]["num_predict"],
+            serde_json::json!(crate::http::PROBE_MAX_TOKENS),
+        );
+        assert!(body.get("stream").is_some_and(|v| v == false));
+
+        // The probe ledgers under the probe stage.
+        let usages = sink.usages.lock().unwrap();
+        assert_eq!(usages.len(), 1);
+        assert!(matches!(usages[0].stage, TokenUsageStage::Probe));
     }
 
     #[tokio::test]

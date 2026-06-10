@@ -13,4 +13,3 @@ pub use inference::CHAT_PATH;
 pub use inference::OllamaInferenceProvider;
 #[cfg(feature = "test-helpers")]
 pub use tags::TAGS_PATH;
-pub use tags::resolve_revision_token as resolve_ollama_revision_token;

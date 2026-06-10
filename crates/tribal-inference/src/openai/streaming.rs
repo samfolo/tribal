@@ -213,8 +213,8 @@ mod tests {
 
     use super::super::inference::CHAT_PATH;
     use crate::{
-        CompletionRequest, InferenceProvider, Message, OpenAiInferenceProvider, Role,
-        collect_completion,
+        CompletionRequest, InferenceProvider, Message, Role, collect_completion,
+        openai::OpenAiInferenceProvider,
     };
     use tribal_domain::InferenceEvent;
 

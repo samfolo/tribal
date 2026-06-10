@@ -153,8 +153,8 @@ mod tests {
 
     use super::super::inference::CHAT_PATH;
     use crate::{
-        CompletionRequest, InferenceProvider, Message, OllamaInferenceProvider, Role,
-        collect_completion,
+        CompletionRequest, InferenceProvider, Message, Role, collect_completion,
+        ollama::OllamaInferenceProvider,
     };
     use tribal_domain::InferenceEvent;
 
