@@ -43,6 +43,20 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
+    /// Every status, for deriving status sets in one place.
+    ///
+    /// SQL predicates over the status column build their lists from this
+    /// constant filtered by [`TaskStatus::is_terminal`], so a new variant
+    /// reaches every predicate through the exhaustiveness test below
+    /// rather than by auditing query strings.
+    pub const ALL: [Self; 5] = [
+        Self::Queued,
+        Self::Claimed,
+        Self::Blocked,
+        Self::Completed,
+        Self::DeadLetter,
+    ];
+
     /// Returns `true` for the two terminal statuses.
     ///
     /// In-flight is always expressed as NOT-in-terminal, never by
@@ -330,6 +344,22 @@ mod tests {
         TaskErrorKind::InternalError => "internal_error",
         TaskErrorKind::ContextOverflow => "context_overflow",
     });
+
+    #[test]
+    fn test_all_covers_every_status() {
+        // The exhaustiveness guard for TaskStatus::ALL: a new variant
+        // fails this match until it joins the constant.
+        for status in TaskStatus::ALL {
+            match status {
+                TaskStatus::Queued
+                | TaskStatus::Claimed
+                | TaskStatus::Blocked
+                | TaskStatus::Completed
+                | TaskStatus::DeadLetter => {}
+            }
+        }
+        assert_eq!(TaskStatus::ALL.len(), 5);
+    }
 
     #[test]
     fn test_task_status_terminality_partition() {

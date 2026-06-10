@@ -261,7 +261,7 @@ mod tests {
         // reorderings are version-breaking, which this snapshot of the
         // key set pins.
         let definition = AgentDefinition::builder()
-            .pipeline_stage(PipelineStage::Extraction)
+            .pipeline_stage(TaskType::Extraction)
             .executor(StageExecutorKind::OneShot)
             .provider(ProviderKind::Ollama)
             .model("llama3".to_owned())

@@ -8,6 +8,7 @@
 
 pub(crate) mod backfill;
 pub(crate) mod backoff;
+pub mod coupling;
 mod dispatch;
 pub(crate) mod heartbeat;
 pub(crate) mod reindex;

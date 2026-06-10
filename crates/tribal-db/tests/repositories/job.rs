@@ -300,9 +300,10 @@ async fn test_update_status_valid_transition() {
         .status(JobStatus::Extracting)
         .build();
     let updated = repo
-        .update_status(&mut txn, job.id(), &transition)
+        .update_status_if_live(&mut txn, job.id(), &transition)
         .await
-        .expect("update_status");
+        .expect("update_status")
+        .expect("a live job updates");
 
     assert_eq!(updated.status(), JobStatus::Extracting);
     assert!(updated.outcome().is_none());
@@ -340,9 +341,10 @@ async fn test_update_status_to_completed() {
         .completed_at(Some(completed_at))
         .build();
     let updated = repo
-        .update_status(&mut txn, job.id(), &transition)
+        .update_status_if_live(&mut txn, job.id(), &transition)
         .await
-        .expect("update_status");
+        .expect("update_status")
+        .expect("a live job updates");
 
     assert_eq!(updated.status(), JobStatus::Completed);
     assert_eq!(updated.outcome(), Some(JobOutcome::Success));
@@ -382,9 +384,10 @@ async fn test_update_status_to_failed() {
         .completed_at(Some(completed_at))
         .build();
     let updated = repo
-        .update_status(&mut txn, job.id(), &transition)
+        .update_status_if_live(&mut txn, job.id(), &transition)
         .await
-        .expect("update_status");
+        .expect("update_status")
+        .expect("a live job updates");
 
     assert_eq!(updated.status(), JobStatus::Failed);
     assert_eq!(updated.outcome(), Some(JobOutcome::Failure));
@@ -419,12 +422,67 @@ async fn test_update_status_invalid_transition() {
     let transition = a_job_status_transition()
         .status(JobStatus::Completed)
         .build();
-    let result = repo.update_status(&mut txn, job.id(), &transition).await;
+    let result = repo
+        .update_status_if_live(&mut txn, job.id(), &transition)
+        .await;
 
     assert!(
         matches!(result, Err(DbError::QueryFailed { .. })),
         "expected QueryFailed, got {result:?}"
     );
+}
+
+#[tokio::test]
+async fn test_update_status_on_a_terminal_job_is_a_silent_no_op() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
+        setup_job_prerequisites(&mut txn, "status-terminal-noop").await;
+
+    let new = a_new_job()
+        .project_id(project_id)
+        .principal_id(principal_id)
+        .extraction_system_prompt_version_id(pv_id)
+        .extraction_user_prompt_version_id(pv_id)
+        .triage_system_prompt_version_id(pv_id)
+        .triage_user_prompt_version_id(pv_id)
+        .relation_system_prompt_version_id(pv_id)
+        .relation_user_prompt_version_id(pv_id)
+        .system_fingerprint_hash(fingerprint_hash)
+        .build();
+    let job = repo.insert(&mut txn, &new).await.expect("insert");
+
+    let complete = a_job_status_transition()
+        .status(JobStatus::Completed)
+        .outcome(Some(JobOutcome::Success))
+        .completed_at(Some(Utc::now()))
+        .build();
+    repo.update_status_if_live(&mut txn, job.id(), &complete)
+        .await
+        .expect("complete")
+        .expect("a live job updates");
+
+    // The late terminal commit: zero rows is success, not an error, and
+    // the transaction stays healthy for whatever else it carries.
+    let late = a_job_status_transition()
+        .status(JobStatus::Failed)
+        .outcome(Some(JobOutcome::Failure))
+        .error_message(Some("late failure".to_owned()))
+        .completed_at(Some(Utc::now()))
+        .build();
+    let result = repo
+        .update_status_if_live(&mut txn, job.id(), &late)
+        .await
+        .expect("the no-op commits");
+    assert!(result.is_none(), "a terminal job is never transitioned");
+
+    let unchanged = repo
+        .find_by_id(&mut txn, job.id())
+        .await
+        .expect("the transaction stays usable after the no-op");
+    assert_eq!(unchanged.status(), JobStatus::Completed);
 }
 
 #[tokio::test]
@@ -437,7 +495,7 @@ async fn test_update_status_not_found() {
         .status(JobStatus::Extracting)
         .build();
     let result = repo
-        .update_status(&mut txn, JobId::new(), &transition)
+        .update_status_if_live(&mut txn, JobId::new(), &transition)
         .await;
 
     assert!(matches!(
@@ -622,7 +680,7 @@ async fn test_fail_stale_dead_lettered_jobs_transitions_stuck_job() {
     let transition = a_job_status_transition()
         .status(JobStatus::Extracting)
         .build();
-    repo.update_status(&mut txn, job.id(), &transition)
+    repo.update_status_if_live(&mut txn, job.id(), &transition)
         .await
         .expect("update status");
 
@@ -691,7 +749,7 @@ async fn test_fail_stale_dead_lettered_jobs_skips_triage() {
     let transition = a_job_status_transition()
         .status(JobStatus::Triaging)
         .build();
-    repo.update_status(&mut txn, job.id(), &transition)
+    repo.update_status_if_live(&mut txn, job.id(), &transition)
         .await
         .expect("update status");
 
@@ -758,7 +816,7 @@ async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
         .error_message(Some("already failed".into()))
         .completed_at(Some(Utc::now()))
         .build();
-    repo.update_status(&mut txn, job.id(), &transition)
+    repo.update_status_if_live(&mut txn, job.id(), &transition)
         .await
         .expect("update status");
 

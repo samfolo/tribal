@@ -13,7 +13,7 @@ mock_repository! {
             (id: JobId) { id };
         find_by_project_id(ProjectId => Vec<Job>)
             (project_id: ProjectId) { project_id };
-        update_status((JobId, JobStatusTransition) => Job)
+        update_status_if_live((JobId, JobStatusTransition) => Option<Job>)
             (id: JobId, transition: &JobStatusTransition) { (id, transition.clone()) };
         update_batch_size((JobId, u32, u32) => Job)
             (id: JobId, batch_size: u32, extraction_original_count: u32) { (id, batch_size, extraction_original_count) };
@@ -45,12 +45,12 @@ mod tests {
     // -- Tests --------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_tuple_req_update_status_dispatches_and_records_history() {
+    async fn test_tuple_req_update_status_if_live_dispatches_and_records_history() {
         let target_id = JobId::new();
         let job = a_job().build();
 
         let mock = MockJobRepository::builder()
-            .on_update_status(job, None)
+            .on_update_status_if_live(Some(job), None)
             .build();
 
         let ctx = test_context().await;
@@ -61,11 +61,11 @@ mod tests {
             .build();
 
         let _ = mock
-            .update_status(&mut tx, target_id, &transition)
+            .update_status_if_live(&mut tx, target_id, &transition)
             .await
             .unwrap();
 
-        let history = mock.update_status_history();
+        let history = mock.update_status_if_live_history();
         assert_eq!(history.len(), 1);
 
         let (recorded_id, recorded_transition) = &history[0];
@@ -81,9 +81,9 @@ mod tests {
         let fallback_job = a_job().build();
 
         let mock = MockJobRepository::builder()
-            .when_update_status(move |(id, _)| *id == target_id)
-            .respond_with(matched_job.clone(), None)
-            .on_update_status(fallback_job.clone(), None)
+            .when_update_status_if_live(move |(id, _)| *id == target_id)
+            .respond_with(Some(matched_job.clone()), None)
+            .on_update_status_if_live(Some(fallback_job.clone()), None)
             .build();
 
         let ctx = test_context().await;
@@ -91,16 +91,16 @@ mod tests {
         let transition = a_job_status_transition().build();
 
         let r1 = mock
-            .update_status(&mut tx, target_id, &transition)
+            .update_status_if_live(&mut tx, target_id, &transition)
             .await
             .unwrap();
-        assert_eq!(r1.id(), matched_job.id());
+        assert_eq!(r1.expect("matched job").id(), matched_job.id());
 
         let r2 = mock
-            .update_status(&mut tx, other_id, &transition)
+            .update_status_if_live(&mut tx, other_id, &transition)
             .await
             .unwrap();
-        assert_eq!(r2.id(), fallback_job.id());
+        assert_eq!(r2.expect("fallback job").id(), fallback_job.id());
     }
 
     #[tokio::test]
@@ -151,8 +151,8 @@ mod tests {
         let job = a_job().build();
 
         let mock = MockJobRepository::builder()
-            .on_update_status(job.clone(), None)
-            .on_update_status_exhaust(ExhaustBehaviour::RepeatLast)
+            .on_update_status_if_live(Some(job.clone()), None)
+            .on_update_status_if_live_exhaust(ExhaustBehaviour::RepeatLast)
             .build();
 
         let ctx = test_context().await;
@@ -160,17 +160,17 @@ mod tests {
         let transition = a_job_status_transition().build();
 
         let r1 = mock
-            .update_status(&mut tx, JobId::new(), &transition)
+            .update_status_if_live(&mut tx, JobId::new(), &transition)
             .await
             .unwrap();
         let r2 = mock
-            .update_status(&mut tx, JobId::new(), &transition)
+            .update_status_if_live(&mut tx, JobId::new(), &transition)
             .await
             .unwrap();
 
-        assert_eq!(r1.id(), job.id());
-        assert_eq!(r2.id(), job.id());
-        assert_eq!(mock.update_status_call_count(), 2);
+        assert_eq!(r1.expect("first call").id(), job.id());
+        assert_eq!(r2.expect("second call").id(), job.id());
+        assert_eq!(mock.update_status_if_live_call_count(), 2);
     }
 
     #[test]

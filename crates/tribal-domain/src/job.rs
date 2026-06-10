@@ -48,6 +48,21 @@ pub enum JobOutcome {
 }
 
 impl JobStatus {
+    /// Every status, for deriving status sets in one place.
+    ///
+    /// SQL predicates over the status column build their lists from this
+    /// constant filtered by [`JobStatus::is_terminal`], so a new variant
+    /// reaches every predicate through the exhaustiveness test in this
+    /// module rather than by auditing query strings.
+    pub const ALL: [Self; 6] = [
+        Self::Queued,
+        Self::Extracting,
+        Self::Triaging,
+        Self::Relating,
+        Self::Completed,
+        Self::Failed,
+    ];
+
     /// Returns `true` if this status is terminal (`Completed` or `Failed`).
     ///
     /// Once a job enters a terminal state it does not transition again.
@@ -330,6 +345,23 @@ impl Job {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_all_covers_every_status() {
+        // The exhaustiveness guard for JobStatus::ALL: a new variant
+        // fails this match until it joins the constant.
+        for status in JobStatus::ALL {
+            match status {
+                JobStatus::Queued
+                | JobStatus::Extracting
+                | JobStatus::Triaging
+                | JobStatus::Relating
+                | JobStatus::Completed
+                | JobStatus::Failed => {}
+            }
+        }
+        assert_eq!(JobStatus::ALL.len(), 6);
+    }
     use crate::{enum_serde_tests, enum_text_tests};
 
     enum_serde_tests!(test_job_status_serde_roundtrip, JobStatus {

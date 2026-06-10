@@ -1023,3 +1023,137 @@ async fn test_count_by_status_groups_by_type_and_status() {
     assert_eq!(total_queued, 3, "3 tasks should remain queued");
     assert_eq!(total_claimed, 1, "1 task should be claimed");
 }
+
+// ---------------------------------------------------------------------------
+// Blocked status (the thread runtime's suspension state)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_block_clears_the_lease_and_makes_the_row_unclaimable() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let job_id = setup_task_prerequisites(&mut txn, "block").await;
+
+    PgTaskRepository
+        .insert(&mut txn, &a_new_task().job_id(job_id).build())
+        .await
+        .expect("insert");
+    let claimed = PgTaskRepository
+        .claim(&mut txn, 1, "worker-block")
+        .await
+        .expect("claim");
+    let task = &claimed[0];
+    let token = task.claim_token().expect("claimed rows carry tokens");
+
+    let blocked = PgTaskRepository
+        .block(&mut txn, task.id(), token)
+        .await
+        .expect("block");
+    assert_eq!(blocked, 1);
+
+    let read = PgTaskRepository
+        .find_by_id(&mut txn, task.id())
+        .await
+        .expect("find");
+    assert_eq!(read.status(), TaskStatus::Blocked);
+    assert!(read.claim_token().is_none(), "blocked rows hold no lease");
+    assert!(read.heartbeat_at().is_none());
+
+    let reclaimed = PgTaskRepository
+        .claim(&mut txn, 10, "worker-other")
+        .await
+        .expect("claim sweep");
+    assert!(
+        reclaimed.iter().all(|t| t.id() != task.id()),
+        "the claim predicate never selects a blocked row",
+    );
+}
+
+#[tokio::test]
+async fn test_requeue_from_blocked_is_immediately_available() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let job_id = setup_task_prerequisites(&mut txn, "unblock").await;
+
+    PgTaskRepository
+        .insert(&mut txn, &a_new_task().job_id(job_id).build())
+        .await
+        .expect("insert");
+    let claimed = PgTaskRepository
+        .claim(&mut txn, 1, "worker-unblock")
+        .await
+        .expect("claim");
+    let task = &claimed[0];
+    let token = task.claim_token().expect("token");
+    PgTaskRepository
+        .block(&mut txn, task.id(), token)
+        .await
+        .expect("block");
+
+    let requeued = PgTaskRepository
+        .requeue_from_blocked(&mut txn, task.id())
+        .await
+        .expect("requeue");
+    assert_eq!(requeued, 1);
+
+    let reclaimed = PgTaskRepository
+        .claim(&mut txn, 1, "worker-after")
+        .await
+        .expect("claim after requeue");
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].id(), task.id());
+}
+
+#[tokio::test]
+async fn test_count_live_siblings_counts_blocked_as_live() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let job_id = setup_task_prerequisites(&mut txn, "live-count").await;
+
+    let current = PgTaskRepository
+        .insert(
+            &mut txn,
+            &a_new_task()
+                .job_id(job_id)
+                .task_type(TaskType::Triage)
+                .batch_index(Some(0))
+                .build(),
+        )
+        .await
+        .expect("insert current");
+    PgTaskRepository
+        .insert(
+            &mut txn,
+            &a_new_task()
+                .job_id(job_id)
+                .task_type(TaskType::Triage)
+                .batch_index(Some(1))
+                .build(),
+        )
+        .await
+        .expect("insert sibling");
+
+    // Block the sibling: claim it, then block it.
+    let claimed = PgTaskRepository
+        .claim(&mut txn, 2, "worker-live")
+        .await
+        .expect("claim");
+    let sibling = claimed
+        .iter()
+        .find(|t| t.id() != current.id())
+        .expect("the sibling claims");
+    PgTaskRepository
+        .block(
+            &mut txn,
+            sibling.id(),
+            sibling.claim_token().expect("token"),
+        )
+        .await
+        .expect("block sibling");
+
+    let live = PgTaskRepository
+        .count_live_siblings(&mut txn, job_id, TaskType::Triage, current.id())
+        .await
+        .expect("count");
+    assert_eq!(live, 1, "a blocked sibling is live: relation must wait");
+}

@@ -418,7 +418,7 @@ impl Worker {
                     .status(target_status)
                     .build();
                 let _ = PgJobRepository
-                    .update_status(&mut conn, job_id, &transition)
+                    .update_status_if_live(&mut conn, job_id, &transition)
                     .await;
             }
 
@@ -588,7 +588,7 @@ impl Worker {
                 .build();
 
             if let Err(e) = PgJobRepository
-                .update_status(&mut txn, *job_id, &transition)
+                .update_status_if_live(&mut txn, *job_id, &transition)
                 .await
             {
                 tracing::warn!(job_id = %job_id, error = %e, "failed to transition stuck job to relating");
