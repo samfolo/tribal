@@ -7,7 +7,6 @@
 //! the single-flight lock.
 
 use sqlx::PgPool;
-use tribal_config::CredentialCatalogue;
 use tribal_db::{
     DbError, EmbeddingIndexRepository, EmbeddingProfileRepository, EmbeddingRepository,
     EmbeddingTable, PgEmbeddingIndexRepository, PgEmbeddingProfileRepository,
@@ -19,13 +18,10 @@ use tribal_domain::{
     ReindexRunState, normalise_endpoint_url,
 };
 use tribal_inference::{
-    DimensionResolutionError, InferenceError, ProviderRegistry, resolve_dimensions,
+    DimensionResolutionError, EmbeddingTarget, InferenceError, InferenceFacade, resolve_dimensions,
 };
 
-use super::reindex::{
-    ReindexCreationOutcome, TargetProviderError, build_provider_for_identity, create_reindex_run,
-    resolve_reindex_target,
-};
+use super::reindex::{ReindexCreationOutcome, create_reindex_run, resolve_reindex_target};
 
 /// The error message stamped on a run aborted by an operator cancel.
 const CANCEL_REASON: &str = "cancelled by operator";
@@ -127,7 +123,7 @@ pub enum ReindexOpError {
     /// The target provider could not be built (a missing credential, an
     /// unsupported provider kind).
     #[error("resolving the target provider: {0}")]
-    Provider(TargetProviderError),
+    Provider(InferenceError),
     /// The drift-signal probe against the target provider failed.
     #[error("probing the target provider: {0}")]
     Probe(InferenceError),
@@ -148,8 +144,7 @@ pub enum ReindexOpError {
 /// built, probed, or persisted.
 pub async fn reindex_run(
     pool: &PgPool,
-    registry: &ProviderRegistry,
-    credentials: &CredentialCatalogue,
+    facade: &InferenceFacade,
     request: &ReindexRunRequest,
     principal_id: PrincipalId,
 ) -> Result<ReindexRunOutcome, ReindexOpError> {
@@ -164,17 +159,18 @@ pub async fn reindex_run(
     let normalised_base_url = normalise_endpoint_url(&base_url)?;
     let dimensions = resolve_dimensions(provider, &request.model, request.dimensions)?;
 
-    // Building the provider validates the credential fail-closed without a
+    // Preparing the target validates the credential fail-closed without a
     // network call; the probe (drift signal) is deferred to the real run.
-    let (built, _semaphore) = build_provider_for_identity(
-        registry,
-        credentials,
+    let target = EmbeddingTarget {
         provider,
-        &normalised_base_url,
-        &request.model,
+        model: request.model.clone(),
         dimensions,
-    )
-    .map_err(ReindexOpError::Provider)?;
+        base_url: normalised_base_url.clone(),
+        profile_id: None,
+    };
+    facade
+        .prepare_embedding_target(&target)
+        .map_err(ReindexOpError::Provider)?;
 
     let (resolution, estimate_profile) = if request.dry_run {
         let mut conn = acquire(pool, "resolving the reindex estimate target").await?;
@@ -188,16 +184,9 @@ pub async fn reindex_run(
         .await?;
         (ReindexResolution::Plan, Some(profile))
     } else {
-        let target = resolve_reindex_target(
-            built.as_ref(),
-            provider,
-            normalised_base_url.clone(),
-            request.model.clone(),
-            dimensions,
-            DistanceMetric::Cosine,
-        )
-        .await
-        .map_err(ReindexOpError::Probe)?;
+        let target = resolve_reindex_target(facade, &target, DistanceMetric::Cosine)
+            .await
+            .map_err(ReindexOpError::Probe)?;
 
         let mut tx = pool.begin().await.map_err(|source| {
             ReindexOpError::Db(DbError::QueryFailed {
