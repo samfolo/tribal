@@ -57,6 +57,7 @@ mod endpoint_url;
 mod error_code;
 mod extraction_result;
 mod feedback_rating;
+pub mod gen_ai;
 mod git;
 mod ids;
 mod inference_parameters;
