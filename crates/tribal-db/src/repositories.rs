@@ -6,6 +6,10 @@
 //! repositories pool-agnostic.
 
 mod advisory_lock;
+mod agent_binding_version;
+mod agent_driver_task;
+mod agent_thread;
+mod agent_thread_record;
 mod auth_token;
 mod common;
 mod embedding;
@@ -37,6 +41,18 @@ mod triage_result;
 mod triage_similar_item_decision;
 
 pub use advisory_lock::{AdvisoryLockRepository, PgAdvisoryLockRepository};
+pub use agent_binding_version::{
+    AgentBindingVersionRepository, NewAgentBindingVersion, PgAgentBindingVersionRepository,
+};
+pub use agent_driver_task::{
+    AgentDriverTaskRepository, NewAgentDriverTask, PgAgentDriverTaskRepository,
+};
+pub use agent_thread::{
+    AgentThreadRepository, DrivingTaskRef, NewAgentThread, PgAgentThreadRepository,
+};
+pub use agent_thread_record::{
+    AgentThreadRecordRepository, NewAgentThreadRecord, PgAgentThreadRecordRepository,
+};
 pub use auth_token::{AuthTokenRepository, NewAuthToken, PgAuthTokenRepository};
 pub use common::cursor::encode_cursor;
 pub use embedding::{EmbeddingRepository, NewEmbedding, PgEmbeddingRepository};
