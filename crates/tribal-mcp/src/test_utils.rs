@@ -12,7 +12,7 @@ use tribal_auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
 use tribal_domain::{PrincipalId, ProjectId, PromptVersionId, ProviderKind};
-use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderIdentity, ProviderRegistry};
+use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderIdentity};
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
@@ -114,18 +114,8 @@ impl From<TestHandler> for TribalServerHandler {
                 .build_version(Arc::from("test-build"))
                 .inference_parameters(tribal_domain::InferenceParameters::default())
                 .active_prompt_versions(th.active_prompt_versions)
-                .provider_registry(Arc::new(
-                    ProviderRegistry::new(Vec::new())
-                        .expect("empty registry construction must not fail"),
-                ))
-                .embedding_provider(th.embedding_provider)
-                .extraction_provider(default_inference_provider())
-                .triage_provider(default_inference_provider())
-                .relation_provider(default_inference_provider())
-                .embedding_key(test_embedding_key())
-                .extraction_key(test_inference_key())
-                .triage_key(test_inference_key())
-                .relation_key(test_inference_key())
+                .facade(test_facade())
+                .embedding_identity(th.embedding_provider.identity().clone())
                 .worker_config(WorkerConfig::default())
                 .server_config(Arc::new(ServerConfig::default()))
                 .cancellation_token(th.cancellation_token)
@@ -241,6 +231,37 @@ fn default_inference_provider() -> Arc<dyn InferenceProvider> {
     Arc::new(MockInferenceProvider::builder().build())
 }
 
+/// A façade over mock providers with an empty registry: embedding
+/// endpoints register dynamically on first resolution, per-profile
+/// providers are injected by tests, and completions are never called by
+/// MCP handlers (only their identities are read).
+fn test_facade() -> Arc<tribal_inference::InferenceFacade> {
+    use tribal_inference::{InjectedCompletion, InjectedProviders, KeylessCredentialResolver};
+
+    let registry = tribal_inference::ProviderRegistry::new(Vec::new())
+        .expect("empty registry construction must not fail");
+    Arc::new(tribal_inference::InferenceFacade::with_providers(
+        InjectedProviders {
+            registry,
+            extraction: InjectedCompletion {
+                provider: default_inference_provider(),
+                key: test_inference_key(),
+            },
+            triage: InjectedCompletion {
+                provider: default_inference_provider(),
+                key: test_inference_key(),
+            },
+            relation: InjectedCompletion {
+                provider: default_inference_provider(),
+                key: test_inference_key(),
+            },
+            embeddings: Vec::new(),
+            credentials: Arc::new(KeylessCredentialResolver),
+            sink: Arc::new(tribal_inference::NoopLedgerSink),
+        },
+    ))
+}
+
 /// Default [`ActivePromptVersions`] for handler tests.
 ///
 /// Uses freshly generated IDs — the specific values do not matter,
@@ -307,15 +328,6 @@ pub(crate) fn configure_fingerprint_mocks(
 
 fn default_prompt_versions() -> Arc<RwLock<ActivePromptVersions>> {
     Arc::new(RwLock::new(test_active_prompt_versions()))
-}
-
-fn test_embedding_key() -> tribal_inference::ProviderKey {
-    tribal_inference::ProviderKey::new(
-        TEST_PROVIDER_KIND,
-        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
-        tribal_inference::RequestClass::Embedding,
-    )
-    .expect("test embedding key construction must not fail")
 }
 
 fn test_inference_key() -> tribal_inference::ProviderKey {

@@ -154,10 +154,10 @@ impl TribalServerHandler {
         let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
         let provider_identities = PipelineProviderIdentities {
-            extraction: self.state.extraction_provider.identity().clone(),
-            triage: self.state.triage_provider.identity().clone(),
-            relation: self.state.relation_provider.identity().clone(),
-            embedding: self.state.embedding_provider.identity().clone(),
+            extraction: self.state.facade.completion_identity(TaskType::Extraction).clone(),
+            triage: self.state.facade.completion_identity(TaskType::Triage).clone(),
+            relation: self.state.facade.completion_identity(TaskType::Relation).clone(),
+            embedding: self.state.embedding_identity.clone(),
         };
 
         let ingest_params = IngestParams {
