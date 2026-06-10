@@ -1274,7 +1274,7 @@ mod tests {
     use tribal_domain::{KnowledgeKind, ReindexRunState};
     use tribal_inference::{
         EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InjectedCompletion,
-        InjectedEmbedding, InjectedProviders, KeylessCredentialResolver, NoopLedgerSink,
+        InjectedEmbedding, InjectedProviders, EmptyCredentialResolver, NoopLedgerSink,
         ProviderIdentity, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
     };
     use tribal_test_utils::{
@@ -1336,7 +1336,7 @@ mod tests {
                 profile_id: building.id(),
                 provider,
             }],
-            credentials: Arc::new(KeylessCredentialResolver),
+            credentials: Arc::new(EmptyCredentialResolver),
             sink: Arc::new(NoopLedgerSink),
         })
     }
@@ -2353,11 +2353,11 @@ mod tests {
             .expect("a building profile");
 
         // Backfill embeds (Candidate purpose) succeed so the set-difference
-        // drains; the drift re-probe (Query purpose) fails, standing in for an
+        // drains; the drift re-probe (Probe purpose) fails, standing in for an
         // endpoint that goes unavailable at the final safety check.
         let provider: Arc<dyn EmbeddingProvider> = Arc::new(
             MockEmbeddingProvider::builder()
-                .when(EmbeddingMatcher::has_purpose(EmbeddingPurpose::Query))
+                .when(EmbeddingMatcher::has_purpose(EmbeddingPurpose::Probe))
                 .respond_with_error(a_provider_unavailable("probe endpoint down"), None)
                 .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
                 .on_exhaust(ExhaustBehaviour::RepeatLast)

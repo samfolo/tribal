@@ -23,7 +23,7 @@ pub(super) use tribal_domain::{
 };
 pub(super) use tribal_inference::{
     EmbeddingProvider, InferenceFacade, InferenceProvider, InjectedCompletion, InjectedEmbedding,
-    InjectedProviders, KeylessCredentialResolver, ProviderKey, ProviderLimits, ProviderRegistry,
+    InjectedProviders, EmptyCredentialResolver, ProviderKey, ProviderLimits, ProviderRegistry,
     RequestClass,
 };
 pub(super) use tribal_telemetry::noop_recorder;
@@ -201,7 +201,7 @@ pub(super) async fn build_test_worker(
             key: key(RequestClass::Inference),
         },
         embeddings,
-        credentials: Arc::new(KeylessCredentialResolver),
+        credentials: Arc::new(EmptyCredentialResolver),
         sink,
     }));
 

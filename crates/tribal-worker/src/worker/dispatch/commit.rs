@@ -1082,7 +1082,7 @@ mod tests {
     use tribal_domain::{EmbeddingProfileId, PromptRole};
     use tribal_inference::{
         EmbeddingProvider, InjectedCompletion, InjectedEmbedding, InjectedProviders,
-        KeylessCredentialResolver, NoopLedgerSink, ProviderKey, ProviderLimits, ProviderRegistry,
+        EmptyCredentialResolver, NoopLedgerSink, ProviderKey, ProviderLimits, ProviderRegistry,
         RequestClass,
     };
     use tribal_test_utils::{
@@ -1146,7 +1146,7 @@ mod tests {
                 profile_id: active.id(),
                 provider: mock,
             }],
-            credentials: Arc::new(KeylessCredentialResolver),
+            credentials: Arc::new(EmptyCredentialResolver),
             sink: Arc::new(NoopLedgerSink),
         });
 

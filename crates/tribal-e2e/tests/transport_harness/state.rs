@@ -14,7 +14,7 @@ use tribal_db::{
 };
 use tribal_domain::{PromptVersionId, ProviderKind, Scope, full_access_scopes};
 use tribal_inference::{
-    InferenceFacade, InjectedCompletion, InjectedProviders, KeylessCredentialResolver,
+    InferenceFacade, InjectedCompletion, InjectedProviders, EmptyCredentialResolver,
     NoopLedgerSink, ProviderIdentity, ProviderRegistry, RequestClass,
 };
 use tribal_mcp::{ActivePromptVersions, AppState};
@@ -85,7 +85,7 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
             key: inference_key,
         },
         embeddings: Vec::new(),
-        credentials: Arc::new(KeylessCredentialResolver),
+        credentials: Arc::new(EmptyCredentialResolver),
         sink: Arc::new(NoopLedgerSink),
     }));
     let embedding_identity = ProviderIdentity {

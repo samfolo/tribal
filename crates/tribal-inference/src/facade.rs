@@ -872,19 +872,29 @@ impl InferenceFacade {
     }
 }
 
-/// A resolver that returns an empty key for every endpoint, for tests
-/// whose providers require no credential.
+/// A resolver behaving as an empty credential catalogue: providers that
+/// need no key resolve an empty one, and key-requiring providers fail
+/// closed. For tests whose providers are mocks or keyless endpoints.
 #[cfg(any(test, feature = "test-helpers"))]
 #[derive(Debug, Default, Clone, Copy)]
-pub struct KeylessCredentialResolver;
+pub struct EmptyCredentialResolver;
 
 #[cfg(any(test, feature = "test-helpers"))]
-impl EmbeddingCredentialResolver for KeylessCredentialResolver {
+impl EmbeddingCredentialResolver for EmptyCredentialResolver {
     fn resolve(
         &self,
-        _provider: ProviderKind,
-        _normalised_base_url: &str,
+        provider: ProviderKind,
+        normalised_base_url: &str,
     ) -> Result<String, CredentialError> {
+        if provider.requires_api_key() {
+            return Err(CredentialError {
+                provider,
+                base_url: normalised_base_url.to_owned(),
+                message: format!(
+                    "no API key resolves for {provider} at {normalised_base_url}: the test                      resolver holds no credentials"
+                ),
+            });
+        }
         Ok(String::new())
     }
 }
@@ -1105,7 +1115,7 @@ mod tests {
                 profile_id,
                 provider: Arc::new(ScriptedEmbedding::new()),
             }],
-            credentials: Arc::new(KeylessCredentialResolver),
+            credentials: Arc::new(EmptyCredentialResolver),
             sink: Arc::clone(&sink) as Arc<dyn LedgerSink>,
         });
 
@@ -1571,7 +1581,7 @@ mod tests {
                 triage: spec.clone(),
                 relation: spec,
             },
-            Arc::new(KeylessCredentialResolver),
+            Arc::new(EmptyCredentialResolver),
             Arc::clone(&sink) as Arc<dyn LedgerSink>,
         )
         .expect("the façade builds from registered endpoints");
