@@ -13,10 +13,13 @@ use tribal_db::{
     PrincipalRepository,
 };
 use tribal_domain::{PromptVersionId, ProviderKind, Scope, full_access_scopes};
-use tribal_inference::{ProviderRegistry, RequestClass};
+use tribal_inference::{
+    InferenceFacade, InjectedCompletion, InjectedProviders, KeylessCredentialResolver,
+    NoopLedgerSink, ProviderIdentity, ProviderRegistry, RequestClass,
+};
 use tribal_mcp::{ActivePromptVersions, AppState};
 use tribal_telemetry::noop_recorder;
-use tribal_test_utils::{MockEmbeddingProvider, MockInferenceProvider, test_context};
+use tribal_test_utils::{MockInferenceProvider, test_context};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,19 +61,37 @@ pub async fn fresh_pool() -> sqlx::PgPool {
 pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState> {
     let provider_kind = ProviderKind::default().to_string();
 
-    let embedding_key = tribal_inference::ProviderKey::new(
-        &provider_kind,
-        ProviderKind::DEFAULT_OLLAMA_BASE_URL,
-        RequestClass::Embedding,
-    )
-    .expect("test embedding key");
-
     let inference_key = tribal_inference::ProviderKey::new(
         &provider_kind,
         ProviderKind::DEFAULT_OLLAMA_BASE_URL,
         RequestClass::Inference,
     )
     .expect("test inference key");
+
+    let registry = ProviderRegistry::new(Vec::new())
+        .expect("empty registry construction must not fail");
+    let facade = Arc::new(InferenceFacade::with_providers(InjectedProviders {
+        registry,
+        extraction: InjectedCompletion {
+            provider: Arc::new(MockInferenceProvider::builder().build()),
+            key: inference_key.clone(),
+        },
+        triage: InjectedCompletion {
+            provider: Arc::new(MockInferenceProvider::builder().build()),
+            key: inference_key.clone(),
+        },
+        relation: InjectedCompletion {
+            provider: Arc::new(MockInferenceProvider::builder().build()),
+            key: inference_key,
+        },
+        embeddings: Vec::new(),
+        credentials: Arc::new(KeylessCredentialResolver),
+        sink: Arc::new(NoopLedgerSink),
+    }));
+    let embedding_identity = ProviderIdentity {
+        name: provider_kind.clone(),
+        model: "mock-embed".to_owned(),
+    };
 
     Arc::new(
         AppState::builder()
@@ -87,18 +108,8 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
                 PromptVersionId::new(),
                 PromptVersionId::new(),
             ))))
-            .provider_registry(Arc::new(
-                ProviderRegistry::new(Vec::new())
-                    .expect("empty registry construction must not fail"),
-            ))
-            .embedding_provider(Arc::new(MockEmbeddingProvider::builder().build()))
-            .extraction_provider(Arc::new(MockInferenceProvider::builder().build()))
-            .triage_provider(Arc::new(MockInferenceProvider::builder().build()))
-            .relation_provider(Arc::new(MockInferenceProvider::builder().build()))
-            .embedding_key(embedding_key)
-            .extraction_key(inference_key.clone())
-            .triage_key(inference_key.clone())
-            .relation_key(inference_key)
+            .facade(facade)
+            .embedding_identity(embedding_identity)
             .worker_config(WorkerConfig::default())
             .server_config(Arc::new(ServerConfig::default()))
             .cancellation_token(ct)
