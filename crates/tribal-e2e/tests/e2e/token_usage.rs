@@ -29,7 +29,7 @@ fn count_of(rows: &[TokenUsage], stage: PipelineStage, purpose: Option<Embedding
 /// expected ledger shape is exact.
 #[tokio::test]
 async fn test_every_pipeline_call_ledgers_one_attributed_row() {
-    let harness = TestHarness::init(|_setup| {}).await;
+    let mut harness = TestHarness::init(|_setup| {}).await;
 
     harness
         .mount_extraction(|m| {
@@ -152,4 +152,10 @@ async fn test_every_pipeline_call_ledgers_one_attributed_row() {
             .all(|r| matches!(r.stage(), PipelineStage::Embedding | PipelineStage::Probe)),
         "unowned rows are only ever embeddings or probes",
     );
+    drop(conn);
+
+    // -- Cleanup --------------------------------------------------------------
+
+    harness.shutdown().await;
+    harness.teardown().await;
 }
