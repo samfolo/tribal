@@ -106,7 +106,11 @@ async fn test_every_pipeline_call_ledgers_one_attributed_row() {
     for row in &rows {
         assert_eq!(row.job_id(), Some(job_id));
         assert!(row.task_id().is_some(), "every pipeline row names its task");
-        assert_eq!(row.attempt(), 0, "a first-attempt pipeline ledgers attempt 0");
+        assert_eq!(
+            row.attempt(),
+            0,
+            "a first-attempt pipeline ledgers attempt 0"
+        );
         assert!(!row.provider().is_empty());
         assert!(!row.model().is_empty());
 

@@ -27,9 +27,8 @@ use tribal_db::{
 };
 use tribal_domain::{
     DistanceMetric, EmbeddingErrorClass, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose,
-    KnowledgeItemId,
-    PrincipalId, ProviderKind, ReindexEntityKind, ReindexRun, ReindexRunId, ReindexRunState,
-    ReindexTask, ReindexTaskId, ReindexTaskState, span_attrs,
+    KnowledgeItemId, PrincipalId, ProviderKind, ReindexEntityKind, ReindexRun, ReindexRunId,
+    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, span_attrs,
 };
 use tribal_inference::{
     EmbeddingTarget, InferenceError, InferenceFacade, PermitWait, UsageAttribution,
@@ -470,7 +469,6 @@ fn retry_at_for(signal: &RetrySignal, attempt: u32) -> DateTime<Utc> {
     }
 }
 
-
 /// The per-cycle context every task in one drive cycle shares: the run, its
 /// building profile, the façade, and the run's ledger attribution.
 struct ReindexCtx<'a> {
@@ -608,10 +606,7 @@ async fn embed_pending_batch(
     }
 
     let items = PgKnowledgeItemRepository.find_by_ids(conn, &ids).await?;
-    let inputs = items
-        .iter()
-        .map(|item| item.content().to_owned())
-        .collect();
+    let inputs = items.iter().map(|item| item.content().to_owned()).collect();
     let result = match ctx
         .facade
         .embed_many(
@@ -1081,7 +1076,11 @@ async fn probe_drifted(ctx: &ReindexCtx<'_>) -> ProbeOutcome {
     let Some(stored) = ctx.building.probe_digest() else {
         return ProbeOutcome::Stable;
     };
-    match ctx.facade.probe_embedding(&ctx.target, &ctx.attribution).await {
+    match ctx
+        .facade
+        .probe_embedding(&ctx.target, &ctx.attribution)
+        .await
+    {
         Ok(response) if probe_digest(&response.vector) == stored => ProbeOutcome::Stable,
         Ok(_) => ProbeOutcome::Drifted,
         Err(_) => ProbeOutcome::Unavailable,
@@ -2044,7 +2043,6 @@ mod tests {
             .sum();
         assert_eq!(total_again, 2, "enrolment is idempotent");
     }
-
 
     #[tokio::test]
     async fn test_process_tasks_embeds_the_backlog_into_the_building_profile() {

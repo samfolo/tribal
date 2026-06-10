@@ -49,7 +49,12 @@ pub trait LedgerSink: Send + Sync {
     /// `stage` is derived by the façade from the operation that produced
     /// `usage`; for embedding usage its purpose equals the purpose inside
     /// `usage` by construction.
-    async fn record_usage(&self, usage: &Usage, stage: TokenUsageStage, attribution: &UsageAttribution);
+    async fn record_usage(
+        &self,
+        usage: &Usage,
+        stage: TokenUsageStage,
+        attribution: &UsageAttribution,
+    );
 
     /// Reports how long a request waited for its concurrency permit.
     fn record_semaphore_wait(&self, provider_key: &str, wait: Duration);

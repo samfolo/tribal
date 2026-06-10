@@ -68,8 +68,8 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
     )
     .expect("test inference key");
 
-    let registry = ProviderRegistry::new(Vec::new())
-        .expect("empty registry construction must not fail");
+    let registry =
+        ProviderRegistry::new(Vec::new()).expect("empty registry construction must not fail");
     let facade = Arc::new(InferenceFacade::with_providers(InjectedProviders {
         registry,
         extraction: InjectedCompletion {

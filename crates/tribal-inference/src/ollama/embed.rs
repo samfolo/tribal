@@ -83,7 +83,6 @@ impl OllamaEmbeddingProvider {
             expected_dimensions,
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -622,10 +621,6 @@ mod tests {
     }
 
     // -- Probe tests --------------------------------------------------------
-
-
-
-
 
     #[tokio::test]
     async fn test_revision_token_resolves_the_models_digest() {

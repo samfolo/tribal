@@ -1087,8 +1087,8 @@ mod tests {
     };
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, Seed, a_candidate,
-        a_new_knowledge_item, a_new_prompt_version, active_embedding_profile,
-        an_embedding_profile, an_embedding_response, seed_triage_job, test_context,
+        a_new_knowledge_item, a_new_prompt_version, active_embedding_profile, an_embedding_profile,
+        an_embedding_response, seed_triage_job, test_context,
     };
 
     use super::*;
@@ -1166,7 +1166,10 @@ mod tests {
         .expect("reembed");
 
         assert!(
-            reembedded.item.iter().all(|&v| (v - 0.5).abs() < f32::EPSILON),
+            reembedded
+                .item
+                .iter()
+                .all(|&v| (v - 0.5).abs() < f32::EPSILON),
             "the item is re-embedded by the new active's provider, not left stale",
         );
         assert_eq!(reembedded.tags.len(), 1);

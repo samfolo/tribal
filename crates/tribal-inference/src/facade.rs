@@ -1397,7 +1397,11 @@ mod tests {
     #[tokio::test]
     async fn test_stream_owns_its_permit_until_dropped() {
         let fixture = a_fixture(1);
-        let semaphore = fixture.facade.registry.resolve_semaphore(&stage_key()).unwrap();
+        let semaphore = fixture
+            .facade
+            .registry
+            .resolve_semaphore(&stage_key())
+            .unwrap();
 
         let stream = fixture
             .facade
@@ -1426,7 +1430,11 @@ mod tests {
     #[tokio::test]
     async fn test_bounded_wait_times_out_as_permit_timeout() {
         let fixture = a_fixture(1);
-        let semaphore = fixture.facade.registry.resolve_semaphore(&stage_key()).unwrap();
+        let semaphore = fixture
+            .facade
+            .registry
+            .resolve_semaphore(&stage_key())
+            .unwrap();
         let held = Arc::clone(&semaphore).acquire_owned().await.unwrap();
 
         let err = fixture
