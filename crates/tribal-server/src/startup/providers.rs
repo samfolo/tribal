@@ -139,6 +139,11 @@ impl EmbeddingCredentialResolver for CatalogueCredentialResolver {
 /// rather than booting into a server whose every ingest and discover
 /// fails.
 ///
+/// The credential pre-check is skipped for a kind with no embedding API,
+/// mirroring the façade's structural-before-credential ordering: such an
+/// identity fails on the missing API, not on a credential no key could
+/// remedy.
+///
 /// # Errors
 ///
 /// Returns [`AppError::EmbeddingCredentialUnresolved`] for a missing
@@ -150,14 +155,17 @@ pub(crate) fn validate_embedding_identity(
     active_profile: &EmbeddingProfile,
 ) -> Result<(), AppError> {
     let provider = active_profile.provider_kind();
-    config
-        .credentials
-        .resolve_api_key(provider, active_profile.normalised_base_url())
-        .map_err(|e| AppError::EmbeddingCredentialUnresolved {
-            provider: e.provider,
-            base_url: e.base_url.clone(),
-            provider_upper: provider.as_str().to_uppercase(),
-        })?;
+    if provider.supports_embedding() {
+        config
+            .credentials
+            .resolve_api_key(provider, active_profile.normalised_base_url())
+            .map_err(|e| AppError::EmbeddingCredentialUnresolved {
+                provider: e.provider,
+                base_url: e.base_url.clone(),
+                kind: e.kind,
+                provider_upper: provider.as_str().to_uppercase(),
+            })?;
+    }
     facade
         .prepare_embedding_target(&EmbeddingTarget::from(active_profile))
         .map_err(|e| AppError::ProviderSetup {
@@ -254,6 +262,12 @@ fn api_key_str(key: Option<&tribal_domain::ApiKey>) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tribal_config::MissingApiKeyKind;
+    use tribal_inference::NoopLedgerSink;
+    use tribal_test_utils::an_embedding_profile;
+
     use super::*;
 
     // -- resolve_base_url -----------------------------------------------------
@@ -302,5 +316,52 @@ mod tests {
             .resolve(ProviderKind::Ollama, "http://localhost:11434")
             .expect("ollama needs no key");
         assert_eq!(key, "");
+    }
+
+    // -- validate_embedding_identity -------------------------------------------
+
+    fn a_facade(config: &TribalConfig) -> InferenceFacade {
+        let registry = build_command_registry(config).expect("a registry from default config");
+        InferenceFacade::new(
+            registry,
+            &completion_stage_specs(config),
+            Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
+            Arc::new(NoopLedgerSink),
+        )
+        .expect("a façade from registered endpoints")
+    }
+
+    #[test]
+    fn test_validate_embedding_identity_allows_keyless_ollama() {
+        let config = TribalConfig::default();
+        let facade = a_facade(&config);
+        let active = an_embedding_profile()
+            .provider_kind(ProviderKind::Ollama)
+            .normalised_base_url("http://localhost:11434".to_owned())
+            .build();
+
+        validate_embedding_identity(&facade, &config, &active)
+            .expect("a keyless ollama identity boots");
+    }
+
+    #[test]
+    fn test_validate_embedding_identity_fails_closed_without_a_credential() {
+        let config = TribalConfig::default();
+        let facade = a_facade(&config);
+        let active = an_embedding_profile()
+            .provider_kind(ProviderKind::OpenAi)
+            .normalised_base_url("https://api.openai.com:443/v1".to_owned())
+            .build();
+
+        let err = validate_embedding_identity(&facade, &config, &active)
+            .expect_err("a keyless cloud identity must abort boot");
+        assert!(matches!(
+            err,
+            AppError::EmbeddingCredentialUnresolved {
+                provider: ProviderKind::OpenAi,
+                kind: MissingApiKeyKind::NoMatchingEntry,
+                ..
+            }
+        ));
     }
 }

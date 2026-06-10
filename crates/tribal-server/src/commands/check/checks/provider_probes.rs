@@ -164,7 +164,9 @@ fn configured_provider(config: &TribalConfig, target: ProviderStage) -> Provider
 
 /// 10s bounds a blackholed provider without choking slow cloud probes: the
 /// façade's per-provider request timeouts are sized for real inference, far
-/// too generous for a reachability check.
+/// too generous for a reachability check. The bound cancels the whole probe
+/// future, so in a rare window a probe that billed may go unledgered —
+/// acceptable for a diagnostic command.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Names the bound in the failure detail so the outcome explains itself.
