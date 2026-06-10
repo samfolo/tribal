@@ -9,7 +9,10 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tribal_domain::{JobId, PromptVersionId, ReindexRunId, TaskId, TokenUsageStage, Usage};
+use tribal_domain::{
+    AgentThreadId, AgentThreadRecordId, JobId, PromptVersionId, ReindexRunId, TaskId,
+    TokenUsageStage, Usage,
+};
 
 /// Caller-supplied attribution for one inference or embedding request.
 ///
@@ -27,6 +30,12 @@ pub struct UsageAttribution {
     pub task_id: Option<TaskId>,
     /// The reindex run the request belongs to.
     pub reindex_run_id: Option<ReindexRunId>,
+    /// The agent thread the request runs under.
+    pub agent_thread_id: Option<AgentThreadId>,
+    /// The committed record the request produced, attributed after the
+    /// fact by sinks that learn it; callers issuing the request leave it
+    /// unset.
+    pub agent_thread_record_id: Option<AgentThreadRecordId>,
     /// The attempt number within the task (0 when unowned).
     pub attempt: i32,
     /// The system prompt version used, for completion calls.

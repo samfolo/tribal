@@ -8,8 +8,8 @@
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
-    EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, ReindexRunId, TaskId, TokenUsage,
-    TokenUsageId, TokenUsageStage,
+    AgentThreadId, AgentThreadRecordId, EmbeddingPurpose, JobId, PipelineStage, PromptVersionId,
+    ReindexRunId, TaskId, TokenUsage, TokenUsageId, TokenUsageStage,
 };
 use typed_builder::TypedBuilder;
 
@@ -25,6 +25,8 @@ const COLUMNS: Columns = Columns(&[
     "job_id",
     "task_id",
     "reindex_run_id",
+    "agent_thread_id",
+    "agent_thread_record_id",
     "attempt",
     "stage",
     "purpose",
@@ -69,6 +71,13 @@ pub struct NewTokenUsage {
     /// and catch-up embedding, null otherwise).
     #[builder(default)]
     pub reindex_run_id: Option<ReindexRunId>,
+    /// The agent thread this usage belongs to (null for non-thread calls).
+    #[builder(default)]
+    pub agent_thread_id: Option<AgentThreadId>,
+    /// The committed record this usage produced (null until the terminal
+    /// record commits, and forever for calls whose record never commits).
+    #[builder(default)]
+    pub agent_thread_record_id: Option<AgentThreadRecordId>,
     /// Snapshot of the task's retry count at call time.
     pub attempt: i32,
     /// The pipeline stage and optional purpose.
@@ -159,12 +168,13 @@ impl TokenUsageRepository for PgTokenUsageRepository {
 
         let sql = format!(
             "INSERT INTO token_usage \
-                 (job_id, task_id, reindex_run_id, attempt, stage, purpose, provider, model, \
+                 (job_id, task_id, reindex_run_id, agent_thread_id, agent_thread_record_id, \
+                  attempt, stage, purpose, provider, model, \
                   tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, \
                   tokens_total, latency_ms, system_prompt_version_id, user_prompt_version_id, \
                   trace_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $9 + $10, $13, $14, $15, \
-                     $16) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $11 + $12, \
+                     $15, $16, $17, $18) \
              RETURNING {COLUMNS}",
         );
 
@@ -172,6 +182,8 @@ impl TokenUsageRepository for PgTokenUsageRepository {
             .bind(new.job_id.map(|id| *id.inner()))
             .bind(new.task_id.map(|id| *id.inner()))
             .bind(new.reindex_run_id.map(|id| *id.inner()))
+            .bind(new.agent_thread_id.map(|id| *id.inner()))
+            .bind(new.agent_thread_record_id.map(|id| *id.inner()))
             .bind(new.attempt)
             .bind(stage_str)
             .bind(purpose_str)
@@ -269,6 +281,14 @@ fn map_token_usage_row(r: &sqlx::postgres::PgRow) -> TokenUsage {
         .reindex_run_id(
             r.get::<Option<uuid::Uuid>, _>("reindex_run_id")
                 .map(ReindexRunId::from),
+        )
+        .agent_thread_id(
+            r.get::<Option<uuid::Uuid>, _>("agent_thread_id")
+                .map(AgentThreadId::from),
+        )
+        .agent_thread_record_id(
+            r.get::<Option<uuid::Uuid>, _>("agent_thread_record_id")
+                .map(AgentThreadRecordId::from),
         )
         .attempt(r.get("attempt"))
         .stage(

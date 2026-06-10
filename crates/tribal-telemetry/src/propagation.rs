@@ -95,6 +95,16 @@ pub fn current_trace_id() -> Option<String> {
     current_span_context().map(|sc| sc.trace_id().to_string())
 }
 
+/// Extracts the current span's span ID as a 16-character lowercase hex
+/// string.
+///
+/// Returns `None` when no OpenTelemetry layer is installed in the
+/// subscriber or no active span exists.
+#[must_use]
+pub fn current_span_id() -> Option<String> {
+    current_span_context().map(|sc| sc.span_id().to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Trace ID validation and parsing
 // ---------------------------------------------------------------------------
