@@ -81,9 +81,9 @@ pub struct Metrics {
     /// Provider call latency, labelled by `provider`, `model`, `stage`.
     pub provider_call_ms: Histogram<f64>,
     /// Token counts per request, classed by `gen_ai.token.type`. Unit:
-    /// `{token}`, per the GenAI client conventions.
+    /// `{token}`, per the `GenAI` client conventions.
     pub gen_ai_token_usage: Histogram<u64>,
-    /// Client operation duration. Unit: seconds, per the GenAI client
+    /// Client operation duration. Unit: seconds, per the `GenAI` client
     /// conventions.
     pub gen_ai_operation_duration: Histogram<f64>,
 }

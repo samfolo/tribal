@@ -20,15 +20,15 @@ use crate::metrics::{
 // Records
 // ---------------------------------------------------------------------------
 
-/// One GenAI client operation, as the duration and token-usage histograms
+/// One `GenAI` client operation, as the duration and token-usage histograms
 /// record it.
 ///
-/// `operation` and the attribute keys follow the GenAI client metric
+/// `operation` and the attribute keys follow the `GenAI` client metric
 /// conventions; `stage` and `purpose` are Tribal's own pipeline
 /// attribution, carried as additional attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InferenceOperationRecord<'a> {
-    /// The GenAI operation name value (`chat` or `embeddings`).
+    /// The `GenAI` operation name value (`chat` or `embeddings`).
     pub operation: &'a str,
     /// The provider name.
     pub provider: &'a str,
@@ -65,7 +65,7 @@ pub trait MetricsRecorder: Send + Sync {
     /// Records provider (LLM/embedding) call latency.
     fn record_provider_call(&self, provider: &str, model: &str, stage: &str, elapsed: Duration);
 
-    /// Records one GenAI client operation: its duration in seconds and
+    /// Records one `GenAI` client operation: its duration in seconds and
     /// its token counts classed by type.
     fn record_inference_operation(&self, record: &InferenceOperationRecord<'_>);
 
