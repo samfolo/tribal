@@ -15,7 +15,7 @@ use tribal_inference::{
 };
 
 use super::{
-    StageCommit, TriageCommitDecision, map_facade_error, record_prompt_version_ids,
+    StageCommit, TriageCommitDecision, map_gateway_error, record_prompt_version_ids,
     stage_attribution,
 };
 use crate::{
@@ -206,7 +206,7 @@ impl Worker {
                         self.pool(),
                         ctx.candidate.suggested_tags(),
                         &ctx.tag_registry,
-                        self.facade(),
+                        self.gateway(),
                         &embedding_target,
                         self.config().tag_similarity_threshold,
                         deadline,
@@ -330,7 +330,7 @@ impl Worker {
             purpose: EmbeddingPurpose::Candidate,
         };
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        self.facade()
+        self.gateway()
             .embed(
                 target,
                 request,
@@ -338,7 +338,7 @@ impl Worker {
                 attribution,
             )
             .await
-            .map_err(|e| map_facade_error("triage embedding call", e))
+            .map_err(|e| map_gateway_error("triage embedding call", e))
     }
 
     /// Runs semantic search against existing knowledge items using the
@@ -417,7 +417,7 @@ impl Worker {
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let response = self
-            .facade()
+            .gateway()
             .complete(
                 TaskType::Triage,
                 request,
@@ -425,7 +425,7 @@ impl Worker {
                 attribution,
             )
             .await
-            .map_err(|e| map_facade_error("triage LLM call", e))?;
+            .map_err(|e| map_gateway_error("triage LLM call", e))?;
 
         if include_llm_content {
             tracing::debug!(
@@ -483,7 +483,7 @@ impl Worker {
                 let mut all_tags = tag_data.resolved.clone();
                 all_tags.extend(tag_data.new_tags.iter().map(|t| t.tag.clone()));
 
-                let extraction_identity = self.facade().completion_identity(TaskType::Extraction);
+                let extraction_identity = self.gateway().completion_identity(TaskType::Extraction);
                 let source_context = serde_json::json!({
                     "provider": extraction_identity.name,
                     "model": extraction_identity.model,

@@ -114,7 +114,7 @@ impl From<TestHandler> for TribalServerHandler {
                 .build_version(Arc::from("test-build"))
                 .inference_parameters(tribal_domain::InferenceParameters::default())
                 .active_prompt_versions(th.active_prompt_versions)
-                .facade(test_facade())
+                .gateway(test_gateway())
                 .embedding_identity(th.embedding_provider.identity().clone())
                 .worker_config(WorkerConfig::default())
                 .server_config(Arc::new(ServerConfig::default()))
@@ -231,16 +231,16 @@ fn default_inference_provider() -> Arc<dyn InferenceProvider> {
     Arc::new(MockInferenceProvider::builder().build())
 }
 
-/// A façade over mock providers with an empty registry: embedding
+/// A gateway over mock providers with an empty registry: embedding
 /// endpoints register dynamically on first resolution, per-profile
 /// providers are injected by tests, and completions are never called by
 /// MCP handlers (only their identities are read).
-fn test_facade() -> Arc<tribal_inference::InferenceFacade> {
+fn test_gateway() -> Arc<tribal_inference::InferenceGateway> {
     use tribal_inference::{EmptyCredentialResolver, InjectedCompletion, InjectedProviders};
 
     let registry = tribal_inference::ProviderRegistry::new(Vec::new())
         .expect("empty registry construction must not fail");
-    Arc::new(tribal_inference::InferenceFacade::with_providers(
+    Arc::new(tribal_inference::InferenceGateway::with_providers(
         InjectedProviders {
             registry,
             extraction: InjectedCompletion {

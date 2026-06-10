@@ -22,7 +22,7 @@ pub(super) use tribal_domain::{
     TaskType, TriageOutcome,
 };
 pub(super) use tribal_inference::{
-    EmbeddingProvider, InferenceFacade, InferenceProvider, InjectedEmbedding, InjectedProviders,
+    EmbeddingProvider, InferenceGateway, InferenceProvider, InjectedEmbedding, InjectedProviders,
     ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
 };
 pub(super) use tribal_telemetry::noop_recorder;
@@ -162,7 +162,7 @@ pub(super) async fn build_test_worker(
     .expect("valid registry");
 
     // Resolve the active profile (the seeded genesis) and bind the mock to it
-    // in the façade's per-profile cache, so the triage stage's per-call
+    // in the gateway's per-profile cache, so the triage stage's per-call
     // provider resolution returns the mock.
     let mut embeddings = Vec::new();
     {
@@ -185,19 +185,21 @@ pub(super) async fn build_test_worker(
     // The real ledger sink, so the integration suite covers usage recording
     // end to end; metrics are dropped.
     let sink = Arc::new(PgLedgerSink::new(pool.clone(), noop_recorder()));
-    let facade = Arc::new(InferenceFacade::with_providers(InjectedProviders::uniform(
-        registry,
-        inference,
-        key(RequestClass::Inference),
-        embeddings,
-        sink,
-    )));
+    let gateway = Arc::new(InferenceGateway::with_providers(
+        InjectedProviders::uniform(
+            registry,
+            inference,
+            key(RequestClass::Inference),
+            embeddings,
+            sink,
+        ),
+    ));
 
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
     Arc::new(Worker::new(
         pool,
-        facade,
+        gateway,
         cancellation_token,
         config,
         false,

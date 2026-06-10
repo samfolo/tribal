@@ -2,7 +2,7 @@
 //! checks (`provider_embedding`, `provider_extraction`,
 //! `provider_triage`, `provider_relation`).
 //!
-//! Probes route through a check-local inference façade, so a probe is a
+//! Probes route through a check-local inference gateway, so a probe is a
 //! real, minimal, billable call exercising exactly the path the server
 //! uses. Probe usage ledgers when the database step produced a pool and
 //! is recorded nowhere when the database is unreachable, keeping the
@@ -21,7 +21,7 @@ use tribal_config::{ProviderStage, TribalConfig};
 use tribal_db::{EmbeddingProfileRepository, PgEmbeddingProfileRepository};
 use tribal_domain::{EmbeddingProfile, ProviderKind, TaskType, normalise_endpoint_url};
 use tribal_inference::{
-    EmbeddingTarget, InferenceFacade, LedgerSink, NoopLedgerSink, UsageAttribution,
+    EmbeddingTarget, InferenceGateway, LedgerSink, NoopLedgerSink, UsageAttribution,
     resolve_dimensions,
 };
 use tribal_telemetry::noop_recorder;
@@ -78,8 +78,8 @@ pub(in crate::commands::check) async fn act(
     state: &mut CheckState,
     target: ProviderStage,
 ) -> CheckOutcome {
-    let facade = match ensure_facade(state) {
-        Ok(facade) => facade,
+    let gateway = match ensure_gateway(state) {
+        Ok(gateway) => gateway,
         Err(error) => {
             return CheckOutcome::provider_probe_failed(
                 target,
@@ -96,18 +96,18 @@ pub(in crate::commands::check) async fn act(
     // unreachable), the same identity first-boot provisioning will consume.
     // The inference stages read their own config block directly.
     let (provider, result) = match target {
-        ProviderStage::Embedding => probe_live_embedding(state, &facade).await,
+        ProviderStage::Embedding => probe_live_embedding(state, &gateway).await,
         ProviderStage::Extraction => (
             config(state).inference.extraction.provider,
-            probe_inference_stage(&facade, TaskType::Extraction).await,
+            probe_inference_stage(&gateway, TaskType::Extraction).await,
         ),
         ProviderStage::Triage => (
             config(state).inference.triage.provider,
-            probe_inference_stage(&facade, TaskType::Triage).await,
+            probe_inference_stage(&gateway, TaskType::Triage).await,
         ),
         ProviderStage::Relation => (
             config(state).inference.relation.provider,
-            probe_inference_stage(&facade, TaskType::Relation).await,
+            probe_inference_stage(&gateway, TaskType::Relation).await,
         ),
     };
     match result {
@@ -116,30 +116,30 @@ pub(in crate::commands::check) async fn act(
     }
 }
 
-/// Returns the façade for this run, building it on the first probe.
-fn ensure_facade(state: &mut CheckState) -> Result<Arc<InferenceFacade>, String> {
-    if let Some(facade) = &state.facade {
-        return Ok(Arc::clone(facade));
+/// Returns the gateway for this run, building it on the first probe.
+fn ensure_gateway(state: &mut CheckState) -> Result<Arc<InferenceGateway>, String> {
+    if let Some(gateway) = &state.gateway {
+        return Ok(Arc::clone(gateway));
     }
-    let facade =
-        build_check_facade(config(state), state.pool.clone()).map_err(|e| e.to_string())?;
-    state.facade = Some(Arc::clone(&facade));
-    Ok(facade)
+    let gateway =
+        build_check_gateway(config(state), state.pool.clone()).map_err(|e| e.to_string())?;
+    state.gateway = Some(Arc::clone(&gateway));
+    Ok(gateway)
 }
 
-/// Builds the check-local façade: a command registry from the inference
+/// Builds the check-local gateway: a command registry from the inference
 /// configuration, the catalogue credential resolver, and a ledger sink
 /// matching what the run has to write to.
-fn build_check_facade(
+fn build_check_gateway(
     config: &TribalConfig,
     pool: Option<PgPool>,
-) -> Result<Arc<InferenceFacade>, AppError> {
+) -> Result<Arc<InferenceGateway>, AppError> {
     let registry = build_command_registry(config)?;
     let sink: Arc<dyn LedgerSink> = match pool {
         Some(pool) => Arc::new(PgLedgerSink::new(pool, noop_recorder())),
         None => Arc::new(NoopLedgerSink),
     };
-    let facade = InferenceFacade::new(
+    let gateway = InferenceGateway::new(
         registry,
         &completion_stage_specs(config),
         Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
@@ -148,11 +148,11 @@ fn build_check_facade(
     .map_err(|e| AppError::ProviderSetup {
         context: e.to_string(),
     })?;
-    Ok(Arc::new(facade))
+    Ok(Arc::new(gateway))
 }
 
 /// Names the provider a probe would have exercised, for failures that
-/// happen before any probe runs (the façade itself failed to build).
+/// happen before any probe runs (the gateway itself failed to build).
 fn configured_provider(config: &TribalConfig, target: ProviderStage) -> ProviderKind {
     match target {
         ProviderStage::Embedding => config.init.embedding.provider,
@@ -163,7 +163,7 @@ fn configured_provider(config: &TribalConfig, target: ProviderStage) -> Provider
 }
 
 /// 10s bounds a blackholed provider without choking slow cloud probes: the
-/// façade's per-provider request timeouts are sized for real inference, far
+/// gateway's per-provider request timeouts are sized for real inference, far
 /// too generous for a reachability check. The bound cancels the whole probe
 /// future, so in a rare window a probe that billed may go unledgered —
 /// acceptable for a diagnostic command.
@@ -175,9 +175,9 @@ fn probe_timed_out() -> String {
 }
 
 /// Probes a single inference stage's configured endpoint.
-async fn probe_inference_stage(facade: &InferenceFacade, stage: TaskType) -> Result<(), String> {
+async fn probe_inference_stage(gateway: &InferenceGateway, stage: TaskType) -> Result<(), String> {
     let attribution = UsageAttribution::default();
-    let probe = facade.probe_completion(stage, &attribution);
+    let probe = gateway.probe_completion(stage, &attribution);
     match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
         Ok(result) => result.map_err(|e| e.to_string()),
         Err(_) => Err(probe_timed_out()),
@@ -199,7 +199,7 @@ fn config(state: &CheckState) -> &TribalConfig {
 /// when the corpus has no profile yet or the database is unreachable.
 async fn probe_live_embedding(
     state: &CheckState,
-    facade: &InferenceFacade,
+    gateway: &InferenceGateway,
 ) -> (ProviderKind, Result<(), String>) {
     let target = match active_embedding_target(state).await {
         Some(target) => target,
@@ -211,7 +211,7 @@ async fn probe_live_embedding(
 
     let provider = target.provider;
     let attribution = UsageAttribution::default();
-    let probe = facade.probe_embedding(&target, &attribution);
+    let probe = gateway.probe_embedding(&target, &attribution);
     let result = match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
         Ok(result) => result.map(|_| ()).map_err(|e| e.to_string()),
         Err(_) => Err(probe_timed_out()),
@@ -335,13 +335,13 @@ mod tests {
         // against the active endpoint, so its failure names that endpoint, not
         // the genesis one.
         let config = TribalConfig::default();
-        let facade = build_check_facade(&config, None).expect("a check façade");
+        let gateway = build_check_gateway(&config, None).expect("a check gateway");
         let active = an_embedding_profile()
             .provider_kind(ProviderKind::OpenAi)
             .normalised_base_url("https://migrated-host:443".to_owned())
             .build();
 
-        let error = facade
+        let error = gateway
             .probe_embedding(
                 &EmbeddingTarget::from(&active),
                 &UsageAttribution::default(),

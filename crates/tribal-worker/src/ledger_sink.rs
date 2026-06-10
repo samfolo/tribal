@@ -1,6 +1,6 @@
 //! The Postgres-backed ledger sink.
 //!
-//! Implements the façade's [`LedgerSink`] port: one `token_usage` row and
+//! Implements the gateway's [`LedgerSink`] port: one `token_usage` row and
 //! the `GenAI` client metrics per request, from the same data, so the
 //! ledger and the telemetry cannot disagree. Writes are best-effort on a
 //! freshly acquired connection — never inside a domain commit, and never
@@ -16,7 +16,7 @@ use tribal_domain::{TokenUsageStage, Usage, gen_ai};
 use tribal_inference::{LedgerSink, UsageAttribution};
 use tribal_telemetry::{InferenceOperationRecord, MetricsRecorder, current_trace_id};
 
-/// Records façade usage into the `token_usage` ledger and the `GenAI`
+/// Records gateway usage into the `token_usage` ledger and the `GenAI`
 /// client metric instruments.
 pub struct PgLedgerSink {
     pool: PgPool,

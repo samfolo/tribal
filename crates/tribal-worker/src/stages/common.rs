@@ -158,7 +158,7 @@ impl Worker {
     ///
     /// The returned profile id is the producing identity carried to the
     /// commit, whose flip-check compares it against the active read under
-    /// the cutover lock; its provider resolves through the façade's
+    /// the cutover lock; its provider resolves through the gateway's
     /// per-profile cache, so the common no-flip path is a cache hit.
     ///
     /// # Errors
@@ -186,7 +186,7 @@ impl Worker {
 
         // A misconfigured profile fails here, before any stage work, rather
         // than mid-embed with a context that no longer names the profile.
-        self.facade()
+        self.gateway()
             .prepare_embedding_target(&EmbeddingTarget::from(&active))
             .map_err(|source| StageError::Provider {
                 context: "resolving the active profile's embedding provider".into(),
@@ -237,10 +237,10 @@ fn prompt_version_ids_for_task(job: &Job, task: &Task) -> (PromptVersionId, Prom
     }
 }
 
-/// Maps a façade error onto the stage error taxonomy: an exhausted permit
+/// Maps a gateway error onto the stage error taxonomy: an exhausted permit
 /// wait is the stage's semaphore timeout, anything else a provider
 /// failure under the given context.
-pub(crate) fn map_facade_error(context: &str, error: InferenceError) -> StageError {
+pub(crate) fn map_gateway_error(context: &str, error: InferenceError) -> StageError {
     match error {
         InferenceError::PermitTimeout { provider_key, .. } => {
             StageError::SemaphoreTimeout { provider_key }

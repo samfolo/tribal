@@ -21,7 +21,7 @@ use tribal_domain::{
     JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
 };
 use tribal_inference::{
-    EmbedGroupError, EmbeddingRequest, EmbeddingTarget, InferenceError, InferenceFacade,
+    EmbedGroupError, EmbeddingRequest, EmbeddingTarget, InferenceError, InferenceGateway,
     PermitWait, UsageAttribution,
 };
 
@@ -309,7 +309,7 @@ impl Worker {
                                     });
                                 }
                                 let reembedded = reembed_against_active(
-                                    self.facade(),
+                                    self.gateway(),
                                     &stage_attribution(job, task),
                                     &active,
                                     &knowledge_item.content,
@@ -721,7 +721,7 @@ struct ReembeddedVectors {
 /// The group embeds under one concurrency permit: the re-embed occupies one
 /// slot, like the stage embedding it replaces.
 async fn reembed_against_active(
-    facade: &InferenceFacade,
+    gateway: &InferenceGateway,
     attribution: &UsageAttribution,
     active: &EmbeddingProfile,
     content: &str,
@@ -737,7 +737,7 @@ async fn reembed_against_active(
         purpose: EmbeddingPurpose::Tag,
     }));
 
-    let responses = facade
+    let responses = gateway
         .embed_group(
             &EmbeddingTarget::from(active),
             requests,
@@ -1100,7 +1100,7 @@ mod tests {
 
     /// When a cutover flips the active profile between an ingest's pre-embed and
     /// its commit, the commit re-embeds the item and its novel tags against the
-    /// new active's provider (resolved through the façade's per-profile cache)
+    /// new active's provider (resolved through the gateway's per-profile cache)
     /// rather than writing the stale, old-space vectors under the new active.
     #[tokio::test]
     async fn test_reembed_against_active_uses_the_new_active_provider() {
@@ -1131,7 +1131,7 @@ mod tests {
             (endpoint, limits),
         ])
         .expect("registry");
-        let facade = InferenceFacade::with_providers(InjectedProviders::uniform(
+        let gateway = InferenceGateway::with_providers(InjectedProviders::uniform(
             registry,
             Arc::new(MockInferenceProvider::builder().build()),
             inference_key,
@@ -1148,7 +1148,7 @@ mod tests {
             embedding: vec![0.1_f32; 768],
         }];
         let reembedded = reembed_against_active(
-            &facade,
+            &gateway,
             &UsageAttribution::default(),
             &active,
             "content",

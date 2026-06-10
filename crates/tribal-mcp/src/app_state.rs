@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
 use tribal_domain::{GitRemote, InferenceParameters, ProjectId};
-use tribal_inference::{InferenceFacade, ProviderIdentity};
+use tribal_inference::{InferenceGateway, ProviderIdentity};
 use tribal_telemetry::MetricsRecorder;
 use typed_builder::TypedBuilder;
 
@@ -101,10 +101,10 @@ pub struct AppState {
     pub(crate) active_prompt_versions: Arc<RwLock<ActivePromptVersions>>,
 
     // -- Providers -----------------------------------------------------------
-    /// The inference façade: the one port every completion and embedding
+    /// The inference gateway: the one port every completion and embedding
     /// call routes through. The discover read path embeds queries through
     /// it, and the reindex tools resolve target providers through it.
-    pub(crate) facade: Arc<InferenceFacade>,
+    pub(crate) gateway: Arc<InferenceGateway>,
 
     /// The active embedding identity snapshotted at boot, recorded as
     /// fingerprint provenance alongside the stage identities.

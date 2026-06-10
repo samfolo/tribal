@@ -149,7 +149,7 @@ impl TribalServerHandler {
 
         let embedding_response = self
             .state
-            .facade
+            .gateway
             .embed(
                 &EmbeddingTarget::from(&active_profile),
                 EmbeddingRequest {
@@ -1146,7 +1146,7 @@ mod tests {
         let handler = TestHandler::builder().pool(pool).build();
         handler
             .state
-            .facade
+            .gateway
             .inject_embedding_provider(active.id(), failing);
 
         let result = handler
@@ -1191,7 +1191,7 @@ mod tests {
             .build();
         handler
             .state
-            .facade
+            .gateway
             .inject_embedding_provider(active.id(), profile_provider("model-a", test_vector()));
 
         // The search mock only responds when the cursor arrives absent, so a
@@ -1419,7 +1419,7 @@ mod tests {
 
         // -- Profile A: the genesis active profile ----------------------------
         let profile_a = ensure_genesis_profile(&mut seed, "model-a", 768).await;
-        handler.state.facade.inject_embedding_provider(
+        handler.state.gateway.inject_embedding_provider(
             profile_a.id(),
             profile_provider("model-a", vec![1.0, 0.0, 0.0]),
         );
@@ -1431,7 +1431,7 @@ mod tests {
 
         // -- Cut over to profile B (higher epoch, now active) -----------------
         let profile_b_id = create_complete_profile(&mut seed, "model-b", 768).await;
-        handler.state.facade.inject_embedding_provider(
+        handler.state.gateway.inject_embedding_provider(
             profile_b_id,
             profile_provider("model-b", vec![0.0, 1.0, 0.0]),
         );

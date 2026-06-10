@@ -28,7 +28,7 @@ use tribal_db::{
 };
 use tribal_domain::{EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose};
 use tribal_inference::{
-    EmbeddingRequest, EmbeddingTarget, InferenceFacade, PermitWait, UsageAttribution,
+    EmbeddingRequest, EmbeddingTarget, InferenceGateway, PermitWait, UsageAttribution,
 };
 
 // ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ impl BackfillOutcome {
 /// multiple backfill methods.
 pub(crate) struct BackfillProcessor {
     pool: PgPool,
-    facade: Arc<InferenceFacade>,
+    gateway: Arc<InferenceGateway>,
     cancellation_token: CancellationToken,
 }
 
@@ -84,12 +84,12 @@ impl BackfillProcessor {
     /// Creates a new backfill processor.
     pub(crate) fn new(
         pool: PgPool,
-        facade: Arc<InferenceFacade>,
+        gateway: Arc<InferenceGateway>,
         cancellation_token: CancellationToken,
     ) -> Self {
         Self {
             pool,
-            facade,
+            gateway,
             cancellation_token,
         }
     }
@@ -287,7 +287,7 @@ impl BackfillProcessor {
         }
     }
 
-    /// Embeds a single tag through the façade.
+    /// Embeds a single tag through the gateway.
     ///
     /// The entire operation (permit acquisition + provider call) is
     /// bounded by [`EMBED_TIMEOUT`] to prevent a hung provider from
@@ -303,7 +303,7 @@ impl BackfillProcessor {
         };
         tokio::time::timeout(
             EMBED_TIMEOUT,
-            self.facade.embed(
+            self.gateway.embed(
                 target,
                 request,
                 PermitWait::Unbounded,

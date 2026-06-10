@@ -18,7 +18,7 @@ use tribal_domain::{
     ReindexRunState, normalise_endpoint_url,
 };
 use tribal_inference::{
-    DimensionResolutionError, EmbeddingTarget, InferenceError, InferenceFacade, resolve_dimensions,
+    DimensionResolutionError, EmbeddingTarget, InferenceError, InferenceGateway, resolve_dimensions,
 };
 
 use super::reindex::{ReindexCreationOutcome, create_reindex_run, resolve_reindex_target};
@@ -144,7 +144,7 @@ pub enum ReindexOpError {
 /// built, probed, or persisted.
 pub async fn reindex_run(
     pool: &PgPool,
-    facade: &InferenceFacade,
+    gateway: &InferenceGateway,
     request: &ReindexRunRequest,
     principal_id: PrincipalId,
 ) -> Result<ReindexRunOutcome, ReindexOpError> {
@@ -168,7 +168,7 @@ pub async fn reindex_run(
         base_url: normalised_base_url.clone(),
         profile_id: None,
     };
-    facade
+    gateway
         .prepare_embedding_target(&target)
         .map_err(ReindexOpError::Provider)?;
 
@@ -184,7 +184,7 @@ pub async fn reindex_run(
         .await?;
         (ReindexResolution::Plan, Some(profile))
     } else {
-        let target = resolve_reindex_target(facade, &target, DistanceMetric::Cosine)
+        let target = resolve_reindex_target(gateway, &target, DistanceMetric::Cosine)
             .await
             .map_err(ReindexOpError::Probe)?;
 

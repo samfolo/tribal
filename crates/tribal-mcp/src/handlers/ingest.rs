@@ -156,17 +156,17 @@ impl TribalServerHandler {
         let provider_identities = PipelineProviderIdentities {
             extraction: self
                 .state
-                .facade
+                .gateway
                 .completion_identity(TaskType::Extraction)
                 .clone(),
             triage: self
                 .state
-                .facade
+                .gateway
                 .completion_identity(TaskType::Triage)
                 .clone(),
             relation: self
                 .state
-                .facade
+                .gateway
                 .completion_identity(TaskType::Relation)
                 .clone(),
             embedding: self.state.embedding_identity.clone(),

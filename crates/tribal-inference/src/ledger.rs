@@ -1,9 +1,9 @@
-//! The ledger-sink port: where the façade reports every request it makes.
+//! The ledger-sink port: where the gateway reports every request it makes.
 //!
-//! The façade calls the sink for each request that produced usage, from the
+//! The gateway calls the sink for each request that produced usage, from the
 //! same code path that returns the response, so the usage ledger and any
 //! telemetry the implementation emits cannot disagree on source data. The
-//! trait lives beside the façade and is implemented above this crate, which
+//! trait lives beside the gateway and is implemented above this crate, which
 //! keeps `tribal-inference` persistence-free.
 
 use std::time::Duration;
@@ -15,7 +15,7 @@ use tribal_domain::{JobId, PromptVersionId, ReindexRunId, TaskId, TokenUsageStag
 ///
 /// Every field is optional: a pipeline call attributes its job and task, a
 /// reindex call its run, and an unowned call (a query embed, a probe)
-/// nothing at all. The stage identity is not carried here — the façade
+/// nothing at all. The stage identity is not carried here — the gateway
 /// derives it from the operation itself, so a caller cannot mislabel one.
 /// New owner kinds extend this struct without changing the
 /// [`LedgerSink`] signature.
@@ -37,7 +37,7 @@ pub struct UsageAttribution {
     pub trace_id: Option<String>,
 }
 
-/// The accounting port the façade reports through.
+/// The accounting port the gateway reports through.
 ///
 /// Implementations must be best-effort: a failed write is logged and
 /// swallowed, never surfaced to the calling request, and never performed
@@ -46,7 +46,7 @@ pub struct UsageAttribution {
 pub trait LedgerSink: Send + Sync {
     /// Records one request's usage.
     ///
-    /// `stage` is derived by the façade from the operation that produced
+    /// `stage` is derived by the gateway from the operation that produced
     /// `usage`; for embedding usage its purpose equals the purpose inside
     /// `usage` by construction.
     async fn record_usage(

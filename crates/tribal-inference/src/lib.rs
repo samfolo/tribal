@@ -9,7 +9,7 @@ mod drift;
 mod embedding_capabilities;
 mod embedding_factory;
 mod error;
-mod facade;
+mod gateway;
 mod http;
 mod ledger;
 mod ollama;
@@ -32,12 +32,12 @@ pub use embedding_capabilities::{
     DimensionResolutionError, EmbeddingCapabilities, resolve_dimensions, resolve_embedding,
 };
 pub use error::{InferenceError, classify_embedding_error, embedding_retry_after};
-pub use facade::{
+pub use gateway::{
     CompletionStageSpec, CompletionStageSpecs, CredentialError, EmbedGroupError,
-    EmbeddingCredentialResolver, EmbeddingTarget, FacadeBuildError, InferenceFacade, PermitWait,
+    EmbeddingCredentialResolver, EmbeddingTarget, GatewayBuildError, InferenceGateway, PermitWait,
 };
 #[cfg(feature = "test-helpers")]
-pub use facade::{
+pub use gateway::{
     EmptyCredentialResolver, InjectedCompletion, InjectedEmbedding, InjectedProviders,
 };
 #[cfg(feature = "test-helpers")]

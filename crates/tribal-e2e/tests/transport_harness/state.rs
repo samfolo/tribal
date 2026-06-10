@@ -14,7 +14,7 @@ use tribal_db::{
 };
 use tribal_domain::{PromptVersionId, ProviderKind, Scope, full_access_scopes};
 use tribal_inference::{
-    EmptyCredentialResolver, InferenceFacade, InjectedCompletion, InjectedProviders,
+    EmptyCredentialResolver, InferenceGateway, InjectedCompletion, InjectedProviders,
     NoopLedgerSink, ProviderIdentity, ProviderRegistry, RequestClass,
 };
 use tribal_mcp::{ActivePromptVersions, AppState};
@@ -70,7 +70,7 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
 
     let registry =
         ProviderRegistry::new(Vec::new()).expect("empty registry construction must not fail");
-    let facade = Arc::new(InferenceFacade::with_providers(InjectedProviders {
+    let gateway = Arc::new(InferenceGateway::with_providers(InjectedProviders {
         registry,
         extraction: InjectedCompletion {
             provider: Arc::new(MockInferenceProvider::builder().build()),
@@ -108,7 +108,7 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
                 PromptVersionId::new(),
                 PromptVersionId::new(),
             ))))
-            .facade(facade)
+            .gateway(gateway)
             .embedding_identity(embedding_identity)
             .worker_config(WorkerConfig::default())
             .server_config(Arc::new(ServerConfig::default()))
