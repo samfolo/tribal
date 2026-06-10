@@ -14,7 +14,7 @@
 //! profile's endpoint when a corpus exists, falling back to the genesis seed
 //! only before the first profile is provisioned.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use sqlx::PgPool;
 use tribal_config::{ProviderStage, TribalConfig};
@@ -162,12 +162,24 @@ fn configured_provider(config: &TribalConfig, target: ProviderStage) -> Provider
     }
 }
 
+/// 10s bounds a blackholed provider without choking slow cloud probes: the
+/// façade's per-provider request timeouts are sized for real inference, far
+/// too generous for a reachability check.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Names the bound in the failure detail so the outcome explains itself.
+fn probe_timed_out() -> String {
+    format!("no response within {}s", PROBE_TIMEOUT.as_secs())
+}
+
 /// Probes a single inference stage's configured endpoint.
 async fn probe_inference_stage(facade: &InferenceFacade, stage: TaskType) -> Result<(), String> {
-    facade
-        .probe_completion(stage, &UsageAttribution::default())
-        .await
-        .map_err(|e| e.to_string())
+    let attribution = UsageAttribution::default();
+    let probe = facade.probe_completion(stage, &attribution);
+    match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+        Ok(result) => result.map_err(|e| e.to_string()),
+        Err(_) => Err(probe_timed_out()),
+    }
 }
 
 /// Borrows the parsed config, which the preflight guarantees is present.
@@ -196,11 +208,12 @@ async fn probe_live_embedding(
     };
 
     let provider = target.provider;
-    let result = facade
-        .probe_embedding(&target, &UsageAttribution::default())
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string());
+    let attribution = UsageAttribution::default();
+    let probe = facade.probe_embedding(&target, &attribution);
+    let result = match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+        Ok(result) => result.map(|_| ()).map_err(|e| e.to_string()),
+        Err(_) => Err(probe_timed_out()),
+    };
     (provider, result)
 }
 
