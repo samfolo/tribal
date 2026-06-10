@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use tracing::Instrument;
 use tribal_domain::{CompletionResponse, CompletionUsage, ProviderKind, gen_ai, span_attrs};
 
+use super::streaming::OllamaStreamTranslator;
 use crate::{
     CompletionRequest, InferenceError, InferenceProvider, ProviderIdentity, ResponseFormat,
     apply_dialect,
@@ -17,8 +18,6 @@ use crate::{
     http::{ensure_success, normalise_base_url, record_completion_usage},
     stream::{InferenceEventStream, WireMode, drive_event_stream},
 };
-
-use super::streaming::OllamaStreamTranslator;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -911,6 +910,4 @@ mod tests {
             "expected ProviderUnavailable with truncated body, got {err:?}"
         );
     }
-
-    // -- Probe tests ---------------------------------------------------------
 }

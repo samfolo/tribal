@@ -15,11 +15,14 @@
 //! the stream-specific fields and fold to identical results.
 
 use std::{
+    pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
 use dashmap::DashMap;
+use futures_util::StreamExt;
 use tokio::sync::OwnedSemaphorePermit;
 use tracing::Instrument;
 use tribal_domain::{
@@ -29,21 +32,21 @@ use tribal_domain::{
 
 use crate::{
     BatchEmbeddingResult, CompletionRequest, EmbeddingProvider, EmbeddingRequest, InferenceError,
-    InferenceProvider, Message, ProviderKey, ProviderLimits, ProviderRegistry,
+    InferenceProvider, Message, ProviderIdentity, ProviderKey, ProviderLimits, ProviderRegistry,
     ProviderRegistryError, RequestClass, Role,
     anthropic::AnthropicInferenceProvider,
-    embedding_factory::make_embedding_provider,
+    embedding_factory::{ensure_embedding_support, make_embedding_provider},
     http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, latency_ms},
     ledger::{LedgerSink, UsageAttribution},
-    ollama::OllamaInferenceProvider,
+    ollama::{OllamaInferenceProvider, tags::check_tags},
     openai::OpenAiInferenceProvider,
     response::EmbeddingResponse,
     stream::InferenceEventStream,
 };
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 /// Limits applied to an embedding endpoint registered for the first time
 /// after boot (a reindex target on a brand-new endpoint). An endpoint the
@@ -57,9 +60,9 @@ const DEFAULT_DYNAMIC_EMBEDDING_LIMITS: ProviderLimits = ProviderLimits {
 /// process lifetime.
 const SEMAPHORE_NEVER_CLOSED: &str = "provider semaphore is never closed";
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // Permit policy
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 /// How long a call may wait for its provider's concurrency permit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,9 +77,9 @@ pub enum PermitWait {
     Unbounded,
 }
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // Credentials
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 /// A required embedding credential could not be resolved.
 ///
@@ -112,9 +115,9 @@ pub trait EmbeddingCredentialResolver: Send + Sync {
     ) -> Result<String, CredentialError>;
 }
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // Targets and specifications
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 /// The resolved identity of an embedding endpoint and model.
 ///
@@ -172,22 +175,37 @@ pub struct CompletionStageSpecs {
     pub relation: CompletionStageSpec,
 }
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // Errors
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
-/// One input of an [`InferenceFacade::embed_group`] call failed.
+/// An [`InferenceFacade::embed_group`] call failed.
 ///
-/// Carries the failing input's position so the caller can attribute the
-/// failure precisely (the group's inputs usually have distinct roles).
+/// Distinguishes a failure before any input was attempted from one
+/// input's failure, carrying the latter's position so the caller can
+/// attribute it precisely (the group's inputs usually have distinct
+/// roles).
 #[derive(Debug, thiserror::Error)]
-#[error("group embed failed at input {index}: {source}")]
-pub struct EmbedGroupError {
-    /// The position of the failing input within the group.
-    pub index: usize,
-    /// The underlying failure.
-    #[source]
-    pub source: InferenceError,
+pub enum EmbedGroupError {
+    /// The group failed before any input was embedded: target resolution
+    /// or permit acquisition.
+    #[error("group embed failed before any input: {source}")]
+    Setup {
+        /// The underlying failure.
+        #[source]
+        source: InferenceError,
+    },
+
+    /// One input's embed failed; earlier inputs succeeded and were
+    /// recorded.
+    #[error("group embed failed at input {index}: {source}")]
+    Input {
+        /// The position of the failing input within the group.
+        index: usize,
+        /// The underlying failure.
+        #[source]
+        source: InferenceError,
+    },
 }
 
 /// The façade could not be constructed.
@@ -211,9 +229,9 @@ pub enum FacadeBuildError {
     },
 }
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // InferenceFacade
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 /// One completion endpoint, bound: the built provider and its registry key.
 struct CompletionBinding {
@@ -270,7 +288,7 @@ impl InferenceFacade {
     /// callers that record provenance (which provider and model produced
     /// an artefact) without making a call.
     #[must_use]
-    pub fn completion_identity(&self, stage: TaskType) -> &crate::ProviderIdentity {
+    pub fn completion_identity(&self, stage: TaskType) -> &ProviderIdentity {
         self.binding(stage).provider.identity()
     }
 
@@ -299,8 +317,9 @@ impl InferenceFacade {
         attribution: &UsageAttribution,
     ) -> Result<CompletionResponse, InferenceError> {
         let binding = self.binding(stage);
-        let _permit = self.acquire(&binding.key, wait).await?;
+        let permit = self.acquire(&binding.key, wait).await?;
         let response = binding.provider.complete(request).await?;
+        drop(permit);
         self.record_completion(&response, TokenUsageStage::from(stage), attribution)
             .await;
         Ok(response)
@@ -365,8 +384,9 @@ impl InferenceFacade {
                 max_tokens: Some(PROBE_MAX_TOKENS),
                 response_format: None,
             };
-            let _permit = self.acquire(&binding.key, PermitWait::Unbounded).await?;
+            let permit = self.acquire(&binding.key, PermitWait::Unbounded).await?;
             let response = binding.provider.complete(request).await?;
+            drop(permit);
             self.record_completion(&response, TokenUsageStage::Probe, attribution)
                 .await;
 
@@ -398,9 +418,10 @@ impl InferenceFacade {
         attribution: &UsageAttribution,
     ) -> Result<EmbeddingResponse, InferenceError> {
         let resolved = self.resolve_embedding(target)?;
-        let _permit = self.acquire(&resolved.key, wait).await?;
+        let permit = self.acquire(&resolved.key, wait).await?;
         let purpose = request.purpose;
         let response = resolved.provider.embed(request).await?;
+        drop(permit);
         self.record_embedding(&response.usage, purpose, attribution)
             .await;
         Ok(response)
@@ -415,8 +436,9 @@ impl InferenceFacade {
     ///
     /// # Errors
     ///
-    /// Returns [`EmbedGroupError`] naming the first failing input; its
-    /// source follows [`embed`](Self::embed)'s error mapping.
+    /// Returns [`EmbedGroupError`] distinguishing a setup failure from a
+    /// named failing input; the source follows
+    /// [`embed`](Self::embed)'s error mapping.
     pub async fn embed_group(
         &self,
         target: &EmbeddingTarget,
@@ -424,23 +446,38 @@ impl InferenceFacade {
         wait: PermitWait,
         attribution: &UsageAttribution,
     ) -> Result<Vec<EmbeddingResponse>, EmbedGroupError> {
-        let on_setup = |source: InferenceError| EmbedGroupError { index: 0, source };
+        let on_setup = |source: InferenceError| EmbedGroupError::Setup { source };
         let resolved = self.resolve_embedding(target).map_err(on_setup)?;
-        let _permit = self.acquire(&resolved.key, wait).await.map_err(on_setup)?;
+        let permit = self.acquire(&resolved.key, wait).await.map_err(on_setup)?;
 
+        let mut purposes = Vec::with_capacity(requests.len());
         let mut responses = Vec::with_capacity(requests.len());
+        let mut failure = None;
         for (index, request) in requests.into_iter().enumerate() {
             let purpose = request.purpose;
-            let response = resolved
-                .provider
-                .embed(request)
-                .await
-                .map_err(|source| EmbedGroupError { index, source })?;
-            self.record_embedding(&response.usage, purpose, attribution)
-                .await;
-            responses.push(response);
+            match resolved.provider.embed(request).await {
+                Ok(response) => {
+                    purposes.push(purpose);
+                    responses.push(response);
+                }
+                Err(source) => {
+                    failure = Some(EmbedGroupError::Input { index, source });
+                    break;
+                }
+            }
         }
-        Ok(responses)
+        drop(permit);
+
+        // Ledgered after the permit is released; a mid-group failure still
+        // ledgers the inputs that completed, whose spend is real.
+        for (response, purpose) in responses.iter().zip(&purposes) {
+            self.record_embedding(&response.usage, *purpose, attribution)
+                .await;
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(responses),
+        }
     }
 
     /// Embeds a batch of inputs with one shared purpose through the
@@ -465,13 +502,14 @@ impl InferenceFacade {
         attribution: &UsageAttribution,
     ) -> Result<BatchEmbeddingResult, InferenceError> {
         let resolved = self.resolve_embedding(target)?;
-        let _permit = self.acquire(&resolved.key, wait).await?;
+        let permit = self.acquire(&resolved.key, wait).await?;
 
         let requests = inputs
             .into_iter()
             .map(|input| EmbeddingRequest { input, purpose })
             .collect();
         let result = resolved.provider.embed_many(requests).await;
+        drop(permit);
         self.record_embedding(&result.usage, purpose, attribution)
             .await;
         Ok(result)
@@ -492,8 +530,10 @@ impl InferenceFacade {
         self.resolve_embedding(target).map(|_| ())
     }
 
-    /// Resolves the provider-native revision token for an embedding target:
-    /// best-effort and non-failing, empty when the provider exposes none.
+    /// Resolves the provider-native revision token for an embedding
+    /// target. The token lookup itself is best-effort and non-failing,
+    /// returning empty when the provider exposes none; only resolving the
+    /// target's provider can fail.
     ///
     /// # Errors
     ///
@@ -531,8 +571,9 @@ impl InferenceFacade {
                 input: EMBEDDING_PROBE_INPUT.to_owned(),
                 purpose: EmbeddingPurpose::Probe,
             };
-            let _permit = self.acquire(&resolved.key, PermitWait::Unbounded).await?;
+            let permit = self.acquire(&resolved.key, PermitWait::Unbounded).await?;
             let response = resolved.provider.embed(request).await?;
+            drop(permit);
             self.record_embedding(&response.usage, EmbeddingPurpose::Probe, attribution)
                 .await;
 
@@ -553,6 +594,13 @@ impl InferenceFacade {
         &self,
         target: &EmbeddingTarget,
     ) -> Result<ResolvedEmbedding, InferenceError> {
+        // The structural check comes first: a kind with no embedding API
+        // fails on that, not on whichever credential or endpoint fault
+        // resolution would have hit before construction.
+        ensure_embedding_support(target.provider).map_err(|e| {
+            InferenceError::provider_unavailable(target.provider.to_string(), e.to_string())
+        })?;
+
         let key = ProviderKey::new(
             target.provider.to_string(),
             &target.base_url,
@@ -621,6 +669,9 @@ impl InferenceFacade {
 
     /// Acquires a permit for the key, reporting the wait to the sink.
     ///
+    /// Permits cover wire time only: every caller drops its permit before
+    /// recording usage, so a slow sink never extends a concurrency slot.
+    ///
     /// # Panics
     ///
     /// Panics if the provider semaphore is closed, which never happens:
@@ -664,7 +715,7 @@ impl InferenceFacade {
         let Some(client) = self.registry.resolve_client(key) else {
             return;
         };
-        crate::ollama::tags::check_tags(&client, key.normalised_base_url(), model).await;
+        check_tags(&client, key.normalised_base_url(), model).await;
     }
 
     async fn record_completion(
@@ -696,6 +747,9 @@ impl InferenceFacade {
 
     /// Wraps a provider stream so it owns its permit and records the
     /// terminal event's usage as it passes through.
+    ///
+    /// The permit wrapper sits inside the recording wrapper, so the permit
+    /// is already released when the terminal event's usage is written.
     fn recorded_stream(
         &self,
         stream: InferenceEventStream,
@@ -703,11 +757,14 @@ impl InferenceFacade {
         stage: TokenUsageStage,
         attribution: &UsageAttribution,
     ) -> InferenceEventStream {
-        use futures_util::StreamExt;
+        let permitted = PermitStream {
+            inner: stream,
+            permit: Some(permit),
+        };
 
         let sink = Arc::clone(&self.sink);
         let attribution = Arc::new(attribution.clone());
-        let recorded = stream.then(move |item| {
+        Box::pin(permitted.then(move |item| {
             let sink = Arc::clone(&sink);
             let attribution = Arc::clone(&attribution);
             async move {
@@ -719,12 +776,7 @@ impl InferenceFacade {
                 }
                 item
             }
-        });
-
-        Box::pin(PermitStream {
-            inner: Box::pin(recorded),
-            _permit: permit,
-        })
+        }))
     }
 }
 
@@ -768,26 +820,33 @@ fn build_binding(
 }
 
 /// A stream that owns the concurrency permit for its wire connection,
-/// releasing it when the stream is dropped or finishes.
+/// releasing it as soon as the wire is done with: when the terminal or
+/// error item passes through, when the stream ends, or when an abandoned
+/// stream is dropped — whichever comes first.
 struct PermitStream {
     inner: InferenceEventStream,
-    _permit: OwnedSemaphorePermit,
+    permit: Option<OwnedSemaphorePermit>,
 }
 
 impl futures_util::Stream for PermitStream {
     type Item = Result<InferenceEvent, InferenceError>;
 
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.get_mut().inner.as_mut().poll_next(cx)
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let poll = this.inner.as_mut().poll_next(cx);
+        if matches!(
+            &poll,
+            Poll::Ready(None | Some(Err(_) | Ok(InferenceEvent::Completed { .. })))
+        ) {
+            this.permit = None;
+        }
+        poll
     }
 }
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // Test injection
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 /// One injected stage provider: the prebuilt provider and the registry key
 /// its permits live under.
@@ -825,6 +884,37 @@ pub struct InjectedProviders {
     pub credentials: Arc<dyn EmbeddingCredentialResolver>,
     /// The accounting sink.
     pub sink: Arc<dyn LedgerSink>,
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl InjectedProviders {
+    /// One inference provider serving all three stages under one key, an
+    /// empty-catalogue credential resolver, and the given embeddings and
+    /// sink: the common shape of a test façade.
+    #[must_use]
+    pub fn uniform(
+        registry: ProviderRegistry,
+        provider: Arc<dyn InferenceProvider>,
+        key: ProviderKey,
+        embeddings: Vec<InjectedEmbedding>,
+        sink: Arc<dyn LedgerSink>,
+    ) -> Self {
+        Self {
+            registry,
+            extraction: InjectedCompletion {
+                provider: Arc::clone(&provider),
+                key: key.clone(),
+            },
+            triage: InjectedCompletion {
+                provider: Arc::clone(&provider),
+                key: key.clone(),
+            },
+            relation: InjectedCompletion { provider, key },
+            embeddings,
+            credentials: Arc::new(EmptyCredentialResolver),
+            sink,
+        }
+    }
 }
 
 #[cfg(any(test, feature = "test-helpers"))]
@@ -891,7 +981,8 @@ impl EmbeddingCredentialResolver for EmptyCredentialResolver {
                 provider,
                 base_url: normalised_base_url.to_owned(),
                 message: format!(
-                    "no API key resolves for {provider} at {normalised_base_url}: the test                      resolver holds no credentials"
+                    "no API key resolves for {provider} at {normalised_base_url}: the test \
+                     resolver holds no credentials"
                 ),
             });
         }
@@ -899,9 +990,9 @@ impl EmbeddingCredentialResolver for EmptyCredentialResolver {
     }
 }
 
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -911,16 +1002,18 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use futures_util::StreamExt;
     use tribal_domain::{CompletionUsage, EmbeddingUsage, JobId};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
 
     use super::*;
-    use crate::ProviderIdentity;
 
     const STAGE_URL: &str = "http://localhost:11434";
     const EMBED_URL: &str = "http://localhost:11500";
 
-    // -- Scripted providers and a recording sink ------------------------------
+    // -- Scripted providers and a recording sink -----------------------------
 
     /// Counts buffered and streaming calls, returning canned responses.
     struct ScriptedInference {
@@ -1057,7 +1150,7 @@ mod tests {
         }
     }
 
-    // -- Fixture assembly ------------------------------------------------------
+    // -- Fixture assembly ----------------------------------------------------
 
     struct Fixture {
         facade: InferenceFacade,
@@ -1097,27 +1190,16 @@ mod tests {
         let sink = Arc::new(RecordingSink::default());
         let profile_id = EmbeddingProfileId::new();
 
-        let facade = InferenceFacade::with_providers(InjectedProviders {
+        let facade = InferenceFacade::with_providers(InjectedProviders::uniform(
             registry,
-            extraction: InjectedCompletion {
-                provider: Arc::clone(&inference) as Arc<dyn InferenceProvider>,
-                key: stage_key(),
-            },
-            triage: InjectedCompletion {
-                provider: Arc::clone(&inference) as Arc<dyn InferenceProvider>,
-                key: stage_key(),
-            },
-            relation: InjectedCompletion {
-                provider: Arc::clone(&inference) as Arc<dyn InferenceProvider>,
-                key: stage_key(),
-            },
-            embeddings: vec![InjectedEmbedding {
+            Arc::clone(&inference) as Arc<dyn InferenceProvider>,
+            stage_key(),
+            vec![InjectedEmbedding {
                 profile_id,
                 provider: Arc::new(ScriptedEmbedding::new()),
             }],
-            credentials: Arc::new(EmptyCredentialResolver),
-            sink: Arc::clone(&sink) as Arc<dyn LedgerSink>,
-        });
+            Arc::clone(&sink) as Arc<dyn LedgerSink>,
+        ));
 
         Fixture {
             facade,
@@ -1159,7 +1241,7 @@ mod tests {
         }
     }
 
-    // -- Accounting -------------------------------------------------------------
+    // -- Accounting ----------------------------------------------------------
 
     #[tokio::test]
     async fn test_complete_records_usage_with_stage_and_attribution() {
@@ -1354,7 +1436,7 @@ mod tests {
         ));
     }
 
-    // -- Transport choice --------------------------------------------------------
+    // -- Transport choice ----------------------------------------------------
 
     #[tokio::test]
     async fn test_complete_uses_the_buffered_wire() {
@@ -1402,7 +1484,7 @@ mod tests {
         assert_eq!(usages[0].attribution, attribution);
     }
 
-    // -- Permits -------------------------------------------------------------------
+    // -- Permits -------------------------------------------------------------
 
     #[tokio::test]
     async fn test_stream_owns_its_permit_until_dropped() {
@@ -1433,7 +1515,44 @@ mod tests {
         assert_eq!(
             semaphore.available_permits(),
             1,
-            "dropping the stream releases the permit"
+            "abandoning the stream releases the permit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_releases_its_permit_on_the_terminal_event() {
+        let fixture = a_fixture(1);
+        let semaphore = fixture
+            .facade
+            .registry
+            .resolve_semaphore(&stage_key())
+            .unwrap();
+
+        let mut stream = fixture
+            .facade
+            .complete_stream(
+                TaskType::Extraction,
+                a_request(),
+                PermitWait::Unbounded,
+                &an_attribution(),
+            )
+            .await
+            .unwrap();
+
+        let delta = stream.next().await.unwrap().unwrap();
+        assert!(matches!(delta, InferenceEvent::TextDelta { .. }));
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the permit is held while deltas flow"
+        );
+
+        let terminal = stream.next().await.unwrap().unwrap();
+        assert!(matches!(terminal, InferenceEvent::Completed { .. }));
+        assert_eq!(
+            semaphore.available_permits(),
+            1,
+            "the terminal event releases the permit before the stream is dropped"
         );
     }
 
@@ -1472,7 +1591,7 @@ mod tests {
         drop(held);
     }
 
-    // -- Embedding resolution --------------------------------------------------------
+    // -- Embedding resolution ------------------------------------------------
 
     #[tokio::test]
     async fn test_embed_unknown_profile_builds_and_caches_the_provider() {
@@ -1533,11 +1652,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_builds_providers_and_probe_sends_the_canonical_request() {
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{method, path},
-        };
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
@@ -1593,8 +1707,11 @@ mod tests {
 
         // The canonical probe request reached the wire (and the tags
         // pre-check stayed best-effort: its 404 did not fail the probe).
-        let request = &server.received_requests().await.unwrap()
-            [usize::from(server.received_requests().await.unwrap().len() > 1)];
+        let requests = server.received_requests().await.unwrap();
+        let request = requests
+            .iter()
+            .find(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/api/chat")
+            .expect("the probe completion reached the chat endpoint");
         let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
         assert_eq!(
             body["messages"][0]["content"],

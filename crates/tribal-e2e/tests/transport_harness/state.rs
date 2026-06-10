@@ -14,7 +14,7 @@ use tribal_db::{
 };
 use tribal_domain::{PromptVersionId, ProviderKind, Scope, full_access_scopes};
 use tribal_inference::{
-    InferenceFacade, InjectedCompletion, InjectedProviders, EmptyCredentialResolver,
+    EmptyCredentialResolver, InferenceFacade, InjectedCompletion, InjectedProviders,
     NoopLedgerSink, ProviderIdentity, ProviderRegistry, RequestClass,
 };
 use tribal_mcp::{ActivePromptVersions, AppState};

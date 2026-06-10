@@ -31,10 +31,6 @@ pub const PROVIDER_NAME: &str = "gen_ai.provider.name";
 /// Attribute key for the model named in the request.
 pub const REQUEST_MODEL: &str = "gen_ai.request.model";
 
-/// Attribute key for the model named in the response, where the wire
-/// returns one.
-pub const RESPONSE_MODEL: &str = "gen_ai.response.model";
-
 /// Attribute key for the sampling temperature sent in the request.
 pub const REQUEST_TEMPERATURE: &str = "gen_ai.request.temperature";
 

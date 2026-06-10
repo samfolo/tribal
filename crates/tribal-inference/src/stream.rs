@@ -115,6 +115,15 @@ impl SseAssembler {
         }
         None
     }
+
+    /// Drains a buffered payload at end of stream, where a final event is
+    /// dispatched by the wire closing rather than a blank line.
+    pub(crate) fn take_pending(&mut self) -> Option<String> {
+        if self.data.is_empty() {
+            return None;
+        }
+        Some(std::mem::take(&mut self.data).join("\n"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,22 +176,28 @@ where
         translator,
         pending: VecDeque::new(),
         provider,
-        finished: false,
+        phase: DrivePhase::Streaming,
     };
 
     Box::pin(futures_util::stream::unfold(
         state,
         |mut state| async move {
             loop {
-                if state.finished {
+                if matches!(state.phase, DrivePhase::Finished) {
                     return None;
                 }
                 if let Some(item) = state.pending.pop_front() {
                     if item.is_err() || matches!(item, Ok(InferenceEvent::Completed { .. })) {
-                        state.finished = true;
+                        state.phase = DrivePhase::Finished;
                         state.pending.clear();
                     }
                     return Some((item, state));
+                }
+                // The wire is closed and pending has drained: nothing more
+                // can arrive, and an exhausted body is not contractually
+                // pollable again.
+                if matches!(state.phase, DrivePhase::WireClosed) {
+                    return None;
                 }
 
                 match state.body.next().await {
@@ -205,17 +220,23 @@ where
                         }
                         let outcome = state.translator.on_end();
                         state.extend_pending(outcome);
-                        // The next pending drain returns the terminal or the
-                        // error; an empty drain on a misbehaving translator
-                        // would loop forever without this.
-                        if state.pending.is_empty() {
-                            return None;
-                        }
+                        state.phase = DrivePhase::WireClosed;
                     }
                 }
             }
         },
     ))
+}
+
+/// Where the drive loop is in one wire exchange's lifecycle.
+enum DrivePhase {
+    /// The body stream is live and polled for further chunks.
+    Streaming,
+    /// The body reached end-of-stream and `on_end` has run; only queued
+    /// events remain.
+    WireClosed,
+    /// The terminal or error item was yielded; the stream is fused.
+    Finished,
 }
 
 struct DriveState<S, T> {
@@ -224,7 +245,7 @@ struct DriveState<S, T> {
     translator: T,
     pending: VecDeque<Result<InferenceEvent, InferenceError>>,
     provider: &'static str,
-    finished: bool,
+    phase: DrivePhase,
 }
 
 impl<S, T: EventTranslator> DriveState<S, T> {
@@ -397,6 +418,14 @@ mod tests {
         let mut sse = SseAssembler::default();
         assert_eq!(sse.on_line("data:tight"), None);
         assert_eq!(sse.on_line(""), Some("tight".to_owned()));
+    }
+
+    #[test]
+    fn test_sse_assembler_take_pending_drains_a_buffered_payload() {
+        let mut sse = SseAssembler::default();
+        assert_eq!(sse.on_line("data: final"), None);
+        assert_eq!(sse.take_pending(), Some("final".to_owned()));
+        assert_eq!(sse.take_pending(), None);
     }
 
     // -- drive_lines ----------------------------------------------------------

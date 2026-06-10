@@ -20,6 +20,27 @@ pub struct UnsupportedEmbeddingProvider {
     pub provider: ProviderKind,
 }
 
+/// Rejects a provider kind with no embedding API.
+///
+/// The structural check runs before credential resolution in the façade, so
+/// a keyless target on an unsupported kind reports the missing API rather
+/// than a missing credential no key could remedy.
+///
+/// # Errors
+///
+/// Returns [`UnsupportedEmbeddingProvider`] for a provider kind with no
+/// embedding API (Anthropic).
+pub(crate) fn ensure_embedding_support(
+    provider_kind: ProviderKind,
+) -> Result<(), UnsupportedEmbeddingProvider> {
+    match provider_kind {
+        ProviderKind::Ollama | ProviderKind::OpenAi => Ok(()),
+        ProviderKind::Anthropic => Err(UnsupportedEmbeddingProvider {
+            provider: ProviderKind::Anthropic,
+        }),
+    }
+}
+
 /// Constructs the concrete embedding provider for a resolved target.
 ///
 /// `api_key` is ignored for providers that need none (Ollama); the caller has

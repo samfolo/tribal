@@ -236,7 +236,7 @@ fn default_inference_provider() -> Arc<dyn InferenceProvider> {
 /// providers are injected by tests, and completions are never called by
 /// MCP handlers (only their identities are read).
 fn test_facade() -> Arc<tribal_inference::InferenceFacade> {
-    use tribal_inference::{InjectedCompletion, InjectedProviders, EmptyCredentialResolver};
+    use tribal_inference::{EmptyCredentialResolver, InjectedCompletion, InjectedProviders};
 
     let registry = tribal_inference::ProviderRegistry::new(Vec::new())
         .expect("empty registry construction must not fail");

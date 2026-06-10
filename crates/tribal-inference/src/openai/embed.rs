@@ -718,6 +718,4 @@ mod tests {
             "expected ProviderUnavailable with truncated body, got {err:?}"
         );
     }
-
-    // -- Probe tests ---------------------------------------------------------
 }

@@ -21,8 +21,8 @@ use tribal_domain::{
     JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
 };
 use tribal_inference::{
-    EmbeddingRequest, EmbeddingTarget, InferenceError, InferenceFacade, PermitWait,
-    UsageAttribution,
+    EmbedGroupError, EmbeddingRequest, EmbeddingTarget, InferenceError, InferenceFacade,
+    PermitWait, UsageAttribution,
 };
 
 use super::Worker;
@@ -745,13 +745,19 @@ async fn reembed_against_active(
             attribution,
         )
         .await
-        .map_err(|e| StageError::Provider {
-            context: if e.index == 0 {
-                "re-embedding the item against the flipped active".to_owned()
-            } else {
-                "re-embedding a tag against the flipped active".to_owned()
+        .map_err(|e| match e {
+            EmbedGroupError::Setup { source } => StageError::Provider {
+                context: "resolving the flipped active profile's provider".to_owned(),
+                source,
             },
-            source: e.source,
+            EmbedGroupError::Input { index: 0, source } => StageError::Provider {
+                context: "re-embedding the item against the flipped active".to_owned(),
+                source,
+            },
+            EmbedGroupError::Input { source, .. } => StageError::Provider {
+                context: "re-embedding a tag against the flipped active".to_owned(),
+                source,
+            },
         })?;
 
     let mut vectors = responses.into_iter().map(|response| response.vector);
@@ -1081,9 +1087,8 @@ mod tests {
     use tribal_db::{EmbeddingRepository, PgEmbeddingRepository};
     use tribal_domain::{EmbeddingProfileId, PromptRole};
     use tribal_inference::{
-        EmbeddingProvider, InjectedCompletion, InjectedEmbedding, InjectedProviders,
-        EmptyCredentialResolver, NoopLedgerSink, ProviderKey, ProviderLimits, ProviderRegistry,
-        RequestClass,
+        EmbeddingProvider, InjectedEmbedding, InjectedProviders, NoopLedgerSink, ProviderKey,
+        ProviderLimits, ProviderRegistry, RequestClass,
     };
     use tribal_test_utils::{
         ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, Seed, a_candidate,
@@ -1108,8 +1113,6 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let stub: Arc<dyn tribal_inference::InferenceProvider> =
-            Arc::new(MockInferenceProvider::builder().build());
         let inference_key =
             ProviderKey::new("mock", "http://localhost:9999", RequestClass::Inference)
                 .expect("inference key");
@@ -1128,27 +1131,16 @@ mod tests {
             (endpoint, limits),
         ])
         .expect("registry");
-        let facade = InferenceFacade::with_providers(InjectedProviders {
+        let facade = InferenceFacade::with_providers(InjectedProviders::uniform(
             registry,
-            extraction: InjectedCompletion {
-                provider: Arc::clone(&stub),
-                key: inference_key.clone(),
-            },
-            triage: InjectedCompletion {
-                provider: Arc::clone(&stub),
-                key: inference_key.clone(),
-            },
-            relation: InjectedCompletion {
-                provider: stub,
-                key: inference_key,
-            },
-            embeddings: vec![InjectedEmbedding {
+            Arc::new(MockInferenceProvider::builder().build()),
+            inference_key,
+            vec![InjectedEmbedding {
                 profile_id: active.id(),
                 provider: mock,
             }],
-            credentials: Arc::new(EmptyCredentialResolver),
-            sink: Arc::new(NoopLedgerSink),
-        });
+            Arc::new(NoopLedgerSink),
+        ));
 
         // The pre-embedded vectors (all 0.1) belong to the superseded geometry.
         let new_tags = [NewTagWithEmbedding {

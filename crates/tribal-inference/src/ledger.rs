@@ -17,8 +17,8 @@ use tribal_domain::{JobId, PromptVersionId, ReindexRunId, TaskId, TokenUsageStag
 /// reindex call its run, and an unowned call (a query embed, a probe)
 /// nothing at all. The stage identity is not carried here — the façade
 /// derives it from the operation itself, so a caller cannot mislabel one.
-/// Future owners (such as agent-thread attribution) extend this struct
-/// without changing the [`LedgerSink`] signature.
+/// New owner kinds extend this struct without changing the
+/// [`LedgerSink`] signature.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UsageAttribution {
     /// The job the request belongs to.

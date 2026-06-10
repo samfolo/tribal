@@ -22,9 +22,8 @@ pub(super) use tribal_domain::{
     TaskType, TriageOutcome,
 };
 pub(super) use tribal_inference::{
-    EmbeddingProvider, InferenceFacade, InferenceProvider, InjectedCompletion, InjectedEmbedding,
-    InjectedProviders, EmptyCredentialResolver, ProviderKey, ProviderLimits, ProviderRegistry,
-    RequestClass,
+    EmbeddingProvider, InferenceFacade, InferenceProvider, InjectedEmbedding, InjectedProviders,
+    ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
 };
 pub(super) use tribal_telemetry::noop_recorder;
 pub(super) use tribal_test_utils::{
@@ -186,24 +185,13 @@ pub(super) async fn build_test_worker(
     // The real ledger sink, so the integration suite covers usage recording
     // end to end; metrics are dropped.
     let sink = Arc::new(PgLedgerSink::new(pool.clone(), noop_recorder()));
-    let facade = Arc::new(InferenceFacade::with_providers(InjectedProviders {
+    let facade = Arc::new(InferenceFacade::with_providers(InjectedProviders::uniform(
         registry,
-        extraction: InjectedCompletion {
-            provider: Arc::clone(&inference),
-            key: key(RequestClass::Inference),
-        },
-        triage: InjectedCompletion {
-            provider: Arc::clone(&inference),
-            key: key(RequestClass::Inference),
-        },
-        relation: InjectedCompletion {
-            provider: inference,
-            key: key(RequestClass::Inference),
-        },
+        inference,
+        key(RequestClass::Inference),
         embeddings,
-        credentials: Arc::new(EmptyCredentialResolver),
         sink,
-    }));
+    )));
 
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 

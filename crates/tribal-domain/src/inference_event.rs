@@ -27,9 +27,10 @@ pub enum InferenceEvent {
         /// Position of the tool call within the response, demultiplexing
         /// parallel calls.
         index: u32,
-        /// The provider-assigned call identifier, when first known.
+        /// The provider-assigned call identifier, where the fragment
+        /// carries it.
         call_id: Option<String>,
-        /// The tool name, when first known.
+        /// The tool name, where the fragment carries it.
         name: Option<String>,
         /// The appended fragment of the call's JSON arguments.
         arguments_fragment: String,
