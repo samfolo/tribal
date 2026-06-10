@@ -11,7 +11,7 @@ use tribal_domain::{
     EmbeddingProfile, EmbeddingProfileId, Job, ProjectId, PromptVersion, PromptVersionId,
     SuggestedReference, SystemFingerprint, TagRegistryEntry, Task, TaskType, span_attrs,
 };
-use tribal_inference::{InferenceError, UsageAttribution};
+use tribal_inference::{EmbeddingTarget, InferenceError, UsageAttribution};
 
 use crate::{error::StageError, tag_resolution::NewTagWithEmbedding, worker::Worker};
 
@@ -164,7 +164,8 @@ impl Worker {
     /// # Errors
     ///
     /// Returns [`StageError::Database`] if the active profile cannot be
-    /// read.
+    /// read, or [`StageError::Provider`] if its provider cannot be built
+    /// or its credential resolved.
     pub(crate) async fn resolve_active_embedding(
         &self,
         stage: &str,
@@ -181,7 +182,17 @@ impl Worker {
                     source: e,
                 },
             })?;
-        load_active_embedding_profile(&mut conn, stage).await
+        let active = load_active_embedding_profile(&mut conn, stage).await?;
+
+        // A misconfigured profile fails here, before any stage work, rather
+        // than mid-embed with a context that no longer names the profile.
+        self.facade()
+            .prepare_embedding_target(&EmbeddingTarget::from(&active))
+            .map_err(|source| StageError::Provider {
+                context: "resolving the active profile's embedding provider".into(),
+                source,
+            })?;
+        Ok(active)
     }
 }
 
