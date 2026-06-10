@@ -5,10 +5,8 @@ use std::time::Duration;
 use tribal_config::{CredentialCatalogue, StageInferenceConfig, TribalConfig};
 use tribal_domain::{EmbeddingProfile, ProviderKind, TaskType};
 use tribal_inference::{
-    AnthropicInferenceProvider, CompletionStageSpec, CompletionStageSpecs, CredentialError,
-    EmbeddingCredentialResolver, EmbeddingTarget, InferenceError, InferenceFacade,
-    OllamaEmbeddingProvider, OllamaInferenceProvider, OpenAiEmbeddingProvider,
-    OpenAiInferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
+    CompletionStageSpec, CompletionStageSpecs, CredentialError, EmbeddingCredentialResolver,
+    EmbeddingTarget, InferenceFacade, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
     UsageAttribution,
 };
 
@@ -19,8 +17,6 @@ use crate::error::AppError;
 // ---------------------------------------------------------------------------
 
 const MISSING_LIMITS: &str = "no limits configured for provider";
-const ANTHROPIC_EMBEDDING_UNSUPPORTED: &str =
-    "Anthropic does not provide an embedding API; use Ollama or OpenAI for embeddings";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -165,76 +161,6 @@ pub(crate) async fn probe_startup_providers(
     }
 }
 
-/// Probes an embedding model by constructing the matching concrete provider
-/// and calling its `probe_model` method.
-///
-/// Takes the resolved identity fields directly so both the boot path (from the
-/// active profile) and `tribal check` (from config) can drive it without
-/// fabricating a profile.
-pub(crate) async fn probe_embedding_provider(
-    client: reqwest::Client,
-    provider_kind: ProviderKind,
-    model: &str,
-    dimensions: u32,
-    base_url: &str,
-    api_key: &str,
-) -> Result<(), InferenceError> {
-    match provider_kind {
-        ProviderKind::Ollama => {
-            OllamaEmbeddingProvider::new(client, base_url, model, dimensions)
-                .probe_model()
-                .await
-        }
-        ProviderKind::OpenAi => {
-            OpenAiEmbeddingProvider::new(client, base_url, model, api_key, dimensions)
-                .probe_model()
-                .await
-        }
-        ProviderKind::Anthropic => Err(InferenceError::provider_unavailable(
-            ProviderKind::Anthropic.to_string(),
-            ANTHROPIC_EMBEDDING_UNSUPPORTED,
-        )),
-    }
-}
-
-/// Probes the configured inference model for a pipeline stage by
-/// constructing the matching concrete provider and calling its
-/// `probe_model` method.
-pub(crate) async fn probe_inference_provider(
-    client: reqwest::Client,
-    config: &StageInferenceConfig,
-) -> Result<(), InferenceError> {
-    let url = resolve_base_url(config.provider, config.base_url.as_ref());
-
-    match config.provider {
-        ProviderKind::Ollama => {
-            OllamaInferenceProvider::new(client, &url, &config.model)
-                .probe_model()
-                .await
-        }
-        ProviderKind::OpenAi => {
-            OpenAiInferenceProvider::new(
-                client,
-                &url,
-                &config.model,
-                api_key_str(config.api_key.as_ref()),
-            )
-            .probe_model()
-            .await
-        }
-        ProviderKind::Anthropic => {
-            AnthropicInferenceProvider::new(
-                client,
-                &url,
-                &config.model,
-                api_key_str(config.api_key.as_ref()),
-            )
-            .probe_model()
-            .await
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -296,13 +222,6 @@ fn api_key_str(key: Option<&tribal_domain::ApiKey>) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use tribal_config::{InferenceConfig, StageInferenceConfig};
-    use tribal_inference::{OLLAMA_EMBED_PATH, OLLAMA_TAGS_PATH, OPENAI_CHAT_PATH};
-    use wiremock::{
-        Mock, MockServer, ResponseTemplate,
-        matchers::{method, path},
-    };
-
     use super::*;
 
     // -- resolve_base_url -----------------------------------------------------
@@ -332,62 +251,6 @@ mod tests {
         );
     }
 
-    // -- probe_embedding_provider --------------------------------------------
-
-    #[tokio::test]
-    async fn test_probe_embedding_provider_short_circuits_for_anthropic() {
-        // No mock server: if the Anthropic arm attempted a network
-        // call this would surface as a connection error, not the
-        // synchronous ProviderUnavailable the arm returns.
-        let err = probe_embedding_provider(
-            reqwest::Client::new(),
-            ProviderKind::Anthropic,
-            "nomic-embed-text:v1.5",
-            3,
-            "http://127.0.0.1:0",
-            "",
-        )
-        .await
-        .expect_err("Anthropic embedding must reject without a network call");
-        assert!(
-            matches!(
-                err,
-                InferenceError::ProviderUnavailable { ref provider, .. } if provider == "anthropic"
-            ),
-            "expected ProviderUnavailable with provider=anthropic, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_probe_embedding_provider_dispatches_to_ollama_and_surfaces_5xx() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(OLLAMA_TAGS_PATH))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path(OLLAMA_EMBED_PATH))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-
-        let err = probe_embedding_provider(
-            reqwest::Client::new(),
-            ProviderKind::Ollama,
-            "nomic-embed-text:v1.5",
-            3,
-            &server.uri(),
-            "",
-        )
-        .await
-        .expect_err("probe should fail when endpoint returns 5xx");
-        assert!(
-            matches!(err, InferenceError::ProviderUnavailable { .. }),
-            "expected ProviderUnavailable, got {err:?}"
-        );
-    }
-
     #[test]
     fn test_catalogue_resolver_fails_closed_for_keyless_cloud_provider() {
         // OpenAI requires a key; an empty catalogue resolves to the
@@ -409,36 +272,4 @@ mod tests {
         assert_eq!(key, "");
     }
 
-    // -- probe_inference_provider --------------------------------------------
-
-    fn openai_inference_stage(base_url: String) -> StageInferenceConfig {
-        // Start from the production default so the remaining fields
-        // track the real configuration instead of being pinned to
-        // arbitrary test values.
-        let mut stage = InferenceConfig::default().triage;
-        stage.provider = ProviderKind::OpenAi;
-        stage.model = "gpt-4o-mini".into();
-        stage.base_url = Some(base_url);
-        stage.api_key = Some("sk-test".parse().expect("test fixture is a valid api key"));
-        stage
-    }
-
-    #[tokio::test]
-    async fn test_probe_inference_provider_dispatches_to_openai_and_surfaces_5xx() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(OPENAI_CHAT_PATH))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-
-        let stage = openai_inference_stage(server.uri());
-        let err = probe_inference_provider(reqwest::Client::new(), &stage)
-            .await
-            .expect_err("probe should fail when endpoint returns 5xx");
-        assert!(
-            matches!(err, InferenceError::ProviderUnavailable { .. }),
-            "expected ProviderUnavailable, got {err:?}"
-        );
-    }
 }

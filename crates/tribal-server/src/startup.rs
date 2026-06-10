@@ -26,8 +26,7 @@ pub(crate) use prompts::{
 };
 pub(crate) use providers::{
     CatalogueCredentialResolver, build_command_registry, build_provider_registry,
-    completion_stage_specs, probe_embedding_provider, probe_inference_provider,
-    probe_startup_providers,
+    completion_stage_specs, probe_startup_providers,
 };
 pub(crate) use provisioning::{provision_genesis, read_active_profile};
 pub(crate) use watcher::init_prompt_watcher;
