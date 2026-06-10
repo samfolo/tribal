@@ -6,19 +6,19 @@
 //! results so the commit path can store them without a redundant embedding
 //! call.
 
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::collections::HashSet;
 
 use sqlx::PgPool;
-use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{PgTagEmbeddingRepository, TagEmbeddingRepository};
-use tribal_domain::{EmbeddingPurpose, TagRegistryEntry, Usage, span_attrs};
-use tribal_inference::{EmbeddingProvider, EmbeddingRequest};
-use tribal_telemetry::MetricsRecorder;
+use tribal_domain::{EmbeddingPurpose, TagRegistryEntry, span_attrs};
+use tribal_inference::{
+    EmbeddingRequest, EmbeddingTarget, InferenceFacade, PermitWait, UsageAttribution,
+};
 
 use crate::{
-    error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError},
-    stages::load_active_embedding_profile,
+    error::{STAGE_TRIAGE, StageError},
+    stages::{load_active_embedding_profile, map_facade_error},
 };
 
 // ---------------------------------------------------------------------------
@@ -67,7 +67,6 @@ pub(crate) fn normalise_tag(raw: &str) -> Option<String> {
 /// Resolves suggested tags against the existing tag registry using
 /// exact matching and embedding-based semantic matching.
 ///
-/// Returns the resolution result and any embedding usages produced.
 /// No database writes are performed — the caller is responsible for
 /// passing resolved tags through to the commit path for storage.
 ///
@@ -75,22 +74,17 @@ pub(crate) fn normalise_tag(raw: &str) -> Option<String> {
 ///
 /// Returns [`StageError::Provider`] on embedding failures and
 /// [`StageError::Database`] on pgvector query failures.
-///
-/// # Panics
-///
-/// Panics if the embedding provider semaphore is unexpectedly closed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_tags(
     pool: &PgPool,
     suggested_tags: &[String],
     registry: &[TagRegistryEntry],
-    embedding_provider: &Arc<dyn EmbeddingProvider>,
-    semaphore: &Arc<Semaphore>,
-    provider_key: &str,
+    facade: &InferenceFacade,
+    embedding_target: &EmbeddingTarget,
     threshold: f64,
     deadline: tokio::time::Instant,
-    metrics: &dyn MetricsRecorder,
-) -> Result<(ResolvedTags, Vec<Usage>), StageError> {
+    attribution: &UsageAttribution,
+) -> Result<ResolvedTags, StageError> {
     let span = tracing::info_span!(
         "tribal.tag_resolution",
         { span_attrs::TAG_RESOLUTION_RESOLVED } = tracing::field::Empty,
@@ -107,7 +101,6 @@ pub(crate) async fn resolve_tags(
         let mut resolved = Vec::with_capacity(tag_count);
         let mut seen_unmatched: HashSet<String> = HashSet::with_capacity(tag_count);
         let mut unmatched = Vec::with_capacity(tag_count);
-        let mut usages = Vec::with_capacity(tag_count);
 
         for raw in suggested_tags {
             let Some(normalised) = normalise_tag(raw) else {
@@ -146,20 +139,8 @@ pub(crate) async fn resolve_tags(
 
         if let Some(profile) = &active_profile {
             for tag in &unmatched {
-                let embedding_response = embed_tag(
-                    tag,
-                    embedding_provider,
-                    semaphore,
-                    deadline,
-                    provider_key,
-                    metrics,
-                )
-                .await?;
-
-                usages.push(Usage::Embedding {
-                    usage: embedding_response.usage,
-                    purpose: EmbeddingPurpose::Tag,
-                });
+                let embedding_response =
+                    embed_tag(tag, facade, embedding_target, deadline, attribution).await?;
 
                 let mut conn = pool.acquire().await.map_err(|e| StageError::Database {
                     stage: STAGE_TRIAGE.into(),
@@ -214,7 +195,7 @@ pub(crate) async fn resolve_tags(
             span.record(span_attrs::TAG_RESOLUTION_BEST_SIMILARITY, sim);
         }
 
-        Ok((ResolvedTags { resolved, new_tags }, usages))
+        Ok(ResolvedTags { resolved, new_tags })
     }
     .instrument(span)
     .await
@@ -224,47 +205,28 @@ pub(crate) async fn resolve_tags(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Embeds a single tag via the embedding provider, acquiring the
-/// semaphore first.
+/// Embeds a single tag through the façade.
 async fn embed_tag(
     tag: &str,
-    embedding_provider: &Arc<dyn EmbeddingProvider>,
-    semaphore: &Arc<Semaphore>,
+    facade: &InferenceFacade,
+    embedding_target: &EmbeddingTarget,
     deadline: tokio::time::Instant,
-    provider_key: &str,
-    metrics: &dyn MetricsRecorder,
+    attribution: &UsageAttribution,
 ) -> Result<tribal_inference::EmbeddingResponse, StageError> {
-    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-    let semaphore_start = Instant::now();
-    let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
-        .await
-        .map_err(|_| StageError::SemaphoreTimeout {
-            provider_key: provider_key.to_owned(),
-        })?
-        .expect(SEMAPHORE_CLOSED);
-    metrics.record_semaphore_acquire(provider_key, semaphore_start.elapsed());
-
     let request = EmbeddingRequest {
         input: tag.to_owned(),
         purpose: EmbeddingPurpose::Tag,
     };
-
-    let provider_start = Instant::now();
-    let response = embedding_provider
-        .embed(request)
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    facade
+        .embed(
+            embedding_target,
+            request,
+            PermitWait::Bounded { limit: remaining },
+            attribution,
+        )
         .await
-        .map_err(|e| StageError::Provider {
-            context: format!("tag embedding call for {tag:?}"),
-            source: e,
-        })?;
-    let identity = embedding_provider.identity();
-    metrics.record_provider_call(
-        &identity.name,
-        &identity.model,
-        "tag_embedding",
-        provider_start.elapsed(),
-    );
-    Ok(response)
+        .map_err(|e| map_facade_error(&format!("tag embedding call for {tag:?}"), e))
 }
 
 // ---------------------------------------------------------------------------

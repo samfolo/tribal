@@ -4,7 +4,6 @@ use std::collections::HashSet;
 
 use chrono::Utc;
 use tracing::Instrument;
-use tribal_config::CredentialCatalogue;
 use tribal_db::{
     AdvisoryLockRepository, EmbeddingRepository, ExtractionResultRepository,
     ItemObservationRepository, JobRepository, JobStatusTransition, KnowledgeItemRepository,
@@ -19,10 +18,12 @@ use tribal_db::{
 };
 use tribal_domain::{
     EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, Job, JobId, JobOutcome, JobState,
-    JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, Usage,
-    span_attrs,
+    JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
 };
-use tribal_inference::{EmbeddingRequest, InferenceError, ProviderRegistry};
+use tribal_inference::{
+    EmbeddingRequest, EmbeddingTarget, InferenceError, InferenceFacade, PermitWait,
+    UsageAttribution,
+};
 
 use super::Worker;
 use crate::{
@@ -30,9 +31,9 @@ use crate::{
     error::{STAGE_EXTRACTION, STAGE_RELATION, STAGE_TRIAGE, StageError},
     stages::{
         RelationCommitDecision, StageCommit, TriageCommitDecision, load_active_embedding_profile,
+        stage_attribution,
     },
     tag_resolution::NewTagWithEmbedding,
-    worker::reindex::{EmbeddingProviderCache, build_target_provider},
 };
 
 // ---------------------------------------------------------------------------
@@ -40,16 +41,6 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 impl Worker {
-    /// The dependencies the commit path needs to re-embed an item and its tags
-    /// against a profile a cutover freshly activated.
-    fn reembed_deps(&self) -> ReembedDeps<'_> {
-        ReembedDeps {
-            registry: self.provider_registry(),
-            cache: self.embedding_providers(),
-            credentials: self.credentials(),
-        }
-    }
-
     /// Commits domain effects produced by a successful stage.
     pub(crate) async fn commit_domain_effects(
         &self,
@@ -263,7 +254,7 @@ impl Worker {
                     // flips the active profile between the pre-embed and the
                     // write, so a provider call never spans the commit
                     // transaction or holds the shared cutover lock.
-                    let reembed = self.reembed_deps();
+
                     let mut embedding = NovelEmbedding {
                         vector: embedding_vector,
                         model: embedding_model,
@@ -317,24 +308,19 @@ impl Worker {
                                         ),
                                     });
                                 }
-                                let (vector, tag_vectors, usages) = reembed_against_active(
-                                    &reembed,
+                                let reembedded = reembed_against_active(
+                                    self.facade(),
+                                    &stage_attribution(job, task),
                                     &active,
                                     &knowledge_item.content,
                                     &new_tags,
                                 )
                                 .await?;
-                                // The re-embed spends provider tokens whether or
-                                // not the retry ultimately commits, so account
-                                // for them like the original stage embedding.
-                                for usage in &usages {
-                                    self.record_token_usage(job, task, usage).await;
-                                }
                                 embedding = NovelEmbedding {
-                                    vector,
+                                    vector: reembedded.item,
                                     model: active.model().to_owned(),
                                     producing_profile_id: active.id(),
-                                    tag_vectors,
+                                    tag_vectors: reembedded.tags,
                                 };
                             }
                         }
@@ -721,75 +707,61 @@ impl Worker {
 // Triage commit helpers
 // ---------------------------------------------------------------------------
 
-/// What the commit path needs to re-embed against a freshly activated profile:
-/// the registry and built-provider cache to resolve the new active's provider,
-/// and the catalogue for its credential.
-struct ReembedDeps<'a> {
-    registry: &'a ProviderRegistry,
-    cache: &'a EmbeddingProviderCache,
-    credentials: &'a CredentialCatalogue,
+/// The vectors a flipped-active re-embed produced: the item's vector and
+/// the per-tag vectors in the input tags' order.
+struct ReembeddedVectors {
+    item: Vec<f32>,
+    tags: Vec<Vec<f32>>,
 }
 
 /// Re-embeds an item and its novel tags against `active` when a cutover flipped
 /// the active profile between the pre-embed and the commit, so an old-space
-/// vector is never written under the new active. Returns the new item vector
-/// and the per-tag vectors in `new_tags` order.
+/// vector is never written under the new active.
+///
+/// The group embeds under one concurrency permit: the re-embed occupies one
+/// slot, like the stage embedding it replaces.
 async fn reembed_against_active(
-    reembed: &ReembedDeps<'_>,
+    facade: &InferenceFacade,
+    attribution: &UsageAttribution,
     active: &EmbeddingProfile,
     content: &str,
     new_tags: &[NewTagWithEmbedding],
-) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<Usage>), StageError> {
-    let (provider, semaphore) =
-        build_target_provider(reembed.registry, reembed.cache, reembed.credentials, active)
-            .map_err(|e| StageError::Provider {
-                context: "resolving the flipped active profile's provider".to_owned(),
-                source: InferenceError::provider_unavailable(
-                    active.provider_kind().to_string(),
-                    e.to_string(),
-                ),
-            })?;
-    let _permit = semaphore
-        .acquire()
-        .await
-        .expect("embedding provider semaphore is never closed");
-
-    let mut usages = Vec::with_capacity(new_tags.len() + 1);
-    let item = provider
-        .embed(EmbeddingRequest {
-            input: content.to_owned(),
-            purpose: EmbeddingPurpose::Candidate,
-        })
-        .await
-        .map_err(|e| StageError::Provider {
-            context: "re-embedding the item against the flipped active".to_owned(),
-            source: e,
-        })?;
-    usages.push(Usage::Embedding {
-        usage: item.usage,
+) -> Result<ReembeddedVectors, StageError> {
+    let mut requests = Vec::with_capacity(new_tags.len() + 1);
+    requests.push(EmbeddingRequest {
+        input: content.to_owned(),
         purpose: EmbeddingPurpose::Candidate,
     });
-    let vector = item.vector;
+    requests.extend(new_tags.iter().map(|tag| EmbeddingRequest {
+        input: tag.tag.clone(),
+        purpose: EmbeddingPurpose::Tag,
+    }));
 
-    let mut tag_vectors = Vec::with_capacity(new_tags.len());
-    for tag in new_tags {
-        let response = provider
-            .embed(EmbeddingRequest {
-                input: tag.tag.clone(),
-                purpose: EmbeddingPurpose::Tag,
-            })
-            .await
-            .map_err(|e| StageError::Provider {
-                context: "re-embedding a tag against the flipped active".to_owned(),
-                source: e,
-            })?;
-        usages.push(Usage::Embedding {
-            usage: response.usage,
-            purpose: EmbeddingPurpose::Tag,
-        });
-        tag_vectors.push(response.vector);
-    }
-    Ok((vector, tag_vectors, usages))
+    let responses = facade
+        .embed_group(
+            &EmbeddingTarget::from(active),
+            requests,
+            PermitWait::Unbounded,
+            attribution,
+        )
+        .await
+        .map_err(|e| StageError::Provider {
+            context: if e.index == 0 {
+                "re-embedding the item against the flipped active".to_owned()
+            } else {
+                "re-embedding a tag against the flipped active".to_owned()
+            },
+            source: e.source,
+        })?;
+
+    let mut vectors = responses.into_iter().map(|response| response.vector);
+    let item = vectors
+        .next()
+        .expect("the group always contains the item's request");
+    Ok(ReembeddedVectors {
+        item,
+        tags: vectors.collect(),
+    })
 }
 
 /// The pre-embedded vectors for a novel item and its tags, against the active
@@ -1106,86 +1078,100 @@ fn stage_sqlx_error(stage: &str, context: &str, source: sqlx::Error) -> StageErr
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use dashmap::DashMap;
-    use tribal_config::CredentialCatalogue;
     use tribal_db::{EmbeddingRepository, PgEmbeddingRepository};
     use tribal_domain::{EmbeddingProfileId, PromptRole};
     use tribal_inference::{
-        EmbeddingProvider, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
+        EmbeddingProvider, InjectedCompletion, InjectedEmbedding, InjectedProviders,
+        KeylessCredentialResolver, NoopLedgerSink, ProviderKey, ProviderLimits, ProviderRegistry,
+        RequestClass,
     };
     use tribal_test_utils::{
-        ExhaustBehaviour, MockEmbeddingProvider, Seed, a_candidate, a_new_knowledge_item,
-        a_new_prompt_version, active_embedding_profile, an_embedding_profile,
-        an_embedding_response, seed_triage_job, test_context,
+        ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, Seed, a_candidate,
+        a_new_knowledge_item, a_new_prompt_version, active_embedding_profile,
+        an_embedding_profile, an_embedding_response, seed_triage_job, test_context,
     };
 
     use super::*;
 
     /// When a cutover flips the active profile between an ingest's pre-embed and
     /// its commit, the commit re-embeds the item and its novel tags against the
-    /// new active's provider (resolved from the cache the reindex driver
-    /// populated) rather than writing the stale, old-space vectors under the new
-    /// active.
+    /// new active's provider (resolved through the façade's per-profile cache)
+    /// rather than writing the stale, old-space vectors under the new active.
     #[tokio::test]
     async fn test_reembed_against_active_uses_the_new_active_provider() {
-        // The new active, its built provider already cached by the driver,
-        // returns a recognisable vector for every input.
+        // The new active, its built provider already cached, returns a
+        // recognisable vector for every input.
         let active = an_embedding_profile().build();
-        let cache: EmbeddingProviderCache = Arc::new(DashMap::new());
         let mock: Arc<dyn EmbeddingProvider> = Arc::new(
             MockEmbeddingProvider::builder()
                 .on_embed(an_embedding_response(vec![0.5_f32; 768]), None)
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        cache.insert(active.id(), mock);
-        let registry = ProviderRegistry::new(vec![]).expect("registry");
-        // The driver registered the new active's endpoint when it built and
-        // cached the provider; registering it here resolves the same rate-limit
-        // semaphore the cache hit returns alongside the cached provider.
-        registry
-            .register_building(
-                ProviderKey::new(
-                    active.provider_kind().to_string(),
-                    active.normalised_base_url(),
-                    RequestClass::Embedding,
-                )
-                .expect("endpoint key"),
-                &ProviderLimits {
-                    max_in_flight: 1,
-                    request_timeout: Duration::from_secs(30),
-                },
-            )
-            .expect("register endpoint");
-        let credentials = CredentialCatalogue::default();
-        let reembed = ReembedDeps {
-            registry: &registry,
-            cache: &cache,
-            credentials: &credentials,
+        let stub: Arc<dyn tribal_inference::InferenceProvider> =
+            Arc::new(MockInferenceProvider::builder().build());
+        let inference_key =
+            ProviderKey::new("mock", "http://localhost:9999", RequestClass::Inference)
+                .expect("inference key");
+        let endpoint = ProviderKey::new(
+            active.provider_kind().to_string(),
+            active.normalised_base_url(),
+            RequestClass::Embedding,
+        )
+        .expect("endpoint key");
+        let limits = ProviderLimits {
+            max_in_flight: 1,
+            request_timeout: Duration::from_secs(30),
         };
+        let registry = ProviderRegistry::new(vec![
+            (inference_key.clone(), limits.clone()),
+            (endpoint, limits),
+        ])
+        .expect("registry");
+        let facade = InferenceFacade::with_providers(InjectedProviders {
+            registry,
+            extraction: InjectedCompletion {
+                provider: Arc::clone(&stub),
+                key: inference_key.clone(),
+            },
+            triage: InjectedCompletion {
+                provider: Arc::clone(&stub),
+                key: inference_key.clone(),
+            },
+            relation: InjectedCompletion {
+                provider: stub,
+                key: inference_key,
+            },
+            embeddings: vec![InjectedEmbedding {
+                profile_id: active.id(),
+                provider: mock,
+            }],
+            credentials: Arc::new(KeylessCredentialResolver),
+            sink: Arc::new(NoopLedgerSink),
+        });
 
         // The pre-embedded vectors (all 0.1) belong to the superseded geometry.
         let new_tags = [NewTagWithEmbedding {
             tag: "rust".to_owned(),
             embedding: vec![0.1_f32; 768],
         }];
-        let (item_vector, tag_vectors, usages) =
-            reembed_against_active(&reembed, &active, "content", &new_tags)
-                .await
-                .expect("reembed");
-        assert_eq!(
-            usages.len(),
-            2,
-            "the re-embed reports one usage for the item and one per tag",
-        );
+        let reembedded = reembed_against_active(
+            &facade,
+            &UsageAttribution::default(),
+            &active,
+            "content",
+            &new_tags,
+        )
+        .await
+        .expect("reembed");
 
         assert!(
-            item_vector.iter().all(|&v| (v - 0.5).abs() < f32::EPSILON),
+            reembedded.item.iter().all(|&v| (v - 0.5).abs() < f32::EPSILON),
             "the item is re-embedded by the new active's provider, not left stale",
         );
-        assert_eq!(tag_vectors.len(), 1);
+        assert_eq!(reembedded.tags.len(), 1);
         assert!(
-            tag_vectors[0]
+            reembedded.tags[0]
                 .iter()
                 .all(|&v| (v - 0.5).abs() < f32::EPSILON),
             "each novel tag is re-embedded against the new active too",

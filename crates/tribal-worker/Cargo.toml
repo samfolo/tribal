@@ -7,6 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
 schemars.workspace = true
@@ -29,7 +30,6 @@ tribal-inference.workspace = true
 tribal-telemetry.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 jsonschema.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

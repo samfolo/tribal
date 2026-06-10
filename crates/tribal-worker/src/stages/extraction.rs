@@ -1,20 +1,15 @@
 //! Extraction stage: LLM-based candidate extraction from raw input.
 
-use std::{sync::Arc, time::Instant};
-
-use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_common::clamp_to_u32;
 use tribal_db::{NewExtractionResult, NewTask};
-use tribal_domain::{
-    Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, Usage, span_attrs,
-};
-use tribal_inference::{InferenceProvider, ProviderKey};
+use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
+use tribal_inference::PermitWait;
 
-use super::{StageCommit, StageOutput, record_prompt_version_ids};
+use super::{StageCommit, map_facade_error, record_prompt_version_ids, stage_attribution};
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
-    error::{SEMAPHORE_CLOSED, STAGE_EXTRACTION, StageError},
+    error::{STAGE_EXTRACTION, StageError},
     parsing::parse_extraction_response,
     prompt::assemble_extraction_prompt,
     worker::Worker,
@@ -26,7 +21,6 @@ use crate::{
 
 const CANDIDATES_SERIALISE: &str = "candidates serialise to JSON";
 const HINTS_SERIALISE: &str = "relation hints serialise to JSON";
-const EXPECT_EXTRACTION_KEY: &str = "extraction key registered at startup";
 
 // ---------------------------------------------------------------------------
 // ExtractionContext
@@ -40,34 +34,6 @@ pub(crate) struct ExtractionContext<'a> {
     pub task: &'a Task,
     /// The current global tag registry.
     pub tag_registry: Vec<TagRegistryEntry>,
-}
-
-// ---------------------------------------------------------------------------
-// Extraction accessors
-// ---------------------------------------------------------------------------
-
-impl Worker {
-    /// Returns a reference to the extraction inference provider.
-    pub(crate) fn extraction_provider(&self) -> &Arc<dyn InferenceProvider> {
-        &self.extraction_provider
-    }
-
-    /// Returns the extraction provider key.
-    pub(crate) fn extraction_key(&self) -> &ProviderKey {
-        &self.extraction_key
-    }
-
-    /// Returns the extraction semaphore from the provider registry.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the extraction key is not registered in the provider
-    /// registry.
-    pub(crate) fn extraction_semaphore(&self) -> &Arc<Semaphore> {
-        self.provider_registry()
-            .semaphore(self.extraction_key())
-            .expect(EXPECT_EXTRACTION_KEY)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,14 +72,14 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageOutput, StageError> {
+    ) -> Result<StageCommit, StageError> {
         let span = tracing::info_span!(
             "tribal.task.extraction",
             { span_attrs::TASK_ID } = %task.id(),
-            { span_attrs::LLM_STAGE } = "extraction",
+            { span_attrs::STAGE } = "extraction",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
-            { span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
-            { span_attrs::LLM_USER_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::USER_PROMPT_VERSION_ID } = tracing::field::Empty,
         );
 
         async {
@@ -143,19 +109,6 @@ impl Worker {
                 ctx.job.extraction_user_prompt_version_id(),
             );
 
-            let semaphore = self.extraction_semaphore();
-            let provider_key = self.extraction_key().to_string();
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let semaphore_start = Instant::now();
-            let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
-                .await
-                .map_err(|_| StageError::SemaphoreTimeout {
-                    provider_key: provider_key.clone(),
-                })?
-                .expect(SEMAPHORE_CLOSED);
-            self.metrics()
-                .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
-
             let request = assemble_extraction_prompt(
                 system_pv.content(),
                 user_pv.content(),
@@ -172,22 +125,17 @@ impl Worker {
                 );
             }
 
-            let provider_start = Instant::now();
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
-                .extraction_provider()
-                .complete(request)
+                .facade()
+                .complete(
+                    TaskType::Extraction,
+                    request,
+                    PermitWait::Bounded { limit: remaining },
+                    &stage_attribution(ctx.job, ctx.task),
+                )
                 .await
-                .map_err(|e| StageError::Provider {
-                    context: "extraction LLM call".into(),
-                    source: e,
-                })?;
-            let identity = self.extraction_provider().identity();
-            self.metrics().record_provider_call(
-                &identity.name,
-                &identity.model,
-                "extraction",
-                provider_start.elapsed(),
-            );
+                .map_err(|e| map_facade_error("extraction LLM call", e))?;
 
             if include_llm_content {
                 tracing::debug!(
@@ -228,16 +176,11 @@ impl Worker {
                 .relation_hints(serde_json::to_value(&capped_hints).expect(HINTS_SERIALISE))
                 .build();
 
-            Ok(StageOutput {
-                commit: StageCommit::Extraction {
-                    extraction_result,
-                    triage_tasks,
-                    batch_size,
-                    original_count,
-                },
-                usages: vec![Usage::Completion {
-                    usage: response.usage,
-                }],
+            Ok(StageCommit::Extraction {
+                extraction_result,
+                triage_tasks,
+                batch_size,
+                original_count,
             })
         }
         .instrument(span)

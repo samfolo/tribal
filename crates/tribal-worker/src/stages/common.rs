@@ -1,8 +1,6 @@
 //! Shared utilities and types for pipeline stage implementations.
 
-use std::sync::Arc;
-
-use tokio::sync::Semaphore;
+use tribal_common::clamp_to_i32;
 use tribal_db::{
     EmbeddingProfileRepository, NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
     NewTriageSimilarItemDecision, PgEmbeddingProfileRepository, PgPromptVersionRepository,
@@ -10,28 +8,12 @@ use tribal_db::{
     SystemFingerprintRepository, TagRegistryRepository,
 };
 use tribal_domain::{
-    EmbeddingProfile, EmbeddingProfileId, ProjectId, PromptVersion, PromptVersionId,
-    SuggestedReference, SystemFingerprint, TagRegistryEntry, Usage, span_attrs,
+    EmbeddingProfile, EmbeddingProfileId, Job, ProjectId, PromptVersion, PromptVersionId,
+    SuggestedReference, SystemFingerprint, TagRegistryEntry, Task, TaskType, span_attrs,
 };
-use tribal_inference::{EmbeddingProvider, InferenceError};
+use tribal_inference::{InferenceError, UsageAttribution};
 
-use crate::{
-    error::StageError,
-    tag_resolution::NewTagWithEmbedding,
-    worker::{Worker, reindex::build_target_provider},
-};
-
-// ---------------------------------------------------------------------------
-// StageOutput
-// ---------------------------------------------------------------------------
-
-/// Output of a successful stage execution, ready for commit.
-pub(crate) struct StageOutput {
-    /// The domain effects to commit transactionally.
-    pub commit: StageCommit,
-    /// Token usage records to persist.
-    pub usages: Vec<Usage>,
-}
+use crate::{error::StageError, tag_resolution::NewTagWithEmbedding, worker::Worker};
 
 // ---------------------------------------------------------------------------
 // StageCommit
@@ -156,11 +138,11 @@ pub(crate) fn record_prompt_version_ids(
 ) {
     let span = tracing::Span::current();
     span.record(
-        span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID,
+        span_attrs::SYSTEM_PROMPT_VERSION_ID,
         tracing::field::display(system_pv_id),
     );
     span.record(
-        span_attrs::LLM_USER_PROMPT_VERSION_ID,
+        span_attrs::USER_PROMPT_VERSION_ID,
         tracing::field::display(user_pv_id),
     );
 }
@@ -170,24 +152,23 @@ pub(crate) fn record_prompt_version_ids(
 // ---------------------------------------------------------------------------
 
 impl Worker {
-    /// Resolves the active embedding profile together with a provider matching
-    /// its geometry, so a live read or write embeds in the space it targets
-    /// rather than the boot-time provider's.
+    /// Resolves the active embedding profile on a freshly acquired
+    /// connection, so a live read or write embeds in the space it targets
+    /// rather than a boot-time snapshot's.
     ///
-    /// The returned profile id is the producing identity carried to the commit,
-    /// whose flip-check compares it against the active read under the cutover
-    /// lock. The provider is resolved through the per-profile cache, so the
-    /// common no-flip path is a cache hit.
+    /// The returned profile id is the producing identity carried to the
+    /// commit, whose flip-check compares it against the active read under
+    /// the cutover lock; its provider resolves through the façade's
+    /// per-profile cache, so the common no-flip path is a cache hit.
     ///
     /// # Errors
     ///
-    /// Returns [`StageError::Database`] if the active profile cannot be read, or
-    /// [`StageError::Provider`] if its provider cannot be built or its
-    /// credential resolved.
+    /// Returns [`StageError::Database`] if the active profile cannot be
+    /// read.
     pub(crate) async fn resolve_active_embedding(
         &self,
         stage: &str,
-    ) -> Result<(EmbeddingProfile, Arc<dyn EmbeddingProvider>, Arc<Semaphore>), StageError> {
+    ) -> Result<EmbeddingProfile, StageError> {
         let mut conn = self
             .pool()
             .acquire()
@@ -200,23 +181,63 @@ impl Worker {
                     source: e,
                 },
             })?;
-        let active = load_active_embedding_profile(&mut conn, stage).await?;
-        drop(conn);
+        load_active_embedding_profile(&mut conn, stage).await
+    }
+}
 
-        let (provider, semaphore) = build_target_provider(
-            self.provider_registry(),
-            self.embedding_providers(),
-            self.credentials(),
-            &active,
-        )
-        .map_err(|source| StageError::Provider {
-            context: "resolving the active profile's embedding provider".into(),
-            source: InferenceError::provider_unavailable(
-                active.provider_kind().to_string(),
-                source.to_string(),
-            ),
-        })?;
-        Ok((active, provider, semaphore))
+// ---------------------------------------------------------------------------
+// Attribution and error mapping
+// ---------------------------------------------------------------------------
+
+/// Builds the ledger attribution for one stage execution: the job, the
+/// task, the attempt, the stage's prompt version pair, and the job's
+/// trace identity.
+pub(crate) fn stage_attribution(job: &Job, task: &Task) -> UsageAttribution {
+    let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
+    UsageAttribution {
+        job_id: Some(job.id()),
+        task_id: Some(task.id()),
+        reindex_run_id: None,
+        attempt: clamp_to_i32(task.retry_count()),
+        system_prompt_version_id: Some(system_pv_id),
+        user_prompt_version_id: Some(user_pv_id),
+        trace_id: job
+            .trace_context()
+            .and_then(tribal_telemetry::trace_id_from_traceparent)
+            .or_else(tribal_telemetry::current_trace_id),
+    }
+}
+
+/// Returns the `(system, user)` prompt version pair for the task's stage.
+fn prompt_version_ids_for_task(job: &Job, task: &Task) -> (PromptVersionId, PromptVersionId) {
+    match task.task_type() {
+        TaskType::Extraction => (
+            job.extraction_system_prompt_version_id(),
+            job.extraction_user_prompt_version_id(),
+        ),
+        TaskType::Triage => (
+            job.triage_system_prompt_version_id(),
+            job.triage_user_prompt_version_id(),
+        ),
+        TaskType::Relation => (
+            job.relation_system_prompt_version_id(),
+            job.relation_user_prompt_version_id(),
+        ),
+    }
+}
+
+/// Maps a façade error onto the stage error taxonomy: an exhausted permit
+/// wait is the stage's semaphore timeout, anything else a provider
+/// failure under the given context.
+pub(crate) fn map_facade_error(context: &str, error: InferenceError) -> StageError {
+    match error {
+        InferenceError::PermitTimeout { provider_key, .. } => {
+            StageError::SemaphoreTimeout { provider_key }
+        }
+        source => StageError::Provider {
+            context: context.to_owned(),
+            source,
+        },
     }
 }
 
