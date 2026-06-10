@@ -242,8 +242,16 @@ impl EventTranslator for AnthropicStreamTranslator {
     fn on_end(&mut self) -> Result<Vec<InferenceEvent>, InferenceError> {
         // A final event may be dispatched by the wire closing rather than a
         // blank line: a message_stop buffered at EOF still terminates cleanly.
+        // Only a terminal flush satisfies the contract — a non-terminal
+        // payload still leaves the exchange without its closing signal.
         if let Some(data) = self.sse.take_pending() {
-            return self.on_data(&data);
+            let events = self.on_data(&data)?;
+            if events
+                .iter()
+                .any(|event| matches!(event, InferenceEvent::Completed { .. }))
+            {
+                return Ok(events);
+            }
         }
         Err(InferenceError::ResponseParseFailed {
             expected_shape: "a message_stop event".to_owned(),
@@ -537,6 +545,32 @@ mod tests {
             r#"data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10,"output_tokens":1}}}"#,
             "",
             "",
+        ]
+        .join("\n");
+        let server = MockServer::start().await;
+        mount_stream(&server, body).await;
+
+        let stream = setup(&server)
+            .complete_stream(a_request("test"))
+            .await
+            .unwrap();
+        let err = collect_completion(stream).await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::InferenceError::ResponseParseFailed { ref expected_shape, .. }
+                if expected_shape == "a message_stop event"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_stream_non_terminal_flush_at_eof_still_errors() {
+        // The wire closes after a complete non-terminal data line with no
+        // blank line: the flush must not satisfy the terminal contract.
+        let body = [
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            "",
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}"#,
         ]
         .join("\n");
         let server = MockServer::start().await;
