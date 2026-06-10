@@ -1,17 +1,15 @@
 //! Provider registry construction, provider instantiation, and startup probes.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
-use tribal_config::{
-    ConfigError, CredentialCatalogue, Diagnostics, StageInferenceConfig, TribalConfig,
-    ValidationError,
-};
-use tribal_domain::{EmbeddingProfile, ProviderKind};
+use tribal_config::{CredentialCatalogue, StageInferenceConfig, TribalConfig};
+use tribal_domain::{EmbeddingProfile, ProviderKind, TaskType};
 use tribal_inference::{
-    AnthropicInferenceProvider, EmbeddingProvider, InferenceError, InferenceProvider,
+    AnthropicInferenceProvider, CompletionStageSpec, CompletionStageSpecs, CredentialError,
+    EmbeddingCredentialResolver, EmbeddingTarget, InferenceError, InferenceFacade,
     OllamaEmbeddingProvider, OllamaInferenceProvider, OpenAiEmbeddingProvider,
     OpenAiInferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
-    make_embedding_provider,
+    UsageAttribution,
 };
 
 use crate::error::AppError;
@@ -21,7 +19,6 @@ use crate::error::AppError;
 // ---------------------------------------------------------------------------
 
 const MISSING_LIMITS: &str = "no limits configured for provider";
-const MISSING_CLIENT: &str = "no HTTP client in registry for provider key";
 const ANTHROPIC_EMBEDDING_UNSUPPORTED: &str =
     "Anthropic does not provide an embedding API; use Ollama or OpenAI for embeddings";
 
@@ -70,116 +67,102 @@ pub(crate) fn build_provider_registry(
     ProviderRegistry::new(entries).map_err(|source| AppError::ProviderRegistry { source })
 }
 
-/// Constructs the live embedding provider from the active profile.
-///
-/// The provider identity (kind, model, dimensions, endpoint) comes from the
-/// active profile; the credential resolves through the catalogue by
-/// `(provider_kind, normalised_base_url)`. Boot fails closed when a provider
-/// that requires a key has none in the catalogue. Returns the boxed provider
-/// and the registry key for semaphore lookups. Calls
-/// [`probe_embedding_provider`] before construction; logs a warning on
-/// failure but does not fail startup.
-pub(crate) async fn build_embedding_provider(
-    registry: &ProviderRegistry,
-    profile: &EmbeddingProfile,
-    credentials: &CredentialCatalogue,
-) -> Result<(Arc<dyn EmbeddingProvider>, ProviderKey), AppError> {
-    let provider_kind = profile.provider_kind();
-    let url = profile.normalised_base_url();
-    let key = ProviderKey::new(provider_kind.to_string(), url, RequestClass::Embedding)
-        .map_err(|source| AppError::ProviderRegistry { source })?;
+/// Builds a [`ProviderRegistry`] from the inference configuration alone,
+/// for commands that run without reading an active profile. Embedding
+/// endpoints register dynamically when the façade first resolves them.
+pub(crate) fn build_command_registry(config: &TribalConfig) -> Result<ProviderRegistry, AppError> {
+    let mut entries: Vec<(ProviderKey, ProviderLimits)> = Vec::new();
+    for stage in &[
+        &config.inference.extraction,
+        &config.inference.triage,
+        &config.inference.relation,
+    ] {
+        add_entry(
+            &mut entries,
+            stage.provider,
+            stage.base_url.as_ref(),
+            RequestClass::Inference,
+            config,
+        )?;
+    }
+    ProviderRegistry::new(entries).map_err(|source| AppError::ProviderRegistry { source })
+}
 
-    let client = get_client(registry, &key)?.clone();
-    let api_key = resolve_embedding_credential(provider_kind, url, credentials)?;
+/// Translates the per-stage inference configuration into the façade's
+/// completion specifications, resolving each stage's base URL and key.
+pub(crate) fn completion_stage_specs(config: &TribalConfig) -> CompletionStageSpecs {
+    CompletionStageSpecs {
+        extraction: completion_stage_spec(&config.inference.extraction),
+        triage: completion_stage_spec(&config.inference.triage),
+        relation: completion_stage_spec(&config.inference.relation),
+    }
+}
 
-    if let Err(e) = probe_embedding_provider(
-        client.clone(),
-        provider_kind,
-        profile.model(),
-        profile.dimensions(),
-        url,
-        api_key,
-    )
-    .await
+fn completion_stage_spec(config: &StageInferenceConfig) -> CompletionStageSpec {
+    CompletionStageSpec {
+        provider: config.provider,
+        model: config.model.clone(),
+        base_url: resolve_base_url(config.provider, config.base_url.as_ref()),
+        api_key: api_key_str(config.api_key.as_ref()).to_owned(),
+    }
+}
+
+/// The façade's embedding credential resolver, backed by the config
+/// catalogue: fail-closed for key-requiring providers, empty for
+/// providers that need none.
+pub(crate) struct CatalogueCredentialResolver {
+    catalogue: CredentialCatalogue,
+}
+
+impl CatalogueCredentialResolver {
+    pub(crate) fn new(catalogue: CredentialCatalogue) -> Self {
+        Self { catalogue }
+    }
+}
+
+impl EmbeddingCredentialResolver for CatalogueCredentialResolver {
+    fn resolve(
+        &self,
+        provider: ProviderKind,
+        normalised_base_url: &str,
+    ) -> Result<String, CredentialError> {
+        self.catalogue
+            .resolve_api_key(provider, normalised_base_url)
+            .map(ToOwned::to_owned)
+            .map_err(|e| CredentialError {
+                provider: e.provider,
+                base_url: e.base_url.clone(),
+                message: e.to_string(),
+            })
+    }
+}
+
+/// Probes every configured provider through the façade at startup: the
+/// three stage completions and the active embedding profile. Probe
+/// failures are logged but never fail boot — a provider may be down at
+/// start and healthy by the first task.
+pub(crate) async fn probe_startup_providers(
+    facade: &InferenceFacade,
+    active_profile: &EmbeddingProfile,
+) {
+    for stage in [TaskType::Extraction, TaskType::Triage, TaskType::Relation] {
+        if let Err(e) = facade
+            .probe_completion(stage, &UsageAttribution::default())
+            .await
+        {
+            tracing::warn!(%stage, %e, "inference model probe failed (non-fatal)");
+        }
+    }
+
+    if let Err(e) = facade
+        .probe_embedding(
+            &EmbeddingTarget::from(active_profile),
+            &UsageAttribution::default(),
+        )
+        .await
     {
         tracing::warn!(%e, "embedding model probe failed (non-fatal)");
     }
-
-    let provider = make_embedding_provider(
-        provider_kind,
-        client,
-        url,
-        profile.model(),
-        profile.dimensions(),
-        api_key,
-    )
-    .map_err(|e| AppError::Config {
-        source: ConfigError::ValidationFailed {
-            diagnostics: Diagnostics::from(vec![ValidationError::EmbeddingProviderUnsupported {
-                provider: e.provider,
-            }]),
-        },
-    })?;
-
-    Ok((provider, key))
-}
-
-/// Resolves the active embedding provider's API key from the catalogue,
-/// failing closed when a provider that requires a key has none.
-///
-/// Ollama needs no key, so an absent entry resolves to an empty key. For a
-/// key-requiring provider, an absent entry or empty key is a fatal
-/// [`AppError::EmbeddingCredentialUnresolved`] naming the missing connection.
-fn resolve_embedding_credential<'a>(
-    provider_kind: ProviderKind,
-    normalised_base_url: &str,
-    credentials: &'a CredentialCatalogue,
-) -> Result<&'a str, AppError> {
-    credentials
-        .resolve_api_key(provider_kind, normalised_base_url)
-        .map_err(|e| AppError::EmbeddingCredentialUnresolved {
-            provider: e.provider,
-            base_url: e.base_url,
-            provider_upper: provider_kind.as_str().to_uppercase(),
-        })
-}
-
-/// Constructs an inference provider for a single pipeline stage.
-///
-/// Returns the boxed provider and the registry key for semaphore lookups.
-/// Calls [`probe_inference_provider`] before construction — logs a
-/// warning on failure but does not fail startup.
-pub(crate) async fn build_inference_provider(
-    registry: &ProviderRegistry,
-    config: &StageInferenceConfig,
-) -> Result<(Arc<dyn InferenceProvider>, ProviderKey), AppError> {
-    let url = resolve_base_url(config.provider, config.base_url.as_ref());
-    let key = ProviderKey::new(config.provider.to_string(), &url, RequestClass::Inference)
-        .map_err(|source| AppError::ProviderRegistry { source })?;
-
-    let client = get_client(registry, &key)?.clone();
-
-    if let Err(e) = probe_inference_provider(client.clone(), config).await {
-        tracing::warn!(%e, "inference model probe failed (non-fatal)");
-    }
-
-    let provider: Arc<dyn InferenceProvider> = match config.provider {
-        ProviderKind::Ollama => Arc::new(OllamaInferenceProvider::new(client, &url, &config.model)),
-        ProviderKind::OpenAi => Arc::new(OpenAiInferenceProvider::new(
-            client,
-            &url,
-            &config.model,
-            api_key_str(config.api_key.as_ref()),
-        )),
-        ProviderKind::Anthropic => Arc::new(AnthropicInferenceProvider::new(
-            client,
-            &url,
-            &config.model,
-            api_key_str(config.api_key.as_ref()),
-        )),
-    };
-
-    Ok((provider, key))
 }
 
 /// Probes an embedding model by constructing the matching concrete provider
@@ -290,21 +273,6 @@ fn add_entry(
     }
 
     Ok(())
-}
-
-/// Retrieves the HTTP client for a provider key from the registry.
-fn get_client<'a>(
-    registry: &'a ProviderRegistry,
-    key: &ProviderKey,
-) -> Result<&'a reqwest::Client, AppError> {
-    registry.client(key).ok_or_else(|| AppError::ProviderSetup {
-        context: format!(
-            "{MISSING_CLIENT}: {} ({}, {})",
-            key.provider_kind(),
-            key.normalised_base_url(),
-            key.request_class(),
-        ),
-    })
 }
 
 /// Resolves the base URL for a provider, falling back to the provider's
@@ -421,31 +389,23 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_embedding_credential_fails_closed_for_keyless_cloud_provider() {
+    fn test_catalogue_resolver_fails_closed_for_keyless_cloud_provider() {
         // OpenAI requires a key; an empty catalogue resolves to the
         // fail-closed error naming the connection.
-        let err = resolve_embedding_credential(
-            ProviderKind::OpenAi,
-            "https://api.openai.com:443/v1",
-            &CredentialCatalogue::default(),
-        )
-        .expect_err("a keyless cloud provider must fail closed");
-        assert!(matches!(
-            err,
-            AppError::EmbeddingCredentialUnresolved { provider, .. }
-                if provider == ProviderKind::OpenAi
-        ));
+        let resolver = CatalogueCredentialResolver::new(CredentialCatalogue::default());
+        let err = resolver
+            .resolve(ProviderKind::OpenAi, "https://api.openai.com:443/v1")
+            .expect_err("a keyless cloud provider must fail closed");
+        assert_eq!(err.provider, ProviderKind::OpenAi);
+        assert_eq!(err.base_url, "https://api.openai.com:443/v1");
     }
 
     #[test]
-    fn test_resolve_embedding_credential_allows_keyless_ollama() {
-        let credentials = CredentialCatalogue::default();
-        let key = resolve_embedding_credential(
-            ProviderKind::Ollama,
-            "http://localhost:11434",
-            &credentials,
-        )
-        .expect("ollama needs no key");
+    fn test_catalogue_resolver_allows_keyless_ollama() {
+        let resolver = CatalogueCredentialResolver::new(CredentialCatalogue::default());
+        let key = resolver
+            .resolve(ProviderKind::Ollama, "http://localhost:11434")
+            .expect("ollama needs no key");
         assert_eq!(key, "");
     }
 
