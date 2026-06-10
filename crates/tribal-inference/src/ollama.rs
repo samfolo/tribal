@@ -2,6 +2,7 @@
 
 mod embed;
 mod inference;
+mod streaming;
 mod tags;
 
 #[cfg(feature = "test-helpers")]
