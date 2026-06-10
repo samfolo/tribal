@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    AgentBindingVersionId, AgentDriverTaskId, AgentThreadId, AgentThreadRecordId, PipelineStage,
-    PrincipalId, TaskId,
+    AgentBindingVersionId, AgentDriverTaskId, AgentThreadId, AgentThreadRecordId, PrincipalId,
+    TaskId, TaskType,
 };
 
 /// The serialisation shape of thread-owned structures (record `content`
@@ -355,7 +355,7 @@ pub struct AgentThread {
     #[builder(default)]
     parent_thread_id: Option<AgentThreadId>,
     /// The pipeline stage this thread executes.
-    pipeline_stage: PipelineStage,
+    pipeline_stage: TaskType,
     /// The content-addressed binding this thread was admitted under.
     binding_version_id: AgentBindingVersionId,
     /// The launched stage task driving this thread, when stage-bound.
@@ -412,7 +412,7 @@ impl AgentThread {
     }
 
     /// Returns the pipeline stage this thread executes.
-    pub fn pipeline_stage(&self) -> PipelineStage {
+    pub fn pipeline_stage(&self) -> TaskType {
         self.pipeline_stage
     }
 

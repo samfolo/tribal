@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{AgentBindingVersionId, PipelineStage, ProviderKind};
+use crate::{AgentBindingVersionId, ProviderKind, TaskType};
 
 // ---------------------------------------------------------------------------
 // Executor kinds
@@ -144,7 +144,7 @@ pub struct ExecutionSpend {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
 pub struct AgentDefinition {
     /// The stage this definition serves.
-    pub pipeline_stage: PipelineStage,
+    pub pipeline_stage: TaskType,
     /// How turns execute.
     pub executor: StageExecutorKind,
     /// The provider the stage's calls bind to.
@@ -170,7 +170,7 @@ pub struct AgentBinding {
     /// The content address over the canonically serialised definition.
     hash: String,
     /// The stage this binding serves.
-    pipeline_stage: PipelineStage,
+    pipeline_stage: TaskType,
     /// The pinned definition.
     definition: AgentDefinition,
     /// When this version was first recorded.
@@ -189,7 +189,7 @@ impl AgentBinding {
     }
 
     /// Returns the stage this binding serves.
-    pub fn pipeline_stage(&self) -> PipelineStage {
+    pub fn pipeline_stage(&self) -> TaskType {
         self.pipeline_stage
     }
 
