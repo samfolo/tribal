@@ -2,8 +2,7 @@ use chrono::Utc;
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentBindingVersionId, AgentDriverTaskId, AgentThread,
     AgentThreadId, AgentThreadRecord, AgentThreadRecordId, AgentThreadRecordKind,
-    AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension, PipelineStage, PrincipalId,
-    TaskId,
+    AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension, PrincipalId, TaskId, TaskType,
 };
 
 define_factory! {
@@ -15,7 +14,7 @@ define_factory! {
     pub struct AgentThreadFactory for AgentThread {
         id: AgentThreadId = AgentThreadId::new(),
         parent_thread_id: Option<AgentThreadId> = None,
-        pipeline_stage: PipelineStage = PipelineStage::Extraction,
+        pipeline_stage: TaskType = TaskType::Extraction,
         binding_version_id: AgentBindingVersionId = AgentBindingVersionId::new(),
         stage_task_id: Option<TaskId> = Some(TaskId::new()),
         driver_task_id: Option<AgentDriverTaskId> = None,
