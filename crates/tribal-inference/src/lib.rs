@@ -35,8 +35,8 @@ pub use embedding_capabilities::{
 pub use embedding_factory::{UnsupportedEmbeddingProvider, make_embedding_provider};
 pub use error::{InferenceError, classify_embedding_error, embedding_retry_after};
 pub use facade::{
-    CompletionStageSpec, CompletionStageSpecs, CredentialError, EmbeddingCredentialResolver,
-    EmbeddingTarget, FacadeBuildError, InferenceFacade, PermitWait,
+    CompletionStageSpec, CompletionStageSpecs, CredentialError, EmbedGroupError,
+    EmbeddingCredentialResolver, EmbeddingTarget, FacadeBuildError, InferenceFacade, PermitWait,
 };
 #[cfg(feature = "test-helpers")]
 pub use facade::{InjectedCompletion, InjectedEmbedding, InjectedProviders, KeylessCredentialResolver};
