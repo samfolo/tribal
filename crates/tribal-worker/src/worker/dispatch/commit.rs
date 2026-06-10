@@ -19,9 +19,10 @@ use tribal_db::{
 };
 use tribal_domain::{
     EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, Job, JobId, JobOutcome, JobState,
-    JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
+    JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, Usage,
+    span_attrs,
 };
-use tribal_inference::{EmbeddingRequest, InferenceError, ProviderRegistry, Usage};
+use tribal_inference::{EmbeddingRequest, InferenceError, ProviderRegistry};
 
 use super::Worker;
 use crate::{

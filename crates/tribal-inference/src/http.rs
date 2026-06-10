@@ -5,7 +5,7 @@ use std::time::Duration;
 use reqwest::StatusCode;
 use tribal_domain::span_attrs;
 
-use crate::CompletionUsage;
+use tribal_domain::CompletionUsage;
 
 // ---------------------------------------------------------------------------
 // Constants

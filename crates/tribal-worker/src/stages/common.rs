@@ -11,9 +11,9 @@ use tribal_db::{
 };
 use tribal_domain::{
     EmbeddingProfile, EmbeddingProfileId, ProjectId, PromptVersion, PromptVersionId,
-    SuggestedReference, SystemFingerprint, TagRegistryEntry, span_attrs,
+    SuggestedReference, SystemFingerprint, TagRegistryEntry, Usage, span_attrs,
 };
-use tribal_inference::{EmbeddingProvider, InferenceError, Usage};
+use tribal_inference::{EmbeddingProvider, InferenceError};
 
 use crate::{
     error::StageError,

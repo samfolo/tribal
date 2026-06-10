@@ -11,10 +11,10 @@ use tribal_db::{
 };
 use tribal_domain::{
     Candidate, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId, KnowledgeItemId,
-    SourceType, StageParameters, TagRegistryEntry, Task, span_attrs,
+    SourceType, StageParameters, TagRegistryEntry, Task, Usage, span_attrs,
 };
 use tribal_inference::{
-    EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
+    EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey,
 };
 
 use super::{StageCommit, StageOutput, TriageCommitDecision, record_prompt_version_ids};
@@ -466,7 +466,7 @@ impl Worker {
         similar_items: &[SimilarItemContext],
         params: &StageParameters,
         deadline: tokio::time::Instant,
-    ) -> Result<(TriageClassification, tribal_inference::CompletionResponse), StageError> {
+    ) -> Result<(TriageClassification, tribal_domain::CompletionResponse), StageError> {
         let include_llm_content = self.include_llm_content();
 
         let request = assemble_triage_prompt(

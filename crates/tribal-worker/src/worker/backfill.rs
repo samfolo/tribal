@@ -27,8 +27,10 @@ use tribal_db::{
     EmbeddingProfileRepository, NewTagEmbedding, NewTokenUsage, PgEmbeddingProfileRepository,
     PgTagEmbeddingRepository, PgTokenUsageRepository, TagEmbeddingRepository, TokenUsageRepository,
 };
-use tribal_domain::{EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, TokenUsageStage};
-use tribal_inference::{EmbeddingProvider, EmbeddingRequest, EmbeddingUsage};
+use tribal_domain::{
+    EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, EmbeddingUsage, TokenUsageStage,
+};
+use tribal_inference::{EmbeddingProvider, EmbeddingRequest};
 
 use crate::error::SEMAPHORE_CLOSED;
 

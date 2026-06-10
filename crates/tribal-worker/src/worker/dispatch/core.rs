@@ -20,11 +20,10 @@ use tribal_db::{
     TaskRepository, TokenUsageRepository,
 };
 use tribal_domain::{
-    Job, JobId, JobState, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage, span_attrs,
+    Job, JobId, JobState, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage, Usage,
+    span_attrs,
 };
-use tribal_inference::{
-    EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
-};
+use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry};
 use tribal_telemetry::MetricsRecorder;
 
 use crate::{

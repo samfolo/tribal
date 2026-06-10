@@ -3,8 +3,7 @@
 use std::fmt;
 
 use serde::Deserialize;
-use tribal_domain::RelationKind;
-use tribal_inference::CompletionResponse;
+use tribal_domain::{CompletionResponse, RelationKind};
 
 use super::deserialise;
 use crate::error::StageError;
@@ -178,7 +177,7 @@ struct RawRelationOutput {
 mod tests {
     use std::time::Duration;
 
-    use tribal_inference::CompletionUsage;
+    use tribal_domain::CompletionUsage;
 
     use super::*;
 

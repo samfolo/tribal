@@ -6,8 +6,10 @@ use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_common::clamp_to_u32;
 use tribal_db::{NewExtractionResult, NewTask};
-use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
-use tribal_inference::{InferenceProvider, ProviderKey, Usage};
+use tribal_domain::{
+    Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, Usage, span_attrs,
+};
+use tribal_inference::{InferenceProvider, ProviderKey};
 
 use super::{StageCommit, StageOutput, record_prompt_version_ids};
 use crate::{
@@ -245,7 +247,7 @@ impl Worker {
 
 /// Parses the extraction response, emitting diagnostics on failure.
 fn parse_with_diagnostics(
-    response: &tribal_inference::CompletionResponse,
+    response: &tribal_domain::CompletionResponse,
     include_llm_content: bool,
 ) -> Result<crate::parsing::ExtractionOutput, StageError> {
     let _parse_span = tracing::info_span!("tribal.extraction.parse").entered();
