@@ -131,6 +131,12 @@ impl AnthropicStreamTranslator {
         }
     }
 
+    /// Translates one assembled SSE data payload, however it dispatched.
+    fn on_data(&mut self, data: &str) -> Result<Vec<InferenceEvent>, InferenceError> {
+        let event = parse_frame(data, "Anthropic stream event JSON object")?;
+        self.on_event(event)
+    }
+
     fn on_event(
         &mut self,
         event: AnthropicStreamEvent,
@@ -230,11 +236,15 @@ impl EventTranslator for AnthropicStreamTranslator {
         let Some(data) = self.sse.on_line(line) else {
             return Ok(vec![]);
         };
-        let event = parse_frame(&data, "Anthropic stream event JSON object")?;
-        self.on_event(event)
+        self.on_data(&data)
     }
 
     fn on_end(&mut self) -> Result<Vec<InferenceEvent>, InferenceError> {
+        // A final event may be dispatched by the wire closing rather than a
+        // blank line: a message_stop buffered at EOF still terminates cleanly.
+        if let Some(data) = self.sse.take_pending() {
+            return self.on_data(&data);
+        }
         Err(InferenceError::ResponseParseFailed {
             expected_shape: "a message_stop event".to_owned(),
             actual: "stream ended without one".to_owned(),
@@ -249,6 +259,7 @@ impl EventTranslator for AnthropicStreamTranslator {
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
+    use tribal_domain::InferenceEvent;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -259,7 +270,6 @@ mod tests {
         CompletionRequest, InferenceProvider, Message, Role, anthropic::AnthropicInferenceProvider,
         collect_completion,
     };
-    use tribal_domain::InferenceEvent;
 
     const MODEL: &str = "claude-haiku-4-5-20251001";
 
@@ -543,6 +553,29 @@ mod tests {
             crate::InferenceError::ResponseParseFailed { ref expected_shape, .. }
                 if expected_shape == "a message_stop event"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_stream_message_stop_dispatched_by_eof_still_terminates() {
+        // No blank line after message_stop: the wire closing dispatches it.
+        let body = [
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            "",
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello!"}}"#,
+            "",
+            r#"data: {"type":"message_stop"}"#,
+        ]
+        .join("\n");
+        let server = MockServer::start().await;
+        mount_stream(&server, body).await;
+
+        let stream = setup(&server)
+            .complete_stream(a_request("test"))
+            .await
+            .unwrap();
+        let response = collect_completion(stream).await.unwrap();
+
+        assert_eq!(response.text, "Hello!");
     }
 
     #[tokio::test]

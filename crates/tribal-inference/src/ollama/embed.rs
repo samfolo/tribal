@@ -620,7 +620,7 @@ mod tests {
         );
     }
 
-    // -- Probe tests --------------------------------------------------------
+    // -- Revision token ------------------------------------------------------
 
     #[tokio::test]
     async fn test_revision_token_resolves_the_models_digest() {

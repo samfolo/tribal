@@ -1273,9 +1273,9 @@ mod tests {
     use tribal_db::{PgPrincipalRepository, PrincipalRepository};
     use tribal_domain::{KnowledgeKind, ReindexRunState};
     use tribal_inference::{
-        EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InjectedCompletion,
-        InjectedEmbedding, InjectedProviders, EmptyCredentialResolver, NoopLedgerSink,
-        ProviderIdentity, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
+        EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InjectedEmbedding,
+        InjectedProviders, NoopLedgerSink, ProviderIdentity, ProviderKey, ProviderLimits,
+        ProviderRegistry, RequestClass,
     };
     use tribal_test_utils::{
         EmbeddingMatcher, ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, Seed,
@@ -1318,27 +1318,16 @@ mod tests {
         ])
         .expect("registry");
 
-        InferenceFacade::with_providers(InjectedProviders {
+        InferenceFacade::with_providers(InjectedProviders::uniform(
             registry,
-            extraction: InjectedCompletion {
-                provider: Arc::clone(&stub),
-                key: inference_key.clone(),
-            },
-            triage: InjectedCompletion {
-                provider: Arc::clone(&stub),
-                key: inference_key.clone(),
-            },
-            relation: InjectedCompletion {
-                provider: stub,
-                key: inference_key,
-            },
-            embeddings: vec![InjectedEmbedding {
+            stub,
+            inference_key,
+            vec![InjectedEmbedding {
                 profile_id: building.id(),
                 provider,
             }],
-            credentials: Arc::new(EmptyCredentialResolver),
-            sink: Arc::new(NoopLedgerSink),
-        })
+            Arc::new(NoopLedgerSink),
+        ))
     }
 
     /// The per-cycle context over a test façade, attributed to `run`.

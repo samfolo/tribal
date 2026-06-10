@@ -14,7 +14,7 @@ use tribal_common::clamp_to_i32;
 use tribal_db::{NewTokenUsage, PgTokenUsageRepository, TokenUsageRepository};
 use tribal_domain::{TokenUsageStage, Usage, gen_ai};
 use tribal_inference::{LedgerSink, UsageAttribution};
-use tribal_telemetry::{InferenceOperationRecord, MetricsRecorder};
+use tribal_telemetry::{InferenceOperationRecord, MetricsRecorder, current_trace_id};
 
 /// Records façade usage into the `token_usage` ledger and the `GenAI`
 /// client metric instruments.
@@ -40,10 +40,7 @@ impl PgLedgerSink {
         stage: TokenUsageStage,
         attribution: &UsageAttribution,
     ) -> NewTokenUsage {
-        let trace_id = attribution
-            .trace_id
-            .clone()
-            .or_else(tribal_telemetry::current_trace_id);
+        let trace_id = attribution.trace_id.clone().or_else(current_trace_id);
 
         match usage {
             Usage::Completion { usage: cu } => NewTokenUsage::builder()

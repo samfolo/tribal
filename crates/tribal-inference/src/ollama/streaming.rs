@@ -146,6 +146,7 @@ impl EventTranslator for OllamaStreamTranslator {
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
+    use tribal_domain::InferenceEvent;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -156,7 +157,6 @@ mod tests {
         CompletionRequest, InferenceProvider, Message, Role, collect_completion,
         ollama::OllamaInferenceProvider,
     };
-    use tribal_domain::InferenceEvent;
 
     const MODEL: &str = "llama3";
 

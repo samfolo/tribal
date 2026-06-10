@@ -38,7 +38,7 @@ pub use facade::{
 };
 #[cfg(feature = "test-helpers")]
 pub use facade::{
-    InjectedCompletion, InjectedEmbedding, InjectedProviders, EmptyCredentialResolver,
+    EmptyCredentialResolver, InjectedCompletion, InjectedEmbedding, InjectedProviders,
 };
 #[cfg(feature = "test-helpers")]
 pub use http::{EMBEDDING_PROBE_INPUT, INFERENCE_PROBE_INPUT};

@@ -97,6 +97,15 @@ impl OpenAiStreamTranslator {
         }
     }
 
+    /// Translates one assembled SSE data payload, however it dispatched.
+    fn on_data(&mut self, data: &str) -> Result<Vec<InferenceEvent>, InferenceError> {
+        if data == DONE_SENTINEL {
+            return self.terminal().map(|event| vec![event]);
+        }
+        let chunk = parse_frame(data, "OpenAI stream chunk JSON object")?;
+        self.on_chunk(chunk)
+    }
+
     fn on_chunk(
         &mut self,
         chunk: OpenAiStreamChunk,
@@ -187,14 +196,15 @@ impl EventTranslator for OpenAiStreamTranslator {
         let Some(data) = self.sse.on_line(line) else {
             return Ok(vec![]);
         };
-        if data == DONE_SENTINEL {
-            return self.terminal().map(|event| vec![event]);
-        }
-        let chunk = parse_frame(&data, "OpenAI stream chunk JSON object")?;
-        self.on_chunk(chunk)
+        self.on_data(&data)
     }
 
     fn on_end(&mut self) -> Result<Vec<InferenceEvent>, InferenceError> {
+        // A final event may be dispatched by the wire closing rather than a
+        // blank line: a sentinel buffered at EOF still terminates cleanly.
+        if let Some(data) = self.sse.take_pending() {
+            return self.on_data(&data);
+        }
         Err(InferenceError::ResponseParseFailed {
             expected_shape: "a [DONE] sentinel".to_owned(),
             actual: "stream ended without one".to_owned(),
@@ -209,6 +219,7 @@ impl EventTranslator for OpenAiStreamTranslator {
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
+    use tribal_domain::InferenceEvent;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -219,7 +230,6 @@ mod tests {
         CompletionRequest, InferenceProvider, Message, Role, collect_completion,
         openai::OpenAiInferenceProvider,
     };
-    use tribal_domain::InferenceEvent;
 
     const MODEL: &str = "gpt-4o-mini";
 
@@ -489,6 +499,27 @@ mod tests {
             crate::InferenceError::ResponseParseFailed { ref expected_shape, .. }
                 if expected_shape == "a [DONE] sentinel"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_stream_sentinel_dispatched_by_eof_still_terminates() {
+        // No blank line after the sentinel: the wire closing dispatches it.
+        let body = [
+            r#"data: {"id":"c1","choices":[{"index":0,"delta":{"content":"Hello!"}}]}"#,
+            "",
+            "data: [DONE]",
+        ]
+        .join("\n");
+        let server = MockServer::start().await;
+        mount_stream(&server, body).await;
+
+        let stream = setup(&server)
+            .complete_stream(a_request("test"))
+            .await
+            .unwrap();
+        let response = collect_completion(stream).await.unwrap();
+
+        assert_eq!(response.text, "Hello!");
     }
 
     #[tokio::test]
