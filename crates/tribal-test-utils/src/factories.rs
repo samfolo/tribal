@@ -72,6 +72,9 @@ macro_rules! define_factory {
 // Submodules — one per domain entity file, mirroring tribal-domain structure.
 // ---------------------------------------------------------------------------
 
+mod agent_binding;
+mod agent_driver_task;
+mod agent_thread;
 mod auth_token;
 mod candidate;
 mod embedding;
@@ -94,6 +97,9 @@ mod task;
 mod token_usage;
 mod triage;
 
+pub use agent_binding::*;
+pub use agent_driver_task::*;
+pub use agent_thread::*;
 pub use auth_token::*;
 pub use candidate::*;
 pub use embedding::*;

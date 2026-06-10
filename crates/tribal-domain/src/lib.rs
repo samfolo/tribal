@@ -44,12 +44,16 @@ macro_rules! enum_text_conversions {
     };
 }
 
+mod agent_binding;
+mod agent_driver_task;
+mod agent_thread;
 mod api_key;
 mod auth_token;
 mod bearer_token;
 mod candidate;
 mod completion_response;
 mod discovery;
+mod disposition;
 mod embedding;
 mod embedding_error_class;
 mod embedding_profile;
@@ -94,12 +98,28 @@ mod token_usage;
 mod triage;
 mod usage;
 
+pub use agent_binding::{
+    AgentBinding, AgentBindingBuilder, AgentDefinition, AgentDefinitionBuilder, ExecutionBudgets,
+    ExecutionSpend, StageExecutorKind, ToolDescriptor, ToolDescriptorBuilder, ToolExecutionMode,
+    ToolSafetyTier,
+};
+pub use agent_driver_task::{
+    AgentDriverTask, AgentDriverTaskBuilder, AgentDriverTaskKind, AgentDriverTaskState,
+};
+pub use agent_thread::{
+    AGENT_THREAD_FORMAT_VERSION, AgentThread, AgentThreadBuilder, AgentThreadRecord,
+    AgentThreadRecordBuilder, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
+    AgentThreadSuspension, AgentThreadTerminal,
+};
 pub use api_key::{ApiKey, ApiKeyParseError};
 pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use bearer_token::{BearerToken, BearerTokenParseError};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
 pub use completion_response::CompletionResponse;
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
+pub use disposition::{
+    Disposition, DispositionCounters, RETRY_COUNT_AFTER_PROGRESS, TurnOutcome, decide_disposition,
+};
 pub use embedding::{Embedding, EmbeddingBuilder};
 pub use embedding_error_class::EmbeddingErrorClass;
 pub use embedding_profile::{
@@ -113,7 +133,8 @@ pub use extraction_result::{ExtractionResult, ExtractionResultBuilder};
 pub use feedback_rating::FeedbackRating;
 pub use git::{GitRemote, GitRemoteParseError};
 pub use ids::{
-    AuthTokenId, EmbeddingId, EmbeddingProfileId, EpisodeId, ExtractionResultId, IdParseError,
+    AgentBindingVersionId, AgentDriverTaskId, AgentThreadId, AgentThreadRecordId, AuthTokenId,
+    EmbeddingId, EmbeddingProfileId, EpisodeId, ExtractionResultId, IdParseError,
     ItemObservationId, JobId, KnowledgeItemId, PrincipalId, ProjectId, PromptVersionId,
     ReferenceId, ReindexRunId, ReindexTaskId, RelationBatchId, RelationId, RetrievalFeedbackId,
     SessionId, SystemFingerprintId, TaskId, TokenUsageId, TriageResultId,
@@ -156,7 +177,7 @@ pub use standing::{Standing, StandingBuilder};
 pub use system_fingerprint::{SystemFingerprint, SystemFingerprintBuilder};
 pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};
 pub use tag_similarity_result::TagSimilarityResult;
-pub use task::{Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
+pub use task::{ErrorOutcome, Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
 pub use token_usage::{TokenUsage, TokenUsageBuilder, TokenUsageStage};
 pub use triage::{
     SimilarItem, SimilarItemBuilder, TriageOutcome, TriageResult, TriageResultBuilder,
