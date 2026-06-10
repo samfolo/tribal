@@ -3,7 +3,7 @@
 mod embed;
 mod inference;
 mod streaming;
-mod tags;
+pub(crate) mod tags;
 
 #[cfg(feature = "test-helpers")]
 pub use embed::EMBED_PATH;
