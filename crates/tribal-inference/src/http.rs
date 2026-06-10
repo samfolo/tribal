@@ -3,9 +3,12 @@
 use std::time::Duration;
 
 use reqwest::StatusCode;
-use tribal_domain::span_attrs;
+use tribal_domain::{CompletionUsage, span_attrs};
 
-use tribal_domain::CompletionUsage;
+use crate::{
+    InferenceError,
+    error::{map_body_read_error, map_http_error},
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,6 +66,43 @@ pub(crate) fn body_preview(body: &str) -> String {
 
     let boundary = normalised.floor_char_boundary(BODY_PREVIEW_LIMIT);
     format!("{}...", &normalised[..boundary])
+}
+
+// ---------------------------------------------------------------------------
+// Status enforcement
+// ---------------------------------------------------------------------------
+
+/// Passes a successful response through; maps an error status to an
+/// [`InferenceError`], reading the body and any `Retry-After` header into
+/// the error context.
+///
+/// Shared by the buffered and streaming wire paths so both map an HTTP
+/// failure identically.
+pub(crate) async fn ensure_success(
+    response: reqwest::Response,
+    provider: &'static str,
+    on_client_error: impl FnOnce(String) -> InferenceError,
+) -> Result<reqwest::Response, InferenceError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let body = response
+        .text()
+        .await
+        .map_err(|e| map_body_read_error(&e, provider))?;
+    let extra: Vec<(&str, &str)> = retry_after
+        .as_deref()
+        .map(|v| vec![("Retry-After", v)])
+        .unwrap_or_default();
+
+    Err(map_http_error(status, &body, provider, &extra, on_client_error))
 }
 
 // ---------------------------------------------------------------------------

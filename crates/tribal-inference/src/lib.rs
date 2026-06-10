@@ -17,6 +17,7 @@ mod registry;
 mod request;
 mod response;
 mod schema_dialect;
+mod stream;
 mod validation;
 
 pub use anthropic::AnthropicInferenceProvider;
@@ -51,3 +52,4 @@ pub use response::EmbeddingResponse;
 pub use schema_dialect::apply_dialect;
 #[cfg(feature = "test-helpers")]
 pub use schema_dialect::assert_dialect_invariants;
+pub use stream::{InferenceEventStream, collect_completion};

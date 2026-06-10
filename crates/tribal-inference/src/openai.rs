@@ -2,6 +2,7 @@
 
 mod embed;
 mod inference;
+mod streaming;
 
 #[cfg(feature = "test-helpers")]
 pub use embed::EMBED_PATH;
