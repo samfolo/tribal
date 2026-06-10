@@ -61,6 +61,7 @@ mod feedback_rating;
 pub mod gen_ai;
 mod git;
 mod ids;
+mod inference_event;
 mod inference_parameters;
 mod item_observation;
 mod job;
@@ -118,6 +119,7 @@ pub use ids::{
     SessionId, SystemFingerprintId, TaskId, TokenUsageId, TriageResultId,
     TriageSimilarItemDecisionId,
 };
+pub use inference_event::InferenceEvent;
 pub use inference_parameters::{
     EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
 };
