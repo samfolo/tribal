@@ -6,6 +6,7 @@ members = [
     "crates/tribal-db",
     "crates/tribal-inference",
     "crates/tribal-worker",
+    "crates/tribal-agent-runtime",
     "crates/tribal-auth",
     "crates/tribal-mcp",
     "crates/tribal-telemetry",
@@ -166,6 +167,7 @@ wiremock = "0.6"
 # Internal crates
 tribal = { path = "crates/tribal-server" }
 
+tribal-agent-runtime = { path = "crates/tribal-agent-runtime" }
 tribal-auth = { path = "crates/tribal-auth" }
 tribal-common = { path = "crates/tribal-common" }
 tribal-config = { path = "crates/tribal-config" }

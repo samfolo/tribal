@@ -209,6 +209,8 @@ pub(crate) fn stage_attribution(job: &Job, task: &Task) -> UsageAttribution {
         job_id: Some(job.id()),
         task_id: Some(task.id()),
         reindex_run_id: None,
+        agent_thread_id: None,
+        agent_thread_record_id: None,
         attempt: clamp_to_i32(task.retry_count()),
         system_prompt_version_id: Some(system_pv_id),
         user_prompt_version_id: Some(user_pv_id),

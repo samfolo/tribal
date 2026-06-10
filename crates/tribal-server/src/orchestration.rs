@@ -15,12 +15,13 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
+use tribal_agent_runtime::PgLedgerSink;
 use tribal_common::JobStateTxs;
 use tribal_config::{PromptSource, TribalConfig};
 use tribal_inference::{InferenceGateway, ProviderIdentity};
 use tribal_mcp::{AppState, build_inference_parameters};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
-use tribal_worker::{PgLedgerSink, Worker, WorkerError};
+use tribal_worker::{Worker, WorkerError};
 
 use crate::{
     error::AppError,

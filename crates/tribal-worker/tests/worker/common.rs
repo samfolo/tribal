@@ -4,6 +4,7 @@ pub(super) use std::{sync::Arc, time::Duration};
 
 pub(super) use dashmap::DashMap;
 pub(super) use tokio_util::sync::CancellationToken;
+pub(super) use tribal_agent_runtime::PgLedgerSink;
 pub(super) use tribal_common::JobStateTxs;
 pub(super) use tribal_config::WorkerConfig;
 pub(super) use tribal_db::{
@@ -43,7 +44,7 @@ pub(super) use tribal_test_utils::{
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
     upsert_system_fingerprint,
 };
-pub(super) use tribal_worker::{PgLedgerSink, Worker};
+use tribal_worker::Worker;
 
 // ---------------------------------------------------------------------------
 // Constants

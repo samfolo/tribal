@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
 use crate::{
-    EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, ReindexRunId, TaskId, TaskType,
-    TokenUsageId,
+    AgentThreadId, AgentThreadRecordId, EmbeddingPurpose, JobId, PipelineStage, PromptVersionId,
+    ReindexRunId, TaskId, TaskType, TokenUsageId,
 };
 
 /// A token usage record for a single LLM or embedding call.
@@ -31,6 +31,12 @@ pub struct TokenUsage {
     /// and catch-up embedding, null otherwise).
     #[builder(default)]
     reindex_run_id: Option<ReindexRunId>,
+    /// The agent thread the request ran under, when thread-attributed.
+    #[builder(default)]
+    agent_thread_id: Option<AgentThreadId>,
+    /// The committed record the request produced, when one committed.
+    #[builder(default)]
+    agent_thread_record_id: Option<AgentThreadRecordId>,
     /// The attempt number within the task (starts at 0).
     attempt: i32,
     /// Which pipeline stage produced this usage record.
@@ -86,6 +92,18 @@ impl TokenUsage {
     /// Returns the reindex run identifier, if applicable.
     pub fn reindex_run_id(&self) -> Option<ReindexRunId> {
         self.reindex_run_id
+    }
+
+    /// Returns the agent thread the request ran under, when
+    /// thread-attributed.
+    pub fn agent_thread_id(&self) -> Option<AgentThreadId> {
+        self.agent_thread_id
+    }
+
+    /// Returns the committed record the request produced, when one
+    /// committed.
+    pub fn agent_thread_record_id(&self) -> Option<AgentThreadRecordId> {
+        self.agent_thread_record_id
     }
 
     /// Returns the attempt number.
