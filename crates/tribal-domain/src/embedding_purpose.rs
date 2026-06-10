@@ -1,16 +1,17 @@
 //! Embedding purpose classification.
 //!
 //! Distinguishes whether an embedding call was for indexing a candidate
-//! knowledge item, embedding a query during retrieval, or embedding a
-//! tag for semantic tag resolution.
+//! knowledge item, embedding a query during retrieval, embedding a tag
+//! for semantic tag resolution, or probing a provider.
 
 use serde::{Deserialize, Serialize};
 
 /// The purpose of an embedding call.
 ///
 /// Only applicable when the pipeline stage is `Embedding`. Distinguishes
-/// write-path (indexing candidates), read-path (embedding queries), and
-/// tag resolution (embedding tags for semantic matching).
+/// write-path (indexing candidates), read-path (embedding queries), tag
+/// resolution (embedding tags for semantic matching), and provider probes
+/// (minimal calls verifying reachability or resolving embedding geometry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EmbeddingPurpose {
@@ -20,12 +21,16 @@ pub enum EmbeddingPurpose {
     Query,
     /// Embedding a tag for semantic tag resolution.
     Tag,
+    /// Probing a provider: verifying reachability or resolving embedding
+    /// geometry with a canonical input.
+    Probe,
 }
 
 enum_text_conversions!(EmbeddingPurpose {
     EmbeddingPurpose::Candidate => "candidate",
     EmbeddingPurpose::Query => "query",
     EmbeddingPurpose::Tag => "tag",
+    EmbeddingPurpose::Probe => "probe",
 });
 
 #[cfg(test)]
@@ -37,11 +42,13 @@ mod tests {
         EmbeddingPurpose::Candidate => "candidate",
         EmbeddingPurpose::Query => "query",
         EmbeddingPurpose::Tag => "tag",
+        EmbeddingPurpose::Probe => "probe",
     });
 
     enum_text_tests!(test_embedding_purpose_text_roundtrip, EmbeddingPurpose {
         EmbeddingPurpose::Candidate => "candidate",
         EmbeddingPurpose::Query => "query",
         EmbeddingPurpose::Tag => "tag",
+        EmbeddingPurpose::Probe => "probe",
     });
 }

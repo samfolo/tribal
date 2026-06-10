@@ -182,9 +182,14 @@ pub enum TokenUsageStage {
     Relation,
     /// The embedding pipeline stage with a required purpose.
     Embedding {
-        /// Whether the embedding was for indexing, querying, or tag resolution.
+        /// Whether the embedding was for indexing, querying, tag
+        /// resolution, or a provider probe.
         purpose: EmbeddingPurpose,
     },
+    /// An inference provider probe — a real but minimal completion call
+    /// made to verify reachability. Embedding probes ride
+    /// [`Self::Embedding`] with [`EmbeddingPurpose::Probe`].
+    Probe,
 }
 
 impl TokenUsageStage {
@@ -196,6 +201,7 @@ impl TokenUsageStage {
             Self::Triage => PipelineStage::Triage,
             Self::Relation => PipelineStage::Relation,
             Self::Embedding { .. } => PipelineStage::Embedding,
+            Self::Probe => PipelineStage::Probe,
         }
     }
 
@@ -204,7 +210,7 @@ impl TokenUsageStage {
     pub fn purpose(&self) -> Option<EmbeddingPurpose> {
         match self {
             Self::Embedding { purpose } => Some(*purpose),
-            _ => None,
+            Self::Extraction | Self::Triage | Self::Relation | Self::Probe => None,
         }
     }
 }
