@@ -11,10 +11,7 @@ use std::{sync::Arc, time::Duration};
 use opentelemetry::KeyValue;
 use tribal_domain::{gen_ai, span_attrs};
 
-use crate::metrics::{
-    LABEL_MODEL, LABEL_OUTCOME, LABEL_POOL, LABEL_PROVIDER, LABEL_PROVIDER_KEY, LABEL_STAGE,
-    LABEL_TASK_TYPE, Metrics,
-};
+use crate::metrics::{LABEL_OUTCOME, LABEL_POOL, LABEL_PROVIDER_KEY, LABEL_TASK_TYPE, Metrics};
 
 // ---------------------------------------------------------------------------
 // Records
@@ -62,9 +59,6 @@ pub trait MetricsRecorder: Send + Sync {
     /// Records semaphore acquisition latency.
     fn record_semaphore_acquire(&self, provider_key: &str, elapsed: Duration);
 
-    /// Records provider (LLM/embedding) call latency.
-    fn record_provider_call(&self, provider: &str, model: &str, stage: &str, elapsed: Duration);
-
     /// Records one `GenAI` client operation: its duration in seconds and
     /// its token counts classed by type.
     fn record_inference_operation(&self, record: &InferenceOperationRecord<'_>);
@@ -100,10 +94,6 @@ impl<T: MetricsRecorder + ?Sized> MetricsRecorder for Arc<T> {
 
     fn record_semaphore_acquire(&self, provider_key: &str, elapsed: Duration) {
         (**self).record_semaphore_acquire(provider_key, elapsed);
-    }
-
-    fn record_provider_call(&self, provider: &str, model: &str, stage: &str, elapsed: Duration) {
-        (**self).record_provider_call(provider, model, stage, elapsed);
     }
 
     fn record_inference_operation(&self, record: &InferenceOperationRecord<'_>) {
@@ -169,17 +159,6 @@ impl MetricsRecorder for OtelMetricsRecorder {
         self.metrics.semaphore_acquire_wait_ms.record(
             duration_ms(elapsed),
             &[KeyValue::new(LABEL_PROVIDER_KEY, provider_key.to_owned())],
-        );
-    }
-
-    fn record_provider_call(&self, provider: &str, model: &str, stage: &str, elapsed: Duration) {
-        self.metrics.provider_call_ms.record(
-            duration_ms(elapsed),
-            &[
-                KeyValue::new(LABEL_PROVIDER, provider.to_owned()),
-                KeyValue::new(LABEL_MODEL, model.to_owned()),
-                KeyValue::new(LABEL_STAGE, stage.to_owned()),
-            ],
         );
     }
 
@@ -272,14 +251,6 @@ pub struct NoopMetricsRecorder;
 impl MetricsRecorder for NoopMetricsRecorder {
     fn record_pool_acquire(&self, _pool: &str, _elapsed: Duration) {}
     fn record_semaphore_acquire(&self, _provider_key: &str, _elapsed: Duration) {}
-    fn record_provider_call(
-        &self,
-        _provider: &str,
-        _model: &str,
-        _stage: &str,
-        _elapsed: Duration,
-    ) {
-    }
     fn record_inference_operation(&self, _record: &InferenceOperationRecord<'_>) {}
     fn record_task_completed(&self, _task_type: &str, _duration_ms: f64) {}
     fn record_task_retried(&self, _task_type: &str) {}
@@ -307,7 +278,6 @@ mod tests {
         let recorder = noop_recorder();
         recorder.record_pool_acquire("worker", Duration::from_millis(5));
         recorder.record_semaphore_acquire("extraction", Duration::from_millis(2));
-        recorder.record_provider_call("ollama", "llama3", "extraction", Duration::from_secs(1));
         recorder.record_task_completed("extraction", 150.0);
         recorder.record_task_retried("triage");
         recorder.record_task_dead_lettered("relation");
@@ -347,12 +317,6 @@ mod tests {
         let recorder = OtelMetricsRecorder::new(metrics);
         recorder.record_pool_acquire("mcp", Duration::from_millis(3));
         recorder.record_semaphore_acquire("triage_inference", Duration::from_millis(1));
-        recorder.record_provider_call(
-            "anthropic",
-            "claude",
-            "triage_inference",
-            Duration::from_secs(2),
-        );
         recorder.record_task_completed("triage", 200.0);
         recorder.record_task_retried("extraction");
         recorder.record_task_dead_lettered("extraction");
