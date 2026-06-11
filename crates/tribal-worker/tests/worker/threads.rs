@@ -958,14 +958,9 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
         reclaim_interval_ms: 120_000,
         ..test_config()
     };
-    let (worker, job_state_txs) = build_test_worker_with_watch(
-        pool.clone(),
-        token.clone(),
-        config,
-        Some(inference),
-        None,
-    )
-    .await;
+    let (worker, job_state_txs) =
+        build_test_worker_with_watch(pool.clone(), token.clone(), config, Some(inference), None)
+            .await;
     let (watch_tx, keepalive_rx) = watch::channel(JobState::Queued);
     let mut watch_rx = watch_tx.subscribe();
     job_state_txs.insert(job_id, JobWatchEntry::new(watch_tx, keepalive_rx));
@@ -1340,15 +1335,24 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
         tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &threaded, &binding)
             .await
             .expect("thread");
+    // The legacy row gets the deeper backdate so it heads the staleness
+    // order: a thread-aware scan that lost its EXISTS clause would lock
+    // it first, find no thread, and requeue nothing — failing the count
+    // below rather than passing by ordering luck.
     backdate_task_heartbeat(&mut conn, task_threaded, STALE_HEARTBEAT_BACKDATE).await;
-    backdate_task_heartbeat(&mut conn, task_legacy, STALE_HEARTBEAT_BACKDATE).await;
+    backdate_task_heartbeat(&mut conn, task_legacy, STALE_HEARTBEAT_BACKDATE * 2).await;
 
     // The thread-aware pass first, against the full mixed population: it
     // must take only the thread-driving row, leaving the legacy row
     // claimed for the bulk scan.
-    let worker =
-        build_test_worker(pool.clone(), CancellationToken::new(), config.clone(), None, None)
-            .await;
+    let worker = build_test_worker(
+        pool.clone(),
+        CancellationToken::new(),
+        config.clone(),
+        None,
+        None,
+    )
+    .await;
     let stats = worker
         .run_thread_aware_reclaim(
             10,
@@ -1359,7 +1363,10 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
         )
         .await
         .expect("thread-aware reclaim");
-    assert_eq!(stats.requeued, 1, "the thread-aware pass takes only its half");
+    assert_eq!(
+        stats.requeued, 1,
+        "the thread-aware pass takes only its half"
+    );
     let legacy_after = PgTaskRepository
         .find_by_id(&mut conn, task_legacy)
         .await
