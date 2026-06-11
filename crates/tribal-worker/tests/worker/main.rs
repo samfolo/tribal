@@ -18,5 +18,6 @@ mod extraction;
 mod fixtures;
 mod lifecycle;
 mod relation;
+mod threads;
 mod token_usage;
 mod triage;
