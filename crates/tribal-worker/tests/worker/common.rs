@@ -23,8 +23,9 @@ pub(super) use tribal_domain::{
     TaskType, TriageOutcome,
 };
 pub(super) use tribal_inference::{
-    EmbeddingProvider, InferenceGateway, InferenceProvider, InjectedEmbedding, InjectedProviders,
-    ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
+    CompletionStageSpec, CompletionStageSpecs, EmbeddingProvider, InferenceGateway,
+    InferenceProvider, InjectedEmbedding, InjectedProviders, ProviderKey, ProviderLimits,
+    ProviderRegistry, RequestClass,
 };
 pub(super) use tribal_telemetry::noop_recorder;
 pub(super) use tribal_test_utils::{
@@ -201,6 +202,7 @@ pub(super) async fn build_test_worker(
     Arc::new(Worker::new(
         pool,
         gateway,
+        test_stage_specs(),
         cancellation_token,
         config,
         false,
@@ -208,6 +210,22 @@ pub(super) async fn build_test_worker(
         job_state_txs,
         noop_recorder(),
     ))
+}
+
+/// The boot-time stage specs a test worker derives bindings from: one
+/// mock endpoint for all three stages, matching the injected providers.
+pub(super) fn test_stage_specs() -> CompletionStageSpecs {
+    let spec = CompletionStageSpec {
+        provider: ProviderKind::Ollama,
+        model: "mock-model".to_owned(),
+        base_url: "http://localhost:9999".to_owned(),
+        api_key: String::new(),
+    };
+    CompletionStageSpecs {
+        extraction: spec.clone(),
+        triage: spec.clone(),
+        relation: spec,
+    }
 }
 
 /// Polls until a task is requeued with at least one retry.

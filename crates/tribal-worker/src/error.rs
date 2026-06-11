@@ -109,6 +109,18 @@ pub(crate) enum StageError {
         source: tera::Error,
     },
 
+    /// A thread-runtime operation failed for a reason that is neither a
+    /// lost lease nor a database fault (content serialisation, a missing
+    /// thread): an internal consistency error.
+    #[error("thread runtime failure during {context}")]
+    Runtime {
+        /// Human-readable description of the stage operation.
+        context: String,
+        /// The underlying runtime error.
+        #[source]
+        source: tribal_agent_runtime::AgentRuntimeError,
+    },
+
     /// A database operation failed during stage execution.
     #[error("database error in {stage}: {context}")]
     Database {
@@ -133,6 +145,7 @@ impl StageError {
             Self::OwnershipLost => TaskErrorKind::OwnershipLost,
             Self::Timeout { .. } => TaskErrorKind::Timeout,
             Self::TemplateRender { .. } => TaskErrorKind::InternalError,
+            Self::Runtime { .. } => TaskErrorKind::InternalError,
             Self::Database { .. } => TaskErrorKind::DatabaseError,
         }
     }

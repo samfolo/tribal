@@ -21,5 +21,5 @@ pub use ledger_sink::PgLedgerSink;
 pub use store::{StageThread, ensure_stage_thread};
 pub use turn::{
     BegunTurn, OneShotOutcome, RecordedMessage, RenderedConversation, begin_one_shot,
-    commit_one_shot_terminal,
+    commit_noop_terminal, commit_one_shot_terminal,
 };
