@@ -1,7 +1,7 @@
 use chrono::Utc;
 use tribal_domain::{
     AgentBinding, AgentBindingVersionId, AgentDefinition, ExecutionBudgets, ProviderKind,
-    StageExecutorKind, TaskType, ToolDescriptor,
+    StageExecutorKind, StageParameters, TaskType, ToolDescriptor,
 };
 
 /// A well-formed placeholder content address (64 hex characters).
@@ -15,6 +15,7 @@ define_factory! {
         provider: ProviderKind = ProviderKind::Ollama,
         model: String = "llama3".to_owned(),
         base_url: String = "http://localhost:11434".to_owned(),
+        parameters: StageParameters = StageParameters::default(),
         prompt_hashes: Vec<String> = vec![PLACEHOLDER_HASH.to_owned()],
         budgets: ExecutionBudgets = ExecutionBudgets::default(),
         tools: Vec<ToolDescriptor> = Vec::new(),

@@ -154,18 +154,8 @@ async fn test_concurrency_limit_respected() {
     {
         let mut conn = raw_conn(ctx).await;
 
-        let fingerprint_hash = upsert_system_fingerprint(
-            &mut conn,
-            &a_new_system_fingerprint()
-                .extraction_system_prompt_version_id(system_pv_id)
-                .extraction_user_prompt_version_id(user_pv_id)
-                .triage_system_prompt_version_id(system_pv_id)
-                .triage_user_prompt_version_id(user_pv_id)
-                .relation_system_prompt_version_id(system_pv_id)
-                .relation_user_prompt_version_id(user_pv_id)
-                .build(),
-        )
-        .await;
+        let fingerprint_hash =
+            upsert_system_fingerprint(&mut conn, &a_new_system_fingerprint().build()).await;
 
         for i in 0..task_count {
             let job = PgJobRepository

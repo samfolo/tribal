@@ -228,51 +228,15 @@ impl Worker {
                     stats.recovery_cycles += 1;
                 }
                 Disposition::ExhaustThread => {
-                    // The thread dead-letters from running, or from queued
-                    // for a thread whose mark-running CAS never landed —
-                    // the same fallback the inline failure path applies.
-                    let moved = PgAgentThreadRepository
-                        .complete(
-                            &mut txn,
-                            thread.id(),
-                            AgentThreadTerminal::DeadLetter,
-                            AgentThreadStatus::Running,
-                        )
-                        .await
-                        .map_err(reclaim_db)?;
-                    let moved = if moved == 0 {
-                        PgAgentThreadRepository
-                            .complete(
-                                &mut txn,
-                                thread.id(),
-                                AgentThreadTerminal::DeadLetter,
-                                AgentThreadStatus::Queued,
-                            )
-                            .await
-                            .map_err(reclaim_db)?
-                    } else {
-                        moved
-                    };
-                    if moved == 0 {
-                        tracing::warn!(
-                            task_id = %task.id(),
-                            thread_id = %thread.id(),
-                            "thread was neither running nor queued at reclaim exhaustion; leaving its status",
-                        );
-                    }
-                    PgTaskRepository
-                        .dead_letter_claimed(
-                            &mut txn,
-                            task.id(),
-                            claim_token,
-                            error_kind,
-                            error_message,
-                        )
-                        .await
-                        .map_err(reclaim_db)?;
-                    owed = coupling::couple_dead_lettered_task(&mut txn, &task, error_message)
-                        .await
-                        .map_err(reclaim_db)?;
+                    owed = exhaust_thread(
+                        &mut txn,
+                        &task,
+                        &thread,
+                        claim_token,
+                        error_kind,
+                        error_message,
+                    )
+                    .await?;
                     stats.exhausted += 1;
                 }
                 Disposition::CompleteTask | Disposition::DeadLetterTask => {
@@ -286,15 +250,13 @@ impl Worker {
                 }
             }
 
-            txn.commit()
-                .await
-                .map_err(|e| WorkerError::ReclaimFailed {
-                    context: "thread-aware reclaim".into(),
-                    source: tribal_db::DbError::QueryFailed {
-                        context: "commit".into(),
-                        source: e,
-                    },
-                })?;
+            txn.commit().await.map_err(|e| WorkerError::ReclaimFailed {
+                context: "thread-aware reclaim".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "commit".into(),
+                    source: e,
+                },
+            })?;
 
             if let Some(notice) = owed {
                 self.notify_job_state(notice.job_id, notice.state);
@@ -303,6 +265,58 @@ impl Worker {
 
         Ok(stats)
     }
+}
+
+/// The exhaustion transaction's body: the thread dead-letters from
+/// running, or from queued for a thread whose mark-running CAS never
+/// landed — the same fallback the inline failure path applies — then the
+/// driving task dead-letters under its claim guard and the job couples,
+/// returning the owed notification.
+async fn exhaust_thread(
+    txn: &mut sqlx::PgConnection,
+    task: &tribal_domain::Task,
+    thread: &tribal_domain::AgentThread,
+    claim_token: uuid::Uuid,
+    error_kind: TaskErrorKind,
+    error_message: &str,
+) -> Result<Option<coupling::OwedNotification>, WorkerError> {
+    let moved = PgAgentThreadRepository
+        .complete(
+            txn,
+            thread.id(),
+            AgentThreadTerminal::DeadLetter,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .map_err(reclaim_db)?;
+    let moved = if moved == 0 {
+        PgAgentThreadRepository
+            .complete(
+                txn,
+                thread.id(),
+                AgentThreadTerminal::DeadLetter,
+                AgentThreadStatus::Queued,
+            )
+            .await
+            .map_err(reclaim_db)?
+    } else {
+        moved
+    };
+    if moved == 0 {
+        tracing::warn!(
+            task_id = %task.id(),
+            thread_id = %thread.id(),
+            "thread was neither running nor queued at reclaim exhaustion; leaving its status",
+        );
+    }
+
+    PgTaskRepository
+        .dead_letter_claimed(txn, task.id(), claim_token, error_kind, error_message)
+        .await
+        .map_err(reclaim_db)?;
+    coupling::couple_dead_lettered_task(txn, task, error_message)
+        .await
+        .map_err(reclaim_db)
 }
 
 /// Shorthand for the reclaim pass's database-error mapping.

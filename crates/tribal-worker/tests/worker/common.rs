@@ -220,6 +220,7 @@ pub(super) fn test_stage_specs() -> CompletionStageSpecs {
         model: "mock-model".to_owned(),
         base_url: "http://localhost:9999".to_owned(),
         api_key: String::new(),
+        parameters: tribal_domain::StageParameters::default(),
     };
     CompletionStageSpecs {
         extraction: spec.clone(),

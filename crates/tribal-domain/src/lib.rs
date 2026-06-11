@@ -141,9 +141,7 @@ pub use ids::{
     TriageSimilarItemDecisionId,
 };
 pub use inference_event::InferenceEvent;
-pub use inference_parameters::{
-    EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
-};
+pub use inference_parameters::{PipelineParameters, StageParameters};
 pub use item_observation::{ItemObservation, ItemObservationBuilder};
 pub use job::{Job, JobBuilder, JobOutcome, JobState, JobStatus};
 pub use knowledge::{Confidence, KnowledgeItem, KnowledgeItemBuilder, KnowledgeKind};

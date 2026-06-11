@@ -157,10 +157,9 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
     )
     .await
     .expect("binding");
-    let stage_thread =
-        tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
-            .await
-            .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
+        .await
+        .expect("thread");
 
     let tasks_before = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
@@ -329,10 +328,9 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
     )
     .await
     .expect("binding");
-    let thread_a =
-        tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task_a, binding.id())
-            .await
-            .expect("thread");
+    let thread_a = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task_a, &binding)
+        .await
+        .expect("thread");
 
     PgAgentThreadRepository
         .record_cancel_intent(&mut conn, thread_a.thread.id(), "operator:first")
@@ -391,10 +389,9 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
         .find_by_id(&mut conn, job_b)
         .await
         .expect("job");
-    let thread_b =
-        tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task_b, binding.id())
-            .await
-            .expect("thread");
+    let thread_b = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task_b, &binding)
+        .await
+        .expect("thread");
 
     tribal_agent_runtime::suspend_stage_thread(
         &mut conn,
@@ -494,10 +491,9 @@ async fn test_concurrent_resolutions_wake_the_thread_exactly_once() {
     )
     .await
     .expect("binding");
-    let stage_thread =
-        tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
-            .await
-            .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
+        .await
+        .expect("thread");
     tribal_agent_runtime::suspend_stage_thread(
         &mut conn,
         &stage_thread.thread,
@@ -582,10 +578,9 @@ async fn test_a_stale_lease_cannot_commit_an_input_record() {
     )
     .await
     .expect("binding");
-    let stage_thread =
-        tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
-            .await
-            .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
+        .await
+        .expect("thread");
 
     let rendered = RenderedConversation {
         system: None,
@@ -655,7 +650,7 @@ async fn test_thread_aware_reclaim_requeues_without_touching_the_thread() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
         .await
         .expect("thread");
     let status_before = stage_thread.thread.status();
@@ -743,13 +738,14 @@ async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job(
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
         .await
         .expect("thread");
     set_retry_count(&mut conn, task_id, config.task_max_retries).await;
     backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
 
-    let worker = build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
+    let worker =
+        build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
     let stats = worker
         .run_thread_aware_reclaim(
             10,
@@ -833,14 +829,15 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
         .await
         .expect("thread");
     let status_before = stage_thread.thread.status();
     set_retry_count(&mut conn, task_id, config.task_max_retries).await;
     backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
 
-    let worker = build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
+    let worker =
+        build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
     let stats = worker
         .run_thread_aware_reclaim(
             10,
@@ -927,7 +924,7 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
         .await
         .expect("thread");
     PgAgentThreadRepository
@@ -1022,7 +1019,7 @@ async fn test_claim_time_disposal_dead_letters_a_task_with_a_terminal_thread() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
         .await
         .expect("thread");
     let moved = PgAgentThreadRepository
@@ -1118,7 +1115,7 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
         .await
         .expect("thread");
     let moved = PgAgentThreadRepository

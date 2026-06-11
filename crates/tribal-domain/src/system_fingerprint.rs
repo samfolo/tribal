@@ -2,20 +2,25 @@
 //!
 //! Each fingerprint captures the full set of inference-affecting
 //! configuration values at a point in time. Identical configurations
-//! produce the same `content_hash`, enabling deduplication.
+//! produce the same `content_hash`, enabling deduplication. Per-stage
+//! configuration (prompts, provider, model, sampling parameters) is
+//! subsumed by that stage's content-addressed binding version; the
+//! fingerprint composes the three binding hashes with what no stage
+//! binding carries — the build version, the job-level pipeline
+//! parameters, and the embedding identity.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{InferenceParameters, PromptVersionId, SystemFingerprintId};
+use crate::{PipelineParameters, SystemFingerprintId};
 
 /// A content-addressed system configuration snapshot.
 ///
-/// The `content_hash` (SHA-256, hex-encoded, 64 chars) uniquely identifies
-/// the combination of prompt versions, model identifiers, build version,
-/// and inference parameters active when a job or feedback record was
-/// created.
+/// The `content_hash` (SHA-256, hex-encoded, 64 chars) uniquely
+/// identifies the combination of stage binding versions, build version,
+/// pipeline parameters, and embedding identity active when a job or
+/// feedback record was created.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TypedBuilder)]
 pub struct SystemFingerprint {
     /// Unique identifier with `sfp_` prefix.
@@ -25,41 +30,25 @@ pub struct SystemFingerprint {
     /// Git-describe version of the build.
     build_version: String,
 
-    // -- Prompt version IDs ---------------------------------------------------
-    /// Extraction system prompt version.
-    extraction_system_prompt_version_id: PromptVersionId,
-    /// Extraction user prompt version.
-    extraction_user_prompt_version_id: PromptVersionId,
-    /// Triage system prompt version.
-    triage_system_prompt_version_id: PromptVersionId,
-    /// Triage user prompt version.
-    triage_user_prompt_version_id: PromptVersionId,
-    /// Relation system prompt version.
-    relation_system_prompt_version_id: PromptVersionId,
-    /// Relation user prompt version.
-    relation_user_prompt_version_id: PromptVersionId,
+    // -- Stage binding versions ------------------------------------------------
+    /// The extraction stage's binding-version content address.
+    extraction_binding_hash: String,
+    /// The triage stage's binding-version content address.
+    triage_binding_hash: String,
+    /// The relation stage's binding-version content address.
+    relation_binding_hash: String,
 
-    // -- Model identifiers ----------------------------------------------------
-    /// Extraction inference provider name.
-    extraction_inference_provider: String,
-    /// Extraction inference model name.
-    extraction_inference_model: String,
-    /// Triage inference provider name.
-    triage_inference_provider: String,
-    /// Triage inference model name.
-    triage_inference_model: String,
-    /// Relation inference provider name.
-    relation_inference_provider: String,
-    /// Relation inference model name.
-    relation_inference_model: String,
+    // -- Embedding identity ------------------------------------------------
     /// Embedding provider name.
     embedding_provider: String,
     /// Embedding model name.
     embedding_model: String,
+    /// Embedding vector dimensionality.
+    embedding_dimensions: u32,
 
-    // -- Inference parameters --------------------------------------------------
-    /// Full inference-affecting parameters as typed JSONB.
-    inference_parameters: InferenceParameters,
+    // -- Pipeline parameters ----------------------------------------------
+    /// Job-level parameters subsumed by no stage binding, as typed JSONB.
+    pipeline_parameters: PipelineParameters,
 
     /// When this fingerprint was first recorded.
     created_at: DateTime<Utc>,
@@ -81,64 +70,19 @@ impl SystemFingerprint {
         &self.build_version
     }
 
-    /// Returns the extraction system prompt version ID.
-    pub fn extraction_system_prompt_version_id(&self) -> PromptVersionId {
-        self.extraction_system_prompt_version_id
+    /// Returns the extraction binding-version content address.
+    pub fn extraction_binding_hash(&self) -> &str {
+        &self.extraction_binding_hash
     }
 
-    /// Returns the extraction user prompt version ID.
-    pub fn extraction_user_prompt_version_id(&self) -> PromptVersionId {
-        self.extraction_user_prompt_version_id
+    /// Returns the triage binding-version content address.
+    pub fn triage_binding_hash(&self) -> &str {
+        &self.triage_binding_hash
     }
 
-    /// Returns the triage system prompt version ID.
-    pub fn triage_system_prompt_version_id(&self) -> PromptVersionId {
-        self.triage_system_prompt_version_id
-    }
-
-    /// Returns the triage user prompt version ID.
-    pub fn triage_user_prompt_version_id(&self) -> PromptVersionId {
-        self.triage_user_prompt_version_id
-    }
-
-    /// Returns the relation system prompt version ID.
-    pub fn relation_system_prompt_version_id(&self) -> PromptVersionId {
-        self.relation_system_prompt_version_id
-    }
-
-    /// Returns the relation user prompt version ID.
-    pub fn relation_user_prompt_version_id(&self) -> PromptVersionId {
-        self.relation_user_prompt_version_id
-    }
-
-    /// Returns the extraction inference provider.
-    pub fn extraction_inference_provider(&self) -> &str {
-        &self.extraction_inference_provider
-    }
-
-    /// Returns the extraction inference model.
-    pub fn extraction_inference_model(&self) -> &str {
-        &self.extraction_inference_model
-    }
-
-    /// Returns the triage inference provider.
-    pub fn triage_inference_provider(&self) -> &str {
-        &self.triage_inference_provider
-    }
-
-    /// Returns the triage inference model.
-    pub fn triage_inference_model(&self) -> &str {
-        &self.triage_inference_model
-    }
-
-    /// Returns the relation inference provider.
-    pub fn relation_inference_provider(&self) -> &str {
-        &self.relation_inference_provider
-    }
-
-    /// Returns the relation inference model.
-    pub fn relation_inference_model(&self) -> &str {
-        &self.relation_inference_model
+    /// Returns the relation binding-version content address.
+    pub fn relation_binding_hash(&self) -> &str {
+        &self.relation_binding_hash
     }
 
     /// Returns the embedding provider.
@@ -151,9 +95,14 @@ impl SystemFingerprint {
         &self.embedding_model
     }
 
-    /// Returns the inference parameters.
-    pub fn inference_parameters(&self) -> &InferenceParameters {
-        &self.inference_parameters
+    /// Returns the embedding vector dimensionality.
+    pub fn embedding_dimensions(&self) -> u32 {
+        self.embedding_dimensions
+    }
+
+    /// Returns the pipeline parameters.
+    pub fn pipeline_parameters(&self) -> &PipelineParameters {
+        &self.pipeline_parameters
     }
 
     /// Returns when this fingerprint was first recorded.

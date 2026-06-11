@@ -4,8 +4,8 @@ use tribal_db::{
 };
 use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, RetrievalFeedbackId};
 use tribal_test_utils::{
-    a_new_principal, a_new_prompt_version, a_new_retrieval_feedback, a_new_system_fingerprint,
-    ensure_genesis_profile, insert_prompt_version, test_context, upsert_system_fingerprint,
+    a_new_principal, a_new_retrieval_feedback, a_new_system_fingerprint, ensure_genesis_profile,
+    test_context, upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -37,19 +37,7 @@ async fn test_insert_returns_populated_retrieval_feedback() {
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "insert").await;
-    let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
-    upsert_system_fingerprint(
-        &mut txn,
-        &a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(pv_id)
-            .extraction_user_prompt_version_id(pv_id)
-            .triage_system_prompt_version_id(pv_id)
-            .triage_user_prompt_version_id(pv_id)
-            .relation_system_prompt_version_id(pv_id)
-            .relation_user_prompt_version_id(pv_id)
-            .build(),
-    )
-    .await;
+    upsert_system_fingerprint(&mut txn, &a_new_system_fingerprint().build()).await;
 
     let profile = ensure_genesis_profile(&mut txn, "nomic-embed-text:v1.5", 768).await;
 
@@ -84,19 +72,7 @@ async fn test_insert_with_populated_uuid_arrays() {
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "arrays").await;
-    let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
-    upsert_system_fingerprint(
-        &mut txn,
-        &a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(pv_id)
-            .extraction_user_prompt_version_id(pv_id)
-            .triage_system_prompt_version_id(pv_id)
-            .triage_user_prompt_version_id(pv_id)
-            .relation_system_prompt_version_id(pv_id)
-            .relation_user_prompt_version_id(pv_id)
-            .build(),
-    )
-    .await;
+    upsert_system_fingerprint(&mut txn, &a_new_system_fingerprint().build()).await;
 
     let profile = ensure_genesis_profile(&mut txn, "nomic-embed-text:v1.5", 768).await;
     let returned = vec![KnowledgeItemId::new(), KnowledgeItemId::new()];
@@ -122,19 +98,7 @@ async fn test_insert_with_empty_arrays() {
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "empty-arrays").await;
-    let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
-    upsert_system_fingerprint(
-        &mut txn,
-        &a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(pv_id)
-            .extraction_user_prompt_version_id(pv_id)
-            .triage_system_prompt_version_id(pv_id)
-            .triage_user_prompt_version_id(pv_id)
-            .relation_system_prompt_version_id(pv_id)
-            .relation_user_prompt_version_id(pv_id)
-            .build(),
-    )
-    .await;
+    upsert_system_fingerprint(&mut txn, &a_new_system_fingerprint().build()).await;
 
     let profile = ensure_genesis_profile(&mut txn, "nomic-embed-text:v1.5", 768).await;
     let new = a_new_retrieval_feedback()
@@ -159,19 +123,7 @@ async fn test_find_by_id_returns_retrieval_feedback() {
     let repo = PgRetrievalFeedbackRepository;
 
     let principal_id = setup_principal(&mut txn, "find").await;
-    let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
-    upsert_system_fingerprint(
-        &mut txn,
-        &a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(pv_id)
-            .extraction_user_prompt_version_id(pv_id)
-            .triage_system_prompt_version_id(pv_id)
-            .triage_user_prompt_version_id(pv_id)
-            .relation_system_prompt_version_id(pv_id)
-            .relation_user_prompt_version_id(pv_id)
-            .build(),
-    )
-    .await;
+    upsert_system_fingerprint(&mut txn, &a_new_system_fingerprint().build()).await;
 
     let profile = ensure_genesis_profile(&mut txn, "nomic-embed-text:v1.5", 768).await;
     let fb = repo

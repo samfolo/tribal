@@ -60,18 +60,8 @@ async fn setup_thread_prerequisites(
         .expect("insert project");
 
     let pv_id = insert_prompt_version(txn, &a_new_prompt_version().build()).await;
-    let fingerprint_hash = upsert_system_fingerprint(
-        txn,
-        &a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(pv_id)
-            .extraction_user_prompt_version_id(pv_id)
-            .triage_system_prompt_version_id(pv_id)
-            .triage_user_prompt_version_id(pv_id)
-            .relation_system_prompt_version_id(pv_id)
-            .relation_user_prompt_version_id(pv_id)
-            .build(),
-    )
-    .await;
+    let fingerprint_hash =
+        upsert_system_fingerprint(txn, &a_new_system_fingerprint().build()).await;
 
     let job = PgJobRepository
         .insert(

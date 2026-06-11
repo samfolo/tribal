@@ -13,7 +13,7 @@ use tribal_db::{
     PgAgentThreadRecordRepository, PgAgentThreadRepository,
 };
 use tribal_domain::{
-    AGENT_THREAD_FORMAT_VERSION, AgentBindingVersionId, AgentThread, AgentThreadRecord,
+    AGENT_THREAD_FORMAT_VERSION, AgentBinding, AgentThread, AgentThreadRecord,
     AgentThreadRecordKind, AgentThreadStatus, Job, Task,
 };
 
@@ -27,6 +27,9 @@ pub struct StageThread {
     /// conversation as sent, which re-execution re-sends verbatim rather
     /// than re-rendering.
     pub input: Option<AgentThreadRecord>,
+    /// The binding the thread runs under: the content-addressed pin the
+    /// stage reads its execution parameters from.
+    pub binding: AgentBinding,
 }
 
 /// Finds or creates the thread a claimed stage task drives, and moves a
@@ -52,7 +55,7 @@ pub async fn ensure_stage_thread(
     conn: &mut PgConnection,
     job: &Job,
     task: &Task,
-    binding_version_id: AgentBindingVersionId,
+    binding: &AgentBinding,
 ) -> Result<StageThread, AgentRuntimeError> {
     let existing = PgAgentThreadRepository
         .find_by_stage_task(conn, task.id())
@@ -61,7 +64,7 @@ pub async fn ensure_stage_thread(
 
     let thread = match existing {
         Some(thread) => thread,
-        None => create_stage_thread(conn, job, task, binding_version_id).await?,
+        None => create_stage_thread(conn, job, task, binding).await?,
     };
 
     let thread = if thread.status() == AgentThreadStatus::Queued {
@@ -96,7 +99,11 @@ pub async fn ensure_stage_thread(
                 && crate::turn::is_rendered_conversation(record.content())
         });
 
-    Ok(StageThread { thread, input })
+    Ok(StageThread {
+        thread,
+        input,
+        binding: binding.clone(),
+    })
 }
 
 /// Creates the thread for a first-claimed stage task, converging on the
@@ -106,11 +113,11 @@ async fn create_stage_thread(
     conn: &mut PgConnection,
     job: &Job,
     task: &Task,
-    binding_version_id: AgentBindingVersionId,
+    binding: &AgentBinding,
 ) -> Result<AgentThread, AgentRuntimeError> {
     let new = NewAgentThread::builder()
         .pipeline_stage(task.task_type())
-        .binding_version_id(binding_version_id)
+        .binding_version_id(binding.id())
         .driving_task(DrivingTaskRef::Stage(task.id()))
         .principal_id(job.principal_id())
         .format_version(AGENT_THREAD_FORMAT_VERSION)

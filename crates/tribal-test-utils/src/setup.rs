@@ -320,18 +320,8 @@ pub async fn seed_extraction_job(
     system_pv_id: PromptVersionId,
     user_pv_id: PromptVersionId,
 ) -> (JobId, TaskId) {
-    let fingerprint_hash = upsert_system_fingerprint(
-        conn,
-        &a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(system_pv_id)
-            .extraction_user_prompt_version_id(user_pv_id)
-            .triage_system_prompt_version_id(system_pv_id)
-            .triage_user_prompt_version_id(user_pv_id)
-            .relation_system_prompt_version_id(system_pv_id)
-            .relation_user_prompt_version_id(user_pv_id)
-            .build(),
-    )
-    .await;
+    let fingerprint_hash =
+        upsert_system_fingerprint(conn, &a_new_system_fingerprint().build()).await;
 
     let job = PgJobRepository
         .insert(
@@ -393,18 +383,8 @@ pub async fn seed_triage_job(
     ensure_genesis_profile(conn, "mock-model", 768).await;
     let batch_size = u32::try_from(candidates.len()).expect("candidate count fits u32");
 
-    let fingerprint_hash = upsert_system_fingerprint(
-        conn,
-        &a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(system_pv_id)
-            .extraction_user_prompt_version_id(user_pv_id)
-            .triage_system_prompt_version_id(system_pv_id)
-            .triage_user_prompt_version_id(user_pv_id)
-            .relation_system_prompt_version_id(system_pv_id)
-            .relation_user_prompt_version_id(user_pv_id)
-            .build(),
-    )
-    .await;
+    let fingerprint_hash =
+        upsert_system_fingerprint(conn, &a_new_system_fingerprint().build()).await;
 
     let job = PgJobRepository
         .insert(
@@ -510,18 +490,8 @@ pub async fn seed_multiple_triage_tasks(
     );
     let batch_size = u32::try_from(candidates.len()).expect("candidate count fits u32");
 
-    let fingerprint_hash = upsert_system_fingerprint(
-        conn,
-        &a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(system_pv_id)
-            .extraction_user_prompt_version_id(user_pv_id)
-            .triage_system_prompt_version_id(system_pv_id)
-            .triage_user_prompt_version_id(user_pv_id)
-            .relation_system_prompt_version_id(system_pv_id)
-            .relation_user_prompt_version_id(user_pv_id)
-            .build(),
-    )
-    .await;
+    let fingerprint_hash =
+        upsert_system_fingerprint(conn, &a_new_system_fingerprint().build()).await;
 
     let job = PgJobRepository
         .insert(
@@ -698,18 +668,8 @@ pub async fn seed_relation_job(
     );
     let batch_size = u32::try_from(candidates.len()).expect("candidate count fits u32");
 
-    let fingerprint_hash = upsert_system_fingerprint(
-        conn,
-        &a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(system_pv_id)
-            .extraction_user_prompt_version_id(user_pv_id)
-            .triage_system_prompt_version_id(system_pv_id)
-            .triage_user_prompt_version_id(user_pv_id)
-            .relation_system_prompt_version_id(system_pv_id)
-            .relation_user_prompt_version_id(user_pv_id)
-            .build(),
-    )
-    .await;
+    let fingerprint_hash =
+        upsert_system_fingerprint(conn, &a_new_system_fingerprint().build()).await;
 
     let job = PgJobRepository
         .insert(
