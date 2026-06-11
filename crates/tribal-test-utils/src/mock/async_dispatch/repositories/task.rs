@@ -30,6 +30,10 @@ mock_repository! {
             (id: TaskId, claim_token: uuid::Uuid) { (id, claim_token) };
         requeue_from_blocked(TaskId => u64)
             (id: TaskId) { id };
+        holds_claim((TaskId, uuid::Uuid) => bool)
+            (id: TaskId, claim_token: uuid::Uuid) { (id, claim_token) };
+        dead_letter_claimed((TaskId, uuid::Uuid, TaskErrorKind, String) => u64)
+            (id: TaskId, claim_token: uuid::Uuid, error_kind: TaskErrorKind, error_message: &str) { (id, claim_token, error_kind, error_message.to_owned()) };
         dead_letter_unclaimed((TaskId, TaskErrorKind, String) => u64)
             (id: TaskId, error_kind: TaskErrorKind, error_message: &str) { (id, error_kind, error_message.to_owned()) };
         upsert(NewTask => u64)

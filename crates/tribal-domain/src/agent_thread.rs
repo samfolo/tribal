@@ -27,9 +27,9 @@ pub const AGENT_THREAD_FORMAT_VERSION: u32 = 1;
 
 /// The lifecycle status of an agent thread.
 ///
-/// All four terminal states are terminal: nothing transitions out of them,
-/// and any resolution arriving at a terminal thread is recorded and
-/// discarded. A thread is dead-lettered only from `Running`.
+/// The four terminal states are absorbing: nothing transitions out of
+/// them, and any resolution arriving at a terminal thread is recorded
+/// and discarded. A thread is dead-lettered only from `Running`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentThreadStatus {
@@ -60,6 +60,22 @@ enum_text_conversions!(AgentThreadStatus {
 });
 
 impl AgentThreadStatus {
+    /// Every status, for deriving status sets in one place.
+    ///
+    /// SQL predicates over the status column build their lists from this
+    /// constant filtered by [`AgentThreadStatus::is_terminal`], so a new
+    /// variant reaches every predicate through the exhaustiveness test in
+    /// this module rather than by auditing query strings.
+    pub const ALL: [Self; 7] = [
+        Self::Queued,
+        Self::Running,
+        Self::Suspended,
+        Self::Completed,
+        Self::Failed,
+        Self::Cancelled,
+        Self::DeadLetter,
+    ];
+
     /// Returns `true` for the four terminal states.
     #[must_use]
     pub fn is_terminal(self) -> bool {
@@ -568,6 +584,24 @@ mod tests {
             assert_eq!(mapped, status);
             assert!(mapped.is_terminal());
         }
+    }
+
+    #[test]
+    fn test_all_covers_every_status() {
+        // The exhaustiveness guard for AgentThreadStatus::ALL: a new
+        // variant fails this match until it joins the constant.
+        for status in AgentThreadStatus::ALL {
+            match status {
+                AgentThreadStatus::Queued
+                | AgentThreadStatus::Running
+                | AgentThreadStatus::Suspended
+                | AgentThreadStatus::Completed
+                | AgentThreadStatus::Failed
+                | AgentThreadStatus::Cancelled
+                | AgentThreadStatus::DeadLetter => {}
+            }
+        }
+        assert_eq!(AgentThreadStatus::ALL.len(), 7);
     }
 
     #[test]

@@ -222,14 +222,14 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
     };
 
     let deadline = tokio::time::Instant::now() + MULTI_CYCLE_SETTLE;
-    let completed = loop {
+    loop {
         let mut probe = raw_conn(ctx).await;
         let task_now = PgTaskRepository
             .find_by_id(&mut probe, task_id)
             .await
             .expect("probe task");
         if task_now.status() == TaskStatus::Completed {
-            break true;
+            break;
         }
         if tokio::time::Instant::now() > deadline {
             let thread_now = PgAgentThreadRepository
@@ -240,8 +240,7 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
             panic!("resume never completed; task: {task_now:?}; thread: {thread_now:?}");
         }
         tokio::time::sleep(POLL_INTERVAL).await;
-    };
-    assert!(completed);
+    }
     token.cancel();
     let _ = handle.await;
 
@@ -417,13 +416,10 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
         .await
         .expect("find")
         .expect("present");
-    let outcome = tribal_agent_runtime::cancel_unclaimed_thread(&mut conn, &thread_b_read)
+    let cancelled_now = tribal_worker::coupling::cancel_thread(&mut conn, &thread_b_read)
         .await
         .expect("cancel fallback");
-    assert!(matches!(
-        outcome,
-        tribal_agent_runtime::CancelOutcome::Cancelled
-    ));
+    assert!(cancelled_now);
 
     let cancelled = PgAgentThreadRepository
         .find_by_id(&mut conn, thread_b.thread.id())
@@ -440,6 +436,15 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
         TaskStatus::DeadLetter,
         "a cancelled stage reads as a failed task on the launched surface",
     );
+
+    // The cancellation coupled the job in the same transaction: an
+    // extraction thread's cancel fails the job, exactly as a worker
+    // dead-letter does.
+    let job_after = PgJobRepository
+        .find_by_id(&mut conn, job_b)
+        .await
+        .expect("find job");
+    assert_eq!(job_after.status(), JobStatus::Failed);
 
     teardown(ctx).await;
 }
@@ -529,6 +534,80 @@ async fn test_concurrent_resolutions_wake_the_thread_exactly_once() {
         .await
         .expect("find");
     assert_eq!(task_after.status(), TaskStatus::Queued);
+
+    teardown(ctx).await;
+}
+
+/// A zombie worker's input commit fails on ownership, deterministically:
+/// the input-record transaction carries the driving task's claim guard.
+#[tokio::test]
+async fn test_a_stale_lease_cannot_commit_an_input_record() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "zombie-input").await;
+    let (job_id, _) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let task = PgTaskRepository
+        .claim(&mut conn, 1, "zombie-input")
+        .await
+        .expect("claim")
+        .first()
+        .expect("claims")
+        .clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread =
+        tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+            .await
+            .expect("thread");
+
+    let rendered = RenderedConversation {
+        system: None,
+        messages: vec![],
+        system_prompt_version_id: Some(system_pv_id),
+        user_prompt_version_id: Some(user_pv_id),
+    };
+    let err = tribal_agent_runtime::begin_one_shot(
+        &mut conn,
+        &stage_thread.thread,
+        task.id(),
+        uuid::Uuid::new_v4(),
+        None,
+        rendered,
+    )
+    .await
+    .expect_err("a stale token must be rejected");
+    assert!(matches!(
+        err,
+        tribal_agent_runtime::AgentRuntimeError::LeaseLost { .. }
+    ));
+
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("log");
+    assert!(records.is_empty(), "the rejected commit left no record");
 
     teardown(ctx).await;
 }

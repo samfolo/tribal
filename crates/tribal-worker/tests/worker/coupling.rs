@@ -1,7 +1,7 @@
 //! Direct tests of the job-coupling seam.
 //!
-//! The fan-in's blocked-sibling behaviour is the §8 audit's acceptance
-//! criterion: a task driving a suspended thread is live, so relation must
+//! The fan-in's blocked-sibling behaviour is the load-bearing rule: a
+//! task driving a suspended thread is live, so relation must
 //! never fire while one exists. Tested against the seam itself — the one
 //! callee both the commit and failure paths share — with the full-worker
 //! fan-in tests covering each call site's integration.

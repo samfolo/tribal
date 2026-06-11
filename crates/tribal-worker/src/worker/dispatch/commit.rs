@@ -606,7 +606,6 @@ impl Worker {
     /// if the batch was already sealed by a prior attempt (idempotency
     /// hit; task completed but no job metrics should be recorded).
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     async fn commit_relation_relate(
         &self,
         thread: &AgentThread,
