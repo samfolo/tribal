@@ -3,9 +3,13 @@
 
 use chrono::Utc;
 use tribal_db::{
-    JobRepository, JobStatusTransition, PgJobRepository, PgTaskRepository, TaskRepository,
+    AgentThreadRepository, JobRepository, JobStatusTransition, PgAgentThreadRepository,
+    PgJobRepository, PgTaskRepository, TaskRepository,
 };
-use tribal_domain::{Job, JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskType};
+use tribal_domain::{
+    AgentThreadStatus, AgentThreadTerminal, ErrorOutcome, Job, JobOutcome, JobState, JobStatus,
+    Task, TaskErrorKind, TaskType,
+};
 
 use super::Worker;
 use crate::{
@@ -138,6 +142,32 @@ impl Worker {
         if rows_affected == 0 {
             tracing::warn!(task_id = %task.id(), "ownership lost during failure handling");
             return Ok(false);
+        }
+
+        // The dead-lettered task's thread reaches its terminal in the same
+        // transaction — the disposition mapping's exhaust leg: a terminal
+        // error class fails the thread, retry exhaustion dead-letters it.
+        // A re-queued task's thread stays running between attempts. (A
+        // task with no thread predates the runtime; legacy semantics.)
+        if outcome.is_dead_lettered
+            && let Some(thread) = PgAgentThreadRepository
+                .find_by_stage_task(&mut txn, task.id())
+                .await?
+        {
+            let terminal = match outcome.error_kind.outcome() {
+                ErrorOutcome::Terminal => AgentThreadTerminal::Failed,
+                ErrorOutcome::Retryable => AgentThreadTerminal::DeadLetter,
+            };
+            let moved = PgAgentThreadRepository
+                .complete(&mut txn, thread.id(), terminal, AgentThreadStatus::Running)
+                .await?;
+            if moved == 0 {
+                tracing::warn!(
+                    task_id = %task.id(),
+                    thread_id = %thread.id(),
+                    "thread was not running at task dead-letter; leaving its status",
+                );
+            }
         }
 
         // When a task exhausts its retry budget, dead-lettering is

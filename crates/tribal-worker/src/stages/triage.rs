@@ -1,14 +1,15 @@
 //! Triage stage: similarity search and LLM-based relevance scoring.
 
 use tracing::Instrument;
+use tribal_agent_runtime::StageThread;
 use tribal_db::{
     ExtractionResultRepository, KnowledgeItemRepository, NewItemObservation, NewKnowledgeItem,
     NewTriageSimilarItemDecision, PgExtractionResultRepository, PgKnowledgeItemRepository,
     PgTriageResultRepository, SemanticSearchParams, SemanticSearchResult, TriageResultRepository,
 };
 use tribal_domain::{
-    Candidate, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId, KnowledgeItemId,
-    SourceType, StageParameters, TagRegistryEntry, Task, TaskType, span_attrs,
+    Candidate, CompletionResponse, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId,
+    KnowledgeItemId, SourceType, StageParameters, TagRegistryEntry, Task, TaskType, span_attrs,
 };
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, EmbeddingTarget, PermitWait, UsageAttribution,
@@ -88,7 +89,8 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageCommit, StageError> {
+        stage_thread: &StageThread,
+    ) -> Result<(StageCommit, Option<CompletionResponse>), StageError> {
         let batch_index = task.batch_index().expect(EXPECT_BATCH_INDEX);
 
         let span = tracing::info_span!(
@@ -103,11 +105,14 @@ impl Worker {
 
         async {
             if self.check_triage_idempotency(job.id(), batch_index).await? {
-                return Ok(StageCommit::Triage {
-                    project_id: job.project_id(),
-                    decision: TriageCommitDecision::NoOp,
-                    similar_item_decisions: vec![],
-                });
+                return Ok((
+                    StageCommit::Triage {
+                        project_id: job.project_id(),
+                        decision: TriageCommitDecision::NoOp,
+                        similar_item_decisions: vec![],
+                    },
+                    None,
+                ));
             }
 
             let candidate = self.load_triage_candidate(job.id(), batch_index).await?;
@@ -136,7 +141,7 @@ impl Worker {
             // flip-check.
             let active_profile = self.resolve_active_embedding(STAGE_TRIAGE).await?;
             let embedding_target = EmbeddingTarget::from(&active_profile);
-            let attribution = stage_attribution(ctx.job, task);
+            let attribution = stage_attribution(ctx.job, task, &stage_thread.thread);
 
             let embedding_response = self
                 .embed_candidate(
@@ -173,9 +178,11 @@ impl Worker {
                 );
             }
 
-            let mut classification = self
+            let (mut classification, response) = self
                 .classify_candidate(
                     &ctx,
+                    task,
+                    stage_thread,
                     system_pv.content(),
                     user_pv.content(),
                     &similar_items,
@@ -229,7 +236,7 @@ impl Worker {
                 resolved_tags,
             );
 
-            Ok(commit)
+            Ok((commit, Some(response)))
         }
         .instrument(span)
         .await
@@ -389,13 +396,15 @@ impl Worker {
     async fn classify_candidate(
         &self,
         ctx: &TriageContext<'_>,
+        task: &Task,
+        stage_thread: &StageThread,
         system_template: &str,
         user_template: &str,
         similar_items: &[SimilarItemContext],
         params: &StageParameters,
         deadline: tokio::time::Instant,
         attribution: &UsageAttribution,
-    ) -> Result<TriageClassification, StageError> {
+    ) -> Result<(TriageClassification, CompletionResponse), StageError> {
         let include_llm_content = self.include_llm_content();
 
         let request = assemble_triage_prompt(
@@ -415,6 +424,9 @@ impl Worker {
             );
         }
 
+        let request = self
+            .bracket_one_shot(STAGE_TRIAGE, stage_thread, ctx.job, task, request)
+            .await?;
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let response = self
             .gateway()
@@ -450,7 +462,7 @@ impl Worker {
             })?
         };
 
-        Ok(classification)
+        Ok((classification, response))
     }
 
     /// Builds the `StageCommit::Triage` variant from the resolved outcome,

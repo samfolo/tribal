@@ -19,12 +19,12 @@ use tribal_db::{
     PgTaskRepository, PrincipalRepository, TaskRepository,
 };
 use tribal_domain::{Job, JobId, JobState, JobStatus, Task, TaskType, span_attrs};
-use tribal_inference::InferenceGateway;
+use tribal_inference::{CompletionStageSpecs, InferenceGateway};
 use tribal_telemetry::MetricsRecorder;
 
 use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
-    stages::StageCommit,
+    stages::StageRun,
     worker::{
         backfill::BackfillProcessor,
         backoff::BACKOFF_CAP_SECS,
@@ -52,6 +52,8 @@ pub struct Worker {
     pool: PgPool,
     /// The one port every completion and embedding call routes through.
     gateway: Arc<InferenceGateway>,
+    /// The boot-time stage endpoints the default bindings derive from.
+    stage_specs: CompletionStageSpecs,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
     include_llm_content: bool,
@@ -73,6 +75,7 @@ impl Worker {
     pub fn new(
         pool: PgPool,
         gateway: Arc<InferenceGateway>,
+        stage_specs: CompletionStageSpecs,
         cancellation_token: CancellationToken,
         config: WorkerConfig,
         include_llm_content: bool,
@@ -83,6 +86,7 @@ impl Worker {
         Self {
             pool,
             gateway,
+            stage_specs,
             cancellation_token,
             config,
             include_llm_content,
@@ -113,6 +117,11 @@ impl Worker {
     /// Returns a reference to the inference gateway.
     pub(crate) fn gateway(&self) -> &Arc<InferenceGateway> {
         &self.gateway
+    }
+
+    /// Returns the boot-time stage endpoint specs.
+    pub(crate) fn stage_specs(&self) -> &CompletionStageSpecs {
+        &self.stage_specs
     }
 
     /// Returns a reference to the telemetry metric instruments.
@@ -486,18 +495,30 @@ impl Worker {
         .await;
     }
 
-    /// Routes to the correct stage based on task type.
+    /// Establishes the stage's thread, then routes to the correct stage.
     async fn dispatch_stage(
         &self,
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageCommit, StageError> {
-        match task.task_type() {
-            TaskType::Extraction => self.run_extraction(job, task, deadline).await,
-            TaskType::Triage => self.run_triage(job, task, deadline).await,
-            TaskType::Relation => self.run_relation(job, task, deadline).await,
-        }
+    ) -> Result<StageRun, StageError> {
+        let stage_thread = self.establish_stage_thread(job, task).await?;
+        let (commit, response) = match task.task_type() {
+            TaskType::Extraction => {
+                self.run_extraction(job, task, deadline, &stage_thread)
+                    .await?
+            }
+            TaskType::Triage => self.run_triage(job, task, deadline, &stage_thread).await?,
+            TaskType::Relation => {
+                self.run_relation(job, task, deadline, &stage_thread)
+                    .await?
+            }
+        };
+        Ok(StageRun {
+            thread: stage_thread.thread,
+            commit,
+            response,
+        })
     }
 
     /// Sends a typed [`JobState`] to any watch subscribers for the given job.

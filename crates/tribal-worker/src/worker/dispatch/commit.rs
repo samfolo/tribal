@@ -17,8 +17,9 @@ use tribal_db::{
     TriageResultRepository, TriageSimilarItemDecisionRepository, advisory_locks,
 };
 use tribal_domain::{
-    EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, Job, JobId, JobOutcome, JobState,
-    JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task, TriageOutcome, span_attrs,
+    AgentThread, CompletionResponse, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, Job,
+    JobId, JobOutcome, JobState, JobStatus, KnowledgeItemId, ReferenceKind, RelationBatchId, Task,
+    TriageOutcome, span_attrs,
 };
 use tribal_inference::{
     EmbedGroupError, EmbeddingRequest, EmbeddingTarget, InferenceError, InferenceGateway,
@@ -30,8 +31,8 @@ use crate::{
     common::{EXPECT_BATCH_INDEX, EXPECT_CLAIMED_AT},
     error::{STAGE_EXTRACTION, STAGE_RELATION, STAGE_TRIAGE, StageError},
     stages::{
-        RelationCommitDecision, StageCommit, TriageCommitDecision, load_active_embedding_profile,
-        stage_attribution,
+        RelationCommitDecision, StageCommit, StageRun, TriageCommitDecision, finish_thread,
+        load_active_embedding_profile, stage_attribution,
     },
     tag_resolution::NewTagWithEmbedding,
     worker::coupling,
@@ -47,8 +48,14 @@ impl Worker {
         &self,
         task: &Task,
         job: &Job,
-        commit: StageCommit,
+        run: StageRun,
     ) -> Result<(), StageError> {
+        let StageRun {
+            thread,
+            commit,
+            response,
+        } = run;
+        let response = response.as_ref();
         match commit {
             StageCommit::Extraction {
                 extraction_result,
@@ -63,6 +70,8 @@ impl Worker {
                     triage_tasks,
                     batch_size,
                     original_count,
+                    &thread,
+                    response,
                 )
                 .await
             }
@@ -71,10 +80,21 @@ impl Worker {
                 decision,
                 similar_item_decisions,
             } => {
-                self.commit_triage(task, job, project_id, decision, similar_item_decisions)
+                self.commit_triage(
+                    task,
+                    job,
+                    project_id,
+                    decision,
+                    similar_item_decisions,
+                    &thread,
+                    response,
+                )
+                .await
+            }
+            StageCommit::Relation { decision } => {
+                self.commit_relation(task, job, decision, &thread, response)
                     .await
             }
-            StageCommit::Relation { decision } => self.commit_relation(task, job, decision).await,
         }
     }
 
@@ -83,6 +103,7 @@ impl Worker {
     /// batch), the job's batch size and its status transition to triaging (or
     /// straight to completed with an empty outcome when no candidates were
     /// extracted), and the claim-guarded task completion.
+    #[allow(clippy::too_many_arguments)]
     async fn commit_extraction(
         &self,
         task: &Task,
@@ -91,6 +112,8 @@ impl Worker {
         triage_tasks: Vec<NewTask>,
         batch_size: u32,
         original_count: u32,
+        thread: &AgentThread,
+        response: Option<&CompletionResponse>,
     ) -> Result<(), StageError> {
         let span = tracing::info_span!(
             "tribal.extraction.commit",
@@ -166,6 +189,8 @@ impl Worker {
                 return Err(StageError::OwnershipLost);
             }
 
+            finish_thread(&mut txn, STAGE_EXTRACTION, thread, response).await?;
+
             txn.commit()
                 .await
                 .map_err(|e| stage_sqlx_error(STAGE_EXTRACTION, "committing transaction", e))?;
@@ -215,6 +240,7 @@ impl Worker {
     /// then records the triage result.
     ///
     /// **`NoOp`**: completes the task without creating any domain entities.
+    #[allow(clippy::too_many_arguments)]
     async fn commit_triage(
         &self,
         task: &Task,
@@ -222,6 +248,8 @@ impl Worker {
         project_id: tribal_domain::ProjectId,
         decision: TriageCommitDecision,
         similar_item_decisions: Vec<tribal_db::NewTriageSimilarItemDecision>,
+        thread: &AgentThread,
+        response: Option<&CompletionResponse>,
     ) -> Result<(), StageError> {
         let job_id = task.job_id();
         let batch_index = task.batch_index().expect(EXPECT_BATCH_INDEX);
@@ -288,6 +316,8 @@ impl Worker {
                                         task,
                                         claim_token,
                                         job_id,
+                                        thread,
+                                        response,
                                     )
                                     .await?;
                                 txn.commit().await.map_err(|e| {
@@ -311,7 +341,7 @@ impl Worker {
                                 }
                                 let reembedded = reembed_against_active(
                                     self.gateway(),
-                                    &stage_attribution(job, task),
+                                    &stage_attribution(job, task, thread),
                                     &active,
                                     &knowledge_item.content,
                                     &new_tags,
@@ -340,6 +370,8 @@ impl Worker {
                             task,
                             claim_token,
                             job_id,
+                            thread,
+                            response,
                         )
                         .await?;
                     txn.commit()
@@ -359,6 +391,8 @@ impl Worker {
                             task,
                             claim_token,
                             job_id,
+                            thread,
+                            response,
                         )
                         .await?;
                     txn.commit()
@@ -404,6 +438,7 @@ impl Worker {
     /// Finalises a triage commit in the caller's transaction: the similar-item
     /// decisions, the claim-guarded task completion, and the fan-in. Returns
     /// whether the fan-in fired the relation stage.
+    #[allow(clippy::too_many_arguments)]
     async fn finalise_triage_commit(
         &self,
         txn: &mut sqlx::PgConnection,
@@ -411,6 +446,8 @@ impl Worker {
         task: &Task,
         claim_token: uuid::Uuid,
         job_id: JobId,
+        thread: &AgentThread,
+        response: Option<&CompletionResponse>,
     ) -> Result<bool, StageError> {
         if !similar_item_decisions.is_empty() {
             PgTriageSimilarItemDecisionRepository
@@ -426,6 +463,8 @@ impl Worker {
         if rows == 0 {
             return Err(StageError::OwnershipLost);
         }
+
+        finish_thread(txn, STAGE_TRIAGE, thread, response).await?;
 
         coupling::triage_fan_in(txn, job_id, task.id())
             .await
@@ -445,6 +484,8 @@ impl Worker {
         task: &Task,
         job: &Job,
         decision: RelationCommitDecision,
+        thread: &AgentThread,
+        response: Option<&CompletionResponse>,
     ) -> Result<(), StageError> {
         let job_id = task.job_id();
         let span = tracing::info_span!(
@@ -480,6 +521,8 @@ impl Worker {
                 } => {
                     let won_commit = self
                         .commit_relation_relate(
+                            thread,
+                            response,
                             &mut txn,
                             task,
                             job_id,
@@ -509,6 +552,7 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
+                    finish_thread(&mut txn, STAGE_RELATION, thread, response).await?;
                     // NoOp does not record job metrics; the job was
                     // already completed by a prior commit attempt.
                     (false, None)
@@ -562,8 +606,11 @@ impl Worker {
     /// if the batch was already sealed by a prior attempt (idempotency
     /// hit; task completed but no job metrics should be recorded).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn commit_relation_relate(
         &self,
+        thread: &AgentThread,
+        response: Option<&CompletionResponse>,
         txn: &mut sqlx::PgConnection,
         task: &Task,
         job_id: JobId,
@@ -591,6 +638,7 @@ impl Worker {
             if rows == 0 {
                 return Err(StageError::OwnershipLost);
             }
+            finish_thread(txn, STAGE_RELATION, thread, response).await?;
 
             return Ok(false);
         }
@@ -624,6 +672,7 @@ impl Worker {
         if rows == 0 {
             return Err(StageError::OwnershipLost);
         }
+        finish_thread(txn, STAGE_RELATION, thread, response).await?;
 
         tracing::Span::current().record(span_attrs::JOB_OUTCOME, outcome.as_str());
         tracing::Span::current().record(

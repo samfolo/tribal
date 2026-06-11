@@ -1,9 +1,12 @@
 //! Extraction stage: LLM-based candidate extraction from raw input.
 
 use tracing::Instrument;
+use tribal_agent_runtime::StageThread;
 use tribal_common::clamp_to_u32;
 use tribal_db::{NewExtractionResult, NewTask};
-use tribal_domain::{Candidate, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs};
+use tribal_domain::{
+    Candidate, CompletionResponse, Job, RelationHint, TagRegistryEntry, Task, TaskType, span_attrs,
+};
 use tribal_inference::PermitWait;
 
 use super::{StageCommit, map_gateway_error, record_prompt_version_ids, stage_attribution};
@@ -72,7 +75,8 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageCommit, StageError> {
+        stage_thread: &StageThread,
+    ) -> Result<(StageCommit, Option<CompletionResponse>), StageError> {
         let span = tracing::info_span!(
             "tribal.task.extraction",
             { span_attrs::TASK_ID } = %task.id(),
@@ -125,6 +129,9 @@ impl Worker {
                 );
             }
 
+            let request = self
+                .bracket_one_shot(STAGE_EXTRACTION, stage_thread, ctx.job, ctx.task, request)
+                .await?;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
                 .gateway()
@@ -132,7 +139,7 @@ impl Worker {
                     TaskType::Extraction,
                     request,
                     PermitWait::Bounded { limit: remaining },
-                    &stage_attribution(ctx.job, ctx.task),
+                    &stage_attribution(ctx.job, ctx.task, &stage_thread.thread),
                 )
                 .await
                 .map_err(|e| map_gateway_error("extraction LLM call", e))?;
@@ -176,12 +183,15 @@ impl Worker {
                 .relation_hints(serde_json::to_value(&capped_hints).expect(HINTS_SERIALISE))
                 .build();
 
-            Ok(StageCommit::Extraction {
-                extraction_result,
-                triage_tasks,
-                batch_size,
-                original_count,
-            })
+            Ok((
+                StageCommit::Extraction {
+                    extraction_result,
+                    triage_tasks,
+                    batch_size,
+                    original_count,
+                },
+                Some(response),
+            ))
         }
         .instrument(span)
         .await
@@ -190,7 +200,7 @@ impl Worker {
 
 /// Parses the extraction response, emitting diagnostics on failure.
 fn parse_with_diagnostics(
-    response: &tribal_domain::CompletionResponse,
+    response: &CompletionResponse,
     include_llm_content: bool,
 ) -> Result<crate::parsing::ExtractionOutput, StageError> {
     let _parse_span = tracing::info_span!("tribal.extraction.parse").entered();

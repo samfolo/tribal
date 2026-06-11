@@ -9,6 +9,9 @@
 pub(crate) mod backfill;
 pub(crate) mod backoff;
 pub mod coupling;
+mod thread;
+
+pub(crate) use thread::map_runtime_error;
 mod dispatch;
 pub(crate) mod heartbeat;
 pub(crate) mod reindex;

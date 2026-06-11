@@ -272,6 +272,38 @@ pub async fn commit_one_shot_terminal(
     Ok(OneShotOutcome { assistant_record })
 }
 
+/// Completes a thread whose attempt did no model work (an idempotency
+/// no-op: the stage's result already existed). The log honestly carries
+/// no assistant record for the attempt; the thread still reaches its
+/// terminal inside the caller's transaction.
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::StatusCasMissed`] when the thread is no
+/// longer `running`, or [`AgentRuntimeError::Database`] on database
+/// errors.
+pub async fn commit_noop_terminal(
+    txn: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<(), AgentRuntimeError> {
+    let moved = PgAgentThreadRepository
+        .complete(
+            txn,
+            thread.id(),
+            AgentThreadTerminal::Completed,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .map_err(|source| AgentRuntimeError::database("completing the no-op thread", source))?;
+    if moved == 0 {
+        return Err(AgentRuntimeError::StatusCasMissed {
+            thread_id: thread.id(),
+            expected: AgentThreadStatus::Running,
+        });
+    }
+    Ok(())
+}
+
 fn db_failure(context: &str, source: sqlx::Error) -> AgentRuntimeError {
     AgentRuntimeError::database(
         context,

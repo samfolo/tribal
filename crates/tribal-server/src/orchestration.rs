@@ -418,6 +418,7 @@ async fn bootstrap(
     let worker = Arc::new(Worker::new(
         pool_worker.clone(),
         Arc::clone(&gateway),
+        completion_stage_specs(config),
         cancellation_token.clone(),
         config.worker.clone(),
         config.logging.include_llm_content,
