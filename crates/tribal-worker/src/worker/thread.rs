@@ -13,8 +13,8 @@ use tribal_db::{
     PgPromptVersionRepository, PgTaskRepository, PromptVersionRepository, TaskRepository as _,
 };
 use tribal_domain::{
-    AgentDefinition, AgentThread, AgentThreadStatus, ExecutionBudgets, Job, PromptVersionId,
-    StageExecutorKind, Task, TaskErrorKind, TaskType,
+    AgentDefinition, AgentThread, AgentThreadStatus, ExecutionBudgets, Job, JobOutcome, JobState,
+    PromptVersionId, StageExecutorKind, Task, TaskErrorKind, TaskType,
 };
 use tribal_inference::{CompletionStageSpec, CompletionStageSpecs};
 
@@ -109,6 +109,8 @@ impl Worker {
                     },
                 })?;
 
+        let owed: Option<coupling::OwedNotification>;
+        let dead_lettered: bool;
         if intent_pending && !thread.status().is_terminal() {
             // The worker-held cancel: claim-guarded task dead-letter, the
             // cancellation record and status, and the job coupling.
@@ -128,14 +130,16 @@ impl Worker {
             cancel_thread_in_txn(&mut txn, thread.id())
                 .await
                 .map_err(|source| map_runtime_error(stage, "cancelling the thread", source))?;
-            coupling::couple_dead_lettered_task(&mut txn, task, "thread cancelled")
+            owed = coupling::couple_dead_lettered_task(&mut txn, task, "thread cancelled")
                 .await
                 .map_err(|e| stage_db(stage, "coupling the cancelled job", e))?;
+            dead_lettered = true;
         } else {
             match thread.status() {
                 AgentThreadStatus::Suspended => {
-                    // A crash-window leftover: the suspend committed but the
-                    // claim outlived it. Re-block and walk away.
+                    // Unreachable through any committed history (a suspend
+                    // clears the claim in its own commit); kept as defence
+                    // for unmodelled states: re-block and walk away.
                     let rows = PgTaskRepository
                         .block(&mut txn, task.id(), claim_token)
                         .await
@@ -143,11 +147,15 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
+                    owed = None;
+                    dead_lettered = false;
                 }
                 AgentThreadStatus::Completed => {
                     // The thread's terminal commit landed but the task half
                     // was re-queued (mid-upgrade or partial history): finish
-                    // the task and fire the idempotent coupling.
+                    // the task and fire the idempotent coupling. No task
+                    // histogram here — the run that did the work recorded
+                    // its own metrics.
                     let rows = PgTaskRepository
                         .complete(&mut txn, task.id(), claim_token)
                         .await
@@ -155,11 +163,18 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
-                    if task.task_type() == TaskType::Triage {
+                    let fired = if task.task_type() == TaskType::Triage {
                         coupling::triage_fan_in(&mut txn, task.job_id(), task.id())
                             .await
-                            .map_err(|e| stage_db(stage, "fan-in for the disposed task", e))?;
-                    }
+                            .map_err(|e| stage_db(stage, "fan-in for the disposed task", e))?
+                    } else {
+                        false
+                    };
+                    owed = fired.then_some(coupling::OwedNotification {
+                        job_id: task.job_id(),
+                        state: JobState::Relating,
+                    });
+                    dead_lettered = false;
                 }
                 _ => {
                     let rows = PgTaskRepository
@@ -175,9 +190,14 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
-                    coupling::couple_dead_lettered_task(&mut txn, task, "thread already terminal")
-                        .await
-                        .map_err(|e| stage_db(stage, "coupling the disposed job", e))?;
+                    owed = coupling::couple_dead_lettered_task(
+                        &mut txn,
+                        task,
+                        "thread already terminal",
+                    )
+                    .await
+                    .map_err(|e| stage_db(stage, "coupling the disposed job", e))?;
+                    dead_lettered = true;
                 }
             }
         }
@@ -190,6 +210,20 @@ impl Worker {
                 source: e,
             },
         })?;
+
+        // Metrics and notifications mirror the launched dead-letter path,
+        // fired only after the commit.
+        if dead_lettered {
+            self.metrics()
+                .record_task_dead_lettered(task.task_type().as_str());
+        }
+        if let Some(notice) = owed {
+            if notice.state == JobState::Failed {
+                self.metrics()
+                    .record_job_completed(JobOutcome::Failure.as_str(), None);
+            }
+            self.notify_job_state(notice.job_id, notice.state);
+        }
 
         tracing::warn!(
             task_id = %task.id(),

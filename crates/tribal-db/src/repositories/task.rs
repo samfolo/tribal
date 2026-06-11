@@ -245,6 +245,39 @@ pub trait TaskRepository {
         flat_backoff_seconds: Option<u32>,
     ) -> Result<ReclaimOutcome, DbError>;
 
+    /// Locks one stale claimed thread-driving task — heartbeat expired,
+    /// with an agent-thread row — for the per-row recovery cycle, with
+    /// `SKIP LOCKED` so concurrent sweeps never contend. Returns `None`
+    /// when no candidate remains. [`reclaim_stale`](Self::reclaim_stale)
+    /// excludes these rows, so the two scans partition the stale set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn lock_stale_thread_driving(
+        &self,
+        conn: &mut PgConnection,
+        timeout_seconds: u32,
+    ) -> Result<Option<Task>, DbError>;
+
+    /// Re-queues a locked stale task with the given consecutive-failure
+    /// count and backoff, clearing its lease: the recovery cycle's task
+    /// half. The caller holds the row lock from
+    /// [`lock_stale_thread_driving`](Self::lock_stale_thread_driving).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn reclaim_requeue(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        retry_count: u32,
+        backoff_seconds: u32,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError>;
+
     /// Counts a job's live (NOT-in-terminal) sibling tasks of the given
     /// type, excluding the specified task. A blocked sibling counts as
     /// live by construction: the predicate is derived from
@@ -626,11 +659,21 @@ impl TaskRepository for PgTaskRepository {
         // is intentionally lower than the Rust-side `backoff_duration`
         // which uses the post-increment count (`2^1 = 2s` for first
         // inline failure) — reclaim recovery should retry sooner.
+        //
+        // Thread-driving rows are excluded: they take the per-row
+        // recovery cycle through `lock_stale_thread_driving`, which
+        // partitions the stale set with this scan. Only rows predating
+        // the runtime (possible mid-upgrade alone) keep these legacy
+        // semantics.
         let rows = sqlx::query(
             "WITH stale AS ( \
                  SELECT id, retry_count FROM tasks \
                  WHERE status = 'claimed' \
                    AND heartbeat_at < now() - make_interval(secs => $1::double precision) \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM agent_threads at \
+                       WHERE at.stage_task_id = tasks.id \
+                   ) \
                  ORDER BY heartbeat_at ASC \
                  LIMIT $3 \
                  FOR UPDATE SKIP LOCKED \
@@ -687,6 +730,78 @@ impl TaskRepository for PgTaskRepository {
             requeued,
             dead_lettered,
         })
+    }
+
+    async fn lock_stale_thread_driving(
+        &self,
+        conn: &mut PgConnection,
+        timeout_seconds: u32,
+    ) -> Result<Option<Task>, DbError> {
+        let timeout_f64 = f64::from(timeout_seconds);
+
+        let sql = format!(
+            "SELECT {COLUMNS} FROM tasks \
+             WHERE status = 'claimed' \
+               AND heartbeat_at < now() - make_interval(secs => $1::double precision) \
+               AND EXISTS ( \
+                   SELECT 1 FROM agent_threads at \
+                   WHERE at.stage_task_id = tasks.id \
+               ) \
+             ORDER BY heartbeat_at ASC \
+             LIMIT 1 \
+             FOR UPDATE OF tasks SKIP LOCKED",
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(timeout_f64)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "locking a stale thread-driving task".to_owned(),
+                source: e,
+            })?;
+
+        Ok(row.as_ref().map(map_task_row))
+    }
+
+    async fn reclaim_requeue(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        retry_count: u32,
+        backoff_seconds: u32,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError> {
+        let retry_count_i32 = i32::try_from(retry_count).expect(MAX_RETRIES_EXCEEDS_I32);
+
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET retry_count = $2, \
+                 status = 'queued', \
+                 available_at = now() + make_interval(secs => $3::double precision), \
+                 claim_token = NULL, \
+                 claimed_by = NULL, \
+                 claimed_at = NULL, \
+                 heartbeat_at = NULL, \
+                 error_kind = $4, \
+                 error_message = $5, \
+                 updated_at = now() \
+             WHERE id = $1 AND status = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(retry_count_i32)
+        .bind(f64::from(backoff_seconds))
+        .bind(error_kind.as_str())
+        .bind(error_message)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("re-queueing reclaimed task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
     }
 
     async fn count_live_siblings(
