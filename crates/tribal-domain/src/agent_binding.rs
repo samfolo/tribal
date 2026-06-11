@@ -198,8 +198,8 @@ impl AgentDefinition {
 
     /// Canonically serialises the definition: compact JSON with fields
     /// in declaration order (guaranteed by serde for structs), the form
-    /// the content address hashes. Renaming, reordering, or adding a
-    /// field changes every binding hash.
+    /// the content address hashes. Renaming or reordering a field, or
+    /// adding an always-emitted one, changes every binding hash.
     ///
     /// # Errors
     ///
@@ -336,10 +336,7 @@ mod tests {
             a = "a".repeat(64),
             b = "b".repeat(64),
         );
-        assert_eq!(
-            definition.canonical_json().expect("serialises"),
-            expected,
-        );
+        assert_eq!(definition.canonical_json().expect("serialises"), expected,);
     }
 
     #[test]

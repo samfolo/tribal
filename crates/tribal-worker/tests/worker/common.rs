@@ -122,14 +122,8 @@ pub(super) async fn build_test_worker(
     inference: Option<Arc<dyn InferenceProvider>>,
     embedding: Option<Arc<dyn EmbeddingProvider>>,
 ) -> Arc<Worker> {
-    let (worker, _) = build_test_worker_with_watch(
-        pool,
-        cancellation_token,
-        config,
-        inference,
-        embedding,
-    )
-    .await;
+    let (worker, _) =
+        build_test_worker_with_watch(pool, cancellation_token, config, inference, embedding).await;
     worker
 }
 

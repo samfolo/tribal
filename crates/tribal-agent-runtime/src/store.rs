@@ -28,10 +28,12 @@ pub struct StageThread {
     /// conversation as sent, which re-execution re-sends verbatim rather
     /// than re-rendering.
     pub input: Option<AgentThreadRecord>,
-    /// The binding the thread runs under — the stored pin for an
-    /// existing thread, the freshly resolved one at creation — which the
-    /// stage reads its execution parameters from, so attribution and
-    /// behaviour cannot drift apart across a configuration change.
+    /// The binding the thread's row records — the stored pin for an
+    /// existing thread, the freshly resolved one at creation. The stage
+    /// reads its sampling parameters from here, so the recorded and the
+    /// sent parameters cannot drift apart across a configuration change;
+    /// the endpoint itself routes through the boot-time stage specs
+    /// until execution becomes binding-driven with the agentic loop.
     pub binding: AgentBinding,
 }
 
@@ -41,11 +43,11 @@ pub struct StageThread {
 /// First claim creates the thread queued, pinned to the supplied
 /// binding, and immediately marks it running. A reclaim after a crash
 /// finds it already running and proceeds — inference is at-least-once —
-/// executing under the binding the thread row records, never the
-/// supplied one, so a configuration change between attempts cannot make
-/// the thread run what it does not record. A suspended or terminal
-/// thread is returned untouched: the claim-time crash-window rules
-/// decide what the worker does with the task, never this function.
+/// carrying the binding the thread row records rather than the supplied
+/// one, so a configuration change between attempts cannot change the
+/// parameters a resumed thread sends. A suspended or terminal thread is
+/// returned untouched: the claim-time crash-window rules decide what
+/// the worker does with the task, never this function.
 ///
 /// Call on a plain connection, never inside a caller's transaction: the
 /// race-converge path re-reads after a unique violation, which would be
@@ -68,31 +70,18 @@ pub async fn ensure_stage_thread(
         .await
         .map_err(|source| AgentRuntimeError::database("finding the stage task's thread", source))?;
 
-    let (thread, binding) = match existing {
-        Some(thread) => {
-            let stored = PgAgentBindingVersionRepository
-                .find_by_id(conn, thread.binding_version_id())
-                .await
-                .map_err(|source| {
-                    AgentRuntimeError::database("loading the thread's recorded binding", source)
-                })?
-                .ok_or_else(|| {
-                    // Binding rows are never deleted while a thread
-                    // references them; absence is a consistency fault.
-                    AgentRuntimeError::database(
-                        "loading the thread's recorded binding",
-                        DbError::NotFound {
-                            entity: "agent_binding_version",
-                            id: thread.binding_version_id().to_string(),
-                        },
-                    )
-                })?;
-            (thread, stored)
-        }
-        None => (
-            create_stage_thread(conn, job, task, binding).await?,
-            binding.clone(),
-        ),
+    let thread = match existing {
+        Some(thread) => thread,
+        // A loser of the one-thread-per-task race converges on the
+        // winner's row, whose recorded binding can differ from the
+        // supplied one; the id comparison below pairs it correctly.
+        None => create_stage_thread(conn, job, task, binding).await?,
+    };
+
+    let binding = if thread.binding_version_id() == binding.id() {
+        binding.clone()
+    } else {
+        load_recorded_binding(conn, &thread).await?
     };
 
     let thread = if thread.status() == AgentThreadStatus::Queued {
@@ -162,6 +151,31 @@ async fn create_stage_thread(
             .ok_or(AgentRuntimeError::ThreadMissing { task_id: task.id() }),
         Err(source) => Err(AgentRuntimeError::database("creating the thread", source)),
     }
+}
+
+/// Loads the binding a thread's row records — the pin a resumed thread's
+/// parameters come from.
+async fn load_recorded_binding(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<AgentBinding, AgentRuntimeError> {
+    PgAgentBindingVersionRepository
+        .find_by_id(conn, thread.binding_version_id())
+        .await
+        .map_err(|source| {
+            AgentRuntimeError::database("loading the thread's recorded binding", source)
+        })?
+        .ok_or_else(|| {
+            // Binding rows are never deleted while a thread references
+            // them; absence is a consistency fault.
+            AgentRuntimeError::database(
+                "loading the thread's recorded binding",
+                DbError::NotFound {
+                    entity: "agent_binding_version",
+                    id: thread.binding_version_id().to_string(),
+                },
+            )
+        })
 }
 
 /// Re-reads a thread after a CAS miss, falling back to the row already

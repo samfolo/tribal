@@ -746,8 +746,13 @@ async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job(
     set_retry_count(&mut conn, task_id, config.task_max_retries).await;
     backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
 
-    let worker =
-        build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
+    let (worker, job_state_txs) =
+        build_test_worker_with_watch(pool.clone(), CancellationToken::new(), config, None, None)
+            .await;
+    let (watch_tx, keepalive_rx) = watch::channel(JobState::Queued);
+    let mut watch_rx = watch_tx.subscribe();
+    job_state_txs.insert(job_id, JobWatchEntry::new(watch_tx, keepalive_rx));
+
     let stats = worker
         .run_thread_aware_reclaim(
             10,
@@ -760,6 +765,11 @@ async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job(
         .expect("reclaim");
 
     assert_eq!(stats.exhausted, 1);
+    assert_eq!(
+        *watch_rx.borrow_and_update(),
+        JobState::Failed,
+        "the owed notification reaches watchers after the exhaustion commit",
+    );
     assert_eq!(stats.requeued, 0);
     assert_eq!(stats.recovery_cycles, 0);
 
@@ -941,10 +951,17 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
             .build(),
     );
     let token = CancellationToken::new();
+    // The sweep's cancel fallback could converge this state and send the
+    // notification itself; disabling it pins the claim-time disposal as
+    // the only sender.
+    let config = WorkerConfig {
+        reclaim_interval_ms: 120_000,
+        ..test_config()
+    };
     let (worker, job_state_txs) = build_test_worker_with_watch(
         pool.clone(),
         token.clone(),
-        test_config(),
+        config,
         Some(inference),
         None,
     )
@@ -1326,8 +1343,39 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
     backdate_task_heartbeat(&mut conn, task_threaded, STALE_HEARTBEAT_BACKDATE).await;
     backdate_task_heartbeat(&mut conn, task_legacy, STALE_HEARTBEAT_BACKDATE).await;
 
-    // The legacy bulk scan first: it must requeue the legacy row alone,
-    // leaving the thread-driving row claimed.
+    // The thread-aware pass first, against the full mixed population: it
+    // must take only the thread-driving row, leaving the legacy row
+    // claimed for the bulk scan.
+    let worker =
+        build_test_worker(pool.clone(), CancellationToken::new(), config.clone(), None, None)
+            .await;
+    let stats = worker
+        .run_thread_aware_reclaim(
+            10,
+            0,
+            tribal_domain::TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            None,
+        )
+        .await
+        .expect("thread-aware reclaim");
+    assert_eq!(stats.requeued, 1, "the thread-aware pass takes only its half");
+    let legacy_after = PgTaskRepository
+        .find_by_id(&mut conn, task_legacy)
+        .await
+        .expect("task");
+    assert_eq!(
+        legacy_after.status(),
+        TaskStatus::Claimed,
+        "the thread-aware pass never touches a legacy row",
+    );
+    let threaded_after = PgTaskRepository
+        .find_by_id(&mut conn, task_threaded)
+        .await
+        .expect("task");
+    assert_eq!(threaded_after.status(), TaskStatus::Queued);
+
+    // The legacy bulk scan takes exactly the remaining half.
     let outcome = PgTaskRepository
         .reclaim_stale(
             &mut conn,
@@ -1341,36 +1389,11 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
         .await
         .expect("legacy reclaim");
     assert_eq!(outcome.requeued, 1, "the legacy scan takes only its half");
-    let threaded_after = PgTaskRepository
-        .find_by_id(&mut conn, task_threaded)
+    let legacy_after = PgTaskRepository
+        .find_by_id(&mut conn, task_legacy)
         .await
         .expect("task");
-    assert_eq!(
-        threaded_after.status(),
-        TaskStatus::Claimed,
-        "the legacy scan never touches a thread-driving row",
-    );
-
-    // The thread-aware pass takes exactly the remaining half.
-    let worker =
-        build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
-    let stats = worker
-        .run_thread_aware_reclaim(
-            10,
-            0,
-            tribal_domain::TaskErrorKind::HeartbeatExpired,
-            "heartbeat_expired",
-            None,
-        )
-        .await
-        .expect("thread-aware reclaim");
-    assert_eq!(stats.requeued, 1);
-
-    let threaded_after = PgTaskRepository
-        .find_by_id(&mut conn, task_threaded)
-        .await
-        .expect("task");
-    assert_eq!(threaded_after.status(), TaskStatus::Queued);
+    assert_eq!(legacy_after.status(), TaskStatus::Queued);
     let thread_after = PgAgentThreadRepository
         .find_by_id(&mut conn, stage_thread.thread.id())
         .await

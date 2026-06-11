@@ -366,7 +366,7 @@ impl Worker {
     /// Parameters (temperature, token caps, response format) ride the
     /// fresh request: they are binding-pinned behaviour, not conversation
     /// content, so the log stays byte-stable while parameters follow the
-    /// running configuration.
+    /// thread's recorded binding.
     pub(crate) async fn bracket_one_shot(
         &self,
         stage: &str,
