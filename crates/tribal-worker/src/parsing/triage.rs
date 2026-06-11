@@ -1,8 +1,7 @@
 //! Triage response parsing and LLM response types.
 
 use serde::Deserialize;
-use tribal_domain::RelationSuggestion;
-use tribal_inference::CompletionResponse;
+use tribal_domain::{CompletionResponse, RelationSuggestion};
 
 use super::deserialise;
 use crate::error::StageError;
@@ -172,7 +171,7 @@ pub(crate) fn parse_triage_response(
 mod tests {
     use std::time::Duration;
 
-    use tribal_inference::CompletionUsage;
+    use tribal_domain::CompletionUsage;
 
     use super::*;
 

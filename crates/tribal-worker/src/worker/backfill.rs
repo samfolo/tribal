@@ -19,18 +19,17 @@
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
-use tribal_common::{clamp_to_i32, clamp_to_u32};
+use tribal_common::clamp_to_u32;
 use tribal_db::{
-    EmbeddingProfileRepository, NewTagEmbedding, NewTokenUsage, PgEmbeddingProfileRepository,
-    PgTagEmbeddingRepository, PgTokenUsageRepository, TagEmbeddingRepository, TokenUsageRepository,
+    EmbeddingProfileRepository, NewTagEmbedding, PgEmbeddingProfileRepository,
+    PgTagEmbeddingRepository, TagEmbeddingRepository,
 };
-use tribal_domain::{EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, TokenUsageStage};
-use tribal_inference::{EmbeddingProvider, EmbeddingRequest, EmbeddingUsage};
-
-use crate::error::SEMAPHORE_CLOSED;
+use tribal_domain::{EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose};
+use tribal_inference::{
+    EmbeddingRequest, EmbeddingTarget, InferenceGateway, PermitWait, UsageAttribution,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -42,7 +41,7 @@ const BATCH_SIZE: usize = 50;
 /// Delay between batches to avoid saturating the embedding provider.
 const INTER_BATCH_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Timeout for a single embedding call (semaphore acquisition + provider
+/// Timeout for a single embedding call (permit acquisition + provider
 /// round-trip).  Generous to accommodate slow providers while preventing
 /// indefinite blocking during startup.
 const EMBED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -77,8 +76,7 @@ impl BackfillOutcome {
 /// multiple backfill methods.
 pub(crate) struct BackfillProcessor {
     pool: PgPool,
-    embedding_provider: Arc<dyn EmbeddingProvider>,
-    semaphore: Arc<Semaphore>,
+    gateway: Arc<InferenceGateway>,
     cancellation_token: CancellationToken,
 }
 
@@ -86,21 +84,14 @@ impl BackfillProcessor {
     /// Creates a new backfill processor.
     pub(crate) fn new(
         pool: PgPool,
-        embedding_provider: Arc<dyn EmbeddingProvider>,
-        semaphore: Arc<Semaphore>,
+        gateway: Arc<InferenceGateway>,
         cancellation_token: CancellationToken,
     ) -> Self {
         Self {
             pool,
-            embedding_provider,
-            semaphore,
+            gateway,
             cancellation_token,
         }
-    }
-
-    /// Returns the model name from the embedding provider identity.
-    fn model(&self) -> &str {
-        &self.embedding_provider.identity().model
     }
 
     /// Embeds tag registry entries that lack embeddings for the active
@@ -153,6 +144,8 @@ impl BackfillProcessor {
                 };
             }
 
+            let target = EmbeddingTarget::from(&profile);
+
             let total = clamp_to_u32(missing.len());
             tracing::info!(count = total, "backfilling tag embeddings");
 
@@ -174,8 +167,7 @@ impl BackfillProcessor {
                     tokio::time::sleep(INTER_BATCH_DELAY).await;
                 }
 
-                let (batch_ok, batch_skip) =
-                    self.embed_and_store_batch(chunk, profile.id()).await;
+                let (batch_ok, batch_skip) = self.embed_and_store_batch(chunk, &target).await;
 
                 processed += batch_ok;
                 skipped += batch_skip;
@@ -246,13 +238,11 @@ impl BackfillProcessor {
 
     /// Embeds each tag in the batch, collects successes, then upserts
     /// them all in one go.  Returns `(successes, failures)`.
-    async fn embed_and_store_batch(
-        &self,
-        tags: &[String],
-        profile_id: EmbeddingProfileId,
-    ) -> (u32, u32) {
+    async fn embed_and_store_batch(&self, tags: &[String], target: &EmbeddingTarget) -> (u32, u32) {
+        let profile_id = target
+            .profile_id
+            .expect("a backfill target derives from the active profile");
         let mut embeddings = Vec::with_capacity(tags.len());
-        let mut usages = Vec::with_capacity(tags.len());
         let mut failures: u32 = 0;
 
         for tag in tags {
@@ -260,17 +250,16 @@ impl BackfillProcessor {
                 break;
             }
 
-            match self.embed_tag(tag).await {
+            match self.embed_tag(tag, target).await {
                 Ok(response) => {
                     embeddings.push(
                         NewTagEmbedding::builder()
                             .tag(tag.clone())
                             .embedding_profile_id(profile_id)
-                            .model(self.model().to_owned())
+                            .model(target.model.clone())
                             .embedding(response.vector)
                             .build(),
                     );
-                    usages.push(response.usage);
                 }
                 Err(e) => {
                     tracing::warn!(tag = %tag, error = %e, "skipping tag embedding");
@@ -285,11 +274,6 @@ impl BackfillProcessor {
 
         let upsert_count = clamp_to_u32(embeddings.len());
 
-        // Record token usage for all successful embedding calls regardless
-        // of whether the DB write succeeds — the provider tokens were spent
-        // either way.
-        self.record_token_usage(&usages).await;
-
         match self.store_batch(&embeddings).await {
             Ok(()) => (upsert_count, failures),
             Err(e) => {
@@ -303,66 +287,36 @@ impl BackfillProcessor {
         }
     }
 
-    /// Embeds a single tag, acquiring the semaphore first.
+    /// Embeds a single tag through the gateway.
     ///
-    /// The entire operation (semaphore acquisition + provider call) is
+    /// The entire operation (permit acquisition + provider call) is
     /// bounded by [`EMBED_TIMEOUT`] to prevent a hung provider from
     /// blocking startup indefinitely.
     async fn embed_tag(
         &self,
         tag: &str,
+        target: &EmbeddingTarget,
     ) -> Result<tribal_inference::EmbeddingResponse, tribal_inference::InferenceError> {
-        tokio::time::timeout(EMBED_TIMEOUT, async {
-            let _permit = Arc::clone(&self.semaphore)
-                .acquire_owned()
-                .await
-                .expect(SEMAPHORE_CLOSED);
-
-            let request = EmbeddingRequest {
-                input: tag.to_owned(),
-                purpose: EmbeddingPurpose::Tag,
-            };
-
-            self.embedding_provider.embed(request).await
-        })
+        let request = EmbeddingRequest {
+            input: tag.to_owned(),
+            purpose: EmbeddingPurpose::Tag,
+        };
+        tokio::time::timeout(
+            EMBED_TIMEOUT,
+            self.gateway.embed(
+                target,
+                request,
+                PermitWait::Unbounded,
+                &UsageAttribution::default(),
+            ),
+        )
         .await
         .unwrap_or_else(|_| {
             Err(tribal_inference::InferenceError::provider_unavailable(
-                self.embedding_provider.identity().name.clone(),
+                target.provider.to_string(),
                 format!("backfill embed timed out after {EMBED_TIMEOUT:?}"),
             ))
         })
-    }
-
-    /// Records token usage for each successful embedding call.
-    ///
-    /// Best-effort: individual insert failures are logged and skipped.
-    async fn record_token_usage(&self, usages: &[EmbeddingUsage]) {
-        let mut conn = match self.pool.acquire().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to acquire connection for backfill token usage");
-                return;
-            }
-        };
-
-        for usage in usages {
-            let new = NewTokenUsage::builder()
-                .attempt(0)
-                .stage(TokenUsageStage::Embedding {
-                    purpose: EmbeddingPurpose::Tag,
-                })
-                .provider(usage.provider.clone())
-                .model(usage.model.clone())
-                .tokens_input(clamp_to_i32(usage.total_tokens))
-                .tokens_output(0)
-                .latency_ms(clamp_to_i32(usage.latency.as_millis()))
-                .build();
-
-            if let Err(e) = PgTokenUsageRepository.insert(&mut conn, &new).await {
-                tracing::warn!(error = %e, "failed to record backfill token usage");
-            }
-        }
     }
 
     /// Upserts a batch of tag embeddings into the database.

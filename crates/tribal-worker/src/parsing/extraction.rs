@@ -1,8 +1,7 @@
 //! Extraction response parsing and output type.
 
 use serde::Deserialize;
-use tribal_domain::{Candidate, RelationHint};
-use tribal_inference::CompletionResponse;
+use tribal_domain::{Candidate, CompletionResponse, RelationHint};
 
 use super::deserialise;
 use crate::error::StageError;
@@ -61,7 +60,7 @@ pub(crate) fn parse_extraction_response(
 mod tests {
     use std::time::Duration;
 
-    use tribal_inference::CompletionUsage;
+    use tribal_domain::CompletionUsage;
 
     use super::*;
 

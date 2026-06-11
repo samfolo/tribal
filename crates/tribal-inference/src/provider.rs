@@ -9,12 +9,13 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
+use tribal_domain::{CompletionResponse, EmbeddingUsage, InferenceEvent};
 
 use crate::{
     error::InferenceError,
     request::{CompletionRequest, EmbeddingRequest},
-    response::{CompletionResponse, EmbeddingResponse},
-    usage::EmbeddingUsage,
+    response::EmbeddingResponse,
+    stream::InferenceEventStream,
 };
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,30 @@ pub trait InferenceProvider: Send + Sync {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, InferenceError>;
+
+    /// Sends a completion request over the provider's native streaming
+    /// wire, returning the event stream.
+    ///
+    /// The folded stream is equivalent to [`complete`](Self::complete) on
+    /// the same request: identical text and usage, with deltas surfaced as
+    /// they arrive. The default implementation serves providers without a
+    /// native streaming path by making the buffered call and emitting the
+    /// terminal event alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same error mapping as [`complete`](Self::complete) for
+    /// failures before the stream opens; failures mid-stream arrive as the
+    /// stream's final item.
+    async fn complete_stream(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<InferenceEventStream, InferenceError> {
+        let response = self.complete(request).await?;
+        Ok(Box::pin(futures_util::stream::once(async move {
+            Ok(InferenceEvent::Completed { response })
+        })))
+    }
 }
 
 /// The outcome of an [`EmbeddingProvider::embed_many`] batch call.

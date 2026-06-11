@@ -21,6 +21,9 @@ pub enum PipelineStage {
     Relation,
     /// The embedding stage — generating vector embeddings.
     Embedding,
+    /// A provider probe — a real but minimal call made to verify
+    /// reachability, never part of pipeline work.
+    Probe,
 }
 
 enum_text_conversions!(PipelineStage {
@@ -28,6 +31,7 @@ enum_text_conversions!(PipelineStage {
     PipelineStage::Triage => "triage",
     PipelineStage::Relation => "relation",
     PipelineStage::Embedding => "embedding",
+    PipelineStage::Probe => "probe",
 });
 
 #[cfg(test)]
@@ -40,6 +44,7 @@ mod tests {
         PipelineStage::Triage => "triage",
         PipelineStage::Relation => "relation",
         PipelineStage::Embedding => "embedding",
+        PipelineStage::Probe => "probe",
     });
 
     enum_text_tests!(test_pipeline_stage_text_roundtrip, PipelineStage {
@@ -47,5 +52,6 @@ mod tests {
         PipelineStage::Triage => "triage",
         PipelineStage::Relation => "relation",
         PipelineStage::Embedding => "embedding",
+        PipelineStage::Probe => "probe",
     });
 }

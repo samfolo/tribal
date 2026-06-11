@@ -7,15 +7,18 @@
 //! provider against a throwaway registry and, for a real run, probes its drift
 //! signal, so it needs no active profile.
 
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    sync::Arc,
+};
 
 use sqlx::PgPool;
 use tribal_config::TribalConfig;
 use tribal_db::{DbError, create_pool};
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
-use tribal_inference::ProviderRegistry;
+use tribal_inference::InferenceGateway;
 use tribal_worker::{
-    ReindexCancelOutcome, ReindexResolution, ReindexRunOutcome, ReindexRunRequest,
+    PgLedgerSink, ReindexCancelOutcome, ReindexResolution, ReindexRunOutcome, ReindexRunRequest,
     drop_superseded_indexes, reindex_cancel, reindex_prune, reindex_run,
 };
 
@@ -26,6 +29,7 @@ use crate::{
         find_or_create_principal, prepare_config,
     },
     error::AppError,
+    startup::{CatalogueCredentialResolver, build_command_registry, completion_stage_specs},
 };
 
 const POOL_NAME: &str = "reindex";
@@ -57,9 +61,23 @@ async fn run_async(config: &TribalConfig, request: ReindexRunRequest) -> Result<
     let pool = command_pool(config).await?;
 
     // The create path registers the target endpoint dynamically and probes it
-    // once, so a throwaway registry with no active-profile entry suffices.
-    let registry = ProviderRegistry::new(std::iter::empty())
-        .map_err(|source| AppError::ProviderRegistry { source })?;
+    // once, so a command registry with no active-profile entry suffices. The
+    // probe is a real, billable call, so the gateway ledgers it; the command
+    // has no metrics pipeline, so the sink records rows alone.
+    let registry = build_command_registry(config)?;
+    let sink = Arc::new(PgLedgerSink::new(
+        pool.clone(),
+        tribal_telemetry::noop_recorder(),
+    ));
+    let gateway = InferenceGateway::new(
+        registry,
+        &completion_stage_specs(config),
+        Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
+        sink,
+    )
+    .map_err(|e| AppError::ProviderSetup {
+        context: e.to_string(),
+    })?;
 
     // A dry run creates no row and so needs no initiating principal; resolve it
     // only on the create path, keeping the estimate genuinely read-only.
@@ -73,15 +91,9 @@ async fn run_async(config: &TribalConfig, request: ReindexRunRequest) -> Result<
         principal.id()
     };
 
-    let outcome = reindex_run(
-        &pool,
-        &registry,
-        &config.credentials,
-        &request,
-        principal_id,
-    )
-    .await
-    .map_err(|source| AppError::Reindex { source })?;
+    let outcome = reindex_run(&pool, &gateway, &request, principal_id)
+        .await
+        .map_err(|source| AppError::Reindex { source })?;
 
     render_run(&mut io::stdout().lock(), &outcome)
 }

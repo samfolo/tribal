@@ -85,7 +85,7 @@ pub async fn resolve_revision_token(
 ///
 /// Never returns an error — warnings are logged and the caller proceeds
 /// regardless.
-pub(super) async fn check_tags(client: &reqwest::Client, base_url: &str, model: &str) {
+pub(crate) async fn check_tags(client: &reqwest::Client, base_url: &str, model: &str) {
     let url = format!("{base_url}{TAGS_PATH}");
     let result = client.get(&url).send().await;
 

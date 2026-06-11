@@ -25,5 +25,7 @@ mod relation_normalisation;
 mod session;
 #[path = "e2e/standing.rs"]
 mod standing;
+#[path = "e2e/token_usage.rs"]
+mod token_usage;
 #[path = "e2e/zero_candidate.rs"]
 mod zero_candidate;

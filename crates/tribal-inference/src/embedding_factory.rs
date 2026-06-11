@@ -10,14 +10,36 @@ use std::sync::Arc;
 
 use tribal_domain::ProviderKind;
 
-use crate::{EmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider};
+use crate::{EmbeddingProvider, ollama::OllamaEmbeddingProvider, openai::OpenAiEmbeddingProvider};
 
 /// A provider kind that has no embedding API was requested.
 #[derive(Debug, thiserror::Error)]
-#[error("{provider} does not provide an embedding API")]
+#[error("{provider} does not provide an embedding API; use Ollama or OpenAI for embeddings")]
 pub struct UnsupportedEmbeddingProvider {
     /// The unsupported provider kind.
     pub provider: ProviderKind,
+}
+
+/// Rejects a provider kind with no embedding API.
+///
+/// The structural check runs before credential resolution in the gateway, so
+/// a keyless target on an unsupported kind reports the missing API rather
+/// than a missing credential no key could remedy.
+///
+/// # Errors
+///
+/// Returns [`UnsupportedEmbeddingProvider`] for a provider kind with no
+/// embedding API (Anthropic).
+pub(crate) fn ensure_embedding_support(
+    provider_kind: ProviderKind,
+) -> Result<(), UnsupportedEmbeddingProvider> {
+    if provider_kind.supports_embedding() {
+        Ok(())
+    } else {
+        Err(UnsupportedEmbeddingProvider {
+            provider: provider_kind,
+        })
+    }
 }
 
 /// Constructs the concrete embedding provider for a resolved target.

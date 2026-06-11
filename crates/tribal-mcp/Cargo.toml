@@ -45,4 +45,5 @@ tracing-subscriber.workspace = true
 
 tribal-auth = { workspace = true, features = ["test-helpers"] }
 tribal-common = { workspace = true, features = ["test-helpers"] }
+tribal-inference = { workspace = true, features = ["test-helpers"] }
 tribal-test-utils.workspace = true

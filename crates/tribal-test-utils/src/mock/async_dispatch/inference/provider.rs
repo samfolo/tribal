@@ -8,9 +8,10 @@
 use std::{collections::VecDeque, sync::Mutex};
 
 use async_trait::async_trait;
+use tribal_domain::CompletionResponse;
 use tribal_inference::{
-    CompletionRequest, CompletionResponse, EmbeddingProvider, EmbeddingRequest, EmbeddingResponse,
-    InferenceError, InferenceProvider, ProviderIdentity,
+    CompletionRequest, EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InferenceError,
+    InferenceProvider, ProviderIdentity,
 };
 
 use super::matcher::{CompletionMatcher, EmbeddingMatcher};
