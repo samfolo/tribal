@@ -13,12 +13,17 @@ mod binding;
 mod error;
 mod ledger_sink;
 mod store;
+mod transitions;
 mod turn;
 
 pub use binding::resolve_binding;
 pub use error::AgentRuntimeError;
 pub use ledger_sink::PgLedgerSink;
 pub use store::{StageThread, ensure_stage_thread};
+pub use transitions::{
+    CancelOutcome, ResolveOutcome, SuspendOutcome, cancel_unclaimed_thread, resolve_stage_thread,
+    suspend_stage_thread,
+};
 pub use turn::{
     BegunTurn, OneShotOutcome, RecordedMessage, RenderedConversation, begin_one_shot,
     commit_noop_terminal, commit_one_shot_terminal,

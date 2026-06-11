@@ -219,6 +219,32 @@ pub trait AgentThreadRepository {
         id: AgentThreadId,
     ) -> Result<u32, DbError>;
 
+    /// Finds suspended threads whose wake instant has elapsed — the
+    /// availability sweep's timer predicate. Rows are locked with
+    /// `SKIP LOCKED` so concurrent sweeps never contend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_due_timer_wakes(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<AgentThread>, DbError>;
+
+    /// Finds live threads carrying a durable cancellation intent — the
+    /// sweep's cancel-fallback predicate. Rows are locked with
+    /// `SKIP LOCKED`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_cancel_intents(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<AgentThread>, DbError>;
+
     /// Replaces the committed-record spend projection.
     ///
     /// # Errors
@@ -456,6 +482,55 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         })?;
 
         Ok(u32::try_from(row.get::<i32, _>("recovery_attempts")).expect(RECOVERY_OVERFLOW))
+    }
+
+    async fn find_due_timer_wakes(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<AgentThread>, DbError> {
+        let sql = format!(
+            "SELECT {COLUMNS} FROM agent_threads \
+             WHERE status = 'suspended' AND wake_at IS NOT NULL AND wake_at <= now() \
+             ORDER BY wake_at \
+             LIMIT $1 \
+             FOR UPDATE SKIP LOCKED"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(i64::from(limit))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "scanning for due timer wakes".to_owned(),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_agent_thread_row).collect())
+    }
+
+    async fn find_cancel_intents(
+        &self,
+        conn: &mut PgConnection,
+        limit: u32,
+    ) -> Result<Vec<AgentThread>, DbError> {
+        let sql = format!(
+            "SELECT {COLUMNS} FROM agent_threads \
+             WHERE cancel_requested_at IS NOT NULL \
+               AND status NOT IN ('completed', 'failed', 'cancelled', 'dead_letter') \
+             ORDER BY cancel_requested_at \
+             LIMIT $1 \
+             FOR UPDATE SKIP LOCKED"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(i64::from(limit))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "scanning for pending cancel intents".to_owned(),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_agent_thread_row).collect())
     }
 
     async fn set_execution_spend(

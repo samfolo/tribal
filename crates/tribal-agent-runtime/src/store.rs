@@ -14,7 +14,7 @@ use tribal_db::{
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentBindingVersionId, AgentThread, AgentThreadRecord,
-    AgentThreadRecordSeq, AgentThreadStatus, Job, Task,
+    AgentThreadRecordKind, AgentThreadStatus, Job, Task,
 };
 
 use crate::AgentRuntimeError;
@@ -91,7 +91,10 @@ pub async fn ensure_stage_thread(
         .await
         .map_err(|source| AgentRuntimeError::database("reading the thread's log", source))?
         .into_iter()
-        .find(|record| record.seq() == AgentThreadRecordSeq::FIRST);
+        .find(|record| {
+            record.kind() == AgentThreadRecordKind::Input
+                && crate::turn::is_rendered_conversation(record.content())
+        });
 
     Ok(StageThread { thread, input })
 }

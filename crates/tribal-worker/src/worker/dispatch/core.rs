@@ -677,6 +677,7 @@ impl Worker {
                     }
 
                     self.heal_stuck_triaging_jobs().await;
+                    self.run_thread_sweep().await;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "reclaim sweep failed");

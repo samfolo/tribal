@@ -26,6 +26,19 @@ use tribal_telemetry::{current_span_id, current_trace_id};
 
 use crate::AgentRuntimeError;
 
+/// The `content_kind` tag value identifying a rendered-conversation
+/// input record.
+pub(crate) const RENDERED_CONVERSATION_KIND: &str = "rendered_conversation";
+
+/// Returns `true` when an input record's content is a rendered
+/// conversation — the record resume re-sends.
+pub(crate) fn is_rendered_conversation(content: &serde_json::Value) -> bool {
+    content
+        .get("content_kind")
+        .and_then(serde_json::Value::as_str)
+        == Some(RENDERED_CONVERSATION_KIND)
+}
+
 // ---------------------------------------------------------------------------
 // Record content shapes
 // ---------------------------------------------------------------------------
@@ -45,8 +58,11 @@ pub struct RecordedMessage {
 ///
 /// Stores what was sent — the conversation an inference call receives is
 /// a pure projection of the log — with the prompt versions as provenance
-/// metadata.
+/// metadata. The `content_kind` tag discriminates this shape from other
+/// input-record payloads (a timer resolution, a human reply), so resume
+/// selects the right record structurally rather than by position.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "content_kind", rename = "rendered_conversation")]
 pub struct RenderedConversation {
     /// The system prompt as sent, when the stage uses one.
     pub system: Option<String>,
