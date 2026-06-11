@@ -228,9 +228,8 @@ impl Worker {
 // Attribution and error mapping
 // ---------------------------------------------------------------------------
 
-/// Builds the ledger attribution for one stage execution: the job, the
-/// task, the attempt, the stage's prompt version pair, and the job's
-/// trace identity.
+/// Builds the ledger attribution for one stage execution: the pipeline
+/// owner, the stage's prompt version pair, and the job's trace identity.
 pub(crate) fn stage_attribution(job: &Job, task: &Task, thread: &AgentThread) -> UsageAttribution {
     let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
     UsageAttribution {
