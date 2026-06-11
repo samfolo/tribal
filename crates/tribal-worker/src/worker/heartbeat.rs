@@ -14,8 +14,8 @@ use tribal_db::{
     TaskRepository,
 };
 use tribal_domain::{
-    AgentThreadStatus, AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome,
-    JobState, TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
+    AgentThreadStatus, AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState,
+    TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
 };
 
 use crate::{
