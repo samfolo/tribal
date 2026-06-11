@@ -59,8 +59,8 @@ pub const EMBEDDING_MODEL: &str = "tribal.embedding.model";
 /// Span field name for embedding vector dimensions.
 pub const EMBEDDING_DIMENSIONS: &str = "tribal.embedding.dimensions";
 
-/// Span field name for the embedding purpose (`"candidate"`, `"query"`,
-/// `"tag"`, or `"probe"`).
+/// Span field name for the embedding purpose: an
+/// [`EmbeddingPurpose`](crate::EmbeddingPurpose) wire string.
 pub const EMBEDDING_PURPOSE: &str = "tribal.embedding.purpose";
 
 // ---------------------------------------------------------------------------

@@ -182,8 +182,7 @@ pub enum TokenUsageStage {
     Relation,
     /// The embedding pipeline stage with a required purpose.
     Embedding {
-        /// Whether the embedding was for indexing, querying, tag
-        /// resolution, or a provider probe.
+        /// What the embedding served.
         purpose: EmbeddingPurpose,
     },
     /// An inference provider probe — a real but minimal completion call
