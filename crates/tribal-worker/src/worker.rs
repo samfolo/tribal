@@ -10,6 +10,7 @@ pub(crate) mod backfill;
 pub(crate) mod backoff;
 pub mod coupling;
 mod thread;
+mod thread_sweep;
 
 pub(crate) use thread::map_runtime_error;
 mod dispatch;

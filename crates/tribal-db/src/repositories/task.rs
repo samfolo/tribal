@@ -296,6 +296,22 @@ pub trait TaskRepository {
         id: TaskId,
     ) -> Result<u64, DbError>;
 
+    /// Terminally dead-letters an unclaimed live task under a row lock —
+    /// the locked-unclaimed guard for non-worker disposers (the cancel
+    /// transaction). A row a live worker holds is never selected. Returns
+    /// the affected row count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn dead_letter_unclaimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError>;
+
     /// Inserts a task idempotently using `ON CONFLICT DO NOTHING`.
     ///
     /// Returns the number of rows affected: `1` if the task was
@@ -712,6 +728,39 @@ impl TaskRepository for PgTaskRepository {
         .await
         .map_err(|e| DbError::QueryFailed {
             context: format!("re-queueing blocked task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn dead_letter_unclaimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "WITH target AS ( \
+                 SELECT id FROM tasks \
+                 WHERE id = $1 AND claim_token IS NULL \
+                   AND status NOT IN ('completed', 'dead_letter') \
+                 FOR UPDATE \
+             ) \
+             UPDATE tasks t \
+             SET status = 'dead_letter', error_kind = $2, error_message = $3, \
+                 updated_at = now() \
+             FROM target \
+             WHERE t.id = target.id",
+        )
+        .bind(id.inner())
+        .bind(error_kind.as_str())
+        .bind(error_message)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("dead-lettering unclaimed task {id}"),
             source: e,
         })?;
 

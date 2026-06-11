@@ -30,6 +30,8 @@ mock_repository! {
             (id: TaskId, claim_token: uuid::Uuid) { (id, claim_token) };
         requeue_from_blocked(TaskId => u64)
             (id: TaskId) { id };
+        dead_letter_unclaimed((TaskId, TaskErrorKind, String) => u64)
+            (id: TaskId, error_kind: TaskErrorKind, error_message: &str) { (id, error_kind, error_message.to_owned()) };
         upsert(NewTask => u64)
             (new_task: &NewTask) { new_task.clone() };
         count_by_status(() => Vec<TaskStatusCount>)
