@@ -26,18 +26,8 @@ async fn test_extraction_records_token_usage() {
     let (job_id, _task_id) = {
         let mut conn = raw_conn(ctx).await;
 
-        let fingerprint_hash = upsert_system_fingerprint(
-            &mut conn,
-            &a_new_system_fingerprint()
-                .extraction_system_prompt_version_id(system_pv_id)
-                .extraction_user_prompt_version_id(user_pv_id)
-                .triage_system_prompt_version_id(system_pv_id)
-                .triage_user_prompt_version_id(user_pv_id)
-                .relation_system_prompt_version_id(system_pv_id)
-                .relation_user_prompt_version_id(user_pv_id)
-                .build(),
-        )
-        .await;
+        let fingerprint_hash =
+            upsert_system_fingerprint(&mut conn, &a_new_system_fingerprint().build()).await;
 
         let job = PgJobRepository
             .insert(
@@ -145,18 +135,8 @@ async fn assert_extraction_with_trace_context(trace_context: Option<String>, lab
     let (job_id, _task_id) = {
         let mut conn = raw_conn(ctx).await;
 
-        let fingerprint_hash = upsert_system_fingerprint(
-            &mut conn,
-            &a_new_system_fingerprint()
-                .extraction_system_prompt_version_id(system_pv_id)
-                .extraction_user_prompt_version_id(user_pv_id)
-                .triage_system_prompt_version_id(system_pv_id)
-                .triage_user_prompt_version_id(user_pv_id)
-                .relation_system_prompt_version_id(system_pv_id)
-                .relation_user_prompt_version_id(user_pv_id)
-                .build(),
-        )
-        .await;
+        let fingerprint_hash =
+            upsert_system_fingerprint(&mut conn, &a_new_system_fingerprint().build()).await;
 
         let job = PgJobRepository
             .insert(

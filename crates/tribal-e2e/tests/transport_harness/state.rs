@@ -14,8 +14,9 @@ use tribal_db::{
 };
 use tribal_domain::{PromptVersionId, ProviderKind, Scope, full_access_scopes};
 use tribal_inference::{
-    EmptyCredentialResolver, InferenceGateway, InjectedCompletion, InjectedProviders,
-    NoopLedgerSink, ProviderIdentity, ProviderRegistry, RequestClass,
+    CompletionStageSpec, CompletionStageSpecs, EmptyCredentialResolver, InferenceGateway,
+    InjectedCompletion, InjectedProviders, NoopLedgerSink, ProviderIdentity, ProviderRegistry,
+    RequestClass,
 };
 use tribal_mcp::{ActivePromptVersions, AppState};
 use tribal_telemetry::noop_recorder;
@@ -99,7 +100,9 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
             .pool_worker(pool)
             .instance_id(Arc::from(TEST_INSTANCE_ID))
             .build_version(Arc::from("test-build"))
-            .inference_parameters(tribal_domain::InferenceParameters::default())
+            .stage_specs(test_stage_specs())
+            .embedding_dimensions(768)
+            .pipeline_parameters(tribal_domain::PipelineParameters::default())
             .active_prompt_versions(Arc::new(RwLock::new(ActivePromptVersions::new(
                 PromptVersionId::new(),
                 PromptVersionId::new(),
@@ -173,4 +176,21 @@ pub async fn seed_scoped_auth(
         )
         .await
         .expect("insert auth token");
+}
+
+/// The boot-time stage specs the fingerprint computation reads: one mock
+/// endpoint for all three stages.
+fn test_stage_specs() -> CompletionStageSpecs {
+    let spec = CompletionStageSpec {
+        provider: ProviderKind::Ollama,
+        model: "mock-model".to_owned(),
+        base_url: "http://localhost:9999".to_owned(),
+        api_key: String::new(),
+        parameters: tribal_domain::StageParameters::default(),
+    };
+    CompletionStageSpecs {
+        extraction: spec.clone(),
+        triage: spec.clone(),
+        relation: spec,
+    }
 }

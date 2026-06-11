@@ -12,8 +12,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
-use tribal_domain::{GitRemote, InferenceParameters, ProjectId};
-use tribal_inference::{InferenceGateway, ProviderIdentity};
+use tribal_domain::{GitRemote, PipelineParameters, ProjectId};
+use tribal_inference::{CompletionStageSpecs, InferenceGateway, ProviderIdentity};
 use tribal_telemetry::MetricsRecorder;
 use typed_builder::TypedBuilder;
 
@@ -107,15 +107,22 @@ pub struct AppState {
     pub(crate) gateway: Arc<InferenceGateway>,
 
     /// The active embedding identity snapshotted at boot, recorded as
-    /// fingerprint provenance alongside the stage identities.
+    /// fingerprint provenance alongside the stage binding hashes.
     pub(crate) embedding_identity: ProviderIdentity,
 
     // -- Fingerprint ----------------------------------------------------------
     /// Git-describe version of the build, used for fingerprint computation.
     pub(crate) build_version: Arc<str>,
 
-    /// Pre-computed inference parameters for fingerprint computation.
-    pub(crate) inference_parameters: InferenceParameters,
+    /// The boot-time stage endpoint specs, whose post-reconcile sampling
+    /// parameters feed the stage binding hashes the fingerprint records.
+    pub(crate) stage_specs: CompletionStageSpecs,
+
+    /// The active embedding dimensionality snapshotted at boot.
+    pub(crate) embedding_dimensions: u32,
+
+    /// Job-level pipeline parameters for fingerprint computation.
+    pub(crate) pipeline_parameters: PipelineParameters,
 
     // -- Config --------------------------------------------------------------
     /// Worker configuration (concurrency, timeouts, thresholds).

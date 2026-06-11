@@ -96,7 +96,7 @@ impl Worker {
                 tag_registry,
             };
 
-            let (system_pv, user_pv, fingerprint) = tokio::try_join!(
+            let (system_pv, user_pv) = tokio::try_join!(
                 self.load_prompt_version(
                     STAGE_EXTRACTION,
                     ctx.job.extraction_system_prompt_version_id()
@@ -105,7 +105,6 @@ impl Worker {
                     STAGE_EXTRACTION,
                     ctx.job.extraction_user_prompt_version_id()
                 ),
-                self.load_system_fingerprint(STAGE_EXTRACTION, ctx.job.system_fingerprint_hash()),
             )?;
 
             record_prompt_version_ids(
@@ -118,7 +117,7 @@ impl Worker {
                 user_pv.content(),
                 ctx.job.raw_input(),
                 &ctx.tag_registry,
-                &fingerprint.inference_parameters().extraction,
+                &stage_thread.binding.definition().parameters,
             )?;
 
             if include_llm_content {

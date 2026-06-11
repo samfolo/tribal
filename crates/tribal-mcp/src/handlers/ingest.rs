@@ -11,15 +11,12 @@ use tokio::sync::watch;
 use tracing::Instrument;
 use tribal_common::JobWatchEntry;
 use tribal_db::{DbError, NewJob, NewTask};
-use tribal_domain::{
-    InferenceParameters, JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType,
-    span_attrs,
-};
+use tribal_domain::{JobId, JobState, McpErrorCode, PrincipalId, ProjectId, TaskType, span_attrs};
 
 use super::common::begin_transaction;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
-    fingerprint::{FingerprintError, PipelineProviderIdentities, compute_and_upsert_fingerprint},
+    fingerprint::{FingerprintError, FingerprintInputs, compute_and_upsert_fingerprint},
     mapping::{McpIngestRequest, McpIngestResponse},
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
 };
@@ -43,8 +40,7 @@ struct IngestParams {
     content: String,
     active_prompts: ActivePromptVersions,
     build_version: Arc<str>,
-    provider_identities: PipelineProviderIdentities,
-    inference_parameters: InferenceParameters,
+    fingerprint_inputs: FingerprintInputs,
 }
 
 /// Domain-level result from the ingest service function.
@@ -153,23 +149,11 @@ impl TribalServerHandler {
 
         let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
-        let provider_identities = PipelineProviderIdentities {
-            extraction: self
-                .state
-                .gateway
-                .completion_identity(TaskType::Extraction)
-                .clone(),
-            triage: self
-                .state
-                .gateway
-                .completion_identity(TaskType::Triage)
-                .clone(),
-            relation: self
-                .state
-                .gateway
-                .completion_identity(TaskType::Relation)
-                .clone(),
+        let fingerprint_inputs = FingerprintInputs {
+            specs: self.state.stage_specs.clone(),
             embedding: self.state.embedding_identity.clone(),
+            embedding_dimensions: self.state.embedding_dimensions,
+            pipeline: self.state.pipeline_parameters.clone(),
         };
 
         let ingest_params = IngestParams {
@@ -179,8 +163,7 @@ impl TribalServerHandler {
             content: request.content,
             active_prompts,
             build_version: Arc::clone(&self.state.build_version),
-            provider_identities,
-            inference_parameters: self.state.inference_parameters.clone(),
+            fingerprint_inputs,
         };
 
         let mut tx = match begin_transaction(
@@ -265,9 +248,8 @@ async fn execute_ingest(
         conn,
         repositories,
         &params.active_prompts,
-        &params.provider_identities,
         &params.build_version,
-        &params.inference_parameters,
+        &params.fingerprint_inputs,
     )
     .await?;
 
@@ -320,7 +302,7 @@ mod tests {
     use rmcp::model::ErrorCode;
     use tracing::Instrument;
     use tracing_subscriber::layer::SubscriberExt;
-    use tribal_domain::{InferenceParameters, KnowledgeItemId, PrincipalId, ProjectId};
+    use tribal_domain::{KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
         MockJobRepository, MockProjectRepository, MockPromptVersionRepository, MockTaskRepository,
         a_job, a_project, a_prompt_version, a_task, test_context,
@@ -329,7 +311,7 @@ mod tests {
     use super::*;
     use crate::test_utils::{
         NO_STRUCTURED_CONTENT, TestHandler, configure_fingerprint_mocks, first_text_content,
-        session_with_project, test_active_prompt_versions, test_provider_identities,
+        session_with_project, test_active_prompt_versions, test_fingerprint_inputs,
         test_repositories,
     };
 
@@ -356,8 +338,7 @@ mod tests {
             content: "some knowledge".into(),
             active_prompts: test_active_prompt_versions(),
             build_version: Arc::from("test-build"),
-            provider_identities: test_provider_identities(),
-            inference_parameters: InferenceParameters::default(),
+            fingerprint_inputs: test_fingerprint_inputs(),
         }
     }
 
@@ -488,8 +469,7 @@ mod tests {
             content: "learned something".into(),
             active_prompts,
             build_version: Arc::from("test-build"),
-            provider_identities: test_provider_identities(),
-            inference_parameters: InferenceParameters::default(),
+            fingerprint_inputs: test_fingerprint_inputs(),
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -546,8 +526,7 @@ mod tests {
             content: "test content".into(),
             active_prompts: prompts,
             build_version: Arc::from("test-build"),
-            provider_identities: test_provider_identities(),
-            inference_parameters: InferenceParameters::default(),
+            fingerprint_inputs: test_fingerprint_inputs(),
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -592,8 +571,7 @@ mod tests {
             content: "test content".into(),
             active_prompts,
             build_version: Arc::from("test-build"),
-            provider_identities: test_provider_identities(),
-            inference_parameters: InferenceParameters::default(),
+            fingerprint_inputs: test_fingerprint_inputs(),
         };
 
         let result = call_execute(&repos, params).await.expect("should succeed");
@@ -771,8 +749,7 @@ mod tests {
             content: "trace test".into(),
             active_prompts,
             build_version: Arc::from("test-build"),
-            provider_identities: test_provider_identities(),
-            inference_parameters: InferenceParameters::default(),
+            fingerprint_inputs: test_fingerprint_inputs(),
         };
 
         let _guard = tracing::subscriber::set_default(subscriber);

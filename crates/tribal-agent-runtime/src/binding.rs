@@ -29,12 +29,13 @@ pub async fn resolve_binding(
     conn: &mut PgConnection,
     definition: &AgentDefinition,
 ) -> Result<AgentBinding, AgentRuntimeError> {
-    let canonical = serde_json::to_string(definition).map_err(|source| {
-        AgentRuntimeError::ContentSerialisation {
-            context: format!("canonicalising the {} binding", definition.pipeline_stage),
-            source,
-        }
-    })?;
+    let canonical =
+        definition
+            .canonical_json()
+            .map_err(|source| AgentRuntimeError::ContentSerialisation {
+                context: format!("canonicalising the {} binding", definition.pipeline_stage),
+                source,
+            })?;
     let hash = sha256_hex(&canonical);
 
     let new = NewAgentBindingVersion::builder()

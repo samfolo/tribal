@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{AgentBindingVersionId, ProviderKind, TaskType};
+use crate::{AgentBindingVersionId, ProviderKind, StageParameters, TaskType};
 
 // ---------------------------------------------------------------------------
 // Executor kinds
@@ -153,6 +153,9 @@ pub struct AgentDefinition {
     pub model: String,
     /// The provider endpoint the stage's calls bind to.
     pub base_url: String,
+    /// The effective (post-reconcile) sampling parameters the stage's
+    /// calls carry, so a temperature edit is a new binding version.
+    pub parameters: StageParameters,
     /// Content hashes of the stage's system and user prompts, in role
     /// order, so a prompt edit is a new binding version.
     pub prompt_hashes: Vec<String>,
@@ -160,6 +163,46 @@ pub struct AgentDefinition {
     pub budgets: ExecutionBudgets,
     /// The tools exposed to the model; empty for one-shot.
     pub tools: Vec<ToolDescriptor>,
+}
+
+impl AgentDefinition {
+    /// Builds the default one-shot definition for a stage: no tools and
+    /// no budget caps, reproducing launched behaviour exactly. The single
+    /// constructor every deriver uses, so the worker and the fingerprint
+    /// computation arrive at identical binding versions.
+    #[must_use]
+    pub fn one_shot(
+        pipeline_stage: TaskType,
+        provider: ProviderKind,
+        model: String,
+        base_url: String,
+        parameters: StageParameters,
+        system_prompt_hash: String,
+        user_prompt_hash: String,
+    ) -> Self {
+        Self {
+            pipeline_stage,
+            executor: StageExecutorKind::OneShot,
+            provider,
+            model,
+            base_url,
+            parameters,
+            prompt_hashes: vec![system_prompt_hash, user_prompt_hash],
+            budgets: ExecutionBudgets::default(),
+            tools: Vec::new(),
+        }
+    }
+
+    /// Canonically serialises the definition: `serde_json`'s
+    /// deterministic lexicographically-ordered object keys, the form the
+    /// content address hashes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying serde error when serialisation fails.
+    pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
 }
 
 /// One stored, content-addressed binding version.
@@ -266,6 +309,7 @@ mod tests {
             .provider(ProviderKind::Ollama)
             .model("llama3".to_owned())
             .base_url("http://localhost:11434".to_owned())
+            .parameters(StageParameters::default())
             .prompt_hashes(vec!["a".repeat(64)])
             .budgets(ExecutionBudgets::default())
             .tools(vec![])
@@ -285,11 +329,35 @@ mod tests {
                 "budgets",
                 "executor",
                 "model",
+                "parameters",
                 "pipeline_stage",
                 "prompt_hashes",
                 "provider",
                 "tools",
             ],
+        );
+    }
+
+    #[test]
+    fn test_a_parameter_edit_changes_the_canonical_form() {
+        let base = AgentDefinition::one_shot(
+            TaskType::Triage,
+            ProviderKind::Ollama,
+            "llama3".to_owned(),
+            "http://localhost:11434".to_owned(),
+            StageParameters {
+                temperature: Some(0.1),
+                max_tokens: Some(2048),
+            },
+            "a".repeat(64),
+            "b".repeat(64),
+        );
+        let mut edited = base.clone();
+        edited.parameters.temperature = Some(0.9);
+
+        assert_ne!(
+            base.canonical_json().expect("serialises"),
+            edited.canonical_json().expect("serialises"),
         );
     }
 }

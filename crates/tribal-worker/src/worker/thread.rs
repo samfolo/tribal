@@ -13,8 +13,8 @@ use tribal_db::{
     PgPromptVersionRepository, PgTaskRepository, PromptVersionRepository, TaskRepository as _,
 };
 use tribal_domain::{
-    AgentDefinition, AgentThread, AgentThreadStatus, ExecutionBudgets, Job, JobOutcome, JobState,
-    PromptVersionId, StageExecutorKind, Task, TaskErrorKind, TaskType,
+    AgentDefinition, AgentThread, AgentThreadStatus, Job, JobOutcome, JobState, PromptVersionId,
+    Task, TaskErrorKind, TaskType,
 };
 use tribal_inference::{CompletionStageSpec, CompletionStageSpecs};
 
@@ -58,7 +58,7 @@ impl Worker {
             .await
             .map_err(|source| map_runtime_error(stage, "resolving the binding version", source))?;
 
-        ensure_stage_thread(&mut conn, job, task, binding.id())
+        ensure_stage_thread(&mut conn, job, task, &binding)
             .await
             .map_err(|source| map_runtime_error(stage, "establishing the thread", source))
     }
@@ -236,8 +236,8 @@ impl Worker {
     }
 
     /// Builds the stage's definition from its boot-time endpoint spec and
-    /// the job's prompt versions' content hashes, so a prompt edit, model
-    /// change, or endpoint change is a new binding version.
+    /// the job's prompt versions' content hashes, so a prompt, model,
+    /// endpoint, or sampling-parameter edit is a new binding version.
     async fn stage_definition(
         &self,
         conn: &mut sqlx::PgConnection,
@@ -250,16 +250,15 @@ impl Worker {
         let system_hash = prompt_hash(conn, system_pv_id).await?;
         let user_hash = prompt_hash(conn, user_pv_id).await?;
 
-        Ok(AgentDefinition::builder()
-            .pipeline_stage(task.task_type())
-            .executor(StageExecutorKind::OneShot)
-            .provider(spec.provider)
-            .model(spec.model.clone())
-            .base_url(spec.base_url.clone())
-            .prompt_hashes(vec![system_hash, user_hash])
-            .budgets(ExecutionBudgets::default())
-            .tools(Vec::new())
-            .build())
+        Ok(AgentDefinition::one_shot(
+            task.task_type(),
+            spec.provider,
+            spec.model.clone(),
+            spec.base_url.clone(),
+            spec.parameters.clone(),
+            system_hash,
+            user_hash,
+        ))
     }
 }
 

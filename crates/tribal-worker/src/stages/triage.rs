@@ -124,10 +124,9 @@ impl Worker {
                 tag_registry,
             };
 
-            let (system_pv, user_pv, fingerprint) = tokio::try_join!(
+            let (system_pv, user_pv) = tokio::try_join!(
                 self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_system_prompt_version_id()),
                 self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_user_prompt_version_id()),
-                self.load_system_fingerprint(STAGE_TRIAGE, ctx.job.system_fingerprint_hash()),
             )?;
 
             record_prompt_version_ids(
@@ -186,7 +185,7 @@ impl Worker {
                     system_pv.content(),
                     user_pv.content(),
                     &similar_items,
-                    &fingerprint.inference_parameters().triage,
+                    &stage_thread.binding.definition().parameters,
                     deadline,
                     &attribution,
                 )

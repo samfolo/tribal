@@ -181,13 +181,12 @@ impl Worker {
 
             let prompt_context = build_prompt_context(&ctx, ctx.batch_size)?;
 
-            let (system_pv, user_pv, fingerprint) = tokio::try_join!(
+            let (system_pv, user_pv) = tokio::try_join!(
                 self.load_prompt_version(
                     STAGE_RELATION,
                     ctx.job.relation_system_prompt_version_id()
                 ),
                 self.load_prompt_version(STAGE_RELATION, ctx.job.relation_user_prompt_version_id()),
-                self.load_system_fingerprint(STAGE_RELATION, ctx.job.system_fingerprint_hash()),
             )?;
 
             record_prompt_version_ids(
@@ -199,7 +198,7 @@ impl Worker {
                 system_pv.content(),
                 user_pv.content(),
                 &prompt_context,
-                &fingerprint.inference_parameters().relation,
+                &stage_thread.binding.definition().parameters,
             )?;
 
             if include_llm_content {

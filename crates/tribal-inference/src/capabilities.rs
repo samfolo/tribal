@@ -17,7 +17,7 @@
 //! shaping (a provider's always-required or fixed-name fields) stays in each
 //! provider's request builder and is not represented here.
 
-use tribal_domain::ProviderKind;
+use tribal_domain::{ProviderKind, StageParameters};
 
 // ---------------------------------------------------------------------------
 // Capability table
@@ -207,6 +207,48 @@ pub fn resolve(provider: ProviderKind, model: &str) -> ModelCapabilities {
         ProviderKind::Ollama | ProviderKind::Anthropic | ProviderKind::OpenAi => {
             ModelCapabilities::SEND_ALL
         }
+    }
+}
+
+/// Logged when a configured `temperature` is ignored because the resolved
+/// model samples adaptively. The drop happens at this config projection
+/// rather than at the wire, so this is where the operator is told their
+/// value took no effect.
+const CONFIGURED_TEMPERATURE_IGNORED: &str = "ignoring configured temperature: stage model samples adaptively and rejects sampling parameters";
+
+/// Derives a stage's effective [`StageParameters`] by resolving its
+/// `(provider, model)` through the capability layer.
+///
+/// `temperature` is recorded as unset when the resolved target samples
+/// adaptively; a configured value thereby ignored is logged once, naming
+/// the stage, since this projection — not the wire layer — is where it is
+/// dropped. `max_tokens` is unaffected (only its wire field name varies,
+/// which does not change the recorded value).
+#[must_use]
+pub fn effective_stage_parameters(
+    stage: &str,
+    provider: ProviderKind,
+    model: &str,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+) -> StageParameters {
+    let temperature = if resolve(provider, model).sampling.accepts_overrides() {
+        temperature
+    } else {
+        if let Some(temperature) = temperature {
+            tracing::warn!(
+                stage,
+                model,
+                temperature,
+                "{CONFIGURED_TEMPERATURE_IGNORED}"
+            );
+        }
+        None
+    };
+
+    StageParameters {
+        temperature,
+        max_tokens,
     }
 }
 
