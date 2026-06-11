@@ -122,6 +122,26 @@ pub(super) async fn build_test_worker(
     inference: Option<Arc<dyn InferenceProvider>>,
     embedding: Option<Arc<dyn EmbeddingProvider>>,
 ) -> Arc<Worker> {
+    let (worker, _) = build_test_worker_with_watch(
+        pool,
+        cancellation_token,
+        config,
+        inference,
+        embedding,
+    )
+    .await;
+    worker
+}
+
+/// Like [`build_test_worker`], also returning the job-state watch map so
+/// tests can subscribe to the notifications the worker sends.
+pub(super) async fn build_test_worker_with_watch(
+    pool: sqlx::PgPool,
+    cancellation_token: CancellationToken,
+    config: WorkerConfig,
+    inference: Option<Arc<dyn InferenceProvider>>,
+    embedding: Option<Arc<dyn EmbeddingProvider>>,
+) -> (Arc<Worker>, JobStateTxs) {
     let inference: Arc<dyn InferenceProvider> = inference.unwrap_or_else(|| {
         Arc::new(
             MockInferenceProvider::builder()
@@ -199,7 +219,7 @@ pub(super) async fn build_test_worker(
 
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
-    Arc::new(Worker::new(
+    let worker = Arc::new(Worker::new(
         pool,
         gateway,
         test_stage_specs(),
@@ -207,9 +227,10 @@ pub(super) async fn build_test_worker(
         config,
         false,
         WORKER_INSTANCE.to_owned(),
-        job_state_txs,
+        Arc::clone(&job_state_txs),
         noop_recorder(),
-    ))
+    ));
+    (worker, job_state_txs)
 }
 
 /// The boot-time stage specs a test worker derives bindings from: one

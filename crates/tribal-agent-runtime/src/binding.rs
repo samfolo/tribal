@@ -3,10 +3,10 @@
 //! The hash covers the canonically serialised definition — tool
 //! descriptors included — so a prompt edit, a model change, or a
 //! tool-surface change is a new version even when everything else is
-//! identical. Canonical means `serde_json`'s deterministic
-//! lexicographically-ordered object keys; the definition's serialisation
-//! shape is pinned by a tribal-domain test. Recording is idempotent by
-//! hash, so concurrent resolvers converge on one row.
+//! identical. Canonical means compact JSON with fields in declaration
+//! order; the definition's serialisation is pinned byte-for-byte by a
+//! tribal-domain test. Recording is idempotent by hash, so concurrent
+//! resolvers converge on one row.
 
 use sqlx::PgConnection;
 use tribal_common::sha256_hex;

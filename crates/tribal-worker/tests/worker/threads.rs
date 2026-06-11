@@ -6,12 +6,14 @@
 //! the rendered input and the assistant response, completed in the same
 //! transaction as the task.
 
+use tokio::sync::watch;
 use tribal_agent_runtime::RenderedConversation;
+use tribal_common::JobWatchEntry;
 use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
     PgAgentThreadRepository,
 };
-use tribal_domain::{AgentThreadRecordKind, AgentThreadStatus};
+use tribal_domain::{AgentThreadRecordKind, AgentThreadStatus, JobState};
 
 use super::{common::*, fixtures::extraction_response_json};
 
@@ -939,7 +941,7 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
             .build(),
     );
     let token = CancellationToken::new();
-    let worker = build_test_worker(
+    let (worker, job_state_txs) = build_test_worker_with_watch(
         pool.clone(),
         token.clone(),
         test_config(),
@@ -947,6 +949,9 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
         None,
     )
     .await;
+    let (watch_tx, keepalive_rx) = watch::channel(JobState::Queued);
+    let mut watch_rx = watch_tx.subscribe();
+    job_state_txs.insert(job_id, JobWatchEntry::new(watch_tx, keepalive_rx));
     let handle = {
         let w = Arc::clone(&worker);
         tokio::spawn(async move { w.run().await })
@@ -954,6 +959,10 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
 
     poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
     let _ = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
+    tokio::time::timeout(POLL_SETTLE, watch_rx.wait_for(|s| *s == JobState::Failed))
+        .await
+        .expect("the disposal's owed notification reaches watchers")
+        .expect("watch channel stays open");
     token.cancel();
     let _ = handle.await;
 
@@ -1166,6 +1175,208 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
         .expect("find")
         .expect("present");
     assert_eq!(thread_after.status(), AgentThreadStatus::Suspended);
+
+    teardown(ctx).await;
+}
+
+/// The availability sweep's cancel fallback sends the owed notification:
+/// a suspended thread with a pending intent and no live worker is
+/// cancelled by the live worker's sweep, and the job-failure state
+/// reaches watchers.
+#[tokio::test]
+async fn test_sweep_cancel_fallback_notifies_watchers() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "sweep-cancel-notify").await;
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    // A suspended thread with a durable intent and a blocked task: the
+    // shape only the sweep's cancel fallback converges.
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "suspending-worker")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
+        .await
+        .expect("thread");
+    tribal_agent_runtime::suspend_stage_thread(
+        &mut conn,
+        &stage_thread.thread,
+        task.id(),
+        task.claim_token().expect("token"),
+        &tribal_domain::AgentThreadSuspension::Timer,
+        None,
+    )
+    .await
+    .expect("suspend");
+    PgAgentThreadRepository
+        .record_cancel_intent(&mut conn, stage_thread.thread.id(), "operator:test")
+        .await
+        .expect("intent");
+
+    let token = CancellationToken::new();
+    let (worker, job_state_txs) =
+        build_test_worker_with_watch(pool.clone(), token.clone(), test_config(), None, None).await;
+    let (watch_tx, keepalive_rx) = watch::channel(JobState::Queued);
+    let mut watch_rx = watch_tx.subscribe();
+    job_state_txs.insert(job_id, JobWatchEntry::new(watch_tx, keepalive_rx));
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    tokio::time::timeout(POLL_SETTLE, watch_rx.wait_for(|s| *s == JobState::Failed))
+        .await
+        .expect("the sweep's owed notification reaches watchers")
+        .expect("watch channel stays open");
+    poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(thread_after.status(), AgentThreadStatus::Cancelled);
+
+    teardown(ctx).await;
+}
+
+/// The two reclaim scans partition the stale set: the legacy bulk scan
+/// handles only rows with no thread, the thread-aware pass only rows
+/// with one. Either predicate's removal makes a scan claim the other's
+/// half.
+#[tokio::test]
+async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let config = test_config();
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "reclaim-partition").await;
+    let mut conn = raw_conn(ctx).await;
+    let (job_threaded, task_threaded) = seed_extraction_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+    )
+    .await;
+    let (_job_legacy, task_legacy) = seed_extraction_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+    )
+    .await;
+
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 2, "crashed-worker")
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 2);
+    let threaded = claimed
+        .iter()
+        .find(|t| t.id() == task_threaded)
+        .expect("threaded task claims")
+        .clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_threaded)
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread =
+        tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &threaded, &binding)
+            .await
+            .expect("thread");
+    backdate_task_heartbeat(&mut conn, task_threaded, STALE_HEARTBEAT_BACKDATE).await;
+    backdate_task_heartbeat(&mut conn, task_legacy, STALE_HEARTBEAT_BACKDATE).await;
+
+    // The legacy bulk scan first: it must requeue the legacy row alone,
+    // leaving the thread-driving row claimed.
+    let outcome = PgTaskRepository
+        .reclaim_stale(
+            &mut conn,
+            10,
+            config.task_max_retries,
+            10,
+            tribal_domain::TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            None,
+        )
+        .await
+        .expect("legacy reclaim");
+    assert_eq!(outcome.requeued, 1, "the legacy scan takes only its half");
+    let threaded_after = PgTaskRepository
+        .find_by_id(&mut conn, task_threaded)
+        .await
+        .expect("task");
+    assert_eq!(
+        threaded_after.status(),
+        TaskStatus::Claimed,
+        "the legacy scan never touches a thread-driving row",
+    );
+
+    // The thread-aware pass takes exactly the remaining half.
+    let worker =
+        build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
+    let stats = worker
+        .run_thread_aware_reclaim(
+            10,
+            0,
+            tribal_domain::TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            None,
+        )
+        .await
+        .expect("thread-aware reclaim");
+    assert_eq!(stats.requeued, 1);
+
+    let threaded_after = PgTaskRepository
+        .find_by_id(&mut conn, task_threaded)
+        .await
+        .expect("task");
+    assert_eq!(threaded_after.status(), TaskStatus::Queued);
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(thread_after.recovery_attempts(), 0);
 
     teardown(ctx).await;
 }

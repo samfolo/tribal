@@ -9,8 +9,9 @@
 
 use sqlx::PgConnection;
 use tribal_db::{
-    AgentThreadRecordRepository, AgentThreadRepository, DbError, DrivingTaskRef, NewAgentThread,
-    PgAgentThreadRecordRepository, PgAgentThreadRepository,
+    AgentBindingVersionRepository, AgentThreadRecordRepository, AgentThreadRepository, DbError,
+    DrivingTaskRef, NewAgentThread, PgAgentBindingVersionRepository, PgAgentThreadRecordRepository,
+    PgAgentThreadRepository,
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentBinding, AgentThread, AgentThreadRecord,
@@ -27,19 +28,24 @@ pub struct StageThread {
     /// conversation as sent, which re-execution re-sends verbatim rather
     /// than re-rendering.
     pub input: Option<AgentThreadRecord>,
-    /// The binding the thread runs under: the content-addressed pin the
-    /// stage reads its execution parameters from.
+    /// The binding the thread runs under — the stored pin for an
+    /// existing thread, the freshly resolved one at creation — which the
+    /// stage reads its execution parameters from, so attribution and
+    /// behaviour cannot drift apart across a configuration change.
     pub binding: AgentBinding,
 }
 
 /// Finds or creates the thread a claimed stage task drives, and moves a
 /// queued thread to running.
 ///
-/// First claim creates the thread queued and immediately marks it
-/// running. A reclaim after a crash finds it already running and
-/// proceeds — inference is at-least-once. A suspended or terminal thread
-/// is returned untouched: the claim-time crash-window rules decide what
-/// the worker does with the task, never this function.
+/// First claim creates the thread queued, pinned to the supplied
+/// binding, and immediately marks it running. A reclaim after a crash
+/// finds it already running and proceeds — inference is at-least-once —
+/// executing under the binding the thread row records, never the
+/// supplied one, so a configuration change between attempts cannot make
+/// the thread run what it does not record. A suspended or terminal
+/// thread is returned untouched: the claim-time crash-window rules
+/// decide what the worker does with the task, never this function.
 ///
 /// Call on a plain connection, never inside a caller's transaction: the
 /// race-converge path re-reads after a unique violation, which would be
@@ -62,9 +68,31 @@ pub async fn ensure_stage_thread(
         .await
         .map_err(|source| AgentRuntimeError::database("finding the stage task's thread", source))?;
 
-    let thread = match existing {
-        Some(thread) => thread,
-        None => create_stage_thread(conn, job, task, binding).await?,
+    let (thread, binding) = match existing {
+        Some(thread) => {
+            let stored = PgAgentBindingVersionRepository
+                .find_by_id(conn, thread.binding_version_id())
+                .await
+                .map_err(|source| {
+                    AgentRuntimeError::database("loading the thread's recorded binding", source)
+                })?
+                .ok_or_else(|| {
+                    // Binding rows are never deleted while a thread
+                    // references them; absence is a consistency fault.
+                    AgentRuntimeError::database(
+                        "loading the thread's recorded binding",
+                        DbError::NotFound {
+                            entity: "agent_binding_version",
+                            id: thread.binding_version_id().to_string(),
+                        },
+                    )
+                })?;
+            (thread, stored)
+        }
+        None => (
+            create_stage_thread(conn, job, task, binding).await?,
+            binding.clone(),
+        ),
     };
 
     let thread = if thread.status() == AgentThreadStatus::Queued {
@@ -102,7 +130,7 @@ pub async fn ensure_stage_thread(
     Ok(StageThread {
         thread,
         input,
-        binding: binding.clone(),
+        binding,
     })
 }
 
