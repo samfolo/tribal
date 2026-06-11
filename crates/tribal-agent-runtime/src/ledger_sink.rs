@@ -160,7 +160,8 @@ mod tests {
     use std::time::Duration;
 
     use tribal_domain::{
-        AgentThreadId, CompletionUsage, EmbeddingPurpose, EmbeddingUsage, JobId, TaskId, UsageOwner,
+        AgentThreadId, AgentThreadRecordId, CompletionUsage, EmbeddingPurpose, EmbeddingUsage,
+        JobId, ReindexRunId, TaskId, UsageOwner,
     };
 
     use super::*;
@@ -170,7 +171,7 @@ mod tests {
             job_id: JobId::new(),
             task_id: TaskId::new(),
             thread_id: AgentThreadId::new(),
-            record_id: None,
+            record_id: Some(AgentThreadRecordId::new()),
             attempt,
         }
     }
@@ -220,6 +221,8 @@ mod tests {
         assert_eq!(row.job_id, owner.job_id());
         assert_eq!(row.task_id, owner.task_id());
         assert_eq!(row.agent_thread_id, owner.agent_thread_id());
+        assert_eq!(row.agent_thread_record_id, owner.agent_thread_record_id());
+        assert!(row.agent_thread_record_id.is_some());
         assert_eq!(row.attempt, 3);
         assert_eq!(row.tokens_input, 100);
         assert_eq!(row.tokens_output, 50);
@@ -227,6 +230,30 @@ mod tests {
         assert_eq!(row.tokens_cache_write, 20);
         assert_eq!(row.latency_ms, 500);
         assert_eq!(row.trace_id.as_deref(), Some("trace-9"));
+    }
+
+    #[test]
+    fn test_reindex_row_carries_the_run_column_alone() {
+        let run_id = ReindexRunId::new();
+        let attribution = UsageAttribution {
+            owner: UsageOwner::Reindex { run_id },
+            ..UsageAttribution::default()
+        };
+
+        let row = PgLedgerSink::new_token_usage(
+            &an_embedding_usage(),
+            TokenUsageStage::Embedding {
+                purpose: EmbeddingPurpose::Candidate,
+            },
+            &attribution,
+        );
+
+        assert_eq!(row.reindex_run_id, Some(run_id));
+        assert_eq!(row.job_id, None);
+        assert_eq!(row.task_id, None);
+        assert_eq!(row.agent_thread_id, None);
+        assert_eq!(row.agent_thread_record_id, None);
+        assert_eq!(row.attempt, 0);
     }
 
     #[test]

@@ -254,7 +254,8 @@ impl From<TaskType> for TokenUsageStage {
 /// single mapping point between owners and columns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum UsageOwner {
-    /// No owner: read-path queries and provider probes.
+    /// No owner: spend with no job, run, or thread to attribute to, such
+    /// as read-path queries, provider probes, and startup backfills.
     #[default]
     Unowned,
     /// A pipeline stage execution: the task it runs, that task's job, and
@@ -340,16 +341,6 @@ impl UsageOwner {
 mod tests {
     use super::*;
 
-    fn a_pipeline_owner() -> UsageOwner {
-        UsageOwner::Pipeline {
-            job_id: JobId::new(),
-            task_id: TaskId::new(),
-            thread_id: AgentThreadId::new(),
-            record_id: Some(AgentThreadRecordId::new()),
-            attempt: 3,
-        }
-    }
-
     #[test]
     fn test_unowned_maps_to_no_columns() {
         let owner = UsageOwner::Unowned;
@@ -364,12 +355,22 @@ mod tests {
 
     #[test]
     fn test_pipeline_owner_maps_to_job_task_and_thread_columns() {
-        let owner = a_pipeline_owner();
+        let job_id = JobId::new();
+        let task_id = TaskId::new();
+        let thread_id = AgentThreadId::new();
+        let record_id = AgentThreadRecordId::new();
+        let owner = UsageOwner::Pipeline {
+            job_id,
+            task_id,
+            thread_id,
+            record_id: Some(record_id),
+            attempt: 3,
+        };
 
-        assert!(owner.job_id().is_some());
-        assert!(owner.task_id().is_some());
-        assert!(owner.agent_thread_id().is_some());
-        assert!(owner.agent_thread_record_id().is_some());
+        assert_eq!(owner.job_id(), Some(job_id));
+        assert_eq!(owner.task_id(), Some(task_id));
+        assert_eq!(owner.agent_thread_id(), Some(thread_id));
+        assert_eq!(owner.agent_thread_record_id(), Some(record_id));
         assert_eq!(owner.attempt(), 3);
         assert_eq!(owner.reindex_run_id(), None);
     }
