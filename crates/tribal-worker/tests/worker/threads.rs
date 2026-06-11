@@ -419,7 +419,12 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
     let cancelled_now = tribal_worker::coupling::cancel_thread(&mut conn, &thread_b_read)
         .await
         .expect("cancel fallback");
-    assert!(cancelled_now);
+    assert!(matches!(
+        cancelled_now,
+        tribal_worker::coupling::CancelThreadOutcome::Cancelled {
+            notification: Some(notice),
+        } if notice.job_id == job_b && notice.state == tribal_domain::JobState::Failed
+    ));
 
     let cancelled = PgAgentThreadRepository
         .find_by_id(&mut conn, thread_b.thread.id())
@@ -608,6 +613,562 @@ async fn test_a_stale_lease_cannot_commit_an_input_record() {
         .await
         .expect("log");
     assert!(records.is_empty(), "the rejected commit left no record");
+
+    teardown(ctx).await;
+}
+
+/// A stale claimed thread-driving task within its retry budget is
+/// re-queued by the thread-aware reclaim without touching its thread.
+#[tokio::test]
+async fn test_thread_aware_reclaim_requeues_without_touching_the_thread() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "thread-reclaim-requeue").await;
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "crashed-worker")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+        .await
+        .expect("thread");
+    let status_before = stage_thread.thread.status();
+    backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
+
+    let worker = build_test_worker(
+        pool.clone(),
+        CancellationToken::new(),
+        test_config(),
+        None,
+        None,
+    )
+    .await;
+    let stats = worker
+        .run_thread_aware_reclaim(
+            10,
+            0,
+            tribal_domain::TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            None,
+        )
+        .await
+        .expect("reclaim");
+
+    assert_eq!(stats.requeued, 1);
+    assert_eq!(stats.recovery_cycles, 0);
+    assert_eq!(stats.exhausted, 0);
+
+    let task_after = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    assert_eq!(task_after.status(), TaskStatus::Queued);
+    assert_eq!(task_after.retry_count(), 1);
+    assert!(task_after.claim_token().is_none());
+
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(thread_after.status(), status_before);
+    assert_eq!(thread_after.recovery_attempts(), 0);
+
+    teardown(ctx).await;
+}
+
+/// Reclaim exhaustion under the production cap dead-letters the thread
+/// and its task and fails the job, in one commit — the task never
+/// strands a running thread behind it.
+#[tokio::test]
+async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let config = test_config();
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "thread-reclaim-exhaust").await;
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "crashed-worker")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+        .await
+        .expect("thread");
+    set_retry_count(&mut conn, task_id, config.task_max_retries).await;
+    backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
+
+    let worker = build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
+    let stats = worker
+        .run_thread_aware_reclaim(
+            10,
+            0,
+            tribal_domain::TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            None,
+        )
+        .await
+        .expect("reclaim");
+
+    assert_eq!(stats.exhausted, 1);
+    assert_eq!(stats.requeued, 0);
+    assert_eq!(stats.recovery_cycles, 0);
+
+    let task_after = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    assert_eq!(task_after.status(), TaskStatus::DeadLetter);
+
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(thread_after.status(), AgentThreadStatus::DeadLetter);
+    assert!(thread_after.completed_at().is_some());
+
+    let job_after = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    assert_eq!(
+        job_after.status(),
+        JobStatus::Failed,
+        "an extraction exhaustion couples the job in the same commit",
+    );
+
+    teardown(ctx).await;
+}
+
+/// With recovery budget remaining, an exhausted retry budget opens a
+/// fresh cycle: the task re-queues with its consecutive counter reset —
+/// never transiting dead-letter — and the thread's cycle counter
+/// advances.
+#[tokio::test]
+async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let config = test_config();
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "thread-reclaim-cycle").await;
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "crashed-worker")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+        .await
+        .expect("thread");
+    let status_before = stage_thread.thread.status();
+    set_retry_count(&mut conn, task_id, config.task_max_retries).await;
+    backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
+
+    let worker = build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
+    let stats = worker
+        .run_thread_aware_reclaim(
+            10,
+            2,
+            tribal_domain::TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            None,
+        )
+        .await
+        .expect("reclaim");
+
+    assert_eq!(stats.recovery_cycles, 1);
+    assert_eq!(stats.requeued, 0);
+    assert_eq!(stats.exhausted, 0);
+
+    let task_after = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    assert_eq!(
+        task_after.status(),
+        TaskStatus::Queued,
+        "a recovery cycle never writes task dead-letter",
+    );
+    assert_eq!(
+        task_after.retry_count(),
+        0,
+        "the consecutive counter resets at cycle start",
+    );
+
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(thread_after.recovery_attempts(), 1);
+    assert_eq!(thread_after.status(), status_before);
+
+    teardown(ctx).await;
+}
+
+/// A worker that claims a task whose thread carries a durable cancel
+/// intent disposes of it without executing a turn: thread cancelled,
+/// task dead-lettered, job coupled. The inference mock would answer a
+/// turn successfully, so a completed thread here means the claim-time
+/// rules were bypassed.
+#[tokio::test]
+async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "claim-dispose-cancel").await;
+    let candidates = vec![a_candidate().content("never sent".to_owned()).build()];
+    let response_json = extraction_response_json(&candidates, &[]);
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    // Fabricate the crash-window state on the still-queued task: its
+    // thread exists and carries a durable intent before any claim.
+    let mut conn = raw_conn(ctx).await;
+    let task = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+        .await
+        .expect("thread");
+    PgAgentThreadRepository
+        .record_cancel_intent(&mut conn, stage_thread.thread.id(), "operator:test")
+        .await
+        .expect("intent");
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(&response_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    let _ = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(
+        thread_after.status(),
+        AgentThreadStatus::Cancelled,
+        "the intent was honoured at the claim boundary, not after a turn",
+    );
+
+    let job_after = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    assert_eq!(job_after.status(), JobStatus::Failed);
+
+    teardown(ctx).await;
+}
+
+/// A worker that claims a task whose thread is already terminal disposes
+/// of the task and couples the job without executing a turn.
+#[tokio::test]
+async fn test_claim_time_disposal_dead_letters_a_task_with_a_terminal_thread() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "claim-dispose-terminal").await;
+    let candidates = vec![a_candidate().content("never sent".to_owned()).build()];
+    let response_json = extraction_response_json(&candidates, &[]);
+
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    // Fabricate the partial history: the thread reached a terminal
+    // status while its task half stayed queued.
+    let mut conn = raw_conn(ctx).await;
+    let task = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+        .await
+        .expect("thread");
+    let moved = PgAgentThreadRepository
+        .complete(
+            &mut conn,
+            stage_thread.thread.id(),
+            tribal_domain::AgentThreadTerminal::Failed,
+            stage_thread.thread.status(),
+        )
+        .await
+        .expect("complete");
+    assert_eq!(moved, 1, "the fabricated terminal transition lands");
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(&response_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    let _ = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(
+        thread_after.status(),
+        AgentThreadStatus::Failed,
+        "disposal leaves the terminal thread untouched",
+    );
+
+    teardown(ctx).await;
+}
+
+/// A worker that claims a task whose thread reads suspended re-blocks
+/// the task and walks away — the defensive arm no committed history
+/// reaches.
+#[tokio::test]
+async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "claim-dispose-suspend").await;
+    let candidates = vec![a_candidate().content("never sent".to_owned()).build()];
+    let response_json = extraction_response_json(&candidates, &[]);
+
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    // Fabricate the unmodelled state: the thread row alone moves to
+    // suspended (no wake-at, no blocked task half).
+    let mut conn = raw_conn(ctx).await;
+    let task = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, binding.id())
+        .await
+        .expect("thread");
+    let moved = PgAgentThreadRepository
+        .suspend(
+            &mut conn,
+            stage_thread.thread.id(),
+            &tribal_domain::AgentThreadSuspension::Timer,
+            None,
+        )
+        .await
+        .expect("suspend the thread half");
+    assert_eq!(moved, 1, "the fabricated suspension lands");
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(a_completion_response(&response_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    poll_task_status(&pool, task_id, TaskStatus::Blocked, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    let task_after = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    assert_eq!(task_after.status(), TaskStatus::Blocked);
+    assert!(task_after.claim_token().is_none());
+
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(thread_after.status(), AgentThreadStatus::Suspended);
 
     teardown(ctx).await;
 }

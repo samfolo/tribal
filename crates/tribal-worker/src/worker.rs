@@ -19,3 +19,4 @@ pub(crate) mod reindex;
 pub(crate) mod reindex_ops;
 
 pub use dispatch::Worker;
+pub use heartbeat::ThreadReclaimStats;

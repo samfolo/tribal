@@ -13,8 +13,19 @@ use tribal_db::{
     TaskRepository,
 };
 use tribal_domain::{
-    AgentThread, JobId, JobOutcome, JobStatus, Task, TaskErrorKind, TaskId, TaskType,
+    AgentThread, JobId, JobOutcome, JobState, JobStatus, Task, TaskErrorKind, TaskId, TaskType,
 };
+
+/// A notification a committed coupling owes its caller: sent to the
+/// job-state watch hub only after the enclosing transaction commits,
+/// never from inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwedNotification {
+    /// The job whose watchers are notified.
+    pub job_id: JobId,
+    /// The state the coupling moved the job towards.
+    pub state: JobState,
+}
 
 /// Fires the triage fan-in when the current task is the last live triage
 /// sibling: upserts the relation task and advances the job to `Relating`.
@@ -70,7 +81,8 @@ pub async fn triage_fan_in(
 /// Couples a task's terminal disposition to its job, exactly as a worker
 /// dead-letter does: the triage fan-in for a triage task, the job-failed
 /// transition for extraction and relation (whose dead-letter means the
-/// job cannot progress).
+/// job cannot progress). Returns the notification the caller owes its
+/// watchers once the transaction commits.
 ///
 /// # Errors
 ///
@@ -80,10 +92,14 @@ pub async fn couple_dead_lettered_task(
     conn: &mut sqlx::PgConnection,
     task: &Task,
     error_message: &str,
-) -> Result<(), DbError> {
+) -> Result<Option<OwedNotification>, DbError> {
     match task.task_type() {
         TaskType::Triage => {
-            triage_fan_in(conn, task.job_id(), task.id()).await?;
+            let fired = triage_fan_in(conn, task.job_id(), task.id()).await?;
+            Ok(fired.then_some(OwedNotification {
+                job_id: task.job_id(),
+                state: JobState::Relating,
+            }))
         }
         TaskType::Extraction | TaskType::Relation => {
             let transition = JobStatusTransition::builder()
@@ -95,16 +111,32 @@ pub async fn couple_dead_lettered_task(
             PgJobRepository
                 .update_status_if_live(conn, task.job_id(), &transition)
                 .await?;
+            Ok(Some(OwedNotification {
+                job_id: task.job_id(),
+                state: JobState::Failed,
+            }))
         }
     }
-    Ok(())
+}
+
+/// What [`cancel_thread`] concluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelThreadOutcome {
+    /// Nothing committed: a live worker owns the boundary, or the thread
+    /// was already terminal or gone.
+    Skipped,
+    /// The cancellation committed; the caller sends the owed
+    /// notification now that the transaction has returned.
+    Cancelled {
+        /// The job coupling's notification, for a thread with a job.
+        notification: Option<OwedNotification>,
+    },
 }
 
 /// Cancels an unclaimed thread and couples its job, in one transaction:
 /// the locked-unclaimed task disposal, the cancellation record and
 /// status, and the launched job coupling. The sweep's cancel fallback and
-/// the control plane share this seam. Returns whether the cancellation
-/// committed.
+/// the control plane share this seam.
 ///
 /// A claimed driving task means a live worker observes the intent at its
 /// own boundary, so this rolls back untouched; a task already terminal
@@ -117,7 +149,7 @@ pub async fn couple_dead_lettered_task(
 pub async fn cancel_thread(
     conn: &mut sqlx::PgConnection,
     thread: &AgentThread,
-) -> Result<bool, AgentRuntimeError> {
+) -> Result<CancelThreadOutcome, AgentRuntimeError> {
     let mut txn = sqlx::Connection::begin(&mut *conn)
         .await
         .map_err(|source| {
@@ -152,7 +184,7 @@ pub async fn cancel_thread(
             if disposed == 0 && !task.status().is_terminal() {
                 // Claimed: the live worker performs the cancel at its own
                 // boundary. Nothing commits.
-                return Ok(false);
+                return Ok(CancelThreadOutcome::Skipped);
             }
             Some(task)
         }
@@ -161,11 +193,12 @@ pub async fn cancel_thread(
 
     let outcome = cancel_thread_in_txn(&mut txn, thread.id()).await?;
     if !matches!(outcome, CancelOutcome::Cancelled) {
-        return Ok(false);
+        return Ok(CancelThreadOutcome::Skipped);
     }
 
+    let mut notification = None;
     if let Some(task) = &task {
-        couple_dead_lettered_task(&mut txn, task, "thread cancelled")
+        notification = couple_dead_lettered_task(&mut txn, task, "thread cancelled")
             .await
             .map_err(|source| AgentRuntimeError::database("coupling the cancelled job", source))?;
     }
@@ -179,5 +212,5 @@ pub async fn cancel_thread(
             },
         )
     })?;
-    Ok(true)
+    Ok(CancelThreadOutcome::Cancelled { notification })
 }

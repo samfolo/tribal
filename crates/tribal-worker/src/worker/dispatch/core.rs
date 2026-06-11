@@ -18,7 +18,7 @@ use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, PgJobRepository, PgPrincipalRepository,
     PgTaskRepository, PrincipalRepository, TaskRepository,
 };
-use tribal_domain::{Job, JobId, JobState, JobStatus, Task, TaskType, span_attrs};
+use tribal_domain::{Job, JobId, JobState, JobStatus, Task, TaskErrorKind, TaskType, span_attrs};
 use tribal_inference::{CompletionStageSpecs, InferenceGateway};
 use tribal_telemetry::MetricsRecorder;
 
@@ -28,7 +28,10 @@ use crate::{
     worker::{
         backfill::BackfillProcessor,
         backoff::BACKOFF_CAP_SECS,
-        heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
+        heartbeat::{
+            HEARTBEAT_EXPIRED_MESSAGE, STARTUP_RECLAIM_LIMIT, STARTUP_RECLAIM_MESSAGE,
+            THREAD_RECOVERY_CAP, run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat,
+        },
         reindex::{drive_reindex_cycle, reconcile_orphan_building_profile},
     },
 };
@@ -157,6 +160,24 @@ impl Worker {
     ///
     /// Returns [`WorkerError`] on database failures.
     pub async fn startup_reclaim(&self) -> Result<u32, WorkerError> {
+        let thread_stats = self
+            .run_thread_aware_reclaim(
+                STARTUP_RECLAIM_LIMIT,
+                THREAD_RECOVERY_CAP,
+                TaskErrorKind::StartupReclaim,
+                STARTUP_RECLAIM_MESSAGE,
+                Some(1),
+            )
+            .await?;
+        if thread_stats.total() > 0 {
+            tracing::info!(
+                requeued = thread_stats.requeued,
+                recovery_cycles = thread_stats.recovery_cycles,
+                exhausted = thread_stats.exhausted,
+                "startup reclaim recovered thread-driving tasks",
+            );
+        }
+
         let stats = run_startup_reclaim(
             &self.pool,
             self.config.task_timeout(),
@@ -175,7 +196,7 @@ impl Worker {
         self.heal_dead_lettered_jobs().await;
         self.heal_stuck_triaging_jobs().await;
 
-        Ok(stats.total())
+        Ok(stats.total().saturating_add(thread_stats.total()))
     }
 
     /// Runs all startup backfill operations.
@@ -535,7 +556,7 @@ impl Worker {
     ///
     /// When `state` is terminal, stamps `terminal_at` on the entry so the
     /// background sweep can evict it after the configured TTL.
-    pub(super) fn notify_job_state(&self, job_id: JobId, state: JobState) {
+    pub(crate) fn notify_job_state(&self, job_id: JobId, state: JobState) {
         if let Some(mut entry) = self.job_state_txs.get_mut(&job_id) {
             let _ = entry.sender.send(state);
             if state.is_terminal() {
@@ -658,6 +679,37 @@ impl Worker {
                     return;
                 }
                 _ = ticker.tick() => {}
+            }
+
+            match self
+                .run_thread_aware_reclaim(
+                    limit,
+                    THREAD_RECOVERY_CAP,
+                    TaskErrorKind::HeartbeatExpired,
+                    HEARTBEAT_EXPIRED_MESSAGE,
+                    None,
+                )
+                .await
+            {
+                Ok(stats) => {
+                    if stats.exhausted > 0 {
+                        tracing::warn!(
+                            requeued = stats.requeued,
+                            recovery_cycles = stats.recovery_cycles,
+                            exhausted = stats.exhausted,
+                            "thread-aware reclaim exhausted threads",
+                        );
+                    } else if stats.total() > 0 {
+                        tracing::info!(
+                            requeued = stats.requeued,
+                            recovery_cycles = stats.recovery_cycles,
+                            "thread-aware reclaim requeued stale tasks",
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "thread-aware reclaim failed");
+                }
             }
 
             match run_reclaim_sweep(

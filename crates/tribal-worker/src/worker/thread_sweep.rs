@@ -37,7 +37,7 @@ impl Worker {
         };
 
         stats.timer_wakes = sweep_timer_wakes(&mut conn).await;
-        stats.cancelled = sweep_cancel_fallback(&mut conn).await;
+        stats.cancelled = sweep_cancel_fallback(self, &mut conn).await;
         stats
     }
 }
@@ -81,7 +81,7 @@ async fn sweep_timer_wakes(conn: &mut sqlx::PgConnection) -> u32 {
 /// worker, or a janitor-spotted orphan) get the cancel transaction. A
 /// claimed task means a live worker will observe the intent at its own
 /// boundary, so the fallback skips it.
-async fn sweep_cancel_fallback(conn: &mut sqlx::PgConnection) -> u32 {
+async fn sweep_cancel_fallback(worker: &Worker, conn: &mut sqlx::PgConnection) -> u32 {
     let intents = match PgAgentThreadRepository
         .find_cancel_intents(conn, SWEEP_BATCH)
         .await
@@ -98,17 +98,21 @@ async fn sweep_cancel_fallback(conn: &mut sqlx::PgConnection) -> u32 {
         // A running thread's worker handles the intent itself unless the
         // worker died; the unclaimed guard inside the transaction is the
         // arbiter, so the sweep simply attempts every candidate. Job
-        // coupling rides the same transaction through the seam.
+        // coupling rides the same transaction through the seam; the owed
+        // notification goes out after it commits.
         match coupling::cancel_thread(conn, &thread).await {
-            Ok(true) => {
+            Ok(coupling::CancelThreadOutcome::Cancelled { notification }) => {
                 cancelled += 1;
+                if let Some(notice) = notification {
+                    worker.notify_job_state(notice.job_id, notice.state);
+                }
                 tracing::info!(
                     thread_id = %thread.id(),
                     status = thread.status().as_str(),
                     "cancel fallback terminated a thread",
                 );
             }
-            Ok(false) => {
+            Ok(coupling::CancelThreadOutcome::Skipped) => {
                 tracing::debug!(thread_id = %thread.id(), "cancel fallback skipped");
             }
             Err(e) => {
