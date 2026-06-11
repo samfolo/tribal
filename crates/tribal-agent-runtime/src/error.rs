@@ -57,7 +57,8 @@ pub enum AgentRuntimeError {
 
 impl AgentRuntimeError {
     /// Wraps a database error with the runtime's context vocabulary.
-    pub(crate) fn database(context: impl Into<String>, source: tribal_db::DbError) -> Self {
+    #[must_use]
+    pub fn database(context: impl Into<String>, source: tribal_db::DbError) -> Self {
         Self::Database {
             context: context.into(),
             source,

@@ -296,6 +296,38 @@ pub trait TaskRepository {
         id: TaskId,
     ) -> Result<u64, DbError>;
 
+    /// Verifies the caller still holds a task's lease, taking a shared
+    /// row lock so the claim cannot move for the rest of the caller's
+    /// transaction: the claim-token guard for transactions that write no
+    /// task column. Returns `true` while the lease holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn holds_claim(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError>;
+
+    /// Terminally dead-letters a claimed task under its claim guard — the
+    /// worker-held cancel disposition, which never consults the retry
+    /// budget. Returns the affected row count (zero means the lease was
+    /// lost).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn dead_letter_claimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError>;
+
     /// Terminally dead-letters an unclaimed live task under a row lock —
     /// the locked-unclaimed guard for non-worker disposers (the cancel
     /// transaction). A row a live worker holds is never selected. Returns
@@ -734,6 +766,55 @@ impl TaskRepository for PgTaskRepository {
         Ok(result.rows_affected())
     }
 
+    async fn holds_claim(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError> {
+        let held: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM tasks WHERE id = $1 AND claim_token = $2 FOR SHARE")
+                .bind(id.inner())
+                .bind(claim_token)
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: format!("verifying the lease on task {id}"),
+                    source: e,
+                })?;
+
+        Ok(held.is_some())
+    }
+
+    async fn dead_letter_claimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET status = 'dead_letter', claim_token = NULL, claimed_by = NULL, \
+                 claimed_at = NULL, heartbeat_at = NULL, error_kind = $3, \
+                 error_message = $4, updated_at = now() \
+             WHERE id = $1 AND claim_token = $2 AND status = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .bind(error_kind.as_str())
+        .bind(error_message)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("dead-lettering claimed task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn dead_letter_unclaimed(
         &self,
         conn: &mut PgConnection,
@@ -741,11 +822,16 @@ impl TaskRepository for PgTaskRepository {
         error_kind: TaskErrorKind,
         error_message: &str,
     ) -> Result<u64, DbError> {
+        let terminal: Vec<&str> = TaskStatus::ALL
+            .iter()
+            .filter(|status| status.is_terminal())
+            .map(TaskStatus::as_str)
+            .collect();
         let result = sqlx::query(
             "WITH target AS ( \
                  SELECT id FROM tasks \
                  WHERE id = $1 AND claim_token IS NULL \
-                   AND status NOT IN ('completed', 'dead_letter') \
+                   AND NOT (status = ANY($4::text[])) \
                  FOR UPDATE \
              ) \
              UPDATE tasks t \
@@ -757,6 +843,7 @@ impl TaskRepository for PgTaskRepository {
         .bind(id.inner())
         .bind(error_kind.as_str())
         .bind(error_message)
+        .bind(&terminal)
         .execute(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {

@@ -8,12 +8,10 @@
 //! wake-at deadline this sweep drives, or a terminal outcome whose
 //! cancel-fallback this sweep performs.
 
-use tribal_agent_runtime::{
-    CancelOutcome, ResolveOutcome, cancel_unclaimed_thread, resolve_stage_thread,
-};
+use tribal_agent_runtime::{ResolveOutcome, resolve_stage_thread};
 use tribal_db::{AgentThreadRepository, PgAgentThreadRepository};
 
-use crate::worker::Worker;
+use crate::worker::{Worker, coupling};
 
 /// How many rows each predicate handles per sweep cycle.
 const SWEEP_BATCH: u32 = 32;
@@ -99,9 +97,10 @@ async fn sweep_cancel_fallback(conn: &mut sqlx::PgConnection) -> u32 {
     for thread in intents {
         // A running thread's worker handles the intent itself unless the
         // worker died; the unclaimed guard inside the transaction is the
-        // arbiter, so the sweep simply attempts every candidate.
-        match cancel_unclaimed_thread(conn, &thread).await {
-            Ok(CancelOutcome::Cancelled) => {
+        // arbiter, so the sweep simply attempts every candidate. Job
+        // coupling rides the same transaction through the seam.
+        match coupling::cancel_thread(conn, &thread).await {
+            Ok(true) => {
                 cancelled += 1;
                 tracing::info!(
                     thread_id = %thread.id(),
@@ -109,8 +108,8 @@ async fn sweep_cancel_fallback(conn: &mut sqlx::PgConnection) -> u32 {
                     "cancel fallback terminated a thread",
                 );
             }
-            Ok(outcome) => {
-                tracing::debug!(thread_id = %thread.id(), ?outcome, "cancel fallback skipped");
+            Ok(false) => {
+                tracing::debug!(thread_id = %thread.id(), "cancel fallback skipped");
             }
             Err(e) => {
                 tracing::warn!(thread_id = %thread.id(), error = %e, "cancel fallback failed");

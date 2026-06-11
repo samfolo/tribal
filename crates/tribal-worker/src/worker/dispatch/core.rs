@@ -470,7 +470,11 @@ impl Worker {
             };
 
             match stage_result {
-                Ok(output) => {
+                Ok(None) => {
+                    // Claim-time disposal: the thread's state decided the
+                    // task's fate without a turn; nothing to commit.
+                }
+                Ok(Some(output)) => {
                     if self.cancellation_token.is_cancelled() {
                         heartbeat.abort();
                         tracing::info!(
@@ -501,8 +505,14 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageRun, StageError> {
+    ) -> Result<Option<StageRun>, StageError> {
         let stage_thread = self.establish_stage_thread(job, task).await?;
+        if self
+            .dispose_for_thread_state(task, &stage_thread.thread)
+            .await?
+        {
+            return Ok(None);
+        }
         let (commit, response) = match task.task_type() {
             TaskType::Extraction => {
                 self.run_extraction(job, task, deadline, &stage_thread)
@@ -514,11 +524,11 @@ impl Worker {
                     .await?
             }
         };
-        Ok(StageRun {
+        Ok(Some(StageRun {
             thread: stage_thread.thread,
             commit,
             response,
-        })
+        }))
     }
 
     /// Sends a typed [`JobState`] to any watch subscribers for the given job.
@@ -677,7 +687,14 @@ impl Worker {
                     }
 
                     self.heal_stuck_triaging_jobs().await;
-                    self.run_thread_sweep().await;
+                    let thread_stats = self.run_thread_sweep().await;
+                    if thread_stats.timer_wakes > 0 || thread_stats.cancelled > 0 {
+                        tracing::info!(
+                            timer_wakes = thread_stats.timer_wakes,
+                            cancelled = thread_stats.cancelled,
+                            "availability sweep converged threads",
+                        );
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "reclaim sweep failed");

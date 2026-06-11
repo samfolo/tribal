@@ -513,16 +513,22 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         conn: &mut PgConnection,
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError> {
+        let terminal: Vec<&str> = AgentThreadStatus::ALL
+            .iter()
+            .filter(|status| status.is_terminal())
+            .map(AgentThreadStatus::as_str)
+            .collect();
         let sql = format!(
             "SELECT {COLUMNS} FROM agent_threads \
              WHERE cancel_requested_at IS NOT NULL \
-               AND status NOT IN ('completed', 'failed', 'cancelled', 'dead_letter') \
+               AND NOT (status = ANY($2::text[])) \
              ORDER BY cancel_requested_at \
              LIMIT $1 \
              FOR UPDATE SKIP LOCKED"
         );
         let rows = sqlx::query(&sql)
             .bind(i64::from(limit))
+            .bind(&terminal)
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {

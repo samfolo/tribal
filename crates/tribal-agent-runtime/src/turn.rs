@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Connection, PgConnection};
 use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, NewAgentThreadRecord,
-    PgAgentThreadRecordRepository, PgAgentThreadRepository,
+    PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository, TaskRepository,
 };
 use tribal_domain::{
     AgentThread, AgentThreadRecord, AgentThreadRecordKind, AgentThreadStatus, AgentThreadTerminal,
-    CompletionResponse, ExecutionSpend, PromptVersionId,
+    CompletionResponse, ExecutionSpend, PromptVersionId, TaskId,
 };
 use tribal_telemetry::{current_span_id, current_trace_id};
 
@@ -99,6 +99,7 @@ struct RecordedUsage {
 // ---------------------------------------------------------------------------
 
 /// A turn ready to call: the conversation to send, durably committed.
+#[derive(Debug)]
 pub struct BegunTurn {
     /// The conversation to send — the committed input verbatim, whether
     /// this attempt rendered it or a prior one did.
@@ -111,15 +112,22 @@ pub struct BegunTurn {
 /// The input commits in its own transaction before any wire call: what
 /// was sent is durable even if the process dies mid-call, and at-least-
 /// once re-execution sends byte-identical content rather than
-/// re-rendering against drifted sources.
+/// re-rendering against drifted sources. The transaction carries the
+/// driving task's claim guard (a shared lock on the lease), so a zombie
+/// worker's write fails on ownership, deterministically — never by the
+/// luck of a seq collision, which the locked tail-append makes
+/// impossible anyway.
 ///
 /// # Errors
 ///
-/// Returns [`AgentRuntimeError::ContentSerialisation`] on a format fault
-/// and [`AgentRuntimeError::Database`] on database errors.
+/// Returns [`AgentRuntimeError::LeaseLost`] when the claim guard misses
+/// (nothing committed), [`AgentRuntimeError::ContentSerialisation`] on a
+/// format fault, and [`AgentRuntimeError::Database`] on database errors.
 pub async fn begin_one_shot(
     conn: &mut PgConnection,
     thread: &AgentThread,
+    task_id: TaskId,
+    claim_token: uuid::Uuid,
     committed_input: Option<&AgentThreadRecord>,
     rendered: RenderedConversation,
 ) -> Result<BegunTurn, AgentRuntimeError> {
@@ -149,9 +157,16 @@ pub async fn begin_one_shot(
         .await
         .map_err(|source| db_failure("beginning the input-record transaction", source))?;
 
-    // Lock before seq derivation; for a stage thread the claim already
-    // excludes rival writers, so this is the categorical rule, not a
-    // contended path.
+    // Lock order: the driving task's lease first (the guard), then the
+    // thread row for the seq derivation.
+    let held = PgTaskRepository
+        .holds_claim(&mut txn, task_id, claim_token)
+        .await
+        .map_err(|source| AgentRuntimeError::database("verifying the lease", source))?;
+    if !held {
+        return Err(AgentRuntimeError::LeaseLost { task_id });
+    }
+
     PgAgentThreadRepository
         .lock(&mut txn, thread.id())
         .await
@@ -188,6 +203,7 @@ pub async fn begin_one_shot(
 // ---------------------------------------------------------------------------
 
 /// The committed terminal: what the caller's transaction now carries.
+#[derive(Debug)]
 pub struct OneShotOutcome {
     /// The committed assistant-message record.
     pub assistant_record: AgentThreadRecord,
@@ -328,4 +344,33 @@ fn db_failure(context: &str, source: sqlx::Error) -> AgentRuntimeError {
             source,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rendered_conversation_carries_its_content_kind_tag() {
+        // The serde tag and the discriminator constant are two spellings
+        // of one string (attribute macros cannot reference consts); this
+        // pins them together.
+        let rendered = RenderedConversation {
+            system: None,
+            messages: vec![],
+            system_prompt_version_id: None,
+            user_prompt_version_id: None,
+        };
+        let value = serde_json::to_value(&rendered).expect("serialises");
+        assert_eq!(
+            value
+                .get("content_kind")
+                .and_then(serde_json::Value::as_str),
+            Some(RENDERED_CONVERSATION_KIND),
+        );
+        assert!(is_rendered_conversation(&value));
+        assert!(!is_rendered_conversation(
+            &serde_json::json!({"cause": "timer"})
+        ));
+    }
 }

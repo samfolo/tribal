@@ -21,7 +21,7 @@ pub use error::AgentRuntimeError;
 pub use ledger_sink::PgLedgerSink;
 pub use store::{StageThread, ensure_stage_thread};
 pub use transitions::{
-    CancelOutcome, ResolveOutcome, SuspendOutcome, cancel_unclaimed_thread, resolve_stage_thread,
+    CancelOutcome, ResolveOutcome, SuspendOutcome, cancel_thread_in_txn, resolve_stage_thread,
     suspend_stage_thread,
 };
 pub use turn::{

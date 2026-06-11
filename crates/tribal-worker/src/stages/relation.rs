@@ -210,10 +210,10 @@ impl Worker {
                 );
             }
 
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let request = self
                 .bracket_one_shot(STAGE_RELATION, stage_thread, ctx.job, task, request)
                 .await?;
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
                 .gateway()
                 .complete(

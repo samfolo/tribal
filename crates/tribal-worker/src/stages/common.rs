@@ -1,7 +1,8 @@
 //! Shared utilities and types for pipeline stage implementations.
 
 use tribal_agent_runtime::{
-    StageThread, begin_one_shot, commit_noop_terminal, commit_one_shot_terminal,
+    RecordedMessage, RenderedConversation, StageThread, begin_one_shot, commit_noop_terminal,
+    commit_one_shot_terminal,
 };
 use tribal_common::clamp_to_i32;
 use tribal_db::{
@@ -19,7 +20,11 @@ use tribal_inference::{
     CompletionRequest, EmbeddingTarget, InferenceError, Message, Role, UsageAttribution,
 };
 
-use crate::{error::StageError, tag_resolution::NewTagWithEmbedding, worker::Worker};
+use crate::{
+    error::StageError,
+    tag_resolution::NewTagWithEmbedding,
+    worker::{Worker, map_runtime_error},
+};
 
 // ---------------------------------------------------------------------------
 // StageCommit
@@ -423,12 +428,12 @@ impl Worker {
         request: CompletionRequest,
     ) -> Result<CompletionRequest, StageError> {
         let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
-        let rendered = tribal_agent_runtime::RenderedConversation {
+        let rendered = RenderedConversation {
             system: request.system.clone(),
             messages: request
                 .messages
                 .iter()
-                .map(|m| tribal_agent_runtime::RecordedMessage {
+                .map(|m| RecordedMessage {
                     role: m.role.as_str().to_owned(),
                     content: m.content.clone(),
                 })
@@ -449,16 +454,19 @@ impl Worker {
                     source: e,
                 },
             })?;
+        let Some(claim_token) = task.claim_token() else {
+            return Err(StageError::OwnershipLost);
+        };
         let begun = begin_one_shot(
             &mut conn,
             &stage_thread.thread,
+            task.id(),
+            claim_token,
             stage_thread.input.as_ref(),
             rendered,
         )
         .await
-        .map_err(|source| {
-            crate::worker::map_runtime_error(stage, "committing the input record", source)
-        })?;
+        .map_err(|source| map_runtime_error(stage, "committing the input record", source))?;
 
         Ok(CompletionRequest {
             system: begun.conversation.system,
@@ -467,8 +475,12 @@ impl Worker {
                 .messages
                 .into_iter()
                 .map(|m| Message {
+                    // The one-shot bracket only ever records the two wire
+                    // roles; an unrecognised string (a future format's
+                    // role) downgrades to User rather than dropping the
+                    // message, keeping resume total.
                     role: match m.role.as_str() {
-                        "assistant" => Role::Assistant,
+                        role if role == Role::Assistant.as_str() => Role::Assistant,
                         _ => Role::User,
                     },
                     content: m.content,
@@ -496,7 +508,5 @@ pub(crate) async fn finish_thread(
             .map(|_| ()),
         None => commit_noop_terminal(txn, thread).await,
     };
-    outcome.map_err(|source| {
-        crate::worker::map_runtime_error(stage, "committing the thread terminal", source)
-    })
+    outcome.map_err(|source| map_runtime_error(stage, "committing the thread terminal", source))
 }

@@ -6,14 +6,23 @@
 //! execution to the runtime. The default binding is one-shot with no
 //! tools and no budget caps, reproducing launched behaviour exactly.
 
-use tribal_agent_runtime::{AgentRuntimeError, StageThread, ensure_stage_thread, resolve_binding};
-use tribal_db::{PgPromptVersionRepository, PromptVersionRepository};
+use tribal_agent_runtime::{
+    AgentRuntimeError, StageThread, cancel_thread_in_txn, ensure_stage_thread, resolve_binding,
+};
+use tribal_db::{
+    PgPromptVersionRepository, PgTaskRepository, PromptVersionRepository, TaskRepository as _,
+};
 use tribal_domain::{
-    AgentDefinition, ExecutionBudgets, Job, PromptVersionId, StageExecutorKind, Task,
+    AgentDefinition, AgentThread, AgentThreadStatus, ExecutionBudgets, Job, PromptVersionId,
+    StageExecutorKind, Task, TaskErrorKind, TaskType,
 };
 use tribal_inference::{CompletionStageSpec, CompletionStageSpecs};
 
-use crate::{error::StageError, worker::Worker};
+use crate::{
+    error::StageError,
+    stages::prompt_version_ids_for_task,
+    worker::{Worker, coupling},
+};
 
 impl Worker {
     /// Establishes the thread a claimed stage task drives: derives the
@@ -54,6 +63,144 @@ impl Worker {
             .map_err(|source| map_runtime_error(stage, "establishing the thread", source))
     }
 
+    /// Applies the claim-time crash-window rules: a worker that claims a
+    /// task whose thread is suspended, terminal, or carries a durable
+    /// cancellation intent disposes of the task accordingly and never
+    /// executes — a cancelled thread never starts a turn after the intent
+    /// is visible at a claim. Returns `true` when the task was disposed
+    /// (the stage must not run).
+    pub(crate) async fn dispose_for_thread_state(
+        &self,
+        task: &Task,
+        thread: &AgentThread,
+    ) -> Result<bool, StageError> {
+        let stage = task.task_type().as_str();
+        let claim_token = task.claim_token().ok_or(StageError::OwnershipLost)?;
+
+        let intent_pending = thread.cancel_requested_at().is_some();
+        let needs_disposal = intent_pending
+            || thread.status().is_terminal()
+            || thread.status() == AgentThreadStatus::Suspended;
+        if !needs_disposal {
+            return Ok(false);
+        }
+
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: stage.into(),
+                context: "acquiring connection for claim-time disposal".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
+        let mut txn =
+            sqlx::Connection::begin(&mut *conn)
+                .await
+                .map_err(|e| StageError::Database {
+                    stage: stage.into(),
+                    context: "beginning the disposal transaction".into(),
+                    source: tribal_db::DbError::QueryFailed {
+                        context: "begin".into(),
+                        source: e,
+                    },
+                })?;
+
+        if intent_pending && !thread.status().is_terminal() {
+            // The worker-held cancel: claim-guarded task dead-letter, the
+            // cancellation record and status, and the job coupling.
+            let rows = PgTaskRepository
+                .dead_letter_claimed(
+                    &mut txn,
+                    task.id(),
+                    claim_token,
+                    TaskErrorKind::InternalError,
+                    "thread cancelled",
+                )
+                .await
+                .map_err(|e| stage_db(stage, "dead-lettering the cancelled task", e))?;
+            if rows == 0 {
+                return Err(StageError::OwnershipLost);
+            }
+            cancel_thread_in_txn(&mut txn, thread.id())
+                .await
+                .map_err(|source| map_runtime_error(stage, "cancelling the thread", source))?;
+            coupling::couple_dead_lettered_task(&mut txn, task, "thread cancelled")
+                .await
+                .map_err(|e| stage_db(stage, "coupling the cancelled job", e))?;
+        } else {
+            match thread.status() {
+                AgentThreadStatus::Suspended => {
+                    // A crash-window leftover: the suspend committed but the
+                    // claim outlived it. Re-block and walk away.
+                    let rows = PgTaskRepository
+                        .block(&mut txn, task.id(), claim_token)
+                        .await
+                        .map_err(|e| stage_db(stage, "re-blocking the suspended task", e))?;
+                    if rows == 0 {
+                        return Err(StageError::OwnershipLost);
+                    }
+                }
+                AgentThreadStatus::Completed => {
+                    // The thread's terminal commit landed but the task half
+                    // was re-queued (mid-upgrade or partial history): finish
+                    // the task and fire the idempotent coupling.
+                    let rows = PgTaskRepository
+                        .complete(&mut txn, task.id(), claim_token)
+                        .await
+                        .map_err(|e| stage_db(stage, "completing the disposed task", e))?;
+                    if rows == 0 {
+                        return Err(StageError::OwnershipLost);
+                    }
+                    if task.task_type() == TaskType::Triage {
+                        coupling::triage_fan_in(&mut txn, task.job_id(), task.id())
+                            .await
+                            .map_err(|e| stage_db(stage, "fan-in for the disposed task", e))?;
+                    }
+                }
+                _ => {
+                    let rows = PgTaskRepository
+                        .dead_letter_claimed(
+                            &mut txn,
+                            task.id(),
+                            claim_token,
+                            TaskErrorKind::InternalError,
+                            "thread already terminal",
+                        )
+                        .await
+                        .map_err(|e| stage_db(stage, "dead-lettering the disposed task", e))?;
+                    if rows == 0 {
+                        return Err(StageError::OwnershipLost);
+                    }
+                    coupling::couple_dead_lettered_task(&mut txn, task, "thread already terminal")
+                        .await
+                        .map_err(|e| stage_db(stage, "coupling the disposed job", e))?;
+                }
+            }
+        }
+
+        txn.commit().await.map_err(|e| StageError::Database {
+            stage: stage.into(),
+            context: "committing the disposal transaction".into(),
+            source: tribal_db::DbError::QueryFailed {
+                context: "commit".into(),
+                source: e,
+            },
+        })?;
+
+        tracing::warn!(
+            task_id = %task.id(),
+            thread_id = %thread.id(),
+            thread_status = thread.status().as_str(),
+            intent_pending,
+            "claim-time disposal: the task never executed",
+        );
+        Ok(true)
+    }
+
     /// Builds the stage's definition from its boot-time endpoint spec and
     /// the job's prompt versions' content hashes, so a prompt edit, model
     /// change, or endpoint change is a new binding version.
@@ -64,7 +211,7 @@ impl Worker {
         task: &Task,
     ) -> Result<AgentDefinition, AgentRuntimeError> {
         let spec = stage_spec(self.stage_specs(), task);
-        let (system_pv_id, user_pv_id) = crate::stages::prompt_version_ids_for_task(job, task);
+        let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
 
         let system_hash = prompt_hash(conn, system_pv_id).await?;
         let user_hash = prompt_hash(conn, user_pv_id).await?;
@@ -85,9 +232,9 @@ impl Worker {
 /// Selects the boot-time endpoint spec for a task's stage.
 fn stage_spec<'a>(specs: &'a CompletionStageSpecs, task: &Task) -> &'a CompletionStageSpec {
     match task.task_type() {
-        tribal_domain::TaskType::Extraction => &specs.extraction,
-        tribal_domain::TaskType::Triage => &specs.triage,
-        tribal_domain::TaskType::Relation => &specs.relation,
+        TaskType::Extraction => &specs.extraction,
+        TaskType::Triage => &specs.triage,
+        TaskType::Relation => &specs.relation,
     }
 }
 
@@ -131,5 +278,14 @@ pub(crate) fn map_runtime_error(
             context: context.to_owned(),
             source,
         },
+    }
+}
+
+/// Shorthand for the disposal transaction's database-error mapping.
+fn stage_db(stage: &str, context: &str, source: tribal_db::DbError) -> StageError {
+    StageError::Database {
+        stage: stage.into(),
+        context: context.to_owned(),
+        source,
     }
 }

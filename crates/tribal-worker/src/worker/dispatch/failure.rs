@@ -161,11 +161,21 @@ impl Worker {
             let moved = PgAgentThreadRepository
                 .complete(&mut txn, thread.id(), terminal, AgentThreadStatus::Running)
                 .await?;
+            // A thread that never reached running (its mark-running CAS
+            // failed on every attempt) would otherwise strand queued
+            // forever with a dead-lettered task no sweep targets.
+            let moved = if moved == 0 {
+                PgAgentThreadRepository
+                    .complete(&mut txn, thread.id(), terminal, AgentThreadStatus::Queued)
+                    .await?
+            } else {
+                moved
+            };
             if moved == 0 {
                 tracing::warn!(
                     task_id = %task.id(),
                     thread_id = %thread.id(),
-                    "thread was not running at task dead-letter; leaving its status",
+                    "thread was neither running nor queued at task dead-letter; leaving its status",
                 );
             }
         }

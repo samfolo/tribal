@@ -345,6 +345,7 @@ impl Job {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{enum_serde_tests, enum_text_tests};
 
     #[test]
     fn test_all_covers_every_status() {
@@ -362,7 +363,6 @@ mod tests {
         }
         assert_eq!(JobStatus::ALL.len(), 6);
     }
-    use crate::{enum_serde_tests, enum_text_tests};
 
     enum_serde_tests!(test_job_status_serde_roundtrip, JobStatus {
         JobStatus::Queued => "queued",

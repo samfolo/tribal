@@ -6,9 +6,9 @@
 //! CAS plus a lock on the driving-task row wherever they dispose of it.
 //! Zero-row CAS misses, deadlock aborts, and serialisation failures are
 //! retryable; every retry loop is bounded and a terminal status ends
-//! every loop. No production path suspends until the agentic loop ships;
-//! these transitions are exercised by the runtime's own tests, which is
-//! the ticket's stated expectation.
+//! every loop. No production path suspends until the agentic loop
+//! ships; until then these transitions are exercised by the runtime's
+//! own tests.
 
 use serde::Serialize;
 use sqlx::{Connection, PgConnection};
@@ -18,7 +18,7 @@ use tribal_db::{
 };
 use tribal_domain::{
     AgentThread, AgentThreadId, AgentThreadRecordKind, AgentThreadStatus, AgentThreadSuspension,
-    AgentThreadTerminal, TaskErrorKind, TaskId,
+    AgentThreadTerminal, TaskId,
 };
 use tribal_telemetry::{current_span_id, current_trace_id};
 
@@ -217,51 +217,24 @@ pub enum ResolveOutcome {
 // Cancel
 // ---------------------------------------------------------------------------
 
-/// Cancels an unclaimed thread under the locked-unclaimed guard: one
-/// transaction commits the cancellation record, the thread's cancelled
-/// status, and the unclaimed driving task's dead-letter disposition (a
-/// cancelled stage deliberately reads as a failed task on the launched
-/// surface).
+/// Commits the cancellation record and the thread's cancelled status
+/// inside the caller's transaction, composing with the caller's task
+/// disposal (claim-guarded for a worker, locked-unclaimed for a sweep)
+/// and job coupling so the whole cancellation is one atomic commit.
 ///
-/// This is the sweep-fallback and janitor path. A worker observing the
-/// intent at a turn boundary or claim performs the same transaction with
-/// its claim token as the guard instead. Job coupling is the caller's:
-/// the worker composes it through the coupling seam after this commits
-/// zero rows of job state.
+/// Locks the thread row before deriving the seq. The caller disposes of
+/// the driving task before calling, honouring the lock order.
 ///
 /// # Errors
 ///
 /// Returns [`AgentRuntimeError::Database`] and serialisation errors of
 /// the parts.
-pub async fn cancel_unclaimed_thread(
-    conn: &mut PgConnection,
-    thread: &AgentThread,
+pub async fn cancel_thread_in_txn(
+    txn: &mut PgConnection,
+    thread_id: AgentThreadId,
 ) -> Result<CancelOutcome, AgentRuntimeError> {
-    let mut txn = begin(conn, "beginning the cancel transaction").await?;
-
-    // The locked-unclaimed guard on the driving task: a row a live worker
-    // holds is never disposed of from outside.
-    if let Some(task_id) = thread.stage_task_id() {
-        let disposed = PgTaskRepository
-            .dead_letter_unclaimed(
-                &mut txn,
-                task_id,
-                TaskErrorKind::InternalError,
-                "thread cancelled",
-            )
-            .await
-            .map_err(|source| {
-                AgentRuntimeError::database("disposing of the unclaimed driving task", source)
-            })?;
-        if disposed == 0 {
-            // Claimed (a worker is live: it observes the intent at its
-            // own boundary) or already terminal. Nothing commits here.
-            return Ok(CancelOutcome::TaskHeld);
-        }
-    }
-
     let locked = PgAgentThreadRepository
-        .lock(&mut txn, thread.id())
+        .lock(txn, thread_id)
         .await
         .map_err(|source| AgentRuntimeError::database("locking the thread for cancel", source))?;
     let Some(current) = locked else {
@@ -271,12 +244,12 @@ pub async fn cancel_unclaimed_thread(
         return Ok(CancelOutcome::AlreadyTerminal);
     }
 
-    let seq = next_seq(&mut txn, thread.id()).await?;
+    let seq = next_seq(txn, thread_id).await?;
     PgAgentThreadRecordRepository
         .append(
-            &mut txn,
+            txn,
             &NewAgentThreadRecord::builder()
-                .thread_id(thread.id())
+                .thread_id(thread_id)
                 .seq(seq)
                 .kind(AgentThreadRecordKind::Cancellation)
                 .content(serde_json::json!({
@@ -294,8 +267,8 @@ pub async fn cancel_unclaimed_thread(
 
     let moved = PgAgentThreadRepository
         .complete(
-            &mut txn,
-            thread.id(),
+            txn,
+            thread_id,
             AgentThreadTerminal::Cancelled,
             current.status(),
         )
@@ -303,23 +276,20 @@ pub async fn cancel_unclaimed_thread(
         .map_err(|source| AgentRuntimeError::database("cancelling the thread", source))?;
     if moved == 0 {
         return Err(AgentRuntimeError::StatusCasMissed {
-            thread_id: thread.id(),
+            thread_id,
             expected: current.status(),
         });
     }
 
-    commit(txn, "committing the cancel transaction").await?;
     Ok(CancelOutcome::Cancelled)
 }
 
 /// What a cancel attempt concluded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelOutcome {
-    /// The cancellation committed; the caller couples job state next.
+    /// The cancellation committed; the caller couples job state in the
+    /// same transaction.
     Cancelled,
-    /// The driving task is claimed: the live worker observes the intent
-    /// at its own boundary; nothing committed.
-    TaskHeld,
     /// The thread was already terminal; the intent is harmless dead data.
     AlreadyTerminal,
     /// The thread row no longer exists; nothing committed.
