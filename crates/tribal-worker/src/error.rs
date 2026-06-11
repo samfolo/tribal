@@ -144,8 +144,7 @@ impl StageError {
             Self::Parse { .. } => TaskErrorKind::ParseError,
             Self::OwnershipLost => TaskErrorKind::OwnershipLost,
             Self::Timeout { .. } => TaskErrorKind::Timeout,
-            Self::TemplateRender { .. } => TaskErrorKind::InternalError,
-            Self::Runtime { .. } => TaskErrorKind::InternalError,
+            Self::TemplateRender { .. } | Self::Runtime { .. } => TaskErrorKind::InternalError,
             Self::Database { .. } => TaskErrorKind::DatabaseError,
         }
     }
