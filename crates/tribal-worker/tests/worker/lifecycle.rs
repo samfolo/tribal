@@ -509,29 +509,26 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     .await;
 
     // Simulate external reclaim: backdate the heartbeat far beyond the
-    // timeout window, then call reclaim_stale to requeue the task.
-    // This clears the claim_token, causing the next heartbeat tick to
-    // return 0 rows and fire the ownership_lost signal.
+    // timeout window, then run the thread-aware reclaim (the executed
+    // task drives a thread, so the legacy bulk scan excludes it). This
+    // clears the claim_token, causing the next heartbeat tick to return
+    // 0 rows and fire the ownership_lost signal. The large flat backoff
+    // keeps the requeued task's available_at far in the future, so the
+    // worker's poll loop cannot re-claim it before the test asserts.
     {
         let mut conn = raw_conn(ctx).await;
         backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
-
-        // Use a large flat backoff so the requeued task's available_at
-        // is far in the future, preventing the worker's poll loop from
-        // re-claiming it before the test asserts.
-        PgTaskRepository
-            .reclaim_stale(
-                &mut conn,
-                10,
-                3,
-                10,
-                TaskErrorKind::HeartbeatExpired,
-                "heartbeat_expired",
-                Some(3600),
-            )
-            .await
-            .expect("reclaim stale");
     }
+    worker
+        .run_thread_aware_reclaim(
+            10,
+            0,
+            TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            Some(3600),
+        )
+        .await
+        .expect("thread-aware reclaim");
 
     // Poll until the heartbeat detects ownership loss and the task
     // is requeued.

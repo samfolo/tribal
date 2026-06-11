@@ -155,6 +155,9 @@ pub struct AgentDefinition {
     pub base_url: String,
     /// The effective (post-reconcile) sampling parameters the stage's
     /// calls carry, so a temperature edit is a new binding version.
+    /// Defaulted on read so rows written before the field existed
+    /// deserialise; the canonical serialisation always emits it.
+    #[serde(default)]
     pub parameters: StageParameters,
     /// Content hashes of the stage's system and user prompts, in role
     /// order, so a prompt edit is a new binding version.
@@ -193,9 +196,10 @@ impl AgentDefinition {
         }
     }
 
-    /// Canonically serialises the definition: `serde_json`'s
-    /// deterministic lexicographically-ordered object keys, the form the
-    /// content address hashes.
+    /// Canonically serialises the definition: compact JSON with fields
+    /// in declaration order (guaranteed by serde for structs), the form
+    /// the content address hashes. Renaming, reordering, or adding a
+    /// field changes every binding hash.
     ///
     /// # Errors
     ///
@@ -299,42 +303,42 @@ mod tests {
     }
 
     #[test]
-    fn test_definition_serialisation_is_field_stable() {
-        // The content address hashes this serialisation: field renames or
-        // reorderings are version-breaking, which this snapshot of the
-        // key set pins.
-        let definition = AgentDefinition::builder()
-            .pipeline_stage(TaskType::Extraction)
-            .executor(StageExecutorKind::OneShot)
-            .provider(ProviderKind::Ollama)
-            .model("llama3".to_owned())
-            .base_url("http://localhost:11434".to_owned())
-            .parameters(StageParameters::default())
-            .prompt_hashes(vec!["a".repeat(64)])
-            .budgets(ExecutionBudgets::default())
-            .tools(vec![])
-            .build();
+    fn test_definition_canonical_serialisation_is_byte_stable() {
+        // The content address hashes this exact byte sequence: renaming,
+        // reordering, or adding a field is version-breaking, which this
+        // snapshot pins byte-for-byte. (`serde_json::to_value` would sort
+        // keys and hide a reorder; the canonical string does not.)
+        let definition = AgentDefinition::one_shot(
+            TaskType::Extraction,
+            ProviderKind::Ollama,
+            "llama3".to_owned(),
+            "http://localhost:11434".to_owned(),
+            StageParameters {
+                temperature: Some(0.2),
+                max_tokens: Some(4096),
+            },
+            "a".repeat(64),
+            "b".repeat(64),
+        );
 
-        let json = serde_json::to_value(&definition).expect("definition serialises");
-        let keys: Vec<&str> = json
-            .as_object()
-            .expect("definition is an object")
-            .keys()
-            .map(String::as_str)
-            .collect();
+        let expected = format!(
+            concat!(
+                "{{\"pipeline_stage\":\"extraction\",",
+                "\"executor\":\"one_shot\",",
+                "\"provider\":\"ollama\",",
+                "\"model\":\"llama3\",",
+                "\"base_url\":\"http://localhost:11434\",",
+                "\"parameters\":{{\"temperature\":0.2,\"max_tokens\":4096}},",
+                "\"prompt_hashes\":[\"{a}\",\"{b}\"],",
+                "\"budgets\":{{\"max_total_tokens\":null,\"max_turns\":null}},",
+                "\"tools\":[]}}"
+            ),
+            a = "a".repeat(64),
+            b = "b".repeat(64),
+        );
         assert_eq!(
-            keys,
-            [
-                "base_url",
-                "budgets",
-                "executor",
-                "model",
-                "parameters",
-                "pipeline_stage",
-                "prompt_hashes",
-                "provider",
-                "tools",
-            ],
+            definition.canonical_json().expect("serialises"),
+            expected,
         );
     }
 

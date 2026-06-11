@@ -14,8 +14,8 @@ use tribal_db::{
     TaskRepository,
 };
 use tribal_domain::{
-    AgentThreadStatus, AgentThreadTerminal, Disposition, DispositionCounters, TaskErrorKind,
-    TaskId, TurnOutcome, decide_disposition,
+    AgentThreadStatus, AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome,
+    JobState, TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
 };
 
 use crate::{
@@ -189,6 +189,7 @@ impl Worker {
             };
 
             let mut owed = None;
+            let mut task_dead_lettered = false;
             match decide_disposition(TurnOutcome::RetryableFailure, counters) {
                 Disposition::Requeue { retry_count } => {
                     let backoff = flat_backoff_seconds
@@ -237,6 +238,7 @@ impl Worker {
                         error_message,
                     )
                     .await?;
+                    task_dead_lettered = true;
                     stats.exhausted += 1;
                 }
                 Disposition::CompleteTask | Disposition::DeadLetterTask => {
@@ -258,7 +260,17 @@ impl Worker {
                 },
             })?;
 
+            // Metrics and notifications mirror the launched dead-letter
+            // path, fired only after the commit.
+            if task_dead_lettered {
+                self.metrics()
+                    .record_task_dead_lettered(task.task_type().as_str());
+            }
             if let Some(notice) = owed {
+                if notice.state == JobState::Failed {
+                    self.metrics()
+                        .record_job_completed(JobOutcome::Failure.as_str(), None);
+                }
                 self.notify_job_state(notice.job_id, notice.state);
             }
         }
