@@ -241,3 +241,154 @@ impl From<TaskType> for TokenUsageStage {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Usage owner
+// ---------------------------------------------------------------------------
+
+/// The owner a usage row attributes spend to.
+///
+/// One variant per legitimate identifier combination, so a row claiming
+/// two owners at once (a job and a reindex run, say) is unrepresentable
+/// at this level. The flat ledger columns derive from the accessors, the
+/// single mapping point between owners and columns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UsageOwner {
+    /// No owner: read-path queries and provider probes.
+    #[default]
+    Unowned,
+    /// A pipeline stage execution: the task it runs, that task's job, and
+    /// the durable thread the execution runs under.
+    Pipeline {
+        /// The job the stage execution belongs to.
+        job_id: JobId,
+        /// The task driving the stage execution.
+        task_id: TaskId,
+        /// The thread the execution runs under.
+        thread_id: AgentThreadId,
+        /// The committed record the request produced, attributed after
+        /// the fact by sinks that learn it; callers issuing the request
+        /// leave it unset.
+        record_id: Option<AgentThreadRecordId>,
+        /// The attempt number within the task (starts at 0).
+        attempt: i32,
+    },
+    /// A reindex run's backfill or catch-up embedding.
+    Reindex {
+        /// The run the embedding belongs to.
+        run_id: ReindexRunId,
+    },
+}
+
+impl UsageOwner {
+    /// Returns the job column value for this owner.
+    #[must_use]
+    pub fn job_id(&self) -> Option<JobId> {
+        match self {
+            Self::Pipeline { job_id, .. } => Some(*job_id),
+            Self::Unowned | Self::Reindex { .. } => None,
+        }
+    }
+
+    /// Returns the task column value for this owner.
+    #[must_use]
+    pub fn task_id(&self) -> Option<TaskId> {
+        match self {
+            Self::Pipeline { task_id, .. } => Some(*task_id),
+            Self::Unowned | Self::Reindex { .. } => None,
+        }
+    }
+
+    /// Returns the reindex-run column value for this owner.
+    #[must_use]
+    pub fn reindex_run_id(&self) -> Option<ReindexRunId> {
+        match self {
+            Self::Reindex { run_id } => Some(*run_id),
+            Self::Unowned | Self::Pipeline { .. } => None,
+        }
+    }
+
+    /// Returns the thread column value for this owner.
+    #[must_use]
+    pub fn agent_thread_id(&self) -> Option<AgentThreadId> {
+        match self {
+            Self::Pipeline { thread_id, .. } => Some(*thread_id),
+            Self::Unowned | Self::Reindex { .. } => None,
+        }
+    }
+
+    /// Returns the record column value for this owner.
+    #[must_use]
+    pub fn agent_thread_record_id(&self) -> Option<AgentThreadRecordId> {
+        match self {
+            Self::Pipeline { record_id, .. } => *record_id,
+            Self::Unowned | Self::Reindex { .. } => None,
+        }
+    }
+
+    /// Returns the attempt column value for this owner (0 outside a task).
+    #[must_use]
+    pub fn attempt(&self) -> i32 {
+        match self {
+            Self::Pipeline { attempt, .. } => *attempt,
+            Self::Unowned | Self::Reindex { .. } => 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a_pipeline_owner() -> UsageOwner {
+        UsageOwner::Pipeline {
+            job_id: JobId::new(),
+            task_id: TaskId::new(),
+            thread_id: AgentThreadId::new(),
+            record_id: Some(AgentThreadRecordId::new()),
+            attempt: 3,
+        }
+    }
+
+    #[test]
+    fn test_unowned_maps_to_no_columns() {
+        let owner = UsageOwner::Unowned;
+
+        assert_eq!(owner.job_id(), None);
+        assert_eq!(owner.task_id(), None);
+        assert_eq!(owner.reindex_run_id(), None);
+        assert_eq!(owner.agent_thread_id(), None);
+        assert_eq!(owner.agent_thread_record_id(), None);
+        assert_eq!(owner.attempt(), 0);
+    }
+
+    #[test]
+    fn test_pipeline_owner_maps_to_job_task_and_thread_columns() {
+        let owner = a_pipeline_owner();
+
+        assert!(owner.job_id().is_some());
+        assert!(owner.task_id().is_some());
+        assert!(owner.agent_thread_id().is_some());
+        assert!(owner.agent_thread_record_id().is_some());
+        assert_eq!(owner.attempt(), 3);
+        assert_eq!(owner.reindex_run_id(), None);
+    }
+
+    #[test]
+    fn test_reindex_owner_maps_to_the_run_column_alone() {
+        let run_id = ReindexRunId::new();
+        let owner = UsageOwner::Reindex { run_id };
+
+        assert_eq!(owner.reindex_run_id(), Some(run_id));
+        assert_eq!(owner.job_id(), None);
+        assert_eq!(owner.task_id(), None);
+        assert_eq!(owner.agent_thread_id(), None);
+        assert_eq!(owner.agent_thread_record_id(), None);
+        assert_eq!(owner.attempt(), 0);
+    }
+
+    #[test]
+    fn test_default_owner_is_unowned() {
+        assert_eq!(UsageOwner::default(), UsageOwner::Unowned);
+    }
+}

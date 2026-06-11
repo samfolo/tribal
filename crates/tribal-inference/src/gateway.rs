@@ -1002,7 +1002,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use tribal_domain::{CompletionUsage, EmbeddingUsage, JobId};
+    use tribal_domain::{CompletionUsage, EmbeddingUsage, ReindexRunId, UsageOwner};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -1224,8 +1224,9 @@ mod tests {
 
     fn an_attribution() -> UsageAttribution {
         UsageAttribution {
-            job_id: Some(JobId::new()),
-            attempt: 2,
+            owner: UsageOwner::Reindex {
+                run_id: ReindexRunId::new(),
+            },
             trace_id: Some("trace-1".to_owned()),
             ..UsageAttribution::default()
         }

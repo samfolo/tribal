@@ -9,35 +9,18 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tribal_domain::{
-    AgentThreadId, AgentThreadRecordId, JobId, PromptVersionId, ReindexRunId, TaskId,
-    TokenUsageStage, Usage,
-};
+use tribal_domain::{PromptVersionId, TokenUsageStage, Usage, UsageOwner};
 
 /// Caller-supplied attribution for one inference or embedding request.
 ///
-/// Every field is optional: a pipeline call attributes its job and task, a
-/// reindex call its run, and an unowned call (a query embed, a probe)
-/// nothing at all. The stage identity is not carried here — the gateway
-/// derives it from the operation itself, so a caller cannot mislabel one.
-/// New owner kinds extend this struct without changing the
-/// [`LedgerSink`] signature.
+/// The owner names the request's legitimate identifier combination; the
+/// stage identity is not carried here — the gateway derives it from the
+/// operation itself, so a caller cannot mislabel one. New owner kinds
+/// extend [`UsageOwner`] without changing the [`LedgerSink`] signature.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UsageAttribution {
-    /// The job the request belongs to.
-    pub job_id: Option<JobId>,
-    /// The task the request belongs to.
-    pub task_id: Option<TaskId>,
-    /// The reindex run the request belongs to.
-    pub reindex_run_id: Option<ReindexRunId>,
-    /// The agent thread the request runs under.
-    pub agent_thread_id: Option<AgentThreadId>,
-    /// The committed record the request produced, attributed after the
-    /// fact by sinks that learn it; callers issuing the request leave it
-    /// unset.
-    pub agent_thread_record_id: Option<AgentThreadRecordId>,
-    /// The attempt number within the task (0 when unowned).
-    pub attempt: i32,
+    /// The owner the request's spend attributes to.
+    pub owner: UsageOwner,
     /// The system prompt version used, for completion calls.
     pub system_prompt_version_id: Option<PromptVersionId>,
     /// The user prompt version used, for completion calls.

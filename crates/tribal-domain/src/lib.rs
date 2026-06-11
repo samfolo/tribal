@@ -178,7 +178,7 @@ pub use system_fingerprint::{SystemFingerprint, SystemFingerprintBuilder};
 pub use tag_registry::{TagRegistryEntry, TagRegistryEntryBuilder};
 pub use tag_similarity_result::TagSimilarityResult;
 pub use task::{ErrorOutcome, Task, TaskBuilder, TaskErrorKind, TaskStatus, TaskType};
-pub use token_usage::{TokenUsage, TokenUsageBuilder, TokenUsageStage};
+pub use token_usage::{TokenUsage, TokenUsageBuilder, TokenUsageStage, UsageOwner};
 pub use triage::{
     SimilarItem, SimilarItemBuilder, TriageOutcome, TriageResult, TriageResultBuilder,
     TriageSimilarItemDecision, TriageSimilarItemDecisionBuilder,

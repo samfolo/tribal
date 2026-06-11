@@ -14,7 +14,7 @@ use tribal_db::{
 use tribal_domain::{
     AgentThread, CompletionResponse, EmbeddingProfile, EmbeddingProfileId, Job, ProjectId,
     PromptVersion, PromptVersionId, SuggestedReference, SystemFingerprint, TagRegistryEntry, Task,
-    TaskType, span_attrs,
+    TaskType, UsageOwner, span_attrs,
 };
 use tribal_inference::{
     CompletionRequest, EmbeddingTarget, InferenceError, Message, Role, UsageAttribution,
@@ -234,12 +234,13 @@ impl Worker {
 pub(crate) fn stage_attribution(job: &Job, task: &Task, thread: &AgentThread) -> UsageAttribution {
     let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
     UsageAttribution {
-        job_id: Some(job.id()),
-        task_id: Some(task.id()),
-        reindex_run_id: None,
-        agent_thread_id: Some(thread.id()),
-        agent_thread_record_id: None,
-        attempt: clamp_to_i32(task.retry_count()),
+        owner: UsageOwner::Pipeline {
+            job_id: job.id(),
+            task_id: task.id(),
+            thread_id: thread.id(),
+            record_id: None,
+            attempt: clamp_to_i32(task.retry_count()),
+        },
         system_prompt_version_id: Some(system_pv_id),
         user_prompt_version_id: Some(user_pv_id),
         trace_id: job
