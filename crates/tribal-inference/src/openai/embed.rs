@@ -9,13 +9,12 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::{EmbeddingPurpose, span_attrs};
+use tribal_domain::{EmbeddingUsage, gen_ai, span_attrs};
 
 use crate::{
-    EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingUsage, InferenceError,
-    ProviderIdentity,
+    EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InferenceError, ProviderIdentity,
     error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
-    http::{EMBEDDING_PROBE_INPUT, latency_ms, normalise_base_url},
+    http::{latency_ms, normalise_base_url},
     validation::validate_embeddings,
 };
 
@@ -98,43 +97,6 @@ impl OpenAiEmbeddingProvider {
             expected_dimensions,
         }
     }
-
-    /// Validates model availability and dimension configuration.
-    ///
-    /// Embeds the canonical string `"tribal probe"` and validates the
-    /// returned vector length against `expected_dimensions`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InferenceError::ProviderUnavailable`] if the provider
-    /// cannot be reached.  Returns [`InferenceError::EmbeddingFailed`]
-    /// if the API key or model is rejected.  Returns
-    /// [`InferenceError::ResponseParseFailed`] if the returned vector
-    /// length does not match expectations.
-    pub async fn probe_model(&self) -> Result<(), InferenceError> {
-        let span = tracing::info_span!(
-            "tribal.embedding.probe",
-            { span_attrs::EMBEDDING_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::EMBEDDING_MODEL } = %self.identity.model,
-        );
-
-        async {
-            let request = EmbeddingRequest {
-                input: EMBEDDING_PROBE_INPUT.to_owned(),
-                purpose: EmbeddingPurpose::Candidate,
-            };
-            let _response = self.embed(request).await?;
-
-            tracing::info!(
-                dimensions = self.expected_dimensions,
-                "model {} probe succeeded",
-                self.identity.model,
-            );
-            Ok(())
-        }
-        .instrument(span)
-        .await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,13 +119,14 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
         }
 
         let span = tracing::info_span!(
-            "tribal.embedding.generate",
-            { span_attrs::EMBEDDING_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::EMBEDDING_MODEL } = %self.identity.model,
+            "embeddings",
+            { span_attrs::OTEL_NAME } = %format!("{} {}", gen_ai::OPERATION_EMBEDDINGS, self.identity.model),
+            { gen_ai::OPERATION_NAME } = gen_ai::OPERATION_EMBEDDINGS,
+            { gen_ai::PROVIDER_NAME } = PROVIDER_NAME,
+            { gen_ai::REQUEST_MODEL } = %self.identity.model,
             { span_attrs::EMBEDDING_PURPOSE } = %request.purpose,
-            { span_attrs::EMBEDDING_TOKENS } = tracing::field::Empty,
-            { span_attrs::EMBEDDING_DIMENSIONS } = tracing::field::Empty,
-            { span_attrs::EMBEDDING_LATENCY_MS } = tracing::field::Empty,
+            { gen_ai::USAGE_INPUT_TOKENS } = tracing::field::Empty,
+            { gen_ai::EMBEDDINGS_DIMENSION_COUNT } = tracing::field::Empty,
         );
 
         async {
@@ -229,9 +192,8 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             let latency_ms = latency_ms(latency);
 
             let current = tracing::Span::current();
-            current.record(span_attrs::EMBEDDING_TOKENS, total_tokens);
-            current.record(span_attrs::EMBEDDING_DIMENSIONS, self.expected_dimensions);
-            current.record(span_attrs::EMBEDDING_LATENCY_MS, latency_ms);
+            current.record(gen_ai::USAGE_INPUT_TOKENS, total_tokens);
+            current.record(gen_ai::EMBEDDINGS_DIMENSION_COUNT, self.expected_dimensions);
 
             tracing::debug!(
                 tokens = total_tokens,
@@ -754,58 +716,6 @@ mod tests {
                 if reason.contains("...") && reason.len() < 300
             ),
             "expected ProviderUnavailable with truncated body, got {err:?}"
-        );
-    }
-
-    // -- Probe tests ---------------------------------------------------------
-
-    #[tokio::test]
-    async fn test_probe_model_success() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path(EMBED_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(3)))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server, 3);
-        provider.probe_model().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_failure_propagates() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path(EMBED_PATH))
-            .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server, 3);
-        let err = provider.probe_model().await.unwrap_err();
-        assert!(
-            matches!(err, InferenceError::ProviderUnavailable { .. }),
-            "expected ProviderUnavailable, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_dimension_mismatch_propagates() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path(EMBED_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json(5)))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server, 3);
-        let err = provider.probe_model().await.unwrap_err();
-        assert!(
-            matches!(err, InferenceError::ResponseParseFailed { .. }),
-            "expected ResponseParseFailed, got {err:?}"
         );
     }
 }

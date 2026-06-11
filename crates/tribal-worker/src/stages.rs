@@ -6,7 +6,7 @@ mod relation;
 mod triage;
 
 pub(crate) use common::{
-    StageCommit, StageOutput, TriageCommitDecision, load_active_embedding_profile,
-    record_prompt_version_ids,
+    StageCommit, TriageCommitDecision, load_active_embedding_profile, map_gateway_error,
+    record_prompt_version_ids, stage_attribution,
 };
 pub(crate) use relation::RelationCommitDecision;

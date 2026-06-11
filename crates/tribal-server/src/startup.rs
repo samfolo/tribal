@@ -25,8 +25,8 @@ pub(crate) use prompts::{
     PromptTemplateLocation, ensure_prompt_files, load_prompts, load_prompts_embedded,
 };
 pub(crate) use providers::{
-    build_embedding_provider, build_inference_provider, build_provider_registry,
-    probe_embedding_provider, probe_inference_provider,
+    CatalogueCredentialResolver, build_command_registry, build_provider_registry,
+    completion_stage_specs, probe_startup_providers, validate_embedding_identity,
 };
 pub(crate) use provisioning::{provision_genesis, read_active_profile};
 pub(crate) use watcher::init_prompt_watcher;

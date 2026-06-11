@@ -1,8 +1,5 @@
 //! Triage stage: similarity search and LLM-based relevance scoring.
 
-use std::{sync::Arc, time::Instant};
-
-use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_db::{
     ExtractionResultRepository, KnowledgeItemRepository, NewItemObservation, NewKnowledgeItem,
@@ -11,16 +8,19 @@ use tribal_db::{
 };
 use tribal_domain::{
     Candidate, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId, KnowledgeItemId,
-    SourceType, StageParameters, TagRegistryEntry, Task, span_attrs,
+    SourceType, StageParameters, TagRegistryEntry, Task, TaskType, span_attrs,
 };
 use tribal_inference::{
-    EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InferenceProvider, ProviderKey, Usage,
+    EmbeddingRequest, EmbeddingResponse, EmbeddingTarget, PermitWait, UsageAttribution,
 };
 
-use super::{StageCommit, StageOutput, TriageCommitDecision, record_prompt_version_ids};
+use super::{
+    StageCommit, TriageCommitDecision, map_gateway_error, record_prompt_version_ids,
+    stage_attribution,
+};
 use crate::{
     common::{EXPECT_BATCH_INDEX, PARSE_PREVIEW_LENGTH},
-    error::{SEMAPHORE_CLOSED, STAGE_TRIAGE, StageError},
+    error::{STAGE_TRIAGE, StageError},
     parsing::{
         SimilarItemClassification, TriageClassification, TriageDecision, TriageItemReference,
         parse_triage_response,
@@ -52,45 +52,6 @@ pub(crate) struct TriageContext<'a> {
 struct CandidateEmbedding<'a> {
     vector: Vec<f32>,
     profile: &'a EmbeddingProfile,
-}
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const EXPECT_TRIAGE_INFERENCE_KEY: &str = "triage inference key registered at startup";
-
-// ---------------------------------------------------------------------------
-// Triage accessors
-// ---------------------------------------------------------------------------
-
-impl Worker {
-    /// Returns a reference to the triage inference provider.
-    pub(crate) fn triage_provider(&self) -> &Arc<dyn InferenceProvider> {
-        &self.triage_provider
-    }
-
-    /// Returns the triage inference provider key.
-    pub(crate) fn triage_inference_key(&self) -> &ProviderKey {
-        &self.triage_inference_key
-    }
-
-    /// Returns the triage embedding provider key.
-    pub(crate) fn triage_embedding_key(&self) -> &ProviderKey {
-        &self.triage_embedding_key
-    }
-
-    /// Returns the triage inference semaphore from the provider registry.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the triage inference key is not registered in the
-    /// provider registry.
-    pub(crate) fn triage_inference_semaphore(&self) -> &Arc<Semaphore> {
-        self.provider_registry()
-            .semaphore(self.triage_inference_key())
-            .expect(EXPECT_TRIAGE_INFERENCE_KEY)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -127,28 +88,25 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageOutput, StageError> {
+    ) -> Result<StageCommit, StageError> {
         let batch_index = task.batch_index().expect(EXPECT_BATCH_INDEX);
 
         let span = tracing::info_span!(
             "tribal.task.triage",
             { span_attrs::BATCH_INDEX } = batch_index,
             { span_attrs::TASK_ID } = %task.id(),
-            { span_attrs::LLM_STAGE } = "triage",
+            { span_attrs::STAGE } = "triage",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
-            { span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
-            { span_attrs::LLM_USER_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::USER_PROMPT_VERSION_ID } = tracing::field::Empty,
         );
 
         async {
             if self.check_triage_idempotency(job.id(), batch_index).await? {
-                return Ok(StageOutput {
-                    commit: StageCommit::Triage {
-                        project_id: job.project_id(),
-                        decision: TriageCommitDecision::NoOp,
-                        similar_item_decisions: vec![],
-                    },
-                    usages: vec![],
+                return Ok(StageCommit::Triage {
+                    project_id: job.project_id(),
+                    decision: TriageCommitDecision::NoOp,
+                    similar_item_decisions: vec![],
                 });
             }
 
@@ -172,19 +130,20 @@ impl Worker {
                 ctx.job.triage_user_prompt_version_id(),
             );
 
-            // Resolve the active profile and a provider matching its geometry
-            // once, so the candidate embedding, the similar-item search, and tag
-            // resolution all target the same active space, and the producing
-            // profile id reaches the commit's flip-check.
-            let (active_profile, embedding_provider, embedding_semaphore) =
-                self.resolve_active_embedding(STAGE_TRIAGE).await?;
+            // Resolve the active profile once, so the candidate embedding,
+            // the similar-item search, and tag resolution all target the same
+            // active space, and the producing profile id reaches the commit's
+            // flip-check.
+            let active_profile = self.resolve_active_embedding(STAGE_TRIAGE).await?;
+            let embedding_target = EmbeddingTarget::from(&active_profile);
+            let attribution = stage_attribution(ctx.job, task);
 
             let embedding_response = self
                 .embed_candidate(
                     ctx.candidate.content(),
-                    &embedding_provider,
-                    &embedding_semaphore,
+                    &embedding_target,
                     deadline,
+                    &attribution,
                 )
                 .await?;
 
@@ -214,7 +173,7 @@ impl Worker {
                 );
             }
 
-            let (mut classification, completion_response) = self
+            let mut classification = self
                 .classify_candidate(
                     &ctx,
                     system_pv.content(),
@@ -222,6 +181,7 @@ impl Worker {
                     &similar_items,
                     &fingerprint.inference_parameters().triage,
                     deadline,
+                    &attribution,
                 )
                 .await?;
 
@@ -238,26 +198,23 @@ impl Worker {
                 ctx.batch_index,
             );
 
-            let embedding_usage = embedding_response.usage;
             let embedding_vector = embedding_response.vector;
 
-            let (resolved_tags, tag_usages) = match &resolved_outcome {
-                ResolvedTriageOutcome::Novel => {
-                    let (resolved, usages) = tag_resolution::resolve_tags(
+            let resolved_tags = match &resolved_outcome {
+                ResolvedTriageOutcome::Novel => Some(
+                    tag_resolution::resolve_tags(
                         self.pool(),
                         ctx.candidate.suggested_tags(),
                         &ctx.tag_registry,
-                        &embedding_provider,
-                        &embedding_semaphore,
-                        &self.triage_embedding_key().to_string(),
+                        self.gateway(),
+                        &embedding_target,
                         self.config().tag_similarity_threshold,
                         deadline,
-                        self.metrics(),
+                        &attribution,
                     )
-                    .await?;
-                    (Some(resolved), usages)
-                }
-                ResolvedTriageOutcome::Duplicate { .. } => (None, vec![]),
+                    .await?,
+                ),
+                ResolvedTriageOutcome::Duplicate { .. } => None,
             };
 
             let commit = self.build_triage_commit(
@@ -272,18 +229,7 @@ impl Worker {
                 resolved_tags,
             );
 
-            let mut usages = vec![
-                Usage::Embedding {
-                    usage: embedding_usage,
-                    purpose: EmbeddingPurpose::Candidate,
-                },
-                Usage::Completion {
-                    usage: completion_response.usage,
-                },
-            ];
-            usages.extend(tag_usages);
-
-            Ok(StageOutput { commit, usages })
+            Ok(commit)
         }
         .instrument(span)
         .await
@@ -375,43 +321,24 @@ impl Worker {
     async fn embed_candidate(
         &self,
         content: &str,
-        provider: &Arc<dyn EmbeddingProvider>,
-        semaphore: &Arc<Semaphore>,
+        target: &EmbeddingTarget,
         deadline: tokio::time::Instant,
+        attribution: &UsageAttribution,
     ) -> Result<EmbeddingResponse, StageError> {
-        let provider_key = self.triage_embedding_key().to_string();
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let semaphore_start = Instant::now();
-        let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
-            .await
-            .map_err(|_| StageError::SemaphoreTimeout {
-                provider_key: provider_key.clone(),
-            })?
-            .expect(SEMAPHORE_CLOSED);
-        self.metrics()
-            .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
-
         let request = EmbeddingRequest {
             input: content.to_owned(),
             purpose: EmbeddingPurpose::Candidate,
         };
-
-        let provider_start = Instant::now();
-        let response = provider
-            .embed(request)
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        self.gateway()
+            .embed(
+                target,
+                request,
+                PermitWait::Bounded { limit: remaining },
+                attribution,
+            )
             .await
-            .map_err(|e| StageError::Provider {
-                context: "triage embedding call".into(),
-                source: e,
-            })?;
-        let identity = provider.identity();
-        self.metrics().record_provider_call(
-            &identity.name,
-            &identity.model,
-            "triage_embedding",
-            provider_start.elapsed(),
-        );
-        Ok(response)
+            .map_err(|e| map_gateway_error("triage embedding call", e))
     }
 
     /// Runs semantic search against existing knowledge items using the
@@ -458,6 +385,7 @@ impl Worker {
 
     /// Assembles the triage prompt, calls the triage LLM, and parses
     /// the classification response.
+    #[allow(clippy::too_many_arguments)]
     async fn classify_candidate(
         &self,
         ctx: &TriageContext<'_>,
@@ -466,7 +394,8 @@ impl Worker {
         similar_items: &[SimilarItemContext],
         params: &StageParameters,
         deadline: tokio::time::Instant,
-    ) -> Result<(TriageClassification, tribal_inference::CompletionResponse), StageError> {
+        attribution: &UsageAttribution,
+    ) -> Result<TriageClassification, StageError> {
         let include_llm_content = self.include_llm_content();
 
         let request = assemble_triage_prompt(
@@ -486,35 +415,17 @@ impl Worker {
             );
         }
 
-        let semaphore = self.triage_inference_semaphore();
-        let provider_key = self.triage_inference_key().to_string();
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let semaphore_start = Instant::now();
-        let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
-            .await
-            .map_err(|_| StageError::SemaphoreTimeout {
-                provider_key: provider_key.clone(),
-            })?
-            .expect(SEMAPHORE_CLOSED);
-        self.metrics()
-            .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
-
-        let provider_start = Instant::now();
         let response = self
-            .triage_provider()
-            .complete(request)
+            .gateway()
+            .complete(
+                TaskType::Triage,
+                request,
+                PermitWait::Bounded { limit: remaining },
+                attribution,
+            )
             .await
-            .map_err(|e| StageError::Provider {
-                context: "triage LLM call".into(),
-                source: e,
-            })?;
-        let identity = self.triage_provider().identity();
-        self.metrics().record_provider_call(
-            &identity.name,
-            &identity.model,
-            "triage_inference",
-            provider_start.elapsed(),
-        );
+            .map_err(|e| map_gateway_error("triage LLM call", e))?;
 
         if include_llm_content {
             tracing::debug!(
@@ -539,7 +450,7 @@ impl Worker {
             })?
         };
 
-        Ok((classification, response))
+        Ok(classification)
     }
 
     /// Builds the `StageCommit::Triage` variant from the resolved outcome,
@@ -572,7 +483,7 @@ impl Worker {
                 let mut all_tags = tag_data.resolved.clone();
                 all_tags.extend(tag_data.new_tags.iter().map(|t| t.tag.clone()));
 
-                let extraction_identity = self.extraction_provider().identity();
+                let extraction_identity = self.gateway().completion_identity(TaskType::Extraction);
                 let source_context = serde_json::json!({
                     "provider": extraction_identity.name,
                     "model": extraction_identity.model,

@@ -1,12 +1,7 @@
 //! Relation stage: LLM-based relation extraction and commit.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use std::collections::{HashMap, HashSet};
 
-use tokio::sync::Semaphore;
 use tracing::Instrument;
 use tribal_common::clamp_to_u32;
 use tribal_db::{
@@ -17,14 +12,15 @@ use tribal_db::{
 };
 use tribal_domain::{
     Candidate, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
-    RelationKind, Task, TriageOutcome, TriageResult, TriageSimilarItemDecision, span_attrs,
+    RelationKind, Task, TaskType, TriageOutcome, TriageResult, TriageSimilarItemDecision,
+    span_attrs,
 };
-use tribal_inference::{InferenceProvider, ProviderKey, Usage};
+use tribal_inference::PermitWait;
 
-use super::{StageCommit, StageOutput, record_prompt_version_ids};
+use super::{StageCommit, map_gateway_error, record_prompt_version_ids, stage_attribution};
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
-    error::{SEMAPHORE_CLOSED, STAGE_RELATION, StageError},
+    error::{STAGE_RELATION, StageError},
     parsing::{RelationEdge, RelationTarget, parse_relation_response},
     prompt::{
         CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext, SimilarityBand,
@@ -32,12 +28,6 @@ use crate::{
     },
     worker::Worker,
 };
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const EXPECT_RELATION_KEY: &str = "relation key registered at startup";
 
 // ---------------------------------------------------------------------------
 // RelationContext
@@ -81,34 +71,6 @@ pub(crate) enum RelationCommitDecision {
     },
     /// Idempotency skip — `committed_batch_id` already set.
     NoOp,
-}
-
-// ---------------------------------------------------------------------------
-// Relation accessors
-// ---------------------------------------------------------------------------
-
-impl Worker {
-    /// Returns a reference to the relation inference provider.
-    pub(crate) fn relation_provider(&self) -> &Arc<dyn InferenceProvider> {
-        &self.relation_provider
-    }
-
-    /// Returns the relation provider key.
-    pub(crate) fn relation_key(&self) -> &ProviderKey {
-        &self.relation_key
-    }
-
-    /// Returns the relation semaphore from the provider registry.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the relation key is not registered in the provider
-    /// registry.
-    pub(crate) fn relation_semaphore(&self) -> &Arc<Semaphore> {
-        self.provider_registry()
-            .semaphore(self.relation_key())
-            .expect(EXPECT_RELATION_KEY)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -190,24 +152,21 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageOutput, StageError> {
+    ) -> Result<StageCommit, StageError> {
         let span = tracing::info_span!(
             "tribal.task.relation",
             { span_attrs::TASK_ID } = %task.id(),
-            { span_attrs::LLM_STAGE } = "relation",
+            { span_attrs::STAGE } = "relation",
             { span_attrs::RETRY_COUNT } = task.retry_count(),
-            { span_attrs::LLM_SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
-            { span_attrs::LLM_USER_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::SYSTEM_PROMPT_VERSION_ID } = tracing::field::Empty,
+            { span_attrs::USER_PROMPT_VERSION_ID } = tracing::field::Empty,
         );
 
         async {
             // Idempotency guard.
             if job.committed_batch_id().is_some() {
-                return Ok(StageOutput {
-                    commit: StageCommit::Relation {
-                        decision: RelationCommitDecision::NoOp,
-                    },
-                    usages: vec![],
+                return Ok(StageCommit::Relation {
+                    decision: RelationCommitDecision::NoOp,
                 });
             }
 
@@ -231,19 +190,6 @@ impl Worker {
                 ctx.job.relation_user_prompt_version_id(),
             );
 
-            let semaphore = self.relation_semaphore();
-            let provider_key = self.relation_key().to_string();
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let semaphore_start = Instant::now();
-            let _permit = tokio::time::timeout(remaining, Arc::clone(semaphore).acquire_owned())
-                .await
-                .map_err(|_| StageError::SemaphoreTimeout {
-                    provider_key: provider_key.clone(),
-                })?
-                .expect(SEMAPHORE_CLOSED);
-            self.metrics()
-                .record_semaphore_acquire(&provider_key, semaphore_start.elapsed());
-
             let request = assemble_relation_prompt(
                 system_pv.content(),
                 user_pv.content(),
@@ -259,22 +205,17 @@ impl Worker {
                 );
             }
 
-            let provider_start = Instant::now();
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
-                .relation_provider()
-                .complete(request)
+                .gateway()
+                .complete(
+                    TaskType::Relation,
+                    request,
+                    PermitWait::Bounded { limit: remaining },
+                    &stage_attribution(ctx.job, task),
+                )
                 .await
-                .map_err(|e| StageError::Provider {
-                    context: "relation LLM call".into(),
-                    source: e,
-                })?;
-            let identity = self.relation_provider().identity();
-            self.metrics().record_provider_call(
-                &identity.name,
-                &identity.model,
-                "relation",
-                provider_start.elapsed(),
-            );
+                .map_err(|e| map_gateway_error("relation LLM call", e))?;
 
             if include_llm_content {
                 tracing::debug!(
@@ -311,12 +252,7 @@ impl Worker {
                 ctx.job.principal_id(),
             );
 
-            Ok(StageOutput {
-                commit: StageCommit::Relation { decision },
-                usages: vec![Usage::Completion {
-                    usage: response.usage,
-                }],
-            })
+            Ok(StageCommit::Relation { decision })
         }
         .instrument(span)
         .await

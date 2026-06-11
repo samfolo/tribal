@@ -12,29 +12,24 @@ use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
-use tribal_common::{JobStateTxs, POOL_NAME_WORKER, clamp_to_i32, clamp_to_u32};
-use tribal_config::{CredentialCatalogue, WorkerConfig};
+use tribal_common::{JobStateTxs, POOL_NAME_WORKER, clamp_to_u32};
+use tribal_config::WorkerConfig;
 use tribal_db::{
-    JobRepository, JobStatusTransition, NewTask, NewTokenUsage, PgJobRepository,
-    PgPrincipalRepository, PgTaskRepository, PgTokenUsageRepository, PrincipalRepository,
-    TaskRepository, TokenUsageRepository,
+    JobRepository, JobStatusTransition, NewTask, PgJobRepository, PgPrincipalRepository,
+    PgTaskRepository, PrincipalRepository, TaskRepository,
 };
-use tribal_domain::{
-    Job, JobId, JobState, JobStatus, PromptVersionId, Task, TaskType, TokenUsageStage, span_attrs,
-};
-use tribal_inference::{
-    EmbeddingProvider, InferenceProvider, ProviderKey, ProviderRegistry, Usage,
-};
+use tribal_domain::{Job, JobId, JobState, JobStatus, Task, TaskType, span_attrs};
+use tribal_inference::InferenceGateway;
 use tribal_telemetry::MetricsRecorder;
 
 use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
-    stages::StageOutput,
+    stages::StageCommit,
     worker::{
         backfill::BackfillProcessor,
         backoff::BACKOFF_CAP_SECS,
         heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
-        reindex::{EmbeddingProviderCache, drive_reindex_cycle, reconcile_orphan_building_profile},
+        reindex::{drive_reindex_cycle, reconcile_orphan_building_profile},
     },
 };
 
@@ -55,21 +50,8 @@ const REINDEX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// cancellation token is triggered.
 pub struct Worker {
     pool: PgPool,
-    provider_registry: Arc<ProviderRegistry>,
-    pub(crate) extraction_provider: Arc<dyn InferenceProvider>,
-    pub(crate) triage_provider: Arc<dyn InferenceProvider>,
-    pub(crate) relation_provider: Arc<dyn InferenceProvider>,
-    pub(crate) embedding_provider: Arc<dyn EmbeddingProvider>,
-    /// Embedding providers built for reindex building profiles, keyed by profile
-    /// id. The reindex driver populates it; the commit path reads it.
-    embedding_providers: EmbeddingProviderCache,
-    /// The embedding-credential catalogue, used to resolve a reindex target
-    /// provider's credential fail-closed.
-    credentials: CredentialCatalogue,
-    pub(crate) extraction_key: ProviderKey,
-    pub(crate) triage_inference_key: ProviderKey,
-    pub(crate) triage_embedding_key: ProviderKey,
-    pub(crate) relation_key: ProviderKey,
+    /// The one port every completion and embedding call routes through.
+    gateway: Arc<InferenceGateway>,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
     include_llm_content: bool,
@@ -90,17 +72,7 @@ impl Worker {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: PgPool,
-        provider_registry: Arc<ProviderRegistry>,
-        extraction_provider: Arc<dyn InferenceProvider>,
-        triage_provider: Arc<dyn InferenceProvider>,
-        relation_provider: Arc<dyn InferenceProvider>,
-        embedding_provider: Arc<dyn EmbeddingProvider>,
-        embedding_providers: EmbeddingProviderCache,
-        credentials: CredentialCatalogue,
-        extraction_key: ProviderKey,
-        triage_inference_key: ProviderKey,
-        triage_embedding_key: ProviderKey,
-        relation_key: ProviderKey,
+        gateway: Arc<InferenceGateway>,
         cancellation_token: CancellationToken,
         config: WorkerConfig,
         include_llm_content: bool,
@@ -110,17 +82,7 @@ impl Worker {
     ) -> Self {
         Self {
             pool,
-            provider_registry,
-            extraction_provider,
-            triage_provider,
-            relation_provider,
-            embedding_provider,
-            embedding_providers,
-            credentials,
-            extraction_key,
-            triage_inference_key,
-            triage_embedding_key,
-            relation_key,
+            gateway,
             cancellation_token,
             config,
             include_llm_content,
@@ -148,19 +110,9 @@ impl Worker {
         &self.pool
     }
 
-    /// Returns a reference to the provider registry.
-    pub(crate) fn provider_registry(&self) -> &Arc<ProviderRegistry> {
-        &self.provider_registry
-    }
-
-    /// Returns the cache of embedding providers built for reindex profiles.
-    pub(crate) fn embedding_providers(&self) -> &EmbeddingProviderCache {
-        &self.embedding_providers
-    }
-
-    /// Returns the embedding-credential catalogue.
-    pub(crate) fn credentials(&self) -> &CredentialCatalogue {
-        &self.credentials
+    /// Returns a reference to the inference gateway.
+    pub(crate) fn gateway(&self) -> &Arc<InferenceGateway> {
+        &self.gateway
     }
 
     /// Returns a reference to the telemetry metric instruments.
@@ -219,20 +171,9 @@ impl Worker {
 
     /// Runs all startup backfill operations.
     async fn run_startup_backfills(&self) {
-        let semaphore = self
-            .provider_registry()
-            .semaphore(&self.triage_embedding_key)
-            .cloned();
-
-        let Some(semaphore) = semaphore else {
-            tracing::warn!("triage embedding key not registered, skipping tag backfill");
-            return;
-        };
-
         let processor = BackfillProcessor::new(
             self.pool.clone(),
-            Arc::clone(&self.embedding_provider),
-            semaphore,
+            Arc::clone(&self.gateway),
             self.cancellation_token.clone(),
         );
 
@@ -369,8 +310,8 @@ impl Worker {
     ///    the status change.
     /// 4. Races the stage execution against the task timeout and the
     ///    cancellation token.
-    /// 5. On success, records token usage and commits domain effects.
-    ///    On failure, delegates to [`handle_stage_failure`](Self::handle_stage_failure).
+    /// 5. On success, commits domain effects.  On failure, delegates to
+    ///    [`handle_stage_failure`](Self::handle_stage_failure).
     async fn run_task(&self, task: Task) {
         let active = self.active_tasks.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak_concurrent.fetch_max(active, Ordering::SeqCst);
@@ -521,10 +462,6 @@ impl Worker {
 
             match stage_result {
                 Ok(output) => {
-                    for usage in &output.usages {
-                        self.record_token_usage(&job, &task, usage).await;
-                    }
-
                     if self.cancellation_token.is_cancelled() {
                         heartbeat.abort();
                         tracing::info!(
@@ -534,7 +471,7 @@ impl Worker {
                         return;
                     }
 
-                    if let Err(e) = self.commit_domain_effects(&task, &job, output.commit).await {
+                    if let Err(e) = self.commit_domain_effects(&task, &job, output).await {
                         self.handle_stage_failure(&task, Some(&job), &e).await;
                     }
                 }
@@ -555,91 +492,11 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageOutput, StageError> {
+    ) -> Result<StageCommit, StageError> {
         match task.task_type() {
             TaskType::Extraction => self.run_extraction(job, task, deadline).await,
             TaskType::Triage => self.run_triage(job, task, deadline).await,
             TaskType::Relation => self.run_relation(job, task, deadline).await,
-        }
-    }
-
-    /// Records a single token usage record.
-    ///
-    /// Best-effort: logs a warning on failure without failing the task.
-    /// Uses a freshly acquired connection from the pool (not the domain
-    /// commit transaction) so recording is independent of task outcome.
-    pub(super) async fn record_token_usage(&self, job: &Job, task: &Task, usage: &Usage) {
-        let mut conn = match self.pool().acquire().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    task_id = %task.id(),
-                    "failed to acquire connection for token usage recording",
-                );
-                return;
-            }
-        };
-
-        let attempt = clamp_to_i32(task.retry_count());
-        let trace_id = job
-            .trace_context()
-            .and_then(tribal_telemetry::trace_id_from_traceparent)
-            .or_else(tribal_telemetry::current_trace_id);
-
-        let new = match usage {
-            Usage::Completion { usage: cu } => {
-                let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
-                NewTokenUsage::builder()
-                    .job_id(Some(job.id()))
-                    .task_id(Some(task.id()))
-                    .attempt(attempt)
-                    .stage(task.task_type().into())
-                    .provider(cu.provider.clone())
-                    .model(cu.model.clone())
-                    .tokens_input(clamp_to_i32(cu.input_tokens))
-                    .tokens_output(clamp_to_i32(cu.output_tokens))
-                    .tokens_cache_read(clamp_to_i32(cu.cache_read_tokens))
-                    .tokens_cache_write(clamp_to_i32(cu.cache_write_tokens))
-                    .latency_ms(clamp_to_i32(cu.latency.as_millis()))
-                    .system_prompt_version_id(Some(system_pv_id))
-                    .user_prompt_version_id(Some(user_pv_id))
-                    .trace_id(trace_id)
-                    .build()
-            }
-            Usage::Embedding { usage: eu, purpose } => NewTokenUsage::builder()
-                .job_id(Some(job.id()))
-                .task_id(Some(task.id()))
-                .attempt(attempt)
-                .stage(TokenUsageStage::Embedding { purpose: *purpose })
-                .provider(eu.provider.clone())
-                .model(eu.model.clone())
-                .tokens_input(clamp_to_i32(eu.total_tokens))
-                .tokens_output(0)
-                .latency_ms(clamp_to_i32(eu.latency.as_millis()))
-                .trace_id(trace_id)
-                .build(),
-        };
-
-        let stage = new.stage.pipeline_stage();
-        match PgTokenUsageRepository.insert(&mut conn, &new).await {
-            Ok(recorded) => {
-                tracing::debug!(
-                    task_id = %task.id(),
-                    stage = %stage,
-                    tokens_total = recorded.tokens_total(),
-                    latency_ms = recorded.latency_ms(),
-                    "token usage recorded",
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    task_id = %task.id(),
-                    stage = %stage,
-                    error = %e,
-                    "failed to record token usage",
-                );
-            }
         }
     }
 
@@ -833,15 +690,7 @@ impl Worker {
                 }
             };
 
-            if let Err(e) = drive_reindex_cycle(
-                &mut conn,
-                &self.provider_registry,
-                &self.embedding_providers,
-                &self.credentials,
-                &self.instance_id,
-            )
-            .await
-            {
+            if let Err(e) = drive_reindex_cycle(&mut conn, &self.gateway, &self.instance_id).await {
                 tracing::warn!(error = %e, "reindex drive cycle failed");
             }
         }
@@ -877,24 +726,6 @@ impl Worker {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Returns the `(system, user)` prompt version pair for the task's stage.
-fn prompt_version_ids_for_task(job: &Job, task: &Task) -> (PromptVersionId, PromptVersionId) {
-    match task.task_type() {
-        TaskType::Extraction => (
-            job.extraction_system_prompt_version_id(),
-            job.extraction_user_prompt_version_id(),
-        ),
-        TaskType::Triage => (
-            job.triage_system_prompt_version_id(),
-            job.triage_user_prompt_version_id(),
-        ),
-        TaskType::Relation => (
-            job.relation_system_prompt_version_id(),
-            job.relation_user_prompt_version_id(),
-        ),
-    }
-}
 
 /// Computes the next claim-cycle backoff by doubling the current poll
 /// interval, capping at [`BACKOFF_CAP_SECS`], and flooring at 1 s.

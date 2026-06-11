@@ -98,8 +98,7 @@ impl TribalServerHandler {
         };
         let outcome = reindex_run(
             &self.state.pool_worker,
-            &self.state.provider_registry,
-            &self.state.credentials,
+            &self.state.gateway,
             &req,
             principal_id,
         )

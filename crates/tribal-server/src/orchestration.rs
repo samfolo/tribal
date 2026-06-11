@@ -17,17 +17,19 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tribal_common::JobStateTxs;
 use tribal_config::{PromptSource, TribalConfig};
+use tribal_inference::{InferenceGateway, ProviderIdentity};
 use tribal_mcp::{AppState, build_inference_parameters};
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
-use tribal_worker::{EmbeddingProviderCache, Worker, WorkerError};
+use tribal_worker::{PgLedgerSink, Worker, WorkerError};
 
 use crate::{
     error::AppError,
     startup::{
-        POOL_NAME_MCP, POOL_NAME_WORKER, build_embedding_provider, build_inference_provider,
-        build_provider_registry, check_first_run, create_pool_with_retry, ensure_prompt_files,
+        CatalogueCredentialResolver, POOL_NAME_MCP, POOL_NAME_WORKER, build_provider_registry,
+        check_first_run, completion_stage_specs, create_pool_with_retry, ensure_prompt_files,
         generate_instance_id, init_prompt_watcher, load_prompts, load_prompts_embedded,
-        provision_genesis, read_active_profile, resolve_project, run_migrations,
+        probe_startup_providers, provision_genesis, read_active_profile, resolve_project,
+        run_migrations, validate_embedding_identity,
     },
 };
 
@@ -377,17 +379,32 @@ async fn bootstrap(
     let active_profile = read_active_profile(&pool_mcp).await?;
     let registry = build_provider_registry(config, &active_profile)?;
 
-    let (embedding_provider, embedding_key) =
-        build_embedding_provider(&registry, &active_profile, &config.credentials).await?;
+    // The gateway owns provider construction, credentials, permits, and
+    // accounting; the ledger sink writes through the worker pool.
+    let sink = Arc::new(PgLedgerSink::new(pool_worker.clone(), metrics.clone()));
+    let gateway = Arc::new(
+        InferenceGateway::new(
+            registry,
+            &completion_stage_specs(config),
+            Arc::new(CatalogueCredentialResolver::new(config.credentials.clone())),
+            sink,
+        )
+        .map_err(|e| AppError::ProviderSetup {
+            context: e.to_string(),
+        })?,
+    );
+    let embedding_identity = ProviderIdentity {
+        name: active_profile.provider_kind().to_string(),
+        model: active_profile.model().to_owned(),
+    };
 
-    let (extraction_provider, extraction_key) =
-        build_inference_provider(&registry, &config.inference.extraction).await?;
+    // Boot fails closed when the active embedding identity is unusable (a
+    // missing cloud credential, a provider kind with no embedding API):
+    // booting past it would dead-letter every ingest and fail every
+    // discover with only a warn line to explain why.
+    validate_embedding_identity(&gateway, config, &active_profile)?;
 
-    let (triage_provider, triage_key) =
-        build_inference_provider(&registry, &config.inference.triage).await?;
-
-    let (relation_provider, relation_key) =
-        build_inference_provider(&registry, &config.inference.relation).await?;
+    probe_startup_providers(&gateway, &active_profile).await;
 
     // -- Project resolution --------------------------------------------------
 
@@ -397,26 +414,9 @@ async fn bootstrap(
     // Worker is built before AppState so shared values can be cloned for the
     // worker and the originals moved into AppState.
 
-    let registry = Arc::new(registry);
-
-    // Shared between the worker (re-embed on cutover) and the MCP read path
-    // (resolve the live provider from the active profile), so a provider built
-    // for a profile is reused across both.
-    let embedding_providers: EmbeddingProviderCache = Arc::new(DashMap::new());
-
     let worker = Arc::new(Worker::new(
         pool_worker.clone(),
-        Arc::clone(&registry),
-        Arc::clone(&extraction_provider),
-        Arc::clone(&triage_provider),
-        Arc::clone(&relation_provider),
-        Arc::clone(&embedding_provider),
-        Arc::clone(&embedding_providers),
-        config.credentials.clone(),
-        extraction_key.clone(),
-        triage_key.clone(),
-        embedding_key.clone(),
-        relation_key.clone(),
+        Arc::clone(&gateway),
         cancellation_token.clone(),
         config.worker.clone(),
         config.logging.include_llm_content,
@@ -436,17 +436,8 @@ async fn bootstrap(
         .build_version(Arc::from(env!("TRIBAL_GIT_DESCRIBE")))
         .inference_parameters(inference_parameters)
         .active_prompt_versions(Arc::new(RwLock::new(active_prompt_versions)))
-        .provider_registry(registry)
-        .credentials(config.credentials.clone())
-        .embedding_providers(embedding_providers)
-        .embedding_provider(embedding_provider)
-        .extraction_provider(extraction_provider)
-        .triage_provider(triage_provider)
-        .relation_provider(relation_provider)
-        .embedding_key(embedding_key)
-        .extraction_key(extraction_key)
-        .triage_key(triage_key)
-        .relation_key(relation_key)
+        .gateway(gateway)
+        .embedding_identity(embedding_identity)
         .worker_config(config.worker.clone())
         .server_config(Arc::new(config.server.clone()))
         .cancellation_token(cancellation_token)

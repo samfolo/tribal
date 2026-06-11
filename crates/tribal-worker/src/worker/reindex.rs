@@ -9,36 +9,30 @@
 //! cutover follow). The set-difference is the completeness source of truth, so
 //! enrolment is re-derivable and crash-safe.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
 use sqlx::PgConnection;
-use tokio::sync::Semaphore;
 use tracing::Instrument;
-use tribal_common::{clamp_to_i32, embedding_profile_fingerprint};
-use tribal_config::{CredentialCatalogue, MissingApiKey};
+use tribal_common::embedding_profile_fingerprint;
 use tribal_db::{
     AdvisoryLockRepository, DbError, EmbeddingIndexRepository, EmbeddingProfileRepository,
     EmbeddingRepository, EmbeddingTable, KnowledgeItemRepository, NewEmbedding,
     NewEmbeddingProfile, NewReindexQuarantine, NewReindexRun, NewReindexTask, NewTagEmbedding,
-    NewTokenUsage, PgAdvisoryLockRepository, PgEmbeddingIndexRepository,
-    PgEmbeddingProfileRepository, PgEmbeddingRepository, PgKnowledgeItemRepository,
-    PgReindexQuarantineRepository, PgReindexRunRepository, PgReindexTaskRepository,
-    PgTagEmbeddingRepository, PgTokenUsageRepository, ReindexQuarantineRepository,
-    ReindexRunRepository, ReindexTaskRepository, TagEmbeddingRepository, TokenUsageRepository,
-    advisory_locks,
+    PgAdvisoryLockRepository, PgEmbeddingIndexRepository, PgEmbeddingProfileRepository,
+    PgEmbeddingRepository, PgKnowledgeItemRepository, PgReindexQuarantineRepository,
+    PgReindexRunRepository, PgReindexTaskRepository, PgTagEmbeddingRepository,
+    ReindexQuarantineRepository, ReindexRunRepository, ReindexTaskRepository,
+    TagEmbeddingRepository, advisory_locks,
 };
 use tribal_domain::{
     DistanceMetric, EmbeddingErrorClass, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose,
     KnowledgeItemId, PrincipalId, ProviderKind, ReindexEntityKind, ReindexRun, ReindexRunId,
-    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, TokenUsageStage, span_attrs,
+    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, span_attrs,
 };
 use tribal_inference::{
-    BatchEmbeddingResult, EMBEDDING_PROBE_INPUT, EmbeddingProvider, EmbeddingRequest,
-    EmbeddingUsage, InferenceError, ProviderKey, ProviderLimits, ProviderRegistry,
-    ProviderRegistryError, RequestClass, UnsupportedEmbeddingProvider, classify_embedding_error,
-    embedding_retry_after, make_embedding_provider, probe_digest,
+    EmbeddingTarget, InferenceError, InferenceGateway, PermitWait, UsageAttribution,
+    classify_embedding_error, embedding_retry_after, probe_digest,
 };
 
 // ---------------------------------------------------------------------------
@@ -372,174 +366,52 @@ pub async fn drive_reindex(conn: &mut PgConnection) -> Result<Option<ReindexRun>
 // Target provider
 // ---------------------------------------------------------------------------
 
-/// Built embedding providers keyed by profile id, shared across the worker.
-///
-/// The `ProviderKey` registry keys clients and concurrency semaphores by
-/// endpoint, so it cannot distinguish two profiles on one endpoint that differ
-/// only by model or dimension; this cache holds the model/dimension-specific
-/// built provider per profile. The reindex driver populates it for the building
-/// profile; the commit path reads it to re-embed against a freshly-activated
-/// profile.
-pub type EmbeddingProviderCache = Arc<DashMap<EmbeddingProfileId, Arc<dyn EmbeddingProvider>>>;
-
-/// Limits applied to a reindex target endpoint registered for the first time.
-///
-/// A model-change reindex reuses the active endpoint's already-registered
-/// client and semaphore, so this conservative default bounds only the rarer
-/// case of a reindex to a brand-new endpoint.
-const DEFAULT_REINDEX_PROVIDER_LIMITS: ProviderLimits = ProviderLimits {
-    max_in_flight: 4,
-    request_timeout: Duration::from_mins(2),
-};
-
-/// A target embedding provider could not be built.
-#[derive(Debug, thiserror::Error)]
-pub enum TargetProviderError {
-    /// Keying or registering the endpoint failed.
-    #[error("registering the target provider: {0}")]
-    Registry(#[from] ProviderRegistryError),
-    /// The registry holds no client or semaphore for the registered endpoint.
-    #[error("the target endpoint resolved no client or semaphore")]
-    EndpointUnresolved,
-    /// A provider that requires an API key has none in the catalogue.
-    #[error(transparent)]
-    Credential(#[from] MissingApiKey),
-    /// The provider kind has no embedding API.
-    #[error(transparent)]
-    Unsupported(#[from] UnsupportedEmbeddingProvider),
-}
-
 /// A reindex drive cycle failed before per-entity handling.
 #[derive(Debug, thiserror::Error)]
 pub enum ReindexError {
     /// A database operation failed.
     #[error(transparent)]
     Db(#[from] DbError),
-    /// The target provider could not be built or resolved.
-    #[error(transparent)]
-    Provider(#[from] TargetProviderError),
+    /// The target provider could not be resolved.
+    #[error("resolving the target provider: {0}")]
+    Provider(#[from] InferenceError),
 }
 
-/// Builds the embedding provider for a profile, caching it by profile id, and
-/// resolves its endpoint's concurrency semaphore.
-///
-/// Registers the endpoint in the registry if it is new (a no-op for an
-/// endpoint the active providers already cover, so a model-change reindex
-/// shares their client and concurrency budget), resolves the credential
-/// fail-closed, and constructs the provider. A second call for the same profile
-/// returns the cached provider.
-///
-/// # Errors
-///
-/// Returns [`TargetProviderError`] if the endpoint cannot be keyed or
-/// registered, no client or semaphore resolves, the credential is missing, or
-/// the provider kind has no embedding API.
-pub fn build_target_provider(
-    registry: &ProviderRegistry,
-    cache: &EmbeddingProviderCache,
-    credentials: &CredentialCatalogue,
-    profile: &EmbeddingProfile,
-) -> Result<(Arc<dyn EmbeddingProvider>, Arc<Semaphore>), TargetProviderError> {
-    if let Some(cached) = cache.get(&profile.id()).map(|p| p.value().clone()) {
-        // The provider is built; its endpoint is registered, so the semaphore
-        // resolves without re-registering.
-        let key = embedding_key(profile.provider_kind(), profile.normalised_base_url())?;
-        let semaphore = registry
-            .resolve_semaphore(&key)
-            .ok_or(TargetProviderError::EndpointUnresolved)?;
-        return Ok((cached, semaphore));
-    }
-
-    let built = build_provider_for_identity(
-        registry,
-        credentials,
-        profile.provider_kind(),
-        profile.normalised_base_url(),
-        profile.model(),
-        profile.dimensions(),
-    )?;
-    cache.insert(profile.id(), Arc::clone(&built.0));
-    Ok(built)
-}
-
-/// Keys an embedding endpoint for registry and credential lookups.
-fn embedding_key(kind: ProviderKind, url: &str) -> Result<ProviderKey, ProviderRegistryError> {
-    ProviderKey::new(kind.to_string(), url, RequestClass::Embedding)
-}
-
-/// Builds an embedding provider and its endpoint concurrency semaphore from a
-/// target identity, with no per-profile cache.
-///
-/// Registers the endpoint if new (a no-op when the active providers already
-/// cover it, so a model-change reindex shares their client and concurrency
-/// budget), resolves the credential fail-closed, and constructs the provider.
-/// [`build_target_provider`] wraps this with the per-profile cache.
-///
-/// # Errors
-///
-/// Returns [`TargetProviderError`] if the endpoint cannot be keyed or
-/// registered, no client or semaphore resolves, the credential is missing, or
-/// the provider kind has no embedding API.
-pub fn build_provider_for_identity(
-    registry: &ProviderRegistry,
-    credentials: &CredentialCatalogue,
-    kind: ProviderKind,
-    url: &str,
-    model: &str,
-    dimensions: u32,
-) -> Result<(Arc<dyn EmbeddingProvider>, Arc<Semaphore>), TargetProviderError> {
-    let key = embedding_key(kind, url)?;
-    registry.register_building(key.clone(), &DEFAULT_REINDEX_PROVIDER_LIMITS)?;
-    let client = registry
-        .resolve_client(&key)
-        .ok_or(TargetProviderError::EndpointUnresolved)?;
-    let api_key = credentials.resolve_api_key(kind, url)?;
-    let provider = make_embedding_provider(kind, client, url, model, dimensions, api_key)?;
-    let semaphore = registry
-        .resolve_semaphore(&key)
-        .ok_or(TargetProviderError::EndpointUnresolved)?;
-    Ok((provider, semaphore))
-}
-
-/// Probes a built target provider for its drift signal and assembles the
+/// Probes a target's provider for its drift signal and assembles the
 /// [`ReindexTarget`] a run is created from.
 ///
 /// The revision token is the provider-native drift signal where one exists (a
 /// content-addressed digest or dated snapshot); the probe digest is the
 /// cross-provider backstop: the same canonical input embedded and quantised, so
-/// a serving whose geometry shifts mid-build is caught at cutover.
+/// a serving whose geometry shifts mid-build is caught at cutover. The probe
+/// has no run to attribute yet, so its ledger row carries no owner.
 ///
 /// # Errors
 ///
-/// Returns [`InferenceError`] when the probe embedding call fails.
+/// Returns [`InferenceError`] when the target cannot be resolved or the probe
+/// embedding call fails.
 pub async fn resolve_reindex_target(
-    provider: &dyn EmbeddingProvider,
-    provider_kind: ProviderKind,
-    normalised_base_url: String,
-    model: String,
-    dimensions: u32,
+    gateway: &InferenceGateway,
+    target: &EmbeddingTarget,
     distance_metric: DistanceMetric,
 ) -> Result<ReindexTarget, InferenceError> {
-    let response = provider
-        .embed(EmbeddingRequest {
-            input: EMBEDDING_PROBE_INPUT.to_owned(),
-            purpose: EmbeddingPurpose::Query,
-        })
+    let response = gateway
+        .probe_embedding(target, &UsageAttribution::default())
         .await?;
-    let revision_token = provider.revision_token().await;
+    let revision_token = gateway.revision_token(target).await?;
     let fingerprint_hash = embedding_profile_fingerprint(
-        provider_kind.as_str(),
-        &normalised_base_url,
-        &model,
-        dimensions,
+        target.provider.as_str(),
+        &target.base_url,
+        &target.model,
+        target.dimensions,
         distance_metric.as_str(),
         &revision_token,
     );
     Ok(ReindexTarget {
-        provider_kind,
-        normalised_base_url,
-        model,
-        dimensions,
+        provider_kind: target.provider,
+        normalised_base_url: target.base_url.clone(),
+        model: target.model.clone(),
+        dimensions: target.dimensions,
         distance_metric,
         revision_token,
         probe_digest: Some(probe_digest(&response.vector)),
@@ -597,53 +469,14 @@ fn retry_at_for(signal: &RetrySignal, attempt: u32) -> DateTime<Utc> {
     }
 }
 
-/// Embeds a batch while holding one endpoint concurrency permit, so a reindex
-/// shares the endpoint's in-flight budget with live ingest rather than
-/// monopolising it.
-async fn embed_with_permit(
-    provider: &dyn EmbeddingProvider,
-    semaphore: &Semaphore,
-    requests: Vec<EmbeddingRequest>,
-) -> BatchEmbeddingResult {
-    let _permit = semaphore
-        .acquire()
-        .await
-        .expect("reindex provider semaphore is never closed");
-    provider.embed_many(requests).await
-}
-
-/// Records a reindex batch's embedding spend against the run, mirroring the
-/// ingest path's per-call accounting. A recording failure is logged and
-/// swallowed: token accounting is observational and must never fail a batch
-/// whose embeddings are about to be written.
-async fn record_reindex_usage(
-    conn: &mut PgConnection,
-    run_id: ReindexRunId,
-    purpose: EmbeddingPurpose,
-    usage: &EmbeddingUsage,
-) {
-    let new = NewTokenUsage::builder()
-        .reindex_run_id(Some(run_id))
-        .attempt(0)
-        .stage(TokenUsageStage::Embedding { purpose })
-        .provider(usage.provider.clone())
-        .model(usage.model.clone())
-        .tokens_input(clamp_to_i32(usage.total_tokens))
-        .tokens_output(0)
-        .latency_ms(clamp_to_i32(usage.latency.as_millis()))
-        .build();
-    if let Err(e) = PgTokenUsageRepository.insert(conn, &new).await {
-        tracing::warn!(error = %e, "failed to record reindex token usage");
-    }
-}
-
 /// The per-cycle context every task in one drive cycle shares: the run, its
-/// building profile, and that profile's provider and concurrency semaphore.
+/// building profile, the gateway, and the run's ledger attribution.
 struct ReindexCtx<'a> {
     run: &'a ReindexRun,
     building: &'a EmbeddingProfile,
-    provider: &'a dyn EmbeddingProvider,
-    semaphore: &'a Semaphore,
+    gateway: &'a InferenceGateway,
+    target: EmbeddingTarget,
+    attribution: UsageAttribution,
 }
 
 /// Records an entity in the durable quarantine, returning whether it was newly
@@ -692,6 +525,17 @@ struct RetrySignal {
     class: EmbeddingErrorClass,
     retry_after: Option<Duration>,
     message: String,
+}
+
+/// Builds the retry signal for a call that failed before any per-item
+/// result existed (target resolution or permit acquisition); classified
+/// like any embed error so quarantine and backoff behave uniformly.
+fn retry_signal_for(error: &InferenceError) -> RetrySignal {
+    RetrySignal {
+        class: classify_embedding_error(error),
+        retry_after: embedding_retry_after(error),
+        message: error.to_string(),
+    }
 }
 
 /// Classifies one embed result against the building geometry, distinguishing a
@@ -762,21 +606,21 @@ async fn embed_pending_batch(
     }
 
     let items = PgKnowledgeItemRepository.find_by_ids(conn, &ids).await?;
-    let requests = items
-        .iter()
-        .map(|item| EmbeddingRequest {
-            input: item.content().to_owned(),
-            purpose: EmbeddingPurpose::Candidate,
-        })
-        .collect();
-    let result = embed_with_permit(ctx.provider, ctx.semaphore, requests).await;
-    record_reindex_usage(
-        conn,
-        ctx.run.id(),
-        EmbeddingPurpose::Candidate,
-        &result.usage,
-    )
-    .await;
+    let inputs = items.iter().map(|item| item.content().to_owned()).collect();
+    let result = match ctx
+        .gateway
+        .embed_many(
+            &ctx.target,
+            inputs,
+            EmbeddingPurpose::Candidate,
+            PermitWait::Unbounded,
+            &ctx.attribution,
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => return Ok(Some(retry_signal_for(&e))),
+    };
 
     let mut rows = Vec::new();
     let mut quarantined = 0u32;
@@ -861,12 +705,20 @@ async fn embed_one_tag(
     ctx: &ReindexCtx<'_>,
     tag: &str,
 ) -> Result<Option<RetrySignal>, DbError> {
-    let request = EmbeddingRequest {
-        input: tag.to_owned(),
-        purpose: EmbeddingPurpose::Tag,
+    let mut result = match ctx
+        .gateway
+        .embed_many(
+            &ctx.target,
+            vec![tag.to_owned()],
+            EmbeddingPurpose::Tag,
+            PermitWait::Unbounded,
+            &ctx.attribution,
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => return Ok(Some(retry_signal_for(&e))),
     };
-    let mut result = embed_with_permit(ctx.provider, ctx.semaphore, vec![request]).await;
-    record_reindex_usage(conn, ctx.run.id(), EmbeddingPurpose::Tag, &result.usage).await;
 
     let Some(result) = result.items.pop() else {
         return Ok(Some(RetrySignal {
@@ -1002,9 +854,7 @@ async fn process_tasks(
 /// processing fails.
 pub async fn drive_reindex_cycle(
     conn: &mut PgConnection,
-    registry: &ProviderRegistry,
-    cache: &EmbeddingProviderCache,
-    credentials: &CredentialCatalogue,
+    gateway: &InferenceGateway,
     claimed_by: &str,
 ) -> Result<(), ReindexError> {
     let Some(run) = drive_reindex(conn).await? else {
@@ -1023,12 +873,17 @@ pub async fn drive_reindex_cycle(
         { span_attrs::EMBEDDING_DIMENSIONS } = building.dimensions(),
     );
     async {
-        let (provider, semaphore) = build_target_provider(registry, cache, credentials, &building)?;
+        let target = EmbeddingTarget::from(&building);
+        gateway.prepare_embedding_target(&target)?;
         let ctx = ReindexCtx {
             run: &run,
             building: &building,
-            provider: provider.as_ref(),
-            semaphore: &semaphore,
+            gateway,
+            target,
+            attribution: UsageAttribution {
+                reindex_run_id: Some(run.id()),
+                ..UsageAttribution::default()
+            },
         };
         process_tasks(conn, &ctx, claimed_by).await?;
         if run_dead_lettered(conn, run.id()).await? {
@@ -1211,7 +1066,9 @@ enum ProbeOutcome {
 /// Both checks are provider network calls, so this must run lock-free, never
 /// while the exclusive cutover lock is held.
 async fn probe_drifted(ctx: &ReindexCtx<'_>) -> ProbeOutcome {
-    let resolved_token = ctx.provider.revision_token().await;
+    let Ok(resolved_token) = ctx.gateway.revision_token(&ctx.target).await else {
+        return ProbeOutcome::Unavailable;
+    };
     if !resolved_token.is_empty() && resolved_token != ctx.building.revision_token() {
         return ProbeOutcome::Drifted;
     }
@@ -1219,19 +1076,14 @@ async fn probe_drifted(ctx: &ReindexCtx<'_>) -> ProbeOutcome {
     let Some(stored) = ctx.building.probe_digest() else {
         return ProbeOutcome::Stable;
     };
-    let mut result = embed_with_permit(
-        ctx.provider,
-        ctx.semaphore,
-        vec![EmbeddingRequest {
-            input: EMBEDDING_PROBE_INPUT.to_owned(),
-            purpose: EmbeddingPurpose::Query,
-        }],
-    )
-    .await;
-    match result.items.pop() {
-        Some(Ok(vector)) if probe_digest(&vector) == stored => ProbeOutcome::Stable,
-        Some(Ok(_)) => ProbeOutcome::Drifted,
-        _ => ProbeOutcome::Unavailable,
+    match ctx
+        .gateway
+        .probe_embedding(&ctx.target, &ctx.attribution)
+        .await
+    {
+        Ok(response) if probe_digest(&response.vector) == stored => ProbeOutcome::Stable,
+        Ok(_) => ProbeOutcome::Drifted,
+        Err(_) => ProbeOutcome::Unavailable,
     }
 }
 
@@ -1413,19 +1265,88 @@ async fn catch_up_and_cutover(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     use tribal_db::{PgPrincipalRepository, PrincipalRepository};
     use tribal_domain::{KnowledgeKind, ReindexRunState};
-    use tribal_inference::{EmbeddingResponse, ProviderIdentity};
+    use tribal_inference::{
+        EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, InjectedEmbedding,
+        InjectedProviders, NoopLedgerSink, ProviderIdentity, ProviderKey, ProviderLimits,
+        ProviderRegistry, RequestClass,
+    };
     use tribal_test_utils::{
-        EmbeddingMatcher, ExhaustBehaviour, MockEmbeddingProvider, Seed, a_new_embedding_profile,
-        a_new_knowledge_item, a_new_principal, a_provider_unavailable, a_rate_limited,
-        an_embedding_profile, an_embedding_response, an_overloaded, item, serial_lock,
-        test_context, truncate_all_tables,
+        EmbeddingMatcher, ExhaustBehaviour, MockEmbeddingProvider, MockInferenceProvider, Seed,
+        a_new_embedding_profile, a_new_knowledge_item, a_new_principal, a_provider_unavailable,
+        a_rate_limited, an_embedding_profile, an_embedding_response, an_overloaded, item,
+        serial_lock, test_context, truncate_all_tables,
     };
 
     use super::*;
+
+    /// A gateway serving `provider` for `building`'s endpoint, with the
+    /// completion stages bound to unreachable stubs.
+    fn a_test_gateway(
+        building: &EmbeddingProfile,
+        provider: Arc<dyn EmbeddingProvider>,
+    ) -> InferenceGateway {
+        let stub: Arc<dyn tribal_inference::InferenceProvider> = Arc::new(
+            MockInferenceProvider::builder()
+                .on_exhaust(ExhaustBehaviour::Error(Box::new(|| {
+                    InferenceError::provider_unavailable("mock", "test stub")
+                })))
+                .build(),
+        );
+        let inference_key =
+            ProviderKey::new("mock", "http://localhost:9999", RequestClass::Inference)
+                .expect("inference key");
+        let endpoint = ProviderKey::new(
+            building.provider_kind().to_string(),
+            building.normalised_base_url(),
+            RequestClass::Embedding,
+        )
+        .expect("embedding endpoint key");
+        let limits = ProviderLimits {
+            max_in_flight: 4,
+            request_timeout: Duration::from_secs(30),
+        };
+        let registry = ProviderRegistry::new(vec![
+            (inference_key.clone(), limits.clone()),
+            (endpoint, limits),
+        ])
+        .expect("registry");
+
+        InferenceGateway::with_providers(InjectedProviders::uniform(
+            registry,
+            stub,
+            inference_key,
+            vec![InjectedEmbedding {
+                profile_id: building.id(),
+                provider,
+            }],
+            Arc::new(NoopLedgerSink),
+        ))
+    }
+
+    /// The per-cycle context over a test gateway, attributed to `run`.
+    fn a_reindex_ctx<'a>(
+        run: &'a ReindexRun,
+        building: &'a EmbeddingProfile,
+        gateway: &'a InferenceGateway,
+    ) -> ReindexCtx<'a> {
+        ReindexCtx {
+            run,
+            building,
+            gateway,
+            target: EmbeddingTarget::from(building),
+            attribution: UsageAttribution {
+                reindex_run_id: Some(run.id()),
+                ..UsageAttribution::default()
+            },
+        }
+    }
 
     /// An embedding provider that, on every embed, checks on a separate
     /// connection whether the exclusive cutover lock is held (a failed
@@ -1703,25 +1624,29 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_reindex_target_probes_and_fingerprints() {
         let probe_vector = vec![0.25_f32; 768];
-        let mock = MockEmbeddingProvider::builder()
-            .on_embed(an_embedding_response(probe_vector.clone()), None)
-            .on_exhaust(ExhaustBehaviour::RepeatLast)
-            .build();
+        let mock: Arc<dyn EmbeddingProvider> = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(probe_vector.clone()), None)
+                .on_exhaust(ExhaustBehaviour::RepeatLast)
+                .build(),
+        );
+        // The target the probe resolves has no profile row yet; route the
+        // mock through the cache of a profile-bearing twin so the gateway
+        // serves it, then probe the profile-less target's identity.
+        let building = an_embedding_profile().build();
+        let gateway = a_test_gateway(&building, mock);
+        let target = EmbeddingTarget {
+            profile_id: Some(building.id()),
+            ..EmbeddingTarget::from(&building)
+        };
 
-        let target = resolve_reindex_target(
-            &mock,
-            ProviderKind::Ollama,
-            "http://localhost:11500".to_owned(),
-            "nomic-embed-text:v1.5".to_owned(),
-            768,
-            DistanceMetric::Cosine,
-        )
-        .await
-        .expect("resolve target");
+        let target = resolve_reindex_target(&gateway, &target, DistanceMetric::Cosine)
+            .await
+            .expect("resolve target");
 
-        assert_eq!(target.provider_kind, ProviderKind::Ollama);
-        assert_eq!(target.model, "nomic-embed-text:v1.5");
-        assert_eq!(target.dimensions, 768);
+        assert_eq!(target.provider_kind, building.provider_kind());
+        assert_eq!(target.model, building.model());
+        assert_eq!(target.dimensions, building.dimensions());
         assert_eq!(target.distance_metric, DistanceMetric::Cosine);
         assert_eq!(target.revision_token, "");
         assert_eq!(
@@ -1979,13 +1904,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let semaphore = Semaphore::new(1);
-        let ctx = ReindexCtx {
-            run: &run,
-            building: &building,
-            provider: provider.as_ref(),
-            semaphore: &semaphore,
-        };
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         let before = Utc::now();
         process_one(&mut txn, &ctx, &task).await.expect("process");
@@ -2022,13 +1942,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let semaphore = Semaphore::new(1);
-        let ctx = ReindexCtx {
-            run: &run,
-            building: &building,
-            provider: provider.as_ref(),
-            semaphore: &semaphore,
-        };
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         let before = Utc::now();
         process_one(&mut txn, &ctx, &task).await.expect("process");
@@ -2118,29 +2033,6 @@ mod tests {
         assert_eq!(total_again, 2, "enrolment is idempotent");
     }
 
-    #[test]
-    fn test_build_target_provider_caches_by_profile_id() {
-        let registry = ProviderRegistry::new(vec![]).expect("registry");
-        let cache: EmbeddingProviderCache = Arc::new(DashMap::new());
-        let catalogue = CredentialCatalogue::default();
-        // The factory default is a local Ollama endpoint, which needs no key.
-        let profile = an_embedding_profile().build();
-
-        let (provider, _semaphore) =
-            build_target_provider(&registry, &cache, &catalogue, &profile).expect("build");
-        assert!(
-            cache.contains_key(&profile.id()),
-            "the built provider is cached by profile id",
-        );
-
-        let (again, _semaphore) =
-            build_target_provider(&registry, &cache, &catalogue, &profile).expect("build");
-        assert!(
-            Arc::ptr_eq(&provider, &again),
-            "a second call returns the cached provider, not a rebuild",
-        );
-    }
-
     #[tokio::test]
     async fn test_process_tasks_embeds_the_backlog_into_the_building_profile() {
         let _guard = serial_lock().await;
@@ -2186,13 +2078,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let semaphore = Semaphore::new(4);
-        let ctx = ReindexCtx {
-            run: &run,
-            building: &building,
-            provider: provider.as_ref(),
-            semaphore: &semaphore,
-        };
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
         process_tasks(&mut txn, &ctx, "test-reindex-worker")
             .await
             .expect("process tasks");
@@ -2267,13 +2154,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let semaphore = Semaphore::new(4);
-        let ctx = ReindexCtx {
-            run: &run,
-            building: &building,
-            provider: provider.as_ref(),
-            semaphore: &semaphore,
-        };
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         process_tasks(&mut txn, &ctx, "test-reindex-worker")
             .await
@@ -2363,13 +2245,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let semaphore = Semaphore::new(4);
-        let ctx = ReindexCtx {
-            run: &run,
-            building: &building,
-            provider: provider.as_ref(),
-            semaphore: &semaphore,
-        };
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         process_tasks(&mut txn, &ctx, "test-reindex-worker")
             .await
@@ -2465,23 +2342,18 @@ mod tests {
             .expect("a building profile");
 
         // Backfill embeds (Candidate purpose) succeed so the set-difference
-        // drains; the drift re-probe (Query purpose) fails, standing in for an
+        // drains; the drift re-probe (Probe purpose) fails, standing in for an
         // endpoint that goes unavailable at the final safety check.
         let provider: Arc<dyn EmbeddingProvider> = Arc::new(
             MockEmbeddingProvider::builder()
-                .when(EmbeddingMatcher::has_purpose(EmbeddingPurpose::Query))
+                .when(EmbeddingMatcher::has_purpose(EmbeddingPurpose::Probe))
                 .respond_with_error(a_provider_unavailable("probe endpoint down"), None)
                 .on_embed(an_embedding_response(vec![0.1_f32; 768]), None)
                 .on_exhaust(ExhaustBehaviour::RepeatLast)
                 .build(),
         );
-        let semaphore = Semaphore::new(4);
-        let ctx = ReindexCtx {
-            run: &run,
-            building: &building,
-            provider: provider.as_ref(),
-            semaphore: &semaphore,
-        };
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         process_tasks(&mut txn, &ctx, "test-reindex-worker")
             .await
@@ -2568,13 +2440,8 @@ mod tests {
                 .on_exhaust(ExhaustBehaviour::Error(a_provider_unavailable("transient")))
                 .build(),
         );
-        let semaphore = Semaphore::new(4);
-        let ctx = ReindexCtx {
-            run: &run,
-            building: &building,
-            provider: provider.as_ref(),
-            semaphore: &semaphore,
-        };
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         assert!(
             !catch_up_and_cutover(&mut setup, &ctx)
@@ -2657,13 +2524,8 @@ mod tests {
             vector: vector.clone(),
             observed_exclusive_held: Arc::clone(&observed),
         });
-        let semaphore = Semaphore::new(4);
-        let ctx = ReindexCtx {
-            run: &run,
-            building: &building,
-            provider: provider.as_ref(),
-            semaphore: &semaphore,
-        };
+        let gateway = a_test_gateway(&building, Arc::clone(&provider));
+        let ctx = a_reindex_ctx(&run, &building, &gateway);
 
         process_tasks(&mut setup, &ctx, "test-reindex-worker")
             .await
@@ -2758,13 +2620,8 @@ mod tests {
         );
         let mut conn_b = ctx_db.raw_connection().await.expect("cutover connection");
         let handle = tokio::spawn(async move {
-            let semaphore = Semaphore::new(4);
-            let ctx = ReindexCtx {
-                run: &run,
-                building: &building,
-                provider: provider.as_ref(),
-                semaphore: &semaphore,
-            };
+            let gateway = a_test_gateway(&building, Arc::clone(&provider));
+            let ctx = a_reindex_ctx(&run, &building, &gateway);
             catch_up_and_cutover(&mut conn_b, &ctx).await
         });
 

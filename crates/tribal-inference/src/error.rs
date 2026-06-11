@@ -75,6 +75,16 @@ pub enum InferenceError {
         /// The actual response content (or a summary of it).
         actual: String,
     },
+
+    /// Timed out waiting for the provider's concurrency permit; the
+    /// request was never sent.
+    #[error("timed out waiting for a permit for provider {provider_key} after {waited_ms}ms")]
+    PermitTimeout {
+        /// The provider key whose permits were exhausted.
+        provider_key: String,
+        /// How long the call waited before giving up, in milliseconds.
+        waited_ms: u64,
+    },
 }
 
 impl InferenceError {
@@ -102,7 +112,9 @@ impl InferenceError {
 /// A retryable [`InferenceError::ProviderUnavailable`] splits by the HTTP status
 /// it carries: 429 is [`EmbeddingErrorClass::RateLimited`], 529 is
 /// [`EmbeddingErrorClass::Overloaded`], and any other status or a statusless
-/// network/timeout failure is [`EmbeddingErrorClass::Transient`]. An
+/// network/timeout failure is [`EmbeddingErrorClass::Transient`]. A permit
+/// wait that timed out is local backpressure, also
+/// [`EmbeddingErrorClass::Transient`]. An
 /// [`InferenceError::EmbeddingFailed`] (400 shape, 401, 403, 404) or an
 /// unparseable response is [`EmbeddingErrorClass::Permanent`] and quarantined.
 #[must_use]
@@ -113,6 +125,7 @@ pub fn classify_embedding_error(error: &InferenceError) -> EmbeddingErrorClass {
             Some(OVERLOADED_STATUS) => EmbeddingErrorClass::Overloaded,
             _ => EmbeddingErrorClass::Transient,
         },
+        InferenceError::PermitTimeout { .. } => EmbeddingErrorClass::Transient,
         InferenceError::EmbeddingFailed { .. }
         | InferenceError::LlmCallFailed { .. }
         | InferenceError::ResponseParseFailed { .. } => EmbeddingErrorClass::Permanent,

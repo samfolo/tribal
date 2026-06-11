@@ -8,13 +8,15 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::{ProviderKind, span_attrs};
+use tribal_domain::{CompletionResponse, CompletionUsage, ProviderKind, gen_ai, span_attrs};
 
+use super::streaming::OllamaStreamTranslator;
 use crate::{
-    CompletionRequest, CompletionResponse, CompletionUsage, InferenceError, InferenceProvider,
-    Message, ProviderIdentity, ResponseFormat, Role, apply_dialect,
-    error::{map_body_read_error, map_http_error, map_json_parse_error, map_send_error},
-    http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS, normalise_base_url, record_completion_usage},
+    CompletionRequest, InferenceError, InferenceProvider, ProviderIdentity, ResponseFormat,
+    apply_dialect,
+    error::{map_body_read_error, map_json_parse_error, map_send_error},
+    http::{ensure_success, normalise_base_url, record_completion_usage},
+    stream::{InferenceEventStream, WireMode, drive_event_stream},
 };
 
 // ---------------------------------------------------------------------------
@@ -106,43 +108,30 @@ impl OllamaInferenceProvider {
         }
     }
 
-    /// Validates model availability by sending a trivial completion.
-    ///
-    /// Sends a best-effort GET to `/api/tags` to check whether the
-    /// configured model is locally available, then sends a minimal
-    /// completion request to verify the model can generate output.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InferenceError::ProviderUnavailable`] if Ollama cannot
-    /// be reached.  Returns [`InferenceError::LlmCallFailed`] if the
-    /// model rejects the request.
-    pub async fn probe_model(&self) -> Result<(), InferenceError> {
-        let span = tracing::info_span!(
-            "tribal.llm.probe",
-            { span_attrs::LLM_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::LLM_MODEL } = %self.identity.model,
-        );
+    /// Builds and sends one `/api/chat` request for the given wire mode,
+    /// enforcing a success status.
+    async fn send_chat(
+        &self,
+        request: &CompletionRequest,
+        mode: WireMode,
+    ) -> Result<reqwest::Response, InferenceError> {
+        let body = build_request(&self.identity.model, request, mode);
+        let url = format!("{}{CHAT_PATH}", self.base_url);
+        let http_response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| map_send_error(&e, PROVIDER_NAME))?;
 
-        async {
-            super::tags::check_tags(&self.client, &self.base_url, &self.identity.model).await;
-
-            let request = CompletionRequest {
-                system: None,
-                messages: vec![Message {
-                    role: Role::User,
-                    content: INFERENCE_PROBE_INPUT.to_owned(),
-                }],
-                temperature: Some(0.0),
-                max_tokens: Some(PROBE_MAX_TOKENS),
-                response_format: None,
-            };
-            let _response = self.complete(request).await?;
-
-            tracing::info!("model {} probe succeeded", self.identity.model);
-            Ok(())
-        }
-        .instrument(span)
+        ensure_success(http_response, PROVIDER_NAME, |context| {
+            InferenceError::LlmCallFailed {
+                model: self.identity.model.clone(),
+                context,
+                source: None,
+            }
+        })
         .await
     }
 }
@@ -170,16 +159,16 @@ impl InferenceProvider for OllamaInferenceProvider {
         }
 
         let span = tracing::info_span!(
-            "tribal.llm.call",
-            { span_attrs::LLM_PROVIDER } = PROVIDER_NAME,
-            { span_attrs::LLM_MODEL } = %self.identity.model,
-            { span_attrs::LLM_TOKENS_INPUT } = tracing::field::Empty,
-            { span_attrs::LLM_TOKENS_OUTPUT } = tracing::field::Empty,
-            { span_attrs::LLM_TOKENS_TOTAL } = tracing::field::Empty,
-            { span_attrs::LLM_LATENCY_MS } = tracing::field::Empty,
-            { span_attrs::LLM_TEMPERATURE } = tracing::field::Empty,
-            { span_attrs::LLM_TOKENS_CACHE_READ } = tracing::field::Empty,
-            { span_attrs::LLM_TOKENS_CACHE_WRITE } = tracing::field::Empty,
+            "chat",
+            { span_attrs::OTEL_NAME } = %format!("{} {}", gen_ai::OPERATION_CHAT, self.identity.model),
+            { gen_ai::OPERATION_NAME } = gen_ai::OPERATION_CHAT,
+            { gen_ai::PROVIDER_NAME } = PROVIDER_NAME,
+            { gen_ai::REQUEST_MODEL } = %self.identity.model,
+            { gen_ai::REQUEST_TEMPERATURE } = tracing::field::Empty,
+            { gen_ai::USAGE_INPUT_TOKENS } = tracing::field::Empty,
+            { gen_ai::USAGE_OUTPUT_TOKENS } = tracing::field::Empty,
+            { gen_ai::USAGE_CACHE_READ_INPUT_TOKENS } = tracing::field::Empty,
+            { gen_ai::USAGE_CACHE_CREATION_INPUT_TOKENS } = tracing::field::Empty,
         );
 
         async {
@@ -187,41 +176,17 @@ impl InferenceProvider for OllamaInferenceProvider {
             // temperature is exactly what is sent — unlike the cloud providers,
             // which record the post-reconcile value.
             if let Some(temp) = request.temperature {
-                tracing::Span::current().record(span_attrs::LLM_TEMPERATURE, f64::from(temp));
+                tracing::Span::current().record(gen_ai::REQUEST_TEMPERATURE, f64::from(temp));
             }
 
             let started = Instant::now();
-            let body = build_request(&self.identity.model, &request);
-            let url = format!("{}{CHAT_PATH}", self.base_url);
-            let http_response = self
-                .client
-                .post(&url)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| map_send_error(&e, PROVIDER_NAME))?;
-
-            let status = http_response.status();
+            let http_response = self.send_chat(&request, WireMode::Buffered).await?;
             let response_body = http_response
                 .text()
                 .await
                 .map_err(|e| map_body_read_error(&e, PROVIDER_NAME))?;
 
             let latency = started.elapsed();
-
-            if !status.is_success() {
-                return Err(map_http_error(
-                    status,
-                    &response_body,
-                    PROVIDER_NAME,
-                    &[],
-                    |ctx| InferenceError::LlmCallFailed {
-                        model: self.identity.model.clone(),
-                        context: ctx,
-                        source: None,
-                    },
-                ));
-            }
 
             let parsed: OllamaChatResponse = serde_json::from_str(&response_body).map_err(|e| {
                 map_json_parse_error(&e, "OllamaChatResponse JSON object", &response_body)
@@ -266,13 +231,34 @@ impl InferenceProvider for OllamaInferenceProvider {
         .instrument(span)
         .await
     }
+
+    async fn complete_stream(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<InferenceEventStream, InferenceError> {
+        if request.messages.is_empty() {
+            return Err(InferenceError::LlmCallFailed {
+                model: self.identity.model.clone(),
+                context: "messages list is empty".to_owned(),
+                source: None,
+            });
+        }
+
+        let http_response = self.send_chat(&request, WireMode::Streaming).await?;
+        let translator = OllamaStreamTranslator::new(self.identity.clone());
+        Ok(drive_event_stream(http_response, translator, PROVIDER_NAME))
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OllamaChatRequest<'a> {
+fn build_request<'a>(
+    model: &'a str,
+    request: &'a CompletionRequest,
+    mode: WireMode,
+) -> OllamaChatRequest<'a> {
     let mut messages =
         Vec::with_capacity(request.messages.len() + usize::from(request.system.is_some()));
 
@@ -303,7 +289,7 @@ fn build_request<'a>(model: &'a str, request: &'a CompletionRequest) -> OllamaCh
     OllamaChatRequest {
         model,
         messages,
-        stream: false,
+        stream: mode == WireMode::Streaming,
         format,
         options,
     }
@@ -332,7 +318,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::ollama::tags::TAGS_PATH;
+    use crate::{Message, Role};
 
     fn a_request(content: &str) -> CompletionRequest {
         CompletionRequest {
@@ -922,76 +908,6 @@ mod tests {
                 if reason.contains("...") && reason.len() < 300
             ),
             "expected ProviderUnavailable with truncated body, got {err:?}"
-        );
-    }
-
-    // -- Probe tests ---------------------------------------------------------
-
-    #[tokio::test]
-    async fn test_probe_model_success() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [{"name": "llama3.2:3b"}],
-            })))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path(CHAT_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        provider.probe_model().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_tags_failure_continues() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path(CHAT_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        provider.probe_model().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_probe_model_completion_failure_propagates() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path(TAGS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "models": [],
-            })))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path(CHAT_PATH))
-            .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
-            .mount(&server)
-            .await;
-
-        let provider = setup(&server);
-        let err = provider.probe_model().await.unwrap_err();
-        assert!(
-            matches!(err, InferenceError::ProviderUnavailable { .. }),
-            "expected ProviderUnavailable, got {err:?}"
         );
     }
 }

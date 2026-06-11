@@ -90,7 +90,10 @@ base64 = "0.22"
 indexmap = "2"
 
 # HTTP client
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+
+# Stream combinators
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # URL parsing
 url = "2"

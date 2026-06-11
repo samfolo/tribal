@@ -174,6 +174,7 @@ fn build_state(opts: &CheckOptions<'_>) -> Result<CheckState, AppError> {
         config: None,
         skip_mask: SkipMask::default(),
         pool: None,
+        gateway: None,
     })
 }
 

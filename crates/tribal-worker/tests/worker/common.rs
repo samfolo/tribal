@@ -5,7 +5,7 @@ pub(super) use std::{sync::Arc, time::Duration};
 pub(super) use dashmap::DashMap;
 pub(super) use tokio_util::sync::CancellationToken;
 pub(super) use tribal_common::JobStateTxs;
-pub(super) use tribal_config::{CredentialCatalogue, WorkerConfig};
+pub(super) use tribal_config::WorkerConfig;
 pub(super) use tribal_db::{
     EmbeddingProfileRepository, ExtractionResultRepository, ItemObservationRepository,
     JobRepository, JobStatusTransition, KnowledgeItemRepository, NewReindexRun, NewTagEmbedding,
@@ -22,8 +22,8 @@ pub(super) use tribal_domain::{
     TaskType, TriageOutcome,
 };
 pub(super) use tribal_inference::{
-    EmbeddingProvider, InferenceProvider, ProviderKey, ProviderLimits, ProviderRegistry,
-    RequestClass,
+    EmbeddingProvider, InferenceGateway, InferenceProvider, InjectedEmbedding, InjectedProviders,
+    ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
 };
 pub(super) use tribal_telemetry::noop_recorder;
 pub(super) use tribal_test_utils::{
@@ -43,7 +43,7 @@ pub(super) use tribal_test_utils::{
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
     upsert_system_fingerprint,
 };
-pub(super) use tribal_worker::{EmbeddingProviderCache, Worker};
+pub(super) use tribal_worker::{PgLedgerSink, Worker};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -154,18 +154,17 @@ pub(super) async fn build_test_worker(
         request_timeout: Duration::from_secs(30),
     };
 
-    let registry = Arc::new(
-        ProviderRegistry::new(vec![
-            (key(RequestClass::Inference), limits()),
-            (key(RequestClass::Embedding), limits()),
-            (embedding_endpoint, limits()),
-        ])
-        .expect("valid registry"),
-    );
+    let registry = ProviderRegistry::new(vec![
+        (key(RequestClass::Inference), limits()),
+        (key(RequestClass::Embedding), limits()),
+        (embedding_endpoint, limits()),
+    ])
+    .expect("valid registry");
 
-    // Resolve the active profile (the seeded genesis) and bind the mock to it, so
-    // the triage stage's per-call provider resolution returns the mock.
-    let embedding_providers: EmbeddingProviderCache = Arc::new(DashMap::new());
+    // Resolve the active profile (the seeded genesis) and bind the mock to it
+    // in the gateway's per-profile cache, so the triage stage's per-call
+    // provider resolution returns the mock.
+    let mut embeddings = Vec::new();
     {
         let mut conn = pool
             .acquire()
@@ -176,25 +175,31 @@ pub(super) async fn build_test_worker(
             .await
             .expect("find active profile")
         {
-            embedding_providers.insert(active.id(), embedding.clone());
+            embeddings.push(InjectedEmbedding {
+                profile_id: active.id(),
+                provider: embedding,
+            });
         }
     }
+
+    // The real ledger sink, so the integration suite covers usage recording
+    // end to end; metrics are dropped.
+    let sink = Arc::new(PgLedgerSink::new(pool.clone(), noop_recorder()));
+    let gateway = Arc::new(InferenceGateway::with_providers(
+        InjectedProviders::uniform(
+            registry,
+            inference,
+            key(RequestClass::Inference),
+            embeddings,
+            sink,
+        ),
+    ));
 
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
     Arc::new(Worker::new(
         pool,
-        registry,
-        inference.clone(),
-        inference.clone(),
-        inference,
-        embedding,
-        embedding_providers,
-        CredentialCatalogue::default(),
-        key(RequestClass::Inference),
-        key(RequestClass::Inference),
-        key(RequestClass::Embedding),
-        key(RequestClass::Inference),
+        gateway,
         cancellation_token,
         config,
         false,

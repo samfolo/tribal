@@ -3,9 +3,12 @@
 use std::time::Duration;
 
 use reqwest::StatusCode;
-use tribal_domain::span_attrs;
+use tribal_domain::{CompletionUsage, gen_ai};
 
-use crate::CompletionUsage;
+use crate::{
+    InferenceError,
+    error::{map_body_read_error, map_http_error},
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,6 +69,49 @@ pub(crate) fn body_preview(body: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Status enforcement
+// ---------------------------------------------------------------------------
+
+/// Passes a successful response through; maps an error status to an
+/// [`InferenceError`], reading the body and any `Retry-After` header into
+/// the error context.
+///
+/// Shared by the buffered and streaming wire paths so both map an HTTP
+/// failure identically.
+pub(crate) async fn ensure_success(
+    response: reqwest::Response,
+    provider: &'static str,
+    on_client_error: impl FnOnce(String) -> InferenceError,
+) -> Result<reqwest::Response, InferenceError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let body = response
+        .text()
+        .await
+        .map_err(|e| map_body_read_error(&e, provider))?;
+    let extra: Vec<(&str, &str)> = retry_after
+        .as_deref()
+        .map(|v| vec![("Retry-After", v)])
+        .unwrap_or_default();
+
+    Err(map_http_error(
+        status,
+        &body,
+        provider,
+        &extra,
+        on_client_error,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // URL helpers
 // ---------------------------------------------------------------------------
 
@@ -99,12 +145,16 @@ pub(crate) fn record_completion_usage(usage: &CompletionUsage) {
     let latency_ms = latency_ms(usage.latency);
 
     let current = tracing::Span::current();
-    current.record(span_attrs::LLM_TOKENS_INPUT, usage.input_tokens);
-    current.record(span_attrs::LLM_TOKENS_OUTPUT, usage.output_tokens);
-    current.record(span_attrs::LLM_TOKENS_TOTAL, usage.total_tokens);
-    current.record(span_attrs::LLM_LATENCY_MS, latency_ms);
-    current.record(span_attrs::LLM_TOKENS_CACHE_READ, usage.cache_read_tokens);
-    current.record(span_attrs::LLM_TOKENS_CACHE_WRITE, usage.cache_write_tokens);
+    current.record(gen_ai::USAGE_INPUT_TOKENS, usage.input_tokens);
+    current.record(gen_ai::USAGE_OUTPUT_TOKENS, usage.output_tokens);
+    current.record(
+        gen_ai::USAGE_CACHE_READ_INPUT_TOKENS,
+        usage.cache_read_tokens,
+    );
+    current.record(
+        gen_ai::USAGE_CACHE_CREATION_INPUT_TOKENS,
+        usage.cache_write_tokens,
+    );
 
     tracing::debug!(
         input_tokens = usage.input_tokens,

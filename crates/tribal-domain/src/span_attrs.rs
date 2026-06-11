@@ -18,6 +18,16 @@
 //! ```
 
 // ---------------------------------------------------------------------------
+// OpenTelemetry plumbing
+// ---------------------------------------------------------------------------
+
+/// Span field name that `tracing-opentelemetry` maps onto the exported span
+/// name. `tracing` span names are static strings, so a dynamic span name
+/// (such as the `GenAI` conventions' `{operation} {model}` form) is recorded
+/// through this field instead.
+pub const OTEL_NAME: &str = "otel.name";
+
+// ---------------------------------------------------------------------------
 // Core identifiers
 // ---------------------------------------------------------------------------
 
@@ -43,22 +53,14 @@ pub const TRANSPORT: &str = "tribal.transport";
 // Embedding spans
 // ---------------------------------------------------------------------------
 
-/// Span field name for the embedding provider name.
-pub const EMBEDDING_PROVIDER: &str = "tribal.embedding.provider";
-
 /// Span field name for the embedding model identifier.
 pub const EMBEDDING_MODEL: &str = "tribal.embedding.model";
-
-/// Span field name for embedding token count.
-pub const EMBEDDING_TOKENS: &str = "tribal.embedding.tokens";
 
 /// Span field name for embedding vector dimensions.
 pub const EMBEDDING_DIMENSIONS: &str = "tribal.embedding.dimensions";
 
-/// Span field name for embedding request latency in milliseconds.
-pub const EMBEDDING_LATENCY_MS: &str = "tribal.embedding.latency_ms";
-
-/// Span field name for the embedding purpose (`"candidate"`, `"query"`, or `"tag"`).
+/// Span field name for the embedding purpose: an
+/// [`EmbeddingPurpose`](crate::EmbeddingPurpose) wire string.
 pub const EMBEDDING_PURPOSE: &str = "tribal.embedding.purpose";
 
 // ---------------------------------------------------------------------------
@@ -70,44 +72,17 @@ pub const EMBEDDING_PURPOSE: &str = "tribal.embedding.purpose";
 pub const REINDEX_RUN_ID: &str = "tribal.reindex.run_id";
 
 // ---------------------------------------------------------------------------
-// LLM completion spans
+// Pipeline attribution
 // ---------------------------------------------------------------------------
 
-/// Span field name for the LLM provider name.
-pub const LLM_PROVIDER: &str = "tribal.llm.provider";
+/// Span field name for the pipeline stage a call is attributed to.
+pub const STAGE: &str = "tribal.stage";
 
-/// Span field name for the LLM model identifier.
-pub const LLM_MODEL: &str = "tribal.llm.model";
+/// Span field name for the system prompt version used in an inference call.
+pub const SYSTEM_PROMPT_VERSION_ID: &str = "tribal.prompt.system_version_id";
 
-/// Span field name for the pipeline stage invoking the LLM.
-pub const LLM_STAGE: &str = "tribal.llm.stage";
-
-/// Span field name for LLM input token count.
-pub const LLM_TOKENS_INPUT: &str = "tribal.llm.tokens.input";
-
-/// Span field name for LLM output token count.
-pub const LLM_TOKENS_OUTPUT: &str = "tribal.llm.tokens.output";
-
-/// Span field name for LLM cache-read token count.
-pub const LLM_TOKENS_CACHE_READ: &str = "tribal.llm.tokens.cache_read";
-
-/// Span field name for LLM cache-write token count.
-pub const LLM_TOKENS_CACHE_WRITE: &str = "tribal.llm.tokens.cache_write";
-
-/// Span field name for LLM total token count.
-pub const LLM_TOKENS_TOTAL: &str = "tribal.llm.tokens.total";
-
-/// Span field name for LLM request latency in milliseconds.
-pub const LLM_LATENCY_MS: &str = "tribal.llm.latency_ms";
-
-/// Span field name for the sampling temperature.
-pub const LLM_TEMPERATURE: &str = "tribal.llm.temperature";
-
-/// Span field name for the system prompt version identifier used in the LLM call.
-pub const LLM_SYSTEM_PROMPT_VERSION_ID: &str = "tribal.llm.system_prompt_version_id";
-
-/// Span field name for the user prompt version identifier used in the LLM call.
-pub const LLM_USER_PROMPT_VERSION_ID: &str = "tribal.llm.user_prompt_version_id";
+/// Span field name for the user prompt version used in an inference call.
+pub const USER_PROMPT_VERSION_ID: &str = "tribal.prompt.user_version_id";
 
 // ---------------------------------------------------------------------------
 // Worker spans

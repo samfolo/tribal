@@ -48,6 +48,7 @@ mod api_key;
 mod auth_token;
 mod bearer_token;
 mod candidate;
+mod completion_response;
 mod discovery;
 mod embedding;
 mod embedding_error_class;
@@ -57,8 +58,10 @@ mod endpoint_url;
 mod error_code;
 mod extraction_result;
 mod feedback_rating;
+pub mod gen_ai;
 mod git;
 mod ids;
+mod inference_event;
 mod inference_parameters;
 mod item_observation;
 mod job;
@@ -89,11 +92,13 @@ mod tag_similarity_result;
 mod task;
 mod token_usage;
 mod triage;
+mod usage;
 
 pub use api_key::{ApiKey, ApiKeyParseError};
 pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use bearer_token::{BearerToken, BearerTokenParseError};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
+pub use completion_response::CompletionResponse;
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use embedding::{Embedding, EmbeddingBuilder};
 pub use embedding_error_class::EmbeddingErrorClass;
@@ -114,6 +119,7 @@ pub use ids::{
     SessionId, SystemFingerprintId, TaskId, TokenUsageId, TriageResultId,
     TriageSimilarItemDecisionId,
 };
+pub use inference_event::InferenceEvent;
 pub use inference_parameters::{
     EmbeddingParameters, InferenceParameters, PipelineParameters, StageParameters,
 };
@@ -156,6 +162,7 @@ pub use triage::{
     SimilarItem, SimilarItemBuilder, TriageOutcome, TriageResult, TriageResultBuilder,
     TriageSimilarItemDecision, TriageSimilarItemDecisionBuilder,
 };
+pub use usage::{CompletionUsage, EmbeddingUsage, Usage};
 
 /// Generates a serde roundtrip test for an enum with a compile-time
 /// exhaustiveness check.
