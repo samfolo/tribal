@@ -41,6 +41,10 @@ const TOKEN_CAP_RENAMED: &str =
 
 // Targets OpenAI /v1/chat/completions — tested against OpenAI API (Feb 2026).
 
+/// `stream` and `stream_options` are set together on the streaming wire
+/// (`include_usage` makes the final chunk carry token usage) and omitted
+/// on the buffered wire, keeping the buffered body byte-identical to its
+/// pre-streaming form.
 #[derive(serde::Serialize)]
 struct OpenAiChatRequest<'a> {
     model: &'a str,
@@ -53,11 +57,8 @@ struct OpenAiChatRequest<'a> {
     max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<serde_json::Value>,
-    /// `Some(true)` on the streaming wire; omitted on the buffered wire,
-    /// keeping the buffered body byte-identical to its pre-streaming form.
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
-    /// Sent with `stream` so the final chunk carries token usage.
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<OpenAiStreamOptions>,
 }

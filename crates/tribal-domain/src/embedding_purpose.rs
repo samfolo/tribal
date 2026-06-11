@@ -1,17 +1,10 @@
-//! Embedding purpose classification.
-//!
-//! Distinguishes whether an embedding call was for indexing a candidate
-//! knowledge item, embedding a query during retrieval, embedding a tag
-//! for semantic tag resolution, or probing a provider.
+//! Embedding purpose classification: what an embedding call served.
 
 use serde::{Deserialize, Serialize};
 
 /// The purpose of an embedding call.
 ///
-/// Only applicable when the pipeline stage is `Embedding`. Distinguishes
-/// write-path (indexing candidates), read-path (embedding queries), tag
-/// resolution (embedding tags for semantic matching), and provider probes
-/// (minimal calls verifying reachability or resolving embedding geometry).
+/// Only applicable when the pipeline stage is `Embedding`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EmbeddingPurpose {
