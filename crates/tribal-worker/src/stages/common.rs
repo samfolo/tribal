@@ -386,8 +386,8 @@ impl Worker {
                 .messages
                 .iter()
                 .map(|m| RecordedMessage {
-                    role: m.role.as_str().to_owned(),
-                    content: m.content.clone(),
+                    role: m.role().as_str().to_owned(),
+                    content: m.content().to_owned(),
                 })
                 .collect(),
             system_prompt_version_id: Some(system_pv_id),
@@ -429,18 +429,22 @@ impl Worker {
                     .conversation
                     .messages
                     .into_iter()
-                    .map(|m| Message {
-                        // The one-shot bracket only ever records the two wire
-                        // roles; an unrecognised string (a future format's
-                        // role) downgrades to User rather than dropping the
-                        // message, keeping resume total.
-                        role: match m.role.as_str() {
-                            role if role == Role::Assistant.as_str() => Role::Assistant,
-                            _ => Role::User,
-                        },
-                        content: m.content,
+                    .map(|m| {
+                        // The one-shot bracket only ever records the two
+                        // launched wire roles; an unrecognised string (a
+                        // future format's role) downgrades to User rather
+                        // than dropping the message, keeping resume total.
+                        if m.role.as_str() == Role::Assistant.as_str() {
+                            Message::Assistant {
+                                content: m.content,
+                                tool_calls: vec![],
+                            }
+                        } else {
+                            Message::User { content: m.content }
+                        }
                     })
                     .collect(),
+                tools: vec![],
                 temperature: request.temperature,
                 max_tokens: request.max_tokens,
                 response_format: request.response_format,
