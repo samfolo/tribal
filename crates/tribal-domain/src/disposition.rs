@@ -16,7 +16,7 @@ use crate::AgentThreadTerminal;
 /// The consecutive-failure count after a successful record commit: any
 /// progress resets it. One-shot execution has no progress point between
 /// failures, so the rule's only live application is the cycle-start
-/// reset below; the loop executor's record commits activate the rest.
+/// reset below.
 pub const RETRY_COUNT_AFTER_PROGRESS: u32 = 0;
 
 /// What an actor observed at the end of a turn or boundary check.

@@ -236,8 +236,8 @@ enum_text_conversions!(AgentThreadRecordKind {
 
 impl AgentThreadRecordKind {
     /// Returns `true` for records that project into the model-facing
-    /// conversation. No production path projects a conversation yet;
-    /// the loop executor is the first consumer.
+    /// conversation. No production path projects a conversation yet:
+    /// one-shot execution re-sends its committed input verbatim.
     #[must_use]
     pub fn is_conversation(self) -> bool {
         matches!(
@@ -403,8 +403,8 @@ pub struct AgentThread {
     #[builder(default)]
     wake_at: Option<DateTime<Utc>>,
     /// Capabilities claimed at initialisation and fidelity observed in
-    /// the stream. Recorded, not yet written: nothing captures fidelity
-    /// until an external-agent executor exists.
+    /// the stream. Recorded, not yet written: no execution path captures
+    /// fidelity yet.
     #[builder(default)]
     fidelity: Option<serde_json::Value>,
     /// The committed-record projection of this thread's spend.
