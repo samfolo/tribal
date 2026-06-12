@@ -7,7 +7,7 @@
 //! records are the only state, so re-execution starts from whatever the
 //! log already holds.
 
-use sqlx::{Connection, PgConnection};
+use sqlx::PgConnection;
 use tribal_db::{
     AgentBindingVersionRepository, AgentThreadRecordRepository, AgentThreadRepository, DbError,
     DrivingTaskRef, NewAgentThread, PgAgentBindingVersionRepository, PgAgentThreadRecordRepository,
@@ -18,7 +18,10 @@ use tribal_domain::{
     AgentThreadRecordKind, AgentThreadStatus, Job, Task,
 };
 
-use crate::AgentRuntimeError;
+use crate::{
+    AgentRuntimeError,
+    txn::{begin, commit},
+};
 
 /// A claimed stage task's thread, with the log prefix resume needs.
 pub struct StageThread {
@@ -203,36 +206,6 @@ async fn holds_claim(
         .holds_claim(txn, task.id(), claim_token)
         .await
         .map_err(|source| AgentRuntimeError::database("verifying the claim", source))
-}
-
-async fn begin<'c>(
-    conn: &'c mut PgConnection,
-    context: &str,
-) -> Result<sqlx::Transaction<'c, sqlx::Postgres>, AgentRuntimeError> {
-    conn.begin().await.map_err(|source| {
-        AgentRuntimeError::database(
-            context,
-            DbError::QueryFailed {
-                context: context.to_owned(),
-                source,
-            },
-        )
-    })
-}
-
-async fn commit(
-    txn: sqlx::Transaction<'_, sqlx::Postgres>,
-    context: &str,
-) -> Result<(), AgentRuntimeError> {
-    txn.commit().await.map_err(|source| {
-        AgentRuntimeError::database(
-            context,
-            DbError::QueryFailed {
-                context: context.to_owned(),
-                source,
-            },
-        )
-    })
 }
 
 /// Loads the binding a thread's row records — the pin a resumed thread's

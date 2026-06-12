@@ -29,7 +29,9 @@ pub struct OwedNotification {
 
 /// Fires the triage fan-in when the current task is the last live triage
 /// sibling: upserts the relation task and advances the job to `Relating`.
-/// Returns whether it fired.
+/// Returns whether the job actually moved — a terminal job makes this
+/// `false` even when the relation task was upserted, so callers never
+/// publish a transition that did not commit.
 ///
 /// A `blocked` sibling counts as live — the count is NOT-in-terminal by
 /// construction — so relation never fires while a triage thread is
@@ -71,18 +73,20 @@ pub async fn triage_fan_in(
         .status(JobStatus::Relating)
         .build();
 
-    PgJobRepository
+    let moved = PgJobRepository
         .update_status_if_live(conn, job_id, &transition)
         .await?;
 
-    Ok(true)
+    Ok(moved.is_some())
 }
 
 /// Couples a task's terminal disposition to its job, exactly as a worker
 /// dead-letter does: the triage fan-in for a triage task, the job-failed
 /// transition for extraction and relation (whose dead-letter means the
 /// job cannot progress). Returns the notification the caller owes its
-/// watchers once the transaction commits.
+/// watchers once the transaction commits — none when the job was already
+/// terminal, so a late coupling never publishes a state that did not
+/// commit.
 ///
 /// # Errors
 ///
@@ -108,10 +112,10 @@ pub async fn couple_dead_lettered_task(
                 .error_message(Some(error_message.to_owned()))
                 .completed_at(Some(Utc::now()))
                 .build();
-            PgJobRepository
+            let moved = PgJobRepository
                 .update_status_if_live(conn, task.job_id(), &transition)
                 .await?;
-            Ok(Some(OwedNotification {
+            Ok(moved.map(|_| OwedNotification {
                 job_id: task.job_id(),
                 state: JobState::Failed,
             }))
@@ -139,8 +143,10 @@ pub enum CancelThreadOutcome {
 /// the control plane share this seam.
 ///
 /// A claimed driving task means a live worker observes the intent at its
-/// own boundary, so this rolls back untouched; a task already terminal
-/// (a stranded pairing) still cancels the thread and couples the job.
+/// own boundary, so this rolls back untouched. A task already terminal
+/// still cancels the thread but never re-couples the job: whichever
+/// transaction made the task terminal fired its coupling, and coupling a
+/// completed task as if dead-lettered would fail a healthy job.
 ///
 /// # Errors
 ///
@@ -186,7 +192,10 @@ pub async fn cancel_thread(
                 // boundary. Nothing commits.
                 return Ok(CancelThreadOutcome::Skipped);
             }
-            Some(task)
+            // The coupling fires only for the task this transaction
+            // disposed; a terminal task was coupled by whichever
+            // transaction made it terminal.
+            (disposed > 0).then_some(task)
         }
         None => None,
     };

@@ -78,9 +78,11 @@ async fn sweep_timer_wakes(conn: &mut sqlx::PgConnection) -> u32 {
 
 /// The cancel-fallback predicate: live threads carrying a durable intent
 /// whose driving task is unclaimed (a suspended thread with no live
-/// worker, or a janitor-spotted orphan) get the cancel transaction. A
-/// claimed task means a live worker will observe the intent at its own
-/// boundary, so the fallback skips it.
+/// worker) get the cancel transaction. A claimed task means a live
+/// worker will observe the intent at its own boundary, so the fallback
+/// skips it. The orphan-spotting janitor that writes intents to
+/// abandoned descendants arrives with the first parent-thread producer;
+/// until then every intent is operator-written.
 async fn sweep_cancel_fallback(worker: &Worker, conn: &mut sqlx::PgConnection) -> u32 {
     let intents = match PgAgentThreadRepository
         .find_cancel_intents(conn, SWEEP_BATCH)

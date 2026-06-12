@@ -94,7 +94,9 @@ pub enum TaskErrorKind {
     /// Internal logic error (e.g. template rendering failure).
     InternalError,
     /// The request exceeded the model's context window. Retrying the same
-    /// input cannot succeed.
+    /// input cannot succeed. No classifier produces this yet; until one
+    /// does, overflows surface through the provider-error classes and
+    /// retry as before.
     ContextOverflow,
 }
 

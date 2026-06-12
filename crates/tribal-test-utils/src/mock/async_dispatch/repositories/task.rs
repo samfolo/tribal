@@ -26,6 +26,8 @@ mock_repository! {
             (timeout_seconds: u32, max_retries: u32, limit: u32, error_kind: TaskErrorKind, error_message: &str, flat_backoff_seconds: Option<u32>) { (timeout_seconds, max_retries, limit, error_kind, error_message.to_owned(), flat_backoff_seconds) };
         lock_stale_thread_driving(u32 => Option<Task>)
             (timeout_seconds: u32) { timeout_seconds };
+        requeue_claimed((TaskId, uuid::Uuid, u32, DateTime<Utc>, TaskErrorKind, String) => u64)
+            (id: TaskId, claim_token: uuid::Uuid, retry_count: u32, available_at: DateTime<Utc>, error_kind: TaskErrorKind, error_message: &str) { (id, claim_token, retry_count, available_at, error_kind, error_message.to_owned()) };
         reclaim_requeue((TaskId, u32, u32, TaskErrorKind, String) => u64)
             (id: TaskId, retry_count: u32, backoff_seconds: u32, error_kind: TaskErrorKind, error_message: &str) { (id, retry_count, backoff_seconds, error_kind, error_message.to_owned()) };
         count_live_siblings((JobId, TaskType, TaskId) => i64)

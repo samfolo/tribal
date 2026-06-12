@@ -114,8 +114,7 @@ pub struct BegunTurn {
 }
 
 /// Commits the input record (first attempt) or adopts the committed one
-/// (resume), and
-/// returns the conversation the call must send.
+/// (resume), and returns the conversation the call must send.
 ///
 /// The input commits in its own transaction before any wire call: what
 /// was sent is durable even if the process dies mid-call, and at-least-

@@ -115,27 +115,7 @@ impl Worker {
         let owed: Option<coupling::OwedNotification>;
         let dead_lettered: bool;
         if intent_pending && !thread.status().is_terminal() {
-            // The worker-held cancel: claim-guarded task dead-letter, the
-            // cancellation record and status, and the job coupling.
-            let rows = PgTaskRepository
-                .dead_letter_claimed(
-                    &mut txn,
-                    task.id(),
-                    claim_token,
-                    TaskErrorKind::InternalError,
-                    "thread cancelled",
-                )
-                .await
-                .map_err(|e| stage_db(stage, "dead-lettering the cancelled task", e))?;
-            if rows == 0 {
-                return Err(StageError::OwnershipLost);
-            }
-            cancel_thread_in_txn(&mut txn, thread.id())
-                .await
-                .map_err(|source| map_runtime_error(stage, "cancelling the thread", source))?;
-            owed = coupling::couple_dead_lettered_task(&mut txn, task, "thread cancelled")
-                .await
-                .map_err(|e| stage_db(stage, "coupling the cancelled job", e))?;
+            owed = cancel_at_claim(&mut txn, stage, task, thread, claim_token).await?;
             dead_lettered = true;
         } else {
             match thread.status() {
@@ -171,6 +151,18 @@ impl Worker {
                             .await
                             .map_err(|e| stage_db(stage, "fan-in for the disposed task", e))?
                     } else {
+                        // Extraction's fan-out and relation's batch seal
+                        // cannot be re-derived here, so this reconciliation
+                        // closes the task and leaves the job where it
+                        // stands — loudly, since an operator must finish
+                        // the job's convergence by hand.
+                        tracing::error!(
+                            task_id = %task.id(),
+                            job_id = %task.job_id(),
+                            task_type = %task.task_type(),
+                            "claim-time disposal completed a non-triage task without its \
+                             stage coupling; the job may need manual convergence",
+                        );
                         false
                     };
                     owed = fired.then_some(coupling::OwedNotification {
@@ -179,7 +171,11 @@ impl Worker {
                     });
                     dead_lettered = false;
                 }
-                _ => {
+                AgentThreadStatus::Queued
+                | AgentThreadStatus::Running
+                | AgentThreadStatus::Failed
+                | AgentThreadStatus::Cancelled
+                | AgentThreadStatus::DeadLetter => {
                     let rows = PgTaskRepository
                         .dead_letter_claimed(
                             &mut txn,
@@ -315,6 +311,38 @@ pub(crate) fn map_runtime_error(
             source,
         },
     }
+}
+
+/// The worker-held cancel at claim time: claim-guarded task
+/// dead-letter, the cancellation record and status, and the job
+/// coupling, all in the caller's disposal transaction. Returns the owed
+/// notification.
+async fn cancel_at_claim(
+    txn: &mut sqlx::PgConnection,
+    stage: &str,
+    task: &Task,
+    thread: &AgentThread,
+    claim_token: uuid::Uuid,
+) -> Result<Option<coupling::OwedNotification>, StageError> {
+    let rows = PgTaskRepository
+        .dead_letter_claimed(
+            txn,
+            task.id(),
+            claim_token,
+            TaskErrorKind::InternalError,
+            "thread cancelled",
+        )
+        .await
+        .map_err(|e| stage_db(stage, "dead-lettering the cancelled task", e))?;
+    if rows == 0 {
+        return Err(StageError::OwnershipLost);
+    }
+    cancel_thread_in_txn(txn, thread.id())
+        .await
+        .map_err(|source| map_runtime_error(stage, "cancelling the thread", source))?;
+    coupling::couple_dead_lettered_task(txn, task, "thread cancelled")
+        .await
+        .map_err(|e| stage_db(stage, "coupling the cancelled job", e))
 }
 
 /// Shorthand for the disposal transaction's database-error mapping.

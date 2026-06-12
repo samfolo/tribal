@@ -212,8 +212,7 @@ impl Worker {
                 if is_empty {
                     // chrono i64 milliseconds to f64; precision loss negligible at this scale
                     #[allow(clippy::cast_precision_loss)]
-                    let job_duration_ms =
-                        (Utc::now() - job.created_at()).num_milliseconds() as f64;
+                    let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
                     self.metrics()
                         .record_job_completed(JobOutcome::Empty.as_str(), Some(job_duration_ms));
                 }

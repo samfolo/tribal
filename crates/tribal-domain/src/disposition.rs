@@ -2,15 +2,22 @@
 //!
 //! Both counters, both reset rules, and the thread-to-task terminal
 //! mapping live here and nowhere else — never spread across SQL CASE
-//! expressions. The task's `retry_count` bounds *consecutive* failures and
-//! resets on any successful record commit and at the start of every
-//! recovery cycle; the thread's `recovery_attempts` accumulates across
-//! cycles, never resets, and drives the escalating per-cycle backoff. The
+//! expressions. The task's `retry_count` bounds *consecutive* failures
+//! and resets at the start of every recovery cycle (and, once an
+//! executor commits records mid-thread, on any successful commit); the
+//! thread's `recovery_attempts` accumulates across cycles, never resets,
+//! and drives the escalating per-cycle backoff. The
 //! driving task never transits dead-letter on the way to a fresh recovery
 //! cycle: dead-letter fires irreversible job couplings and is reserved for
 //! terminal outcomes.
 
 use crate::AgentThreadTerminal;
+
+/// The consecutive-failure count after a successful record commit: any
+/// progress resets it. One-shot execution has no progress point between
+/// failures, so the rule's only live application is the cycle-start
+/// reset below; the loop executor's record commits activate the rest.
+pub const RETRY_COUNT_AFTER_PROGRESS: u32 = 0;
 
 /// What an actor observed at the end of a turn or boundary check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,10 +72,6 @@ pub enum Disposition {
     /// task dead-letters with it.
     ExhaustThread,
 }
-
-/// The consecutive-failure count after a successful record commit: any
-/// progress resets it (the progress rule).
-pub const RETRY_COUNT_AFTER_PROGRESS: u32 = 0;
 
 /// Decides the disposition for one observed outcome.
 ///
@@ -182,10 +185,5 @@ mod tests {
     fn test_exhausted_recovery_dead_letters_the_thread() {
         let disposition = decide_disposition(TurnOutcome::RetryableFailure, counters(3, 2));
         assert!(matches!(disposition, Disposition::ExhaustThread));
-    }
-
-    #[test]
-    fn test_progress_reset_rule_is_zero() {
-        assert_eq!(RETRY_COUNT_AFTER_PROGRESS, 0);
     }
 }

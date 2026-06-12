@@ -1,3 +1,8 @@
+use tribal_db::{
+    AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
+    PgAgentThreadRepository,
+};
+
 use super::common::*;
 
 /// Verifies that when a stage stub fails, the task is re-queued with
@@ -549,6 +554,34 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     );
 
     let mut conn = raw_conn(ctx).await;
+
+    // The zombie's commit attempt died at the task claim CAS, so nothing
+    // of its turn persisted: the thread stays running with the lone
+    // adopted input record and no assistant message.
+    let thread = PgAgentThreadRepository
+        .find_by_stage_task(&mut conn, task_id)
+        .await
+        .expect("find thread")
+        .expect("the executed task drives a thread");
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, thread.id())
+        .await
+        .expect("read the log");
+    assert!(
+        records
+            .iter()
+            .all(|r| r.kind() != tribal_domain::AgentThreadRecordKind::AssistantMessage),
+        "a zombie's terminal commit must not persist an assistant record",
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r.kind() == tribal_domain::AgentThreadRecordKind::Input)
+            .count(),
+        1,
+        "exactly the committed input survives",
+    );
+
     let task = PgTaskRepository
         .find_by_id(&mut conn, task_id)
         .await
