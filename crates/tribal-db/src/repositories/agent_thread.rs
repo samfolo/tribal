@@ -1,8 +1,9 @@
 //! Agent thread repository: the thread store's guarded transitions.
 //!
 //! Status moves exist only as compare-and-set methods naming their `from`
-//! status; zero affected rows is the CAS-miss signal every §8 retry loop
-//! is built on, with the table CHECKs as backstop. Methods that leave
+//! status; zero affected rows is the CAS-miss signal callers act on —
+//! treating it as lost ownership, or leaving convergence to the next
+//! sweep cycle — with the table CHECKs as backstop. Methods that leave
 //! `suspended` clear the suspension payload and wake instant in the same
 //! statement, so the suspended-has-cause CHECK can never trip. The
 //! cancellation intent write is seq-free and idempotent. Uses runtime
@@ -219,9 +220,11 @@ pub trait AgentThreadRepository {
         id: AgentThreadId,
     ) -> Result<u32, DbError>;
 
-    /// Finds suspended threads whose wake instant has elapsed — the
-    /// availability sweep's timer predicate. Rows are locked with
-    /// `SKIP LOCKED` so concurrent sweeps never contend.
+    /// Finds suspended threads whose wake instant has elapsed and that
+    /// carry no cancellation intent — the availability sweep's timer
+    /// predicate. `SKIP LOCKED` sheds rows a rival scan holds, though the
+    /// statement-scope locks release at once: the per-row transitions'
+    /// own guards are what make concurrent sweeps converge.
     ///
     /// # Errors
     ///
@@ -489,9 +492,14 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         conn: &mut PgConnection,
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError> {
+        // An intent-carrying thread belongs to the cancel predicate: waking
+        // it would burn a turn the cancellation immediately discards, and
+        // the two predicates locking task and thread rows in opposite
+        // orders could deadlock (retryable, but better unconstructible).
         let sql = format!(
             "SELECT {COLUMNS} FROM agent_threads \
              WHERE status = 'suspended' AND wake_at IS NOT NULL AND wake_at <= now() \
+               AND cancel_requested_at IS NULL \
              ORDER BY wake_at \
              LIMIT $1 \
              FOR UPDATE SKIP LOCKED"

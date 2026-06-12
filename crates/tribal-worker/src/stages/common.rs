@@ -359,9 +359,11 @@ impl Worker {
 
 impl Worker {
     /// Brackets a stage's single completion call with the thread log:
-    /// commits the input record (first attempt) or re-reads it (resume),
-    /// and returns the request to send — the committed conversation
-    /// verbatim, with this attempt's runtime parameters.
+    /// commits the input record (first attempt) or adopts the committed
+    /// one (resume), and returns the turn to send — the committed
+    /// conversation verbatim, with this attempt's runtime parameters,
+    /// plus the recorded resolution context the caller's positional
+    /// references must resolve against.
     ///
     /// Parameters (temperature, token caps, response format) ride the
     /// fresh request: they are binding-pinned behaviour, not conversation
@@ -374,7 +376,8 @@ impl Worker {
         job: &Job,
         task: &Task,
         request: CompletionRequest,
-    ) -> Result<CompletionRequest, StageError> {
+        resolution_context: Option<serde_json::Value>,
+    ) -> Result<BracketedTurn, StageError> {
         let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
         let rendered = RenderedConversation {
             system: request.system.clone(),
@@ -388,6 +391,7 @@ impl Worker {
                 .collect(),
             system_prompt_version_id: Some(system_pv_id),
             user_prompt_version_id: Some(user_pv_id),
+            resolution_context,
         };
 
         let mut conn = self
@@ -416,29 +420,43 @@ impl Worker {
         .await
         .map_err(|source| map_runtime_error(stage, "committing the input record", source))?;
 
-        Ok(CompletionRequest {
-            system: begun.conversation.system,
-            messages: begun
-                .conversation
-                .messages
-                .into_iter()
-                .map(|m| Message {
-                    // The one-shot bracket only ever records the two wire
-                    // roles; an unrecognised string (a future format's
-                    // role) downgrades to User rather than dropping the
-                    // message, keeping resume total.
-                    role: match m.role.as_str() {
-                        role if role == Role::Assistant.as_str() => Role::Assistant,
-                        _ => Role::User,
-                    },
-                    content: m.content,
-                })
-                .collect(),
-            temperature: request.temperature,
-            max_tokens: request.max_tokens,
-            response_format: request.response_format,
+        Ok(BracketedTurn {
+            resolution_context: begun.conversation.resolution_context.clone(),
+            request: CompletionRequest {
+                system: begun.conversation.system,
+                messages: begun
+                    .conversation
+                    .messages
+                    .into_iter()
+                    .map(|m| Message {
+                        // The one-shot bracket only ever records the two wire
+                        // roles; an unrecognised string (a future format's
+                        // role) downgrades to User rather than dropping the
+                        // message, keeping resume total.
+                        role: match m.role.as_str() {
+                            role if role == Role::Assistant.as_str() => Role::Assistant,
+                            _ => Role::User,
+                        },
+                        content: m.content,
+                    })
+                    .collect(),
+                temperature: request.temperature,
+                max_tokens: request.max_tokens,
+                response_format: request.response_format,
+            },
         })
     }
+}
+
+/// The one-shot bracket's product: the request to send — the committed
+/// conversation on resume — and the resolution context recorded with it.
+pub(crate) struct BracketedTurn {
+    /// The request to send.
+    pub request: CompletionRequest,
+    /// The recorded context the response's positional references resolve
+    /// against; `None` for stages with no positional references, or for
+    /// records written before the context was recorded.
+    pub resolution_context: Option<serde_json::Value>,
 }
 
 /// Commits a stage thread's terminal inside the caller's transaction:

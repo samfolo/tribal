@@ -3,8 +3,9 @@
 //! An agent run is a thread — an append-only sequence of records
 //! committed to Postgres as they happen; the committed record is truth,
 //! and resume, evaluation, and observability all derive from it. This
-//! crate owns the thread store orchestration, the turn loop, the one-shot
-//! executor, binding resolution, and the ledger-sink implementation. It
+//! crate owns the thread store orchestration, the one-shot turn bracket,
+//! the guarded transitions, binding resolution, and the ledger-sink
+//! implementation. It
 //! sits between `tribal-inference` and `tribal-worker`: the worker keeps
 //! dispatch and stage assembly, delegating execution here, and nothing
 //! below this crate depends back on it.

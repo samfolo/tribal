@@ -16,9 +16,9 @@ pub enum AgentRuntimeError {
         source: tribal_db::DbError,
     },
 
-    /// A status compare-and-set missed: the thread moved under the actor.
-    /// Bounded retry loops treat this as their retry signal; a terminal
-    /// status ends every loop.
+    /// A status compare-and-set missed: the thread moved under the
+    /// actor, which abandons its write — ownership is lost, or the next
+    /// sweep cycle converges what this attempt could not.
     #[error("thread {thread_id} status CAS missed: expected {expected}, the row moved")]
     StatusCasMissed {
         /// The thread whose status moved.

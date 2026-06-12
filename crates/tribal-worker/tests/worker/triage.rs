@@ -1887,3 +1887,157 @@ async fn test_triage_fan_in_single_candidate_batch() {
 
     teardown(ctx).await;
 }
+
+/// A resumed triage attempt resolves the model's positional answer
+/// against the similar-item slots its first attempt rendered, never a
+/// re-derived search: an item inserted between attempts that outranks
+/// the original cannot become the duplicate target.
+#[tokio::test]
+async fn test_resumed_triage_resolves_against_the_recorded_slots() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let mut conn = raw_conn(ctx).await;
+    let seed_result = Seed::new()
+        .define_project("proj", "git@github.com:test/triage-resume.git")
+        .define_principal("user", "user:triage-resume")
+        .define_prompt_version("system-pv", a_new_prompt_version().build())
+        .define_prompt_version(
+            "user-pv",
+            a_new_prompt_version()
+                .role(tribal_domain::PromptRole::User)
+                .content_hash("c".repeat(64))
+                .content("test user prompt content".to_owned())
+                .build(),
+        )
+        .set_embedding_model("mock-model", 768)
+        .as_principal("user")
+        .for_project("proj", |store| {
+            store.add_item("original", item(KnowledgeKind::Fact, "the original match"));
+        })
+        .execute(&mut conn)
+        .await;
+
+    let principal_id = seed_result.principal_id("user");
+    let project_id = seed_result.project_id("proj");
+    let original_id = seed_result.item_id("original");
+    let system_pv_id = seed_result.prompt_version_id("system-pv");
+    let user_pv_id = seed_result.prompt_version_id("user-pv");
+
+    // The candidate's vector diverges from the original's, so the decoy
+    // inserted between attempts — carrying the candidate's exact vector —
+    // would strictly outrank the original in a re-derived search.
+    let original_embedding = find_active_embedding(&mut conn, original_id)
+        .await
+        .expect("find seeded embedding")
+        .expect("seeded embedding should exist");
+    let mut candidate_vector = original_embedding.embedding().to_vec();
+    candidate_vector[0] += 1.0;
+
+    let candidates = vec![
+        a_candidate()
+            .content("resumed duplicate".to_owned())
+            .build(),
+    ];
+    let (job_id, task_id) = seed_triage_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+        &candidates,
+    )
+    .await;
+    drop(conn);
+
+    let embedding: Arc<dyn EmbeddingProvider> = Arc::new(
+        MockEmbeddingProvider::builder()
+            .on_embed(an_embedding_response(candidate_vector.clone()), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    // Attempt one commits its input record (slots: the original alone),
+    // then fails retryably; attempt two answers duplicate-of-index-0.
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete_error(
+                || tribal_inference::InferenceError::provider_unavailable("mock", "transient"),
+                None,
+            )
+            .on_complete(
+                a_completion_response(triage_duplicate_response_json(0)),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        Some(embedding),
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    // Attempt one has failed and re-queued; the graph drifts before the
+    // retry: a decoy item whose vector equals the candidate's lands at
+    // the top of any fresh search.
+    poll_task_requeued_with_retry(&pool, task_id, POLL_SETTLE).await;
+    let mut conn = raw_conn(ctx).await;
+    let decoy = PgKnowledgeItemRepository
+        .insert(
+            &mut conn,
+            &a_new_knowledge_item()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .content("the decoy that outranks the original".to_owned())
+                .build(),
+        )
+        .await
+        .expect("insert decoy");
+    let profile = active_embedding_profile(&mut conn).await;
+    tribal_db::EmbeddingRepository::insert(
+        &tribal_db::PgEmbeddingRepository,
+        &mut conn,
+        &tribal_db::NewEmbedding::builder()
+            .knowledge_item_id(decoy.id())
+            .embedding_profile_id(profile.id())
+            .model("mock-model".to_owned())
+            .embedding(candidate_vector)
+            .build(),
+    )
+    .await
+    .expect("insert decoy embedding");
+    drop(conn);
+
+    let task = poll_task_status(&pool, task_id, TaskStatus::Completed, MULTI_CYCLE_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+    assert_eq!(task.status(), TaskStatus::Completed);
+
+    let mut conn = raw_conn(ctx).await;
+    let triage_result = PgTriageResultRepository
+        .find_by_job_id_and_batch_index(&mut conn, job_id, SEED_TRIAGE_BATCH_INDEX)
+        .await
+        .expect("find triage result")
+        .expect("triage result should exist");
+    assert!(
+        matches!(
+            triage_result.outcome(),
+            TriageOutcome::Duplicate { matched_item_id, .. }
+                if *matched_item_id == original_id
+        ),
+        "the duplicate resolves to the item the model saw, not the decoy: {:?}",
+        triage_result.outcome(),
+    );
+
+    teardown(ctx).await;
+}

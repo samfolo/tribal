@@ -129,7 +129,8 @@ impl Worker {
     ///
     /// Loads triage results and extraction relation hints, calls the
     /// relation LLM, normalises and filters edges, and returns a
-    /// [`StageOutput`] ready for atomic commit.
+    /// stage commit ready for the atomic commit, with the response for
+    /// the thread terminal.
     ///
     /// Returns early with a no-op if `committed_batch_id` is already
     /// set (idempotency guard).
@@ -209,9 +210,15 @@ impl Worker {
                 );
             }
 
+            // Relation's positional references resolve against the
+            // similar-item decisions, which are immutable once the fan-in
+            // fires and are read in a deterministic order — a resumed
+            // attempt re-derives the identical lookup, so no resolution
+            // context needs recording.
             let request = self
-                .bracket_one_shot(STAGE_RELATION, stage_thread, ctx.job, task, request)
-                .await?;
+                .bracket_one_shot(STAGE_RELATION, stage_thread, ctx.job, task, request, None)
+                .await?
+                .request;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
                 .gateway()
