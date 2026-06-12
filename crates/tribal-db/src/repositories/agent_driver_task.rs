@@ -160,6 +160,34 @@ pub trait AgentDriverTaskRepository {
         error_message: &str,
     ) -> Result<u64, DbError>;
 
+    /// Verifies the caller still holds the claim, taking a shared lock
+    /// that pins the lease for the calling transaction: the claim-token
+    /// guard for transactions that write no driver-task column. Returns
+    /// `true` while the lease holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn holds_claim(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError>;
+
+    /// Pumps the heartbeat under the claim guard. Returns the affected
+    /// row count (zero means the lease was lost).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn heartbeat(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError>;
+
     /// Terminally dispositions an unclaimed live row under a row lock —
     /// the cancel transaction's disposal of pending deferred work. The
     /// `claim_token IS NULL` requirement is the locked-unclaimed guard:
@@ -362,6 +390,50 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
         .await
         .map_err(|e| DbError::QueryFailed {
             context: format!("dead-lettering driver task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn holds_claim(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError> {
+        let held: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM agent_driver_tasks WHERE id = $1 AND claim_token = $2 FOR SHARE",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("verifying the lease on driver task {id}"),
+            source: e,
+        })?;
+
+        Ok(held.is_some())
+    }
+
+    async fn heartbeat(
+        &self,
+        conn: &mut PgConnection,
+        id: AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE agent_driver_tasks \
+             SET heartbeat_at = now(), updated_at = now() \
+             WHERE id = $1 AND claim_token = $2 AND state = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("heartbeat for driver task {id}"),
             source: e,
         })?;
 
