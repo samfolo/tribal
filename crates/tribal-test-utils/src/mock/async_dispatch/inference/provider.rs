@@ -477,7 +477,7 @@ mod tests {
     use std::sync::Arc;
 
     use tribal_domain::EmbeddingPurpose;
-    use tribal_inference::{Message, Role};
+    use tribal_inference::Message;
 
     use super::*;
     use crate::mock::async_dispatch::inference::responses::{
@@ -487,10 +487,10 @@ mod tests {
     fn a_request(system: &str) -> CompletionRequest {
         CompletionRequest {
             system: Some(system.to_owned()),
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,

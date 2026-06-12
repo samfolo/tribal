@@ -9,12 +9,14 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::{CompletionResponse, CompletionUsage, ProviderKind, gen_ai, span_attrs};
+use tribal_domain::{
+    CompletionResponse, CompletionUsage, ProviderKind, ToolCall, gen_ai, span_attrs,
+};
 
 use super::streaming::AnthropicStreamTranslator;
 use crate::{
-    CompletionRequest, InferenceError, InferenceProvider, ProviderIdentity, ResponseFormat,
-    apply_dialect,
+    CompletionRequest, InferenceError, InferenceProvider, Message, ProviderIdentity,
+    ResponseFormat, apply_dialect,
     capabilities::{reconcile_temperature, resolve},
     error::{map_body_read_error, map_json_parse_error, map_send_error},
     http::{ensure_success, normalise_base_url, record_completion_usage},
@@ -43,6 +45,8 @@ struct AnthropicChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<&'a str>,
     messages: Vec<AnthropicMessage<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<AnthropicTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,7 +60,42 @@ struct AnthropicChatRequest<'a> {
 #[derive(serde::Serialize)]
 struct AnthropicMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    content: AnthropicMessageContent<'a>,
+}
+
+/// Plain turns keep the bare-string content the wire has always carried,
+/// so a tools-free request body stays byte-identical to its pre-tools
+/// form; tool turns use content-block arrays.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum AnthropicMessageContent<'a> {
+    Text(&'a str),
+    Blocks(Vec<AnthropicContentBlockOut<'a>>),
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type")]
+enum AnthropicContentBlockOut<'a> {
+    #[serde(rename = "text")]
+    Text { text: &'a str },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: &'a str,
+        name: &'a str,
+        input: &'a serde_json::Value,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: &'a str,
+        content: &'a str,
+    },
+}
+
+#[derive(serde::Serialize)]
+struct AnthropicTool {
+    name: String,
+    description: String,
+    input_schema: serde_json::Value,
 }
 
 #[derive(serde::Serialize)]
@@ -82,6 +121,12 @@ struct AnthropicChatResponse {
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     #[serde(other)]
     Other,
 }
@@ -222,7 +267,7 @@ impl InferenceProvider for AnthropicInferenceProvider {
                     map_json_parse_error(&e, "AnthropicChatResponse JSON object", &response_body)
                 })?;
 
-            let text = extract_text_content(&parsed.content)?;
+            let (text, tool_calls) = extract_content(parsed.content)?;
 
             let input_tokens = parsed.usage.input_tokens;
             let output_tokens = parsed.usage.output_tokens;
@@ -239,7 +284,11 @@ impl InferenceProvider for AnthropicInferenceProvider {
             };
             record_completion_usage(&usage);
 
-            Ok(CompletionResponse { text, usage })
+            Ok(CompletionResponse {
+                text,
+                tool_calls,
+                usage,
+            })
         }
         .instrument(span)
         .await
@@ -272,14 +321,66 @@ fn build_request<'a>(
     request: &'a CompletionRequest,
     mode: WireMode,
 ) -> AnthropicChatRequest<'a> {
-    let messages: Vec<AnthropicMessage<'_>> = request
-        .messages
-        .iter()
-        .map(|msg| AnthropicMessage {
-            role: msg.role.as_str(),
-            content: &msg.content,
-        })
-        .collect();
+    let mut messages: Vec<AnthropicMessage<'_>> = Vec::with_capacity(request.messages.len());
+    for msg in &request.messages {
+        match msg {
+            Message::User { content } => messages.push(AnthropicMessage {
+                role: "user",
+                content: AnthropicMessageContent::Text(content),
+            }),
+            Message::Assistant {
+                content,
+                tool_calls,
+            } if tool_calls.is_empty() => messages.push(AnthropicMessage {
+                role: "assistant",
+                content: AnthropicMessageContent::Text(content),
+            }),
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => {
+                let mut blocks = Vec::with_capacity(tool_calls.len() + 1);
+                if !content.is_empty() {
+                    blocks.push(AnthropicContentBlockOut::Text { text: content });
+                }
+                blocks.extend(
+                    tool_calls
+                        .iter()
+                        .map(|call| AnthropicContentBlockOut::ToolUse {
+                            id: &call.id,
+                            name: &call.name,
+                            input: &call.arguments,
+                        }),
+                );
+                messages.push(AnthropicMessage {
+                    role: "assistant",
+                    content: AnthropicMessageContent::Blocks(blocks),
+                });
+            }
+            // Tool results ride user-role messages on this wire; results
+            // answering parallel calls coalesce into one message, the
+            // shape the protocol documents.
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => {
+                let block = AnthropicContentBlockOut::ToolResult {
+                    tool_use_id: tool_call_id,
+                    content,
+                };
+                match messages.last_mut() {
+                    Some(AnthropicMessage {
+                        role: "user",
+                        content: AnthropicMessageContent::Blocks(blocks),
+                    }) => blocks.push(block),
+                    _ => messages.push(AnthropicMessage {
+                        role: "user",
+                        content: AnthropicMessageContent::Blocks(vec![block]),
+                    }),
+                }
+            }
+        }
+    }
 
     // `max_tokens` is always required by the Anthropic protocol, so it is
     // defaulted here rather than being capability-driven; only the sampling
@@ -294,11 +395,22 @@ fn build_request<'a>(
         .as_ref()
         .and_then(map_response_format);
 
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| AnthropicTool {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            input_schema: apply_dialect(ProviderKind::Anthropic, tool.input_schema.clone()),
+        })
+        .collect();
+
     AnthropicChatRequest {
         model,
         max_tokens,
         system: request.system.as_deref(),
         messages,
+        tools,
         temperature,
         output_config,
         stream: (mode == WireMode::Streaming).then_some(true),
@@ -322,26 +434,38 @@ fn map_response_format(format: &ResponseFormat) -> Option<AnthropicOutputConfig>
     }
 }
 
-/// Extracts and concatenates all text content blocks from an Anthropic
-/// response.
-fn extract_text_content(content: &[AnthropicContentBlock]) -> Result<String, InferenceError> {
+/// Extracts the concatenated text and the tool calls from an Anthropic
+/// response's content blocks. A tool-call turn legitimately carries no
+/// text; a response with neither is the empty response it always was.
+fn extract_content(
+    content: Vec<AnthropicContentBlock>,
+) -> Result<(String, Vec<ToolCall>), InferenceError> {
     let mut text = String::new();
     let mut text_block_count: usize = 0;
+    let mut tool_calls = Vec::new();
     for block in content {
-        if let AnthropicContentBlock::Text { text: t } = block {
-            text.push_str(t);
-            text_block_count += 1;
+        match block {
+            AnthropicContentBlock::Text { text: t } => {
+                text.push_str(&t);
+                text_block_count += 1;
+            }
+            AnthropicContentBlock::ToolUse { id, name, input } => tool_calls.push(ToolCall {
+                id,
+                name,
+                arguments: input,
+            }),
+            AnthropicContentBlock::Other => {}
         }
     }
 
-    if text_block_count == 0 {
+    if text_block_count == 0 && tool_calls.is_empty() {
         return Err(InferenceError::ResponseParseFailed {
-            expected_shape: "at least one text content block".to_owned(),
-            actual: "0 text blocks in response".to_owned(),
+            expected_shape: "at least one text or tool_use content block".to_owned(),
+            actual: "0 text and 0 tool_use blocks in response".to_owned(),
         });
     }
 
-    Ok(text)
+    Ok((text, tool_calls))
 }
 
 // ---------------------------------------------------------------------------
@@ -359,17 +483,17 @@ mod tests {
 
     use super::*;
     use crate::{
-        Message, Role,
+        Message,
         http::{INFERENCE_PROBE_INPUT, PROBE_MAX_TOKENS},
     };
 
     fn a_request(content: &str) -> CompletionRequest {
         CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: content.to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -502,10 +626,10 @@ mod tests {
         );
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.5),
             max_tokens: None,
             response_format: None,
@@ -533,10 +657,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.5),
             max_tokens: None,
             response_format: None,
@@ -550,20 +674,20 @@ mod tests {
         // yields the same admissible field set regardless of caller.
         let probe = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: INFERENCE_PROBE_INPUT.to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.0),
             max_tokens: Some(PROBE_MAX_TOKENS),
             response_format: None,
         };
         let ingest = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "real input".to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.5),
             max_tokens: Some(512),
             response_format: None,
@@ -627,10 +751,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: Some("You are helpful.".to_owned()),
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "hi".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -679,10 +803,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: Some(100),
             response_format: None,
@@ -730,10 +854,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: Some(ResponseFormat::JsonSchema { schema }),
@@ -760,10 +884,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: Some(ResponseFormat::Json),
@@ -847,7 +971,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_chat_ignores_non_text_blocks() {
+    async fn test_chat_extracts_tool_use_blocks_alongside_text() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(MESSAGES_PATH))
@@ -856,7 +980,8 @@ mod tests {
                 "type": "message",
                 "role": "assistant",
                 "content": [
-                    {"type": "tool_use", "id": "toolu_01abc123", "name": "search", "input": {}},
+                    {"type": "tool_use", "id": "toolu_01abc123", "name": "search",
+                     "input": {"query": "indexing"}},
                     {"type": "text", "text": "result"},
                 ],
                 "model": "claude-haiku-4-5-20251001",
@@ -872,10 +997,17 @@ mod tests {
         let provider = setup(&server);
         let response = provider.complete(a_request("test")).await.unwrap();
         assert_eq!(response.text, "result");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "toolu_01abc123");
+        assert_eq!(response.tool_calls[0].name, "search");
+        assert_eq!(
+            response.tool_calls[0].arguments,
+            serde_json::json!({"query": "indexing"})
+        );
     }
 
     #[tokio::test]
-    async fn test_chat_no_text_blocks_returns_response_parse_failed() {
+    async fn test_chat_tool_use_only_response_is_valid_with_empty_text() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(MESSAGES_PATH))
@@ -897,6 +1029,33 @@ mod tests {
             .await;
 
         let provider = setup(&server);
+        let response = provider.complete(a_request("test")).await.unwrap();
+        assert_eq!(response.text, "");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].arguments, serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn test_chat_neither_text_nor_tool_use_returns_response_parse_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(MESSAGES_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "claude-haiku-4-5-20251001",
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                },
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
         let err = provider.complete(a_request("test")).await.unwrap_err();
 
         assert!(
@@ -906,11 +1065,95 @@ mod tests {
                     ref expected_shape,
                     ref actual,
                 }
-                if expected_shape == "at least one text content block"
-                    && actual == "0 text blocks in response"
+                if expected_shape == "at least one text or tool_use content block"
+                    && actual == "0 text and 0 tool_use blocks in response"
             ),
-            "expected ResponseParseFailed for no text blocks, got {err:?}"
+            "expected ResponseParseFailed for an empty content array, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_chat_sends_tools_and_coalesces_tool_results() {
+        let server = MockServer::start().await;
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": false,
+        });
+
+        Mock::given(method("POST"))
+            .and(path(MESSAGES_PATH))
+            .and(body_json(serde_json::json!({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": DEFAULT_MAX_TOKENS,
+                "messages": [
+                    {"role": "user", "content": "find duplicates"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "toolu_a", "name": "search",
+                         "input": {"query": "indexing"}},
+                        {"type": "tool_use", "id": "toolu_b", "name": "search",
+                         "input": {"query": "consolidation"}},
+                    ]},
+                    // Two consecutive tool results coalesce into one
+                    // user message of tool_result blocks.
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_a", "content": "[]"},
+                        {"type": "tool_result", "tool_use_id": "toolu_b", "content": "[]"},
+                    ]},
+                ],
+                "tools": [{
+                    "name": "search",
+                    "description": "Project-scoped similarity search.",
+                    "input_schema": apply_dialect(ProviderKind::Anthropic, schema.clone()),
+                }],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(a_valid_response_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = setup(&server);
+        let request = CompletionRequest {
+            system: None,
+            messages: vec![
+                Message::User {
+                    content: "find duplicates".to_owned(),
+                },
+                Message::Assistant {
+                    content: String::new(),
+                    tool_calls: vec![
+                        ToolCall {
+                            id: "toolu_a".to_owned(),
+                            name: "search".to_owned(),
+                            arguments: serde_json::json!({"query": "indexing"}),
+                        },
+                        ToolCall {
+                            id: "toolu_b".to_owned(),
+                            name: "search".to_owned(),
+                            arguments: serde_json::json!({"query": "consolidation"}),
+                        },
+                    ],
+                },
+                Message::Tool {
+                    tool_call_id: "toolu_a".to_owned(),
+                    content: "[]".to_owned(),
+                },
+                Message::Tool {
+                    tool_call_id: "toolu_b".to_owned(),
+                    content: "[]".to_owned(),
+                },
+            ],
+            tools: vec![crate::ToolWireDefinition {
+                name: "search".to_owned(),
+                description: "Project-scoped similarity search.".to_owned(),
+                input_schema: schema,
+            }],
+            temperature: None,
+            max_tokens: None,
+            response_format: None,
+        };
+        let _ = provider.complete(request).await.unwrap();
     }
 
     // -- Cache tokens --------------------------------------------------------
@@ -957,6 +1200,7 @@ mod tests {
         let request = CompletionRequest {
             system: None,
             messages: vec![],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
