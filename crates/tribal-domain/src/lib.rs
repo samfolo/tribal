@@ -115,7 +115,7 @@ pub use api_key::{ApiKey, ApiKeyParseError};
 pub use auth_token::{AuthToken, AuthTokenBuilder};
 pub use bearer_token::{BearerToken, BearerTokenParseError};
 pub use candidate::{Candidate, RelationHint, SuggestedReference};
-pub use completion_response::CompletionResponse;
+pub use completion_response::{CompletionResponse, ToolCall};
 pub use discovery::{Direction, DiscoveryField, ExplorationField};
 pub use disposition::{
     Disposition, DispositionCounters, RETRY_COUNT_AFTER_PROGRESS, TurnOutcome, decide_disposition,
