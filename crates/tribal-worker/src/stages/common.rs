@@ -8,7 +8,8 @@ use tribal_common::clamp_to_i32;
 use tribal_db::{
     EmbeddingProfileRepository, NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
     NewTriageSimilarItemDecision, PgEmbeddingProfileRepository, PgPromptVersionRepository,
-    PgTagRegistryRepository, PromptVersionRepository, TagRegistryRepository,
+    PgTagRegistryRepository, PgTokenUsageRepository, PromptVersionRepository,
+    TagRegistryRepository, TokenUsageRepository,
 };
 use tribal_domain::{
     AgentThread, CompletionResponse, EmbeddingProfile, EmbeddingProfileId, Job, ProjectId,
@@ -461,18 +462,41 @@ pub(crate) struct BracketedTurn {
 
 /// Commits a stage thread's terminal inside the caller's transaction:
 /// the assistant record and completed status when a turn ran, the bare
-/// completed status for a no-op.
+/// completed status for a no-op. The completion's ledger row gains its
+/// record attribution in the same commit; zero linked rows means the
+/// sink's best-effort write never landed, which stays best-effort here.
 pub(crate) async fn finish_thread(
     txn: &mut sqlx::PgConnection,
     stage: &str,
     thread: &AgentThread,
+    task: &Task,
     response: Option<&CompletionResponse>,
 ) -> Result<(), StageError> {
-    let outcome = match response {
-        Some(response) => commit_one_shot_terminal(txn, thread, response)
+    match response {
+        Some(response) => {
+            let outcome = commit_one_shot_terminal(txn, thread, response)
+                .await
+                .map_err(|source| {
+                    map_runtime_error(stage, "committing the thread terminal", source)
+                })?;
+            PgTokenUsageRepository
+                .link_completion_to_record(
+                    txn,
+                    thread.id(),
+                    task.id(),
+                    clamp_to_i32(task.retry_count()),
+                    outcome.assistant_record.id(),
+                )
+                .await
+                .map_err(|source| StageError::Database {
+                    stage: stage.into(),
+                    context: "linking the completion spend to its record".into(),
+                    source,
+                })?;
+            Ok(())
+        }
+        None => commit_noop_terminal(txn, thread)
             .await
-            .map(|_| ()),
-        None => commit_noop_terminal(txn, thread).await,
-    };
-    outcome.map_err(|source| map_runtime_error(stage, "committing the thread terminal", source))
+            .map_err(|source| map_runtime_error(stage, "committing the thread terminal", source)),
+    }
 }

@@ -103,6 +103,9 @@ impl Worker {
     /// batch), the job's batch size and its status transition to triaging (or
     /// straight to completed with an empty outcome when no candidates were
     /// extracted), and the claim-guarded task completion.
+    // The commit transaction's full guard context (task, thread, claim,
+    // and the stage's domain effects); a params struct would only move
+    // the same arguments behind a name.
     #[allow(clippy::too_many_arguments)]
     async fn commit_extraction(
         &self,
@@ -175,7 +178,7 @@ impl Worker {
                     .build()
             };
 
-            PgJobRepository
+            let job_moved = PgJobRepository
                 .update_status_if_live(&mut txn, task.job_id(), &job_transition)
                 .await
                 .map_err(|e| stage_db_error(STAGE_EXTRACTION, "transitioning job status", e))?;
@@ -189,7 +192,7 @@ impl Worker {
                 return Err(StageError::OwnershipLost);
             }
 
-            finish_thread(&mut txn, STAGE_EXTRACTION, thread, response).await?;
+            finish_thread(&mut txn, STAGE_EXTRACTION, thread, task, response).await?;
 
             txn.commit()
                 .await
@@ -202,21 +205,26 @@ impl Worker {
             self.metrics()
                 .record_task_completed(task.task_type().as_str(), duration_ms);
 
-            if is_empty {
-                // chrono i64 milliseconds to f64; precision loss negligible at this scale
-                #[allow(clippy::cast_precision_loss)]
-                let job_duration_ms = (Utc::now() - job.created_at()).num_milliseconds() as f64;
-                self.metrics()
-                    .record_job_completed(JobOutcome::Empty.as_str(), Some(job_duration_ms));
-            }
+            // The job metric and the watcher notification follow the
+            // committed transition: a terminal job's silent no-op
+            // publishes nothing.
+            if job_moved.is_some() {
+                if is_empty {
+                    // chrono i64 milliseconds to f64; precision loss negligible at this scale
+                    #[allow(clippy::cast_precision_loss)]
+                    let job_duration_ms =
+                        (Utc::now() - job.created_at()).num_milliseconds() as f64;
+                    self.metrics()
+                        .record_job_completed(JobOutcome::Empty.as_str(), Some(job_duration_ms));
+                }
 
-            // Notify watch subscribers of the post-extraction job state.
-            let state = if is_empty {
-                JobState::Completed
-            } else {
-                JobState::Triaging
-            };
-            self.notify_job_state(task.job_id(), state);
+                let state = if is_empty {
+                    JobState::Completed
+                } else {
+                    JobState::Triaging
+                };
+                self.notify_job_state(task.job_id(), state);
+            }
 
             tracing::info!(
                 task_id = %task.id(),
@@ -240,6 +248,9 @@ impl Worker {
     /// then records the triage result.
     ///
     /// **`NoOp`**: completes the task without creating any domain entities.
+    // The commit transaction's full guard context (task, thread, claim,
+    // and the stage's domain effects); a params struct would only move
+    // the same arguments behind a name.
     #[allow(clippy::too_many_arguments)]
     async fn commit_triage(
         &self,
@@ -438,6 +449,9 @@ impl Worker {
     /// Finalises a triage commit in the caller's transaction: the similar-item
     /// decisions, the claim-guarded task completion, and the fan-in. Returns
     /// whether the fan-in fired the relation stage.
+    // The commit transaction's full guard context (task, thread, claim,
+    // and the stage's domain effects); a params struct would only move
+    // the same arguments behind a name.
     #[allow(clippy::too_many_arguments)]
     async fn finalise_triage_commit(
         &self,
@@ -464,7 +478,7 @@ impl Worker {
             return Err(StageError::OwnershipLost);
         }
 
-        finish_thread(txn, STAGE_TRIAGE, thread, response).await?;
+        finish_thread(txn, STAGE_TRIAGE, thread, task, response).await?;
 
         coupling::triage_fan_in(txn, job_id, task.id())
             .await
@@ -536,8 +550,8 @@ impl Worker {
                     if won_commit {
                         (true, Some(outcome))
                     } else {
-                        // Idempotency hit; task completed but this
-                        // attempt did not seal the batch.
+                        // Idempotency hit or terminal no-op: the task
+                        // completed, but nothing publishable moved.
                         (false, None)
                     }
                 }
@@ -552,7 +566,7 @@ impl Worker {
                     if rows == 0 {
                         return Err(StageError::OwnershipLost);
                     }
-                    finish_thread(&mut txn, STAGE_RELATION, thread, response).await?;
+                    finish_thread(&mut txn, STAGE_RELATION, thread, task, response).await?;
                     // NoOp does not record job metrics; the job was
                     // already completed by a prior commit attempt.
                     (false, None)
@@ -602,9 +616,14 @@ impl Worker {
     /// already wrote a batch, the conditional update returns zero rows
     /// and this method short-circuits to a task-only completion,
     /// preventing relation overwrites.
-    /// Returns `true` if this attempt was the winning commit, `false`
-    /// if the batch was already sealed by a prior attempt (idempotency
-    /// hit; task completed but no job metrics should be recorded).
+    /// Returns `true` when this attempt won the seal AND the job's
+    /// completed transition moved the row — the condition for publishing
+    /// the job metric and the watcher notification. `false` covers both
+    /// the idempotency hit (a prior attempt sealed the batch) and a
+    /// terminal job's silent no-op.
+    // The commit transaction's full guard context (task, thread, claim,
+    // and the stage's domain effects); a params struct would only move
+    // the same arguments behind a name.
     #[allow(clippy::too_many_arguments)]
     async fn commit_relation_relate(
         &self,
@@ -637,7 +656,7 @@ impl Worker {
             if rows == 0 {
                 return Err(StageError::OwnershipLost);
             }
-            finish_thread(txn, STAGE_RELATION, thread, response).await?;
+            finish_thread(txn, STAGE_RELATION, thread, task, response).await?;
 
             return Ok(false);
         }
@@ -658,7 +677,7 @@ impl Worker {
             .completed_at(Some(Utc::now()))
             .build();
 
-        PgJobRepository
+        let job_moved = PgJobRepository
             .update_status_if_live(txn, job_id, &transition)
             .await
             .map_err(|e| stage_db_error(STAGE_RELATION, "transitioning job to completed", e))?;
@@ -671,7 +690,7 @@ impl Worker {
         if rows == 0 {
             return Err(StageError::OwnershipLost);
         }
-        finish_thread(txn, STAGE_RELATION, thread, response).await?;
+        finish_thread(txn, STAGE_RELATION, thread, task, response).await?;
 
         tracing::Span::current().record(span_attrs::JOB_OUTCOME, outcome.as_str());
         tracing::Span::current().record(
@@ -681,7 +700,7 @@ impl Worker {
         tracing::Span::current().record(span_attrs::RELATIONS_COMMITTED, relations_count);
         tracing::Span::current().record(span_attrs::RELATIONS_SKIPPED, skipped);
 
-        Ok(true)
+        Ok(job_moved.is_some())
     }
 }
 

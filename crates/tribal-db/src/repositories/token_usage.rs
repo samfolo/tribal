@@ -6,10 +6,11 @@
 //! provider's total field.
 
 use async_trait::async_trait;
+use strum::IntoEnumIterator;
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
     AgentThreadId, AgentThreadRecordId, EmbeddingPurpose, JobId, PipelineStage, PromptVersionId,
-    ReindexRunId, TaskId, TokenUsage, TokenUsageId, TokenUsageStage,
+    ReindexRunId, TaskId, TaskType, TokenUsage, TokenUsageId, TokenUsageStage,
 };
 use typed_builder::TypedBuilder;
 
@@ -132,6 +133,26 @@ pub trait TokenUsageRepository {
         new: &NewTokenUsage,
     ) -> Result<TokenUsage, DbError>;
 
+    /// Links one attempt's completion row to the assistant record its
+    /// turn committed, inside the caller's terminal transaction. The row
+    /// is scoped by thread, task, attempt, and the stage's completion
+    /// class — embedding rows attribute to the thread alone, having
+    /// produced no record. Returns the affected row count: zero means
+    /// the sink's best-effort write never landed, which stays
+    /// best-effort here too.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn link_completion_to_record(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        task_id: TaskId,
+        attempt: i32,
+        record_id: AgentThreadRecordId,
+    ) -> Result<u64, DbError>;
+
     /// Finds all token usage records for a given job, ordered by
     /// `created_at ASC`.
     ///
@@ -158,6 +179,44 @@ pub struct PgTokenUsageRepository;
 
 #[async_trait]
 impl TokenUsageRepository for PgTokenUsageRepository {
+    async fn link_completion_to_record(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        task_id: TaskId,
+        attempt: i32,
+        record_id: AgentThreadRecordId,
+    ) -> Result<u64, DbError> {
+        // The completion class derives from the task vocabulary, so a
+        // future stage joins this predicate by construction.
+        let completion_stages: Vec<&str> = TaskType::iter()
+            .map(|t| TokenUsageStage::from(t).pipeline_stage().as_str())
+            .collect();
+
+        let result = sqlx::query(
+            "UPDATE token_usage \
+             SET agent_thread_record_id = $5 \
+             WHERE agent_thread_id = $1 \
+               AND task_id = $2 \
+               AND attempt = $3 \
+               AND stage = ANY($4::text[]) \
+               AND agent_thread_record_id IS NULL",
+        )
+        .bind(thread_id.inner())
+        .bind(task_id.inner())
+        .bind(attempt)
+        .bind(&completion_stages)
+        .bind(record_id.inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("linking completion spend to record {record_id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn insert(
         &self,
         conn: &mut PgConnection,

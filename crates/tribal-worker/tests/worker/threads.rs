@@ -109,6 +109,27 @@ async fn test_stage_execution_commits_a_completed_thread_with_its_log() {
         "the assistant record carries the call's usage",
     );
 
+    // The completion's ledger row is linked to the committed assistant
+    // record in the same terminal transaction.
+    let usage_rows = PgTokenUsageRepository
+        .find_by_job_id(&mut conn, job_id)
+        .await
+        .expect("ledger rows");
+    let completion = usage_rows
+        .iter()
+        .find(|r| r.stage() == PipelineStage::Extraction)
+        .expect("the extraction completion is ledgered");
+    assert_eq!(
+        completion.agent_thread_id(),
+        Some(thread.id()),
+        "completion spend attributes to the thread",
+    );
+    assert_eq!(
+        completion.agent_thread_record_id(),
+        Some(records[1].id()),
+        "completion spend attributes to the committed assistant record",
+    );
+
     teardown(ctx).await;
 }
 
@@ -937,6 +958,10 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
         task_after.retry_count(),
         0,
         "the consecutive counter resets at cycle start",
+    );
+    assert!(
+        task_after.available_at() > chrono::Utc::now() + chrono::Duration::seconds(1),
+        "the cycle's escalating backoff reaches the row, not just the pure function",
     );
 
     let thread_after = PgAgentThreadRepository
@@ -1946,6 +1971,237 @@ async fn test_one_shot_terminal_refuses_a_non_running_thread() {
         err,
         tribal_agent_runtime::AgentRuntimeError::StatusCasMissed { .. }
     ));
+
+    teardown(ctx).await;
+}
+
+/// Inline retry exhaustion runs the same disposition as the reclaim
+/// sweep: the task dead-letters, its thread dead-letters in the same
+/// commit, and the job fails.
+#[tokio::test]
+async fn test_inline_failure_exhaustion_dead_letters_the_thread() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let config = test_config();
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "inline-exhaust").await;
+    let (job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        let ids = seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await;
+        // The next failure is the budget-exhausting one.
+        set_retry_count(&mut conn, ids.1, config.task_max_retries).await;
+        ids
+    };
+
+    // Every call fails retryably; the None default stub errors.
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool.clone(), token.clone(), config, None, None).await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    poll_task_status(&pool, task_id, TaskStatus::DeadLetter, POLL_SETTLE).await;
+    let _ = poll_job_status(&pool, job_id, JobStatus::Failed, POLL_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+    let thread = PgAgentThreadRepository
+        .find_by_stage_task(&mut conn, task_id)
+        .await
+        .expect("find")
+        .expect("the executed task drives a thread");
+    assert_eq!(
+        thread.status(),
+        AgentThreadStatus::DeadLetter,
+        "the inline exhaustion maps the retryable class to a dead-lettered thread",
+    );
+    assert!(thread.completed_at().is_some());
+
+    teardown(ctx).await;
+}
+
+/// An arrival at a terminal thread is recorded and discarded: the log
+/// grows, nothing re-enqueues, and the durable arrival survives.
+#[tokio::test]
+async fn test_resolution_at_a_terminal_thread_is_recorded_and_discarded() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "resolve-terminal").await;
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "resolve-terminal")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
+    let moved = PgAgentThreadRepository
+        .complete(
+            &mut conn,
+            stage_thread.thread.id(),
+            tribal_domain::AgentThreadTerminal::Cancelled,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .expect("cancel");
+    assert_eq!(moved, 1);
+
+    let before = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("log")
+        .len();
+
+    let outcome = tribal_agent_runtime::resolve_stage_thread(
+        &mut conn,
+        stage_thread.thread.id(),
+        &serde_json::json!({ "cause": "late arrival" }),
+    )
+    .await
+    .expect("resolve");
+
+    assert!(matches!(
+        outcome,
+        tribal_agent_runtime::ResolveOutcome::RecordedAtTerminal
+    ));
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("log");
+    assert_eq!(
+        records.len(),
+        before + 1,
+        "the durable arrival is recorded even though it re-enqueues nothing",
+    );
+    let task_after = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    assert_eq!(
+        task_after.status(),
+        TaskStatus::Claimed,
+        "a terminal arrival never touches the task",
+    );
+
+    teardown(ctx).await;
+}
+
+/// A resolution against a running thread commits nothing: no record, no
+/// task move.
+#[tokio::test]
+async fn test_resolution_at_a_running_thread_commits_nothing() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "resolve-running").await;
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "resolve-running")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
+
+    let outcome = tribal_agent_runtime::resolve_stage_thread(
+        &mut conn,
+        stage_thread.thread.id(),
+        &serde_json::json!({ "cause": "premature" }),
+    )
+    .await
+    .expect("resolve");
+
+    assert!(matches!(
+        outcome,
+        tribal_agent_runtime::ResolveOutcome::NotSuspended
+    ));
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("log");
+    assert!(
+        records.is_empty(),
+        "the premature arrival's append rolls back with its transaction",
+    );
+    let task_after = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    assert_eq!(task_after.status(), TaskStatus::Claimed);
 
     teardown(ctx).await;
 }
