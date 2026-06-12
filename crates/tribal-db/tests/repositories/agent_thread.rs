@@ -10,7 +10,7 @@ use tribal_db::{
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskKind, AgentDriverTaskState,
     AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal, GitRemote, PrincipalId, TaskId, TaskType,
+    AgentThreadSuspension, AgentThreadTerminal, GitRemote, JobId, PrincipalId, TaskId, TaskType,
     TokenUsageStage,
 };
 use tribal_test_utils::{
@@ -24,11 +24,13 @@ use tribal_test_utils::{
 // ---------------------------------------------------------------------------
 
 const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 /// Everything a thread row needs to exist: a principal, a stage task (with
 /// its job chain), and a binding version.
 struct ThreadPrerequisites {
     principal_id: PrincipalId,
+    job_id: JobId,
     stage_task_id: TaskId,
     new_thread: NewAgentThread,
 }
@@ -110,6 +112,7 @@ async fn setup_thread_prerequisites(
 
     ThreadPrerequisites {
         principal_id: principal.id(),
+        job_id: job.id(),
         stage_task_id: task.id(),
         new_thread,
     }
@@ -209,6 +212,78 @@ async fn test_one_thread_per_stage_task_ever() {
         .expect_err("a second thread on the same stage task must be rejected");
 
     assert!(matches!(err, DbError::UniqueViolation { .. }));
+}
+
+#[tokio::test]
+async fn test_find_by_job_lists_only_the_jobs_stage_threads() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    // Job A drives two stage threads across two tasks.
+    let prerequisites = setup_thread_prerequisites(&mut txn, "by-job-a").await;
+    let thread_a1 = PgAgentThreadRepository
+        .insert(&mut txn, &prerequisites.new_thread)
+        .await
+        .expect("insert thread a1");
+    let second_task = PgTaskRepository
+        .insert(
+            &mut txn,
+            &a_new_task()
+                .job_id(prerequisites.job_id)
+                .task_type(TaskType::Triage)
+                .batch_index(Some(0))
+                .build(),
+        )
+        .await
+        .expect("insert second task");
+    // The binding-stage FK requires a triage binding for a triage thread.
+    let triage_binding = PgAgentBindingVersionRepository
+        .record(
+            &mut txn,
+            &NewAgentBindingVersion::builder()
+                .hash(HASH_B.to_owned())
+                .pipeline_stage(TaskType::Triage)
+                .definition(an_agent_definition().build())
+                .build(),
+        )
+        .await
+        .expect("record triage binding");
+    let mut second_new = prerequisites.new_thread.clone();
+    second_new.pipeline_stage = TaskType::Triage;
+    second_new.binding_version_id = triage_binding.id();
+    second_new.driving_task = DrivingTaskRef::Stage(second_task.id());
+    let thread_a2 = PgAgentThreadRepository
+        .insert(&mut txn, &second_new)
+        .await
+        .expect("insert thread a2");
+
+    // A driver-driven child of A1 is not stage-task-bound, so it belongs
+    // to its parent's lineage rather than the job's stage roster. The
+    // deferred circular reference admits it before its driver row.
+    let mut child_new = prerequisites.new_thread.clone();
+    child_new.parent_thread_id = Some(thread_a1.id());
+    child_new.driving_task = DrivingTaskRef::Driver(AgentDriverTaskId::from(uuid::Uuid::new_v4()));
+    PgAgentThreadRepository
+        .insert(&mut txn, &child_new)
+        .await
+        .expect("insert driver child");
+
+    // Job B's thread must not bleed into job A's listing.
+    let other = setup_thread_prerequisites(&mut txn, "by-job-b").await;
+    PgAgentThreadRepository
+        .insert(&mut txn, &other.new_thread)
+        .await
+        .expect("insert thread b1");
+
+    let threads = PgAgentThreadRepository
+        .find_by_job(&mut txn, prerequisites.job_id)
+        .await
+        .expect("find by job");
+
+    let ids: Vec<_> = threads.iter().map(AgentThread::id).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&thread_a1.id()));
+    assert!(ids.contains(&thread_a2.id()));
 }
 
 #[tokio::test]
@@ -449,6 +524,59 @@ async fn test_record_append_advances_seq_and_lists_in_order() {
         .expect("last")
         .expect("present");
     assert_eq!(last.seq(), next);
+}
+
+#[tokio::test]
+async fn test_record_pages_chain_through_the_log_without_gaps() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let thread = insert_thread(&mut txn, "page").await;
+
+    for position in 0..5 {
+        PgAgentThreadRecordRepository
+            .append(
+                &mut txn,
+                &NewAgentThreadRecord::builder()
+                    .thread_id(thread.id())
+                    .seq(AgentThreadRecordSeq::new(position))
+                    .kind(AgentThreadRecordKind::Input)
+                    .content(serde_json::json!({"position": position}))
+                    .build(),
+            )
+            .await
+            .expect("append record");
+    }
+
+    let first = PgAgentThreadRecordRepository
+        .find_by_thread_from(&mut txn, thread.id(), AgentThreadRecordSeq::FIRST, 2)
+        .await
+        .expect("first page");
+    let seqs: Vec<i64> = first.iter().map(|r| r.seq().inner()).collect();
+    assert_eq!(seqs, vec![0, 1]);
+
+    // The next page starts at the previous page's last seq's successor;
+    // chaining this way walks the log without gaps or repeats.
+    let resume = first.last().expect("non-empty page").seq().next();
+    let second = PgAgentThreadRecordRepository
+        .find_by_thread_from(&mut txn, thread.id(), resume, 2)
+        .await
+        .expect("second page");
+    let seqs: Vec<i64> = second.iter().map(|r| r.seq().inner()).collect();
+    assert_eq!(seqs, vec![2, 3]);
+
+    let resume = second.last().expect("non-empty page").seq().next();
+    let tail = PgAgentThreadRecordRepository
+        .find_by_thread_from(&mut txn, thread.id(), resume, 2)
+        .await
+        .expect("tail page");
+    let seqs: Vec<i64> = tail.iter().map(|r| r.seq().inner()).collect();
+    assert_eq!(seqs, vec![4]);
+
+    let beyond = PgAgentThreadRecordRepository
+        .find_by_thread_from(&mut txn, thread.id(), AgentThreadRecordSeq::new(5), 2)
+        .await
+        .expect("page beyond the log");
+    assert!(beyond.is_empty());
 }
 
 #[tokio::test]

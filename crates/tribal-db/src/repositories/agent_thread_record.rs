@@ -120,6 +120,22 @@ pub trait AgentThreadRecordRepository {
         thread_id: AgentThreadId,
     ) -> Result<Vec<AgentThreadRecord>, DbError>;
 
+    /// Lists a thread's records in log order from `from_seq` (inclusive),
+    /// at most `limit` of them — the keyset page behind paged reads.
+    /// The first page starts at [`AgentThreadRecordSeq::FIRST`]; each
+    /// further page starts at the previous page's last seq's `next()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_thread_from(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        from_seq: AgentThreadRecordSeq,
+        limit: u32,
+    ) -> Result<Vec<AgentThreadRecord>, DbError>;
+
     /// Returns a thread's last committed record, if any.
     ///
     /// # Errors
@@ -225,6 +241,31 @@ impl AgentThreadRecordRepository for PgAgentThreadRecordRepository {
             .await
             .map_err(|e| DbError::QueryFailed {
                 context: format!("listing records for thread {thread_id}"),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_agent_thread_record_row).collect())
+    }
+
+    async fn find_by_thread_from(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        from_seq: AgentThreadRecordSeq,
+        limit: u32,
+    ) -> Result<Vec<AgentThreadRecord>, DbError> {
+        let sql = format!(
+            "SELECT {COLUMNS} FROM agent_thread_records \
+             WHERE thread_id = $1 AND seq >= $2 ORDER BY seq LIMIT $3"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(thread_id.inner())
+            .bind(from_seq.inner())
+            .bind(i64::from(limit))
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("listing a record page for thread {thread_id}"),
                 source: e,
             })?;
 
