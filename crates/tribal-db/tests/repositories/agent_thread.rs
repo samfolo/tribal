@@ -4,17 +4,19 @@ use tribal_db::{
     NewAgentDriverTask, NewAgentThread, NewAgentThreadRecord, PgAgentBindingVersionRepository,
     PgAgentDriverTaskRepository, PgAgentThreadRecordRepository, PgAgentThreadRepository,
     PgJobRepository, PgPrincipalRepository, PgProjectRepository, PgTaskRepository,
-    PrincipalRepository, ProjectRepository, TaskRepository, ThreadPruneCriteria,
+    PgTokenUsageRepository, PrincipalRepository, ProjectRepository, TaskRepository,
+    ThreadPruneCriteria, TokenUsageRepository,
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskKind, AgentDriverTaskState,
     AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
     AgentThreadSuspension, AgentThreadTerminal, GitRemote, PrincipalId, TaskId, TaskType,
+    TokenUsageStage,
 };
 use tribal_test_utils::{
     a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
-    a_new_task, an_agent_definition, insert_prompt_version, test_context,
-    upsert_system_fingerprint,
+    a_new_task, a_new_token_usage, an_agent_definition, insert_prompt_version,
+    shift_timestamp_by_id, test_context, upsert_system_fingerprint,
 };
 
 // ---------------------------------------------------------------------------
@@ -864,6 +866,202 @@ async fn test_complete_from_suspended_clears_the_suspension_payload() {
     assert!(
         after.suspension().is_none() && after.wake_at().is_none(),
         "leaving suspended clears the payload so the paired CHECK can never trip",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Driver-task lease guards
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_driver_holds_claim_tracks_the_lease() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let thread = insert_thread(&mut txn, "driver-guard").await;
+
+    let inserted = PgAgentDriverTaskRepository
+        .insert(
+            &mut txn,
+            &NewAgentDriverTask::builder()
+                .thread_id(thread.id())
+                .kind(AgentDriverTaskKind::Drive)
+                .build(),
+        )
+        .await
+        .expect("insert");
+    let claimed = PgAgentDriverTaskRepository
+        .claim(&mut txn, 1, "guard-test")
+        .await
+        .expect("claim");
+    let token = claimed[0].claim_token().expect("token");
+
+    assert!(
+        PgAgentDriverTaskRepository
+            .holds_claim(&mut txn, inserted.id(), token)
+            .await
+            .expect("held")
+    );
+    assert!(
+        !PgAgentDriverTaskRepository
+            .holds_claim(&mut txn, inserted.id(), uuid::Uuid::new_v4())
+            .await
+            .expect("stale")
+    );
+
+    PgAgentDriverTaskRepository
+        .complete(&mut txn, inserted.id(), token)
+        .await
+        .expect("complete");
+    assert!(
+        !PgAgentDriverTaskRepository
+            .holds_claim(&mut txn, inserted.id(), token)
+            .await
+            .expect("terminal"),
+        "a completed row releases its lease",
+    );
+}
+
+#[tokio::test]
+async fn test_driver_heartbeat_is_claim_guarded() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let thread = insert_thread(&mut txn, "driver-beat").await;
+
+    PgAgentDriverTaskRepository
+        .insert(
+            &mut txn,
+            &NewAgentDriverTask::builder()
+                .thread_id(thread.id())
+                .kind(AgentDriverTaskKind::Drive)
+                .build(),
+        )
+        .await
+        .expect("insert");
+    let claimed = PgAgentDriverTaskRepository
+        .claim(&mut txn, 1, "beat-test")
+        .await
+        .expect("claim");
+    let task = &claimed[0];
+    let token = task.claim_token().expect("token");
+
+    let beaten = PgAgentDriverTaskRepository
+        .heartbeat(&mut txn, task.id(), token)
+        .await
+        .expect("beat");
+    assert_eq!(beaten, 1);
+
+    let stale = PgAgentDriverTaskRepository
+        .heartbeat(&mut txn, task.id(), uuid::Uuid::new_v4())
+        .await
+        .expect("stale beat");
+    assert_eq!(stale, 0, "a zombie's heartbeat must not land");
+}
+
+// ---------------------------------------------------------------------------
+// Thread-scoped ledger reads (fixtures live here with the thread chain)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_sum_thread_spend_counts_only_the_thread() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let thread = insert_thread(&mut txn, "spend-sum").await;
+
+    for tokens in [100, 60] {
+        PgTokenUsageRepository
+            .insert(
+                &mut txn,
+                &a_new_token_usage()
+                    .agent_thread_id(Some(thread.id()))
+                    .tokens_input(tokens)
+                    .tokens_output(0)
+                    .build(),
+            )
+            .await
+            .expect("insert thread row");
+    }
+    PgTokenUsageRepository
+        .insert(&mut txn, &a_new_token_usage().tokens_input(999).build())
+        .await
+        .expect("insert unattributed row");
+
+    let total = PgTokenUsageRepository
+        .sum_thread_spend(&mut txn, thread.id())
+        .await
+        .expect("sum");
+    assert_eq!(total, 160, "only the thread's rows count");
+}
+
+#[tokio::test]
+async fn test_thread_link_picks_only_the_most_recent_unlinked_row() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let thread = insert_thread(&mut txn, "thread-link").await;
+
+    let earlier = PgTokenUsageRepository
+        .insert(
+            &mut txn,
+            &a_new_token_usage()
+                .agent_thread_id(Some(thread.id()))
+                .stage(TokenUsageStage::Triage)
+                .build(),
+        )
+        .await
+        .expect("insert earlier");
+    shift_timestamp_by_id(
+        &mut txn,
+        "token_usage",
+        "created_at",
+        earlier.id().inner().to_owned(),
+        chrono::Duration::seconds(-60),
+    )
+    .await;
+    let later = PgTokenUsageRepository
+        .insert(
+            &mut txn,
+            &a_new_token_usage()
+                .agent_thread_id(Some(thread.id()))
+                .stage(TokenUsageStage::Triage)
+                .build(),
+        )
+        .await
+        .expect("insert later");
+
+    let record = PgAgentThreadRecordRepository
+        .append(
+            &mut txn,
+            &NewAgentThreadRecord::builder()
+                .thread_id(thread.id())
+                .seq(AgentThreadRecordSeq::FIRST)
+                .kind(AgentThreadRecordKind::AssistantMessage)
+                .content(serde_json::json!({}))
+                .build(),
+        )
+        .await
+        .expect("append record");
+
+    let linked = PgTokenUsageRepository
+        .link_thread_completion_to_record(&mut txn, thread.id(), 0, record.id())
+        .await
+        .expect("link");
+    assert_eq!(linked, 1, "exactly the most recent row links");
+
+    let later_record: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT agent_thread_record_id FROM token_usage WHERE id = $1")
+            .bind(later.id().inner())
+            .fetch_one(&mut *txn)
+            .await
+            .expect("read later");
+    let earlier_record: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT agent_thread_record_id FROM token_usage WHERE id = $1")
+            .bind(earlier.id().inner())
+            .fetch_one(&mut *txn)
+            .await
+            .expect("read earlier");
+    assert_eq!(later_record, Some(record.id().inner().to_owned()));
+    assert_eq!(
+        earlier_record, None,
+        "the earlier attempt's orphan stays thread-attributed",
     );
 }
 
