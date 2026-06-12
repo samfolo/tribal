@@ -111,6 +111,13 @@ pub struct ExecutionBudgets {
     /// Cap on the number of turns.
     #[builder(default)]
     pub max_turns: Option<u32>,
+    /// Cap on child executions launched by the thread.
+    #[builder(default)]
+    pub max_child_launches: Option<u32>,
+    /// Wall-clock bound on the thread's whole execution, in seconds,
+    /// measured from its creation.
+    #[builder(default)]
+    pub execution_deadline_seconds: Option<u32>,
 }
 
 /// The committed-record projection of one thread's spend.
@@ -298,6 +305,8 @@ mod tests {
             ExecutionBudgets {
                 max_total_tokens: None,
                 max_turns: None,
+                max_child_launches: None,
+                execution_deadline_seconds: None,
             }
         ));
     }
@@ -330,7 +339,7 @@ mod tests {
                 "\"base_url\":\"http://localhost:11434\",",
                 "\"parameters\":{{\"temperature\":0.2,\"max_tokens\":4096}},",
                 "\"prompt_hashes\":[\"{a}\",\"{b}\"],",
-                "\"budgets\":{{\"max_total_tokens\":null,\"max_turns\":null}},",
+                "\"budgets\":{{\"max_total_tokens\":null,\"max_turns\":null,\"max_child_launches\":null,\"execution_deadline_seconds\":null}},",
                 "\"tools\":[]}}"
             ),
             a = "a".repeat(64),
