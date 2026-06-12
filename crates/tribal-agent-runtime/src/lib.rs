@@ -17,6 +17,7 @@ mod binding;
 mod error;
 mod ledger_sink;
 mod store;
+mod tools;
 mod transitions;
 mod turn;
 mod txn;
@@ -25,6 +26,7 @@ pub use binding::resolve_binding;
 pub use error::AgentRuntimeError;
 pub use ledger_sink::PgLedgerSink;
 pub use store::{StageThread, ensure_stage_thread};
+pub use tools::{StageTool, ToolOutcome, ToolRegistry, ToolRegistryError};
 pub use transitions::{
     CancelOutcome, ResolveOutcome, SuspendOutcome, cancel_thread_in_txn, resolve_stage_thread,
     suspend_stage_thread,
