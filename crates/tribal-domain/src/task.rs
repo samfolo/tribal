@@ -98,6 +98,10 @@ pub enum TaskErrorKind {
     /// does, overflows surface through the provider-error classes and
     /// retry as before.
     ContextOverflow,
+    /// An execution budget exhausted in a way no retry can change: the
+    /// turn cap, the execution deadline, or the bounded budget
+    /// re-checks running dry.
+    BudgetExhausted,
 }
 
 /// Whether a failure class can succeed on retry.
@@ -118,7 +122,7 @@ impl TaskErrorKind {
     #[must_use]
     pub fn outcome(self) -> ErrorOutcome {
         match self {
-            Self::ContextOverflow => ErrorOutcome::Terminal,
+            Self::ContextOverflow | Self::BudgetExhausted => ErrorOutcome::Terminal,
             Self::ProviderError
             | Self::SemaphoreTimeout
             | Self::ParseError
@@ -157,6 +161,7 @@ enum_text_conversions!(TaskErrorKind {
     TaskErrorKind::DatabaseError => "database_error",
     TaskErrorKind::InternalError => "internal_error",
     TaskErrorKind::ContextOverflow => "context_overflow",
+    TaskErrorKind::BudgetExhausted => "budget_exhausted",
 });
 
 /// A task in the ingest pipeline.
@@ -318,6 +323,7 @@ mod tests {
         TaskErrorKind::DatabaseError => "database_error",
         TaskErrorKind::InternalError => "internal_error",
         TaskErrorKind::ContextOverflow => "context_overflow",
+        TaskErrorKind::BudgetExhausted => "budget_exhausted",
     });
 
     enum_text_tests!(test_task_type_text_roundtrip, TaskType {
@@ -345,6 +351,7 @@ mod tests {
         TaskErrorKind::DatabaseError => "database_error",
         TaskErrorKind::InternalError => "internal_error",
         TaskErrorKind::ContextOverflow => "context_overflow",
+        TaskErrorKind::BudgetExhausted => "budget_exhausted",
     });
 
     #[test]

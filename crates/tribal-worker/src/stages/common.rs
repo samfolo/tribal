@@ -1,20 +1,22 @@
 //! Shared utilities and types for pipeline stage implementations.
 
 use tribal_agent_runtime::{
-    RecordedMessage, RenderedConversation, StageThread, begin_turn, commit_noop_terminal,
-    commit_one_shot_terminal,
+    AdmissionDecision, RecheckPolicy, RecordedMessage, RenderedConversation, StageThread,
+    SuspendOutcome, begin_turn, carried_rechecks, commit_noop_terminal, commit_one_shot_terminal,
+    decide_admission, suspend_stage_thread,
 };
 use tribal_common::clamp_to_i32;
+use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
 use tribal_db::{
-    EmbeddingProfileRepository, NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
-    NewTriageSimilarItemDecision, PgEmbeddingProfileRepository, PgPromptVersionRepository,
-    PgTagRegistryRepository, PgTokenUsageRepository, PromptVersionRepository,
-    TagRegistryRepository, TokenUsageRepository,
+    AgentThreadRepository, EmbeddingProfileRepository, NewExtractionResult, NewItemObservation,
+    NewKnowledgeItem, NewTask, NewTriageSimilarItemDecision, PgAgentThreadRepository,
+    PgEmbeddingProfileRepository, PgPromptVersionRepository, PgTagRegistryRepository,
+    PgTokenUsageRepository, PromptVersionRepository, TagRegistryRepository, TokenUsageRepository,
 };
 use tribal_domain::{
-    AgentThread, CompletionResponse, EmbeddingProfile, EmbeddingProfileId, Job, ProjectId,
-    PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry, Task, TaskType,
-    UsageOwner, span_attrs,
+    AgentThread, AgentThreadSuspension, CompletionResponse, EmbeddingProfile, EmbeddingProfileId,
+    Job, ProjectId, PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry, Task,
+    TaskType, UsageOwner, span_attrs,
 };
 use tribal_inference::{
     CompletionRequest, EmbeddingTarget, InferenceError, Message, Role, UsageAttribution,
@@ -361,15 +363,21 @@ impl Worker {
 impl Worker {
     /// Brackets a stage's single completion call with the thread log:
     /// commits the input record (first attempt) or adopts the committed
-    /// one (resume), and returns the turn to send — the committed
-    /// conversation verbatim, with this attempt's runtime parameters,
-    /// plus the recorded resolution context the caller's positional
-    /// references must resolve against.
+    /// one (resume), enforces the binding's token budget, and returns
+    /// the turn to send — the committed conversation verbatim, with this
+    /// attempt's runtime parameters, plus the recorded resolution
+    /// context the caller's positional references must resolve against.
     ///
     /// Parameters (temperature, token caps, response format) ride the
     /// fresh request: they are binding-pinned behaviour, not conversation
     /// content, so the log stays byte-stable while parameters follow the
     /// thread's recorded binding.
+    ///
+    /// Returns `None` when no turn runs this claim: the budget admission
+    /// suspended the thread (or its bounded re-checks ran dry, or a
+    /// cancellation intervened) — the caller propagates the no-terminal
+    /// outcome up through dispatch. Under the default cap-less binding
+    /// the admission issues no query at all.
     pub(crate) async fn bracket_one_shot(
         &self,
         stage: &str,
@@ -378,7 +386,7 @@ impl Worker {
         task: &Task,
         request: CompletionRequest,
         resolution_context: Option<serde_json::Value>,
-    ) -> Result<BracketedTurn, StageError> {
+    ) -> Result<Option<BracketedTurn>, StageError> {
         let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
         let rendered = RenderedConversation {
             system: request.system.clone(),
@@ -421,7 +429,14 @@ impl Worker {
         .await
         .map_err(|source| map_runtime_error(stage, "committing the input record", source))?;
 
-        Ok(BracketedTurn {
+        if self
+            .enforce_token_budget(stage, stage_thread, task, claim_token, &mut conn)
+            .await?
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(BracketedTurn {
             resolution_context: begun.conversation.resolution_context.clone(),
             request: CompletionRequest {
                 system: begun.conversation.system,
@@ -449,7 +464,107 @@ impl Worker {
                 max_tokens: request.max_tokens,
                 response_format: request.response_format,
             },
-        })
+        }))
+    }
+
+    /// Enforces the binding's token budget before the stage's call,
+    /// returning `true` when no turn may run this claim. Exhaustion
+    /// suspends with the bounded-recheck accounting; a re-check that
+    /// runs dry fails the thread through the claim-time disposal
+    /// machinery, as does a cancellation intervening at the suspend.
+    async fn enforce_token_budget(
+        &self,
+        stage: &str,
+        stage_thread: &StageThread,
+        task: &Task,
+        claim_token: uuid::Uuid,
+        conn: &mut sqlx::PgConnection,
+    ) -> Result<bool, StageError> {
+        let budgets = stage_thread.binding.definition().budgets;
+        if budgets.max_total_tokens.is_none() {
+            return Ok(false);
+        }
+        let thread = &stage_thread.thread;
+        let carried = carried_rechecks(conn, thread)
+            .await
+            .map_err(|source| map_runtime_error(stage, "reading the carried re-checks", source))?;
+        let recheck = RecheckPolicy {
+            delay_seconds: DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS,
+            bound: DEFAULT_AGENTIC_RECHECK_BOUND,
+        };
+        match decide_admission(conn, thread, &budgets, recheck, carried)
+            .await
+            .map_err(|source| map_runtime_error(stage, "admitting the call", source))?
+        {
+            AdmissionDecision::Proceed => Ok(false),
+            AdmissionDecision::Suspend { unchanged_rechecks } => {
+                let wake_at = chrono::Utc::now()
+                    + chrono::Duration::seconds(i64::from(recheck.delay_seconds));
+                let outcome = suspend_stage_thread(
+                    conn,
+                    thread,
+                    task.id(),
+                    claim_token,
+                    &AgentThreadSuspension::BudgetExhaustion { unchanged_rechecks },
+                    Some(wake_at),
+                )
+                .await
+                .map_err(|source| map_runtime_error(stage, "suspending on the budget", source))?;
+                if matches!(outcome, SuspendOutcome::CancelIntervened) {
+                    self.dispose_intervened(task, thread).await?;
+                }
+                Ok(true)
+            }
+            AdmissionDecision::Exhausted(cause) => {
+                // The bounded re-checks ran dry: the thread fails with
+                // its task disposed, exactly as a terminal stage error
+                // would, in the claim-time disposal shape.
+                tracing::warn!(
+                    thread_id = %thread.id(),
+                    task_id = %task.id(),
+                    ?cause,
+                    "budget re-checks exhausted; failing the thread",
+                );
+                Err(StageError::BudgetExhausted {
+                    stage: stage.to_owned(),
+                    context: cause.to_string(),
+                })
+            }
+        }
+    }
+
+    /// Re-reads the thread and runs the claim-time disposal for an
+    /// intent that intervened mid-claim.
+    async fn dispose_intervened(
+        &self,
+        task: &Task,
+        thread: &AgentThread,
+    ) -> Result<(), StageError> {
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: task.task_type().as_str().into(),
+                context: "acquiring connection for the intervened disposal".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
+        let fresh = PgAgentThreadRepository
+            .find_by_id(&mut conn, thread.id())
+            .await
+            .map_err(|e| StageError::Database {
+                stage: task.task_type().as_str().into(),
+                context: "re-reading the intervened thread".into(),
+                source: e,
+            })?;
+        drop(conn);
+        if let Some(fresh) = fresh {
+            self.dispose_for_thread_state(task, &fresh).await?;
+        }
+        Ok(())
     }
 }
 

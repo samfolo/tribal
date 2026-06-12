@@ -155,7 +155,7 @@ impl Worker {
         task: &Task,
         deadline: tokio::time::Instant,
         stage_thread: &StageThread,
-    ) -> Result<(StageCommit, Option<CompletionResponse>), StageError> {
+    ) -> Result<Option<(StageCommit, Option<CompletionResponse>)>, StageError> {
         let span = tracing::info_span!(
             "tribal.task.relation",
             { span_attrs::TASK_ID } = %task.id(),
@@ -168,12 +168,12 @@ impl Worker {
         async {
             // Idempotency guard.
             if job.committed_batch_id().is_some() {
-                return Ok((
+                return Ok(Some((
                     StageCommit::Relation {
                         decision: RelationCommitDecision::NoOp,
                     },
                     None,
-                ));
+                )));
             }
 
             let include_llm_content = self.include_llm_content();
@@ -215,10 +215,13 @@ impl Worker {
             // fires and are read in a deterministic order — a resumed
             // attempt re-derives the identical lookup, so no resolution
             // context needs recording.
-            let request = self
+            let Some(bracketed) = self
                 .bracket_one_shot(STAGE_RELATION, stage_thread, ctx.job, task, request, None)
                 .await?
-                .request;
+            else {
+                return Ok(None);
+            };
+            let request = bracketed.request;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
                 .gateway()
@@ -266,7 +269,7 @@ impl Worker {
                 ctx.job.principal_id(),
             );
 
-            Ok((StageCommit::Relation { decision }, Some(response)))
+            Ok(Some((StageCommit::Relation { decision }, Some(response))))
         }
         .instrument(span)
         .await

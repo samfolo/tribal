@@ -492,8 +492,9 @@ impl Worker {
 
             match stage_result {
                 Ok(None) => {
-                    // Claim-time disposal: the thread's state decided the
-                    // task's fate without a turn; nothing to commit.
+                    // No terminal this claim: a claim-time disposal, a
+                    // budget suspension, or an intervened cancellation
+                    // decided the task's fate without a commit here.
                 }
                 Ok(Some(output)) => {
                     if self.cancellation_token.is_cancelled() {
@@ -534,7 +535,7 @@ impl Worker {
         {
             return Ok(None);
         }
-        let (commit, response) = match task.task_type() {
+        let run = match task.task_type() {
             TaskType::Extraction => {
                 self.run_extraction(job, task, deadline, &stage_thread)
                     .await?
@@ -544,6 +545,12 @@ impl Worker {
                 self.run_relation(job, task, deadline, &stage_thread)
                     .await?
             }
+        };
+        // A stage that produced no turn this claim (a budget suspension,
+        // an intervened cancellation) widens the claim-time-disposal
+        // contract: no terminal this claim, nothing to commit.
+        let Some((commit, response)) = run else {
+            return Ok(None);
         };
         Ok(Some(StageRun {
             thread: stage_thread.thread,

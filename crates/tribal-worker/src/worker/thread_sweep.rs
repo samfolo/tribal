@@ -8,8 +8,9 @@
 //! wake-at deadline this sweep drives, or a terminal outcome whose
 //! cancel-fallback this sweep performs.
 
-use tribal_agent_runtime::{ResolveOutcome, resolve_stage_thread};
+use tribal_agent_runtime::{BUDGET_RECHECK_CAUSE, ResolveOutcome, resolve_stage_thread};
 use tribal_db::{AgentThreadRepository, PgAgentThreadRepository};
+use tribal_domain::AgentThreadSuspension;
 
 use crate::worker::{Worker, coupling};
 
@@ -59,7 +60,20 @@ async fn sweep_timer_wakes(conn: &mut sqlx::PgConnection) -> u32 {
 
     let mut woken = 0;
     for thread in due {
-        let resolution = serde_json::json!({ "cause": "timer", "fired_at": chrono::Utc::now() });
+        // The resolution payload discriminates its cause: a budget wake
+        // carries the suspension's unchanged-recheck count forward, so
+        // the resumed admission's accounting is durable rather than
+        // worker memory.
+        let resolution = match thread.suspension() {
+            Some(AgentThreadSuspension::BudgetExhaustion { unchanged_rechecks }) => {
+                serde_json::json!({
+                    "cause": BUDGET_RECHECK_CAUSE,
+                    "fired_at": chrono::Utc::now(),
+                    "unchanged_rechecks": unchanged_rechecks,
+                })
+            }
+            _ => serde_json::json!({ "cause": "timer", "fired_at": chrono::Utc::now() }),
+        };
         match resolve_stage_thread(conn, thread.id(), &resolution).await {
             Ok(ResolveOutcome::Woken) => woken += 1,
             Ok(outcome) => {
@@ -123,4 +137,180 @@ async fn sweep_cancel_fallback(worker: &Worker, conn: &mut sqlx::PgConnection) -
         }
     }
     cancelled
+}
+
+#[cfg(test)]
+mod tests {
+    use tribal_agent_runtime::{SuspendOutcome, suspend_stage_thread};
+    use tribal_db::{
+        AgentBindingVersionRepository, AgentThreadRecordRepository, DrivingTaskRef, JobRepository,
+        NewAgentBindingVersion, NewAgentThread, PgAgentBindingVersionRepository,
+        PgAgentThreadRecordRepository, PgTaskRepository, PrincipalRepository, ProjectRepository,
+        TaskRepository,
+    };
+    use tribal_domain::{AGENT_THREAD_FORMAT_VERSION, AgentThreadRecordKind, GitRemote, TaskType};
+    use tribal_test_utils::{
+        a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
+        a_new_task, an_agent_definition, insert_prompt_version, serial_lock, test_context,
+        upsert_system_fingerprint,
+    };
+
+    use super::*;
+
+    /// Seeds a claimed stage task with its thread, ready to suspend.
+    async fn a_claimed_thread(
+        conn: &mut sqlx::PgConnection,
+        suffix: &str,
+    ) -> (tribal_domain::Task, tribal_domain::AgentThread) {
+        let principal = tribal_db::PgPrincipalRepository
+            .insert(
+                conn,
+                &a_new_principal()
+                    .principal_key(format!("user:sweep-{suffix}"))
+                    .build(),
+            )
+            .await
+            .expect("insert principal");
+        let project = tribal_db::PgProjectRepository
+            .insert(
+                conn,
+                &a_new_project()
+                    .git_remote(GitRemote::from_parts(
+                        "github.com",
+                        &format!("test/sweep-{suffix}"),
+                        None,
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("insert project");
+        let pv_id = insert_prompt_version(conn, &a_new_prompt_version().build()).await;
+        let fingerprint =
+            upsert_system_fingerprint(conn, &a_new_system_fingerprint().build()).await;
+        let job = tribal_db::PgJobRepository
+            .insert(
+                conn,
+                &a_new_job()
+                    .project_id(project.id())
+                    .principal_id(principal.id())
+                    .extraction_system_prompt_version_id(pv_id)
+                    .extraction_user_prompt_version_id(pv_id)
+                    .triage_system_prompt_version_id(pv_id)
+                    .triage_user_prompt_version_id(pv_id)
+                    .relation_system_prompt_version_id(pv_id)
+                    .relation_user_prompt_version_id(pv_id)
+                    .system_fingerprint_hash(fingerprint)
+                    .build(),
+            )
+            .await
+            .expect("insert job");
+        PgTaskRepository
+            .insert(conn, &a_new_task().job_id(job.id()).build())
+            .await
+            .expect("insert task");
+        let claimed = PgTaskRepository
+            .claim(conn, 1, &format!("sweep-{suffix}"))
+            .await
+            .expect("claim");
+        let task = claimed.first().expect("claims").clone();
+        let binding = PgAgentBindingVersionRepository
+            .record(
+                conn,
+                &NewAgentBindingVersion::builder()
+                    .hash(format!("{:0>64}", suffix.len()))
+                    .pipeline_stage(TaskType::Extraction)
+                    .definition(an_agent_definition().build())
+                    .build(),
+            )
+            .await
+            .expect("record binding");
+        let thread = PgAgentThreadRepository
+            .insert(
+                conn,
+                &NewAgentThread::builder()
+                    .pipeline_stage(TaskType::Extraction)
+                    .binding_version_id(binding.id())
+                    .driving_task(DrivingTaskRef::Stage(task.id()))
+                    .principal_id(principal.id())
+                    .format_version(AGENT_THREAD_FORMAT_VERSION)
+                    .build(),
+            )
+            .await
+            .expect("insert thread");
+        let moved = PgAgentThreadRepository
+            .mark_running(conn, thread.id(), tribal_domain::AgentThreadStatus::Queued)
+            .await
+            .expect("mark running");
+        assert_eq!(moved, 1);
+        let thread = PgAgentThreadRepository
+            .find_by_id(conn, thread.id())
+            .await
+            .expect("re-read")
+            .expect("present");
+        (task, thread)
+    }
+
+    /// The timer-wake sweep's resolution payload discriminates its
+    /// cause: a budget-exhaustion suspension wakes with the durable
+    /// re-check count carried forward; a plain timer stays a timer.
+    #[tokio::test]
+    async fn test_budget_wakes_carry_the_recheck_count_and_timer_wakes_stay_timers() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut conn = ctx.raw_connection().await.expect("raw connection");
+
+        let (budget_task, budget_thread) = a_claimed_thread(&mut conn, "budget").await;
+        let outcome = suspend_stage_thread(
+            &mut conn,
+            &budget_thread,
+            budget_task.id(),
+            budget_task.claim_token().expect("token"),
+            &AgentThreadSuspension::BudgetExhaustion {
+                unchanged_rechecks: 2,
+            },
+            Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+        )
+        .await
+        .expect("suspend");
+        assert!(matches!(outcome, SuspendOutcome::Suspended));
+
+        let (timer_task, timer_thread) = a_claimed_thread(&mut conn, "timer").await;
+        let outcome = suspend_stage_thread(
+            &mut conn,
+            &timer_thread,
+            timer_task.id(),
+            timer_task.claim_token().expect("token"),
+            &AgentThreadSuspension::Timer,
+            Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+        )
+        .await
+        .expect("suspend");
+        assert!(matches!(outcome, SuspendOutcome::Suspended));
+
+        let woken = sweep_timer_wakes(&mut conn).await;
+        assert_eq!(woken, 2);
+
+        let budget_wake = PgAgentThreadRecordRepository
+            .last_record(&mut conn, budget_thread.id())
+            .await
+            .expect("read")
+            .expect("present");
+        assert_eq!(budget_wake.kind(), AgentThreadRecordKind::Input);
+        assert_eq!(budget_wake.content()["cause"], BUDGET_RECHECK_CAUSE);
+        assert_eq!(
+            budget_wake.content()["unchanged_rechecks"],
+            2,
+            "the suspension's count rides the resolution record",
+        );
+
+        let timer_wake = PgAgentThreadRecordRepository
+            .last_record(&mut conn, timer_thread.id())
+            .await
+            .expect("read")
+            .expect("present");
+        assert_eq!(timer_wake.content()["cause"], "timer");
+        assert!(timer_wake.content().get("unchanged_rechecks").is_none());
+
+        tribal_test_utils::truncate_all_tables(&mut conn).await;
+    }
 }
