@@ -76,6 +76,7 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     validate_auth(config, &mut diags);
     validate_oauth(config, &mut diags);
     validate_worker(config, &mut diags);
+    validate_agents(config, &mut diags);
     validate_pool_sizing(config, &mut diags);
     validate_init(config, &mut diags);
     validate_inference(config, &mut diags);
@@ -459,6 +460,10 @@ fn validate_credentials(config: &TribalConfig, diags: &mut Diagnostics) {
 
 fn validate_worker(config: &TribalConfig, diags: &mut Diagnostics) {
     config.worker.validate(diags);
+}
+
+fn validate_agents(config: &TribalConfig, diags: &mut Diagnostics) {
+    config.agents.validate(diags);
 }
 
 fn validate_pool_sizing(config: &TribalConfig, diags: &mut Diagnostics) {
