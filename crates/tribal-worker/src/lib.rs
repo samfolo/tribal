@@ -10,6 +10,7 @@ mod parsing;
 mod prompt;
 mod stages;
 mod tag_resolution;
+mod tools;
 mod worker;
 
 pub use error::WorkerError;

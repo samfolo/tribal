@@ -100,6 +100,19 @@ pub(crate) struct LoopSimilarItemContext {
     pub tags: Vec<String>,
 }
 
+impl From<&SemanticSearchResult> for LoopSimilarItemContext {
+    fn from(result: &SemanticSearchResult) -> Self {
+        Self {
+            item_id: result.item.id().to_string(),
+            kind: result.item.kind(),
+            content: result.item.content().to_owned(),
+            similarity_score: result.similarity,
+            similarity_label: SimilarityBand::from(result.similarity).to_string(),
+            tags: result.item.tags().to_vec(),
+        }
+    }
+}
+
 /// Builds the agentic loop's opening user prompt context.
 ///
 /// Both the production assembly and the validation tests call this,
@@ -172,9 +185,8 @@ pub(crate) fn assemble_triage_prompt(
 #[cfg(test)]
 mod tests {
     use tribal_domain::TaskErrorKind;
-    use tribal_test_utils::a_tag_registry_entry;
-
     use tribal_inference::Role;
+    use tribal_test_utils::a_tag_registry_entry;
 
     use super::*;
 
