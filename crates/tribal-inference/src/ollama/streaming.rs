@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use tribal_domain::{CompletionResponse, CompletionUsage, InferenceEvent};
 
+use super::inference::{OllamaFunctionCallIn, OllamaToolCallIn, synthesise_tool_calls};
 use crate::{
     InferenceError, ProviderIdentity,
     http::record_completion_usage,
@@ -41,6 +42,8 @@ struct StreamMessage {
     content: String,
     #[serde(default)]
     thinking: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<OllamaToolCallIn>,
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +55,7 @@ pub(super) struct OllamaStreamTranslator {
     identity: ProviderIdentity,
     started: Instant,
     text: String,
+    tool_calls: Vec<OllamaToolCallIn>,
 }
 
 impl OllamaStreamTranslator {
@@ -60,6 +64,7 @@ impl OllamaStreamTranslator {
             identity,
             started: Instant::now(),
             text: String::new(),
+            tool_calls: Vec::new(),
         }
     }
 
@@ -88,6 +93,7 @@ impl OllamaStreamTranslator {
         InferenceEvent::Completed {
             response: CompletionResponse {
                 text: std::mem::take(&mut self.text),
+                tool_calls: synthesise_tool_calls(std::mem::take(&mut self.tool_calls)),
                 usage,
             },
         }
@@ -124,6 +130,23 @@ impl EventTranslator for OllamaStreamTranslator {
                     text: message.content.clone(),
                 });
             }
+            // The wire streams whole calls, not fragments: each arrival
+            // is one complete delta, identified by its overall position.
+            for call in &message.tool_calls {
+                let index = u32::try_from(self.tool_calls.len()).unwrap_or(u32::MAX);
+                events.push(InferenceEvent::ToolCallDelta {
+                    index,
+                    call_id: Some(format!("call_{index}")),
+                    name: Some(call.function.name.clone()),
+                    arguments_fragment: call.function.arguments.to_string(),
+                });
+                self.tool_calls.push(OllamaToolCallIn {
+                    function: OllamaFunctionCallIn {
+                        name: call.function.name.clone(),
+                        arguments: call.function.arguments.clone(),
+                    },
+                });
+            }
         }
         if chunk.done {
             events.push(self.terminal(&chunk));
@@ -154,7 +177,7 @@ mod tests {
 
     use super::super::inference::CHAT_PATH;
     use crate::{
-        CompletionRequest, InferenceProvider, Message, Role, collect_completion,
+        CompletionRequest, InferenceProvider, Message, collect_completion,
         ollama::OllamaInferenceProvider,
     };
 
@@ -163,10 +186,10 @@ mod tests {
     fn a_request(content: &str) -> CompletionRequest {
         CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: content.to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -394,5 +417,49 @@ mod tests {
             crate::InferenceError::ProviderUnavailable { ref reason, .. }
                 if reason.contains("500")
         ));
+    }
+
+    #[tokio::test]
+    async fn test_stream_synthesises_ids_for_whole_call_chunks() {
+        let body = [
+            r#"{"message":{"content":"","tool_calls":[{"function":{"name":"search","arguments":{"query":"indexing"}}}]},"done":false}"#,
+            r#"{"message":{"content":"","tool_calls":[{"function":{"name":"read_knowledge_item","arguments":{"id":"itm_1"}}}]},"done":false}"#,
+            r#"{"done":true,"prompt_eval_count":10,"eval_count":5}"#,
+            "",
+        ]
+        .join("\n");
+        let server = MockServer::start().await;
+        mount_stream(&server, body).await;
+
+        let mut stream = setup(&server)
+            .complete_stream(a_request("test"))
+            .await
+            .unwrap();
+
+        let mut delta_ids = Vec::new();
+        let mut terminal = None;
+        while let Some(event) = stream.next().await {
+            match event.unwrap() {
+                InferenceEvent::ToolCallDelta { call_id, .. } => delta_ids.push(call_id),
+                InferenceEvent::Completed { response } => terminal = Some(response),
+                InferenceEvent::TextDelta { .. } | InferenceEvent::ReasoningDelta { .. } => {}
+            }
+        }
+
+        // The wire carries no ids: the deltas and the terminal agree on
+        // the position-synthesised ones.
+        assert_eq!(
+            delta_ids,
+            vec![Some("call_0".to_owned()), Some("call_1".to_owned())]
+        );
+        let terminal = terminal.expect("stream must end with the terminal event");
+        assert_eq!(terminal.tool_calls.len(), 2);
+        assert_eq!(terminal.tool_calls[0].id, "call_0");
+        assert_eq!(terminal.tool_calls[0].name, "search");
+        assert_eq!(terminal.tool_calls[1].id, "call_1");
+        assert_eq!(
+            terminal.tool_calls[1].arguments,
+            serde_json::json!({"id": "itm_1"})
+        );
     }
 }

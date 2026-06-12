@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use tribal_domain::{CompletionResponse, CompletionUsage, EmbeddingUsage};
+use tribal_domain::{CompletionResponse, CompletionUsage, EmbeddingUsage, ToolCall};
 use tribal_inference::{EmbeddingResponse, InferenceError};
 
 use crate::mock::async_dispatch::core::ErrorFactory;
@@ -22,6 +22,7 @@ pub type InferenceErrorFactory = ErrorFactory<InferenceError>;
 pub fn a_completion_response(text: impl Into<String>) -> CompletionResponse {
     CompletionResponse {
         text: text.into(),
+        tool_calls: vec![],
         usage: CompletionUsage {
             provider: "mock".to_owned(),
             model: "mock-model".to_owned(),
@@ -33,6 +34,21 @@ pub fn a_completion_response(text: impl Into<String>) -> CompletionResponse {
             latency: Duration::ZERO,
         },
     }
+}
+
+/// Produces a tool-calling [`CompletionResponse`]: no text, one call per
+/// `(id, name, arguments)` entry, mock usage defaults.
+pub fn a_tool_call_response(calls: &[(&str, &str, serde_json::Value)]) -> CompletionResponse {
+    let mut response = a_completion_response("");
+    response.tool_calls = calls
+        .iter()
+        .map(|(id, name, arguments)| ToolCall {
+            id: (*id).to_owned(),
+            name: (*name).to_owned(),
+            arguments: arguments.clone(),
+        })
+        .collect();
+    response
 }
 
 /// Produces an [`EmbeddingResponse`] with the given vector and mock defaults.

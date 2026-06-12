@@ -8,15 +8,15 @@
 //! surface reasoning as `delta.reasoning_content` map onto reasoning
 //! deltas.
 
-use std::time::Instant;
+use std::{collections::BTreeMap, time::Instant};
 
-use tribal_domain::{CompletionResponse, CompletionUsage, InferenceEvent};
+use tribal_domain::{CompletionResponse, CompletionUsage, InferenceEvent, ToolCall};
 
 use super::inference::OpenAiChatUsage;
 use crate::{
     InferenceError, ProviderIdentity,
     http::{body_preview, record_completion_usage},
-    stream::{EventTranslator, SseAssembler, parse_frame},
+    stream::{EventTranslator, SseAssembler, parse_frame, parse_tool_arguments},
 };
 
 /// The sentinel data payload that closes an `OpenAI` event stream.
@@ -74,6 +74,15 @@ struct StreamToolFunction {
 // Translator
 // ---------------------------------------------------------------------------
 
+/// One tool call under assembly from its streamed fragments, keyed by
+/// the chunk-supplied index so parallel calls demultiplex.
+#[derive(Default)]
+struct PendingToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
 /// Accumulates one streamed chat completions exchange into the terminal
 /// response.
 pub(super) struct OpenAiStreamTranslator {
@@ -82,6 +91,7 @@ pub(super) struct OpenAiStreamTranslator {
     sse: SseAssembler,
     text: String,
     content_seen: bool,
+    tool_calls: BTreeMap<u32, PendingToolCall>,
     usage: Option<OpenAiChatUsage>,
 }
 
@@ -93,6 +103,7 @@ impl OpenAiStreamTranslator {
             sse: SseAssembler::default(),
             text: String::new(),
             content_seen: false,
+            tool_calls: BTreeMap::new(),
             usage: None,
         }
     }
@@ -140,24 +151,61 @@ impl OpenAiStreamTranslator {
             }
             for call in choice.delta.tool_calls {
                 let function = call.function.unwrap_or_default();
+                let pending = self.tool_calls.entry(call.index).or_default();
+                if pending.id.is_none() {
+                    pending.id.clone_from(&call.id);
+                }
+                if pending.name.is_none() {
+                    pending.name.clone_from(&function.name);
+                }
+                let fragment = function.arguments.unwrap_or_default();
+                pending.arguments.push_str(&fragment);
                 events.push(InferenceEvent::ToolCallDelta {
                     index: call.index,
                     call_id: call.id,
                     name: function.name,
-                    arguments_fragment: function.arguments.unwrap_or_default(),
+                    arguments_fragment: fragment,
                 });
             }
         }
         Ok(events)
     }
 
+    /// Assembles the accumulated tool-call fragments, in index order.
+    fn assemble_tool_calls(&mut self) -> Result<Vec<ToolCall>, InferenceError> {
+        std::mem::take(&mut self.tool_calls)
+            .into_values()
+            .map(|pending| {
+                let id = pending
+                    .id
+                    .ok_or_else(|| InferenceError::ResponseParseFailed {
+                        expected_shape: "a tool call id on the first fragment".to_owned(),
+                        actual: "tool call streamed without an id".to_owned(),
+                    })?;
+                let name = pending
+                    .name
+                    .ok_or_else(|| InferenceError::ResponseParseFailed {
+                        expected_shape: "a tool call name on the first fragment".to_owned(),
+                        actual: format!("tool call {id} streamed without a name"),
+                    })?;
+                Ok(ToolCall {
+                    id,
+                    name,
+                    arguments: parse_tool_arguments(&pending.arguments)?,
+                })
+            })
+            .collect()
+    }
+
     /// Builds the terminal event, mirroring the buffered path's
-    /// null-content failure when no content delta ever arrived.
+    /// null-content failure when neither content nor a tool call ever
+    /// arrived.
     fn terminal(&mut self) -> Result<InferenceEvent, InferenceError> {
-        if !self.content_seen {
+        let tool_calls = self.assemble_tool_calls()?;
+        if !self.content_seen && tool_calls.is_empty() {
             return Err(InferenceError::ResponseParseFailed {
-                expected_shape: "choices[0].message.content present".to_owned(),
-                actual: "no content deltas in stream".to_owned(),
+                expected_shape: "choices[0].message.content or tool_calls present".to_owned(),
+                actual: "no content or tool-call deltas in stream".to_owned(),
             });
         }
 
@@ -185,6 +233,7 @@ impl OpenAiStreamTranslator {
         Ok(InferenceEvent::Completed {
             response: CompletionResponse {
                 text: std::mem::take(&mut self.text),
+                tool_calls,
                 usage,
             },
         })
@@ -235,7 +284,7 @@ mod tests {
 
     use super::super::inference::CHAT_PATH;
     use crate::{
-        CompletionRequest, InferenceProvider, Message, Role, collect_completion,
+        CompletionRequest, InferenceProvider, Message, collect_completion,
         openai::OpenAiInferenceProvider,
     };
 
@@ -244,10 +293,10 @@ mod tests {
     fn a_request(content: &str) -> CompletionRequest {
         CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: content.to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -578,8 +627,8 @@ mod tests {
         assert!(matches!(
             err,
             crate::InferenceError::ResponseParseFailed { ref expected_shape, ref actual }
-                if expected_shape == "choices[0].message.content present"
-                    && actual == "no content deltas in stream"
+                if expected_shape == "choices[0].message.content or tool_calls present"
+                    && actual == "no content or tool-call deltas in stream"
         ));
     }
 
@@ -628,5 +677,67 @@ mod tests {
             crate::InferenceError::ProviderUnavailable { ref reason, .. }
                 if reason.contains("500")
         ));
+    }
+
+    /// An SSE body whose tool call streams in fragments: the id and name
+    /// arrive on the first fragment, the arguments split across three.
+    fn a_tool_call_stream_body() -> String {
+        [
+            r#"data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"search","arguments":""}}]}}]}"#,
+            "",
+            r#"data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"que"}}]}}]}"#,
+            "",
+            r#"data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ry\":\"indexing\"}"}}]}}]}"#,
+            "",
+            r#"data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            "",
+            r#"data: {"id":"c1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#,
+            "",
+            "data: [DONE]",
+            "",
+            "",
+        ]
+        .join("\n")
+    }
+
+    #[tokio::test]
+    async fn test_stream_folds_fragmented_tool_calls_to_the_buffered_response() {
+        let stream_server = MockServer::start().await;
+        mount_stream(&stream_server, a_tool_call_stream_body()).await;
+        let buffered_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(CHAT_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "c1",
+                "choices": [{"message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{\"query\":\"indexing\"}"},
+                    }],
+                }}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            })))
+            .mount(&buffered_server)
+            .await;
+
+        let streamed = setup(&stream_server)
+            .complete_stream(a_request("test"))
+            .await
+            .unwrap();
+        let streamed = collect_completion(streamed).await.unwrap();
+        let buffered = setup(&buffered_server)
+            .complete(a_request("test"))
+            .await
+            .unwrap();
+
+        assert_eq!(streamed.text, buffered.text);
+        assert_eq!(streamed.tool_calls, buffered.tool_calls);
+        assert_eq!(streamed.tool_calls.len(), 1);
+        assert_eq!(
+            streamed.tool_calls[0].arguments,
+            serde_json::json!({"query": "indexing"})
+        );
     }
 }

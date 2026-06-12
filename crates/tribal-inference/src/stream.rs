@@ -16,6 +16,7 @@ use tribal_domain::{CompletionResponse, InferenceEvent};
 use crate::{
     InferenceError,
     error::{map_body_read_error, map_json_parse_error},
+    http::body_preview,
 };
 
 /// The stream of events from one completion call.
@@ -129,6 +130,19 @@ impl SseAssembler {
 // ---------------------------------------------------------------------------
 // Event translation and the shared pull loop
 // ---------------------------------------------------------------------------
+
+/// Parses a wire's JSON-encoded tool-call arguments. An empty string is
+/// the no-arguments call some runtimes emit and parses as an empty
+/// object.
+pub(crate) fn parse_tool_arguments(arguments: &str) -> Result<serde_json::Value, InferenceError> {
+    if arguments.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(arguments).map_err(|e| InferenceError::ResponseParseFailed {
+        expected_shape: "tool call arguments as a JSON-encoded string".to_owned(),
+        actual: format!("unparseable arguments ({e}): {}", body_preview(arguments)),
+    })
+}
 
 /// Translates framed wire lines into [`InferenceEvent`]s.
 ///
@@ -446,6 +460,7 @@ mod tests {
             InferenceEvent::Completed {
                 response: CompletionResponse {
                     text: self.text.clone(),
+                    tool_calls: vec![],
                     usage: CompletionUsage {
                         provider: "scripted".to_owned(),
                         model: "scripted-model".to_owned(),
@@ -624,5 +639,16 @@ mod tests {
             InferenceError::ResponseParseFailed { ref expected_shape, .. }
                 if expected_shape == "a terminal Completed event"
         ));
+    }
+
+    #[test]
+    fn test_parse_tool_arguments_empty_is_the_no_arguments_call() {
+        assert_eq!(parse_tool_arguments("").unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_parse_tool_arguments_invalid_json_fails() {
+        let err = parse_tool_arguments("{not json").unwrap_err();
+        assert!(matches!(err, InferenceError::ResponseParseFailed { .. }));
     }
 }

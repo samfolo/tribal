@@ -39,7 +39,7 @@ impl CompletionMatcher {
         Self::new(move |req| {
             req.messages
                 .iter()
-                .any(|m| m.content.contains(text.as_str()))
+                .any(|m| m.content().contains(text.as_str()))
         })
     }
 
@@ -98,17 +98,17 @@ impl EmbeddingMatcher {
 
 #[cfg(test)]
 mod tests {
-    use tribal_inference::{Message, Role};
+    use tribal_inference::Message;
 
     use super::*;
 
     fn a_completion_request(system: Option<&str>) -> CompletionRequest {
         CompletionRequest {
             system: system.map(String::from),
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test message".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -134,13 +134,12 @@ mod tests {
     fn test_completion_message_contains() {
         let mut req = a_completion_request(None);
         req.messages = vec![
-            Message {
-                role: Role::User,
+            Message::User {
                 content: "first message".to_owned(),
             },
-            Message {
-                role: Role::Assistant,
+            Message::Assistant {
                 content: "keyword here".to_owned(),
+                tool_calls: vec![],
             },
         ];
         let matcher = CompletionMatcher::message_contains("keyword");

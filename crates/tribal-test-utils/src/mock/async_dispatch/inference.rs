@@ -15,5 +15,6 @@ pub use provider::{
 };
 pub use responses::{
     a_completion_response, a_parse_failure, a_provider_unavailable, a_rate_limited,
-    an_embedding_failure, an_embedding_response, an_llm_call_failure, an_overloaded,
+    a_tool_call_response, an_embedding_failure, an_embedding_response, an_llm_call_failure,
+    an_overloaded,
 };

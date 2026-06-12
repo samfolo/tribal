@@ -8,12 +8,14 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::Instrument;
-use tribal_domain::{CompletionResponse, CompletionUsage, ProviderKind, gen_ai, span_attrs};
+use tribal_domain::{
+    CompletionResponse, CompletionUsage, ProviderKind, ToolCall, gen_ai, span_attrs,
+};
 
 use super::streaming::OllamaStreamTranslator;
 use crate::{
-    CompletionRequest, InferenceError, InferenceProvider, ProviderIdentity, ResponseFormat,
-    apply_dialect,
+    CompletionRequest, InferenceError, InferenceProvider, Message, ProviderIdentity,
+    ResponseFormat, apply_dialect,
     error::{map_body_read_error, map_json_parse_error, map_send_error},
     http::{ensure_success, normalise_base_url, record_completion_usage},
     stream::{InferenceEventStream, WireMode, drive_event_stream},
@@ -37,6 +39,8 @@ pub const CHAT_PATH: &str = "/api/chat";
 struct OllamaChatRequest<'a> {
     model: &'a str,
     messages: Vec<OllamaChatMessage<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<OllamaTool>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<serde_json::Value>,
@@ -44,10 +48,41 @@ struct OllamaChatRequest<'a> {
     options: Option<OllamaChatOptions>,
 }
 
+/// A chat message on the wire. A plain message serialises exactly as it
+/// always has; the wire carries no call identifiers, so tool results
+/// associate with their requests positionally and assistant turns echo
+/// calls without ids.
 #[derive(serde::Serialize)]
 struct OllamaChatMessage<'a> {
     role: &'a str,
     content: &'a str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<OllamaToolCallOut<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct OllamaToolCallOut<'a> {
+    function: OllamaFunctionCallOut<'a>,
+}
+
+#[derive(serde::Serialize)]
+struct OllamaFunctionCallOut<'a> {
+    name: &'a str,
+    arguments: &'a serde_json::Value,
+}
+
+#[derive(serde::Serialize)]
+struct OllamaTool {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: OllamaToolFunction,
+}
+
+#[derive(serde::Serialize)]
+struct OllamaToolFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
 }
 
 #[derive(serde::Serialize)]
@@ -74,6 +109,34 @@ struct OllamaChatResponse {
 #[derive(serde::Deserialize)]
 struct OllamaChatResponseMessage {
     content: String,
+    #[serde(default)]
+    tool_calls: Vec<OllamaToolCallIn>,
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct OllamaToolCallIn {
+    pub(super) function: OllamaFunctionCallIn,
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct OllamaFunctionCallIn {
+    pub(super) name: String,
+    pub(super) arguments: serde_json::Value,
+}
+
+/// Maps the wire's id-less calls onto [`ToolCall`]s, synthesising the
+/// identifier from the call's position within its message — deterministic
+/// for any worker re-issuing the same response.
+pub(super) fn synthesise_tool_calls(calls: Vec<OllamaToolCallIn>) -> Vec<ToolCall> {
+    calls
+        .into_iter()
+        .enumerate()
+        .map(|(index, call)| ToolCall {
+            id: format!("call_{index}"),
+            name: call.function.name,
+            arguments: call.function.arguments,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +288,7 @@ impl InferenceProvider for OllamaInferenceProvider {
 
             Ok(CompletionResponse {
                 text: parsed.message.content,
+                tool_calls: synthesise_tool_calls(parsed.message.tool_calls),
                 usage,
             })
         }
@@ -266,15 +330,53 @@ fn build_request<'a>(
         messages.push(OllamaChatMessage {
             role: "system",
             content: system,
+            tool_calls: vec![],
         });
     }
 
     for msg in &request.messages {
-        messages.push(OllamaChatMessage {
-            role: msg.role.as_str(),
-            content: &msg.content,
+        messages.push(match msg {
+            Message::User { content } => OllamaChatMessage {
+                role: "user",
+                content,
+                tool_calls: vec![],
+            },
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => OllamaChatMessage {
+                role: "assistant",
+                content,
+                tool_calls: tool_calls
+                    .iter()
+                    .map(|call| OllamaToolCallOut {
+                        function: OllamaFunctionCallOut {
+                            name: &call.name,
+                            arguments: &call.arguments,
+                        },
+                    })
+                    .collect(),
+            },
+            Message::Tool { content, .. } => OllamaChatMessage {
+                role: "tool",
+                content,
+                tool_calls: vec![],
+            },
         });
     }
+
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| OllamaTool {
+            kind: "function",
+            function: OllamaToolFunction {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: apply_dialect(ProviderKind::Ollama, tool.input_schema.clone()),
+            },
+        })
+        .collect();
 
     let format = request.response_format.as_ref().map(map_response_format);
 
@@ -289,6 +391,7 @@ fn build_request<'a>(
     OllamaChatRequest {
         model,
         messages,
+        tools,
         stream: mode == WireMode::Streaming,
         format,
         options,
@@ -318,15 +421,15 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Message, Role};
+    use crate::Message;
 
     fn a_request(content: &str) -> CompletionRequest {
         CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: content.to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -433,10 +536,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: Some("You are helpful.".to_owned()),
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "hi".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -464,10 +567,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: Some(ResponseFormat::Json),
@@ -499,10 +602,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: Some(ResponseFormat::JsonSchema { schema }),
@@ -532,10 +635,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.7),
             max_tokens: Some(100),
             response_format: None,
@@ -563,10 +666,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: Some(0.5),
             max_tokens: None,
             response_format: None,
@@ -594,10 +697,10 @@ mod tests {
         let provider = setup(&server);
         let request = CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: "test".to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: Some(200),
             response_format: None,
@@ -635,6 +738,7 @@ mod tests {
         let request = CompletionRequest {
             system: None,
             messages: vec![],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,

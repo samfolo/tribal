@@ -7,15 +7,15 @@
 //! cumulative output count on `message_delta`, and `message_stop` closes
 //! the exchange with the terminal event.
 
-use std::{collections::HashMap, time::Instant};
+use std::{collections::BTreeMap, time::Instant};
 
-use tribal_domain::{CompletionResponse, CompletionUsage, InferenceEvent};
+use tribal_domain::{CompletionResponse, CompletionUsage, InferenceEvent, ToolCall};
 
 use super::inference::AnthropicUsage;
 use crate::{
     InferenceError, ProviderIdentity,
     http::record_completion_usage,
-    stream::{EventTranslator, SseAssembler, parse_frame},
+    stream::{EventTranslator, SseAssembler, parse_frame, parse_tool_arguments},
 };
 
 // ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ pub(super) struct AnthropicStreamTranslator {
     sse: SseAssembler,
     text: String,
     text_blocks: usize,
-    tool_blocks: HashMap<u32, ToolBlock>,
+    tool_blocks: BTreeMap<u32, ToolBlock>,
     input_tokens: u32,
     output_tokens: u32,
     cache_read_tokens: u32,
@@ -113,6 +113,7 @@ pub(super) struct AnthropicStreamTranslator {
 struct ToolBlock {
     id: String,
     name: String,
+    arguments: String,
 }
 
 impl AnthropicStreamTranslator {
@@ -123,7 +124,7 @@ impl AnthropicStreamTranslator {
             sse: SseAssembler::default(),
             text: String::new(),
             text_blocks: 0,
-            tool_blocks: HashMap::new(),
+            tool_blocks: BTreeMap::new(),
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
@@ -156,7 +157,14 @@ impl AnthropicStreamTranslator {
                 match content_block {
                     StreamContentBlock::Text {} => self.text_blocks += 1,
                     StreamContentBlock::ToolUse { id, name } => {
-                        self.tool_blocks.insert(index, ToolBlock { id, name });
+                        self.tool_blocks.insert(
+                            index,
+                            ToolBlock {
+                                id,
+                                name,
+                                arguments: String::new(),
+                            },
+                        );
                     }
                     StreamContentBlock::Other => {}
                 }
@@ -171,11 +179,15 @@ impl AnthropicStreamTranslator {
                     vec![InferenceEvent::ReasoningDelta { text: thinking }]
                 }
                 StreamDelta::InputJsonDelta { partial_json } => {
-                    let block = self.tool_blocks.get(&index);
+                    let block = self.tool_blocks.get_mut(&index);
+                    let (call_id, name) = block.map_or((None, None), |b| {
+                        b.arguments.push_str(&partial_json);
+                        (Some(b.id.clone()), Some(b.name.clone()))
+                    });
                     vec![InferenceEvent::ToolCallDelta {
                         index,
-                        call_id: block.map(|b| b.id.clone()),
-                        name: block.map(|b| b.name.clone()),
+                        call_id,
+                        name,
                         arguments_fragment: partial_json,
                     }]
                 }
@@ -200,13 +212,30 @@ impl AnthropicStreamTranslator {
         }
     }
 
+    /// Assembles the accumulated tool blocks, in stream order. A block
+    /// whose input streamed no fragments is the no-arguments call and
+    /// parses as an empty object.
+    fn assemble_tool_calls(&mut self) -> Result<Vec<ToolCall>, InferenceError> {
+        std::mem::take(&mut self.tool_blocks)
+            .into_values()
+            .map(|block| {
+                Ok(ToolCall {
+                    id: block.id,
+                    name: block.name,
+                    arguments: parse_tool_arguments(&block.arguments)?,
+                })
+            })
+            .collect()
+    }
+
     /// Builds the terminal event, mirroring the buffered path's
-    /// no-text-content failure.
+    /// no-content failure when neither text nor a tool call arrived.
     fn terminal(&mut self) -> Result<InferenceEvent, InferenceError> {
-        if self.text_blocks == 0 {
+        let tool_calls = self.assemble_tool_calls()?;
+        if self.text_blocks == 0 && tool_calls.is_empty() {
             return Err(InferenceError::ResponseParseFailed {
-                expected_shape: "at least one text content block".to_owned(),
-                actual: "0 text blocks in response".to_owned(),
+                expected_shape: "at least one text or tool_use content block".to_owned(),
+                actual: "0 text and 0 tool_use blocks in response".to_owned(),
             });
         }
 
@@ -225,6 +254,7 @@ impl AnthropicStreamTranslator {
         Ok(InferenceEvent::Completed {
             response: CompletionResponse {
                 text: std::mem::take(&mut self.text),
+                tool_calls,
                 usage,
             },
         })
@@ -275,7 +305,7 @@ mod tests {
 
     use super::super::inference::MESSAGES_PATH;
     use crate::{
-        CompletionRequest, InferenceProvider, Message, Role, anthropic::AnthropicInferenceProvider,
+        CompletionRequest, InferenceProvider, Message, anthropic::AnthropicInferenceProvider,
         collect_completion,
     };
 
@@ -284,10 +314,10 @@ mod tests {
     fn a_request(content: &str) -> CompletionRequest {
         CompletionRequest {
             system: None,
-            messages: vec![Message {
-                role: Role::User,
+            messages: vec![Message::User {
                 content: content.to_owned(),
             }],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -613,7 +643,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stream_no_text_blocks_mirrors_the_buffered_failure() {
+    async fn test_stream_tool_use_only_terminates_with_the_assembled_call() {
         let body = [
             r#"data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10,"output_tokens":1}}}"#,
             "",
@@ -631,14 +661,13 @@ mod tests {
             .complete_stream(a_request("test"))
             .await
             .unwrap();
-        let err = collect_completion(stream).await.unwrap_err();
+        let response = collect_completion(stream).await.unwrap();
 
-        assert!(matches!(
-            err,
-            crate::InferenceError::ResponseParseFailed { ref expected_shape, ref actual }
-                if expected_shape == "at least one text content block"
-                    && actual == "0 text blocks in response"
-        ));
+        assert_eq!(response.text, "");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "toolu_01");
+        assert_eq!(response.tool_calls[0].name, "search");
+        assert_eq!(response.tool_calls[0].arguments, serde_json::json!({}));
     }
 
     #[tokio::test]
@@ -669,6 +698,7 @@ mod tests {
         let request = CompletionRequest {
             system: None,
             messages: vec![],
+            tools: vec![],
             temperature: None,
             max_tokens: None,
             response_format: None,
@@ -685,5 +715,38 @@ mod tests {
             crate::InferenceError::LlmCallFailed { ref context, .. }
                 if context == "messages list is empty"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_stream_assembles_tool_input_fragments() {
+        let body = [
+            r#"data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            "",
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"search"}}"#,
+            "",
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"que"}}"#,
+            "",
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"ry\":\"indexing\"}"}}"#,
+            "",
+            r#"data: {"type":"message_stop"}"#,
+            "",
+            "",
+        ]
+        .join("\n");
+        let server = MockServer::start().await;
+        mount_stream(&server, body).await;
+
+        let stream = setup(&server)
+            .complete_stream(a_request("test"))
+            .await
+            .unwrap();
+        let response = collect_completion(stream).await.unwrap();
+
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "toolu_01");
+        assert_eq!(
+            response.tool_calls[0].arguments,
+            serde_json::json!({"query": "indexing"})
+        );
     }
 }

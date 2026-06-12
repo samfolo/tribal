@@ -54,7 +54,9 @@ pub use provider::{BatchEmbeddingResult, EmbeddingProvider, InferenceProvider, P
 pub use registry::{
     ProviderKey, ProviderLimits, ProviderRegistry, ProviderRegistryError, RequestClass,
 };
-pub use request::{CompletionRequest, EmbeddingRequest, Message, ResponseFormat, Role};
+pub use request::{
+    CompletionRequest, EmbeddingRequest, Message, ResponseFormat, Role, ToolWireDefinition,
+};
 pub use response::EmbeddingResponse;
 pub use schema_dialect::apply_dialect;
 #[cfg(feature = "test-helpers")]
