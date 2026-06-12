@@ -1975,6 +1975,74 @@ async fn test_one_shot_terminal_refuses_a_non_running_thread() {
     teardown(ctx).await;
 }
 
+/// The claim guard at thread creation: a worker presenting a token the
+/// lease does not hold cannot create a thread for the task, and the
+/// refusal leaves no thread row behind.
+#[tokio::test]
+async fn test_ensure_stage_thread_refuses_a_stale_claim() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "stale-claim").await;
+    let (_job_id, _task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "stale-claim")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+
+    let result = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        uuid::Uuid::new_v4(),
+        &binding,
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("a stale claim must not create a thread");
+    };
+    assert!(matches!(
+        err,
+        tribal_agent_runtime::AgentRuntimeError::LeaseLost { .. }
+    ));
+
+    assert!(
+        PgAgentThreadRepository
+            .find_by_stage_task(&mut conn, task.id())
+            .await
+            .expect("find")
+            .is_none(),
+        "the refused creation left no thread row",
+    );
+
+    teardown(ctx).await;
+}
+
 /// Inline retry exhaustion runs the same disposition as the reclaim
 /// sweep: the task dead-letters, its thread dead-letters in the same
 /// commit, and the job fails.
