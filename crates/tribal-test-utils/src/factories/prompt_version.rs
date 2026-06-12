@@ -1,12 +1,13 @@
 use chrono::Utc;
 use tribal_db::NewPromptVersion;
-use tribal_domain::{PromptRole, PromptStage, PromptVersion, PromptVersionId};
+use tribal_domain::{PromptClass, PromptRole, PromptStage, PromptVersion, PromptVersionId};
 
 define_factory! {
     /// Factory for [`PromptVersion`] instances.
     pub struct PromptVersionFactory for PromptVersion {
         id: PromptVersionId = PromptVersionId::new(),
         stage: PromptStage = PromptStage::Extraction,
+        class: PromptClass = PromptClass::OneShot,
         role: PromptRole = PromptRole::System,
         content_hash: String = "b".repeat(64),
         content: String = "test prompt content".to_owned(),
@@ -24,6 +25,7 @@ define_factory! {
     /// insert operations.
     pub struct NewPromptVersionFactory for NewPromptVersion {
         stage: PromptStage = PromptStage::Extraction,
+        class: PromptClass = PromptClass::OneShot,
         role: PromptRole = PromptRole::System,
         content_hash: String = "b".repeat(64),
         content: String = "test prompt content".to_owned(),

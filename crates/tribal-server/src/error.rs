@@ -132,6 +132,13 @@ pub enum AppError {
     },
 
     /// Prompt file I/O failed.
+    /// A prompt template slot was invalid or unsatisfiable.
+    #[error("{context}")]
+    PromptValidation {
+        /// What was wrong with the slot.
+        context: String,
+    },
+
     #[error("prompt I/O failed ({context}): {source}")]
     PromptIo {
         /// Description of the failed operation.

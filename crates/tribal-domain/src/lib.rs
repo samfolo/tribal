@@ -75,6 +75,7 @@ mod oauth_client;
 mod pipeline_stage;
 mod principal;
 mod project;
+mod prompt_class;
 mod prompt_role;
 mod prompt_stage;
 mod prompt_version;
@@ -151,6 +152,7 @@ pub use oauth_client::{ApplicationType, OauthClient, OauthClientBuilder, TokenEn
 pub use pipeline_stage::PipelineStage;
 pub use principal::{LOCAL_PRINCIPAL_KEY, Principal, PrincipalBuilder};
 pub use project::{Project, ProjectBuilder};
+pub use prompt_class::PromptClass;
 pub use prompt_role::PromptRole;
 pub use prompt_stage::PromptStage;
 pub use prompt_version::{PromptVersion, PromptVersionBuilder};

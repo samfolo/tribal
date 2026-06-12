@@ -13,7 +13,7 @@ mock_repository! {
             (id: PromptVersionId) { id };
         find_by_ids(Vec<PromptVersionId> => Vec<PromptVersion>)
             (ids: &[PromptVersionId]) { ids.to_vec() };
-        find_by_stage_role_and_hash(String => Option<PromptVersion>)
-            (stage: tribal_domain::PromptStage, role: tribal_domain::PromptRole, content_hash: &str) { format!("{stage}:{role}:{content_hash}") }
+        find_by_slot_and_hash(String => Option<PromptVersion>)
+            (stage: tribal_domain::PromptStage, class: tribal_domain::PromptClass, role: tribal_domain::PromptRole, content_hash: &str) { format!("{stage}:{class}:{role}:{content_hash}") }
     }
 }
