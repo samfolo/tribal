@@ -11,5 +11,8 @@ CREATE TABLE agent_binding_versions (
     pipeline_stage TEXT NOT NULL CHECK (pipeline_stage IN ('extraction', 'triage', 'relation')),
     definition JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_agent_binding_versions_hash UNIQUE (hash)
+    CONSTRAINT uq_agent_binding_versions_hash UNIQUE (hash),
+    -- The target for the composite foreign key from agent_threads, which
+    -- holds a thread's stage to its binding's stage.
+    CONSTRAINT uq_agent_binding_versions_id_stage UNIQUE (id, pipeline_stage)
 );

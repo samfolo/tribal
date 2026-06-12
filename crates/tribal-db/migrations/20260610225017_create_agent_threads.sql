@@ -10,7 +10,7 @@ CREATE TABLE agent_threads (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_thread_id UUID REFERENCES agent_threads(id),
     pipeline_stage TEXT NOT NULL CHECK (pipeline_stage IN ('extraction', 'triage', 'relation')),
-    binding_version_id UUID NOT NULL REFERENCES agent_binding_versions(id),
+    binding_version_id UUID NOT NULL,
     stage_task_id UUID REFERENCES tasks(id),
     driver_task_id UUID,
     principal_id UUID NOT NULL REFERENCES principals(id),
@@ -28,6 +28,10 @@ CREATE TABLE agent_threads (
     completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- A thread's stage always matches its binding's stage: the composite
+    -- reference makes the cross-stage pairing unrepresentable.
+    CONSTRAINT fk_agent_threads_binding_stage FOREIGN KEY (binding_version_id, pipeline_stage)
+        REFERENCES agent_binding_versions (id, pipeline_stage),
     -- Exactly one driving task: the guard's target is always a real row.
     CONSTRAINT chk_one_driving_task CHECK ((stage_task_id IS NULL) <> (driver_task_id IS NULL)),
     -- A suspension payload exists exactly while suspended.
