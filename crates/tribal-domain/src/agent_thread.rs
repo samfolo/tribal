@@ -212,7 +212,8 @@ pub enum AgentThreadRecordKind {
     /// One executed tool call's result.
     ToolResult,
     /// Input injected into the conversation (the initial prompt, a human
-    /// resolution, a child's hand-back).
+    /// resolution, an injected diagnostic). A child's hand-back is not an
+    /// input: it answers its requesting call as a fenced [`ToolResult`].
     Input,
     /// A suspension control record.
     Suspension,
