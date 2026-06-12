@@ -7,9 +7,9 @@ use tribal_db::{
     PrincipalRepository, ProjectRepository, TaskRepository, ThreadPruneCriteria,
 };
 use tribal_domain::{
-    AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskKind, AgentDriverTaskState, AgentThread,
-    AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus, AgentThreadSuspension,
-    AgentThreadTerminal, GitRemote, PrincipalId, TaskId, TaskType,
+    AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskId, AgentDriverTaskKind, AgentDriverTaskState,
+    AgentThread, AgentThreadRecordKind, AgentThreadRecordSeq, AgentThreadStatus,
+    AgentThreadSuspension, AgentThreadTerminal, GitRemote, PrincipalId, TaskId, TaskType,
 };
 use tribal_test_utils::{
     a_new_job, a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
@@ -769,12 +769,47 @@ async fn test_timer_wake_scan_selects_only_due_intentless_stage_threads() {
         .await
         .expect("intent");
 
+    // Due and intentless but driver-driven: waking it without its driver
+    // half would strand it running, so the scan must leave it alone. The
+    // deferred circular reference admits the thread before its driver row.
+    let driver_prereq = setup_thread_prerequisites(&mut txn, "wake-driver").await;
+    let driver_task_id = uuid::Uuid::new_v4();
+    let mut driver_new = driver_prereq.new_thread;
+    driver_new.driving_task = DrivingTaskRef::Driver(AgentDriverTaskId::from(driver_task_id));
+    let driver_driven = PgAgentThreadRepository
+        .insert(&mut txn, &driver_new)
+        .await
+        .expect("insert driver-driven thread");
+    sqlx::query("INSERT INTO agent_driver_tasks (id, thread_id, kind) VALUES ($1, $2, 'drive')")
+        .bind(driver_task_id)
+        .bind(driver_driven.id().inner())
+        .execute(&mut *txn)
+        .await
+        .expect("insert paired driver task");
+    PgAgentThreadRepository
+        .mark_running(&mut txn, driver_driven.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            driver_driven.id(),
+            &AgentThreadSuspension::Timer,
+            Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
+        )
+        .await
+        .expect("suspend driver-driven");
+
     let woken = PgAgentThreadRepository
         .find_due_timer_wakes(&mut txn, 10)
         .await
         .expect("scan");
 
-    assert_eq!(woken.len(), 1, "only the due intentless thread is woken");
+    assert_eq!(
+        woken.len(),
+        1,
+        "only the due intentless stage-driven thread is woken"
+    );
     assert_eq!(woken[0].id(), due.id());
 
     let intents = PgAgentThreadRepository
@@ -879,6 +914,27 @@ async fn test_prune_deletes_only_aged_terminal_threads() {
         .expect("record");
     let live = insert_thread(&mut txn, "prune-live").await;
 
+    // An age bound in the past collects nothing while the terminal
+    // thread is present: the bound, not terminality, is what spares it.
+    let too_old = ThreadPruneCriteria {
+        completed_before: chrono::Utc::now() - chrono::Duration::days(30),
+        stage: None,
+        cascade: false,
+    };
+    let pruned = PgAgentThreadRepository
+        .prune_threads(&mut txn, &too_old)
+        .await
+        .expect("prune");
+    assert_eq!(pruned, 0, "nothing terminal predates the bound");
+    assert!(
+        PgAgentThreadRepository
+            .find_by_id(&mut txn, terminal.id())
+            .await
+            .expect("find")
+            .is_some(),
+        "the bound spared the terminal thread",
+    );
+
     let refused = PgAgentThreadRepository
         .count_refused_prune_roots(&mut txn, &prune_now(false))
         .await
@@ -914,18 +970,6 @@ async fn test_prune_deletes_only_aged_terminal_threads() {
             .is_some(),
         "the live thread survives",
     );
-
-    // An age bound in the past collects nothing.
-    let too_old = ThreadPruneCriteria {
-        completed_before: chrono::Utc::now() - chrono::Duration::days(30),
-        stage: None,
-        cascade: false,
-    };
-    let pruned = PgAgentThreadRepository
-        .prune_threads(&mut txn, &too_old)
-        .await
-        .expect("prune");
-    assert_eq!(pruned, 0, "nothing terminal predates the bound");
 }
 
 #[tokio::test]
