@@ -1792,9 +1792,10 @@ mod tests {
 pub enum ThreadsCommand {
     /// Delete terminal threads and their records by explicit criteria.
     /// Spend rows in the ledger survive with their thread references
-    /// cleared. Refuses any candidate whose subtree still holds a live
-    /// thread; `--cascade` extends a pass to the terminal descendants of
-    /// accepted candidates. Use `--dry-run` to see what a pass would
+    /// cleared. Without `--cascade` any candidate with descendants is
+    /// refused; with it, a pass extends to the terminal descendants of
+    /// accepted candidates, refusing only candidates whose subtree still
+    /// holds a live thread. Use `--dry-run` to see what a pass would
     /// collect.
     Prune {
         /// Arguments for the prune pass.

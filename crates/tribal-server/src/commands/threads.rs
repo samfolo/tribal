@@ -71,14 +71,14 @@ async fn prune_async(
         // The dry run derives its counts from the real pass, then rolls
         // the whole transaction back.
         drop(tx);
-        report(&outcome, true)
+        report(&outcome, true, criteria.cascade)
     } else {
         commit(tx).await?;
-        report(&outcome, false)
+        report(&outcome, false, criteria.cascade)
     }
 }
 
-fn report(outcome: &ThreadPruneOutcome, dry_run: bool) -> Result<(), AppError> {
+fn report(outcome: &ThreadPruneOutcome, dry_run: bool, cascade: bool) -> Result<(), AppError> {
     let verb = if dry_run { "would prune" } else { "pruned" };
     let mut out = io::stdout().lock();
     writeln!(
@@ -91,15 +91,19 @@ fn report(outcome: &ThreadPruneOutcome, dry_run: bool) -> Result<(), AppError> {
         source,
     })?;
     if outcome.refused > 0 {
-        writeln!(
-            out,
-            "refused {} candidate(s) with descendants — resolve or cancel live ones, or pass \
-             --cascade to collect terminal subtrees",
-            outcome.refused,
-        )
-        .map_err(|source| AppError::Io {
-            context: "writing threads prune output".to_owned(),
-            source,
+        // Under the cascade every refusal is a live descendant, so the
+        // --cascade remedy is only offered when it was not already given.
+        let advice = if cascade {
+            "subtrees still hold live threads; resolve or cancel them first"
+        } else {
+            "candidates have descendants; resolve or cancel live ones, or pass --cascade to \
+             collect terminal subtrees"
+        };
+        writeln!(out, "refused {} candidate(s): {advice}", outcome.refused).map_err(|source| {
+            AppError::Io {
+                context: "writing threads prune output".to_owned(),
+                source,
+            }
         })?;
     }
     Ok(())
