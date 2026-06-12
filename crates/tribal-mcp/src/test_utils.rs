@@ -279,6 +279,7 @@ pub(crate) fn test_active_prompt_versions() -> ActivePromptVersions {
         triage_user_prompt_version_id: PromptVersionId::new(),
         relation_system_prompt_version_id: PromptVersionId::new(),
         relation_user_prompt_version_id: PromptVersionId::new(),
+        agentic: std::collections::HashMap::new(),
     }
 }
 

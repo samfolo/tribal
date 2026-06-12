@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use tribal_common::sha256_hex;
 use tribal_db::{NewPromptVersion, PgPromptVersionRepository, PromptVersionRepository};
-use tribal_domain::{PromptRole, PromptStage};
+use tribal_domain::{PromptClass, PromptRole, PromptStage};
 use tribal_mcp::ActivePromptVersions;
 use tribal_worker::{reserved_keys, synthetic_validation_context};
 
@@ -46,6 +46,7 @@ pub(crate) const VALIDATION_CONTEXT_PANIC: &str =
 /// keys — the same builders production uses — so it is self-maintaining.
 pub(crate) fn validate_prompt_template(
     stage: PromptStage,
+    class: PromptClass,
     role: PromptRole,
     content: &str,
 ) -> Result<(), String> {
@@ -56,7 +57,8 @@ pub(crate) fn validate_prompt_template(
     // synthetic_validation_context panics only if the hardcoded JSON
     // cannot deserialise into domain types — a programming error.
     // Catching the unwind preserves the "watcher never crashes" contract.
-    let Ok(tera_ctx) = std::panic::catch_unwind(|| synthetic_validation_context(stage, role))
+    let Ok(tera_ctx) =
+        std::panic::catch_unwind(|| synthetic_validation_context(stage, class, role))
     else {
         return Err(VALIDATION_CONTEXT_PANIC.to_owned());
     };
@@ -112,6 +114,7 @@ pub(crate) async fn reload_single_prompt(
     active_prompt_versions: &Arc<RwLock<ActivePromptVersions>>,
 ) {
     let stage = location.stage();
+    let class = location.class();
     let role = location.role();
 
     // -- Read ----------------------------------------------------------------
@@ -132,7 +135,7 @@ pub(crate) async fn reload_single_prompt(
 
     // -- Validate ------------------------------------------------------------
 
-    if let Err(reason) = validate_prompt_template(stage, role, &content) {
+    if let Err(reason) = validate_prompt_template(stage, class, role, &content) {
         warn!(
             %reason,
             stage = stage.as_str(),
@@ -164,6 +167,7 @@ pub(crate) async fn reload_single_prompt(
     let repo = PgPromptVersionRepository;
     let new = NewPromptVersion::builder()
         .stage(stage)
+        .class(class)
         .role(role)
         .content_hash(content_hash)
         .content(content)
@@ -185,15 +189,18 @@ pub(crate) async fn reload_single_prompt(
 
     // -- Swap ----------------------------------------------------------------
 
-    let current_id = active_prompt_versions.read().await.get_version(stage, role);
-    if current_id == version.id() {
+    let current_id = active_prompt_versions
+        .read()
+        .await
+        .get_version(stage, class, role);
+    if current_id == Some(version.id()) {
         return;
     }
 
     active_prompt_versions
         .write()
         .await
-        .set_version(stage, role, version.id());
+        .set_version(stage, class, role, version.id());
 
     info!(
         stage = stage.as_str(),
@@ -220,14 +227,23 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_rejects_empty() {
-        let result = validate_prompt_template(PromptStage::Extraction, PromptRole::System, "");
+        let result = validate_prompt_template(
+            PromptStage::Extraction,
+            PromptClass::OneShot,
+            PromptRole::System,
+            "",
+        );
         assert_eq!(result.unwrap_err(), VALIDATION_EMPTY_CONTENT);
     }
 
     #[test]
     fn test_validate_prompt_template_rejects_whitespace_only() {
-        let result =
-            validate_prompt_template(PromptStage::Extraction, PromptRole::System, "   \n\t  ");
+        let result = validate_prompt_template(
+            PromptStage::Extraction,
+            PromptClass::OneShot,
+            PromptRole::System,
+            "   \n\t  ",
+        );
         assert_eq!(result.unwrap_err(), VALIDATION_EMPTY_CONTENT);
     }
 
@@ -235,6 +251,7 @@ mod tests {
     fn test_validate_prompt_template_rejects_dropped_required_variable() {
         let result = validate_prompt_template(
             PromptStage::Extraction,
+            PromptClass::OneShot,
             PromptRole::User,
             "Static text with no variable references",
         );
@@ -251,6 +268,7 @@ mod tests {
         // Uses tags but drops raw_input — should fail for extraction/user.
         let result = validate_prompt_template(
             PromptStage::Extraction,
+            PromptClass::OneShot,
             PromptRole::User,
             "{{ tags }} but no raw input reference",
         );
@@ -268,6 +286,7 @@ mod tests {
         // which variables are available.
         let result = validate_prompt_template(
             PromptStage::Extraction,
+            PromptClass::OneShot,
             PromptRole::System,
             "{% if true %}unclosed",
         );
@@ -285,6 +304,7 @@ mod tests {
         // of which variables are available.
         let result = validate_prompt_template(
             PromptStage::Extraction,
+            PromptClass::OneShot,
             PromptRole::System,
             "{{ nonexistent }}",
         );
@@ -299,6 +319,7 @@ mod tests {
     fn test_validate_prompt_template_rejects_comment_only_reference() {
         let result = validate_prompt_template(
             PromptStage::Extraction,
+            PromptClass::OneShot,
             PromptRole::User,
             "{# raw_input #}\n{{ tags }}",
         );
@@ -313,6 +334,7 @@ mod tests {
     fn test_validate_prompt_template_rejects_prose_only_reference() {
         let result = validate_prompt_template(
             PromptStage::Triage,
+            PromptClass::OneShot,
             PromptRole::User,
             "Consider the candidate carefully.\n{{ similar_items }} {{ tags }}",
         );
@@ -329,6 +351,7 @@ mod tests {
         // check passes; Tera rejects the invalid nested path.
         let result = validate_prompt_template(
             PromptStage::Triage,
+            PromptClass::OneShot,
             PromptRole::User,
             "{{ candidate.nmae }} {{ similar_items }} {{ tags }}",
         );
@@ -376,10 +399,13 @@ mod tests {
 
         let stage = PromptStage::Extraction;
         let role = PromptRole::System;
-        let target = PromptTemplateLocation::from((stage, role));
+        let target = PromptTemplateLocation::one_shot(stage, role);
         let file_path = target.resolve(prompts_dir.path());
 
-        let id_before = active.read().await.get_version(stage, role);
+        let id_before = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         let original = tokio::fs::read_to_string(&file_path)
             .await
@@ -391,7 +417,10 @@ mod tests {
 
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let id_after = active.read().await.get_version(stage, role);
+        let id_after = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         assert_ne!(id_before, id_after, "version ID should change after reload");
     }
@@ -402,14 +431,20 @@ mod tests {
 
         let stage = PromptStage::Extraction;
         let role = PromptRole::System;
-        let target = PromptTemplateLocation::from((stage, role));
+        let target = PromptTemplateLocation::one_shot(stage, role);
         let file_path = target.resolve(prompts_dir.path());
 
-        let id_before = active.read().await.get_version(stage, role);
+        let id_before = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let id_after = active.read().await.get_version(stage, role);
+        let id_after = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         assert_eq!(
             id_before, id_after,
@@ -423,17 +458,23 @@ mod tests {
 
         let stage = PromptStage::Triage;
         let role = PromptRole::User;
-        let target = PromptTemplateLocation::from((stage, role));
+        let target = PromptTemplateLocation::one_shot(stage, role);
         let file_path = target.resolve(prompts_dir.path());
         tokio::fs::write(&file_path, "")
             .await
             .expect("write empty content");
 
-        let id_before = active.read().await.get_version(stage, role);
+        let id_before = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let id_after = active.read().await.get_version(stage, role);
+        let id_after = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         assert_eq!(
             id_before, id_after,
@@ -447,17 +488,23 @@ mod tests {
 
         let stage = PromptStage::Extraction;
         let role = PromptRole::System;
-        let target = PromptTemplateLocation::from((stage, role));
+        let target = PromptTemplateLocation::one_shot(stage, role);
         let file_path = target.resolve(prompts_dir.path());
         tokio::fs::write(&file_path, "{{ nonexistent_variable }}")
             .await
             .expect("write invalid template");
 
-        let id_before = active.read().await.get_version(stage, role);
+        let id_before = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let id_after = active.read().await.get_version(stage, role);
+        let id_after = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         assert_eq!(
             id_before, id_after,
@@ -471,7 +518,7 @@ mod tests {
 
         let stage = PromptStage::Relation;
         let role = PromptRole::User;
-        let target = PromptTemplateLocation::from((stage, role));
+        let target = PromptTemplateLocation::one_shot(stage, role);
         let file_path = target.resolve(prompts_dir.path());
         let original = tokio::fs::read_to_string(&file_path)
             .await
@@ -481,18 +528,27 @@ mod tests {
             .await
             .expect("write modified prompt");
 
-        let id_before = active.read().await.get_version(stage, role);
+        let id_before = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let id_after = active.read().await.get_version(stage, role);
+        let id_after = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
 
         assert_ne!(id_before, id_after, "version ID should change after reload");
 
         // Second reload of same content should be idempotent.
         reload_single_prompt(target, &file_path, &pool, &active).await;
 
-        let id_third = active.read().await.get_version(stage, role);
+        let id_third = active
+            .read()
+            .await
+            .get_version(stage, PromptClass::OneShot, role);
         assert_eq!(
             id_after, id_third,
             "second reload of same content should be idempotent",
@@ -503,43 +559,73 @@ mod tests {
 
     #[test]
     fn test_validate_prompt_template_accepts_embedded_defaults() {
-        let pairs: [(PromptStage, PromptRole, &str); 6] = [
+        let pairs: [(PromptStage, PromptClass, PromptRole, &str); 10] = [
             (
                 PromptStage::Extraction,
+                PromptClass::OneShot,
                 PromptRole::System,
                 include_str!("../../../../../prompts/extraction/system.tera"),
             ),
             (
                 PromptStage::Extraction,
+                PromptClass::OneShot,
                 PromptRole::User,
                 include_str!("../../../../../prompts/extraction/user.tera"),
             ),
             (
                 PromptStage::Triage,
+                PromptClass::OneShot,
                 PromptRole::System,
                 include_str!("../../../../../prompts/triage/system.tera"),
             ),
             (
                 PromptStage::Triage,
+                PromptClass::OneShot,
                 PromptRole::User,
                 include_str!("../../../../../prompts/triage/user.tera"),
             ),
             (
                 PromptStage::Relation,
+                PromptClass::OneShot,
                 PromptRole::System,
                 include_str!("../../../../../prompts/relation/system.tera"),
             ),
             (
                 PromptStage::Relation,
+                PromptClass::OneShot,
                 PromptRole::User,
                 include_str!("../../../../../prompts/relation/user.tera"),
             ),
+            (
+                PromptStage::Triage,
+                PromptClass::Loop,
+                PromptRole::System,
+                include_str!("../../../../../prompts/triage/loop_system.tera"),
+            ),
+            (
+                PromptStage::Triage,
+                PromptClass::Loop,
+                PromptRole::User,
+                include_str!("../../../../../prompts/triage/loop_user.tera"),
+            ),
+            (
+                PromptStage::Triage,
+                PromptClass::Verifier,
+                PromptRole::System,
+                include_str!("../../../../../prompts/triage/verifier_system.tera"),
+            ),
+            (
+                PromptStage::Triage,
+                PromptClass::Verifier,
+                PromptRole::User,
+                include_str!("../../../../../prompts/triage/verifier_user.tera"),
+            ),
         ];
-        for (stage, role, content) in &pairs {
-            let result = validate_prompt_template(*stage, *role, content);
+        for (stage, class, role, content) in &pairs {
+            let result = validate_prompt_template(*stage, *class, *role, content);
             assert!(
                 result.is_ok(),
-                "embedded default for {stage}/{role} failed validation: {}",
+                "embedded default for {stage}/{class}/{role} failed validation: {}",
                 result.unwrap_err(),
             );
         }

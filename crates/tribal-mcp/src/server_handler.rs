@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rmcp::{
@@ -21,7 +22,7 @@ use tribal_db::{
     RetrievalFeedbackRepository, StandingRepository, SystemFingerprintRepository, TaskRepository,
     TriageResultRepository,
 };
-use tribal_domain::{PromptRole, PromptStage, PromptVersionId, is_authorised};
+use tribal_domain::{PromptClass, PromptRole, PromptStage, PromptVersionId, is_authorised};
 
 use crate::{
     app_state::AppState,
@@ -124,6 +125,10 @@ pub struct ActivePromptVersions {
     pub(crate) triage_user_prompt_version_id: PromptVersionId,
     pub(crate) relation_system_prompt_version_id: PromptVersionId,
     pub(crate) relation_user_prompt_version_id: PromptVersionId,
+    /// Versions for the non-one-shot classes, keyed by slot. The six
+    /// named fields mirror the jobs table's prompt columns; classes the
+    /// schema does not reference ride here additively.
+    pub(crate) agentic: HashMap<(PromptStage, PromptClass, PromptRole), PromptVersionId>,
 }
 
 impl ActivePromptVersions {
@@ -146,14 +151,25 @@ impl ActivePromptVersions {
             triage_user_prompt_version_id: triage_user,
             relation_system_prompt_version_id: relation_system,
             relation_user_prompt_version_id: relation_user,
+            agentic: HashMap::new(),
         }
     }
 
-    /// Updates the active version ID for a single (stage, role) pair.
+    /// Updates the active version ID for a single slot.
     ///
     /// Exclusive access is enforced by the `&mut self` receiver — in
     /// practice this means the caller holds the `RwLock` write guard.
-    pub fn set_version(&mut self, stage: PromptStage, role: PromptRole, id: PromptVersionId) {
+    pub fn set_version(
+        &mut self,
+        stage: PromptStage,
+        class: PromptClass,
+        role: PromptRole,
+        id: PromptVersionId,
+    ) {
+        if class != PromptClass::OneShot {
+            self.agentic.insert((stage, class, role), id);
+            return;
+        }
         match (stage, role) {
             (PromptStage::Extraction, PromptRole::System) => {
                 self.extraction_system_prompt_version_id = id;
@@ -190,10 +206,19 @@ impl ActivePromptVersions {
         ]
     }
 
-    /// Returns the active version ID for a single (stage, role) pair.
+    /// Returns the active version ID for a slot, `None` for a slot no
+    /// loader has populated.
     #[must_use]
-    pub fn get_version(&self, stage: PromptStage, role: PromptRole) -> PromptVersionId {
-        match (stage, role) {
+    pub fn get_version(
+        &self,
+        stage: PromptStage,
+        class: PromptClass,
+        role: PromptRole,
+    ) -> Option<PromptVersionId> {
+        if class != PromptClass::OneShot {
+            return self.agentic.get(&(stage, class, role)).copied();
+        }
+        Some(match (stage, role) {
             (PromptStage::Extraction, PromptRole::System) => {
                 self.extraction_system_prompt_version_id
             }
@@ -202,7 +227,7 @@ impl ActivePromptVersions {
             (PromptStage::Triage, PromptRole::User) => self.triage_user_prompt_version_id,
             (PromptStage::Relation, PromptRole::System) => self.relation_system_prompt_version_id,
             (PromptStage::Relation, PromptRole::User) => self.relation_user_prompt_version_id,
-        }
+        })
     }
 }
 
@@ -728,7 +753,12 @@ mod tests {
             ActivePromptVersions::new(original, original, original, original, original, original);
 
         let new_id = PromptVersionId::new();
-        versions.set_version(PromptStage::Triage, PromptRole::User, new_id);
+        versions.set_version(
+            PromptStage::Triage,
+            PromptClass::OneShot,
+            PromptRole::User,
+            new_id,
+        );
 
         assert_eq!(versions.extraction_system_prompt_version_id, original);
         assert_eq!(versions.extraction_user_prompt_version_id, original);

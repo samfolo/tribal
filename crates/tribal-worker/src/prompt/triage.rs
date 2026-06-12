@@ -77,6 +77,45 @@ pub(crate) fn triage_user_context(
     ctx
 }
 
+/// A similar item as the agentic loop's opening prompt presents it.
+///
+/// The inversion of [`SimilarItemContext`]'s id-hiding is deliberate:
+/// the loop's submissions reference items by id, copied from rendered
+/// context or tool results, so the id is exactly what the model must
+/// see. The validator later checks references against these recorded
+/// renderings.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct LoopSimilarItemContext {
+    /// The existing knowledge item identifier, as the model copies it.
+    pub item_id: String,
+    /// Classification of the existing item.
+    pub kind: KnowledgeKind,
+    /// The existing item's content.
+    pub content: String,
+    /// Cosine similarity score.
+    pub similarity_score: f64,
+    /// Human-readable similarity band for the score.
+    pub similarity_label: String,
+    /// The existing item's tags.
+    pub tags: Vec<String>,
+}
+
+/// Builds the agentic loop's opening user prompt context.
+///
+/// Both the production assembly and the validation tests call this,
+/// so adding a variable here is automatically reflected in both paths.
+pub(crate) fn loop_user_context(
+    candidate: &Candidate,
+    similar_items: &[LoopSimilarItemContext],
+    tags: &[&str],
+) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    ctx.insert(VAR_CANDIDATE, candidate);
+    ctx.insert(VAR_SIMILAR_ITEMS, similar_items);
+    ctx.insert(VAR_TAGS, tags);
+    ctx
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

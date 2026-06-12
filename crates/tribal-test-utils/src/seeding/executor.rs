@@ -25,8 +25,8 @@ use tribal_db::{
 };
 use tribal_domain::{
     EmbeddingId, EmbeddingProfileId, EpisodeId, GitRemote, ItemObservationId, KnowledgeItemId,
-    PrincipalId, ProjectId, PromptVersionId, ProviderKind, ReferenceId, RelationBatchId,
-    RelationId, RelationKind,
+    PrincipalId, ProjectId, PromptClass, PromptVersionId, ProviderKind, ReferenceId,
+    RelationBatchId, RelationId, RelationKind,
 };
 
 use super::{
@@ -186,6 +186,7 @@ pub(crate) async fn execute(commands: Vec<SeedCommand>, conn: &mut PgConnection)
             } => {
                 let new = NewPromptVersion::builder()
                     .stage(*stage)
+                    .class(PromptClass::OneShot)
                     .role(*role)
                     .content_hash(content_hash.clone())
                     .content(content.clone())

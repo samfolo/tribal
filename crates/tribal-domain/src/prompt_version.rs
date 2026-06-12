@@ -7,19 +7,21 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
-use crate::{PromptRole, PromptStage, PromptVersionId};
+use crate::{PromptClass, PromptRole, PromptStage, PromptVersionId};
 
 /// A content-addressed prompt version.
 ///
 /// Prompt versions are immutable. The `content_hash` (SHA-256, hex-encoded)
-/// together with `stage` and `role` forms a unique constraint — identical
-/// content for the same stage and role is deduplicated to one row.
+/// together with `stage`, `class`, and `role` forms a unique constraint —
+/// identical content for the same slot is deduplicated to one row.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TypedBuilder)]
 pub struct PromptVersion {
     /// Unique identifier with `pv_` prefix.
     id: PromptVersionId,
     /// Pipeline stage this prompt version applies to.
     stage: PromptStage,
+    /// The executor surface this prompt version serves.
+    class: PromptClass,
     /// Whether this is a system or user prompt.
     role: PromptRole,
     /// SHA-256 hash of the prompt content (hex-encoded, 64 chars).
@@ -39,6 +41,11 @@ impl PromptVersion {
     /// Returns the pipeline stage.
     pub fn stage(&self) -> PromptStage {
         self.stage
+    }
+
+    /// Returns the executor surface this version serves.
+    pub fn class(&self) -> PromptClass {
+        self.class
     }
 
     /// Returns the prompt role.
