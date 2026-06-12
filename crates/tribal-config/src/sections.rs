@@ -1,5 +1,6 @@
 //! Configuration section types.
 
+mod agents;
 mod auth;
 mod credential_catalogue;
 mod credentials;
@@ -18,6 +19,12 @@ mod telemetry;
 mod transport_kind;
 mod worker;
 
+pub use agents::{
+    AgentsConfig, DEFAULT_AGENTIC_EXECUTION_DEADLINE_SECONDS, DEFAULT_AGENTIC_MAX_TOTAL_TOKENS,
+    DEFAULT_AGENTIC_MAX_TURNS, DEFAULT_AGENTIC_RECHECK_BOUND,
+    DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS, DEFAULT_AGENTIC_VERIFY_ROUNDS, ExecutorChoice,
+    StageAgentConfig,
+};
 pub use auth::{AuthConfig, MAX_TTL_HOURS};
 pub use credential_catalogue::{
     CredentialCatalogue, CredentialEntry, MissingApiKey, MissingApiKeyKind,
