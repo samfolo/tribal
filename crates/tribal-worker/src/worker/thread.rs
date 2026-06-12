@@ -305,8 +305,17 @@ pub(crate) fn map_runtime_error(
             context: inner,
             source,
         },
+        AgentRuntimeError::Inference {
+            context: inner,
+            source,
+        } => StageError::Provider {
+            context: inner,
+            source: *source,
+        },
         source @ (AgentRuntimeError::ThreadMissing { .. }
-        | AgentRuntimeError::ContentSerialisation { .. }) => StageError::Runtime {
+        | AgentRuntimeError::ContentSerialisation { .. }
+        | AgentRuntimeError::ToolExecution { .. }
+        | AgentRuntimeError::LogProjection { .. }) => StageError::Runtime {
             context: context.to_owned(),
             source,
         },

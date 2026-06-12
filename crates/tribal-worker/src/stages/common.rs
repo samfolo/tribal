@@ -1,7 +1,7 @@
 //! Shared utilities and types for pipeline stage implementations.
 
 use tribal_agent_runtime::{
-    RecordedMessage, RenderedConversation, StageThread, begin_one_shot, commit_noop_terminal,
+    RecordedMessage, RenderedConversation, StageThread, begin_turn, commit_noop_terminal,
     commit_one_shot_terminal,
 };
 use tribal_common::clamp_to_i32;
@@ -410,7 +410,7 @@ impl Worker {
         let Some(claim_token) = task.claim_token() else {
             return Err(StageError::OwnershipLost);
         };
-        let begun = begin_one_shot(
+        let begun = begin_turn(
             &mut conn,
             &stage_thread.thread,
             task.id(),
