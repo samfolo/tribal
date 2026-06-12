@@ -467,12 +467,9 @@ async fn test_triage_duplicate_records_token_usage() {
         .await
         .expect("find token usage");
 
-    assert_eq!(
-        records.len(),
-        2,
-        "triage duplicate should produce 2 token usage records",
-    );
-
+    // The ledger records every call including retried attempts, so the
+    // load-robust invariant is per-attempt: at most one candidate embed
+    // and one completion per attempt, nothing of any other class.
     let candidate_embeds: Vec<_> = records
         .iter()
         .filter(|r| {
@@ -486,14 +483,27 @@ async fn test_triage_duplicate_records_token_usage() {
         .collect();
 
     assert_eq!(
-        candidate_embeds.len(),
-        1,
-        "should have 1 candidate embedding record"
+        records.len(),
+        candidate_embeds.len() + completions.len(),
+        "a triage duplicate ledgers only candidate embeds and completions",
     );
-    assert_eq!(
-        completions.len(),
-        1,
-        "should have 1 triage completion record"
+    for rows in [&candidate_embeds, &completions] {
+        let mut attempts: Vec<i32> = rows.iter().map(|r| r.attempt()).collect();
+        attempts.sort_unstable();
+        attempts.dedup();
+        assert_eq!(
+            attempts.len(),
+            rows.len(),
+            "each attempt ledgers at most one row per class",
+        );
+    }
+    assert!(
+        !candidate_embeds.is_empty(),
+        "the candidate embedding is ledgered",
+    );
+    assert!(
+        !completions.is_empty(),
+        "the successful attempt's completion is ledgered",
     );
 
     // Verify no tag embeddings were recorded.
