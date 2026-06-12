@@ -1,14 +1,15 @@
 //! Triage stage: similarity search and LLM-based relevance scoring.
 
 use tracing::Instrument;
+use tribal_agent_runtime::StageThread;
 use tribal_db::{
     ExtractionResultRepository, KnowledgeItemRepository, NewItemObservation, NewKnowledgeItem,
     NewTriageSimilarItemDecision, PgExtractionResultRepository, PgKnowledgeItemRepository,
     PgTriageResultRepository, SemanticSearchParams, SemanticSearchResult, TriageResultRepository,
 };
 use tribal_domain::{
-    Candidate, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId, KnowledgeItemId,
-    SourceType, StageParameters, TagRegistryEntry, Task, TaskType, span_attrs,
+    Candidate, CompletionResponse, Confidence, EmbeddingProfile, EmbeddingPurpose, Job, JobId,
+    KnowledgeItemId, SourceType, TagRegistryEntry, Task, TaskType, span_attrs,
 };
 use tribal_inference::{
     EmbeddingRequest, EmbeddingResponse, EmbeddingTarget, PermitWait, UsageAttribution,
@@ -27,7 +28,7 @@ use crate::{
     },
     prompt::{SimilarItemContext, assemble_triage_prompt},
     tag_resolution::{self, ResolvedTags},
-    worker::Worker,
+    worker::{Worker, map_runtime_error},
 };
 
 // ---------------------------------------------------------------------------
@@ -88,7 +89,8 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageCommit, StageError> {
+        stage_thread: &StageThread,
+    ) -> Result<(StageCommit, Option<CompletionResponse>), StageError> {
         let batch_index = task.batch_index().expect(EXPECT_BATCH_INDEX);
 
         let span = tracing::info_span!(
@@ -103,11 +105,14 @@ impl Worker {
 
         async {
             if self.check_triage_idempotency(job.id(), batch_index).await? {
-                return Ok(StageCommit::Triage {
-                    project_id: job.project_id(),
-                    decision: TriageCommitDecision::NoOp,
-                    similar_item_decisions: vec![],
-                });
+                return Ok((
+                    StageCommit::Triage {
+                        project_id: job.project_id(),
+                        decision: TriageCommitDecision::NoOp,
+                        similar_item_decisions: vec![],
+                    },
+                    None,
+                ));
             }
 
             let candidate = self.load_triage_candidate(job.id(), batch_index).await?;
@@ -119,10 +124,9 @@ impl Worker {
                 tag_registry,
             };
 
-            let (system_pv, user_pv, fingerprint) = tokio::try_join!(
+            let (system_pv, user_pv) = tokio::try_join!(
                 self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_system_prompt_version_id()),
                 self.load_prompt_version(STAGE_TRIAGE, ctx.job.triage_user_prompt_version_id()),
-                self.load_system_fingerprint(STAGE_TRIAGE, ctx.job.system_fingerprint_hash()),
             )?;
 
             record_prompt_version_ids(
@@ -136,7 +140,7 @@ impl Worker {
             // flip-check.
             let active_profile = self.resolve_active_embedding(STAGE_TRIAGE).await?;
             let embedding_target = EmbeddingTarget::from(&active_profile);
-            let attribution = stage_attribution(ctx.job, task);
+            let attribution = stage_attribution(ctx.job, task, &stage_thread.thread);
 
             let embedding_response = self
                 .embed_candidate(
@@ -173,13 +177,18 @@ impl Worker {
                 );
             }
 
-            let mut classification = self
+            let fresh_slots: Vec<SimilarItemSlot> =
+                search_results.iter().map(SimilarItemSlot::from).collect();
+
+            let (mut classification, response, slots) = self
                 .classify_candidate(
                     &ctx,
+                    task,
+                    stage_thread,
                     system_pv.content(),
                     user_pv.content(),
                     &similar_items,
-                    &fingerprint.inference_parameters().triage,
+                    fresh_slots,
                     deadline,
                     &attribution,
                 )
@@ -193,7 +202,7 @@ impl Worker {
             // as a novel item, rather than panicking at commit time.
             let resolved_outcome = resolve_triage_outcome(
                 &classification.outcome,
-                &search_results,
+                &slots,
                 ctx.job.id(),
                 ctx.batch_index,
             );
@@ -221,7 +230,7 @@ impl Worker {
                 &ctx,
                 &resolved_outcome,
                 &classification.similar_item_decisions,
-                &search_results,
+                &slots,
                 CandidateEmbedding {
                     vector: embedding_vector,
                     profile: &active_profile,
@@ -229,7 +238,7 @@ impl Worker {
                 resolved_tags,
             );
 
-            Ok(commit)
+            Ok((commit, Some(response)))
         }
         .instrument(span)
         .await
@@ -389,13 +398,22 @@ impl Worker {
     async fn classify_candidate(
         &self,
         ctx: &TriageContext<'_>,
+        task: &Task,
+        stage_thread: &StageThread,
         system_template: &str,
         user_template: &str,
         similar_items: &[SimilarItemContext],
-        params: &StageParameters,
+        fresh_slots: Vec<SimilarItemSlot>,
         deadline: tokio::time::Instant,
         attribution: &UsageAttribution,
-    ) -> Result<TriageClassification, StageError> {
+    ) -> Result<
+        (
+            TriageClassification,
+            CompletionResponse,
+            Vec<SimilarItemSlot>,
+        ),
+        StageError,
+    > {
         let include_llm_content = self.include_llm_content();
 
         let request = assemble_triage_prompt(
@@ -404,7 +422,7 @@ impl Worker {
             &ctx.candidate,
             similar_items,
             &ctx.tag_registry,
-            params,
+            &stage_thread.binding.definition().parameters,
         )?;
 
         if include_llm_content {
@@ -415,6 +433,45 @@ impl Worker {
             );
         }
 
+        let recorded_context = serde_json::to_value(&fresh_slots).map_err(|source| {
+            map_runtime_error(
+                STAGE_TRIAGE,
+                "serialising the similar-item slots",
+                tribal_agent_runtime::AgentRuntimeError::ContentSerialisation {
+                    context: "serialising the similar-item slots".to_owned(),
+                    source,
+                },
+            )
+        })?;
+        let bracketed = self
+            .bracket_one_shot(
+                STAGE_TRIAGE,
+                stage_thread,
+                ctx.job,
+                task,
+                request,
+                Some(recorded_context),
+            )
+            .await?;
+
+        // The model's context indices address the list its conversation
+        // rendered: on resume that is the recorded one, never this
+        // attempt's re-derived search. A record from before slots were
+        // recorded falls back to the fresh search, the old semantics.
+        let slots = match bracketed.resolution_context {
+            Some(context) => serde_json::from_value(context).map_err(|source| {
+                map_runtime_error(
+                    STAGE_TRIAGE,
+                    "deserialising the recorded similar-item slots",
+                    tribal_agent_runtime::AgentRuntimeError::ContentSerialisation {
+                        context: "deserialising the recorded similar-item slots".to_owned(),
+                        source,
+                    },
+                )
+            })?,
+            None => fresh_slots,
+        };
+        let request = bracketed.request;
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let response = self
             .gateway()
@@ -450,7 +507,7 @@ impl Worker {
             })?
         };
 
-        Ok(classification)
+        Ok((classification, response, slots))
     }
 
     /// Builds the `StageCommit::Triage` variant from the resolved outcome,
@@ -464,7 +521,7 @@ impl Worker {
         ctx: &TriageContext<'_>,
         outcome: &ResolvedTriageOutcome,
         similar_item_decisions: &[SimilarItemClassification],
-        search_results: &[SemanticSearchResult],
+        slots: &[SimilarItemSlot],
         embedding: CandidateEmbedding<'_>,
         resolved_tags: Option<ResolvedTags>,
     ) -> StageCommit {
@@ -472,7 +529,7 @@ impl Worker {
             ctx.job.id(),
             ctx.batch_index,
             similar_item_decisions,
-            search_results,
+            slots,
         );
 
         let decision = match outcome {
@@ -549,14 +606,36 @@ enum ResolvedTriageOutcome {
     Duplicate { matched_item_id: KnowledgeItemId },
 }
 
-/// Resolves a similar-item reference to its entry in the search results,
-/// returning `None` if the index is out of range.
+/// One similar-item slot as the model saw it: the positional source the
+/// model's context indices resolve against. Recorded with the input
+/// record, so a resumed attempt resolves the answer against what its
+/// first attempt rendered — never against a re-derived search, whose
+/// ranking can drift as sibling commits land between attempts.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+struct SimilarItemSlot {
+    /// The knowledge item rendered at this position.
+    item_id: KnowledgeItemId,
+    /// The similarity the search scored it with.
+    similarity: f64,
+}
+
+impl From<&SemanticSearchResult> for SimilarItemSlot {
+    fn from(result: &SemanticSearchResult) -> Self {
+        Self {
+            item_id: result.item.id(),
+            similarity: result.similarity,
+        }
+    }
+}
+
+/// Resolves a similar-item reference to its slot, returning `None` if
+/// the index is out of range.
 fn lookup_similar_item<'a>(
     reference: &TriageItemReference,
-    search_results: &'a [SemanticSearchResult],
-) -> Option<&'a SemanticSearchResult> {
+    slots: &'a [SimilarItemSlot],
+) -> Option<&'a SimilarItemSlot> {
     let TriageItemReference::ContextIndex { context_index } = reference;
-    search_results.get(*context_index as usize)
+    slots.get(*context_index as usize)
 }
 
 /// Resolves a parsed [`TriageDecision`] into a [`ResolvedTriageOutcome`].
@@ -567,21 +646,21 @@ fn lookup_similar_item<'a>(
 /// still ingested, just as a new item rather than an observation.
 fn resolve_triage_outcome(
     outcome: &TriageDecision,
-    search_results: &[SemanticSearchResult],
+    slots: &[SimilarItemSlot],
     job_id: JobId,
     batch_index: u32,
 ) -> ResolvedTriageOutcome {
     match outcome {
         TriageDecision::Novel => ResolvedTriageOutcome::Novel,
         TriageDecision::Duplicate { matched_item } => {
-            if let Some(result) = lookup_similar_item(matched_item, search_results) {
+            if let Some(slot) = lookup_similar_item(matched_item, slots) {
                 ResolvedTriageOutcome::Duplicate {
-                    matched_item_id: result.item.id(),
+                    matched_item_id: slot.item_id,
                 }
             } else {
                 tracing::warn!(
                     item = ?matched_item,
-                    search_result_count = search_results.len(),
+                    slot_count = slots.len(),
                     %job_id,
                     %batch_index,
                     "downgrading duplicate to novel — matched context index out of range",
@@ -593,29 +672,29 @@ fn resolve_triage_outcome(
 }
 
 /// Builds `NewTriageSimilarItemDecision` records by resolving each
-/// classification's context index against the positionally-aligned search
-/// results, taking the similarity score from the same entry.
+/// classification's context index against the positionally-aligned
+/// slots the model saw, taking the similarity score from the same slot.
 ///
 /// An out-of-range index is dropped with a warning rather than failing the
 /// stage. Each index addresses a position in both the rendered similar-items
-/// list and `search_results`, an alignment guarded at the call site that
-/// builds those lists.
+/// list and the slots, an alignment guarded at the call site that builds
+/// those lists.
 fn build_similar_item_decisions(
     job_id: JobId,
     batch_index: u32,
     classifications: &[SimilarItemClassification],
-    search_results: &[SemanticSearchResult],
+    slots: &[SimilarItemSlot],
 ) -> Vec<NewTriageSimilarItemDecision> {
     classifications
         .iter()
         .filter_map(|c| {
-            let Some(result) = lookup_similar_item(&c.item, search_results) else {
+            let Some(slot) = lookup_similar_item(&c.item, slots) else {
                 tracing::warn!(
                     item = ?c.item,
-                    search_result_count = search_results.len(),
+                    slot_count = slots.len(),
                     %job_id,
                     %batch_index,
-                    "dropping similar-item classification for index not in search results",
+                    "dropping similar-item classification for index not in the rendered slots",
                 );
                 return None;
             };
@@ -623,13 +702,13 @@ fn build_similar_item_decisions(
             // Similarity scores persist as REAL (f32), so narrowing here
             // matches the storage precision and loses nothing.
             #[allow(clippy::cast_possible_truncation)]
-            let similarity_score = result.similarity as f32;
+            let similarity_score = slot.similarity as f32;
 
             Some(
                 NewTriageSimilarItemDecision::builder()
                     .job_id(job_id)
                     .batch_index(batch_index)
-                    .matched_item_id(result.item.id())
+                    .matched_item_id(slot.item_id)
                     .similarity_score(similarity_score)
                     .suggested_relation(c.suggested_relation)
                     .justification_text(c.justification.clone())
@@ -675,19 +754,18 @@ mod tests {
     fn test_resolve_triage_outcome_downgrades_out_of_range_duplicate() {
         // A duplicate referencing an index with no backing search result
         // downgrades to Novel rather than failing the stage.
-        let search_results: Vec<SemanticSearchResult> = vec![];
+        let slots: Vec<SimilarItemSlot> = vec![];
         let outcome = TriageDecision::Duplicate {
             matched_item: TriageItemReference::ContextIndex { context_index: 0 },
         };
-        let resolved = resolve_triage_outcome(&outcome, &search_results, JobId::new(), 0);
+        let resolved = resolve_triage_outcome(&outcome, &slots, JobId::new(), 0);
         assert!(matches!(resolved, ResolvedTriageOutcome::Novel));
     }
 
     #[test]
     fn test_resolve_triage_outcome_passes_novel_through() {
-        let search_results: Vec<SemanticSearchResult> = vec![];
-        let resolved =
-            resolve_triage_outcome(&TriageDecision::Novel, &search_results, JobId::new(), 0);
+        let slots: Vec<SimilarItemSlot> = vec![];
+        let resolved = resolve_triage_outcome(&TriageDecision::Novel, &slots, JobId::new(), 0);
         assert!(matches!(resolved, ResolvedTriageOutcome::Novel));
     }
 
@@ -695,23 +773,22 @@ mod tests {
     fn test_resolve_triage_outcome_resolves_in_range_duplicate() {
         // A duplicate referencing an in-range, non-zero index resolves to that
         // entry's item id.
-        let item_a = a_knowledge_item().build();
-        let item_b = a_knowledge_item().build();
-        let id_b = item_b.id();
-        let search_results = vec![
-            SemanticSearchResult {
-                item: item_a,
+        let id_a = a_knowledge_item().build().id();
+        let id_b = a_knowledge_item().build().id();
+        let slots = vec![
+            SimilarItemSlot {
+                item_id: id_a,
                 similarity: 0.9,
             },
-            SemanticSearchResult {
-                item: item_b,
+            SimilarItemSlot {
+                item_id: id_b,
                 similarity: 0.5,
             },
         ];
         let outcome = TriageDecision::Duplicate {
             matched_item: TriageItemReference::ContextIndex { context_index: 1 },
         };
-        let resolved = resolve_triage_outcome(&outcome, &search_results, JobId::new(), 0);
+        let resolved = resolve_triage_outcome(&outcome, &slots, JobId::new(), 0);
         assert!(matches!(
             resolved,
             ResolvedTriageOutcome::Duplicate { matched_item_id } if matched_item_id == id_b
@@ -723,22 +800,20 @@ mod tests {
         // Indices deliberately diverge from classification order, and one is
         // out of range. This fails for any implementation that maps by
         // position rather than by the context index value.
-        let item_a = a_knowledge_item().build();
-        let item_b = a_knowledge_item().build();
-        let item_c = a_knowledge_item().build();
-        let id_a = item_a.id();
-        let id_c = item_c.id();
-        let search_results = vec![
-            SemanticSearchResult {
-                item: item_a,
+        let id_a = a_knowledge_item().build().id();
+        let id_b = a_knowledge_item().build().id();
+        let id_c = a_knowledge_item().build().id();
+        let slots = vec![
+            SimilarItemSlot {
+                item_id: id_a,
                 similarity: 0.5,
             },
-            SemanticSearchResult {
-                item: item_b,
+            SimilarItemSlot {
+                item_id: id_b,
                 similarity: 0.25,
             },
-            SemanticSearchResult {
-                item: item_c,
+            SimilarItemSlot {
+                item_id: id_c,
                 similarity: 0.75,
             },
         ];
@@ -761,7 +836,7 @@ mod tests {
             },
         ];
 
-        let rows = build_similar_item_decisions(JobId::new(), 0, &classifications, &search_results);
+        let rows = build_similar_item_decisions(JobId::new(), 0, &classifications, &slots);
 
         // Out-of-range dropped; survivors keep classification order and each
         // resolves by index value to the right item and that entry's similarity.

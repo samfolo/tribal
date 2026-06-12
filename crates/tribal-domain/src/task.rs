@@ -31,10 +31,41 @@ pub enum TaskStatus {
     Queued,
     /// A worker owns this task and is actively processing it.
     Claimed,
+    /// The task drives a suspended agent thread: unclaimable until the
+    /// suspension resolves, holding no lease and no worker slot. The
+    /// claim predicate never selects it; the same row re-queues on
+    /// resolution.
+    Blocked,
     /// Task finished successfully.
     Completed,
     /// Task exhausted its retry budget and has been permanently shelved.
     DeadLetter,
+}
+
+impl TaskStatus {
+    /// Every status, for deriving status sets in one place.
+    ///
+    /// SQL predicates over the status column build their lists from this
+    /// constant filtered by [`TaskStatus::is_terminal`], so a new variant
+    /// reaches every predicate through the exhaustiveness test below
+    /// rather than by auditing query strings.
+    pub const ALL: [Self; 5] = [
+        Self::Queued,
+        Self::Claimed,
+        Self::Blocked,
+        Self::Completed,
+        Self::DeadLetter,
+    ];
+
+    /// Returns `true` for the two terminal statuses.
+    ///
+    /// In-flight is always expressed as NOT-in-terminal, never by
+    /// enumerating the live statuses, so a new live status (such as
+    /// `Blocked`) counts as live everywhere by construction.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::DeadLetter)
+    }
 }
 
 /// Structured classification of a task failure.
@@ -62,6 +93,43 @@ pub enum TaskErrorKind {
     DatabaseError,
     /// Internal logic error (e.g. template rendering failure).
     InternalError,
+    /// The request exceeded the model's context window. Retrying the same
+    /// input cannot succeed. No classifier produces this yet; until one
+    /// does, overflows surface through the provider-error classes and
+    /// retry as before.
+    ContextOverflow,
+}
+
+/// Whether a failure class can succeed on retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorOutcome {
+    /// Retrying the same input cannot succeed; the failure is final.
+    Terminal,
+    /// A retry may succeed.
+    Retryable,
+}
+
+impl TaskErrorKind {
+    /// Returns the terminal-versus-retryable outcome axis for this kind.
+    ///
+    /// The axis lives on the taxonomy itself, never as caller-side
+    /// special-casing: an actor deciding whether to retry asks the kind,
+    /// not the message.
+    #[must_use]
+    pub fn outcome(self) -> ErrorOutcome {
+        match self {
+            Self::ContextOverflow => ErrorOutcome::Terminal,
+            Self::ProviderError
+            | Self::SemaphoreTimeout
+            | Self::ParseError
+            | Self::HeartbeatExpired
+            | Self::StartupReclaim
+            | Self::OwnershipLost
+            | Self::Timeout
+            | Self::DatabaseError
+            | Self::InternalError => ErrorOutcome::Retryable,
+        }
+    }
 }
 
 enum_text_conversions!(TaskType {
@@ -73,6 +141,7 @@ enum_text_conversions!(TaskType {
 enum_text_conversions!(TaskStatus {
     TaskStatus::Queued => "queued",
     TaskStatus::Claimed => "claimed",
+    TaskStatus::Blocked => "blocked",
     TaskStatus::Completed => "completed",
     TaskStatus::DeadLetter => "dead_letter",
 });
@@ -87,6 +156,7 @@ enum_text_conversions!(TaskErrorKind {
     TaskErrorKind::Timeout => "timeout",
     TaskErrorKind::DatabaseError => "database_error",
     TaskErrorKind::InternalError => "internal_error",
+    TaskErrorKind::ContextOverflow => "context_overflow",
 });
 
 /// A task in the ingest pipeline.
@@ -232,6 +302,7 @@ mod tests {
     enum_serde_tests!(test_task_status_serde_roundtrip, TaskStatus {
         TaskStatus::Queued => "queued",
         TaskStatus::Claimed => "claimed",
+        TaskStatus::Blocked => "blocked",
         TaskStatus::Completed => "completed",
         TaskStatus::DeadLetter => "dead_letter",
     });
@@ -246,6 +317,7 @@ mod tests {
         TaskErrorKind::Timeout => "timeout",
         TaskErrorKind::DatabaseError => "database_error",
         TaskErrorKind::InternalError => "internal_error",
+        TaskErrorKind::ContextOverflow => "context_overflow",
     });
 
     enum_text_tests!(test_task_type_text_roundtrip, TaskType {
@@ -257,6 +329,7 @@ mod tests {
     enum_text_tests!(test_task_status_text_roundtrip, TaskStatus {
         TaskStatus::Queued => "queued",
         TaskStatus::Claimed => "claimed",
+        TaskStatus::Blocked => "blocked",
         TaskStatus::Completed => "completed",
         TaskStatus::DeadLetter => "dead_letter",
     });
@@ -271,5 +344,47 @@ mod tests {
         TaskErrorKind::Timeout => "timeout",
         TaskErrorKind::DatabaseError => "database_error",
         TaskErrorKind::InternalError => "internal_error",
+        TaskErrorKind::ContextOverflow => "context_overflow",
     });
+
+    #[test]
+    fn test_all_covers_every_status() {
+        // The exhaustiveness guard for TaskStatus::ALL: a new variant
+        // fails this match until it joins the constant.
+        for status in TaskStatus::ALL {
+            match status {
+                TaskStatus::Queued
+                | TaskStatus::Claimed
+                | TaskStatus::Blocked
+                | TaskStatus::Completed
+                | TaskStatus::DeadLetter => {}
+            }
+        }
+        assert_eq!(TaskStatus::ALL.len(), 5);
+    }
+
+    #[test]
+    fn test_task_status_terminality_partition() {
+        assert!(!TaskStatus::Queued.is_terminal());
+        assert!(!TaskStatus::Claimed.is_terminal());
+        assert!(!TaskStatus::Blocked.is_terminal());
+        assert!(TaskStatus::Completed.is_terminal());
+        assert!(TaskStatus::DeadLetter.is_terminal());
+    }
+
+    #[test]
+    fn test_only_context_overflow_is_terminal() {
+        assert!(matches!(
+            TaskErrorKind::ContextOverflow.outcome(),
+            ErrorOutcome::Terminal
+        ));
+        assert!(matches!(
+            TaskErrorKind::ProviderError.outcome(),
+            ErrorOutcome::Retryable
+        ));
+        assert!(matches!(
+            TaskErrorKind::Timeout.outcome(),
+            ErrorOutcome::Retryable
+        ));
+    }
 }

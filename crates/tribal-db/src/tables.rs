@@ -11,6 +11,10 @@
 /// here when creating migrations — the schema validation test will
 /// catch omissions.
 pub const APPLICATION_TABLES: &[&str] = &[
+    "agent_binding_versions",
+    "agent_driver_tasks",
+    "agent_thread_records",
+    "agent_threads",
     "auth_tokens",
     "embedding_profiles",
     "embeddings",

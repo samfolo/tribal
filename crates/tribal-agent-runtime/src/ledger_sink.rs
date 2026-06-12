@@ -42,12 +42,15 @@ impl PgLedgerSink {
     ) -> NewTokenUsage {
         let trace_id = attribution.trace_id.clone().or_else(current_trace_id);
 
+        let owner = &attribution.owner;
         match usage {
             Usage::Completion { usage: cu } => NewTokenUsage::builder()
-                .job_id(attribution.job_id)
-                .task_id(attribution.task_id)
-                .reindex_run_id(attribution.reindex_run_id)
-                .attempt(attribution.attempt)
+                .job_id(owner.job_id())
+                .task_id(owner.task_id())
+                .reindex_run_id(owner.reindex_run_id())
+                .agent_thread_id(owner.agent_thread_id())
+                .agent_thread_record_id(owner.agent_thread_record_id())
+                .attempt(owner.attempt())
                 .stage(stage)
                 .provider(cu.provider.clone())
                 .model(cu.model.clone())
@@ -61,10 +64,12 @@ impl PgLedgerSink {
                 .trace_id(trace_id)
                 .build(),
             Usage::Embedding { usage: eu, .. } => NewTokenUsage::builder()
-                .job_id(attribution.job_id)
-                .task_id(attribution.task_id)
-                .reindex_run_id(attribution.reindex_run_id)
-                .attempt(attribution.attempt)
+                .job_id(owner.job_id())
+                .task_id(owner.task_id())
+                .reindex_run_id(owner.reindex_run_id())
+                .agent_thread_id(owner.agent_thread_id())
+                .agent_thread_record_id(owner.agent_thread_record_id())
+                .attempt(owner.attempt())
                 .stage(stage)
                 .provider(eu.provider.clone())
                 .model(eu.model.clone())
@@ -154,9 +159,22 @@ impl LedgerSink for PgLedgerSink {
 mod tests {
     use std::time::Duration;
 
-    use tribal_domain::{CompletionUsage, EmbeddingPurpose, EmbeddingUsage, JobId, TaskId};
+    use tribal_domain::{
+        AgentThreadId, AgentThreadRecordId, CompletionUsage, EmbeddingPurpose, EmbeddingUsage,
+        JobId, ReindexRunId, TaskId, UsageOwner,
+    };
 
     use super::*;
+
+    fn a_pipeline_owner(attempt: i32) -> UsageOwner {
+        UsageOwner::Pipeline {
+            job_id: JobId::new(),
+            task_id: TaskId::new(),
+            thread_id: AgentThreadId::new(),
+            record_id: Some(AgentThreadRecordId::new()),
+            attempt,
+        }
+    }
 
     fn a_completion_usage() -> Usage {
         Usage::Completion {
@@ -187,10 +205,9 @@ mod tests {
 
     #[test]
     fn test_completion_row_carries_full_attribution() {
+        let owner = a_pipeline_owner(3);
         let attribution = UsageAttribution {
-            job_id: Some(JobId::new()),
-            task_id: Some(TaskId::new()),
-            attempt: 3,
+            owner,
             trace_id: Some("trace-9".to_owned()),
             ..UsageAttribution::default()
         };
@@ -201,8 +218,11 @@ mod tests {
             &attribution,
         );
 
-        assert_eq!(row.job_id, attribution.job_id);
-        assert_eq!(row.task_id, attribution.task_id);
+        assert_eq!(row.job_id, owner.job_id());
+        assert_eq!(row.task_id, owner.task_id());
+        assert_eq!(row.agent_thread_id, owner.agent_thread_id());
+        assert_eq!(row.agent_thread_record_id, owner.agent_thread_record_id());
+        assert!(row.agent_thread_record_id.is_some());
         assert_eq!(row.attempt, 3);
         assert_eq!(row.tokens_input, 100);
         assert_eq!(row.tokens_output, 50);
@@ -213,12 +233,36 @@ mod tests {
     }
 
     #[test]
+    fn test_reindex_row_carries_the_run_column_alone() {
+        let run_id = ReindexRunId::new();
+        let attribution = UsageAttribution {
+            owner: UsageOwner::Reindex { run_id },
+            ..UsageAttribution::default()
+        };
+
+        let row = PgLedgerSink::new_token_usage(
+            &an_embedding_usage(),
+            TokenUsageStage::Embedding {
+                purpose: EmbeddingPurpose::Candidate,
+            },
+            &attribution,
+        );
+
+        assert_eq!(row.reindex_run_id, Some(run_id));
+        assert_eq!(row.job_id, None);
+        assert_eq!(row.task_id, None);
+        assert_eq!(row.agent_thread_id, None);
+        assert_eq!(row.agent_thread_record_id, None);
+        assert_eq!(row.attempt, 0);
+    }
+
+    #[test]
     fn test_embedding_row_never_carries_prompt_versions() {
         // An embedding call has no prompt, so even an attribution that
         // names prompt versions (a stage attribution shared across the
         // stage's calls) must not attach them to an embedding row.
         let attribution = UsageAttribution {
-            job_id: Some(JobId::new()),
+            owner: a_pipeline_owner(0),
             system_prompt_version_id: Some(tribal_domain::PromptVersionId::new()),
             user_prompt_version_id: Some(tribal_domain::PromptVersionId::new()),
             ..UsageAttribution::default()

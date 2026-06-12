@@ -303,7 +303,9 @@ async fn execute_job_status(
         match task.status() {
             TaskStatus::Completed => tasks_completed += 1,
             TaskStatus::DeadLetter => tasks_failed += 1,
-            _ => {}
+            // In-flight statuses count as neither: a blocked task is a
+            // live sibling, exactly like a queued or claimed one.
+            TaskStatus::Queued | TaskStatus::Claimed | TaskStatus::Blocked => {}
         }
     }
 

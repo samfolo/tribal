@@ -13,9 +13,11 @@
 //! spawn issue that leaks connections across serialised tests.
 
 mod common;
+mod coupling;
 mod extraction;
 mod fixtures;
 mod lifecycle;
 mod relation;
+mod threads;
 mod token_usage;
 mod triage;

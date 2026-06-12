@@ -197,10 +197,13 @@ impl TriageSimilarItemDecisionRepository for PgTriageSimilarItemDecisionReposito
         conn: &mut PgConnection,
         job_id: JobId,
     ) -> Result<Vec<TriageSimilarItemDecision>, DbError> {
+        // The id tiebreak makes the order total: a batch insert shares one
+        // `created_at`, and consumers that render positional context from
+        // this read must re-derive the identical order on a re-read.
         let sql = format!(
             "SELECT {COLUMNS} FROM triage_similar_item_decisions \
              WHERE job_id = $1 \
-             ORDER BY batch_index, created_at",
+             ORDER BY batch_index, created_at, id",
         );
 
         let rows = sqlx::query(&sql)

@@ -15,12 +15,14 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
+use tribal_agent_runtime::PgLedgerSink;
 use tribal_common::JobStateTxs;
 use tribal_config::{PromptSource, TribalConfig};
+use tribal_domain::PipelineParameters;
 use tribal_inference::{InferenceGateway, ProviderIdentity};
-use tribal_mcp::{AppState, build_inference_parameters};
+use tribal_mcp::AppState;
 use tribal_telemetry::{MetricsRecorder, TelemetryGuard};
-use tribal_worker::{PgLedgerSink, Worker, WorkerError};
+use tribal_worker::{Worker, WorkerError};
 
 use crate::{
     error::AppError,
@@ -417,6 +419,7 @@ async fn bootstrap(
     let worker = Arc::new(Worker::new(
         pool_worker.clone(),
         Arc::clone(&gateway),
+        completion_stage_specs(config),
         cancellation_token.clone(),
         config.worker.clone(),
         config.logging.include_llm_content,
@@ -427,14 +430,20 @@ async fn bootstrap(
 
     // -- AppState assembly ---------------------------------------------------
 
-    let inference_parameters = build_inference_parameters(config, active_profile.dimensions());
+    let pipeline_parameters = PipelineParameters {
+        max_candidates_per_job: config.worker.max_candidates_per_job,
+        triage_search_limit: config.worker.triage_search_limit,
+        tag_similarity_threshold: config.worker.tag_similarity_threshold,
+    };
 
     let base = AppState::builder()
         .pool_mcp(pool_mcp)
         .pool_worker(pool_worker)
         .instance_id(instance_id)
         .build_version(Arc::from(env!("TRIBAL_GIT_DESCRIBE")))
-        .inference_parameters(inference_parameters)
+        .stage_specs(completion_stage_specs(config))
+        .embedding_dimensions(active_profile.dimensions())
+        .pipeline_parameters(pipeline_parameters)
         .active_prompt_versions(Arc::new(RwLock::new(active_prompt_versions)))
         .gateway(gateway)
         .embedding_identity(embedding_identity)

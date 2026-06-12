@@ -7,9 +7,10 @@
 
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
+use strum::IntoEnumIterator;
 use tribal_domain::{
-    EmbeddingPurpose, JobId, PipelineStage, PromptVersionId, ReindexRunId, TaskId, TokenUsage,
-    TokenUsageId, TokenUsageStage,
+    AgentThreadId, AgentThreadRecordId, EmbeddingPurpose, JobId, PipelineStage, PromptVersionId,
+    ReindexRunId, TaskId, TaskType, TokenUsage, TokenUsageId, TokenUsageStage,
 };
 use typed_builder::TypedBuilder;
 
@@ -25,6 +26,8 @@ const COLUMNS: Columns = Columns(&[
     "job_id",
     "task_id",
     "reindex_run_id",
+    "agent_thread_id",
+    "agent_thread_record_id",
     "attempt",
     "stage",
     "purpose",
@@ -69,6 +72,13 @@ pub struct NewTokenUsage {
     /// and catch-up embedding, null otherwise).
     #[builder(default)]
     pub reindex_run_id: Option<ReindexRunId>,
+    /// The agent thread this usage belongs to (null for non-thread calls).
+    #[builder(default)]
+    pub agent_thread_id: Option<AgentThreadId>,
+    /// The committed record this usage produced (null until the terminal
+    /// record commits, and forever for calls whose record never commits).
+    #[builder(default)]
+    pub agent_thread_record_id: Option<AgentThreadRecordId>,
     /// Snapshot of the task's retry count at call time.
     pub attempt: i32,
     /// The pipeline stage and optional purpose.
@@ -123,6 +133,26 @@ pub trait TokenUsageRepository {
         new: &NewTokenUsage,
     ) -> Result<TokenUsage, DbError>;
 
+    /// Links one attempt's completion row to the assistant record its
+    /// turn committed, inside the caller's terminal transaction. The row
+    /// is scoped by thread, task, attempt, and the stage's completion
+    /// class — embedding rows attribute to the thread alone, having
+    /// produced no record. Returns the affected row count: zero means
+    /// the sink's best-effort write never landed, which stays
+    /// best-effort here too.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn link_completion_to_record(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        task_id: TaskId,
+        attempt: i32,
+        record_id: AgentThreadRecordId,
+    ) -> Result<u64, DbError>;
+
     /// Finds all token usage records for a given job, ordered by
     /// `created_at ASC`.
     ///
@@ -149,6 +179,44 @@ pub struct PgTokenUsageRepository;
 
 #[async_trait]
 impl TokenUsageRepository for PgTokenUsageRepository {
+    async fn link_completion_to_record(
+        &self,
+        conn: &mut PgConnection,
+        thread_id: AgentThreadId,
+        task_id: TaskId,
+        attempt: i32,
+        record_id: AgentThreadRecordId,
+    ) -> Result<u64, DbError> {
+        // The completion class derives from the task vocabulary, so a
+        // future stage joins this predicate by construction.
+        let completion_stages: Vec<&str> = TaskType::iter()
+            .map(|t| TokenUsageStage::from(t).pipeline_stage().as_str())
+            .collect();
+
+        let result = sqlx::query(
+            "UPDATE token_usage \
+             SET agent_thread_record_id = $5 \
+             WHERE agent_thread_id = $1 \
+               AND task_id = $2 \
+               AND attempt = $3 \
+               AND stage = ANY($4::text[]) \
+               AND agent_thread_record_id IS NULL",
+        )
+        .bind(thread_id.inner())
+        .bind(task_id.inner())
+        .bind(attempt)
+        .bind(&completion_stages)
+        .bind(record_id.inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("linking completion spend to record {record_id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn insert(
         &self,
         conn: &mut PgConnection,
@@ -159,12 +227,13 @@ impl TokenUsageRepository for PgTokenUsageRepository {
 
         let sql = format!(
             "INSERT INTO token_usage \
-                 (job_id, task_id, reindex_run_id, attempt, stage, purpose, provider, model, \
+                 (job_id, task_id, reindex_run_id, agent_thread_id, agent_thread_record_id, \
+                  attempt, stage, purpose, provider, model, \
                   tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, \
                   tokens_total, latency_ms, system_prompt_version_id, user_prompt_version_id, \
                   trace_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $9 + $10, $13, $14, $15, \
-                     $16) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $11 + $12, \
+                     $15, $16, $17, $18) \
              RETURNING {COLUMNS}",
         );
 
@@ -172,6 +241,8 @@ impl TokenUsageRepository for PgTokenUsageRepository {
             .bind(new.job_id.map(|id| *id.inner()))
             .bind(new.task_id.map(|id| *id.inner()))
             .bind(new.reindex_run_id.map(|id| *id.inner()))
+            .bind(new.agent_thread_id.map(|id| *id.inner()))
+            .bind(new.agent_thread_record_id.map(|id| *id.inner()))
             .bind(new.attempt)
             .bind(stage_str)
             .bind(purpose_str)
@@ -269,6 +340,14 @@ fn map_token_usage_row(r: &sqlx::postgres::PgRow) -> TokenUsage {
         .reindex_run_id(
             r.get::<Option<uuid::Uuid>, _>("reindex_run_id")
                 .map(ReindexRunId::from),
+        )
+        .agent_thread_id(
+            r.get::<Option<uuid::Uuid>, _>("agent_thread_id")
+                .map(AgentThreadId::from),
+        )
+        .agent_thread_record_id(
+            r.get::<Option<uuid::Uuid>, _>("agent_thread_record_id")
+                .map(AgentThreadRecordId::from),
         )
         .attempt(r.get("attempt"))
         .stage(

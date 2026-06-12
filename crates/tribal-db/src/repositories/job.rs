@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
     EpisodeId, Job, JobId, JobOutcome, JobStatus, PrincipalId, ProjectId, PromptVersionId,
-    RelationBatchId,
+    RelationBatchId, TaskStatus,
 };
 use typed_builder::TypedBuilder;
 
@@ -163,23 +163,22 @@ pub trait JobRepository {
         project_id: ProjectId,
     ) -> Result<Vec<Job>, DbError>;
 
-    /// Transitions a job's status and returns the updated job.
-    ///
-    /// Sets `updated_at` to `now()` atomically.  Terminal transitions
-    /// must supply appropriate outcome and `error_message` fields to
-    /// satisfy database CHECK constraints.
+    /// Applies a status transition to a live job; a terminal job is a
+    /// silent no-op. Returns `Ok(None)` for the no-op — zero rows is
+    /// success, distinguishable from job-not-found — so a late terminal
+    /// commit against a completed job commits its transaction instead of
+    /// erroring. Invalid transitions are rejected by the table CHECKs.
     ///
     /// # Errors
     ///
     /// Returns [`DbError::NotFound`] if no job with the given ID exists.
-    /// Returns [`DbError::QueryFailed`] on database errors (including
-    /// CHECK constraint violations for invalid transitions).
-    async fn update_status(
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn update_status_if_live(
         &self,
         conn: &mut PgConnection,
         id: JobId,
         transition: &JobStatusTransition,
-    ) -> Result<Job, DbError>;
+    ) -> Result<Option<Job>, DbError>;
 
     /// Sets the batch size and extraction original count, returning the
     /// updated job.
@@ -336,17 +335,23 @@ impl JobRepository for PgJobRepository {
         Ok(rows.iter().map(map_job_row).collect())
     }
 
-    async fn update_status(
+    async fn update_status_if_live(
         &self,
         conn: &mut PgConnection,
         id: JobId,
         transition: &JobStatusTransition,
-    ) -> Result<Job, DbError> {
+    ) -> Result<Option<Job>, DbError> {
+        let terminal: Vec<&str> = JobStatus::ALL
+            .iter()
+            .filter(|status| status.is_terminal())
+            .map(JobStatus::as_str)
+            .collect();
+
         let sql = format!(
             "UPDATE jobs \
              SET status = $2, outcome = $3, error_message = $4, \
                  completed_at = $5, updated_at = now() \
-             WHERE id = $1 \
+             WHERE id = $1 AND NOT (status = ANY($6::text[])) \
              RETURNING {COLUMNS}",
         );
 
@@ -356,18 +361,35 @@ impl JobRepository for PgJobRepository {
             .bind(transition.outcome.map(|o| o.as_str().to_owned()))
             .bind(&transition.error_message)
             .bind(transition.completed_at)
+            .bind(&terminal)
             .fetch_optional(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
                 context: format!("updating job status for {id}"),
                 source: e,
-            })?
-            .ok_or_else(|| DbError::NotFound {
-                entity: "job",
-                id: id.to_string(),
             })?;
 
-        Ok(map_job_row(&row))
+        if let Some(row) = row {
+            return Ok(Some(map_job_row(&row)));
+        }
+
+        // Zero rows: a terminal job (success, no-op) or a missing one.
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
+            .bind(id.inner())
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("checking job {id} after a guarded status update"),
+                source: e,
+            })?;
+        if exists {
+            Ok(None)
+        } else {
+            Err(DbError::NotFound {
+                entity: "job",
+                id: id.to_string(),
+            })
+        }
     }
 
     async fn update_batch_size(
@@ -458,7 +480,12 @@ impl JobRepository for PgJobRepository {
         &self,
         conn: &mut PgConnection,
     ) -> Result<Vec<JobId>, DbError> {
-        let rows = sqlx::query(
+        let job_terminal: Vec<String> = JobStatus::ALL
+            .iter()
+            .filter(|status| status.is_terminal())
+            .map(|status| format!("'{}'", status.as_str()))
+            .collect();
+        let sql = format!(
             "UPDATE jobs \
              SET status = 'failed', \
                  outcome = 'failure', \
@@ -470,15 +497,18 @@ impl JobRepository for PgJobRepository {
                  WHERE t.status = 'dead_letter' \
                  AND t.task_type IN ('extraction', 'relation') \
              ) \
-             AND status NOT IN ('failed', 'completed') \
+             AND status NOT IN ({job_terminal}) \
              RETURNING id",
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: "failing jobs with dead-lettered tasks".to_owned(),
-            source: e,
-        })?;
+            job_terminal = job_terminal.join(", "),
+        );
+        let rows =
+            sqlx::query(&sql)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: "failing jobs with dead-lettered tasks".to_owned(),
+                    source: e,
+                })?;
 
         Ok(rows
             .iter()
@@ -490,7 +520,16 @@ impl JobRepository for PgJobRepository {
         &self,
         conn: &mut PgConnection,
     ) -> Result<Vec<JobId>, DbError> {
-        let rows = sqlx::query(
+        // The live-sibling predicate is NOT-in-terminal, derived from the
+        // task vocabulary: a blocked triage task (suspended thread) holds
+        // the fan-in back through this authority path exactly as it does
+        // through the in-commit count.
+        let task_terminal: Vec<String> = TaskStatus::ALL
+            .iter()
+            .filter(|status| status.is_terminal())
+            .map(|status| format!("'{}'", status.as_str()))
+            .collect();
+        let sql = format!(
             "SELECT j.id FROM jobs j \
              WHERE j.status = 'triaging' \
                AND EXISTS ( \
@@ -502,20 +541,23 @@ impl JobRepository for PgJobRepository {
                    SELECT 1 FROM tasks t \
                    WHERE t.job_id = j.id \
                      AND t.task_type = 'triage' \
-                     AND t.status NOT IN ('completed', 'dead_letter') \
+                     AND t.status NOT IN ({task_terminal}) \
                ) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM tasks t \
                    WHERE t.job_id = j.id \
                      AND t.task_type = 'relation' \
                )",
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: "finding stuck triaging jobs".to_owned(),
-            source: e,
-        })?;
+            task_terminal = task_terminal.join(", "),
+        );
+        let rows =
+            sqlx::query(&sql)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: "finding stuck triaging jobs".to_owned(),
+                    source: e,
+                })?;
 
         Ok(rows
             .iter()

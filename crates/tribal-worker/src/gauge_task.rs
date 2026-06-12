@@ -79,6 +79,9 @@ pub(crate) async fn update_queue_gauges(pool: &PgPool, metrics: &dyn MetricsReco
             "claimed" => {
                 claimed.insert(key, row.count);
             }
+            // Deliberately not gauged: blocked rows hold no worker slot
+            // (a waiting thread is data at rest), and terminal rows are
+            // not queue depth.
             _ => {}
         }
     }

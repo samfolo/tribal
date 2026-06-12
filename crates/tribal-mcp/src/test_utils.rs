@@ -12,7 +12,10 @@ use tribal_auth::{AuthContext, AuthenticatedPrincipal, TransportAuthStrategy};
 use tribal_common::JobStateTxs;
 use tribal_config::{ServerConfig, WorkerConfig};
 use tribal_domain::{PrincipalId, ProjectId, PromptVersionId, ProviderKind};
-use tribal_inference::{EmbeddingProvider, InferenceProvider, ProviderIdentity};
+use tribal_inference::{
+    CompletionStageSpec, CompletionStageSpecs, EmbeddingProvider, InferenceProvider,
+    ProviderIdentity,
+};
 use tribal_telemetry::noop_recorder;
 use tribal_test_utils::{
     MockEmbeddingProvider, MockInferenceProvider, MockJobRepository, MockKnowledgeItemRepository,
@@ -27,7 +30,7 @@ use typed_builder::TypedBuilder;
 use crate::{
     app_state::AppState,
     config::HandlerConfig,
-    fingerprint::PipelineProviderIdentities,
+    fingerprint::FingerprintInputs,
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
     session::{SessionContext, SessionProject},
 };
@@ -112,7 +115,9 @@ impl From<TestHandler> for TribalServerHandler {
                 .pool_worker(th.pool)
                 .instance_id(Arc::from(TEST_INSTANCE_ID))
                 .build_version(Arc::from("test-build"))
-                .inference_parameters(tribal_domain::InferenceParameters::default())
+                .stage_specs(test_stage_specs())
+                .embedding_dimensions(768)
+                .pipeline_parameters(tribal_domain::PipelineParameters::default())
                 .active_prompt_versions(th.active_prompt_versions)
                 .gateway(test_gateway())
                 .embedding_identity(th.embedding_provider.identity().clone())
@@ -277,28 +282,35 @@ pub(crate) fn test_active_prompt_versions() -> ActivePromptVersions {
     }
 }
 
-/// Default [`PipelineProviderIdentities`] for handler tests.
+/// Default stage endpoint specs for handler tests.
 ///
 /// Uses placeholder provider/model names — the specific values do not
 /// matter, only that they thread through to the fingerprint computation.
-pub(crate) fn test_provider_identities() -> PipelineProviderIdentities {
-    PipelineProviderIdentities {
-        extraction: ProviderIdentity {
-            name: "ollama".into(),
-            model: "llama3:70b".into(),
-        },
-        triage: ProviderIdentity {
-            name: "ollama".into(),
-            model: "llama3:8b".into(),
-        },
-        relation: ProviderIdentity {
-            name: "ollama".into(),
-            model: "llama3:8b".into(),
-        },
+pub(crate) fn test_stage_specs() -> CompletionStageSpecs {
+    let spec = |model: &str| CompletionStageSpec {
+        provider: tribal_domain::ProviderKind::Ollama,
+        model: model.to_owned(),
+        base_url: "http://localhost:11434".to_owned(),
+        api_key: String::new(),
+        parameters: tribal_domain::StageParameters::default(),
+    };
+    CompletionStageSpecs {
+        extraction: spec("llama3:70b"),
+        triage: spec("llama3:8b"),
+        relation: spec("llama3:8b"),
+    }
+}
+
+/// Default [`FingerprintInputs`] for handler tests.
+pub(crate) fn test_fingerprint_inputs() -> FingerprintInputs {
+    FingerprintInputs {
+        specs: test_stage_specs(),
         embedding: ProviderIdentity {
             name: "ollama".into(),
             model: "nomic-embed-text".into(),
         },
+        embedding_dimensions: 768,
+        pipeline: tribal_domain::PipelineParameters::default(),
     }
 }
 

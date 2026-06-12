@@ -10,7 +10,7 @@ mod styles;
 pub use command::{
     BootstrapArgs, CheckArgs, Cli, Command, ConfigCommand, ConfigShowArgs, DatabaseArgs,
     McpConfigArgs, ProjectCommand, ProjectListArgs, ProjectRegisterArgs, ReindexCommand,
-    ReindexRunArgs, ServeArgs, SetupArgs, TokenCommand, TokenCreateArgs, TokenListArgs,
-    TokenRevokeAllArgs, TokenRevokeArgs,
+    ReindexRunArgs, ServeArgs, SetupArgs, ThreadsCommand, ThreadsPruneArgs, TokenCommand,
+    TokenCreateArgs, TokenListArgs, TokenRevokeAllArgs, TokenRevokeArgs,
 };
 pub(crate) use flags::PersistableFlag;

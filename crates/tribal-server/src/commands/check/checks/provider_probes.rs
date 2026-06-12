@@ -17,6 +17,7 @@
 use std::{sync::Arc, time::Duration};
 
 use sqlx::PgPool;
+use tribal_agent_runtime::PgLedgerSink;
 use tribal_config::{ProviderStage, TribalConfig};
 use tribal_db::{EmbeddingProfileRepository, PgEmbeddingProfileRepository};
 use tribal_domain::{EmbeddingProfile, ProviderKind, TaskType, normalise_endpoint_url};
@@ -25,7 +26,6 @@ use tribal_inference::{
     resolve_dimensions,
 };
 use tribal_telemetry::noop_recorder;
-use tribal_worker::PgLedgerSink;
 
 use super::{
     state::CheckState,

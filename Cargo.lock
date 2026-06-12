@@ -5389,6 +5389,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "tribal-agent-runtime",
  "tribal-auth",
  "tribal-common",
  "tribal-config",
@@ -5403,6 +5404,27 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "tribal-agent-runtime"
+version = "0.3.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tribal-common",
+ "tribal-db",
+ "tribal-domain",
+ "tribal-inference",
+ "tribal-telemetry",
+ "tribal-test-utils",
+ "uuid",
 ]
 
 [[package]]
@@ -5474,6 +5496,7 @@ dependencies = [
  "pgvector",
  "serde_json",
  "sqlx",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5660,6 +5683,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tribal-agent-runtime",
  "tribal-common",
  "tribal-config",
  "tribal-db",

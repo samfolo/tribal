@@ -8,6 +8,9 @@
 #[path = "repositories/advisory_lock.rs"]
 mod advisory_lock;
 
+#[path = "repositories/agent_thread.rs"]
+mod agent_thread;
+
 #[path = "repositories/auth_token.rs"]
 mod auth_token;
 

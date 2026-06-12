@@ -1,20 +1,23 @@
 //! System fingerprint computation: hash derivation and construction.
 //!
 //! The system fingerprint captures all inference-affecting configuration
-//! values as a content-addressed SHA-256 hash. This module provides the
-//! functions to compute that hash and build the repository input type.
+//! values as a content-addressed SHA-256 hash. Per-stage configuration
+//! (prompts, provider, model, sampling parameters) is subsumed by that
+//! stage's content-addressed binding version, derived here through the
+//! same constructor the worker uses at claim, so the recorded composite
+//! names exactly the binding versions execution resolves. The composite
+//! adds what no stage binding carries: the build version, the job-level
+//! pipeline parameters, and the embedding identity with its dimensions.
 
 use std::collections::HashMap;
 
 use sqlx::PgConnection;
 use tribal_common::sha256_hex;
-use tribal_config::{StageInferenceConfig, TribalConfig};
 use tribal_db::{DbError, NewSystemFingerprint};
 use tribal_domain::{
-    EmbeddingParameters, InferenceParameters, McpErrorCode, PipelineParameters, PromptStage,
-    PromptVersion, PromptVersionId, StageParameters,
+    AgentDefinition, McpErrorCode, PipelineParameters, PromptVersion, PromptVersionId, TaskType,
 };
-use tribal_inference::{ProviderIdentity, resolve};
+use tribal_inference::{CompletionStageSpec, CompletionStageSpecs, ProviderIdentity};
 
 use crate::{
     error::{IntoMcpError, McpToolError},
@@ -27,11 +30,6 @@ use crate::{
 
 pub(crate) const MISSING_PROMPT_VERSIONS: &str =
     "one or more active prompt versions could not be found in the database";
-
-/// Logged when a stage's configured `temperature` is ignored because its model
-/// samples adaptively. The drop happens here (config projection) rather than at
-/// the wire, so this is where the operator is told their value took no effect.
-const CONFIGURED_TEMPERATURE_IGNORED: &str = "ignoring configured temperature: stage model samples adaptively and rejects sampling parameters";
 
 // ---------------------------------------------------------------------------
 // PromptContentHashes
@@ -86,100 +84,84 @@ impl PromptContentHashes {
                 .to_string(),
         })
     }
-
-    /// Returns hashes in canonical order, matching the
-    /// `SystemFingerprint` struct field declaration order.
-    fn as_ordered_slice(&self) -> [&str; 6] {
-        [
-            &self.extraction_system,
-            &self.extraction_user,
-            &self.triage_system,
-            &self.triage_user,
-            &self.relation_system,
-            &self.relation_user,
-        ]
-    }
 }
 
 // ---------------------------------------------------------------------------
-// PipelineProviderIdentities
+// FingerprintInputs
 // ---------------------------------------------------------------------------
 
-/// Provider identities for all inference and embedding providers.
+/// The boot-static fingerprint inputs.
 ///
-/// Reuses [`ProviderIdentity`] from the inference crate — the same
-/// type returned by each provider's `identity()` method.
-pub(crate) struct PipelineProviderIdentities {
-    pub extraction: ProviderIdentity,
-    pub triage: ProviderIdentity,
-    pub relation: ProviderIdentity,
+/// The stage specs carry post-reconcile sampling parameters, so the
+/// binding hashes derived from them record the effective request shape;
+/// the embedding identity and pipeline parameters are the inputs no
+/// stage binding subsumes.
+#[derive(Debug, Clone)]
+pub(crate) struct FingerprintInputs {
+    /// The three stage endpoint specs.
+    pub specs: CompletionStageSpecs,
+    /// The active embedding identity.
     pub embedding: ProviderIdentity,
+    /// The active embedding dimensionality.
+    pub embedding_dimensions: u32,
+    /// The job-level pipeline parameters.
+    pub pipeline: PipelineParameters,
 }
 
-// ---------------------------------------------------------------------------
-// Construction helpers
-// ---------------------------------------------------------------------------
-
-/// Builds [`InferenceParameters`] from the resolved configuration and the live
-/// embedding dimension.
-///
-/// Each stage's sampling parameters are resolved through the capability layer
-/// so the fingerprint records the effective post-reconcile shape: a stage
-/// whose model samples adaptively records `temperature` as unset, matching
-/// what the wire layer sends, rather than the raw configured value. The
-/// embedding dimension is the active profile's, supplied by the caller rather
-/// than read from config, so it records the resolved geometry rather than the
-/// configured default.
-#[must_use]
-pub fn build_inference_parameters(
-    config: &TribalConfig,
-    embedding_dimensions: u32,
-) -> InferenceParameters {
-    InferenceParameters {
-        extraction: stage_parameters(PromptStage::Extraction, &config.inference.extraction),
-        triage: stage_parameters(PromptStage::Triage, &config.inference.triage),
-        relation: stage_parameters(PromptStage::Relation, &config.inference.relation),
-        embedding: EmbeddingParameters {
-            dimensions: embedding_dimensions,
-        },
-        pipeline: PipelineParameters {
-            max_candidates_per_job: config.worker.max_candidates_per_job,
-            triage_search_limit: config.worker.triage_search_limit,
-            tag_similarity_threshold: config.worker.tag_similarity_threshold,
-        },
-    }
+/// The three stage binding hashes the fingerprint composes.
+struct StageBindingHashes {
+    extraction: String,
+    triage: String,
+    relation: String,
 }
 
-/// Derives a stage's effective [`StageParameters`] by resolving its
-/// `(provider, model)` through the capability layer.
-///
-/// `temperature` is recorded as unset when the resolved target samples
-/// adaptively; a configured value that is thereby ignored is logged once
-/// (naming the stage), since this projection — not the wire layer — is where
-/// it is actually dropped. The `max_tokens` value is unaffected (only its wire
-/// field name varies, which does not change the recorded value).
-fn stage_parameters(stage: PromptStage, config: &StageInferenceConfig) -> StageParameters {
-    let temperature = if resolve(config.provider, &config.model)
-        .sampling
-        .accepts_overrides()
-    {
-        config.temperature
-    } else {
-        if let Some(temperature) = config.temperature {
-            tracing::warn!(
-                stage = %stage,
-                model = %config.model,
-                temperature,
-                "{CONFIGURED_TEMPERATURE_IGNORED}"
-            );
-        }
-        None
-    };
+/// Derives the three stage binding hashes from the boot-time endpoint
+/// specs and the active prompt content hashes, through the same
+/// definition constructor the worker uses at claim.
+fn stage_binding_hashes(
+    specs: &CompletionStageSpecs,
+    hashes: &PromptContentHashes,
+) -> Result<StageBindingHashes, serde_json::Error> {
+    Ok(StageBindingHashes {
+        extraction: binding_hash(
+            TaskType::Extraction,
+            &specs.extraction,
+            &hashes.extraction_system,
+            &hashes.extraction_user,
+        )?,
+        triage: binding_hash(
+            TaskType::Triage,
+            &specs.triage,
+            &hashes.triage_system,
+            &hashes.triage_user,
+        )?,
+        relation: binding_hash(
+            TaskType::Relation,
+            &specs.relation,
+            &hashes.relation_system,
+            &hashes.relation_user,
+        )?,
+    })
+}
 
-    StageParameters {
-        temperature,
-        max_tokens: config.max_tokens,
-    }
+/// One stage's binding hash: the content address over the canonically
+/// serialised default one-shot definition.
+fn binding_hash(
+    stage: TaskType,
+    spec: &CompletionStageSpec,
+    system_prompt_hash: &str,
+    user_prompt_hash: &str,
+) -> Result<String, serde_json::Error> {
+    let definition = AgentDefinition::one_shot(
+        stage,
+        spec.provider,
+        spec.model.clone(),
+        spec.base_url.clone(),
+        spec.parameters.clone(),
+        system_prompt_hash.to_owned(),
+        user_prompt_hash.to_owned(),
+    );
+    Ok(sha256_hex(&definition.canonical_json()?))
 }
 
 // ---------------------------------------------------------------------------
@@ -188,71 +170,30 @@ fn stage_parameters(stage: PromptStage, config: &StageInferenceConfig) -> StageP
 
 /// Computes the system fingerprint SHA-256 hash.
 ///
-/// Input fields are concatenated with newline separators: prompt
-/// content hashes, then provider identity strings, then build version,
-/// then canonical JSON of `InferenceParameters`.
-pub(crate) fn compute_fingerprint_hash(
-    hashes: &PromptContentHashes,
-    provider_identities: &PipelineProviderIdentities,
+/// Input fields are concatenated with newline separators: the three
+/// stage binding hashes, the build version, the embedding identity with
+/// its dimensions, then canonical JSON of the pipeline parameters.
+fn compute_fingerprint_hash(
+    bindings: &StageBindingHashes,
     build_version: &str,
-    params: &InferenceParameters,
+    inputs: &FingerprintInputs,
 ) -> String {
-    let ordered = hashes.as_ordered_slice();
-
-    let parts: Vec<&str> = ordered
-        .iter()
-        .copied()
-        .chain([
-            provider_identities.extraction.name.as_str(),
-            provider_identities.extraction.model.as_str(),
-            provider_identities.triage.name.as_str(),
-            provider_identities.triage.model.as_str(),
-            provider_identities.relation.name.as_str(),
-            provider_identities.relation.model.as_str(),
-            provider_identities.embedding.name.as_str(),
-            provider_identities.embedding.model.as_str(),
-            build_version,
-        ])
-        .collect();
-
-    let json = params.to_canonical_json();
+    let dimensions = inputs.embedding_dimensions.to_string();
+    let parts = [
+        bindings.extraction.as_str(),
+        bindings.triage.as_str(),
+        bindings.relation.as_str(),
+        build_version,
+        inputs.embedding.name.as_str(),
+        inputs.embedding.model.as_str(),
+        dimensions.as_str(),
+    ];
 
     let mut concatenated = parts.join("\n");
     concatenated.push('\n');
-    concatenated.push_str(&json);
+    concatenated.push_str(&inputs.pipeline.to_canonical_json());
 
     sha256_hex(&concatenated)
-}
-
-/// Builds a [`NewSystemFingerprint`] from all component values.
-pub(crate) fn build_new_system_fingerprint(
-    content_hash: &str,
-    build_version: &str,
-    active: &ActivePromptVersions,
-    provider_identities: &PipelineProviderIdentities,
-    params: &InferenceParameters,
-) -> NewSystemFingerprint {
-    NewSystemFingerprint::builder()
-        .content_hash(content_hash.to_owned())
-        .build_version(build_version.to_owned())
-        .extraction_system_prompt_version_id(active.extraction_system_prompt_version_id)
-        .extraction_user_prompt_version_id(active.extraction_user_prompt_version_id)
-        .triage_system_prompt_version_id(active.triage_system_prompt_version_id)
-        .triage_user_prompt_version_id(active.triage_user_prompt_version_id)
-        .relation_system_prompt_version_id(active.relation_system_prompt_version_id)
-        .relation_user_prompt_version_id(active.relation_user_prompt_version_id)
-        .extraction_inference_provider(provider_identities.extraction.name.clone())
-        .extraction_inference_model(provider_identities.extraction.model.clone())
-        .triage_inference_provider(provider_identities.triage.name.clone())
-        .triage_inference_model(provider_identities.triage.model.clone())
-        .relation_inference_provider(provider_identities.relation.name.clone())
-        .relation_inference_model(provider_identities.relation.model.clone())
-        .embedding_provider(provider_identities.embedding.name.clone())
-        .embedding_model(provider_identities.embedding.model.clone())
-        .inference_parameters(
-            serde_json::to_value(params).expect("InferenceParameters serialisation is infallible"),
-        )
-        .build()
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +215,12 @@ pub(crate) enum FingerprintError {
         /// Number of prompt versions found in the database.
         found: usize,
     },
+
+    #[error("serialising a stage definition for the fingerprint failed")]
+    DefinitionSerialisation {
+        #[from]
+        source: serde_json::Error,
+    },
 }
 
 impl IntoMcpError for FingerprintError {
@@ -292,6 +239,13 @@ impl IntoMcpError for FingerprintError {
                     "found": found,
                 }),
             },
+            Self::DefinitionSerialisation { source } => McpToolError {
+                code: McpErrorCode::Internal,
+                message: format!(
+                    "serialising a stage definition for the fingerprint failed: {source}"
+                ),
+                details: serde_json::Value::Null,
+            },
         }
     }
 }
@@ -300,15 +254,15 @@ impl IntoMcpError for FingerprintError {
 // Combined compute + upsert
 // ---------------------------------------------------------------------------
 
-/// Looks up prompt content hashes, computes the fingerprint hash,
-/// upserts the fingerprint record, and returns the content hash.
+/// Looks up prompt content hashes, derives the stage binding hashes,
+/// computes the fingerprint hash, upserts the fingerprint record, and
+/// returns the content hash.
 pub(crate) async fn compute_and_upsert_fingerprint(
     conn: &mut PgConnection,
     repositories: &ConnectionRepositories,
     active_prompts: &ActivePromptVersions,
-    provider_identities: &PipelineProviderIdentities,
     build_version: &str,
-    inference_parameters: &InferenceParameters,
+    inputs: &FingerprintInputs,
 ) -> Result<String, FingerprintError> {
     let version_ids = active_prompts.version_ids();
 
@@ -327,20 +281,20 @@ pub(crate) async fn compute_and_upsert_fingerprint(
         },
     )?;
 
-    let fingerprint_hash = compute_fingerprint_hash(
-        &content_hashes,
-        provider_identities,
-        build_version,
-        inference_parameters,
-    );
+    let bindings = stage_binding_hashes(&inputs.specs, &content_hashes)?;
+    let fingerprint_hash = compute_fingerprint_hash(&bindings, build_version, inputs);
 
-    let new_fingerprint = build_new_system_fingerprint(
-        &fingerprint_hash,
-        build_version,
-        active_prompts,
-        provider_identities,
-        inference_parameters,
-    );
+    let new_fingerprint = NewSystemFingerprint::builder()
+        .content_hash(fingerprint_hash.clone())
+        .build_version(build_version.to_owned())
+        .extraction_binding_hash(bindings.extraction)
+        .triage_binding_hash(bindings.triage)
+        .relation_binding_hash(bindings.relation)
+        .embedding_provider(inputs.embedding.name.clone())
+        .embedding_model(inputs.embedding.model.clone())
+        .embedding_dimensions(inputs.embedding_dimensions)
+        .pipeline_parameters(serde_json::to_value(&inputs.pipeline)?)
+        .build();
 
     repositories
         .system_fingerprint
@@ -357,8 +311,7 @@ pub(crate) async fn compute_and_upsert_fingerprint(
 #[cfg(test)]
 mod tests {
     use tribal_common::SHA256_HEX_LENGTH;
-    use tribal_config::DEFAULT_EMBEDDING_DIMENSIONS;
-    use tribal_domain::ProviderKind;
+    use tribal_domain::{ProviderKind, StageParameters};
 
     use super::*;
 
@@ -373,42 +326,31 @@ mod tests {
         }
     }
 
-    fn test_provider_identities() -> PipelineProviderIdentities {
-        PipelineProviderIdentities {
-            extraction: ProviderIdentity {
-                name: "ollama".into(),
-                model: "llama3:70b".into(),
+    fn a_spec(model: &str, temperature: Option<f64>) -> CompletionStageSpec {
+        CompletionStageSpec {
+            provider: ProviderKind::Ollama,
+            model: model.to_owned(),
+            base_url: "http://localhost:11434".to_owned(),
+            api_key: String::new(),
+            parameters: StageParameters {
+                temperature,
+                max_tokens: Some(2048),
             },
-            triage: ProviderIdentity {
-                name: "ollama".into(),
-                model: "llama3:8b".into(),
-            },
-            relation: ProviderIdentity {
-                name: "ollama".into(),
-                model: "llama3:8b".into(),
+        }
+    }
+
+    fn test_inputs() -> FingerprintInputs {
+        FingerprintInputs {
+            specs: CompletionStageSpecs {
+                extraction: a_spec("llama3:70b", Some(0.2)),
+                triage: a_spec("llama3:8b", Some(0.1)),
+                relation: a_spec("llama3:8b", Some(0.1)),
             },
             embedding: ProviderIdentity {
                 name: "ollama".into(),
                 model: "nomic-embed-text".into(),
             },
-        }
-    }
-
-    fn test_params() -> InferenceParameters {
-        InferenceParameters {
-            extraction: StageParameters {
-                temperature: Some(0.2),
-                max_tokens: Some(4096),
-            },
-            triage: StageParameters {
-                temperature: Some(0.1),
-                max_tokens: Some(2048),
-            },
-            relation: StageParameters {
-                temperature: Some(0.1),
-                max_tokens: Some(2048),
-            },
-            embedding: EmbeddingParameters { dimensions: 768 },
+            embedding_dimensions: 768,
             pipeline: PipelineParameters {
                 max_candidates_per_job: 20,
                 triage_search_limit: 10,
@@ -417,14 +359,15 @@ mod tests {
         }
     }
 
+    fn hash_of(inputs: &FingerprintInputs, build_version: &str) -> String {
+        let bindings =
+            stage_binding_hashes(&inputs.specs, &test_hashes()).expect("definitions serialise");
+        compute_fingerprint_hash(&bindings, build_version, inputs)
+    }
+
     #[test]
     fn test_hash_produces_valid_hex() {
-        let hash = compute_fingerprint_hash(
-            &test_hashes(),
-            &test_provider_identities(),
-            "v0.1.0-abc123",
-            &test_params(),
-        );
+        let hash = hash_of(&test_inputs(), "v0.1.0-abc123");
 
         assert_eq!(hash.len(), SHA256_HEX_LENGTH);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
@@ -432,130 +375,83 @@ mod tests {
 
     #[test]
     fn test_hash_is_deterministic() {
-        let a = compute_fingerprint_hash(
-            &test_hashes(),
-            &test_provider_identities(),
-            "v0.1.0",
-            &test_params(),
+        assert_eq!(
+            hash_of(&test_inputs(), "v0.1.0"),
+            hash_of(&test_inputs(), "v0.1.0")
         );
-        let b = compute_fingerprint_hash(
-            &test_hashes(),
-            &test_provider_identities(),
-            "v0.1.0",
-            &test_params(),
-        );
-
-        assert_eq!(a, b);
     }
 
     #[test]
     fn test_changing_build_version_changes_hash() {
-        let a = compute_fingerprint_hash(
-            &test_hashes(),
-            &test_provider_identities(),
-            "v0.1.0",
-            &test_params(),
+        assert_ne!(
+            hash_of(&test_inputs(), "v0.1.0"),
+            hash_of(&test_inputs(), "v0.2.0")
         );
-        let b = compute_fingerprint_hash(
-            &test_hashes(),
-            &test_provider_identities(),
-            "v0.2.0",
-            &test_params(),
-        );
-
-        assert_ne!(a, b);
     }
 
     #[test]
     fn test_changing_prompt_hash_changes_fingerprint() {
-        let mut hashes = test_hashes();
-        let a = compute_fingerprint_hash(
-            &hashes,
-            &test_provider_identities(),
-            "v0.1.0",
-            &test_params(),
-        );
+        let inputs = test_inputs();
+        let a = hash_of(&inputs, "v0.1.0");
 
+        let mut hashes = test_hashes();
         hashes.extraction_system = "0".repeat(64);
-        let b = compute_fingerprint_hash(
-            &hashes,
-            &test_provider_identities(),
-            "v0.1.0",
-            &test_params(),
-        );
+        let bindings = stage_binding_hashes(&inputs.specs, &hashes).expect("definitions serialise");
+        let b = compute_fingerprint_hash(&bindings, "v0.1.0", &inputs);
 
         assert_ne!(a, b);
     }
 
     #[test]
     fn test_changing_model_changes_hash() {
-        let mut identities = test_provider_identities();
-        let a = compute_fingerprint_hash(&test_hashes(), &identities, "v0.1.0", &test_params());
+        let mut inputs = test_inputs();
+        let a = hash_of(&inputs, "v0.1.0");
 
-        identities.triage.model = "different-model".into();
-        let b = compute_fingerprint_hash(&test_hashes(), &identities, "v0.1.0", &test_params());
-
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn test_changing_inference_param_changes_hash() {
-        let mut params = test_params();
-        let a = compute_fingerprint_hash(
-            &test_hashes(),
-            &test_provider_identities(),
-            "v0.1.0",
-            &params,
-        );
-
-        params.extraction.temperature = Some(0.9);
-        let b = compute_fingerprint_hash(
-            &test_hashes(),
-            &test_provider_identities(),
-            "v0.1.0",
-            &params,
-        );
+        inputs.specs.triage.model = "different-model".into();
+        let b = hash_of(&inputs, "v0.1.0");
 
         assert_ne!(a, b);
     }
 
     #[test]
-    fn test_build_inference_parameters_from_config() {
-        // The default config uses an Ollama (sampling-configurable) model, so
-        // the configured sampling values pass through unchanged.
-        let config = TribalConfig::default();
-        let params = build_inference_parameters(&config, DEFAULT_EMBEDDING_DIMENSIONS);
+    fn test_a_sampling_parameter_edit_changes_the_binding_and_the_fingerprint() {
+        // The composite changes when the binding does: a temperature edit
+        // is a new binding version, and the fingerprint follows it.
+        let inputs = test_inputs();
+        let bindings_before =
+            stage_binding_hashes(&inputs.specs, &test_hashes()).expect("serialises");
+        let a = hash_of(&inputs, "v0.1.0");
 
-        assert_eq!(
-            params.extraction.temperature,
-            config.inference.extraction.temperature
-        );
-        assert_eq!(
-            params.extraction.max_tokens,
-            config.inference.extraction.max_tokens
-        );
-        assert_eq!(params.embedding.dimensions, DEFAULT_EMBEDDING_DIMENSIONS);
-        assert_eq!(
-            params.pipeline.max_candidates_per_job,
-            config.worker.max_candidates_per_job
-        );
+        let mut edited = inputs.clone();
+        edited.specs.extraction.parameters.temperature = Some(0.9);
+        let bindings_after =
+            stage_binding_hashes(&edited.specs, &test_hashes()).expect("serialises");
+        let b = hash_of(&edited, "v0.1.0");
+
+        assert_ne!(bindings_before.extraction, bindings_after.extraction);
+        assert_eq!(bindings_before.triage, bindings_after.triage);
+        assert_ne!(a, b);
     }
 
     #[test]
-    fn test_build_inference_parameters_nulls_temperature_for_adaptive_model() {
-        // A configured temperature on an adaptive-sampling model is recorded
-        // as unset (the effective post-reconcile shape); the max_tokens value
-        // is retained.
-        let mut config = TribalConfig::default();
-        config.inference.extraction.provider = ProviderKind::OpenAi;
-        config.inference.extraction.model = "o3".into();
-        config.inference.extraction.api_key = Some("test-key".parse().unwrap());
-        config.inference.extraction.temperature = Some(0.7);
-        config.inference.extraction.max_tokens = Some(512);
+    fn test_changing_pipeline_parameters_changes_hash() {
+        let mut inputs = test_inputs();
+        let a = hash_of(&inputs, "v0.1.0");
 
-        let params = build_inference_parameters(&config, DEFAULT_EMBEDDING_DIMENSIONS);
+        inputs.pipeline.triage_search_limit = 25;
+        let b = hash_of(&inputs, "v0.1.0");
 
-        assert_eq!(params.extraction.temperature, None);
-        assert_eq!(params.extraction.max_tokens, Some(512));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_changing_embedding_dimensions_changes_hash() {
+        let mut inputs = test_inputs();
+        let a = hash_of(&inputs, "v0.1.0");
+
+        inputs.embedding_dimensions = 1024;
+        let b = hash_of(&inputs, "v0.1.0");
+
+        assert_ne!(a, b);
     }
 }

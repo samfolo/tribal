@@ -6,7 +6,7 @@ use tribal_config::{
     InferenceStageCliOverrides, InitCliOverrides, ServerCliOverrides, TelemetryCliOverrides,
     TransportKind, default_config_file_path,
 };
-use tribal_domain::{ProviderKind, Scope, is_mintable_scope};
+use tribal_domain::{ProviderKind, Scope, TaskType, is_mintable_scope};
 
 use super::{flags::PersistableFlag, styles::STYLES};
 
@@ -154,6 +154,10 @@ pub enum Command {
     /// Migrate the embedding space: run, cancel, or prune a reindex.
     #[command(subcommand, display_order = 8)]
     Reindex(ReindexCommand),
+
+    /// Manage durable agent threads.
+    #[command(subcommand, display_order = 9)]
+    Threads(ThreadsCommand),
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,4 +1781,51 @@ mod tests {
             Some(ENV_PROJECT_ID),
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Threads
+// ---------------------------------------------------------------------------
+
+/// Durable agent-thread subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ThreadsCommand {
+    /// Delete terminal threads and their records by explicit criteria.
+    /// Spend rows in the ledger survive with their thread references
+    /// cleared. Without `--cascade` any candidate with descendants is
+    /// refused; with it, a pass extends to the terminal descendants of
+    /// accepted candidates, refusing only candidates whose subtree still
+    /// holds a live thread. Use `--dry-run` to see what a pass would
+    /// collect.
+    Prune {
+        /// Arguments for the prune pass.
+        #[command(flatten)]
+        args: ThreadsPruneArgs,
+    },
+}
+
+/// Arguments for `threads prune`.
+#[derive(Debug, Args)]
+pub struct ThreadsPruneArgs {
+    /// Prune threads whose terminal commit is older than this many days.
+    #[arg(long = "older-than-days", help_heading = "Threads")]
+    pub older_than_days: u32,
+
+    /// Restrict the pass to one pipeline stage (extraction, triage,
+    /// relation).
+    #[arg(long, value_parser = clap::value_parser!(TaskType), help_heading = "Threads")]
+    pub stage: Option<TaskType>,
+
+    /// Also delete the terminal descendants of accepted candidates; a
+    /// live descendant still refuses its whole subtree.
+    #[arg(long, help_heading = "Threads")]
+    pub cascade: bool,
+
+    /// Report what the pass would collect without deleting anything.
+    #[arg(long = "dry-run", help_heading = "Threads")]
+    pub dry_run: bool,
+
+    /// Database connection options.
+    #[command(flatten)]
+    pub database: DatabaseArgs,
 }

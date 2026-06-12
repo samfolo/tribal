@@ -8,9 +8,15 @@
 
 pub(crate) mod backfill;
 pub(crate) mod backoff;
+pub mod coupling;
+mod thread;
+mod thread_sweep;
+
+pub(crate) use thread::map_runtime_error;
 mod dispatch;
 pub(crate) mod heartbeat;
 pub(crate) mod reindex;
 pub(crate) mod reindex_ops;
 
 pub use dispatch::Worker;
+pub use heartbeat::ThreadReclaimStats;
