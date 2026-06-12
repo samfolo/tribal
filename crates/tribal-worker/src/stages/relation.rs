@@ -205,7 +205,7 @@ impl Worker {
             if include_llm_content {
                 tracing::debug!(
                     system_prompt = %request.system.as_deref().unwrap_or(""),
-                    user_prompt = %request.messages.first().map_or("", |m| m.content.as_str()),
+                    user_prompt = %request.messages.first().map_or("", |m| m.content()),
                     "relation prompt assembled",
                 );
             }

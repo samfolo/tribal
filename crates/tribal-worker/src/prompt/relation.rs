@@ -5,7 +5,7 @@ use serde::Serialize;
 use tribal_domain::{
     Candidate, KnowledgeItemId, RelationHint, RelationSuggestion, StageParameters,
 };
-use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
+use tribal_inference::{CompletionRequest, Message, ResponseFormat};
 
 use super::renderer::PromptRenderer;
 use crate::{
@@ -132,10 +132,10 @@ pub(crate) fn assemble_relation_prompt(
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
-        messages: vec![Message {
-            role: Role::User,
+        messages: vec![Message::User {
             content: rendered_user,
         }],
+        tools: vec![],
         temperature: narrow_temperature(params.temperature),
         max_tokens: params.max_tokens,
         response_format: Some(ResponseFormat::JsonSchema {
@@ -151,6 +151,8 @@ pub(crate) fn assemble_relation_prompt(
 #[cfg(test)]
 mod tests {
     use tribal_domain::TaskErrorKind;
+
+    use tribal_inference::Role;
 
     use super::*;
     use crate::prompt::SimilarityBand;
@@ -283,7 +285,7 @@ mod tests {
             &StageParameters::default(),
         )
         .unwrap();
-        let user_content = &request.messages[0].content;
+        let user_content = request.messages[0].content();
 
         assert!(
             user_content.contains("0: created"),
@@ -319,7 +321,7 @@ mod tests {
         let request =
             assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
                 .unwrap();
-        let user_content = &request.messages[0].content;
+        let user_content = request.messages[0].content();
 
         assert!(
             user_content.contains("0 -> 1: derived_from"),
@@ -340,7 +342,7 @@ mod tests {
         let request =
             assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
                 .unwrap();
-        let user_content = &request.messages[0].content;
+        let user_content = request.messages[0].content();
 
         assert!(
             user_content.contains("batch 0:"),
@@ -414,9 +416,9 @@ mod tests {
             assemble_relation_prompt("system", user_template, &ctx, &StageParameters::default())
                 .unwrap();
         assert_eq!(request.messages.len(), 1);
-        assert_eq!(request.messages[0].role, Role::User);
+        assert_eq!(request.messages[0].role(), Role::User);
 
-        let content = &request.messages[0].content;
+        let content = request.messages[0].content();
         assert!(
             content.contains("Rust has zero-cost abstractions"),
             "should contain candidate content: {content}",

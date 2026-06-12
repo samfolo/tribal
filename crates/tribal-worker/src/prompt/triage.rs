@@ -4,7 +4,7 @@ use schemars::schema_for;
 use serde::Serialize;
 use tribal_db::SemanticSearchResult;
 use tribal_domain::{Candidate, KnowledgeItemId, KnowledgeKind, StageParameters, TagRegistryEntry};
-use tribal_inference::{CompletionRequest, Message, ResponseFormat, Role};
+use tribal_inference::{CompletionRequest, Message, ResponseFormat};
 
 use super::{legends::SimilarityBand, renderer::PromptRenderer};
 use crate::{
@@ -114,10 +114,10 @@ pub(crate) fn assemble_triage_prompt(
 
     Ok(CompletionRequest {
         system: Some(rendered_system),
-        messages: vec![Message {
-            role: Role::User,
+        messages: vec![Message::User {
             content: rendered_user,
         }],
+        tools: vec![],
         temperature: narrow_temperature(params.temperature),
         max_tokens: params.max_tokens,
         response_format: Some(ResponseFormat::JsonSchema {
@@ -134,6 +134,8 @@ pub(crate) fn assemble_triage_prompt(
 mod tests {
     use tribal_domain::TaskErrorKind;
     use tribal_test_utils::a_tag_registry_entry;
+
+    use tribal_inference::Role;
 
     use super::*;
 
@@ -192,7 +194,7 @@ mod tests {
         );
         assert!(result.is_ok());
         let request = result.unwrap();
-        let user_content = &request.messages[0].content;
+        let user_content = request.messages[0].content();
         assert!(user_content.contains("rust"), "user prompt: {user_content}");
         assert!(
             user_content.contains("testing"),
@@ -265,10 +267,10 @@ mod tests {
         assert!(result.is_ok());
         let request = result.unwrap();
         assert_eq!(request.messages.len(), 1);
-        assert_eq!(request.messages[0].role, Role::User);
+        assert_eq!(request.messages[0].role(), Role::User);
         assert!(
             request.messages[0]
-                .content
+                .content()
                 .contains("Rust has zero-cost abstractions"),
         );
     }
@@ -293,9 +295,9 @@ mod tests {
         );
         let request = result.unwrap();
         assert!(
-            request.messages[0].content.contains("high"),
+            request.messages[0].content().contains("high"),
             "should contain label: {}",
-            request.messages[0].content,
+            request.messages[0].content(),
         );
     }
 
