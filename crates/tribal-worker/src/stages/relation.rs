@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use tracing::Instrument;
+use tribal_agent_runtime::StageThread;
 use tribal_common::clamp_to_u32;
 use tribal_db::{
     ExtractionResultRepository, KnowledgeItemRepository, NewKnowledgeItemRelation,
@@ -11,9 +12,9 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    Candidate, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
-    RelationKind, Task, TaskType, TriageOutcome, TriageResult, TriageSimilarItemDecision,
-    span_attrs,
+    Candidate, CompletionResponse, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId,
+    RelationHint, RelationKind, Task, TaskType, TriageOutcome, TriageResult,
+    TriageSimilarItemDecision, span_attrs,
 };
 use tribal_inference::PermitWait;
 
@@ -128,7 +129,8 @@ impl Worker {
     ///
     /// Loads triage results and extraction relation hints, calls the
     /// relation LLM, normalises and filters edges, and returns a
-    /// [`StageOutput`] ready for atomic commit.
+    /// stage commit ready for the atomic commit, with the response for
+    /// the thread terminal.
     ///
     /// Returns early with a no-op if `committed_batch_id` is already
     /// set (idempotency guard).
@@ -152,7 +154,8 @@ impl Worker {
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageCommit, StageError> {
+        stage_thread: &StageThread,
+    ) -> Result<(StageCommit, Option<CompletionResponse>), StageError> {
         let span = tracing::info_span!(
             "tribal.task.relation",
             { span_attrs::TASK_ID } = %task.id(),
@@ -165,9 +168,12 @@ impl Worker {
         async {
             // Idempotency guard.
             if job.committed_batch_id().is_some() {
-                return Ok(StageCommit::Relation {
-                    decision: RelationCommitDecision::NoOp,
-                });
+                return Ok((
+                    StageCommit::Relation {
+                        decision: RelationCommitDecision::NoOp,
+                    },
+                    None,
+                ));
             }
 
             let include_llm_content = self.include_llm_content();
@@ -176,13 +182,12 @@ impl Worker {
 
             let prompt_context = build_prompt_context(&ctx, ctx.batch_size)?;
 
-            let (system_pv, user_pv, fingerprint) = tokio::try_join!(
+            let (system_pv, user_pv) = tokio::try_join!(
                 self.load_prompt_version(
                     STAGE_RELATION,
                     ctx.job.relation_system_prompt_version_id()
                 ),
                 self.load_prompt_version(STAGE_RELATION, ctx.job.relation_user_prompt_version_id()),
-                self.load_system_fingerprint(STAGE_RELATION, ctx.job.system_fingerprint_hash()),
             )?;
 
             record_prompt_version_ids(
@@ -194,7 +199,7 @@ impl Worker {
                 system_pv.content(),
                 user_pv.content(),
                 &prompt_context,
-                &fingerprint.inference_parameters().relation,
+                &stage_thread.binding.definition().parameters,
             )?;
 
             if include_llm_content {
@@ -205,6 +210,15 @@ impl Worker {
                 );
             }
 
+            // Relation's positional references resolve against the
+            // similar-item decisions, which are immutable once the fan-in
+            // fires and are read in a deterministic order — a resumed
+            // attempt re-derives the identical lookup, so no resolution
+            // context needs recording.
+            let request = self
+                .bracket_one_shot(STAGE_RELATION, stage_thread, ctx.job, task, request, None)
+                .await?
+                .request;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
                 .gateway()
@@ -212,7 +226,7 @@ impl Worker {
                     TaskType::Relation,
                     request,
                     PermitWait::Bounded { limit: remaining },
-                    &stage_attribution(ctx.job, task),
+                    &stage_attribution(ctx.job, task, &stage_thread.thread),
                 )
                 .await
                 .map_err(|e| map_gateway_error("relation LLM call", e))?;
@@ -252,7 +266,7 @@ impl Worker {
                 ctx.job.principal_id(),
             );
 
-            Ok(StageCommit::Relation { decision })
+            Ok((StageCommit::Relation { decision }, Some(response)))
         }
         .instrument(span)
         .await

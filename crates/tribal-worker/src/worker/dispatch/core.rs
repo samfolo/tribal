@@ -18,17 +18,20 @@ use tribal_db::{
     JobRepository, JobStatusTransition, NewTask, PgJobRepository, PgPrincipalRepository,
     PgTaskRepository, PrincipalRepository, TaskRepository,
 };
-use tribal_domain::{Job, JobId, JobState, JobStatus, Task, TaskType, span_attrs};
-use tribal_inference::InferenceGateway;
+use tribal_domain::{Job, JobId, JobState, JobStatus, Task, TaskErrorKind, TaskType, span_attrs};
+use tribal_inference::{CompletionStageSpecs, InferenceGateway};
 use tribal_telemetry::MetricsRecorder;
 
 use crate::{
     error::{SEMAPHORE_CLOSED, STAGE_PRE_DISPATCH, StageError, WorkerError},
-    stages::StageCommit,
+    stages::StageRun,
     worker::{
         backfill::BackfillProcessor,
         backoff::BACKOFF_CAP_SECS,
-        heartbeat::{run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat},
+        heartbeat::{
+            HEARTBEAT_EXPIRED_MESSAGE, STARTUP_RECLAIM_LIMIT, STARTUP_RECLAIM_MESSAGE,
+            THREAD_RECOVERY_CAP, run_reclaim_sweep, run_startup_reclaim, spawn_heartbeat,
+        },
         reindex::{drive_reindex_cycle, reconcile_orphan_building_profile},
     },
 };
@@ -52,6 +55,8 @@ pub struct Worker {
     pool: PgPool,
     /// The one port every completion and embedding call routes through.
     gateway: Arc<InferenceGateway>,
+    /// The boot-time stage endpoints the default bindings derive from.
+    stage_specs: CompletionStageSpecs,
     cancellation_token: CancellationToken,
     config: WorkerConfig,
     include_llm_content: bool,
@@ -73,6 +78,7 @@ impl Worker {
     pub fn new(
         pool: PgPool,
         gateway: Arc<InferenceGateway>,
+        stage_specs: CompletionStageSpecs,
         cancellation_token: CancellationToken,
         config: WorkerConfig,
         include_llm_content: bool,
@@ -83,6 +89,7 @@ impl Worker {
         Self {
             pool,
             gateway,
+            stage_specs,
             cancellation_token,
             config,
             include_llm_content,
@@ -113,6 +120,11 @@ impl Worker {
     /// Returns a reference to the inference gateway.
     pub(crate) fn gateway(&self) -> &Arc<InferenceGateway> {
         &self.gateway
+    }
+
+    /// Returns the boot-time stage endpoint specs.
+    pub(crate) fn stage_specs(&self) -> &CompletionStageSpecs {
+        &self.stage_specs
     }
 
     /// Returns a reference to the telemetry metric instruments.
@@ -148,6 +160,24 @@ impl Worker {
     ///
     /// Returns [`WorkerError`] on database failures.
     pub async fn startup_reclaim(&self) -> Result<u32, WorkerError> {
+        let thread_stats = self
+            .run_thread_aware_reclaim(
+                STARTUP_RECLAIM_LIMIT,
+                THREAD_RECOVERY_CAP,
+                TaskErrorKind::StartupReclaim,
+                STARTUP_RECLAIM_MESSAGE,
+                Some(1),
+            )
+            .await?;
+        if thread_stats.total() > 0 {
+            tracing::info!(
+                requeued = thread_stats.requeued,
+                recovery_cycles = thread_stats.recovery_cycles,
+                exhausted = thread_stats.exhausted,
+                "startup reclaim recovered thread-driving tasks",
+            );
+        }
+
         let stats = run_startup_reclaim(
             &self.pool,
             self.config.task_timeout(),
@@ -166,7 +196,7 @@ impl Worker {
         self.heal_dead_lettered_jobs().await;
         self.heal_stuck_triaging_jobs().await;
 
-        Ok(stats.total())
+        Ok(stats.total().saturating_add(thread_stats.total()))
     }
 
     /// Runs all startup backfill operations.
@@ -418,7 +448,7 @@ impl Worker {
                     .status(target_status)
                     .build();
                 let _ = PgJobRepository
-                    .update_status(&mut conn, job_id, &transition)
+                    .update_status_if_live(&mut conn, job_id, &transition)
                     .await;
             }
 
@@ -461,7 +491,11 @@ impl Worker {
             };
 
             match stage_result {
-                Ok(output) => {
+                Ok(None) => {
+                    // Claim-time disposal: the thread's state decided the
+                    // task's fate without a turn; nothing to commit.
+                }
+                Ok(Some(output)) => {
                     if self.cancellation_token.is_cancelled() {
                         heartbeat.abort();
                         tracing::info!(
@@ -486,25 +520,43 @@ impl Worker {
         .await;
     }
 
-    /// Routes to the correct stage based on task type.
+    /// Establishes the stage's thread, then routes to the correct stage.
     async fn dispatch_stage(
         &self,
         job: &Job,
         task: &Task,
         deadline: tokio::time::Instant,
-    ) -> Result<StageCommit, StageError> {
-        match task.task_type() {
-            TaskType::Extraction => self.run_extraction(job, task, deadline).await,
-            TaskType::Triage => self.run_triage(job, task, deadline).await,
-            TaskType::Relation => self.run_relation(job, task, deadline).await,
+    ) -> Result<Option<StageRun>, StageError> {
+        let stage_thread = self.establish_stage_thread(job, task).await?;
+        if self
+            .dispose_for_thread_state(task, &stage_thread.thread)
+            .await?
+        {
+            return Ok(None);
         }
+        let (commit, response) = match task.task_type() {
+            TaskType::Extraction => {
+                self.run_extraction(job, task, deadline, &stage_thread)
+                    .await?
+            }
+            TaskType::Triage => self.run_triage(job, task, deadline, &stage_thread).await?,
+            TaskType::Relation => {
+                self.run_relation(job, task, deadline, &stage_thread)
+                    .await?
+            }
+        };
+        Ok(Some(StageRun {
+            thread: stage_thread.thread,
+            commit,
+            response,
+        }))
     }
 
     /// Sends a typed [`JobState`] to any watch subscribers for the given job.
     ///
     /// When `state` is terminal, stamps `terminal_at` on the entry so the
     /// background sweep can evict it after the configured TTL.
-    pub(super) fn notify_job_state(&self, job_id: JobId, state: JobState) {
+    pub(crate) fn notify_job_state(&self, job_id: JobId, state: JobState) {
         if let Some(mut entry) = self.job_state_txs.get_mut(&job_id) {
             let _ = entry.sender.send(state);
             if state.is_terminal() {
@@ -588,7 +640,7 @@ impl Worker {
                 .build();
 
             if let Err(e) = PgJobRepository
-                .update_status(&mut txn, *job_id, &transition)
+                .update_status_if_live(&mut txn, *job_id, &transition)
                 .await
             {
                 tracing::warn!(job_id = %job_id, error = %e, "failed to transition stuck job to relating");
@@ -629,6 +681,37 @@ impl Worker {
                 _ = ticker.tick() => {}
             }
 
+            match self
+                .run_thread_aware_reclaim(
+                    limit,
+                    THREAD_RECOVERY_CAP,
+                    TaskErrorKind::HeartbeatExpired,
+                    HEARTBEAT_EXPIRED_MESSAGE,
+                    None,
+                )
+                .await
+            {
+                Ok(stats) => {
+                    if stats.exhausted > 0 {
+                        tracing::warn!(
+                            requeued = stats.requeued,
+                            recovery_cycles = stats.recovery_cycles,
+                            exhausted = stats.exhausted,
+                            "thread-aware reclaim exhausted threads",
+                        );
+                    } else if stats.total() > 0 {
+                        tracing::info!(
+                            requeued = stats.requeued,
+                            recovery_cycles = stats.recovery_cycles,
+                            "thread-aware reclaim requeued stale tasks",
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "thread-aware reclaim failed");
+                }
+            }
+
             match run_reclaim_sweep(
                 &self.pool,
                 self.config.task_timeout(),
@@ -656,6 +739,14 @@ impl Worker {
                     }
 
                     self.heal_stuck_triaging_jobs().await;
+                    let thread_stats = self.run_thread_sweep().await;
+                    if thread_stats.timer_wakes > 0 || thread_stats.cancelled > 0 {
+                        tracing::info!(
+                            timer_wakes = thread_stats.timer_wakes,
+                            cancelled = thread_stats.cancelled,
+                            "availability sweep converged threads",
+                        );
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "reclaim sweep failed");

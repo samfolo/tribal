@@ -25,7 +25,8 @@ mod validation;
 #[cfg(feature = "test-helpers")]
 pub use anthropic::MESSAGES_PATH as ANTHROPIC_MESSAGES_PATH;
 pub use capabilities::{
-    MaxOutputTokensParam, ModelCapabilities, SamplingControl, StructuredOutputMode, resolve,
+    MaxOutputTokensParam, ModelCapabilities, SamplingControl, StructuredOutputMode,
+    effective_stage_parameters, resolve,
 };
 pub use drift::probe_digest;
 pub use embedding_capabilities::{

@@ -4,6 +4,7 @@ pub(super) use std::{sync::Arc, time::Duration};
 
 pub(super) use dashmap::DashMap;
 pub(super) use tokio_util::sync::CancellationToken;
+pub(super) use tribal_agent_runtime::PgLedgerSink;
 pub(super) use tribal_common::JobStateTxs;
 pub(super) use tribal_config::WorkerConfig;
 pub(super) use tribal_db::{
@@ -22,8 +23,9 @@ pub(super) use tribal_domain::{
     TaskType, TriageOutcome,
 };
 pub(super) use tribal_inference::{
-    EmbeddingProvider, InferenceGateway, InferenceProvider, InjectedEmbedding, InjectedProviders,
-    ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
+    CompletionStageSpec, CompletionStageSpecs, EmbeddingProvider, InferenceGateway,
+    InferenceProvider, InjectedEmbedding, InjectedProviders, ProviderKey, ProviderLimits,
+    ProviderRegistry, RequestClass,
 };
 pub(super) use tribal_telemetry::noop_recorder;
 pub(super) use tribal_test_utils::{
@@ -43,7 +45,7 @@ pub(super) use tribal_test_utils::{
     serial_lock, set_retry_count, set_task_status_by_job, test_context, truncate_all_tables,
     upsert_system_fingerprint,
 };
-pub(super) use tribal_worker::{PgLedgerSink, Worker};
+use tribal_worker::Worker;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -120,6 +122,20 @@ pub(super) async fn build_test_worker(
     inference: Option<Arc<dyn InferenceProvider>>,
     embedding: Option<Arc<dyn EmbeddingProvider>>,
 ) -> Arc<Worker> {
+    let (worker, _) =
+        build_test_worker_with_watch(pool, cancellation_token, config, inference, embedding).await;
+    worker
+}
+
+/// Like [`build_test_worker`], also returning the job-state watch map so
+/// tests can subscribe to the notifications the worker sends.
+pub(super) async fn build_test_worker_with_watch(
+    pool: sqlx::PgPool,
+    cancellation_token: CancellationToken,
+    config: WorkerConfig,
+    inference: Option<Arc<dyn InferenceProvider>>,
+    embedding: Option<Arc<dyn EmbeddingProvider>>,
+) -> (Arc<Worker>, JobStateTxs) {
     let inference: Arc<dyn InferenceProvider> = inference.unwrap_or_else(|| {
         Arc::new(
             MockInferenceProvider::builder()
@@ -197,16 +213,35 @@ pub(super) async fn build_test_worker(
 
     let job_state_txs: JobStateTxs = Arc::new(DashMap::new());
 
-    Arc::new(Worker::new(
+    let worker = Arc::new(Worker::new(
         pool,
         gateway,
+        test_stage_specs(),
         cancellation_token,
         config,
         false,
         WORKER_INSTANCE.to_owned(),
-        job_state_txs,
+        Arc::clone(&job_state_txs),
         noop_recorder(),
-    ))
+    ));
+    (worker, job_state_txs)
+}
+
+/// The boot-time stage specs a test worker derives bindings from: one
+/// mock endpoint for all three stages, matching the injected providers.
+pub(super) fn test_stage_specs() -> CompletionStageSpecs {
+    let spec = CompletionStageSpec {
+        provider: ProviderKind::Ollama,
+        model: "mock-model".to_owned(),
+        base_url: "http://localhost:9999".to_owned(),
+        api_key: String::new(),
+        parameters: tribal_domain::StageParameters::default(),
+    };
+    CompletionStageSpecs {
+        extraction: spec.clone(),
+        triage: spec.clone(),
+        relation: spec,
+    }
 }
 
 /// Polls until a task is requeued with at least one retry.

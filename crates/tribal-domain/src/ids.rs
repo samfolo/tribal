@@ -1,3 +1,7 @@
+mod agent_binding_version;
+mod agent_driver_task;
+mod agent_thread;
+mod agent_thread_record;
 mod auth_token;
 mod common;
 mod embedding;
@@ -23,6 +27,10 @@ mod token_usage;
 mod triage_result;
 mod triage_similar_item_decision;
 
+pub use agent_binding_version::AgentBindingVersionId;
+pub use agent_driver_task::AgentDriverTaskId;
+pub use agent_thread::AgentThreadId;
+pub use agent_thread_record::AgentThreadRecordId;
 pub use auth_token::AuthTokenId;
 pub use common::IdParseError;
 pub use embedding::EmbeddingId;

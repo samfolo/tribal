@@ -10,14 +10,13 @@ use sqlx::PgConnection;
 use tracing::Instrument;
 use tribal_db::{DbError, EmbeddingProfileRepository, PgEmbeddingProfileRepository};
 use tribal_domain::{
-    EmbeddingProfileId, FeedbackRating, InferenceParameters, KnowledgeItemId, McpErrorCode,
-    PrincipalId, TaskType, span_attrs,
+    EmbeddingProfileId, FeedbackRating, KnowledgeItemId, McpErrorCode, PrincipalId, span_attrs,
 };
 
 use super::common::begin_transaction;
 use crate::{
     error::{IntoCallToolResult, IntoMcpError, McpToolError, invalid_argument},
-    fingerprint::{FingerprintError, PipelineProviderIdentities, compute_and_upsert_fingerprint},
+    fingerprint::{FingerprintError, FingerprintInputs, compute_and_upsert_fingerprint},
     mapping::{McpFeedbackRequest, McpFeedbackResponse},
     server_handler::{ActivePromptVersions, ConnectionRepositories, TribalServerHandler},
 };
@@ -48,8 +47,7 @@ struct FeedbackParams {
     embedding_profile_id: Option<EmbeddingProfileId>,
     active_prompts: ActivePromptVersions,
     build_version: Arc<str>,
-    provider_identities: PipelineProviderIdentities,
-    inference_parameters: InferenceParameters,
+    fingerprint_inputs: FingerprintInputs,
 }
 
 /// Errors that can occur during feedback execution.
@@ -202,23 +200,11 @@ impl TribalServerHandler {
 
         let active_prompts = self.state.active_prompt_versions.read().await.clone();
 
-        let provider_identities = PipelineProviderIdentities {
-            extraction: self
-                .state
-                .gateway
-                .completion_identity(TaskType::Extraction)
-                .clone(),
-            triage: self
-                .state
-                .gateway
-                .completion_identity(TaskType::Triage)
-                .clone(),
-            relation: self
-                .state
-                .gateway
-                .completion_identity(TaskType::Relation)
-                .clone(),
+        let fingerprint_inputs = FingerprintInputs {
+            specs: self.state.stage_specs.clone(),
             embedding: self.state.embedding_identity.clone(),
+            embedding_dimensions: self.state.embedding_dimensions,
+            pipeline: self.state.pipeline_parameters.clone(),
         };
 
         let feedback_params = FeedbackParams {
@@ -232,8 +218,7 @@ impl TribalServerHandler {
             embedding_profile_id,
             active_prompts,
             build_version: Arc::clone(&self.state.build_version),
-            provider_identities,
-            inference_parameters: self.state.inference_parameters.clone(),
+            fingerprint_inputs,
         };
 
         let mut tx = match begin_transaction(
@@ -284,9 +269,8 @@ async fn execute_feedback(
         conn,
         repositories,
         &params.active_prompts,
-        &params.provider_identities,
         &params.build_version,
-        &params.inference_parameters,
+        &params.fingerprint_inputs,
     )
     .await?;
 
@@ -347,9 +331,7 @@ mod tests {
 
     use rmcp::model::ErrorCode;
     use tokio::sync::RwLock;
-    use tribal_domain::{
-        FeedbackRating, InferenceParameters, KnowledgeItemId, PrincipalId, ProjectId,
-    };
+    use tribal_domain::{FeedbackRating, KnowledgeItemId, PrincipalId, ProjectId};
     use tribal_test_utils::{
         MockPromptVersionRepository, MockRetrievalFeedbackRepository, TestContext,
         a_new_embedding_profile, a_prompt_version, a_retrieval_feedback, ensure_genesis_profile,
@@ -359,7 +341,7 @@ mod tests {
     use super::*;
     use crate::test_utils::{
         NO_STRUCTURED_CONTENT, TestHandler, configure_fingerprint_mocks, first_text_content,
-        test_active_prompt_versions, test_provider_identities, test_repositories,
+        test_active_prompt_versions, test_fingerprint_inputs, test_repositories,
     };
 
     // -- Constants ---------------------------------------------------------
@@ -401,8 +383,7 @@ mod tests {
             embedding_profile_id: None,
             active_prompts: test_active_prompt_versions(),
             build_version: Arc::from("test-build"),
-            provider_identities: test_provider_identities(),
-            inference_parameters: InferenceParameters::default(),
+            fingerprint_inputs: test_fingerprint_inputs(),
         }
     }
 

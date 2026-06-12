@@ -1,3 +1,8 @@
+use tribal_db::{
+    AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
+    PgAgentThreadRepository,
+};
+
 use super::common::*;
 
 /// Verifies that when a stage stub fails, the task is re-queued with
@@ -154,18 +159,8 @@ async fn test_concurrency_limit_respected() {
     {
         let mut conn = raw_conn(ctx).await;
 
-        let fingerprint_hash = upsert_system_fingerprint(
-            &mut conn,
-            &a_new_system_fingerprint()
-                .extraction_system_prompt_version_id(system_pv_id)
-                .extraction_user_prompt_version_id(user_pv_id)
-                .triage_system_prompt_version_id(system_pv_id)
-                .triage_user_prompt_version_id(user_pv_id)
-                .relation_system_prompt_version_id(system_pv_id)
-                .relation_user_prompt_version_id(user_pv_id)
-                .build(),
-        )
-        .await;
+        let fingerprint_hash =
+            upsert_system_fingerprint(&mut conn, &a_new_system_fingerprint().build()).await;
 
         for i in 0..task_count {
             let job = PgJobRepository
@@ -519,29 +514,26 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     .await;
 
     // Simulate external reclaim: backdate the heartbeat far beyond the
-    // timeout window, then call reclaim_stale to requeue the task.
-    // This clears the claim_token, causing the next heartbeat tick to
-    // return 0 rows and fire the ownership_lost signal.
+    // timeout window, then run the thread-aware reclaim (the executed
+    // task drives a thread, so the legacy bulk scan excludes it). This
+    // clears the claim_token, causing the next heartbeat tick to return
+    // 0 rows and fire the ownership_lost signal. The large flat backoff
+    // keeps the requeued task's available_at far in the future, so the
+    // worker's poll loop cannot re-claim it before the test asserts.
     {
         let mut conn = raw_conn(ctx).await;
         backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
-
-        // Use a large flat backoff so the requeued task's available_at
-        // is far in the future, preventing the worker's poll loop from
-        // re-claiming it before the test asserts.
-        PgTaskRepository
-            .reclaim_stale(
-                &mut conn,
-                10,
-                3,
-                10,
-                TaskErrorKind::HeartbeatExpired,
-                "heartbeat_expired",
-                Some(3600),
-            )
-            .await
-            .expect("reclaim stale");
     }
+    worker
+        .run_thread_aware_reclaim(
+            10,
+            0,
+            TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            Some(3600),
+        )
+        .await
+        .expect("thread-aware reclaim");
 
     // Poll until the heartbeat detects ownership loss and the task
     // is requeued.
@@ -562,6 +554,34 @@ async fn test_heartbeat_detects_ownership_loss_mid_stage() {
     );
 
     let mut conn = raw_conn(ctx).await;
+
+    // The zombie's commit attempt died at the task claim CAS, so nothing
+    // of its turn persisted: the thread stays running with the lone
+    // adopted input record and no assistant message.
+    let thread = PgAgentThreadRepository
+        .find_by_stage_task(&mut conn, task_id)
+        .await
+        .expect("find thread")
+        .expect("the executed task drives a thread");
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, thread.id())
+        .await
+        .expect("read the log");
+    assert!(
+        records
+            .iter()
+            .all(|r| r.kind() != tribal_domain::AgentThreadRecordKind::AssistantMessage),
+        "a zombie's terminal commit must not persist an assistant record",
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r.kind() == tribal_domain::AgentThreadRecordKind::Input)
+            .count(),
+        1,
+        "exactly the committed input survives",
+    );
+
     let task = PgTaskRepository
         .find_by_id(&mut conn, task_id)
         .await

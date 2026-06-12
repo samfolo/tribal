@@ -1,18 +1,29 @@
-//! Heartbeat, reclaim sweep, and startup reclaim.
+//! Heartbeat, reclaim sweeps, and startup reclaim.
 //!
 //! Provides per-task background heartbeat with ownership-loss
-//! signalling, a periodic reclaim sweep for abandoned tasks, and a
-//! startup reclaim pass for crash recovery.
+//! signalling, the per-row thread-aware reclaim (recovery cycles and
+//! thread exhaustion for stage tasks that drive a thread), the legacy
+//! bulk reclaim for rows with no thread, and a startup reclaim pass for
+//! crash recovery.
 
 use std::time::Duration;
 
 use sqlx::PgPool;
 use tokio::{sync::oneshot, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
-use tribal_db::{PgTaskRepository, ReclaimOutcome, TaskRepository};
-use tribal_domain::{TaskErrorKind, TaskId};
+use tribal_db::{
+    AgentThreadRepository, PgAgentThreadRepository, PgTaskRepository, ReclaimOutcome,
+    TaskRepository,
+};
+use tribal_domain::{
+    AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState, TaskErrorKind,
+    TaskId, TurnOutcome, decide_disposition,
+};
 
-use crate::error::WorkerError;
+use crate::{
+    error::WorkerError,
+    worker::{Worker, coupling},
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,6 +37,19 @@ pub(crate) const STARTUP_RECLAIM_MESSAGE: &str = "startup_reclaim";
 
 /// Error message written to tasks reclaimed by the periodic sweep.
 pub(crate) const HEARTBEAT_EXPIRED_MESSAGE: &str = "heartbeat_expired";
+
+/// The thread recovery-cycle budget. Zero reproduces launched behaviour
+/// exactly: a stage task whose retry budget exhausts under reclaim
+/// dead-letters at the same moment it always did, with its thread and
+/// job coupled in the same commit. Raising the cap opens fresh cycles
+/// (reset retry budget, escalating per-cycle backoff) before the thread
+/// fails.
+pub(crate) const THREAD_RECOVERY_CAP: u32 = 0;
+
+/// Ceiling on the per-cycle backoff ladder (`2^recovery_attempts`
+/// seconds), so the never-resetting cycle counter cannot push a task's
+/// availability out indefinitely.
+const RECOVERY_BACKOFF_CAP_SECONDS: u32 = 3_600;
 
 // ---------------------------------------------------------------------------
 // ReclaimStats
@@ -53,6 +77,274 @@ impl From<ReclaimOutcome> for ReclaimStats {
             requeued: u32::try_from(outcome.requeued).unwrap_or(u32::MAX),
             dead_lettered: u32::try_from(outcome.dead_lettered).unwrap_or(u32::MAX),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Thread-aware reclaim
+// ---------------------------------------------------------------------------
+
+/// Counts of what one thread-aware reclaim pass did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadReclaimStats {
+    /// Stale tasks re-queued within their retry budget.
+    pub requeued: u32,
+    /// Fresh recovery cycles opened (retry budget reset).
+    pub recovery_cycles: u32,
+    /// Threads exhausted: thread and task dead-lettered, job coupled.
+    pub exhausted: u32,
+}
+
+impl ThreadReclaimStats {
+    /// Total number of tasks the pass acted on.
+    #[must_use]
+    pub fn total(self) -> u32 {
+        self.requeued
+            .saturating_add(self.recovery_cycles)
+            .saturating_add(self.exhausted)
+    }
+}
+
+/// The escalating per-cycle delay: `2^recovery_attempts` seconds, capped
+/// at [`RECOVERY_BACKOFF_CAP_SECONDS`]. The cycle counter never resets,
+/// so it carries the backoff ladder the per-cycle retry reset would
+/// otherwise discard.
+pub(crate) fn recovery_backoff_seconds(recovery_attempts: u32) -> u32 {
+    2u32.saturating_pow(recovery_attempts)
+        .min(RECOVERY_BACKOFF_CAP_SECONDS)
+}
+
+impl Worker {
+    /// One thread-aware reclaim pass over stale claimed thread-driving
+    /// tasks, each handled in its own transaction under the staleness
+    /// predicate, the row lock, and the thread-status CAS. The
+    /// disposition (re-queue, fresh recovery cycle, or thread
+    /// exhaustion) is [`decide_disposition`]'s alone: the task never
+    /// transits dead-letter on the way to a fresh cycle, and exhaustion
+    /// dead-letters thread and task with the job coupled in the same
+    /// commit, the owed notification sent after it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkerError::ReclaimFailed`] on database failures.
+    pub async fn run_thread_aware_reclaim(
+        &self,
+        limit: u32,
+        recovery_cap: u32,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+        flat_backoff_seconds: Option<u32>,
+    ) -> Result<ThreadReclaimStats, WorkerError> {
+        let timeout_seconds =
+            u32::try_from(self.config().task_timeout().as_secs()).unwrap_or(u32::MAX);
+        let mut stats = ThreadReclaimStats::default();
+
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| WorkerError::ReclaimFailed {
+                context: "thread-aware reclaim".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
+
+        for _ in 0..limit {
+            let mut txn = sqlx::Connection::begin(&mut *conn).await.map_err(|e| {
+                WorkerError::ReclaimFailed {
+                    context: "thread-aware reclaim".into(),
+                    source: tribal_db::DbError::QueryFailed {
+                        context: "begin".into(),
+                        source: e,
+                    },
+                }
+            })?;
+
+            let Some(task) = PgTaskRepository
+                .lock_stale_thread_driving(&mut txn, timeout_seconds)
+                .await
+                .map_err(reclaim_db)?
+            else {
+                break;
+            };
+            let Some(thread) = PgAgentThreadRepository
+                .find_by_stage_task(&mut txn, task.id())
+                .await
+                .map_err(reclaim_db)?
+            else {
+                // The scan's EXISTS clause makes this unreachable; the
+                // rolled-back row falls to the legacy pass.
+                break;
+            };
+            let Some(claim_token) = task.claim_token() else {
+                tracing::error!(task_id = %task.id(), "stale claimed task carries no claim token");
+                break;
+            };
+
+            let counters = DispositionCounters {
+                retry_count: task.retry_count(),
+                max_retries: self.config().task_max_retries,
+                recovery_attempts: thread.recovery_attempts(),
+                max_recovery_attempts: recovery_cap,
+            };
+
+            let mut owed = None;
+            let mut task_dead_lettered = false;
+            match decide_disposition(TurnOutcome::RetryableFailure, counters) {
+                Disposition::Requeue { retry_count } => {
+                    let backoff = flat_backoff_seconds
+                        .unwrap_or_else(|| 2u32.saturating_pow(retry_count.saturating_sub(1)));
+                    PgTaskRepository
+                        .reclaim_requeue(
+                            &mut txn,
+                            task.id(),
+                            retry_count,
+                            backoff,
+                            error_kind,
+                            error_message,
+                        )
+                        .await
+                        .map_err(reclaim_db)?;
+                    stats.requeued += 1;
+                }
+                Disposition::RecoveryCycle {
+                    retry_count,
+                    recovery_attempts,
+                } => {
+                    PgAgentThreadRepository
+                        .increment_recovery_attempts(&mut txn, thread.id())
+                        .await
+                        .map_err(reclaim_db)?;
+                    PgTaskRepository
+                        .reclaim_requeue(
+                            &mut txn,
+                            task.id(),
+                            retry_count,
+                            recovery_backoff_seconds(recovery_attempts),
+                            error_kind,
+                            error_message,
+                        )
+                        .await
+                        .map_err(reclaim_db)?;
+                    stats.recovery_cycles += 1;
+                }
+                Disposition::ExhaustThread => {
+                    owed = exhaust_thread(
+                        &mut txn,
+                        &task,
+                        &thread,
+                        claim_token,
+                        error_kind,
+                        error_message,
+                    )
+                    .await?;
+                    task_dead_lettered = true;
+                    stats.exhausted += 1;
+                }
+                Disposition::CompleteTask | Disposition::DeadLetterTask => {
+                    // Terminal-outcome dispositions need a turn outcome; a
+                    // retryable failure never maps onto them.
+                    tracing::error!(
+                        task_id = %task.id(),
+                        "reclaim disposition was a terminal-outcome variant; leaving the row",
+                    );
+                    break;
+                }
+            }
+
+            txn.commit().await.map_err(|e| WorkerError::ReclaimFailed {
+                context: "thread-aware reclaim".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "commit".into(),
+                    source: e,
+                },
+            })?;
+
+            // Metrics and notifications mirror the launched dead-letter
+            // path, fired only after the commit.
+            if task_dead_lettered {
+                self.metrics()
+                    .record_task_dead_lettered(task.task_type().as_str());
+            }
+            if let Some(notice) = owed {
+                if notice.state == JobState::Failed {
+                    self.metrics()
+                        .record_job_completed(JobOutcome::Failure.as_str(), None);
+                }
+                self.notify_job_state(notice.job_id, notice.state);
+            }
+        }
+
+        Ok(stats)
+    }
+}
+
+/// The exhaustion transaction's body: the thread row is locked before
+/// its status is judged — a concurrent guarded queued-to-running move
+/// serialises against this write rather than racing it — then the thread
+/// dead-letters from whatever live status the locked row holds, the
+/// driving task dead-letters under its claim guard, and the job couples,
+/// returning the owed notification.
+async fn exhaust_thread(
+    txn: &mut sqlx::PgConnection,
+    task: &tribal_domain::Task,
+    thread: &tribal_domain::AgentThread,
+    claim_token: uuid::Uuid,
+    error_kind: TaskErrorKind,
+    error_message: &str,
+) -> Result<Option<coupling::OwedNotification>, WorkerError> {
+    let locked = PgAgentThreadRepository
+        .lock(txn, thread.id())
+        .await
+        .map_err(reclaim_db)?;
+    match locked {
+        Some(current) if !current.status().is_terminal() => {
+            let moved = PgAgentThreadRepository
+                .complete(
+                    txn,
+                    thread.id(),
+                    AgentThreadTerminal::DeadLetter,
+                    current.status(),
+                )
+                .await
+                .map_err(reclaim_db)?;
+            if moved == 0 {
+                // Unreachable under the row lock; recorded if it ever fires.
+                tracing::warn!(
+                    task_id = %task.id(),
+                    thread_id = %thread.id(),
+                    "thread status moved under its row lock at reclaim exhaustion",
+                );
+            }
+        }
+        Some(_) => {
+            // Already terminal: the task half still needs its disposition.
+        }
+        None => {
+            tracing::warn!(
+                task_id = %task.id(),
+                thread_id = %thread.id(),
+                "thread row vanished at reclaim exhaustion; dead-lettering the task alone",
+            );
+        }
+    }
+
+    PgTaskRepository
+        .dead_letter_claimed(txn, task.id(), claim_token, error_kind, error_message)
+        .await
+        .map_err(reclaim_db)?;
+    coupling::couple_dead_lettered_task(txn, task, error_message)
+        .await
+        .map_err(reclaim_db)
+}
+
+/// Shorthand for the reclaim pass's database-error mapping.
+fn reclaim_db(source: tribal_db::DbError) -> WorkerError {
+    WorkerError::ReclaimFailed {
+        context: "thread-aware reclaim".into(),
+        source,
     }
 }
 
@@ -275,5 +567,21 @@ mod tests {
         let stats = ReclaimStats::from(outcome);
         assert_eq!(stats.requeued, 7);
         assert_eq!(stats.dead_lettered, 3);
+    }
+
+    #[test]
+    fn test_recovery_backoff_escalates_with_the_cycle_counter() {
+        assert_eq!(recovery_backoff_seconds(1), 2);
+        assert_eq!(recovery_backoff_seconds(2), 4);
+        assert_eq!(recovery_backoff_seconds(5), 32);
+    }
+
+    #[test]
+    fn test_recovery_backoff_is_capped() {
+        assert_eq!(recovery_backoff_seconds(30), RECOVERY_BACKOFF_CAP_SECONDS);
+        assert_eq!(
+            recovery_backoff_seconds(u32::MAX),
+            RECOVERY_BACKOFF_CAP_SECONDS
+        );
     }
 }

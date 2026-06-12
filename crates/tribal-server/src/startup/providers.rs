@@ -7,7 +7,7 @@ use tribal_domain::{EmbeddingProfile, ProviderKind, TaskType};
 use tribal_inference::{
     CompletionStageSpec, CompletionStageSpecs, CredentialError, EmbeddingCredentialResolver,
     EmbeddingTarget, InferenceGateway, ProviderKey, ProviderLimits, ProviderRegistry, RequestClass,
-    UsageAttribution,
+    UsageAttribution, effective_stage_parameters,
 };
 
 use crate::error::AppError;
@@ -85,21 +85,29 @@ pub(crate) fn build_command_registry(config: &TribalConfig) -> Result<ProviderRe
 }
 
 /// Translates the per-stage inference configuration into the gateway's
-/// completion specifications, resolving each stage's base URL and key.
+/// completion specifications, resolving each stage's base URL, key, and
+/// effective (post-reconcile) sampling parameters.
 pub(crate) fn completion_stage_specs(config: &TribalConfig) -> CompletionStageSpecs {
     CompletionStageSpecs {
-        extraction: completion_stage_spec(&config.inference.extraction),
-        triage: completion_stage_spec(&config.inference.triage),
-        relation: completion_stage_spec(&config.inference.relation),
+        extraction: completion_stage_spec("extraction", &config.inference.extraction),
+        triage: completion_stage_spec("triage", &config.inference.triage),
+        relation: completion_stage_spec("relation", &config.inference.relation),
     }
 }
 
-fn completion_stage_spec(config: &StageInferenceConfig) -> CompletionStageSpec {
+fn completion_stage_spec(stage: &str, config: &StageInferenceConfig) -> CompletionStageSpec {
     CompletionStageSpec {
         provider: config.provider,
         model: config.model.clone(),
         base_url: resolve_base_url(config.provider, config.base_url.as_ref()),
         api_key: api_key_str(config.api_key.as_ref()).to_owned(),
+        parameters: effective_stage_parameters(
+            stage,
+            config.provider,
+            &config.model,
+            config.temperature,
+            config.max_tokens,
+        ),
     }
 }
 

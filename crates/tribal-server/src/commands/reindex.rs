@@ -13,12 +13,13 @@ use std::{
 };
 
 use sqlx::PgPool;
+use tribal_agent_runtime::PgLedgerSink;
 use tribal_config::TribalConfig;
 use tribal_db::{DbError, create_pool};
 use tribal_domain::{LOCAL_PRINCIPAL_KEY, PrincipalId};
 use tribal_inference::InferenceGateway;
 use tribal_worker::{
-    PgLedgerSink, ReindexCancelOutcome, ReindexResolution, ReindexRunOutcome, ReindexRunRequest,
+    ReindexCancelOutcome, ReindexResolution, ReindexRunOutcome, ReindexRunRequest,
     drop_superseded_indexes, reindex_cancel, reindex_prune, reindex_run,
 };
 

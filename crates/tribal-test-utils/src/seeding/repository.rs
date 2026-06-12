@@ -129,14 +129,7 @@ impl SeedRepository for PgSeedRepository {
     ) -> JobId {
         let pv_id = insert_prompt_version(conn, &a_new_prompt_version().build()).await;
 
-        let new_fingerprint = a_new_system_fingerprint()
-            .extraction_system_prompt_version_id(pv_id)
-            .extraction_user_prompt_version_id(pv_id)
-            .triage_system_prompt_version_id(pv_id)
-            .triage_user_prompt_version_id(pv_id)
-            .relation_system_prompt_version_id(pv_id)
-            .relation_user_prompt_version_id(pv_id)
-            .build();
+        let new_fingerprint = a_new_system_fingerprint().build();
         let fingerprint_hash = new_fingerprint.content_hash.clone();
         PgSystemFingerprintRepository
             .upsert(conn, &new_fingerprint)

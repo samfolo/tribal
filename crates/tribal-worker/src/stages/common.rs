@@ -1,19 +1,30 @@
 //! Shared utilities and types for pipeline stage implementations.
 
+use tribal_agent_runtime::{
+    RecordedMessage, RenderedConversation, StageThread, begin_one_shot, commit_noop_terminal,
+    commit_one_shot_terminal,
+};
 use tribal_common::clamp_to_i32;
 use tribal_db::{
     EmbeddingProfileRepository, NewExtractionResult, NewItemObservation, NewKnowledgeItem, NewTask,
     NewTriageSimilarItemDecision, PgEmbeddingProfileRepository, PgPromptVersionRepository,
-    PgSystemFingerprintRepository, PgTagRegistryRepository, PromptVersionRepository,
-    SystemFingerprintRepository, TagRegistryRepository,
+    PgTagRegistryRepository, PgTokenUsageRepository, PromptVersionRepository,
+    TagRegistryRepository, TokenUsageRepository,
 };
 use tribal_domain::{
-    EmbeddingProfile, EmbeddingProfileId, Job, ProjectId, PromptVersion, PromptVersionId,
-    SuggestedReference, SystemFingerprint, TagRegistryEntry, Task, TaskType, span_attrs,
+    AgentThread, CompletionResponse, EmbeddingProfile, EmbeddingProfileId, Job, ProjectId,
+    PromptVersion, PromptVersionId, SuggestedReference, TagRegistryEntry, Task, TaskType,
+    UsageOwner, span_attrs,
 };
-use tribal_inference::{EmbeddingTarget, InferenceError, UsageAttribution};
+use tribal_inference::{
+    CompletionRequest, EmbeddingTarget, InferenceError, Message, Role, UsageAttribution,
+};
 
-use crate::{error::StageError, tag_resolution::NewTagWithEmbedding, worker::Worker};
+use crate::{
+    error::StageError,
+    tag_resolution::NewTagWithEmbedding,
+    worker::{Worker, map_runtime_error},
+};
 
 // ---------------------------------------------------------------------------
 // StageCommit
@@ -47,6 +58,23 @@ pub(crate) enum StageCommit {
         /// The relation decision with associated commit data.
         decision: super::relation::RelationCommitDecision,
     },
+}
+
+// ---------------------------------------------------------------------------
+// StageRun
+// ---------------------------------------------------------------------------
+
+/// One stage execution's full outcome: the domain effects to commit, the
+/// thread that ran it, and the model response when a turn actually ran
+/// (`None` for idempotency no-ops). The commit path composes all three
+/// into one transaction.
+pub(crate) struct StageRun {
+    /// The thread the stage executed under.
+    pub(crate) thread: AgentThread,
+    /// The domain effects to commit.
+    pub(crate) commit: StageCommit,
+    /// The model response, when a turn ran.
+    pub(crate) response: Option<CompletionResponse>,
 }
 
 // ---------------------------------------------------------------------------
@@ -200,16 +228,18 @@ impl Worker {
 // Attribution and error mapping
 // ---------------------------------------------------------------------------
 
-/// Builds the ledger attribution for one stage execution: the job, the
-/// task, the attempt, the stage's prompt version pair, and the job's
-/// trace identity.
-pub(crate) fn stage_attribution(job: &Job, task: &Task) -> UsageAttribution {
+/// Builds the ledger attribution for one stage execution: the pipeline
+/// owner, the stage's prompt version pair, and the job's trace identity.
+pub(crate) fn stage_attribution(job: &Job, task: &Task, thread: &AgentThread) -> UsageAttribution {
     let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
     UsageAttribution {
-        job_id: Some(job.id()),
-        task_id: Some(task.id()),
-        reindex_run_id: None,
-        attempt: clamp_to_i32(task.retry_count()),
+        owner: UsageOwner::Pipeline {
+            job_id: job.id(),
+            task_id: task.id(),
+            thread_id: thread.id(),
+            record_id: None,
+            attempt: clamp_to_i32(task.retry_count()),
+        },
         system_prompt_version_id: Some(system_pv_id),
         user_prompt_version_id: Some(user_pv_id),
         trace_id: job
@@ -220,7 +250,10 @@ pub(crate) fn stage_attribution(job: &Job, task: &Task) -> UsageAttribution {
 }
 
 /// Returns the `(system, user)` prompt version pair for the task's stage.
-fn prompt_version_ids_for_task(job: &Job, task: &Task) -> (PromptVersionId, PromptVersionId) {
+pub(crate) fn prompt_version_ids_for_task(
+    job: &Job,
+    task: &Task,
+) -> (PromptVersionId, PromptVersionId) {
     match task.task_type() {
         TaskType::Extraction => (
             job.extraction_system_prompt_version_id(),
@@ -319,55 +352,151 @@ impl Worker {
                 source: e,
             })
     }
+}
 
-    /// Loads the system fingerprint a job was created under, by content hash.
+// ---------------------------------------------------------------------------
+// The one-shot bracket
+// ---------------------------------------------------------------------------
+
+impl Worker {
+    /// Brackets a stage's single completion call with the thread log:
+    /// commits the input record (first attempt) or adopts the committed
+    /// one (resume), and returns the turn to send — the committed
+    /// conversation verbatim, with this attempt's runtime parameters,
+    /// plus the recorded resolution context the caller's positional
+    /// references must resolve against.
     ///
-    /// The fingerprint records the effective sampling parameters the stage
-    /// threads into its request, so they match what the job was fingerprinted
-    /// under rather than the worker's current live config. Only the reconciled
-    /// sampling parameters are sourced here: they carry a post-reconcile shape
-    /// that must match the hash, whereas pass-through pipeline parameters
-    /// (search limits, candidate caps) need no reconciliation and are read from
-    /// live config.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StageError::Database`] on pool or query failure, or when no
-    /// fingerprint matches the hash. The fingerprint is written before a job
-    /// is enqueued, so its absence is a consistency fault, not an expected
-    /// outcome.
-    pub(crate) async fn load_system_fingerprint(
+    /// Parameters (temperature, token caps, response format) ride the
+    /// fresh request: they are binding-pinned behaviour, not conversation
+    /// content, so the log stays byte-stable while parameters follow the
+    /// thread's recorded binding.
+    pub(crate) async fn bracket_one_shot(
         &self,
         stage: &str,
-        hash: &str,
-    ) -> Result<SystemFingerprint, StageError> {
+        stage_thread: &StageThread,
+        job: &Job,
+        task: &Task,
+        request: CompletionRequest,
+        resolution_context: Option<serde_json::Value>,
+    ) -> Result<BracketedTurn, StageError> {
+        let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
+        let rendered = RenderedConversation {
+            system: request.system.clone(),
+            messages: request
+                .messages
+                .iter()
+                .map(|m| RecordedMessage {
+                    role: m.role.as_str().to_owned(),
+                    content: m.content.clone(),
+                })
+                .collect(),
+            system_prompt_version_id: Some(system_pv_id),
+            user_prompt_version_id: Some(user_pv_id),
+            resolution_context,
+        };
+
         let mut conn = self
             .pool()
             .acquire()
             .await
             .map_err(|e| StageError::Database {
                 stage: stage.into(),
-                context: "acquiring connection for system fingerprint".into(),
+                context: "acquiring connection for the input record".into(),
                 source: tribal_db::DbError::QueryFailed {
                     context: "pool acquire".into(),
                     source: e,
                 },
             })?;
-        PgSystemFingerprintRepository
-            .find_by_hash(&mut conn, hash)
+        let Some(claim_token) = task.claim_token() else {
+            return Err(StageError::OwnershipLost);
+        };
+        let begun = begin_one_shot(
+            &mut conn,
+            &stage_thread.thread,
+            task.id(),
+            claim_token,
+            stage_thread.input.as_ref(),
+            rendered,
+        )
+        .await
+        .map_err(|source| map_runtime_error(stage, "committing the input record", source))?;
+
+        Ok(BracketedTurn {
+            resolution_context: begun.conversation.resolution_context.clone(),
+            request: CompletionRequest {
+                system: begun.conversation.system,
+                messages: begun
+                    .conversation
+                    .messages
+                    .into_iter()
+                    .map(|m| Message {
+                        // The one-shot bracket only ever records the two wire
+                        // roles; an unrecognised string (a future format's
+                        // role) downgrades to User rather than dropping the
+                        // message, keeping resume total.
+                        role: match m.role.as_str() {
+                            role if role == Role::Assistant.as_str() => Role::Assistant,
+                            _ => Role::User,
+                        },
+                        content: m.content,
+                    })
+                    .collect(),
+                temperature: request.temperature,
+                max_tokens: request.max_tokens,
+                response_format: request.response_format,
+            },
+        })
+    }
+}
+
+/// The one-shot bracket's product: the request to send — the committed
+/// conversation on resume — and the resolution context recorded with it.
+pub(crate) struct BracketedTurn {
+    /// The request to send.
+    pub request: CompletionRequest,
+    /// The recorded context the response's positional references resolve
+    /// against; `None` for stages with no positional references, or for
+    /// records written before the context was recorded.
+    pub resolution_context: Option<serde_json::Value>,
+}
+
+/// Commits a stage thread's terminal inside the caller's transaction:
+/// the assistant record and completed status when a turn ran, the bare
+/// completed status for a no-op. The completion's ledger row gains its
+/// record attribution in the same commit; zero linked rows means the
+/// sink's best-effort write never landed, which stays best-effort here.
+pub(crate) async fn finish_thread(
+    txn: &mut sqlx::PgConnection,
+    stage: &str,
+    thread: &AgentThread,
+    task: &Task,
+    response: Option<&CompletionResponse>,
+) -> Result<(), StageError> {
+    match response {
+        Some(response) => {
+            let outcome = commit_one_shot_terminal(txn, thread, response)
+                .await
+                .map_err(|source| {
+                    map_runtime_error(stage, "committing the thread terminal", source)
+                })?;
+            PgTokenUsageRepository
+                .link_completion_to_record(
+                    txn,
+                    thread.id(),
+                    task.id(),
+                    clamp_to_i32(task.retry_count()),
+                    outcome.assistant_record.id(),
+                )
+                .await
+                .map_err(|source| StageError::Database {
+                    stage: stage.into(),
+                    context: "linking the completion spend to its record".into(),
+                    source,
+                })?;
+            Ok(())
+        }
+        None => commit_noop_terminal(txn, thread)
             .await
-            .map_err(|e| StageError::Database {
-                stage: stage.into(),
-                context: "loading system fingerprint".into(),
-                source: e,
-            })?
-            .ok_or_else(|| StageError::Database {
-                stage: stage.into(),
-                context: "system fingerprint not found".into(),
-                source: tribal_db::DbError::NotFound {
-                    entity: "system_fingerprint",
-                    id: hash.to_owned(),
-                },
-            })
+            .map_err(|source| map_runtime_error(stage, "committing the thread terminal", source)),
     }
 }

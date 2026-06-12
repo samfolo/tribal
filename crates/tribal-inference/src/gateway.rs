@@ -27,7 +27,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use tracing::Instrument;
 use tribal_domain::{
     CompletionResponse, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose, InferenceEvent,
-    ProviderKind, TaskType, TokenUsageStage, Usage, gen_ai,
+    ProviderKind, StageParameters, TaskType, TokenUsageStage, Usage, gen_ai,
 };
 
 use crate::{
@@ -152,7 +152,7 @@ impl From<&EmbeddingProfile> for EmbeddingTarget {
 }
 
 /// The resolved completion endpoint for one pipeline stage.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompletionStageSpec {
     /// The provider kind.
     pub provider: ProviderKind,
@@ -162,10 +162,13 @@ pub struct CompletionStageSpec {
     pub base_url: String,
     /// The resolved API key, empty for providers that need none.
     pub api_key: String,
+    /// The effective (post-reconcile) sampling parameters, derived once
+    /// at boot through the capability layer.
+    pub parameters: StageParameters,
 }
 
 /// The completion endpoints for the three pipeline stages.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompletionStageSpecs {
     /// The extraction stage endpoint.
     pub extraction: CompletionStageSpec,
@@ -1002,7 +1005,9 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use tribal_domain::{CompletionUsage, EmbeddingUsage, JobId};
+    use tribal_domain::{
+        AgentThreadId, CompletionUsage, EmbeddingUsage, JobId, TaskId, UsageOwner,
+    };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -1224,8 +1229,13 @@ mod tests {
 
     fn an_attribution() -> UsageAttribution {
         UsageAttribution {
-            job_id: Some(JobId::new()),
-            attempt: 2,
+            owner: UsageOwner::Pipeline {
+                job_id: JobId::new(),
+                task_id: TaskId::new(),
+                thread_id: AgentThreadId::new(),
+                record_id: None,
+                attempt: 2,
+            },
             trace_id: Some("trace-1".to_owned()),
             ..UsageAttribution::default()
         }
@@ -1671,6 +1681,7 @@ mod tests {
             model: "llama3".to_owned(),
             base_url: server.uri(),
             api_key: String::new(),
+            parameters: StageParameters::default(),
         };
         let key = ProviderKey::new(
             spec.provider.to_string(),

@@ -28,7 +28,7 @@ use tribal_db::{
 use tribal_domain::{
     DistanceMetric, EmbeddingErrorClass, EmbeddingProfile, EmbeddingProfileId, EmbeddingPurpose,
     KnowledgeItemId, PrincipalId, ProviderKind, ReindexEntityKind, ReindexRun, ReindexRunId,
-    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, span_attrs,
+    ReindexRunState, ReindexTask, ReindexTaskId, ReindexTaskState, UsageOwner, span_attrs,
 };
 use tribal_inference::{
     EmbeddingTarget, InferenceError, InferenceGateway, PermitWait, UsageAttribution,
@@ -881,7 +881,7 @@ pub async fn drive_reindex_cycle(
             gateway,
             target,
             attribution: UsageAttribution {
-                reindex_run_id: Some(run.id()),
+                owner: UsageOwner::Reindex { run_id: run.id() },
                 ..UsageAttribution::default()
             },
         };
@@ -1342,7 +1342,7 @@ mod tests {
             gateway,
             target: EmbeddingTarget::from(building),
             attribution: UsageAttribution {
-                reindex_run_id: Some(run.id()),
+                owner: UsageOwner::Reindex { run_id: run.id() },
                 ..UsageAttribution::default()
             },
         }

@@ -21,6 +21,11 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// The claim scan's ordering — the named policy point for claim fairness.
+/// Today it is strictly oldest-available-first; a fairness policy would
+/// replace this constant, never an inline ORDER BY.
+const CLAIM_ORDERING: &str = "available_at, created_at";
+
 const COLUMNS: Columns = Columns(&[
     "id",
     "job_id",
@@ -240,8 +245,65 @@ pub trait TaskRepository {
         flat_backoff_seconds: Option<u32>,
     ) -> Result<ReclaimOutcome, DbError>;
 
-    /// Counts sibling tasks of the given type and statuses for a job,
-    /// excluding the specified task.
+    /// Locks one stale claimed thread-driving task — heartbeat expired,
+    /// with an agent-thread row — for the per-row recovery cycle, with
+    /// `SKIP LOCKED` so concurrent sweeps never contend. Returns `None`
+    /// when no candidate remains. [`reclaim_stale`](Self::reclaim_stale)
+    /// excludes these rows, so the two scans partition the stale set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn lock_stale_thread_driving(
+        &self,
+        conn: &mut PgConnection,
+        timeout_seconds: u32,
+    ) -> Result<Option<Task>, DbError>;
+
+    /// Re-queues a claimed task under its claim guard with an explicit
+    /// consecutive-failure count and availability: the inline failure
+    /// path's requeue and recovery-cycle writes, where the disposition
+    /// decision owns the counter rather than a SQL CASE. Returns the
+    /// affected row count (zero means the lease was lost).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    #[allow(clippy::too_many_arguments)] // mirrors fail(); a params struct would obscure the guard
+    async fn requeue_claimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+        retry_count: u32,
+        available_at: DateTime<Utc>,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError>;
+
+    /// Re-queues a locked stale task with the given consecutive-failure
+    /// count and backoff, clearing its lease: the recovery cycle's task
+    /// half. The caller holds the row lock from
+    /// [`lock_stale_thread_driving`](Self::lock_stale_thread_driving).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn reclaim_requeue(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        retry_count: u32,
+        backoff_seconds: u32,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError>;
+
+    /// Counts a job's live (NOT-in-terminal) sibling tasks of the given
+    /// type, excluding the specified task. A blocked sibling counts as
+    /// live by construction: the predicate is derived from
+    /// [`TaskStatus::is_terminal`], never an enumeration of live
+    /// statuses.
     ///
     /// The exclusion is a defensive guard for callers that run this
     /// check within the same transaction that transitions the excluded
@@ -252,14 +314,89 @@ pub trait TaskRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn count_siblings_by_status(
+    async fn count_live_siblings(
         &self,
         conn: &mut PgConnection,
         job_id: JobId,
         task_type: TaskType,
-        statuses: &[TaskStatus],
         exclude_task_id: TaskId,
     ) -> Result<i64, DbError>;
+
+    /// Moves a claimed task to `blocked`, clearing its lease in the same
+    /// statement: the row drives a suspended thread and holds no worker
+    /// slot until resolution re-queues it. Claim-token guarded; returns
+    /// the affected row count (zero means the lease was lost).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn block(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError>;
+
+    /// Re-queues a blocked task, immediately available: the resolve
+    /// transaction's task half. Returns the affected row count (zero
+    /// means the row was not blocked).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn requeue_from_blocked(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+    ) -> Result<u64, DbError>;
+
+    /// Verifies the caller still holds a task's lease, taking a shared
+    /// row lock so the claim cannot move for the rest of the caller's
+    /// transaction: the claim-token guard for transactions that write no
+    /// task column. Returns `true` while the lease holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn holds_claim(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError>;
+
+    /// Terminally dead-letters a claimed task under its claim guard — the
+    /// worker-held cancel disposition, which never consults the retry
+    /// budget. Returns the affected row count (zero means the lease was
+    /// lost).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn dead_letter_claimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError>;
+
+    /// Terminally dead-letters an unclaimed live task under a row lock —
+    /// the locked-unclaimed guard for non-worker disposers (the cancel
+    /// transaction). A row a live worker holds is never selected. Returns
+    /// the affected row count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn dead_letter_unclaimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError>;
 
     /// Inserts a task idempotently using `ON CONFLICT DO NOTHING`.
     ///
@@ -396,7 +533,7 @@ impl TaskRepository for PgTaskRepository {
             "WITH claimable AS ( \
                  SELECT id FROM tasks \
                  WHERE status = 'queued' AND available_at <= now() \
-                 ORDER BY available_at, created_at \
+                 ORDER BY {CLAIM_ORDERING} \
                  LIMIT $1 \
                  FOR UPDATE SKIP LOCKED \
              ) \
@@ -543,11 +680,21 @@ impl TaskRepository for PgTaskRepository {
         // is intentionally lower than the Rust-side `backoff_duration`
         // which uses the post-increment count (`2^1 = 2s` for first
         // inline failure) — reclaim recovery should retry sooner.
+        //
+        // Thread-driving rows are excluded: they take the per-row
+        // recovery cycle through `lock_stale_thread_driving`, which
+        // partitions the stale set with this scan. Only rows predating
+        // the runtime (possible mid-upgrade alone) keep these legacy
+        // semantics.
         let rows = sqlx::query(
             "WITH stale AS ( \
                  SELECT id, retry_count FROM tasks \
                  WHERE status = 'claimed' \
                    AND heartbeat_at < now() - make_interval(secs => $1::double precision) \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM agent_threads at \
+                       WHERE at.stage_task_id = tasks.id \
+                   ) \
                  ORDER BY heartbeat_at ASC \
                  LIMIT $3 \
                  FOR UPDATE SKIP LOCKED \
@@ -606,33 +753,283 @@ impl TaskRepository for PgTaskRepository {
         })
     }
 
-    async fn count_siblings_by_status(
+    async fn lock_stale_thread_driving(
+        &self,
+        conn: &mut PgConnection,
+        timeout_seconds: u32,
+    ) -> Result<Option<Task>, DbError> {
+        let timeout_f64 = f64::from(timeout_seconds);
+
+        let sql = format!(
+            "SELECT {COLUMNS} FROM tasks \
+             WHERE status = 'claimed' \
+               AND heartbeat_at < now() - make_interval(secs => $1::double precision) \
+               AND EXISTS ( \
+                   SELECT 1 FROM agent_threads at \
+                   WHERE at.stage_task_id = tasks.id \
+               ) \
+             ORDER BY heartbeat_at ASC \
+             LIMIT 1 \
+             FOR UPDATE OF tasks SKIP LOCKED",
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(timeout_f64)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "locking a stale thread-driving task".to_owned(),
+                source: e,
+            })?;
+
+        Ok(row.as_ref().map(map_task_row))
+    }
+
+    async fn requeue_claimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+        retry_count: u32,
+        available_at: DateTime<Utc>,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError> {
+        let retry_count_i32 = i32::try_from(retry_count).expect(MAX_RETRIES_EXCEEDS_I32);
+
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET retry_count = $3, \
+                 status = 'queued', \
+                 available_at = $4, \
+                 claim_token = NULL, \
+                 claimed_by = NULL, \
+                 claimed_at = NULL, \
+                 heartbeat_at = NULL, \
+                 error_kind = $5, \
+                 error_message = $6, \
+                 updated_at = now() \
+             WHERE id = $1 AND claim_token = $2 AND status = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .bind(retry_count_i32)
+        .bind(available_at)
+        .bind(error_kind.as_str())
+        .bind(error_message)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("re-queueing claimed task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn reclaim_requeue(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        retry_count: u32,
+        backoff_seconds: u32,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError> {
+        let retry_count_i32 = i32::try_from(retry_count).expect(MAX_RETRIES_EXCEEDS_I32);
+
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET retry_count = $2, \
+                 status = 'queued', \
+                 available_at = now() + make_interval(secs => $3::double precision), \
+                 claim_token = NULL, \
+                 claimed_by = NULL, \
+                 claimed_at = NULL, \
+                 heartbeat_at = NULL, \
+                 error_kind = $4, \
+                 error_message = $5, \
+                 updated_at = now() \
+             WHERE id = $1 AND status = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(retry_count_i32)
+        .bind(f64::from(backoff_seconds))
+        .bind(error_kind.as_str())
+        .bind(error_message)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("re-queueing reclaimed task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn count_live_siblings(
         &self,
         conn: &mut PgConnection,
         job_id: JobId,
         task_type: TaskType,
-        statuses: &[TaskStatus],
         exclude_task_id: TaskId,
     ) -> Result<i64, DbError> {
-        let status_strings: Vec<&str> = statuses.iter().map(TaskStatus::as_str).collect();
+        let terminal: Vec<&str> = TaskStatus::ALL
+            .iter()
+            .filter(|status| status.is_terminal())
+            .map(TaskStatus::as_str)
+            .collect();
 
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM tasks \
              WHERE job_id = $1 \
                AND task_type = $2 \
-               AND status = ANY($3::text[]) \
+               AND NOT (status = ANY($3::text[])) \
                AND id != $4",
         )
         .bind(job_id.inner())
         .bind(task_type.as_str())
-        .bind(&status_strings)
+        .bind(&terminal)
         .bind(exclude_task_id.inner())
         .fetch_one(&mut *conn)
         .await
         .map_err(|e| DbError::QueryFailed {
-            context: format!("counting {task_type} siblings for job {job_id}"),
+            context: format!("counting live {task_type} siblings for job {job_id}"),
             source: e,
         })
+    }
+
+    async fn block(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET status = 'blocked', claim_token = NULL, claimed_by = NULL, \
+                 claimed_at = NULL, heartbeat_at = NULL, updated_at = now() \
+             WHERE id = $1 AND claim_token = $2 AND status = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("blocking task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn requeue_from_blocked(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET status = 'queued', available_at = now(), updated_at = now() \
+             WHERE id = $1 AND status = 'blocked'",
+        )
+        .bind(id.inner())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("re-queueing blocked task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn holds_claim(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+    ) -> Result<bool, DbError> {
+        let held: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM tasks WHERE id = $1 AND claim_token = $2 FOR SHARE")
+                .bind(id.inner())
+                .bind(claim_token)
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(|e| DbError::QueryFailed {
+                    context: format!("verifying the lease on task {id}"),
+                    source: e,
+                })?;
+
+        Ok(held.is_some())
+    }
+
+    async fn dead_letter_claimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET status = 'dead_letter', claim_token = NULL, claimed_by = NULL, \
+                 claimed_at = NULL, heartbeat_at = NULL, error_kind = $3, \
+                 error_message = $4, updated_at = now() \
+             WHERE id = $1 AND claim_token = $2 AND status = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .bind(error_kind.as_str())
+        .bind(error_message)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("dead-lettering claimed task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn dead_letter_unclaimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError> {
+        let terminal: Vec<&str> = TaskStatus::ALL
+            .iter()
+            .filter(|status| status.is_terminal())
+            .map(TaskStatus::as_str)
+            .collect();
+        let result = sqlx::query(
+            "WITH target AS ( \
+                 SELECT id FROM tasks \
+                 WHERE id = $1 AND claim_token IS NULL \
+                   AND NOT (status = ANY($4::text[])) \
+                 FOR UPDATE \
+             ) \
+             UPDATE tasks t \
+             SET status = 'dead_letter', error_kind = $2, error_message = $3, \
+                 updated_at = now() \
+             FROM target \
+             WHERE t.id = target.id",
+        )
+        .bind(id.inner())
+        .bind(error_kind.as_str())
+        .bind(error_message)
+        .bind(&terminal)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("dead-lettering unclaimed task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
     }
 
     async fn upsert(&self, conn: &mut PgConnection, new_task: &NewTask) -> Result<u64, DbError> {
@@ -791,5 +1188,30 @@ impl PgTaskRepository {
             })?;
 
         Ok(map_task_row(&row))
+    }
+
+    /// Sets a task's status directly, bypassing the production CAS
+    /// methods, for tests that walk a row through states the harness
+    /// cannot reach via claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn set_status_for_test(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        status: TaskStatus,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query("UPDATE tasks SET status = $2, updated_at = now() WHERE id = $1")
+            .bind(id.inner())
+            .bind(status.as_str())
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "setting task status (test helper)".to_owned(),
+                source: e,
+            })?;
+        Ok(result.rows_affected())
     }
 }

@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use sqlx::{PgConnection, Row};
-use tribal_domain::{InferenceParameters, PromptVersionId, SystemFingerprint, SystemFingerprintId};
+use tribal_domain::{PipelineParameters, SystemFingerprint, SystemFingerprintId};
 use typed_builder::TypedBuilder;
 
 use super::common::columns::Columns;
@@ -17,25 +17,22 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// The column's CHECK forbids non-positive dimensions; a negative value
+/// here is database corruption, not an expected state.
+const NEGATIVE_DIMENSIONS_IN_DB: &str =
+    "system_fingerprints.embedding_dimensions is negative despite its CHECK";
+
 const COLUMNS: Columns = Columns(&[
     "id",
     "content_hash",
     "build_version",
-    "extraction_system_prompt_version_id",
-    "extraction_user_prompt_version_id",
-    "triage_system_prompt_version_id",
-    "triage_user_prompt_version_id",
-    "relation_system_prompt_version_id",
-    "relation_user_prompt_version_id",
-    "extraction_inference_provider",
-    "extraction_inference_model",
-    "triage_inference_provider",
-    "triage_inference_model",
-    "relation_inference_provider",
-    "relation_inference_model",
+    "extraction_binding_hash",
+    "triage_binding_hash",
+    "relation_binding_hash",
     "embedding_provider",
     "embedding_model",
-    "inference_parameters",
+    "embedding_dimensions",
+    "pipeline_parameters",
     "created_at",
 ]);
 
@@ -55,41 +52,25 @@ pub struct NewSystemFingerprint {
     /// Build version from `TRIBAL_GIT_DESCRIBE`.
     pub build_version: String,
 
-    // -- Prompt version IDs ---------------------------------------------------
-    /// Extraction system prompt version.
-    pub extraction_system_prompt_version_id: PromptVersionId,
-    /// Extraction user prompt version.
-    pub extraction_user_prompt_version_id: PromptVersionId,
-    /// Triage system prompt version.
-    pub triage_system_prompt_version_id: PromptVersionId,
-    /// Triage user prompt version.
-    pub triage_user_prompt_version_id: PromptVersionId,
-    /// Relation system prompt version.
-    pub relation_system_prompt_version_id: PromptVersionId,
-    /// Relation user prompt version.
-    pub relation_user_prompt_version_id: PromptVersionId,
+    // -- Stage binding versions ------------------------------------------------
+    /// The extraction stage's binding-version content address.
+    pub extraction_binding_hash: String,
+    /// The triage stage's binding-version content address.
+    pub triage_binding_hash: String,
+    /// The relation stage's binding-version content address.
+    pub relation_binding_hash: String,
 
-    // -- Model identifiers ----------------------------------------------------
-    /// Extraction inference provider name.
-    pub extraction_inference_provider: String,
-    /// Extraction inference model name.
-    pub extraction_inference_model: String,
-    /// Triage inference provider name.
-    pub triage_inference_provider: String,
-    /// Triage inference model name.
-    pub triage_inference_model: String,
-    /// Relation inference provider name.
-    pub relation_inference_provider: String,
-    /// Relation inference model name.
-    pub relation_inference_model: String,
+    // -- Embedding identity ------------------------------------------------
     /// Embedding provider name.
     pub embedding_provider: String,
     /// Embedding model name.
     pub embedding_model: String,
+    /// Embedding vector dimensionality.
+    pub embedding_dimensions: u32,
 
-    // -- Inference parameters --------------------------------------------------
-    /// Serialised inference parameters (JSONB).
-    pub inference_parameters: serde_json::Value,
+    // -- Pipeline parameters ----------------------------------------------
+    /// Serialised pipeline parameters (JSONB).
+    pub pipeline_parameters: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -149,19 +130,23 @@ impl SystemFingerprintRepository for PgSystemFingerprintRepository {
         conn: &mut PgConnection,
         new: &NewSystemFingerprint,
     ) -> Result<SystemFingerprint, DbError> {
+        let embedding_dimensions =
+            i32::try_from(new.embedding_dimensions).map_err(|_| DbError::QueryFailed {
+                context: format!(
+                    "embedding dimensions {} exceed the column range",
+                    new.embedding_dimensions
+                ),
+                source: sqlx::Error::Protocol("embedding_dimensions out of range".into()),
+            })?;
+
         let sql = format!(
             "INSERT INTO system_fingerprints (\
                  content_hash, build_version, \
-                 extraction_system_prompt_version_id, extraction_user_prompt_version_id, \
-                 triage_system_prompt_version_id, triage_user_prompt_version_id, \
-                 relation_system_prompt_version_id, relation_user_prompt_version_id, \
-                 extraction_inference_provider, extraction_inference_model, \
-                 triage_inference_provider, triage_inference_model, \
-                 relation_inference_provider, relation_inference_model, \
-                 embedding_provider, embedding_model, \
-                 inference_parameters\
+                 extraction_binding_hash, triage_binding_hash, relation_binding_hash, \
+                 embedding_provider, embedding_model, embedding_dimensions, \
+                 pipeline_parameters\
              ) VALUES (\
-                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17\
+                 $1, $2, $3, $4, $5, $6, $7, $8, $9\
              ) \
              ON CONFLICT (content_hash) DO NOTHING \
              RETURNING {COLUMNS}",
@@ -170,21 +155,13 @@ impl SystemFingerprintRepository for PgSystemFingerprintRepository {
         let row = sqlx::query(&sql)
             .bind(&new.content_hash)
             .bind(&new.build_version)
-            .bind(new.extraction_system_prompt_version_id.inner())
-            .bind(new.extraction_user_prompt_version_id.inner())
-            .bind(new.triage_system_prompt_version_id.inner())
-            .bind(new.triage_user_prompt_version_id.inner())
-            .bind(new.relation_system_prompt_version_id.inner())
-            .bind(new.relation_user_prompt_version_id.inner())
-            .bind(&new.extraction_inference_provider)
-            .bind(&new.extraction_inference_model)
-            .bind(&new.triage_inference_provider)
-            .bind(&new.triage_inference_model)
-            .bind(&new.relation_inference_provider)
-            .bind(&new.relation_inference_model)
+            .bind(&new.extraction_binding_hash)
+            .bind(&new.triage_binding_hash)
+            .bind(&new.relation_binding_hash)
             .bind(&new.embedding_provider)
             .bind(&new.embedding_model)
-            .bind(&new.inference_parameters)
+            .bind(embedding_dimensions)
+            .bind(&new.pipeline_parameters)
             .fetch_optional(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
@@ -238,44 +215,27 @@ impl SystemFingerprintRepository for PgSystemFingerprintRepository {
 /// Maps a raw `sqlx::Row` from a system fingerprint query into a
 /// [`SystemFingerprint`].
 fn map_system_fingerprint_row(r: &sqlx::postgres::PgRow) -> Result<SystemFingerprint, DbError> {
-    let params_value: serde_json::Value = r.get("inference_parameters");
-    let inference_parameters: InferenceParameters =
+    let params_value: serde_json::Value = r.get("pipeline_parameters");
+    let pipeline_parameters: PipelineParameters =
         serde_json::from_value(params_value).map_err(|e| DbError::QueryFailed {
-            context: format!("deserialising inference_parameters for system fingerprint: {e}"),
+            context: format!("deserialising pipeline_parameters for system fingerprint: {e}"),
             source: sqlx::Error::Decode(Box::new(e)),
         })?;
+
+    let embedding_dimensions =
+        u32::try_from(r.get::<i32, _>("embedding_dimensions")).expect(NEGATIVE_DIMENSIONS_IN_DB);
 
     Ok(SystemFingerprint::builder()
         .id(SystemFingerprintId::from(r.get::<uuid::Uuid, _>("id")))
         .content_hash(r.get("content_hash"))
         .build_version(r.get("build_version"))
-        .extraction_system_prompt_version_id(PromptVersionId::from(
-            r.get::<uuid::Uuid, _>("extraction_system_prompt_version_id"),
-        ))
-        .extraction_user_prompt_version_id(PromptVersionId::from(
-            r.get::<uuid::Uuid, _>("extraction_user_prompt_version_id"),
-        ))
-        .triage_system_prompt_version_id(PromptVersionId::from(
-            r.get::<uuid::Uuid, _>("triage_system_prompt_version_id"),
-        ))
-        .triage_user_prompt_version_id(PromptVersionId::from(
-            r.get::<uuid::Uuid, _>("triage_user_prompt_version_id"),
-        ))
-        .relation_system_prompt_version_id(PromptVersionId::from(
-            r.get::<uuid::Uuid, _>("relation_system_prompt_version_id"),
-        ))
-        .relation_user_prompt_version_id(PromptVersionId::from(
-            r.get::<uuid::Uuid, _>("relation_user_prompt_version_id"),
-        ))
-        .extraction_inference_provider(r.get("extraction_inference_provider"))
-        .extraction_inference_model(r.get("extraction_inference_model"))
-        .triage_inference_provider(r.get("triage_inference_provider"))
-        .triage_inference_model(r.get("triage_inference_model"))
-        .relation_inference_provider(r.get("relation_inference_provider"))
-        .relation_inference_model(r.get("relation_inference_model"))
+        .extraction_binding_hash(r.get("extraction_binding_hash"))
+        .triage_binding_hash(r.get("triage_binding_hash"))
+        .relation_binding_hash(r.get("relation_binding_hash"))
         .embedding_provider(r.get("embedding_provider"))
         .embedding_model(r.get("embedding_model"))
-        .inference_parameters(inference_parameters)
+        .embedding_dimensions(embedding_dimensions)
+        .pipeline_parameters(pipeline_parameters)
         .created_at(r.get("created_at"))
         .build())
 }
