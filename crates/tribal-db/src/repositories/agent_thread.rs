@@ -15,7 +15,8 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
 use tribal_domain::{
     AgentBindingVersionId, AgentDriverTaskId, AgentThread, AgentThreadId, AgentThreadStatus,
-    AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, PrincipalId, TaskId, TaskType,
+    AgentThreadSuspension, AgentThreadTerminal, ExecutionSpend, JobId, PrincipalId, TaskId,
+    TaskType,
 };
 use typed_builder::TypedBuilder;
 
@@ -155,6 +156,22 @@ pub trait AgentThreadRepository {
         conn: &mut PgConnection,
         stage_task_id: TaskId,
     ) -> Result<Option<AgentThread>, DbError>;
+
+    /// Lists the threads a job's stage tasks drive, ordered by creation
+    /// time with ties broken by id.
+    ///
+    /// Reaches threads through the stage-task linkage, so driver-driven
+    /// threads (delegated children) are not included: they belong to
+    /// their parent's lineage, not to the job's stage roster.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn find_by_job(
+        &self,
+        conn: &mut PgConnection,
+        job_id: JobId,
+    ) -> Result<Vec<AgentThread>, DbError>;
 
     /// Locks a thread row (`FOR UPDATE`) and returns its current state.
     /// Every resolution append locks the thread before its completeness
@@ -394,6 +411,30 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             })?;
 
         Ok(row.as_ref().map(map_agent_thread_row))
+    }
+
+    async fn find_by_job(
+        &self,
+        conn: &mut PgConnection,
+        job_id: JobId,
+    ) -> Result<Vec<AgentThread>, DbError> {
+        let sql = format!(
+            "SELECT {} FROM agent_threads t \
+             JOIN tasks ON tasks.id = t.stage_task_id \
+             WHERE tasks.job_id = $1 \
+             ORDER BY t.created_at, t.id",
+            COLUMNS.qualified("t"),
+        );
+        let rows = sqlx::query(&sql)
+            .bind(job_id.inner())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("listing the threads of job {job_id}"),
+                source: e,
+            })?;
+
+        Ok(rows.iter().map(map_agent_thread_row).collect())
     }
 
     async fn lock(
