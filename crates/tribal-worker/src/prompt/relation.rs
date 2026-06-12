@@ -151,7 +151,6 @@ pub(crate) fn assemble_relation_prompt(
 #[cfg(test)]
 mod tests {
     use tribal_domain::TaskErrorKind;
-
     use tribal_inference::Role;
 
     use super::*;

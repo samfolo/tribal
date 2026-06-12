@@ -1,0 +1,1051 @@
+//! The triage stage's project-scoped tools.
+//!
+//! Dedup is project-local, so every read here is fenced to the project
+//! captured at construction. A read of another project's item renders
+//! exactly as a miss: scope is enforced without offering an existence
+//! oracle over the rest of the store.
+
+use std::{collections::HashSet, sync::Arc};
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::PgConnection;
+use tribal_agent_runtime::{StageTool, ToolOutcome};
+use tribal_db::{
+    DbError, KnowledgeItemRepository, PgKnowledgeItemRepository, PgRelationRepository,
+    PgTagRegistryRepository, RelationRepository, SemanticSearchParams, TagRegistryRepository,
+};
+use tribal_domain::{
+    EmbeddingProfile, EmbeddingPurpose, KnowledgeItem, KnowledgeItemId, KnowledgeKind, ProjectId,
+    RecoverableToolFailure, ToolDescriptor, ToolExecutionMode, ToolFailure, ToolSafetyTier,
+};
+use tribal_inference::{
+    EmbeddingRequest, EmbeddingTarget, InferenceGateway, PermitWait, UsageAttribution,
+};
+
+use super::{db_failure, parse_arguments, serialise_outcome};
+use crate::prompt::LoopSimilarItemContext;
+
+// ---------------------------------------------------------------------------
+// Shared views
+// ---------------------------------------------------------------------------
+
+/// One knowledge item as the read tools render it.
+#[derive(Debug, Serialize)]
+struct ItemView {
+    item_id: String,
+    kind: KnowledgeKind,
+    content: String,
+    tags: Vec<String>,
+    created_at: DateTime<Utc>,
+}
+
+impl From<&KnowledgeItem> for ItemView {
+    fn from(item: &KnowledgeItem) -> Self {
+        Self {
+            item_id: item.id().to_string(),
+            kind: item.kind(),
+            content: item.content().to_owned(),
+            tags: item.tags().to_vec(),
+            created_at: item.created_at(),
+        }
+    }
+}
+
+/// Parses a model-supplied item id, rendering the copy-exactly rule
+/// into the diagnostic on failure.
+fn parse_item_id(tool: &str, raw: &str) -> Result<KnowledgeItemId, ToolFailure> {
+    raw.parse().map_err(|_| {
+        ToolFailure::Recoverable(RecoverableToolFailure::InvalidArguments {
+            tool: tool.to_owned(),
+            detail: format!(
+                "'{raw}' is not a knowledge item id; copy ids exactly as rendered \
+                 (the '{}_' prefix followed by a UUID)",
+                KnowledgeItemId::PREFIX,
+            ),
+        })
+    })
+}
+
+/// The miss rendering shared by the id-addressed reads: a foreign
+/// project's item renders identically to one that does not exist.
+fn missing_item(tool: &str, raw_id: &str) -> ToolFailure {
+    ToolFailure::Recoverable(RecoverableToolFailure::EmptyResult {
+        tool: tool.to_owned(),
+        detail: format!("no item with id {raw_id} exists in this project"),
+    })
+}
+
+/// Reads an item and applies the project fence, mapping a repository
+/// miss and an out-of-project hit onto the same rendering.
+async fn read_project_item(
+    conn: &mut PgConnection,
+    tool: &str,
+    project_id: ProjectId,
+    raw_id: &str,
+) -> Result<KnowledgeItem, ToolFailure> {
+    let id = parse_item_id(tool, raw_id)?;
+    let item = match PgKnowledgeItemRepository.find_by_id(conn, id).await {
+        Ok(item) => item,
+        Err(DbError::NotFound { .. }) => return Err(missing_item(tool, raw_id)),
+        Err(source) => return Err(db_failure("reading a knowledge item", &source)),
+    };
+    if item.project_id() != project_id {
+        return Err(missing_item(tool, raw_id));
+    }
+    Ok(item)
+}
+
+// ---------------------------------------------------------------------------
+// search_similar_items
+// ---------------------------------------------------------------------------
+
+const SEARCH_NAME: &str = "search_similar_items";
+const SEARCH_RESPONSE_SIZE_BOUND: u32 = 16_384;
+const SEARCH_EXPECTED: &str = r#"{"query": "<search text>"}"#;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchArguments {
+    query: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SearchResults {
+    results: Vec<LoopSimilarItemContext>,
+}
+
+/// Semantic search over the project's knowledge items.
+///
+/// The two phases split exactly along the provider boundary: `prepare`
+/// embeds the query through the gateway with no transaction held, and
+/// `execute` runs the project-scoped search against the prepared
+/// vector. Results render in the same shape as the loop's opening
+/// similar-claims context, so the ids the model copies are uniform
+/// wherever it reads them.
+pub(crate) struct SearchSimilarItemsTool {
+    descriptor: ToolDescriptor,
+    project_id: ProjectId,
+    profile: EmbeddingProfile,
+    gateway: Arc<InferenceGateway>,
+    attribution: UsageAttribution,
+    search_limit: u32,
+    deadline: tokio::time::Instant,
+}
+
+impl SearchSimilarItemsTool {
+    /// Creates the search tool for one stage execution: the project
+    /// fence, the active embedding profile the search space is keyed
+    /// to, and the attribution its embedding spend is metered under.
+    pub(crate) fn new(
+        project_id: ProjectId,
+        profile: EmbeddingProfile,
+        gateway: Arc<InferenceGateway>,
+        attribution: UsageAttribution,
+        search_limit: u32,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        let descriptor = ToolDescriptor::builder()
+            .name(SEARCH_NAME.to_owned())
+            .description(
+                "Search this project's knowledge graph for items semantically similar to a \
+                 query. Returns items with their ids, kinds, content, tags, and similarity \
+                 scores, most similar first. Rephrase the candidate's claim from different \
+                 angles to probe for duplicates the opening context may have missed."
+                    .to_owned(),
+            )
+            .input_schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The text to search for; phrased as a claim, not keywords."
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }))
+            .response_size_bound(SEARCH_RESPONSE_SIZE_BOUND)
+            .safety_tier(ToolSafetyTier::Pure)
+            .execution_mode(ToolExecutionMode::Immediate)
+            .build();
+        Self {
+            descriptor,
+            project_id,
+            profile,
+            gateway,
+            attribution,
+            search_limit,
+            deadline,
+        }
+    }
+}
+
+#[async_trait]
+impl StageTool for SearchSimilarItemsTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn prepare(
+        &self,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, ToolFailure> {
+        let args: SearchArguments = parse_arguments(SEARCH_NAME, arguments, SEARCH_EXPECTED)?;
+        if args.query.trim().is_empty() {
+            return Err(ToolFailure::Recoverable(
+                RecoverableToolFailure::InvalidArguments {
+                    tool: SEARCH_NAME.to_owned(),
+                    detail: "'query' must be non-empty search text".to_owned(),
+                },
+            ));
+        }
+        let request = EmbeddingRequest {
+            input: args.query,
+            purpose: EmbeddingPurpose::Query,
+        };
+        let remaining = self
+            .deadline
+            .saturating_duration_since(tokio::time::Instant::now());
+        let response = self
+            .gateway
+            .embed(
+                &EmbeddingTarget::from(&self.profile),
+                request,
+                PermitWait::Bounded { limit: remaining },
+                &self.attribution,
+            )
+            .await
+            .map_err(|source| ToolFailure::System {
+                context: format!("search query embedding call: {source}"),
+            })?;
+        serde_json::to_value(response.vector).map_err(|source| ToolFailure::System {
+            context: format!("serialising the prepared query embedding: {source}"),
+        })
+    }
+
+    async fn execute(
+        &self,
+        conn: &mut PgConnection,
+        prepared: serde_json::Value,
+        _arguments: &serde_json::Value,
+    ) -> Result<ToolOutcome, ToolFailure> {
+        let vector: Vec<f32> =
+            serde_json::from_value(prepared).map_err(|_| ToolFailure::System {
+                context: "search executed without its prepared query embedding".to_owned(),
+            })?;
+        let params = SemanticSearchParams::builder()
+            .query_embedding(vector)
+            .embedding_profile_id(self.profile.id())
+            .dimensions(self.profile.dimensions())
+            .project_id(Some(self.project_id))
+            .limit(self.search_limit)
+            .build();
+        let response = PgKnowledgeItemRepository
+            .semantic_search(conn, &params)
+            .await
+            .map_err(|source| db_failure("similar-item search", &source))?;
+        let results: Vec<LoopSimilarItemContext> = response
+            .results
+            .iter()
+            .map(LoopSimilarItemContext::from)
+            .collect();
+        serialise_outcome(
+            "serialising similar-item search results",
+            &SearchResults { results },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// read_knowledge_item
+// ---------------------------------------------------------------------------
+
+const READ_ITEM_NAME: &str = "read_knowledge_item";
+const READ_ITEM_RESPONSE_SIZE_BOUND: u32 = 8_192;
+const READ_ITEM_EXPECTED: &str = r#"{"item_id": "<a rendered knowledge item id>"}"#;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadItemArguments {
+    item_id: String,
+}
+
+/// Reads one of the project's knowledge items in full.
+pub(crate) struct ReadKnowledgeItemTool {
+    descriptor: ToolDescriptor,
+    project_id: ProjectId,
+}
+
+impl ReadKnowledgeItemTool {
+    /// Creates the read tool fenced to one project.
+    pub(crate) fn new(project_id: ProjectId) -> Self {
+        let descriptor = ToolDescriptor::builder()
+            .name(READ_ITEM_NAME.to_owned())
+            .description(
+                "Read one of this project's knowledge items by id, returning its kind, \
+                 content, tags, and creation time. Use it to inspect an item in full before \
+                 judging how the candidate relates to it."
+                    .to_owned(),
+            )
+            .input_schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "item_id": {
+                        "type": "string",
+                        "description": "A knowledge item id, copied exactly as rendered."
+                    }
+                },
+                "required": ["item_id"],
+                "additionalProperties": false
+            }))
+            .response_size_bound(READ_ITEM_RESPONSE_SIZE_BOUND)
+            .safety_tier(ToolSafetyTier::Pure)
+            .execution_mode(ToolExecutionMode::Immediate)
+            .build();
+        Self {
+            descriptor,
+            project_id,
+        }
+    }
+}
+
+#[async_trait]
+impl StageTool for ReadKnowledgeItemTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn execute(
+        &self,
+        conn: &mut PgConnection,
+        _prepared: serde_json::Value,
+        arguments: &serde_json::Value,
+    ) -> Result<ToolOutcome, ToolFailure> {
+        let args: ReadItemArguments =
+            parse_arguments(READ_ITEM_NAME, arguments, READ_ITEM_EXPECTED)?;
+        let item = read_project_item(conn, READ_ITEM_NAME, self.project_id, &args.item_id).await?;
+        serialise_outcome("serialising a knowledge item read", &ItemView::from(&item))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// read_item_neighbourhood
+// ---------------------------------------------------------------------------
+
+const NEIGHBOURHOOD_NAME: &str = "read_item_neighbourhood";
+const NEIGHBOURHOOD_RESPONSE_SIZE_BOUND: u32 = 16_384;
+const NEIGHBOURHOOD_EXPECTED: &str = r#"{"item_id": "<a rendered knowledge item id>"}"#;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NeighbourhoodArguments {
+    item_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct InboundRelationView {
+    relation: &'static str,
+    from_item_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    justification: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct OutboundRelationView {
+    relation: &'static str,
+    to_item_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    justification: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NeighbourhoodView {
+    item_id: String,
+    inbound_relations: Vec<InboundRelationView>,
+    outbound_relations: Vec<OutboundRelationView>,
+    neighbours: Vec<ItemView>,
+}
+
+/// Reads an item's committed relations and their in-project neighbours.
+///
+/// Relations whose far endpoint lies outside the project are omitted
+/// with their endpoints: triage reasons within its own project, and the
+/// cross-project graph belongs to the relation stage's tools.
+pub(crate) struct ReadItemNeighbourhoodTool {
+    descriptor: ToolDescriptor,
+    project_id: ProjectId,
+}
+
+impl ReadItemNeighbourhoodTool {
+    /// Creates the neighbourhood tool fenced to one project.
+    pub(crate) fn new(project_id: ProjectId) -> Self {
+        let descriptor = ToolDescriptor::builder()
+            .name(NEIGHBOURHOOD_NAME.to_owned())
+            .description(
+                "Read a knowledge item's committed relations and the neighbouring items they \
+                 connect within this project. Use it to see how an item already sits in the \
+                 graph before deciding the candidate's relationship to it."
+                    .to_owned(),
+            )
+            .input_schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "item_id": {
+                        "type": "string",
+                        "description": "A knowledge item id, copied exactly as rendered."
+                    }
+                },
+                "required": ["item_id"],
+                "additionalProperties": false
+            }))
+            .response_size_bound(NEIGHBOURHOOD_RESPONSE_SIZE_BOUND)
+            .safety_tier(ToolSafetyTier::Pure)
+            .execution_mode(ToolExecutionMode::Immediate)
+            .build();
+        Self {
+            descriptor,
+            project_id,
+        }
+    }
+}
+
+#[async_trait]
+impl StageTool for ReadItemNeighbourhoodTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn execute(
+        &self,
+        conn: &mut PgConnection,
+        _prepared: serde_json::Value,
+        arguments: &serde_json::Value,
+    ) -> Result<ToolOutcome, ToolFailure> {
+        let args: NeighbourhoodArguments =
+            parse_arguments(NEIGHBOURHOOD_NAME, arguments, NEIGHBOURHOOD_EXPECTED)?;
+        let anchor =
+            read_project_item(conn, NEIGHBOURHOOD_NAME, self.project_id, &args.item_id).await?;
+
+        let inbound = PgRelationRepository
+            .find_inbound(conn, anchor.id(), None)
+            .await
+            .map_err(|source| db_failure("reading inbound relations", &source))?;
+        let outbound = PgRelationRepository
+            .find_outbound(conn, anchor.id(), None)
+            .await
+            .map_err(|source| db_failure("reading outbound relations", &source))?;
+
+        let neighbour_ids: Vec<KnowledgeItemId> = inbound
+            .iter()
+            .map(tribal_domain::KnowledgeItemRelation::source_id)
+            .chain(
+                outbound
+                    .iter()
+                    .map(tribal_domain::KnowledgeItemRelation::target_id),
+            )
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let neighbours: Vec<KnowledgeItem> = PgKnowledgeItemRepository
+            .find_by_ids(conn, &neighbour_ids)
+            .await
+            .map_err(|source| db_failure("reading neighbouring items", &source))?
+            .into_iter()
+            .filter(|item| item.project_id() == self.project_id)
+            .collect();
+        let in_project: HashSet<KnowledgeItemId> =
+            neighbours.iter().map(KnowledgeItem::id).collect();
+
+        let view = NeighbourhoodView {
+            item_id: anchor.id().to_string(),
+            inbound_relations: inbound
+                .iter()
+                .filter(|relation| in_project.contains(&relation.source_id()))
+                .map(|relation| InboundRelationView {
+                    relation: relation.relation_type().as_str(),
+                    from_item_id: relation.source_id().to_string(),
+                    justification: relation.justification().map(str::to_owned),
+                })
+                .collect(),
+            outbound_relations: outbound
+                .iter()
+                .filter(|relation| in_project.contains(&relation.target_id()))
+                .map(|relation| OutboundRelationView {
+                    relation: relation.relation_type().as_str(),
+                    to_item_id: relation.target_id().to_string(),
+                    justification: relation.justification().map(str::to_owned),
+                })
+                .collect(),
+            neighbours: neighbours.iter().map(ItemView::from).collect(),
+        };
+        serialise_outcome("serialising an item neighbourhood", &view)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// list_tag_registry
+// ---------------------------------------------------------------------------
+
+const TAG_REGISTRY_NAME: &str = "list_tag_registry";
+const TAG_REGISTRY_RESPONSE_SIZE_BOUND: u32 = 8_192;
+const TAG_REGISTRY_EXPECTED: &str = "no arguments";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TagRegistryArguments {}
+
+#[derive(Debug, Serialize)]
+struct TagView {
+    tag: String,
+    usage_count: i32,
+}
+
+#[derive(Debug, Serialize)]
+struct TagRegistryView {
+    tags: Vec<TagView>,
+}
+
+/// Lists the tag registry.
+pub(crate) struct ListTagRegistryTool {
+    descriptor: ToolDescriptor,
+}
+
+impl ListTagRegistryTool {
+    /// Creates the tag registry listing tool. The registry is shared
+    /// vocabulary across projects, so no fence applies.
+    pub(crate) fn new() -> Self {
+        let descriptor = ToolDescriptor::builder()
+            .name(TAG_REGISTRY_NAME.to_owned())
+            .description(
+                "List every tag in the registry with its usage count. Consult it before \
+                 suggesting tags, so the existing vocabulary is reused instead of fragmented."
+                    .to_owned(),
+            )
+            .input_schema(serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }))
+            .response_size_bound(TAG_REGISTRY_RESPONSE_SIZE_BOUND)
+            .safety_tier(ToolSafetyTier::Pure)
+            .execution_mode(ToolExecutionMode::Immediate)
+            .build();
+        Self { descriptor }
+    }
+}
+
+#[async_trait]
+impl StageTool for ListTagRegistryTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn execute(
+        &self,
+        conn: &mut PgConnection,
+        _prepared: serde_json::Value,
+        arguments: &serde_json::Value,
+    ) -> Result<ToolOutcome, ToolFailure> {
+        let _: TagRegistryArguments =
+            parse_arguments(TAG_REGISTRY_NAME, arguments, TAG_REGISTRY_EXPECTED)?;
+        let entries = PgTagRegistryRepository
+            .find_all(conn)
+            .await
+            .map_err(|source| db_failure("listing the tag registry", &source))?;
+        let view = TagRegistryView {
+            tags: entries
+                .iter()
+                .map(|entry| TagView {
+                    tag: entry.tag().to_owned(),
+                    usage_count: entry.usage_count(),
+                })
+                .collect(),
+        };
+        serialise_outcome("serialising the tag registry", &view)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tribal_db::{
+        JobStateOverride, PgJobRepository, PgPrincipalRepository, PgProjectRepository,
+        PrincipalRepository, ProjectRepository,
+    };
+    use tribal_domain::{
+        GitRemote, JobOutcome, JobStatus, PrincipalId, ProviderKind, RelationBatchId, RelationKind,
+        UsageOwner,
+    };
+    use tribal_inference::{
+        InjectedEmbedding, InjectedProviders, NoopLedgerSink, ProviderKey, ProviderLimits,
+        ProviderRegistry, RequestClass,
+    };
+    use tribal_test_utils::{
+        MockEmbeddingProvider, MockInferenceProvider, a_new_job, a_new_knowledge_item,
+        a_new_principal, a_new_project, a_new_prompt_version, a_new_system_fingerprint,
+        an_embedding_profile, an_embedding_response, ensure_genesis_profile,
+        insert_committed_relation, insert_embedding_for_profile, insert_prompt_version,
+        serial_lock, test_context, upsert_system_fingerprint,
+    };
+
+    use super::*;
+
+    const EMBEDDING_MODEL: &str = "text-embedding-test";
+    const DIMENSIONS: u32 = 768;
+
+    fn basis_vector(dominant: usize) -> Vec<f32> {
+        let mut vector = vec![0.0f32; DIMENSIONS as usize];
+        vector[dominant] = 1.0;
+        vector
+    }
+
+    fn unowned_attribution() -> UsageAttribution {
+        UsageAttribution {
+            owner: UsageOwner::Unowned,
+            system_prompt_version_id: None,
+            user_prompt_version_id: None,
+            trace_id: None,
+        }
+    }
+
+    fn a_deadline() -> tokio::time::Instant {
+        tokio::time::Instant::now() + Duration::from_secs(30)
+    }
+
+    /// A gateway whose embedding provider is the given mock, bound to
+    /// the profile, with no ledger writes.
+    fn embed_gateway(
+        profile_id: tribal_domain::EmbeddingProfileId,
+        embedding: Arc<MockEmbeddingProvider>,
+    ) -> Arc<InferenceGateway> {
+        let limits = || ProviderLimits {
+            max_in_flight: 10,
+            request_timeout: Duration::from_secs(30),
+        };
+        let inference_key =
+            ProviderKey::new("mock", "http://localhost:9999", RequestClass::Inference)
+                .expect("valid inference key");
+        // The gateway resolves the embedding semaphore from the profile's
+        // recorded endpoint, which the genesis profile pins to the Ollama
+        // default.
+        let embedding_key = ProviderKey::new(
+            ProviderKind::Ollama.to_string(),
+            ProviderKind::DEFAULT_OLLAMA_BASE_URL,
+            RequestClass::Embedding,
+        )
+        .expect("valid embedding key");
+        let registry = ProviderRegistry::new(vec![
+            (inference_key.clone(), limits()),
+            (embedding_key, limits()),
+        ])
+        .expect("valid registry");
+        Arc::new(InferenceGateway::with_providers(
+            InjectedProviders::uniform(
+                registry,
+                Arc::new(MockInferenceProvider::builder().build()),
+                inference_key,
+                vec![InjectedEmbedding {
+                    profile_id,
+                    provider: embedding,
+                }],
+                Arc::new(NoopLedgerSink),
+            ),
+        ))
+    }
+
+    async fn seed_actors(
+        conn: &mut sqlx::PgConnection,
+        suffix: &str,
+    ) -> (PrincipalId, tribal_domain::ProjectId) {
+        let principal = PgPrincipalRepository
+            .insert(
+                conn,
+                &a_new_principal()
+                    .principal_key(format!("user:tools-{suffix}"))
+                    .build(),
+            )
+            .await
+            .expect("insert principal");
+        let project = PgProjectRepository
+            .insert(
+                conn,
+                &a_new_project()
+                    .git_remote(GitRemote::from_parts(
+                        "github.com",
+                        &format!("test/tools-{suffix}"),
+                        None,
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("insert project");
+        (principal.id(), project.id())
+    }
+
+    async fn seed_item(
+        conn: &mut sqlx::PgConnection,
+        principal_id: PrincipalId,
+        project_id: tribal_domain::ProjectId,
+        content: &str,
+    ) -> KnowledgeItem {
+        PgKnowledgeItemRepository
+            .insert(
+                conn,
+                &a_new_knowledge_item()
+                    .project_id(project_id)
+                    .principal_id(principal_id)
+                    .content(content.to_owned())
+                    .build(),
+            )
+            .await
+            .expect("insert item")
+    }
+
+    fn parsed(outcome: &ToolOutcome) -> serde_json::Value {
+        serde_json::from_str(&outcome.content).expect("tool outcomes are JSON")
+    }
+
+    #[tokio::test]
+    async fn test_search_embeds_in_prepare_then_searches_only_the_project() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let (principal_id, project_a) = seed_actors(&mut txn, "search-a").await;
+        let (_, project_b) = seed_actors(&mut txn, "search-b").await;
+        let profile = ensure_genesis_profile(&mut txn, EMBEDDING_MODEL, DIMENSIONS).await;
+
+        // Identical embeddings either side of the fence: only the scope
+        // can separate them.
+        let item_a = seed_item(&mut txn, principal_id, project_a, "claim in project A").await;
+        insert_embedding_for_profile(
+            &mut txn,
+            item_a.id(),
+            profile.id(),
+            EMBEDDING_MODEL,
+            basis_vector(0),
+        )
+        .await;
+        let item_b = seed_item(&mut txn, principal_id, project_b, "claim in project B").await;
+        insert_embedding_for_profile(
+            &mut txn,
+            item_b.id(),
+            profile.id(),
+            EMBEDDING_MODEL,
+            basis_vector(0),
+        )
+        .await;
+
+        let embedding = Arc::new(
+            MockEmbeddingProvider::builder()
+                .on_embed(an_embedding_response(basis_vector(0)), None)
+                .build(),
+        );
+        let tool = SearchSimilarItemsTool::new(
+            project_a,
+            profile.clone(),
+            embed_gateway(profile.id(), Arc::clone(&embedding)),
+            unowned_attribution(),
+            10,
+            a_deadline(),
+        );
+
+        let arguments = serde_json::json!({"query": "does this claim already exist"});
+        let prepared = tool.prepare(&arguments).await.expect("prepare embeds");
+
+        // The provider work happened in the prepare phase, on the query.
+        let history = embedding.embedding_history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].input, "does this claim already exist");
+        assert_eq!(history[0].purpose, EmbeddingPurpose::Query);
+
+        let outcome = tool
+            .execute(&mut txn, prepared, &arguments)
+            .await
+            .expect("execute searches");
+        let view = parsed(&outcome);
+        let results = view["results"].as_array().expect("results array");
+        assert_eq!(
+            results.len(),
+            1,
+            "the foreign project's item must not match"
+        );
+        assert_eq!(results[0]["item_id"], item_a.id().to_string());
+        assert_eq!(results[0]["content"], "claim in project A");
+        assert!(results[0]["similarity_label"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_search_executed_without_its_prepared_embedding_is_a_system_failure() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let profile = an_embedding_profile().build();
+        let embedding = Arc::new(MockEmbeddingProvider::builder().build());
+        let tool = SearchSimilarItemsTool::new(
+            tribal_domain::ProjectId::new(),
+            profile,
+            embed_gateway(tribal_domain::EmbeddingProfileId::new(), embedding),
+            unowned_attribution(),
+            10,
+            a_deadline(),
+        );
+
+        let err = tool
+            .execute(
+                &mut txn,
+                serde_json::Value::Null,
+                &serde_json::json!({"query": "anything"}),
+            )
+            .await
+            .expect_err("a skipped prepare phase must not reach the search");
+        assert!(matches!(err, ToolFailure::System { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_search_rejects_a_missing_or_blank_query() {
+        let profile = an_embedding_profile().build();
+        let embedding = Arc::new(MockEmbeddingProvider::builder().build());
+        let tool = SearchSimilarItemsTool::new(
+            tribal_domain::ProjectId::new(),
+            profile.clone(),
+            embed_gateway(profile.id(), embedding),
+            unowned_attribution(),
+            10,
+            a_deadline(),
+        );
+
+        let missing = tool
+            .prepare(&serde_json::json!({}))
+            .await
+            .expect_err("a missing query must be rejected before any provider call");
+        assert!(matches!(
+            missing,
+            ToolFailure::Recoverable(RecoverableToolFailure::InvalidArguments { ref tool, .. })
+                if tool == SEARCH_NAME
+        ));
+
+        let blank = tool
+            .prepare(&serde_json::json!({"query": "   "}))
+            .await
+            .expect_err("a blank query must be rejected before any provider call");
+        assert!(matches!(
+            blank,
+            ToolFailure::Recoverable(RecoverableToolFailure::InvalidArguments { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_read_knowledge_item_renders_the_item_and_hides_foreign_projects() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let (principal_id, project_a) = seed_actors(&mut txn, "read-a").await;
+        let (_, project_b) = seed_actors(&mut txn, "read-b").await;
+        let item_a = seed_item(&mut txn, principal_id, project_a, "the project's own claim").await;
+        let item_b = seed_item(&mut txn, principal_id, project_b, "a foreign claim").await;
+
+        let tool = ReadKnowledgeItemTool::new(project_a);
+
+        let outcome = tool
+            .execute(
+                &mut txn,
+                serde_json::Value::Null,
+                &serde_json::json!({"item_id": item_a.id().to_string()}),
+            )
+            .await
+            .expect("an in-project read succeeds");
+        let view = parsed(&outcome);
+        assert_eq!(view["item_id"], item_a.id().to_string());
+        assert_eq!(view["content"], "the project's own claim");
+        assert!(view["kind"].is_string());
+        assert!(view["tags"].is_array());
+
+        // A foreign item and a non-existent one render identically, so
+        // the tool offers no existence oracle over other projects.
+        for raw_id in [item_b.id().to_string(), KnowledgeItemId::new().to_string()] {
+            let err = tool
+                .execute(
+                    &mut txn,
+                    serde_json::Value::Null,
+                    &serde_json::json!({"item_id": raw_id}),
+                )
+                .await
+                .expect_err("out-of-project reads must miss");
+            assert!(matches!(
+                err,
+                ToolFailure::Recoverable(RecoverableToolFailure::EmptyResult { .. })
+            ));
+        }
+
+        let err = tool
+            .execute(
+                &mut txn,
+                serde_json::Value::Null,
+                &serde_json::json!({"item_id": "not-an-id"}),
+            )
+            .await
+            .expect_err("a malformed id is an argument fault");
+        assert!(matches!(
+            err,
+            ToolFailure::Recoverable(RecoverableToolFailure::InvalidArguments { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_neighbourhood_omits_relations_crossing_the_project_fence() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+        let (principal_id, project_a) = seed_actors(&mut txn, "hood-a").await;
+        let (_, project_b) = seed_actors(&mut txn, "hood-b").await;
+
+        let anchor = seed_item(&mut txn, principal_id, project_a, "the anchor claim").await;
+        let inbound_neighbour =
+            seed_item(&mut txn, principal_id, project_a, "supports the anchor").await;
+        let outbound_neighbour =
+            seed_item(&mut txn, principal_id, project_a, "anchored context").await;
+        let foreign = seed_item(&mut txn, principal_id, project_b, "foreign claim").await;
+
+        // Relations only count once their batch is committed through a job.
+        let batch_id = RelationBatchId::new();
+        let pv_id = insert_prompt_version(&mut txn, &a_new_prompt_version().build()).await;
+        let fingerprint_hash =
+            upsert_system_fingerprint(&mut txn, &a_new_system_fingerprint().build()).await;
+        PgJobRepository
+            .insert_for_test(
+                &mut txn,
+                &a_new_job()
+                    .project_id(project_a)
+                    .principal_id(principal_id)
+                    .extraction_system_prompt_version_id(pv_id)
+                    .extraction_user_prompt_version_id(pv_id)
+                    .triage_system_prompt_version_id(pv_id)
+                    .triage_user_prompt_version_id(pv_id)
+                    .relation_system_prompt_version_id(pv_id)
+                    .relation_user_prompt_version_id(pv_id)
+                    .system_fingerprint_hash(fingerprint_hash)
+                    .build(),
+                &JobStateOverride::builder()
+                    .status(JobStatus::Completed)
+                    .outcome(Some(JobOutcome::Success))
+                    .committed_batch_id(Some(batch_id))
+                    .build(),
+            )
+            .await
+            .expect("insert committed job");
+
+        insert_committed_relation(
+            &mut txn,
+            batch_id,
+            inbound_neighbour.id(),
+            anchor.id(),
+            RelationKind::Supports,
+            principal_id,
+        )
+        .await;
+        insert_committed_relation(
+            &mut txn,
+            batch_id,
+            anchor.id(),
+            outbound_neighbour.id(),
+            RelationKind::DerivedFrom,
+            principal_id,
+        )
+        .await;
+        insert_committed_relation(
+            &mut txn,
+            batch_id,
+            foreign.id(),
+            anchor.id(),
+            RelationKind::Supports,
+            principal_id,
+        )
+        .await;
+
+        let tool = ReadItemNeighbourhoodTool::new(project_a);
+        let outcome = tool
+            .execute(
+                &mut txn,
+                serde_json::Value::Null,
+                &serde_json::json!({"item_id": anchor.id().to_string()}),
+            )
+            .await
+            .expect("neighbourhood read succeeds");
+        let view = parsed(&outcome);
+
+        let inbound = view["inbound_relations"].as_array().expect("inbound array");
+        assert_eq!(
+            inbound.len(),
+            1,
+            "the cross-project inbound edge must be omitted"
+        );
+        assert_eq!(
+            inbound[0]["from_item_id"],
+            inbound_neighbour.id().to_string()
+        );
+        assert_eq!(inbound[0]["relation"], "supports");
+
+        let outbound = view["outbound_relations"]
+            .as_array()
+            .expect("outbound array");
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(
+            outbound[0]["to_item_id"],
+            outbound_neighbour.id().to_string()
+        );
+
+        assert!(
+            !outcome.content.contains(&foreign.id().to_string()),
+            "no foreign id may leak through any part of the rendering",
+        );
+        let neighbours = view["neighbours"].as_array().expect("neighbours array");
+        assert_eq!(neighbours.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_list_tag_registry_renders_the_repository_entries() {
+        let _guard = serial_lock().await;
+        let ctx = test_context().await;
+        let mut txn = ctx.begin_test().await.expect("begin_test");
+
+        PgTagRegistryRepository
+            .upsert(&mut txn, "error-handling")
+            .await
+            .expect("upsert tag");
+        PgTagRegistryRepository
+            .upsert(&mut txn, "testing")
+            .await
+            .expect("upsert tag");
+        let entries = PgTagRegistryRepository
+            .find_all(&mut txn)
+            .await
+            .expect("list entries");
+
+        let tool = ListTagRegistryTool::new();
+        let outcome = tool
+            .execute(&mut txn, serde_json::Value::Null, &serde_json::json!({}))
+            .await
+            .expect("listing succeeds");
+        let view = parsed(&outcome);
+        let tags = view["tags"].as_array().expect("tags array");
+
+        // The rendering mirrors the repository's entries one for one.
+        assert_eq!(tags.len(), entries.len());
+        for entry in &entries {
+            assert!(
+                tags.iter()
+                    .any(|tag| tag["tag"] == entry.tag()
+                        && tag["usage_count"] == entry.usage_count()),
+                "entry '{}' must render with its usage count",
+                entry.tag(),
+            );
+        }
+    }
+}

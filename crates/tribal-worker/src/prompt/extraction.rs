@@ -85,9 +85,8 @@ pub(crate) fn assemble_extraction_prompt(
 #[cfg(test)]
 mod tests {
     use tribal_domain::TaskErrorKind;
-    use tribal_test_utils::a_tag_registry_entry;
-
     use tribal_inference::Role;
+    use tribal_test_utils::a_tag_registry_entry;
 
     use super::*;
 
