@@ -121,6 +121,17 @@ pub(crate) enum StageError {
         source: tribal_agent_runtime::AgentRuntimeError,
     },
 
+    /// An execution budget exhausted in a way no retry can change: the
+    /// turn cap, the execution deadline, or the bounded budget
+    /// re-checks running dry. Terminal — the thread fails with its task.
+    #[error("execution budget exhausted in {stage}: {context}")]
+    BudgetExhausted {
+        /// The stage whose thread exhausted its budget.
+        stage: String,
+        /// Which budget, with its numbers.
+        context: String,
+    },
+
     /// A database operation failed during stage execution.
     #[error("database error in {stage}: {context}")]
     Database {
@@ -145,6 +156,7 @@ impl StageError {
             Self::OwnershipLost => TaskErrorKind::OwnershipLost,
             Self::Timeout { .. } => TaskErrorKind::Timeout,
             Self::TemplateRender { .. } | Self::Runtime { .. } => TaskErrorKind::InternalError,
+            Self::BudgetExhausted { .. } => TaskErrorKind::BudgetExhausted,
             Self::Database { .. } => TaskErrorKind::DatabaseError,
         }
     }

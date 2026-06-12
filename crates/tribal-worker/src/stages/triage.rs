@@ -90,7 +90,7 @@ impl Worker {
         task: &Task,
         deadline: tokio::time::Instant,
         stage_thread: &StageThread,
-    ) -> Result<(StageCommit, Option<CompletionResponse>), StageError> {
+    ) -> Result<Option<(StageCommit, Option<CompletionResponse>)>, StageError> {
         let batch_index = task.batch_index().expect(EXPECT_BATCH_INDEX);
 
         let span = tracing::info_span!(
@@ -105,14 +105,14 @@ impl Worker {
 
         async {
             if self.check_triage_idempotency(job.id(), batch_index).await? {
-                return Ok((
+                return Ok(Some((
                     StageCommit::Triage {
                         project_id: job.project_id(),
                         decision: TriageCommitDecision::NoOp,
                         similar_item_decisions: vec![],
                     },
                     None,
-                ));
+                )));
             }
 
             let candidate = self.load_triage_candidate(job.id(), batch_index).await?;
@@ -180,7 +180,7 @@ impl Worker {
             let fresh_slots: Vec<SimilarItemSlot> =
                 search_results.iter().map(SimilarItemSlot::from).collect();
 
-            let (mut classification, response, slots) = self
+            let Some((mut classification, response, slots)) = self
                 .classify_candidate(
                     &ctx,
                     task,
@@ -192,7 +192,10 @@ impl Worker {
                     deadline,
                     &attribution,
                 )
-                .await?;
+                .await?
+            else {
+                return Ok(None);
+            };
 
             classification.reconcile();
 
@@ -238,7 +241,7 @@ impl Worker {
                 resolved_tags,
             );
 
-            Ok((commit, Some(response)))
+            Ok(Some((commit, Some(response))))
         }
         .instrument(span)
         .await
@@ -407,11 +410,11 @@ impl Worker {
         deadline: tokio::time::Instant,
         attribution: &UsageAttribution,
     ) -> Result<
-        (
+        Option<(
             TriageClassification,
             CompletionResponse,
             Vec<SimilarItemSlot>,
-        ),
+        )>,
         StageError,
     > {
         let include_llm_content = self.include_llm_content();
@@ -443,7 +446,7 @@ impl Worker {
                 },
             )
         })?;
-        let bracketed = self
+        let Some(bracketed) = self
             .bracket_one_shot(
                 STAGE_TRIAGE,
                 stage_thread,
@@ -452,7 +455,10 @@ impl Worker {
                 request,
                 Some(recorded_context),
             )
-            .await?;
+            .await?
+        else {
+            return Ok(None);
+        };
 
         // The model's context indices address the list its conversation
         // rendered: on resume that is the recorded one, never this
@@ -507,7 +513,7 @@ impl Worker {
             })?
         };
 
-        Ok((classification, response, slots))
+        Ok(Some((classification, response, slots)))
     }
 
     /// Builds the `StageCommit::Triage` variant from the resolved outcome,

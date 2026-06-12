@@ -246,6 +246,101 @@ pub struct RecheckPolicy {
     pub bound: u32,
 }
 
+/// What the pre-call budget enforcement decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionDecision {
+    /// Headroom exists; the call proceeds.
+    Proceed,
+    /// The budget is exhausted; the caller commits the suspension with
+    /// this re-check count.
+    Suspend {
+        /// Consecutive wakes whose re-check found the budget unchanged.
+        unchanged_rechecks: u32,
+    },
+    /// The bounded re-checks ran dry; the caller fails the thread.
+    Exhausted(BudgetFailure),
+}
+
+/// Runs the token admission and folds in the bounded-recheck
+/// accounting — the decision both executors share before an inference
+/// call. The caller commits the suspension (or the failure), so each
+/// path keeps its own heartbeat discipline around the commit.
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::Database`] on database errors.
+pub async fn decide_admission(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+    budgets: &ExecutionBudgets,
+    recheck: RecheckPolicy,
+    carried_rechecks: Option<u32>,
+) -> Result<AdmissionDecision, AgentRuntimeError> {
+    match admit_inference(conn, thread, budgets).await? {
+        Admission::Admitted => Ok(AdmissionDecision::Proceed),
+        Admission::Exhausted { spent, cap } => match carried_rechecks {
+            Some(count) => {
+                let unchanged = count.saturating_add(1);
+                if unchanged >= recheck.bound {
+                    Ok(AdmissionDecision::Exhausted(
+                        BudgetFailure::RecheckExhausted {
+                            spent,
+                            cap,
+                            rechecks: unchanged,
+                        },
+                    ))
+                } else {
+                    Ok(AdmissionDecision::Suspend {
+                        unchanged_rechecks: unchanged,
+                    })
+                }
+            }
+            None => Ok(AdmissionDecision::Suspend {
+                unchanged_rechecks: 0,
+            }),
+        },
+    }
+}
+
+/// Reads the re-check count a trailing budget wake carries, for callers
+/// without a projection in hand (the one-shot bracket). Only consulted
+/// when a token cap exists, so the default path issues no query.
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::Database`] on database errors.
+pub async fn carried_rechecks(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<Option<u32>, AgentRuntimeError> {
+    let last = PgAgentThreadRecordRepository
+        .last_record(conn, thread.id())
+        .await
+        .map_err(|source| AgentRuntimeError::database("reading the log's tail", source))?;
+    Ok(last.as_ref().and_then(wake_count))
+}
+
+/// The wake-count discrimination: a budget-recheck resolution record's
+/// carried count, `None` for everything else.
+fn wake_count(record: &AgentThreadRecord) -> Option<u32> {
+    if record.kind() != AgentThreadRecordKind::Input {
+        return None;
+    }
+    if record
+        .content()
+        .get("cause")
+        .and_then(serde_json::Value::as_str)
+        != Some(BUDGET_RECHECK_CAUSE)
+    {
+        return None;
+    }
+    record
+        .content()
+        .get("unchanged_rechecks")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|count| u32::try_from(count).ok())
+}
+
 // ---------------------------------------------------------------------------
 // Outcomes
 // ---------------------------------------------------------------------------
@@ -297,6 +392,34 @@ pub enum BudgetFailure {
     },
 }
 
+impl std::fmt::Display for BudgetFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TurnCap { turns, cap } => {
+                write!(
+                    f,
+                    "the turn cap: {turns} committed turns against a cap of {cap}"
+                )
+            }
+            Self::Deadline { seconds } => {
+                write!(
+                    f,
+                    "the execution deadline: the thread outlived its {seconds}s bound"
+                )
+            }
+            Self::RecheckExhausted {
+                spent,
+                cap,
+                rechecks,
+            } => write!(
+                f,
+                "the token budget: {spent} spent against a cap of {cap} after {rechecks} \
+                 unchanged re-checks",
+            ),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dependencies
 // ---------------------------------------------------------------------------
@@ -327,9 +450,9 @@ pub struct TurnLoopDeps<'a> {
     pub pipeline: &'a dyn SubmissionPipeline,
     /// The lease-liveness seam.
     pub pump: &'a dyn HeartbeatPump,
-    /// The committed input record, when a prior attempt rendered it.
-    pub committed_input: Option<&'a AgentThreadRecord>,
-    /// This attempt's rendering, committed only when no input exists.
+    /// This attempt's rendering, committed only when the log holds no
+    /// rendered conversation yet — the log, not caller bookkeeping,
+    /// decides.
     pub rendered: RenderedConversation,
     /// The binding's execution caps.
     pub budgets: ExecutionBudgets,
@@ -361,17 +484,27 @@ pub struct TurnLoopDeps<'a> {
 pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentRuntimeError> {
     let mut conn = acquire(deps.pool).await?;
 
-    begin_turn(
-        &mut conn,
-        deps.thread,
-        deps.task_id,
-        deps.claim_token,
-        deps.committed_input,
-        deps.rendered.clone(),
-    )
-    .await?;
-
-    let mut projection = read_projection(&mut conn, deps.thread).await?;
+    // The committed log decides whether this attempt renders the
+    // opening: only a log with no rendered conversation commits one, so
+    // a resumed entry can never write a duplicate whatever the caller
+    // believes about prior attempts.
+    let mut records = read_log(&mut conn, deps.thread).await?;
+    if !records
+        .iter()
+        .any(|record| is_rendered_conversation(record.content()))
+    {
+        begin_turn(
+            &mut conn,
+            deps.thread,
+            deps.task_id,
+            deps.claim_token,
+            None,
+            deps.rendered.clone(),
+        )
+        .await?;
+        records = read_log(&mut conn, deps.thread).await?;
+    }
+    let mut projection = project(deps.thread, &records)?;
 
     loop {
         if let Some(batch) = projection.tail.take() {
@@ -423,42 +556,39 @@ pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentR
             });
         }
 
-        // 4. Ledger-side token admission.
-        if let Admission::Exhausted { spent, cap } =
-            admit_inference(&mut conn, deps.thread, &deps.budgets).await?
+        // 4. Ledger-side token admission, with the bounded re-check
+        //    accounting.
+        match decide_admission(
+            &mut conn,
+            deps.thread,
+            &deps.budgets,
+            deps.recheck,
+            carried_rechecks,
+        )
+        .await?
         {
-            let unchanged_rechecks = match carried_rechecks {
-                Some(count) => {
-                    let unchanged = count.saturating_add(1);
-                    if unchanged >= deps.recheck.bound {
-                        return Ok(LoopOutcome::BudgetFailed {
-                            cause: BudgetFailure::RecheckExhausted {
-                                spent,
-                                cap,
-                                rechecks: unchanged,
-                            },
-                        });
-                    }
-                    unchanged
-                }
-                None => 0,
-            };
-            deps.pump.abort();
-            let wake_at =
-                Utc::now() + chrono::Duration::seconds(i64::from(deps.recheck.delay_seconds));
-            return match suspend_stage_thread(
-                &mut conn,
-                deps.thread,
-                deps.task_id,
-                deps.claim_token,
-                &AgentThreadSuspension::BudgetExhaustion { unchanged_rechecks },
-                Some(wake_at),
-            )
-            .await?
-            {
-                SuspendOutcome::Suspended => Ok(LoopOutcome::Suspended),
-                SuspendOutcome::CancelIntervened => Ok(LoopOutcome::CancelIntent),
-            };
+            AdmissionDecision::Proceed => {}
+            AdmissionDecision::Exhausted(cause) => {
+                return Ok(LoopOutcome::BudgetFailed { cause });
+            }
+            AdmissionDecision::Suspend { unchanged_rechecks } => {
+                deps.pump.abort();
+                let wake_at =
+                    Utc::now() + chrono::Duration::seconds(i64::from(deps.recheck.delay_seconds));
+                return match suspend_stage_thread(
+                    &mut conn,
+                    deps.thread,
+                    deps.task_id,
+                    deps.claim_token,
+                    &AgentThreadSuspension::BudgetExhaustion { unchanged_rechecks },
+                    Some(wake_at),
+                )
+                .await?
+                {
+                    SuspendOutcome::Suspended => Ok(LoopOutcome::Suspended),
+                    SuspendOutcome::CancelIntervened => Ok(LoopOutcome::CancelIntent),
+                };
+            }
         }
 
         // 5. The streamed inference call, no transaction held.
@@ -504,11 +634,18 @@ async fn read_projection(
     conn: &mut PgConnection,
     thread: &AgentThread,
 ) -> Result<Projection, AgentRuntimeError> {
-    let records = PgAgentThreadRecordRepository
+    let records = read_log(conn, thread).await?;
+    project(thread, &records)
+}
+
+async fn read_log(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<Vec<AgentThreadRecord>, AgentRuntimeError> {
+    PgAgentThreadRecordRepository
         .find_by_thread(conn, thread.id())
         .await
-        .map_err(|source| AgentRuntimeError::database("reading the thread's log", source))?;
-    project(thread, &records)
+        .map_err(|source| AgentRuntimeError::database("reading the thread's log", source))
 }
 
 fn project(
@@ -547,18 +684,7 @@ fn project(
                     // never model-facing. A budget wake carries the
                     // unchanged-recheck count forward when it is the
                     // log's trailing record.
-                    if record
-                        .content()
-                        .get("cause")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(BUDGET_RECHECK_CAUSE)
-                    {
-                        projection.carried_rechecks = record
-                            .content()
-                            .get("unchanged_rechecks")
-                            .and_then(serde_json::Value::as_u64)
-                            .and_then(|count| u32::try_from(count).ok());
-                    }
+                    projection.carried_rechecks = wake_count(record);
                 }
             }
             AgentThreadRecordKind::AssistantMessage => {

@@ -76,7 +76,7 @@ impl Worker {
         task: &Task,
         deadline: tokio::time::Instant,
         stage_thread: &StageThread,
-    ) -> Result<(StageCommit, Option<CompletionResponse>), StageError> {
+    ) -> Result<Option<(StageCommit, Option<CompletionResponse>)>, StageError> {
         let span = tracing::info_span!(
             "tribal.task.extraction",
             { span_attrs::TASK_ID } = %task.id(),
@@ -130,7 +130,7 @@ impl Worker {
 
             // Extraction output stands alone (no positional references
             // into rendered context), so no resolution context is recorded.
-            let request = self
+            let Some(bracketed) = self
                 .bracket_one_shot(
                     STAGE_EXTRACTION,
                     stage_thread,
@@ -140,7 +140,10 @@ impl Worker {
                     None,
                 )
                 .await?
-                .request;
+            else {
+                return Ok(None);
+            };
+            let request = bracketed.request;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
                 .gateway()
@@ -192,7 +195,7 @@ impl Worker {
                 .relation_hints(serde_json::to_value(&capped_hints).expect(HINTS_SERIALISE))
                 .build();
 
-            Ok((
+            Ok(Some((
                 StageCommit::Extraction {
                     extraction_result,
                     triage_tasks,
@@ -200,7 +203,7 @@ impl Worker {
                     original_count,
                 },
                 Some(response),
-            ))
+            )))
         }
         .instrument(span)
         .await
