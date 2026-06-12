@@ -124,3 +124,111 @@ async fn test_fan_in_never_fires_while_a_sibling_is_blocked() {
 
     teardown(ctx).await;
 }
+
+/// A fan-in against a terminal job reports no transition: the relation
+/// task may be upserted, but callers publish nothing.
+#[tokio::test]
+async fn test_fan_in_against_a_terminal_job_reports_no_transition() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "fan-in-terminal").await;
+    let candidates = vec![a_candidate().content("lone candidate".to_owned()).build()];
+
+    let mut conn = raw_conn(ctx).await;
+    let (job_id, task_ids) = seed_multiple_triage_tasks(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+        &candidates,
+    )
+    .await;
+    let task_id = task_ids[0];
+
+    // The job reaches a terminal state before the late fan-in arrives.
+    let failed = tribal_db::JobStatusTransition::builder()
+        .status(JobStatus::Failed)
+        .outcome(Some(tribal_domain::JobOutcome::Failure))
+        .error_message(Some("raced to terminal".to_owned()))
+        .completed_at(Some(chrono::Utc::now()))
+        .build();
+    PgJobRepository
+        .update_status_if_live(&mut conn, job_id, &failed)
+        .await
+        .expect("fail the job");
+
+    let fired = coupling::triage_fan_in(&mut conn, job_id, task_id)
+        .await
+        .expect("fan-in");
+
+    assert!(
+        !fired,
+        "a terminal job's silent no-op must not read as a fired transition",
+    );
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    assert_eq!(job.status(), JobStatus::Failed, "the terminal state holds");
+
+    teardown(ctx).await;
+}
+
+/// A dead-letter coupling against a terminal job owes no notification.
+#[tokio::test]
+async fn test_couple_dead_lettered_against_a_terminal_job_owes_nothing() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "couple-terminal").await;
+
+    let mut conn = raw_conn(ctx).await;
+    let (job_id, _task_id) = tribal_test_utils::seed_extraction_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+    )
+    .await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "couple-terminal")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+
+    // The job completes before the late coupling arrives.
+    let completed = tribal_db::JobStatusTransition::builder()
+        .status(JobStatus::Completed)
+        .outcome(Some(tribal_domain::JobOutcome::Success))
+        .completed_at(Some(chrono::Utc::now()))
+        .build();
+    PgJobRepository
+        .update_status_if_live(&mut conn, job_id, &completed)
+        .await
+        .expect("complete the job");
+
+    let owed = coupling::couple_dead_lettered_task(&mut conn, &task, "late failure")
+        .await
+        .expect("couple");
+
+    assert!(
+        owed.is_none(),
+        "a completed job must not yield a Failed notification",
+    );
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("job");
+    assert_eq!(
+        job.status(),
+        JobStatus::Completed,
+        "the late coupling never resurrects or fails a completed job",
+    );
+
+    teardown(ctx).await;
+}

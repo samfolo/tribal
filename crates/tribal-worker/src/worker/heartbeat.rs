@@ -109,7 +109,7 @@ impl ThreadReclaimStats {
 /// at [`RECOVERY_BACKOFF_CAP_SECONDS`]. The cycle counter never resets,
 /// so it carries the backoff ladder the per-cycle retry reset would
 /// otherwise discard.
-fn recovery_backoff_seconds(recovery_attempts: u32) -> u32 {
+pub(crate) fn recovery_backoff_seconds(recovery_attempts: u32) -> u32 {
     2u32.saturating_pow(recovery_attempts)
         .min(RECOVERY_BACKOFF_CAP_SECONDS)
 }

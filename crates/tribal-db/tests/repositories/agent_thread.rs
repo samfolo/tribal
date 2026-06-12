@@ -4,7 +4,7 @@ use tribal_db::{
     NewAgentDriverTask, NewAgentThread, NewAgentThreadRecord, PgAgentBindingVersionRepository,
     PgAgentDriverTaskRepository, PgAgentThreadRecordRepository, PgAgentThreadRepository,
     PgJobRepository, PgPrincipalRepository, PgProjectRepository, PgTaskRepository,
-    PrincipalRepository, ProjectRepository, TaskRepository,
+    PrincipalRepository, ProjectRepository, TaskRepository, ThreadPruneCriteria,
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentDriverTaskKind, AgentDriverTaskState, AgentThread,
@@ -706,4 +706,329 @@ async fn test_dispose_unclaimed_never_touches_a_claimed_row() {
         .expect("present");
     assert_eq!(read.state(), AgentDriverTaskState::DeadLetter);
     assert!(read.completed_at().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Sweep scan predicates
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_timer_wake_scan_selects_only_due_intentless_stage_threads() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    // Due, intentless, stage-driven: the one row the predicate returns.
+    let due = insert_thread(&mut txn, "wake-due").await;
+    PgAgentThreadRepository
+        .mark_running(&mut txn, due.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            due.id(),
+            &AgentThreadSuspension::Timer,
+            Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
+        )
+        .await
+        .expect("suspend due");
+
+    // Suspended with a future wake: not yet due.
+    let future = insert_thread(&mut txn, "wake-future").await;
+    PgAgentThreadRepository
+        .mark_running(&mut txn, future.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            future.id(),
+            &AgentThreadSuspension::Timer,
+            Some(chrono::Utc::now() + chrono::Duration::minutes(10)),
+        )
+        .await
+        .expect("suspend future");
+
+    // Due but carrying a cancel intent: the cancel predicate's row.
+    let cancelled = insert_thread(&mut txn, "wake-intent").await;
+    PgAgentThreadRepository
+        .mark_running(&mut txn, cancelled.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            cancelled.id(),
+            &AgentThreadSuspension::Timer,
+            Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
+        )
+        .await
+        .expect("suspend intent");
+    PgAgentThreadRepository
+        .record_cancel_intent(&mut txn, cancelled.id(), "operator:test")
+        .await
+        .expect("intent");
+
+    let woken = PgAgentThreadRepository
+        .find_due_timer_wakes(&mut txn, 10)
+        .await
+        .expect("scan");
+
+    assert_eq!(woken.len(), 1, "only the due intentless thread is woken");
+    assert_eq!(woken[0].id(), due.id());
+
+    let intents = PgAgentThreadRepository
+        .find_cancel_intents(&mut txn, 10)
+        .await
+        .expect("intent scan");
+    assert_eq!(
+        intents.len(),
+        1,
+        "the intent thread belongs to the cancel predicate"
+    );
+    assert_eq!(intents[0].id(), cancelled.id());
+}
+
+#[tokio::test]
+async fn test_complete_from_suspended_clears_the_suspension_payload() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let thread = insert_thread(&mut txn, "complete-suspended").await;
+    PgAgentThreadRepository
+        .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .suspend(
+            &mut txn,
+            thread.id(),
+            &AgentThreadSuspension::Timer,
+            Some(chrono::Utc::now()),
+        )
+        .await
+        .expect("suspend");
+
+    let moved = PgAgentThreadRepository
+        .complete(
+            &mut txn,
+            thread.id(),
+            AgentThreadTerminal::Cancelled,
+            AgentThreadStatus::Suspended,
+        )
+        .await
+        .expect("complete");
+    assert_eq!(moved, 1);
+
+    let after = PgAgentThreadRepository
+        .find_by_id(&mut txn, thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(after.status(), AgentThreadStatus::Cancelled);
+    assert!(
+        after.suspension().is_none() && after.wake_at().is_none(),
+        "leaving suspended clears the payload so the paired CHECK can never trip",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Prune
+// ---------------------------------------------------------------------------
+
+/// Builds prune criteria collecting everything terminal as of now.
+fn prune_now(cascade: bool) -> ThreadPruneCriteria {
+    ThreadPruneCriteria {
+        completed_before: chrono::Utc::now() + chrono::Duration::seconds(1),
+        stage: None,
+        cascade,
+    }
+}
+
+#[tokio::test]
+async fn test_prune_deletes_only_aged_terminal_threads() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    // A terminal thread with a record, and a live one.
+    let terminal = insert_thread(&mut txn, "prune-terminal").await;
+    PgAgentThreadRepository
+        .mark_running(&mut txn, terminal.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .complete(
+            &mut txn,
+            terminal.id(),
+            AgentThreadTerminal::Completed,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .expect("complete");
+    PgAgentThreadRecordRepository
+        .append(
+            &mut txn,
+            &NewAgentThreadRecord::builder()
+                .thread_id(terminal.id())
+                .seq(AgentThreadRecordSeq::FIRST)
+                .kind(AgentThreadRecordKind::Input)
+                .content(serde_json::json!({"kept": false}))
+                .build(),
+        )
+        .await
+        .expect("record");
+    let live = insert_thread(&mut txn, "prune-live").await;
+
+    let refused = PgAgentThreadRepository
+        .count_refused_prune_roots(&mut txn, &prune_now(false))
+        .await
+        .expect("count");
+    assert_eq!(refused, 0);
+    let pruned = PgAgentThreadRepository
+        .prune_threads(&mut txn, &prune_now(false))
+        .await
+        .expect("prune");
+    assert_eq!(pruned, 1, "the terminal thread and only it");
+
+    assert!(
+        PgAgentThreadRepository
+            .find_by_id(&mut txn, terminal.id())
+            .await
+            .expect("find")
+            .is_none(),
+        "the terminal thread is gone",
+    );
+    assert!(
+        PgAgentThreadRecordRepository
+            .find_by_thread(&mut txn, terminal.id())
+            .await
+            .expect("log")
+            .is_empty(),
+        "its records went with it",
+    );
+    assert!(
+        PgAgentThreadRepository
+            .find_by_id(&mut txn, live.id())
+            .await
+            .expect("find")
+            .is_some(),
+        "the live thread survives",
+    );
+
+    // An age bound in the past collects nothing.
+    let too_old = ThreadPruneCriteria {
+        completed_before: chrono::Utc::now() - chrono::Duration::days(30),
+        stage: None,
+        cascade: false,
+    };
+    let pruned = PgAgentThreadRepository
+        .prune_threads(&mut txn, &too_old)
+        .await
+        .expect("prune");
+    assert_eq!(pruned, 0, "nothing terminal predates the bound");
+}
+
+#[tokio::test]
+async fn test_prune_refuses_a_root_with_a_live_descendant_even_cascading() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    // A terminal parent with a live child.
+    let parent = insert_thread(&mut txn, "prune-parent-live").await;
+    PgAgentThreadRepository
+        .mark_running(&mut txn, parent.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .complete(
+            &mut txn,
+            parent.id(),
+            AgentThreadTerminal::Failed,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .expect("complete");
+    let mut child_prereq = setup_thread_prerequisites(&mut txn, "prune-child-live").await;
+    child_prereq.new_thread.parent_thread_id = Some(parent.id());
+    let child = PgAgentThreadRepository
+        .insert(&mut txn, &child_prereq.new_thread)
+        .await
+        .expect("insert child");
+
+    for cascade in [false, true] {
+        let refused = PgAgentThreadRepository
+            .count_refused_prune_roots(&mut txn, &prune_now(cascade))
+            .await
+            .expect("count");
+        assert_eq!(
+            refused, 1,
+            "the live descendant refuses (cascade {cascade})"
+        );
+        let pruned = PgAgentThreadRepository
+            .prune_threads(&mut txn, &prune_now(cascade))
+            .await
+            .expect("prune");
+        assert_eq!(pruned, 0, "nothing deletes (cascade {cascade})");
+    }
+    assert!(
+        PgAgentThreadRepository
+            .find_by_id(&mut txn, child.id())
+            .await
+            .expect("find")
+            .is_some(),
+    );
+}
+
+#[tokio::test]
+async fn test_prune_cascade_collects_a_terminal_subtree() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+
+    let parent = insert_thread(&mut txn, "prune-subtree-parent").await;
+    PgAgentThreadRepository
+        .mark_running(&mut txn, parent.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .complete(
+            &mut txn,
+            parent.id(),
+            AgentThreadTerminal::Completed,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .expect("complete");
+    let mut child_prereq = setup_thread_prerequisites(&mut txn, "prune-subtree-child").await;
+    child_prereq.new_thread.parent_thread_id = Some(parent.id());
+    let child = PgAgentThreadRepository
+        .insert(&mut txn, &child_prereq.new_thread)
+        .await
+        .expect("insert child");
+    PgAgentThreadRepository
+        .mark_running(&mut txn, child.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("running");
+    PgAgentThreadRepository
+        .complete(
+            &mut txn,
+            child.id(),
+            AgentThreadTerminal::Completed,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .expect("complete");
+
+    // Without the cascade the descendant refuses the root.
+    let refused = PgAgentThreadRepository
+        .count_refused_prune_roots(&mut txn, &prune_now(false))
+        .await
+        .expect("count");
+    assert_eq!(refused, 1, "any descendant refuses without the cascade");
+
+    // With it, the whole terminal subtree collects in one pass.
+    let pruned = PgAgentThreadRepository
+        .prune_threads(&mut txn, &prune_now(true))
+        .await
+        .expect("prune");
+    assert_eq!(pruned, 2, "parent and terminal child delete together");
 }

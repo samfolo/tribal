@@ -50,7 +50,7 @@ pub use repositories::{
     ReindexRunRepository, ReindexTaskRepository, ReindexTaskStateCount, RelationRepository,
     RetrievalFeedbackRepository, SemanticSearchParams, SemanticSearchResponse,
     SemanticSearchResult, StandingRepository, SystemFingerprintRepository, TagEmbeddingRepository,
-    TagRegistryRepository, TaskRepository, TaskStatusCount, TokenUsageRepository,
-    TraversalDirection, TraversalNode, TraversalResponse, TriageResultRepository,
-    TriageSimilarItemDecisionRepository, encode_cursor,
+    TagRegistryRepository, TaskRepository, TaskStatusCount, ThreadPruneCriteria,
+    ThreadPruneOutcome, TokenUsageRepository, TraversalDirection, TraversalNode, TraversalResponse,
+    TriageResultRepository, TriageSimilarItemDecisionRepository, encode_cursor,
 };

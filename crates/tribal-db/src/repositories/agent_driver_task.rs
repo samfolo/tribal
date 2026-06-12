@@ -377,11 +377,16 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
         // The inner SELECT ... FOR UPDATE is the locked-unclaimed guard:
         // the row is locked before the state write, and a claimed row
         // (token held by a live worker) is never selected.
-        let result = sqlx::query(
+        let terminal: Vec<String> = AgentDriverTaskState::ALL
+            .iter()
+            .filter(|state| state.is_terminal())
+            .map(|state| format!("'{}'", state.as_str()))
+            .collect();
+        let sql = format!(
             "WITH target AS ( \
                  SELECT id FROM agent_driver_tasks \
                  WHERE id = $1 AND claim_token IS NULL \
-                   AND state NOT IN ('completed', 'dead_letter') \
+                   AND state NOT IN ({terminal}) \
                  FOR UPDATE \
              ) \
              UPDATE agent_driver_tasks t \
@@ -389,15 +394,17 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
                  completed_at = now(), updated_at = now() \
              FROM target \
              WHERE t.id = target.id",
-        )
-        .bind(id.inner())
-        .bind(error_message)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| DbError::QueryFailed {
-            context: format!("disposing of unclaimed driver task {id}"),
-            source: e,
-        })?;
+            terminal = terminal.join(", "),
+        );
+        let result = sqlx::query(&sql)
+            .bind(id.inner())
+            .bind(error_message)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: format!("disposing of unclaimed driver task {id}"),
+                source: e,
+            })?;
 
         Ok(result.rows_affected())
     }

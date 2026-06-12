@@ -11,7 +11,7 @@
 //! are exercised by the runtime's own tests until one does.
 
 use serde::Serialize;
-use sqlx::{Connection, PgConnection};
+use sqlx::PgConnection;
 use tribal_db::{
     AgentThreadRecordRepository, AgentThreadRepository, NewAgentThreadRecord,
     PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository, TaskRepository,
@@ -22,7 +22,10 @@ use tribal_domain::{
 };
 use tribal_telemetry::{current_span_id, current_trace_id};
 
-use crate::AgentRuntimeError;
+use crate::{
+    AgentRuntimeError,
+    txn::{begin, commit},
+};
 
 // ---------------------------------------------------------------------------
 // Suspend
@@ -187,12 +190,22 @@ pub async fn resolve_stage_thread(
     }
 
     if let Some(task_id) = thread.stage_task_id() {
-        PgTaskRepository
+        let rows = PgTaskRepository
             .requeue_from_blocked(&mut txn, task_id)
             .await
             .map_err(|source| {
                 AgentRuntimeError::database("re-queueing the driving task", source)
             })?;
+        if rows == 0 {
+            // A suspended thread's task is blocked by construction; a
+            // zero-row requeue means an unmodelled pairing this commit
+            // would otherwise silently strand.
+            tracing::warn!(
+                thread_id = %thread.id(),
+                task_id = %task_id,
+                "resolve found the driving task not blocked; committing the wake regardless",
+            );
+        }
     }
 
     commit(txn, "committing the resolve transaction").await?;
@@ -299,36 +312,6 @@ pub enum CancelOutcome {
 // ---------------------------------------------------------------------------
 // Shared parts
 // ---------------------------------------------------------------------------
-
-async fn begin<'c>(
-    conn: &'c mut PgConnection,
-    context: &str,
-) -> Result<sqlx::Transaction<'c, sqlx::Postgres>, AgentRuntimeError> {
-    conn.begin().await.map_err(|source| {
-        AgentRuntimeError::database(
-            context,
-            tribal_db::DbError::QueryFailed {
-                context: context.to_owned(),
-                source,
-            },
-        )
-    })
-}
-
-async fn commit(
-    txn: sqlx::Transaction<'_, sqlx::Postgres>,
-    context: &str,
-) -> Result<(), AgentRuntimeError> {
-    txn.commit().await.map_err(|source| {
-        AgentRuntimeError::database(
-            context,
-            tribal_db::DbError::QueryFailed {
-                context: context.to_owned(),
-                source,
-            },
-        )
-    })
-}
 
 async fn next_seq(
     txn: &mut PgConnection,

@@ -260,6 +260,27 @@ pub trait TaskRepository {
         timeout_seconds: u32,
     ) -> Result<Option<Task>, DbError>;
 
+    /// Re-queues a claimed task under its claim guard with an explicit
+    /// consecutive-failure count and availability: the inline failure
+    /// path's requeue and recovery-cycle writes, where the disposition
+    /// decision owns the counter rather than a SQL CASE. Returns the
+    /// affected row count (zero means the lease was lost).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    #[allow(clippy::too_many_arguments)] // mirrors fail(); a params struct would obscure the guard
+    async fn requeue_claimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+        retry_count: u32,
+        available_at: DateTime<Utc>,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError>;
+
     /// Re-queues a locked stale task with the given consecutive-failure
     /// count and backoff, clearing its lease: the recovery cycle's task
     /// half. The caller holds the row lock from
@@ -764,6 +785,48 @@ impl TaskRepository for PgTaskRepository {
         Ok(row.as_ref().map(map_task_row))
     }
 
+    async fn requeue_claimed(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        claim_token: uuid::Uuid,
+        retry_count: u32,
+        available_at: DateTime<Utc>,
+        error_kind: TaskErrorKind,
+        error_message: &str,
+    ) -> Result<u64, DbError> {
+        let retry_count_i32 = i32::try_from(retry_count).expect(MAX_RETRIES_EXCEEDS_I32);
+
+        let result = sqlx::query(
+            "UPDATE tasks \
+             SET retry_count = $3, \
+                 status = 'queued', \
+                 available_at = $4, \
+                 claim_token = NULL, \
+                 claimed_by = NULL, \
+                 claimed_at = NULL, \
+                 heartbeat_at = NULL, \
+                 error_kind = $5, \
+                 error_message = $6, \
+                 updated_at = now() \
+             WHERE id = $1 AND claim_token = $2 AND status = 'claimed'",
+        )
+        .bind(id.inner())
+        .bind(claim_token)
+        .bind(retry_count_i32)
+        .bind(available_at)
+        .bind(error_kind.as_str())
+        .bind(error_message)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: format!("re-queueing claimed task {id}"),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn reclaim_requeue(
         &self,
         conn: &mut PgConnection,
@@ -1125,5 +1188,30 @@ impl PgTaskRepository {
             })?;
 
         Ok(map_task_row(&row))
+    }
+
+    /// Sets a task's status directly, bypassing the production CAS
+    /// methods, for tests that walk a row through states the harness
+    /// cannot reach via claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    pub async fn set_status_for_test(
+        &self,
+        conn: &mut PgConnection,
+        id: TaskId,
+        status: TaskStatus,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query("UPDATE tasks SET status = $2, updated_at = now() WHERE id = $1")
+            .bind(id.inner())
+            .bind(status.as_str())
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| DbError::QueryFailed {
+                context: "setting task status (test helper)".to_owned(),
+                source: e,
+            })?;
+        Ok(result.rows_affected())
     }
 }

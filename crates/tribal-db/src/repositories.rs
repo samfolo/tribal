@@ -49,6 +49,7 @@ pub use agent_driver_task::{
 };
 pub use agent_thread::{
     AgentThreadRepository, DrivingTaskRef, NewAgentThread, PgAgentThreadRepository,
+    ThreadPruneCriteria, ThreadPruneOutcome,
 };
 pub use agent_thread_record::{
     AgentThreadRecordRepository, NewAgentThreadRecord, PgAgentThreadRecordRepository,

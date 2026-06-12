@@ -236,7 +236,8 @@ enum_text_conversions!(AgentThreadRecordKind {
 
 impl AgentThreadRecordKind {
     /// Returns `true` for records that project into the model-facing
-    /// conversation.
+    /// conversation. No production path projects a conversation yet;
+    /// the loop executor is the first consumer.
     #[must_use]
     pub fn is_conversation(self) -> bool {
         matches!(
@@ -401,8 +402,9 @@ pub struct AgentThread {
     /// The instant a timer or budget suspension wakes at.
     #[builder(default)]
     wake_at: Option<DateTime<Utc>>,
-    /// Capabilities claimed at initialisation and fidelity observed in the
-    /// stream, finalised at completion.
+    /// Capabilities claimed at initialisation and fidelity observed in
+    /// the stream. Recorded, not yet written: nothing captures fidelity
+    /// until an external-agent executor exists.
     #[builder(default)]
     fidelity: Option<serde_json::Value>,
     /// The committed-record projection of this thread's spend.

@@ -17,6 +17,11 @@ use crate::DbError;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// The column's CHECK forbids non-positive dimensions; a negative value
+/// here is database corruption, not an expected state.
+const NEGATIVE_DIMENSIONS_IN_DB: &str =
+    "system_fingerprints.embedding_dimensions is negative despite its CHECK";
+
 const COLUMNS: Columns = Columns(&[
     "id",
     "content_hash",
@@ -218,7 +223,7 @@ fn map_system_fingerprint_row(r: &sqlx::postgres::PgRow) -> Result<SystemFingerp
         })?;
 
     let embedding_dimensions =
-        u32::try_from(r.get::<i32, _>("embedding_dimensions")).unwrap_or_default();
+        u32::try_from(r.get::<i32, _>("embedding_dimensions")).expect(NEGATIVE_DIMENSIONS_IN_DB);
 
     Ok(SystemFingerprint::builder()
         .id(SystemFingerprintId::from(r.get::<uuid::Uuid, _>("id")))

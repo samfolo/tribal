@@ -829,3 +829,79 @@ async fn test_fail_stale_dead_lettered_jobs_skips_already_failed() {
 
     assert!(failed_ids.is_empty());
 }
+
+#[tokio::test]
+async fn test_find_stuck_triaging_skips_a_job_with_a_blocked_sibling() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let repo = PgJobRepository;
+
+    let (principal_id, project_id, pv_id, fingerprint_hash) =
+        setup_job_prerequisites(&mut txn, "stuck-blocked").await;
+
+    let job = repo
+        .insert(
+            &mut txn,
+            &a_new_job()
+                .project_id(project_id)
+                .principal_id(principal_id)
+                .extraction_system_prompt_version_id(pv_id)
+                .extraction_user_prompt_version_id(pv_id)
+                .triage_system_prompt_version_id(pv_id)
+                .triage_user_prompt_version_id(pv_id)
+                .relation_system_prompt_version_id(pv_id)
+                .relation_user_prompt_version_id(pv_id)
+                .system_fingerprint_hash(fingerprint_hash)
+                .build(),
+        )
+        .await
+        .expect("insert job");
+    let transition = a_job_status_transition()
+        .status(JobStatus::Triaging)
+        .build();
+    repo.update_status_if_live(&mut txn, job.id(), &transition)
+        .await
+        .expect("update status");
+
+    // One completed triage sibling and one blocked one: a blocked task
+    // drives a suspended thread and counts as live, so the healing
+    // authority must not converge this job.
+    PgTaskRepository
+        .insert_for_test(
+            &mut txn,
+            &a_new_task()
+                .job_id(job.id())
+                .task_type(TaskType::Triage)
+                .batch_index(Some(0))
+                .build(),
+            TaskStatus::Completed,
+        )
+        .await
+        .expect("insert completed sibling");
+    let blocked = PgTaskRepository
+        .insert_for_test(
+            &mut txn,
+            &a_new_task()
+                .job_id(job.id())
+                .task_type(TaskType::Triage)
+                .batch_index(Some(1))
+                .build(),
+            TaskStatus::Blocked,
+        )
+        .await
+        .expect("insert blocked sibling");
+
+    let stuck = repo.find_stuck_triaging_jobs(&mut txn).await.expect("scan");
+    assert!(
+        stuck.is_empty(),
+        "a blocked sibling holds the healing fan-in back",
+    );
+
+    // The blocked sibling reaching terminal releases the job to the scan.
+    PgTaskRepository
+        .set_status_for_test(&mut txn, blocked.id(), TaskStatus::Completed)
+        .await
+        .expect("complete the blocked sibling");
+    let stuck = repo.find_stuck_triaging_jobs(&mut txn).await.expect("scan");
+    assert_eq!(stuck, vec![job.id()]);
+}

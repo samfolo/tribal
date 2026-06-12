@@ -95,6 +95,28 @@ pub struct NewAgentThread {
 // Trait
 // ---------------------------------------------------------------------------
 
+/// Criteria for one thread prune pass.
+#[derive(Debug, Clone)]
+pub struct ThreadPruneCriteria {
+    /// Only threads whose terminal commit predates this instant.
+    pub completed_before: DateTime<Utc>,
+    /// Restrict the pass to one pipeline stage.
+    pub stage: Option<TaskType>,
+    /// Include a candidate's terminal descendants in the deletion; a
+    /// live descendant still refuses the whole subtree.
+    pub cascade: bool,
+}
+
+/// What one prune pass concluded (or would conclude, for a dry run).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadPruneOutcome {
+    /// Thread rows deleted (with their records).
+    pub pruned: u64,
+    /// Candidate roots refused: a live descendant, or any descendant
+    /// without the cascade flag.
+    pub refused: u64,
+}
+
 /// Data access operations for agent threads.
 #[async_trait]
 pub trait AgentThreadRepository {
@@ -102,7 +124,8 @@ pub trait AgentThreadRepository {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::UniqueViolation`] when the stage task already
+    /// Returns [`DbError::UniqueViolation`] when the driving task — the
+    /// stage or driver side, each under its own unique fence — already
     /// drives a thread, or [`DbError::QueryFailed`] on other database
     /// errors.
     async fn insert(
@@ -192,7 +215,9 @@ pub trait AgentThreadRepository {
         from: AgentThreadStatus,
     ) -> Result<u64, DbError>;
 
-    /// Durably records a cancellation intent: an idempotent, seq-free
+    /// Durably records a cancellation intent against an existing
+    /// thread, returning [`DbError::NotFound`] for an unknown id: an
+    /// idempotent, seq-free
     /// write to columns no record commit touches, so it can never be lost
     /// to a racing commit. Recording an intent on a terminal thread is
     /// harmless dead data.
@@ -220,9 +245,9 @@ pub trait AgentThreadRepository {
         id: AgentThreadId,
     ) -> Result<u32, DbError>;
 
-    /// Finds suspended threads whose wake instant has elapsed and that
-    /// carry no cancellation intent — the availability sweep's timer
-    /// predicate. `SKIP LOCKED` sheds rows a rival scan holds, though the
+    /// Finds suspended stage-driven threads whose wake instant has
+    /// elapsed and that carry no cancellation intent — the availability
+    /// sweep's timer predicate. `SKIP LOCKED` sheds rows a rival scan holds, though the
     /// statement-scope locks release at once: the per-row transitions'
     /// own guards are what make concurrent sweeps converge.
     ///
@@ -259,6 +284,34 @@ pub trait AgentThreadRepository {
         id: AgentThreadId,
         spend: &ExecutionSpend,
     ) -> Result<(), DbError>;
+
+    /// Counts the prune candidates a pass would refuse: terminal,
+    /// criteria-matching roots holding a live descendant, or any
+    /// descendant at all without the cascade flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn count_refused_prune_roots(
+        &self,
+        conn: &mut PgConnection,
+        criteria: &ThreadPruneCriteria,
+    ) -> Result<u64, DbError>;
+
+    /// Deletes the prunable threads and their records in one statement:
+    /// terminal, criteria-matching roots without refused descendants,
+    /// plus (cascading) the terminal descendants of accepted roots.
+    /// Spend rows survive with their thread references nulled. Returns
+    /// the deleted thread count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::QueryFailed`] on database errors.
+    async fn prune_threads(
+        &self,
+        conn: &mut PgConnection,
+        criteria: &ThreadPruneCriteria,
+    ) -> Result<u64, DbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +499,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         id: AgentThreadId,
         requested_by: &str,
     ) -> Result<(), DbError> {
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE agent_threads \
              SET cancel_requested_at = COALESCE(cancel_requested_at, now()), \
                  cancel_requested_by = COALESCE(cancel_requested_by, $2), \
@@ -461,6 +514,16 @@ impl AgentThreadRepository for PgAgentThreadRepository {
             context: format!("recording cancel intent on thread {id}"),
             source: e,
         })?;
+
+        // Idempotency covers re-writes to an existing row, never a
+        // missing one: a cancel against an unknown id must not report
+        // success.
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound {
+                entity: "agent_thread",
+                id: id.to_string(),
+            });
+        }
 
         Ok(())
     }
@@ -496,10 +559,15 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         // it would burn a turn the cancellation immediately discards, and
         // the two predicates locking task and thread rows in opposite
         // orders could deadlock (retryable, but better unconstructible).
+        // The scan is stage-only: the resolve transaction re-queues a
+        // stage task, and waking a driver-driven thread without its
+        // driver half would strand it running; the driver family's wake
+        // path ships with its first producer.
         let sql = format!(
             "SELECT {COLUMNS} FROM agent_threads \
              WHERE status = 'suspended' AND wake_at IS NOT NULL AND wake_at <= now() \
                AND cancel_requested_at IS NULL \
+               AND stage_task_id IS NOT NULL \
              ORDER BY wake_at \
              LIMIT $1 \
              FOR UPDATE SKIP LOCKED"
@@ -521,22 +589,26 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         conn: &mut PgConnection,
         limit: u32,
     ) -> Result<Vec<AgentThread>, DbError> {
-        let terminal: Vec<&str> = AgentThreadStatus::ALL
+        // The terminal set is interpolated as literals rather than bound:
+        // the planner can only match the partial cancel-intent index's
+        // hard-coded predicate against literals, and the derivation from
+        // ALL keeps the single-source contract either way.
+        let terminal: Vec<String> = AgentThreadStatus::ALL
             .iter()
             .filter(|status| status.is_terminal())
-            .map(AgentThreadStatus::as_str)
+            .map(|status| format!("'{}'", status.as_str()))
             .collect();
         let sql = format!(
             "SELECT {COLUMNS} FROM agent_threads \
              WHERE cancel_requested_at IS NOT NULL \
-               AND NOT (status = ANY($2::text[])) \
+               AND status NOT IN ({terminal}) \
              ORDER BY cancel_requested_at \
              LIMIT $1 \
-             FOR UPDATE SKIP LOCKED"
+             FOR UPDATE SKIP LOCKED",
+            terminal = terminal.join(", "),
         );
         let rows = sqlx::query(&sql)
             .bind(i64::from(limit))
-            .bind(&terminal)
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| DbError::QueryFailed {
@@ -571,6 +643,96 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         })?;
 
         Ok(())
+    }
+
+    async fn count_refused_prune_roots(
+        &self,
+        conn: &mut PgConnection,
+        criteria: &ThreadPruneCriteria,
+    ) -> Result<u64, DbError> {
+        let stage = criteria.stage.map(|stage| stage.as_str().to_owned());
+        let count: i64 = sqlx::query_scalar(
+            "WITH RECURSIVE candidates AS ( \
+                 SELECT id FROM agent_threads \
+                 WHERE completed_at IS NOT NULL AND completed_at < $1 \
+                   AND ($2::text IS NULL OR pipeline_stage = $2) \
+             ), \
+             descendants AS ( \
+                 SELECT c.id AS root, t.id, t.completed_at \
+                 FROM agent_threads t JOIN candidates c ON t.parent_thread_id = c.id \
+                 UNION ALL \
+                 SELECT d.root, t.id, t.completed_at \
+                 FROM agent_threads t JOIN descendants d ON t.parent_thread_id = d.id \
+             ) \
+             SELECT COUNT(DISTINCT root) FROM descendants \
+             WHERE completed_at IS NULL OR NOT $3",
+        )
+        .bind(criteria.completed_before)
+        .bind(stage)
+        .bind(criteria.cascade)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "counting refused prune roots".to_owned(),
+            source: e,
+        })?;
+
+        Ok(u64::try_from(count).unwrap_or_default())
+    }
+
+    async fn prune_threads(
+        &self,
+        conn: &mut PgConnection,
+        criteria: &ThreadPruneCriteria,
+    ) -> Result<u64, DbError> {
+        let stage = criteria.stage.map(|stage| stage.as_str().to_owned());
+        // One statement: the data-modifying record delete and the thread
+        // delete share the candidate derivation, and the self-referential
+        // parent FK is checked at statement end, so a whole terminal
+        // subtree deletes together.
+        let result = sqlx::query(
+            "WITH RECURSIVE candidates AS ( \
+                 SELECT id FROM agent_threads \
+                 WHERE completed_at IS NOT NULL AND completed_at < $1 \
+                   AND ($2::text IS NULL OR pipeline_stage = $2) \
+             ), \
+             descendants AS ( \
+                 SELECT c.id AS root, t.id, t.completed_at \
+                 FROM agent_threads t JOIN candidates c ON t.parent_thread_id = c.id \
+                 UNION ALL \
+                 SELECT d.root, t.id, t.completed_at \
+                 FROM agent_threads t JOIN descendants d ON t.parent_thread_id = d.id \
+             ), \
+             refused AS ( \
+                 SELECT DISTINCT root FROM descendants \
+                 WHERE completed_at IS NULL OR NOT $3 \
+             ), \
+             prunable AS ( \
+                 SELECT id FROM candidates \
+                 WHERE id NOT IN (SELECT root FROM refused) \
+                 UNION \
+                 SELECT d.id FROM descendants d \
+                 WHERE $3 \
+                   AND d.root NOT IN (SELECT root FROM refused) \
+                   AND d.completed_at IS NOT NULL \
+             ), \
+             deleted_records AS ( \
+                 DELETE FROM agent_thread_records \
+                 WHERE thread_id IN (SELECT id FROM prunable) \
+             ) \
+             DELETE FROM agent_threads WHERE id IN (SELECT id FROM prunable)",
+        )
+        .bind(criteria.completed_before)
+        .bind(stage)
+        .bind(criteria.cascade)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| DbError::QueryFailed {
+            context: "pruning terminal threads".to_owned(),
+            source: e,
+        })?;
+
+        Ok(result.rows_affected())
     }
 }
 

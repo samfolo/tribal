@@ -28,7 +28,7 @@ use crate::{
     },
     prompt::{SimilarItemContext, assemble_triage_prompt},
     tag_resolution::{self, ResolvedTags},
-    worker::Worker,
+    worker::{Worker, map_runtime_error},
 };
 
 // ---------------------------------------------------------------------------
@@ -433,15 +433,16 @@ impl Worker {
             );
         }
 
-        let recorded_context =
-            serde_json::to_value(&fresh_slots).map_err(|e| StageError::Database {
-                stage: STAGE_TRIAGE.into(),
-                context: "serialising the similar-item slots".into(),
-                source: tribal_db::DbError::QueryFailed {
-                    context: "slot serialisation".into(),
-                    source: sqlx::Error::Encode(Box::new(e)),
+        let recorded_context = serde_json::to_value(&fresh_slots).map_err(|source| {
+            map_runtime_error(
+                STAGE_TRIAGE,
+                "serialising the similar-item slots",
+                tribal_agent_runtime::AgentRuntimeError::ContentSerialisation {
+                    context: "serialising the similar-item slots".to_owned(),
+                    source,
                 },
-            })?;
+            )
+        })?;
         let bracketed = self
             .bracket_one_shot(
                 STAGE_TRIAGE,
@@ -458,13 +459,15 @@ impl Worker {
         // attempt's re-derived search. A record from before slots were
         // recorded falls back to the fresh search, the old semantics.
         let slots = match bracketed.resolution_context {
-            Some(context) => serde_json::from_value(context).map_err(|e| StageError::Database {
-                stage: STAGE_TRIAGE.into(),
-                context: "deserialising the recorded similar-item slots".into(),
-                source: tribal_db::DbError::QueryFailed {
-                    context: "slot deserialisation".into(),
-                    source: sqlx::Error::Decode(Box::new(e)),
-                },
+            Some(context) => serde_json::from_value(context).map_err(|source| {
+                map_runtime_error(
+                    STAGE_TRIAGE,
+                    "deserialising the recorded similar-item slots",
+                    tribal_agent_runtime::AgentRuntimeError::ContentSerialisation {
+                        context: "deserialising the recorded similar-item slots".to_owned(),
+                        source,
+                    },
+                )
             })?,
             None => fresh_slots,
         };

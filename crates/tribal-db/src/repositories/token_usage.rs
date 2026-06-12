@@ -6,8 +6,8 @@
 //! provider's total field.
 
 use async_trait::async_trait;
-use strum::IntoEnumIterator;
 use sqlx::{PgConnection, Row};
+use strum::IntoEnumIterator;
 use tribal_domain::{
     AgentThreadId, AgentThreadRecordId, EmbeddingPurpose, JobId, PipelineStage, PromptVersionId,
     ReindexRunId, TaskId, TaskType, TokenUsage, TokenUsageId, TokenUsageStage,

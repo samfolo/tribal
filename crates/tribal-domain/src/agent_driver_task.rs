@@ -34,6 +34,20 @@ enum_text_conversions!(AgentDriverTaskState {
 });
 
 impl AgentDriverTaskState {
+    /// Every state, for deriving status sets in one place.
+    ///
+    /// SQL predicates over the state column build their lists from this
+    /// constant filtered by
+    /// [`is_terminal`](AgentDriverTaskState::is_terminal), so a new
+    /// variant reaches every predicate through the exhaustiveness test
+    /// rather than by auditing query strings.
+    pub const ALL: [Self; 4] = [
+        Self::Pending,
+        Self::Claimed,
+        Self::Completed,
+        Self::DeadLetter,
+    ];
+
     /// Returns `true` for the two terminal states.
     #[must_use]
     pub fn is_terminal(self) -> bool {
@@ -215,5 +229,20 @@ mod tests {
         assert!(!AgentDriverTaskState::Claimed.is_terminal());
         assert!(AgentDriverTaskState::Completed.is_terminal());
         assert!(AgentDriverTaskState::DeadLetter.is_terminal());
+    }
+
+    #[test]
+    fn test_all_covers_every_state() {
+        // The exhaustiveness guard for AgentDriverTaskState::ALL: a new
+        // variant fails this match until it joins the constant.
+        for state in AgentDriverTaskState::ALL {
+            match state {
+                AgentDriverTaskState::Pending
+                | AgentDriverTaskState::Claimed
+                | AgentDriverTaskState::Completed
+                | AgentDriverTaskState::DeadLetter => {}
+            }
+        }
+        assert_eq!(AgentDriverTaskState::ALL.len(), 4);
     }
 }

@@ -16,6 +16,7 @@ pub(crate) mod project;
 pub(crate) mod reindex;
 mod serve;
 pub(crate) mod setup;
+pub(crate) mod threads;
 pub(crate) mod token;
 
 pub(crate) use self::{

@@ -5,7 +5,9 @@ use std::ffi::OsString;
 use clap::{CommandFactory, Parser};
 
 use crate::{
-    cli::{Cli, Command, ConfigCommand, ProjectCommand, ReindexCommand, TokenCommand},
+    cli::{
+        Cli, Command, ConfigCommand, ProjectCommand, ReindexCommand, ThreadsCommand, TokenCommand,
+    },
     commands,
     error::AppError,
 };
@@ -116,6 +118,11 @@ impl App {
                 }
                 ReindexCommand::Prune { args } => {
                     commands::reindex::prune(&self.cli.global.config, args)?;
+                }
+            },
+            Command::Threads(command) => match command {
+                ThreadsCommand::Prune { args } => {
+                    commands::threads::prune(&self.cli.global.config, args)?;
                 }
             },
         }
