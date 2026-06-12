@@ -37,6 +37,9 @@ impl Worker {
         task: &Task,
     ) -> Result<StageThread, StageError> {
         let stage = task.task_type().as_str();
+        let Some(claim_token) = task.claim_token() else {
+            return Err(StageError::OwnershipLost);
+        };
         let mut conn = self
             .pool()
             .acquire()
@@ -58,7 +61,7 @@ impl Worker {
             .await
             .map_err(|source| map_runtime_error(stage, "resolving the binding version", source))?;
 
-        ensure_stage_thread(&mut conn, job, task, &binding)
+        ensure_stage_thread(&mut conn, job, task, claim_token, &binding)
             .await
             .map_err(|source| map_runtime_error(stage, "establishing the thread", source))
     }

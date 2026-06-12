@@ -1,8 +1,10 @@
-//! Heartbeat, reclaim sweep, and startup reclaim.
+//! Heartbeat, reclaim sweeps, and startup reclaim.
 //!
 //! Provides per-task background heartbeat with ownership-loss
-//! signalling, a periodic reclaim sweep for abandoned tasks, and a
-//! startup reclaim pass for crash recovery.
+//! signalling, the per-row thread-aware reclaim (recovery cycles and
+//! thread exhaustion for stage tasks that drive a thread), the legacy
+//! bulk reclaim for rows with no thread, and a startup reclaim pass for
+//! crash recovery.
 
 use std::time::Duration;
 
@@ -14,8 +16,8 @@ use tribal_db::{
     TaskRepository,
 };
 use tribal_domain::{
-    AgentThreadStatus, AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState,
-    TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
+    AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState, TaskErrorKind,
+    TaskId, TurnOutcome, decide_disposition,
 };
 
 use crate::{
@@ -279,10 +281,11 @@ impl Worker {
     }
 }
 
-/// The exhaustion transaction's body: the thread dead-letters from
-/// running, or from queued for a thread whose mark-running CAS never
-/// landed — the same fallback the inline failure path applies — then the
-/// driving task dead-letters under its claim guard and the job couples,
+/// The exhaustion transaction's body: the thread row is locked before
+/// its status is judged — a concurrent guarded queued-to-running move
+/// serialises against this write rather than racing it — then the thread
+/// dead-letters from whatever live status the locked row holds, the
+/// driving task dead-letters under its claim guard, and the job couples,
 /// returning the owed notification.
 async fn exhaust_thread(
     txn: &mut sqlx::PgConnection,
@@ -292,34 +295,40 @@ async fn exhaust_thread(
     error_kind: TaskErrorKind,
     error_message: &str,
 ) -> Result<Option<coupling::OwedNotification>, WorkerError> {
-    let moved = PgAgentThreadRepository
-        .complete(
-            txn,
-            thread.id(),
-            AgentThreadTerminal::DeadLetter,
-            AgentThreadStatus::Running,
-        )
+    let locked = PgAgentThreadRepository
+        .lock(txn, thread.id())
         .await
         .map_err(reclaim_db)?;
-    let moved = if moved == 0 {
-        PgAgentThreadRepository
-            .complete(
-                txn,
-                thread.id(),
-                AgentThreadTerminal::DeadLetter,
-                AgentThreadStatus::Queued,
-            )
-            .await
-            .map_err(reclaim_db)?
-    } else {
-        moved
-    };
-    if moved == 0 {
-        tracing::warn!(
-            task_id = %task.id(),
-            thread_id = %thread.id(),
-            "thread was neither running nor queued at reclaim exhaustion; leaving its status",
-        );
+    match locked {
+        Some(current) if !current.status().is_terminal() => {
+            let moved = PgAgentThreadRepository
+                .complete(
+                    txn,
+                    thread.id(),
+                    AgentThreadTerminal::DeadLetter,
+                    current.status(),
+                )
+                .await
+                .map_err(reclaim_db)?;
+            if moved == 0 {
+                // Unreachable under the row lock; recorded if it ever fires.
+                tracing::warn!(
+                    task_id = %task.id(),
+                    thread_id = %thread.id(),
+                    "thread status moved under its row lock at reclaim exhaustion",
+                );
+            }
+        }
+        Some(_) => {
+            // Already terminal: the task half still needs its disposition.
+        }
+        None => {
+            tracing::warn!(
+                task_id = %task.id(),
+                thread_id = %thread.id(),
+                "thread row vanished at reclaim exhaustion; dead-lettering the task alone",
+            );
+        }
     }
 
     PgTaskRepository

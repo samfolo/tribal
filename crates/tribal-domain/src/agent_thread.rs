@@ -29,7 +29,8 @@ pub const AGENT_THREAD_FORMAT_VERSION: u32 = 1;
 ///
 /// The four terminal states are absorbing: nothing transitions out of
 /// them, and any resolution arriving at a terminal thread is recorded
-/// and discarded. A thread is dead-lettered only from `Running`.
+/// and discarded. A thread dead-letters from whichever live status its
+/// row holds when its recovery exhausts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentThreadStatus {

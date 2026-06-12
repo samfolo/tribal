@@ -5,10 +5,10 @@
 //! the same transaction; non-worker writers guard with the thread-status
 //! CAS plus a lock on the driving-task row wherever they dispose of it.
 //! Zero-row CAS misses, deadlock aborts, and serialisation failures are
-//! retryable; every retry loop is bounded and a terminal status ends
-//! every loop. No production path suspends until the agentic loop
-//! ships; until then these transitions are exercised by the runtime's
-//! own tests.
+//! transient: a caller treats them as lost ownership or leaves
+//! convergence to the next sweep cycle, and a terminal status ends every
+//! path. No production caller suspends a thread yet; these transitions
+//! are exercised by the runtime's own tests until one does.
 
 use serde::Serialize;
 use sqlx::{Connection, PgConnection};
@@ -207,7 +207,7 @@ pub enum ResolveOutcome {
     /// The thread was terminal; the arrival was recorded and discarded.
     RecordedAtTerminal,
     /// The thread was running (not suspended); nothing committed. The
-    /// caller's bounded retry loop re-reads until suspended or terminal.
+    /// caller re-reads or leaves the arrival to a later cycle.
     NotSuspended,
     /// The thread row no longer exists (prune raced); nothing committed.
     Vanished,

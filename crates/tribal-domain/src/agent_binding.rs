@@ -4,10 +4,10 @@
 //! identity, budgets, and tool descriptors. The version hash covers the
 //! serialised tool descriptors as well as the definition, so a tool-surface
 //! change is a new version even when the definition text is unchanged.
-//! Threads record the version they were admitted under; budgets at resume
-//! are re-resolved from the binding current at that moment without
-//! touching the thread's original version. Hash computation lives with
-//! binding resolution in the runtime; these are the pure shapes.
+//! Threads record the version they were admitted under. Budgets are
+//! recorded, not yet enforced: no admission check reads them in this
+//! release. Hash derivation is [`AgentDefinition::canonical_json`];
+//! binding resolution lives in the runtime.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

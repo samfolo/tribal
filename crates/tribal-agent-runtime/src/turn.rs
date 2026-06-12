@@ -61,7 +61,7 @@ pub struct RecordedMessage {
 /// metadata. The `content_kind` tag discriminates this shape from other
 /// input-record payloads (a timer resolution, a human reply), so resume
 /// selects the right record structurally rather than by position.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "content_kind", rename = "rendered_conversation")]
 pub struct RenderedConversation {
     /// The system prompt as sent, when the stage uses one.
@@ -72,6 +72,13 @@ pub struct RenderedConversation {
     pub system_prompt_version_id: Option<PromptVersionId>,
     /// The user prompt version rendered from.
     pub user_prompt_version_id: Option<PromptVersionId>,
+    /// Stage-opaque context the model's positional references resolve
+    /// against — recorded with the conversation so a resumed attempt
+    /// resolves the answer it gets against what this attempt rendered,
+    /// never against re-derived state that may have drifted. Defaulted
+    /// on read so records written before the field existed deserialise.
+    #[serde(default)]
+    pub resolution_context: Option<serde_json::Value>,
 }
 
 /// The assistant message's content: the response text. Usage rides the
@@ -106,7 +113,8 @@ pub struct BegunTurn {
     pub conversation: RenderedConversation,
 }
 
-/// Commits the input record (first attempt) or re-reads it (resume), and
+/// Commits the input record (first attempt) or adopts the committed one
+/// (resume), and
 /// returns the conversation the call must send.
 ///
 /// The input commits in its own transaction before any wire call: what
@@ -360,6 +368,7 @@ mod tests {
             messages: vec![],
             system_prompt_version_id: None,
             user_prompt_version_id: None,
+            resolution_context: None,
         };
         let value = serde_json::to_value(&rendered).expect("serialises");
         assert_eq!(

@@ -159,9 +159,15 @@ async fn test_suspend_and_resolve_preserve_job_shape_and_resume_completes() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
 
     let tasks_before = PgTaskRepository
         .find_by_job_id(&mut conn, job_id)
@@ -330,9 +336,15 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
     )
     .await
     .expect("binding");
-    let thread_a = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task_a, &binding)
-        .await
-        .expect("thread");
+    let thread_a = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task_a,
+        task_a.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
 
     PgAgentThreadRepository
         .record_cancel_intent(&mut conn, thread_a.thread.id(), "operator:first")
@@ -391,9 +403,15 @@ async fn test_suspend_versus_cancel_converges_in_both_orderings() {
         .find_by_id(&mut conn, job_b)
         .await
         .expect("job");
-    let thread_b = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task_b, &binding)
-        .await
-        .expect("thread");
+    let thread_b = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task_b,
+        task_b.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
 
     tribal_agent_runtime::suspend_stage_thread(
         &mut conn,
@@ -493,9 +511,15 @@ async fn test_concurrent_resolutions_wake_the_thread_exactly_once() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
     tribal_agent_runtime::suspend_stage_thread(
         &mut conn,
         &stage_thread.thread,
@@ -537,6 +561,16 @@ async fn test_concurrent_resolutions_wake_the_thread_exactly_once() {
         .await
         .expect("find");
     assert_eq!(task_after.status(), TaskStatus::Queued);
+
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, thread_id)
+        .await
+        .expect("read the log");
+    assert_eq!(
+        records.len(),
+        2,
+        "the loser's arrival rolls back: one suspension, one resolution",
+    );
 
     teardown(ctx).await;
 }
@@ -580,15 +614,22 @@ async fn test_a_stale_lease_cannot_commit_an_input_record() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
 
     let rendered = RenderedConversation {
         system: None,
         messages: vec![],
         system_prompt_version_id: Some(system_pv_id),
         user_prompt_version_id: Some(user_pv_id),
+        resolution_context: None,
     };
     let err = tribal_agent_runtime::begin_one_shot(
         &mut conn,
@@ -652,9 +693,15 @@ async fn test_thread_aware_reclaim_requeues_without_touching_the_thread() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
     let status_before = stage_thread.thread.status();
     backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
 
@@ -740,9 +787,15 @@ async fn test_reclaim_exhaustion_dead_letters_thread_and_task_and_fails_the_job(
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
     set_retry_count(&mut conn, task_id, config.task_max_retries).await;
     backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
 
@@ -841,9 +894,15 @@ async fn test_reclaim_opens_a_recovery_cycle_with_reset_retry_counter() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
     let status_before = stage_thread.thread.status();
     set_retry_count(&mut conn, task_id, config.task_max_retries).await;
     backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
@@ -922,10 +981,11 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
     // Fabricate the crash-window state on the still-queued task: its
     // thread exists and carries a durable intent before any claim.
     let mut conn = raw_conn(ctx).await;
-    let task = PgTaskRepository
-        .find_by_id(&mut conn, task_id)
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "fabricating-worker")
         .await
-        .expect("task");
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
     let job = PgJobRepository
         .find_by_id(&mut conn, job_id)
         .await
@@ -936,13 +996,33 @@ async fn test_claim_time_disposal_cancels_an_intent_carrying_thread() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
     PgAgentThreadRepository
         .record_cancel_intent(&mut conn, stage_thread.thread.id(), "operator:test")
         .await
         .expect("intent");
+
+    // Release the fabricating claim so the live worker can take the task.
+    PgTaskRepository
+        .block(
+            &mut conn,
+            task.id(),
+            task.claim_token().expect("claim token"),
+        )
+        .await
+        .expect("block");
+    PgTaskRepository
+        .requeue_from_blocked(&mut conn, task.id())
+        .await
+        .expect("requeue");
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
@@ -1026,10 +1106,11 @@ async fn test_claim_time_disposal_dead_letters_a_task_with_a_terminal_thread() {
     // Fabricate the partial history: the thread reached a terminal
     // status while its task half stayed queued.
     let mut conn = raw_conn(ctx).await;
-    let task = PgTaskRepository
-        .find_by_id(&mut conn, task_id)
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "fabricating-worker")
         .await
-        .expect("task");
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
     let job = PgJobRepository
         .find_by_id(&mut conn, job_id)
         .await
@@ -1040,9 +1121,15 @@ async fn test_claim_time_disposal_dead_letters_a_task_with_a_terminal_thread() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
     let moved = PgAgentThreadRepository
         .complete(
             &mut conn,
@@ -1053,6 +1140,20 @@ async fn test_claim_time_disposal_dead_letters_a_task_with_a_terminal_thread() {
         .await
         .expect("complete");
     assert_eq!(moved, 1, "the fabricated terminal transition lands");
+
+    // Release the fabricating claim so the live worker can take the task.
+    PgTaskRepository
+        .block(
+            &mut conn,
+            task.id(),
+            task.claim_token().expect("claim token"),
+        )
+        .await
+        .expect("block");
+    PgTaskRepository
+        .requeue_from_blocked(&mut conn, task.id())
+        .await
+        .expect("requeue");
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
@@ -1122,10 +1223,11 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
     // Fabricate the unmodelled state: the thread row alone moves to
     // suspended (no wake-at, no blocked task half).
     let mut conn = raw_conn(ctx).await;
-    let task = PgTaskRepository
-        .find_by_id(&mut conn, task_id)
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "fabricating-worker")
         .await
-        .expect("task");
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
     let job = PgJobRepository
         .find_by_id(&mut conn, task.job_id())
         .await
@@ -1136,9 +1238,15 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
     let moved = PgAgentThreadRepository
         .suspend(
             &mut conn,
@@ -1149,6 +1257,20 @@ async fn test_claim_time_disposal_reblocks_a_task_with_a_suspended_thread() {
         .await
         .expect("suspend the thread half");
     assert_eq!(moved, 1, "the fabricated suspension lands");
+
+    // Release the fabricating claim so the live worker can take the task.
+    PgTaskRepository
+        .block(
+            &mut conn,
+            task.id(),
+            task.claim_token().expect("claim token"),
+        )
+        .await
+        .expect("block");
+    PgTaskRepository
+        .requeue_from_blocked(&mut conn, task.id())
+        .await
+        .expect("requeue");
 
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
@@ -1233,9 +1355,15 @@ async fn test_sweep_cancel_fallback_notifies_watchers() {
     )
     .await
     .expect("binding");
-    let stage_thread = tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &task, &binding)
-        .await
-        .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
     tribal_agent_runtime::suspend_stage_thread(
         &mut conn,
         &stage_thread.thread,
@@ -1331,10 +1459,15 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
     )
     .await
     .expect("binding");
-    let stage_thread =
-        tribal_agent_runtime::ensure_stage_thread(&mut conn, &job, &threaded, &binding)
-            .await
-            .expect("thread");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &threaded,
+        threaded.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
     // The legacy row gets the deeper backdate so it heads the staleness
     // order: a thread-aware scan that lost its EXISTS clause would lock
     // it first, find no thread, and requeue nothing — failing the count
@@ -1407,6 +1540,412 @@ async fn test_reclaim_scans_partition_threaded_and_legacy_rows() {
         .expect("find")
         .expect("present");
     assert_eq!(thread_after.recovery_attempts(), 0);
+
+    teardown(ctx).await;
+}
+
+/// A retried attempt adopts the committed input record rather than
+/// appending a second one: the log ends with exactly one rendered
+/// conversation and one assistant message after a transient provider
+/// failure between the input commit and the response.
+#[tokio::test]
+async fn test_resume_adopts_the_committed_input_record() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "resume-adopt").await;
+    let candidates = vec![a_candidate().content("resumed".to_owned()).build()];
+    let response_json = extraction_response_json(&candidates, &[]);
+
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    // Attempt one commits its input record, then the call fails
+    // retryably; attempt two succeeds.
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete_error(
+                || tribal_inference::InferenceError::provider_unavailable("mock", "transient"),
+                None,
+            )
+            .on_complete(a_completion_response(&response_json), None)
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    )
+    .await;
+    let handle = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run().await })
+    };
+
+    poll_task_status(&pool, task_id, TaskStatus::Completed, MULTI_CYCLE_SETTLE).await;
+    token.cancel();
+    let _ = handle.await;
+
+    let mut conn = raw_conn(ctx).await;
+    let thread = PgAgentThreadRepository
+        .find_by_stage_task(&mut conn, task_id)
+        .await
+        .expect("find thread")
+        .expect("the executed task drives a thread");
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, thread.id())
+        .await
+        .expect("read the log");
+
+    let inputs: Vec<_> = records
+        .iter()
+        .filter(|r| r.kind() == AgentThreadRecordKind::Input)
+        .collect();
+    assert_eq!(
+        inputs.len(),
+        1,
+        "the resumed attempt adopts the committed input, never appending a second",
+    );
+    assert_eq!(records.len(), 2, "one input, one assistant message");
+    assert_eq!(records[1].kind(), AgentThreadRecordKind::AssistantMessage);
+
+    teardown(ctx).await;
+}
+
+/// An existing thread re-established under a different binding executes
+/// and reports the binding its row records, not the supplied one.
+#[tokio::test]
+async fn test_resume_pairs_an_existing_thread_with_its_recorded_binding() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "recorded-binding").await;
+    let (_job_id, _task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "first-config")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+
+    let first = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("first binding");
+    let created = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &first,
+    )
+    .await
+    .expect("create");
+    assert_eq!(created.binding.id(), first.id());
+
+    // A configuration change between attempts: the re-establishment
+    // supplies a different binding, but the thread keeps its pin.
+    let second = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition()
+            .model("changed-model".to_owned())
+            .build(),
+    )
+    .await
+    .expect("second binding");
+    assert_ne!(first.id(), second.id());
+
+    let resumed = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &second,
+    )
+    .await
+    .expect("resume");
+
+    assert_eq!(
+        resumed.binding.id(),
+        first.id(),
+        "a resumed thread carries the binding its row records",
+    );
+    assert_eq!(
+        resumed.thread.binding_version_id(),
+        first.id(),
+        "the row's pin is unchanged",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Reclaim exhaustion dead-letters a thread that never reached running
+/// (its queued row is the live status the locked CAS moves from).
+#[tokio::test]
+async fn test_reclaim_exhaustion_dead_letters_a_thread_that_never_started() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let config = test_config();
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "exhaust-queued").await;
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    // A queued thread behind a claimed task: the crash window between
+    // the thread insert and the running move.
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "crashed-worker")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    PgAgentThreadRepository
+        .insert(
+            &mut conn,
+            &tribal_db::NewAgentThread::builder()
+                .pipeline_stage(task.task_type())
+                .binding_version_id(binding.id())
+                .driving_task(tribal_db::DrivingTaskRef::Stage(task.id()))
+                .principal_id(job.principal_id())
+                .format_version(tribal_domain::AGENT_THREAD_FORMAT_VERSION)
+                .build(),
+        )
+        .await
+        .expect("insert the queued thread");
+    set_retry_count(&mut conn, task_id, config.task_max_retries).await;
+    backdate_task_heartbeat(&mut conn, task_id, STALE_HEARTBEAT_BACKDATE).await;
+
+    let worker =
+        build_test_worker(pool.clone(), CancellationToken::new(), config, None, None).await;
+    let stats = worker
+        .run_thread_aware_reclaim(
+            10,
+            0,
+            tribal_domain::TaskErrorKind::HeartbeatExpired,
+            "heartbeat_expired",
+            None,
+        )
+        .await
+        .expect("reclaim");
+    assert_eq!(stats.exhausted, 1);
+
+    let thread = PgAgentThreadRepository
+        .find_by_stage_task(&mut conn, task_id)
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(thread.status(), AgentThreadStatus::DeadLetter);
+    assert!(thread.completed_at().is_some());
+
+    teardown(ctx).await;
+}
+
+/// The cancel fallback never disposes of a claimed stage task: a live
+/// worker owns that boundary, so the whole transaction rolls back.
+#[tokio::test]
+async fn test_cancel_fallback_skips_a_claimed_stage_task() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "cancel-skip-claimed").await;
+    let (_job_id, task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "live-worker")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
+    PgAgentThreadRepository
+        .record_cancel_intent(&mut conn, stage_thread.thread.id(), "operator:test")
+        .await
+        .expect("intent");
+
+    let thread = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    let outcome = tribal_worker::coupling::cancel_thread(&mut conn, &thread)
+        .await
+        .expect("cancel attempt");
+
+    assert!(matches!(
+        outcome,
+        tribal_worker::coupling::CancelThreadOutcome::Skipped
+    ));
+    let task_after = PgTaskRepository
+        .find_by_id(&mut conn, task_id)
+        .await
+        .expect("task");
+    assert_eq!(task_after.status(), TaskStatus::Claimed);
+    let thread_after = PgAgentThreadRepository
+        .find_by_id(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(thread_after.status(), AgentThreadStatus::Running);
+
+    teardown(ctx).await;
+}
+
+/// A one-shot terminal against a thread that left running (swept,
+/// cancelled) refuses with a status CAS miss, so the enclosing commit
+/// rolls back rather than completing a task whose thread is gone.
+#[tokio::test]
+async fn test_one_shot_terminal_refuses_a_non_running_thread() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let _pool = ctx.create_pool().await.expect("create pool");
+
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "terminal-cas").await;
+    let (_job_id, _task_id) = {
+        let mut conn = raw_conn(ctx).await;
+        seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await
+    };
+
+    let mut conn = raw_conn(ctx).await;
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "terminal-cas")
+        .await
+        .expect("claim");
+    let task = claimed.first().expect("the seeded task claims").clone();
+    let job = PgJobRepository
+        .find_by_id(&mut conn, task.job_id())
+        .await
+        .expect("job");
+    let binding = tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition().build(),
+    )
+    .await
+    .expect("binding");
+    let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("thread");
+
+    // The thread is cancelled out from under the worker's snapshot.
+    let moved = PgAgentThreadRepository
+        .complete(
+            &mut conn,
+            stage_thread.thread.id(),
+            tribal_domain::AgentThreadTerminal::Cancelled,
+            AgentThreadStatus::Running,
+        )
+        .await
+        .expect("cancel");
+    assert_eq!(moved, 1);
+
+    let response = a_completion_response("late");
+    let err =
+        tribal_agent_runtime::commit_one_shot_terminal(&mut conn, &stage_thread.thread, &response)
+            .await
+            .expect_err("a terminal against a non-running thread must refuse");
+    assert!(matches!(
+        err,
+        tribal_agent_runtime::AgentRuntimeError::StatusCasMissed { .. }
+    ));
 
     teardown(ctx).await;
 }

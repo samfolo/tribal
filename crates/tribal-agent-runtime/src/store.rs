@@ -7,11 +7,11 @@
 //! records are the only state, so re-execution starts from whatever the
 //! log already holds.
 
-use sqlx::PgConnection;
+use sqlx::{Connection, PgConnection};
 use tribal_db::{
     AgentBindingVersionRepository, AgentThreadRecordRepository, AgentThreadRepository, DbError,
     DrivingTaskRef, NewAgentThread, PgAgentBindingVersionRepository, PgAgentThreadRecordRepository,
-    PgAgentThreadRepository,
+    PgAgentThreadRepository, PgTaskRepository, TaskRepository,
 };
 use tribal_domain::{
     AGENT_THREAD_FORMAT_VERSION, AgentBinding, AgentThread, AgentThreadRecord,
@@ -33,7 +33,7 @@ pub struct StageThread {
     /// reads its sampling parameters from here, so the recorded and the
     /// sent parameters cannot drift apart across a configuration change;
     /// the endpoint itself routes through the boot-time stage specs
-    /// until execution becomes binding-driven with the agentic loop.
+    /// until execution becomes binding-driven.
     pub binding: AgentBinding,
 }
 
@@ -49,6 +49,11 @@ pub struct StageThread {
 /// returned untouched: the claim-time crash-window rules decide what
 /// the worker does with the task, never this function.
 ///
+/// The thread insert and the queued-to-running move each commit with the
+/// caller's claim verified inside their transaction, so a worker whose
+/// lease was reclaimed cannot create a thread for (or set running under)
+/// a task it no longer owns.
+///
 /// Call on a plain connection, never inside a caller's transaction: the
 /// race-converge path re-reads after a unique violation, which would be
 /// poisoned inside an aborted transaction. This is pre-call setup, on the
@@ -56,13 +61,15 @@ pub struct StageThread {
 ///
 /// # Errors
 ///
-/// Returns [`AgentRuntimeError::Database`] on database errors. A
-/// concurrent creator losing the one-thread-per-task race converges on
-/// the winner's row.
+/// Returns [`AgentRuntimeError::LeaseLost`] when the claim guard misses,
+/// and [`AgentRuntimeError::Database`] on database errors. A concurrent
+/// creator losing the one-thread-per-task race converges on the winner's
+/// row.
 pub async fn ensure_stage_thread(
     conn: &mut PgConnection,
     job: &Job,
     task: &Task,
+    claim_token: uuid::Uuid,
     binding: &AgentBinding,
 ) -> Result<StageThread, AgentRuntimeError> {
     let existing = PgAgentThreadRepository
@@ -75,7 +82,7 @@ pub async fn ensure_stage_thread(
         // A loser of the one-thread-per-task race converges on the
         // winner's row, whose recorded binding can differ from the
         // supplied one; the id comparison below pairs it correctly.
-        None => create_stage_thread(conn, job, task, binding).await?,
+        None => create_stage_thread(conn, job, task, claim_token, binding).await?,
     };
 
     let binding = if thread.binding_version_id() == binding.id() {
@@ -85,10 +92,7 @@ pub async fn ensure_stage_thread(
     };
 
     let thread = if thread.status() == AgentThreadStatus::Queued {
-        let moved = PgAgentThreadRepository
-            .mark_running(conn, thread.id(), AgentThreadStatus::Queued)
-            .await
-            .map_err(|source| AgentRuntimeError::database("marking the thread running", source))?;
+        let moved = mark_running_guarded(conn, &thread, task, claim_token).await?;
         if moved == 0 {
             // Another actor moved it between the read and the CAS; the
             // re-read is the converged truth.
@@ -130,6 +134,7 @@ async fn create_stage_thread(
     conn: &mut PgConnection,
     job: &Job,
     task: &Task,
+    claim_token: uuid::Uuid,
     binding: &AgentBinding,
 ) -> Result<AgentThread, AgentRuntimeError> {
     let new = NewAgentThread::builder()
@@ -140,17 +145,94 @@ async fn create_stage_thread(
         .format_version(AGENT_THREAD_FORMAT_VERSION)
         .build();
 
-    match PgAgentThreadRepository.insert(conn, &new).await {
-        Ok(thread) => Ok(thread),
-        Err(DbError::UniqueViolation { .. }) => PgAgentThreadRepository
-            .find_by_stage_task(conn, task.id())
-            .await
-            .map_err(|source| {
-                AgentRuntimeError::database("re-reading the race winner's thread", source)
-            })?
-            .ok_or(AgentRuntimeError::ThreadMissing { task_id: task.id() }),
+    let mut txn = begin(conn, "beginning the thread-creation transaction").await?;
+    if !holds_claim(&mut txn, task, claim_token).await? {
+        return Err(AgentRuntimeError::LeaseLost { task_id: task.id() });
+    }
+    let inserted = PgAgentThreadRepository.insert(&mut txn, &new).await;
+    match inserted {
+        Ok(thread) => {
+            commit(txn, "committing the thread creation").await?;
+            Ok(thread)
+        }
+        Err(DbError::UniqueViolation { .. }) => {
+            // The aborted transaction drops here; the converge re-read
+            // runs on the clean connection.
+            drop(txn);
+            PgAgentThreadRepository
+                .find_by_stage_task(conn, task.id())
+                .await
+                .map_err(|source| {
+                    AgentRuntimeError::database("re-reading the race winner's thread", source)
+                })?
+                .ok_or(AgentRuntimeError::ThreadMissing { task_id: task.id() })
+        }
         Err(source) => Err(AgentRuntimeError::database("creating the thread", source)),
     }
+}
+
+/// Moves a queued thread to running with the caller's claim verified in
+/// the same transaction, so a reclaimed-away worker cannot flip a thread
+/// whose task it no longer owns. Returns the CAS's affected-row count.
+async fn mark_running_guarded(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+    task: &Task,
+    claim_token: uuid::Uuid,
+) -> Result<u64, AgentRuntimeError> {
+    let mut txn = begin(conn, "beginning the mark-running transaction").await?;
+    if !holds_claim(&mut txn, task, claim_token).await? {
+        return Err(AgentRuntimeError::LeaseLost { task_id: task.id() });
+    }
+    let moved = PgAgentThreadRepository
+        .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)
+        .await
+        .map_err(|source| AgentRuntimeError::database("marking the thread running", source))?;
+    commit(txn, "committing the mark-running transaction").await?;
+    Ok(moved)
+}
+
+/// Verifies the claim with a shared row lock, holding it for the rest of
+/// the enclosing transaction.
+async fn holds_claim(
+    txn: &mut PgConnection,
+    task: &Task,
+    claim_token: uuid::Uuid,
+) -> Result<bool, AgentRuntimeError> {
+    PgTaskRepository
+        .holds_claim(txn, task.id(), claim_token)
+        .await
+        .map_err(|source| AgentRuntimeError::database("verifying the claim", source))
+}
+
+async fn begin<'c>(
+    conn: &'c mut PgConnection,
+    context: &str,
+) -> Result<sqlx::Transaction<'c, sqlx::Postgres>, AgentRuntimeError> {
+    conn.begin().await.map_err(|source| {
+        AgentRuntimeError::database(
+            context,
+            DbError::QueryFailed {
+                context: context.to_owned(),
+                source,
+            },
+        )
+    })
+}
+
+async fn commit(
+    txn: sqlx::Transaction<'_, sqlx::Postgres>,
+    context: &str,
+) -> Result<(), AgentRuntimeError> {
+    txn.commit().await.map_err(|source| {
+        AgentRuntimeError::database(
+            context,
+            DbError::QueryFailed {
+                context: context.to_owned(),
+                source,
+            },
+        )
+    })
 }
 
 /// Loads the binding a thread's row records — the pin a resumed thread's

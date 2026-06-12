@@ -49,7 +49,7 @@ impl Worker {
     /// Loads the prompt template and tag registry from the database,
     /// acquires a semaphore permit, assembles the prompt via Tera,
     /// calls the LLM, parses the response, caps candidates, and
-    /// builds the [`StageOutput`] for commit.
+    /// builds the stage commit and the response for the thread terminal.
     ///
     /// The `deadline` is the absolute instant by which the outer task
     /// timeout will fire.  Semaphore acquisition uses the remaining
@@ -128,9 +128,19 @@ impl Worker {
                 );
             }
 
+            // Extraction output stands alone (no positional references
+            // into rendered context), so no resolution context is recorded.
             let request = self
-                .bracket_one_shot(STAGE_EXTRACTION, stage_thread, ctx.job, ctx.task, request)
-                .await?;
+                .bracket_one_shot(
+                    STAGE_EXTRACTION,
+                    stage_thread,
+                    ctx.job,
+                    ctx.task,
+                    request,
+                    None,
+                )
+                .await?
+                .request;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let response = self
                 .gateway()
