@@ -81,24 +81,55 @@ pub struct RenderedConversation {
     pub resolution_context: Option<serde_json::Value>,
 }
 
-/// The assistant message's content: the response text. Usage rides the
-/// record's dedicated column, not the content.
+/// One tool call as the assistant message requested it, in the thread's
+/// serialisation format (independent of the wire type, so provider-layer
+/// changes never reshape committed records).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct AssistantContent {
-    text: String,
+pub struct RecordedToolCall {
+    /// The call identifier its result must answer.
+    pub id: String,
+    /// The tool the model called.
+    pub name: String,
+    /// The call's JSON arguments.
+    pub arguments: serde_json::Value,
+}
+
+/// The assistant message's content: the response text and any tool
+/// calls it carries. Usage rides the record's dedicated column, not the
+/// content. The `tool_calls` field is additive: one-shot records omit
+/// it (empty serialises to nothing), so their bytes are unchanged and
+/// old records deserialise with the default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AssistantContent {
+    pub(crate) text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) tool_calls: Vec<RecordedToolCall>,
 }
 
 /// The usage column's shape: token counts and wire latency, independent
 /// of the inference layer's in-memory type so committed records never
 /// reshape with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct RecordedUsage {
-    input_tokens: u32,
-    output_tokens: u32,
-    cache_read_tokens: u32,
-    cache_write_tokens: u32,
-    total_tokens: u32,
-    latency_ms: u64,
+pub(crate) struct RecordedUsage {
+    pub(crate) input_tokens: u32,
+    pub(crate) output_tokens: u32,
+    pub(crate) cache_read_tokens: u32,
+    pub(crate) cache_write_tokens: u32,
+    pub(crate) total_tokens: u32,
+    pub(crate) latency_ms: u64,
+}
+
+impl From<&CompletionResponse> for RecordedUsage {
+    fn from(response: &CompletionResponse) -> Self {
+        Self {
+            input_tokens: response.usage.input_tokens,
+            output_tokens: response.usage.output_tokens,
+            cache_read_tokens: response.usage.cache_read_tokens,
+            cache_write_tokens: response.usage.cache_write_tokens,
+            total_tokens: response.usage.total_tokens,
+            latency_ms: u64::try_from(response.usage.latency.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +145,9 @@ pub struct BegunTurn {
 }
 
 /// Commits the input record (first attempt) or adopts the committed one
-/// (resume), and returns the conversation the call must send.
+/// (resume), and returns the conversation the call must send. Both
+/// executors begin here: the one-shot bracket and the turn loop share
+/// this entry, so the byte-stable opening rides one mechanism.
 ///
 /// The input commits in its own transaction before any wire call: what
 /// was sent is durable even if the process dies mid-call, and at-least-
@@ -130,7 +163,7 @@ pub struct BegunTurn {
 /// Returns [`AgentRuntimeError::LeaseLost`] when the claim guard misses
 /// (nothing committed), [`AgentRuntimeError::ContentSerialisation`] on a
 /// format fault, and [`AgentRuntimeError::Database`] on database errors.
-pub async fn begin_one_shot(
+pub async fn begin_turn(
     conn: &mut PgConnection,
     thread: &AgentThread,
     task_id: TaskId,
@@ -238,22 +271,17 @@ pub async fn commit_one_shot_terminal(
 ) -> Result<OneShotOutcome, AgentRuntimeError> {
     let content = serde_json::to_value(AssistantContent {
         text: response.text.clone(),
+        tool_calls: vec![],
     })
     .map_err(|source| AgentRuntimeError::ContentSerialisation {
         context: format!("serialising the assistant record of thread {}", thread.id()),
         source,
     })?;
-    let usage = serde_json::to_value(RecordedUsage {
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
-        cache_read_tokens: response.usage.cache_read_tokens,
-        cache_write_tokens: response.usage.cache_write_tokens,
-        total_tokens: response.usage.total_tokens,
-        latency_ms: u64::try_from(response.usage.latency.as_millis()).unwrap_or(u64::MAX),
-    })
-    .map_err(|source| AgentRuntimeError::ContentSerialisation {
-        context: format!("serialising usage for thread {}", thread.id()),
-        source,
+    let usage = serde_json::to_value(RecordedUsage::from(response)).map_err(|source| {
+        AgentRuntimeError::ContentSerialisation {
+            context: format!("serialising usage for thread {}", thread.id()),
+            source,
+        }
     })?;
 
     PgAgentThreadRepository

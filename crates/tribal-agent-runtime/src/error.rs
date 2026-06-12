@@ -53,6 +53,35 @@ pub enum AgentRuntimeError {
         #[source]
         source: serde_json::Error,
     },
+
+    /// A loop inference call failed — a provider fault that routes to
+    /// the stage-error path, never the conversation. Boxed so the
+    /// provider error's width never inflates every runtime result.
+    #[error("loop inference call failed: {context}")]
+    Inference {
+        /// What the loop was doing.
+        context: String,
+        /// The underlying provider error.
+        #[source]
+        source: Box<tribal_inference::InferenceError>,
+    },
+
+    /// A tool's system half failed — routed to the stage-error path,
+    /// never the conversation; the recoverable half returns in-band by
+    /// construction and can never reach this variant.
+    #[error("tool execution failed: {context}")]
+    ToolExecution {
+        /// The tool's operator-facing context.
+        context: String,
+    },
+
+    /// The committed log violated a structural expectation of the
+    /// projection — a consistency fault, not an operational one.
+    #[error("thread log projection failed: {context}")]
+    LogProjection {
+        /// What the projection found.
+        context: String,
+    },
 }
 
 impl AgentRuntimeError {

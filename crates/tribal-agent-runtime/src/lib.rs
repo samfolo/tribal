@@ -20,6 +20,7 @@ mod store;
 mod tools;
 mod transitions;
 mod turn;
+mod turn_loop;
 mod txn;
 
 pub use binding::resolve_binding;
@@ -32,6 +33,12 @@ pub use transitions::{
     suspend_stage_thread,
 };
 pub use turn::{
-    BegunTurn, OneShotOutcome, RecordedMessage, RenderedConversation, begin_one_shot,
+    BegunTurn, OneShotOutcome, RecordedMessage, RecordedToolCall, RenderedConversation, begin_turn,
     commit_noop_terminal, commit_one_shot_terminal,
+};
+pub use turn_loop::{
+    AcceptedSubmission, Admission, BUDGET_RECHECK_CAUSE, BudgetFailure, HeartbeatPump, LoopOutcome,
+    RecheckPolicy, SUBMIT_RESULT_TOOL, SeenCorpus, SubmissionContent, SubmissionOutcome,
+    SubmissionPipeline, ToolResultContent, TurnLoopDeps, admit_inference, commit_loop_terminal,
+    run_turn_loop,
 };
