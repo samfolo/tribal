@@ -20,6 +20,12 @@ pub(crate) const VAR_SIMILAR_ITEMS: &str = "similar_items";
 /// Tera context variable: the tag registry as a list of strings.
 pub(crate) const VAR_TAGS: &str = "tags";
 
+/// Tera context variable: the submission a verifier reviews.
+pub(crate) const VAR_SUBMISSION: &str = "submission";
+
+/// Tera context variable: the claims a verifier's submission assessed.
+pub(crate) const VAR_CONSIDERED_ITEMS: &str = "considered_items";
+
 /// Tera context variable: the verbatim raw input text.
 pub(crate) const VAR_RAW_INPUT: &str = "raw_input";
 

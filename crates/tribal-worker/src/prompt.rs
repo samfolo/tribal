@@ -18,8 +18,9 @@ pub(crate) use relation::{
     relation_user_context,
 };
 pub(crate) use triage::{
-    LoopSimilarItemContext, SimilarItemContext, assemble_loop_opening, assemble_triage_prompt,
-    loop_user_context, triage_user_context,
+    LoopSimilarItemContext, SimilarItemContext, VerifierConsideredItem, VerifierSubmissionContext,
+    assemble_loop_opening, assemble_triage_prompt, assemble_verifier_input, loop_user_context,
+    triage_user_context, verifier_user_context,
 };
 pub use validation::synthetic_validation_context;
 pub use variables::reserved_keys;

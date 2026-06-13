@@ -13,13 +13,15 @@ use tribal_domain::{
 
 use super::{
     CandidateOutcome, LoopSimilarItemContext, RelationPromptContext, SimilarItemContext,
-    SimilarItemDecisionContext, extraction_user_context,
+    SimilarItemDecisionContext, VerifierConsideredItem, VerifierSubmissionContext,
+    extraction_user_context,
     legends::SimilarityBand,
     loop_user_context, relation_user_context, triage_user_context,
     variables::{
         extraction_system_context, inject_validation_defaults, relation_system_context,
         triage_system_context,
     },
+    verifier_user_context,
 };
 
 /// Builds a [`tera::Context`] matching the production context shape for
@@ -85,33 +87,33 @@ fn loop_validation_context(role: PromptRole) -> tera::Context {
     }
 }
 
-/// The verifier's synthetic contexts. No production context builder
-/// exists until the submission pipeline renders these; this shape pins
-/// the templates' variable names until then.
+/// The verifier's synthetic contexts: the system prompt is static, the
+/// user prompt consumes the same production builder the submission
+/// pipeline renders through, so a variable added there is reflected here.
 fn verifier_validation_context(role: PromptRole) -> tera::Context {
     match role {
         PromptRole::System => tera::Context::new(),
         PromptRole::User => {
-            let mut ctx = tera::Context::new();
-            ctx.insert("candidate", &json!({"kind": "fact", "content": "x"}));
-            ctx.insert(
-                "submission",
-                &json!({
-                    "decision": "duplicate",
-                    "matched_item_id": "itm_x",
-                    "handoff": "x",
-                }),
-            );
-            ctx.insert(
-                "considered_items",
-                &json!([{
-                    "item_id": "itm_x",
-                    "kind": "fact",
-                    "assessment": "duplicate",
-                    "content": "x",
-                }]),
-            );
-            ctx
+            let candidate: Candidate = serde_json::from_value(json!({
+                "kind": "fact",
+                "content": "x",
+                "suggested_tags": ["x"],
+            }))
+            .expect("synthetic candidate is valid");
+
+            let submission = VerifierSubmissionContext {
+                decision: "duplicate".to_owned(),
+                matched_item_id: Some(KnowledgeItemId::new().to_string()),
+                handoff: Some("x".to_owned()),
+            };
+            let considered = VerifierConsideredItem {
+                item_id: KnowledgeItemId::new().to_string(),
+                kind: KnowledgeKind::Fact,
+                assessment: "x".to_owned(),
+                content: "x".to_owned(),
+            };
+
+            verifier_user_context(&candidate, &submission, &[considered])
         }
     }
 }

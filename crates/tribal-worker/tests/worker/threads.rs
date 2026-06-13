@@ -651,6 +651,7 @@ async fn test_a_stale_lease_cannot_commit_an_input_record() {
         system_prompt_version_id: Some(system_pv_id),
         user_prompt_version_id: Some(user_pv_id),
         resolution_context: None,
+        response_schema: None,
     };
     let err = tribal_agent_runtime::begin_turn(
         &mut conn,
