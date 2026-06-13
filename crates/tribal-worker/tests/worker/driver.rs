@@ -238,8 +238,7 @@ async fn test_child_terminal_hands_the_verdict_back_to_the_parent() {
     let (mut conn, sp) = seed_suspended_parent(ctx, "hand-back").await;
     let token = claim_and_run_child(&mut conn, &sp).await;
 
-    let response = a_completion_response("the verifier's verdict text");
-    let verdict = serde_json::json!({"decision": "accept", "reason": "sound"});
+    let response = a_completion_response(r#"{"accepted": true, "critique": null}"#);
     let child_thread = child(&mut conn, sp.child_thread_id).await;
     let outcome = commit_child_terminal(
         &mut conn,
@@ -249,7 +248,6 @@ async fn test_child_terminal_hands_the_verdict_back_to_the_parent() {
         0,
         &response,
         &a_parent_resolution(&sp),
-        &verdict,
     )
     .await
     .expect("child terminal");
@@ -300,7 +298,10 @@ async fn test_child_terminal_hands_the_verdict_back_to_the_parent() {
     assert_eq!(result.tool_call_id(), Some(SUBMIT_CALL_ID));
     assert_eq!(result.requesting_seq(), Some(sp.requesting_seq));
     assert_eq!(result.content()["is_error"], false);
-    assert_eq!(result.content()["output"]["decision"], "accept");
+    assert_eq!(
+        result.content()["output"],
+        r#"{"accepted": true, "critique": null}"#
+    );
 
     teardown(ctx).await;
 }
@@ -314,7 +315,7 @@ async fn test_a_stale_driver_token_rolls_the_whole_terminal_back() {
 
     // A reclaimed run presents a stale token: the driver-task completion
     // affects zero rows and the whole hand-back rolls back.
-    let response = a_completion_response("a zombie's verdict");
+    let response = a_completion_response(r#"{"accepted": true}"#);
     let child_thread = child(&mut conn, sp.child_thread_id).await;
     let err = commit_child_terminal(
         &mut conn,
@@ -324,7 +325,6 @@ async fn test_a_stale_driver_token_rolls_the_whole_terminal_back() {
         0,
         &response,
         &a_parent_resolution(&sp),
-        &serde_json::json!({"decision": "accept"}),
     )
     .await
     .expect_err("a stale driver token is rejected");
@@ -377,7 +377,7 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
         .expect("cancel the parent");
     assert_eq!(moved, 1);
 
-    let response = a_completion_response("a verdict with nowhere to go");
+    let response = a_completion_response(r#"{"accepted": true}"#);
     let child_thread = child(&mut conn, sp.child_thread_id).await;
     let outcome = commit_child_terminal(
         &mut conn,
@@ -387,7 +387,6 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
         0,
         &response,
         &a_parent_resolution(&sp),
-        &serde_json::json!({"decision": "accept"}),
     )
     .await
     .expect("child terminal against a terminal parent");
@@ -438,7 +437,7 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
     let inference: Arc<dyn InferenceProvider> = Arc::new(
         MockInferenceProvider::builder()
             .on_complete(
-                a_completion_response(r#"{"decision": "accept", "reason": "sound"}"#),
+                a_completion_response(r#"{"accepted": true, "critique": null}"#),
                 None,
             )
             .on_exhaust(ExhaustBehaviour::RepeatLast)
@@ -499,7 +498,11 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
         .find(|r| r.kind() == AgentThreadRecordKind::ToolResult)
         .expect("the loop handed a verdict back");
     assert_eq!(result.tool_call_id(), Some(SUBMIT_CALL_ID));
-    assert_eq!(result.content()["output"]["decision"], "accept");
+    assert_eq!(
+        result.content()["output"],
+        r#"{"accepted": true, "critique": null}"#,
+        "the child's raw verdict is handed back as the tool-result output",
+    );
 
     let child = child(&mut conn, sp.child_thread_id).await;
     assert_eq!(child.status(), AgentThreadStatus::Completed);

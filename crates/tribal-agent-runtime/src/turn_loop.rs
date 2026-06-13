@@ -41,7 +41,9 @@ use tribal_inference::{
 use tribal_telemetry::{current_span_id, current_trace_id};
 
 use crate::{
-    AgentRuntimeError, SuspendOutcome, ToolRegistry, suspend_stage_thread,
+    AgentRuntimeError, SuspendOutcome, ToolRegistry,
+    driver::{ChildLaunch, SuspendWithChildOutcome, suspend_with_child},
+    suspend_stage_thread,
     turn::{
         AssistantContent, DrivingClaim, RecordedToolCall, RecordedUsage, RenderedConversation,
         begin_turn, is_rendered_conversation,
@@ -57,6 +59,12 @@ pub const SUBMIT_RESULT_TOOL: &str = "submit_result";
 /// carries, discriminating it from a plain timer wake.
 pub const BUDGET_RECHECK_CAUSE: &str = "budget_recheck";
 
+/// The `content_kind` tag of an injected conversational message — a
+/// system-authored user turn the model reads (post-acceptance drift
+/// diagnostics, a human resolution). Distinct from the rendered opening
+/// and from bookkeeping resolutions.
+pub(crate) const INJECTED_MESSAGE_KIND: &str = "injected_message";
+
 // ---------------------------------------------------------------------------
 // Record content shapes
 // ---------------------------------------------------------------------------
@@ -70,6 +78,15 @@ pub struct ToolResultContent {
     pub output: String,
     /// Whether this result is an error-shaped diagnostic.
     pub is_error: bool,
+}
+
+/// A system-authored user turn the model reads: post-acceptance drift
+/// diagnostics, or a human resolution. Tagged so the projection renders
+/// it as a conversation message rather than treating it as bookkeeping.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "content_kind", rename = "injected_message")]
+struct InjectedMessage {
+    content: String,
 }
 
 /// A submission record's content: the accepted, validated payload with
@@ -178,6 +195,50 @@ pub trait SubmissionPipeline: Send + Sync {
         corpus: &SeenCorpus,
         arguments: &serde_json::Value,
     ) -> Result<SubmissionOutcome, ToolFailure>;
+
+    /// Decides whether a validators-accepted submission is verified by a
+    /// child execution, and if so renders that child's opening.
+    ///
+    /// `None` commits the submission directly — the default, and the only
+    /// behaviour for a binding with no verifier. `Some` launches the
+    /// verifier as a fresh-context child whose verdict the loop awaits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolFailure`] per the two-class routing contract.
+    async fn verifier_launch(
+        &self,
+        _conn: &mut PgConnection,
+        _thread: &AgentThread,
+        _payload: &serde_json::Value,
+    ) -> Result<Option<VerifierLaunch>, ToolFailure> {
+        Ok(None)
+    }
+}
+
+/// The verifier child a validators-accepted submission launches: its
+/// binding, its stage, and the opening the verifier reads — the
+/// submission and the rubric, never the submitting thread's reasoning.
+#[derive(Debug, Clone)]
+pub struct VerifierLaunch {
+    /// The content-addressed binding the verifier child runs under.
+    pub binding_version_id: tribal_domain::AgentBindingVersionId,
+    /// The stage the verifier child executes (its parent's).
+    pub pipeline_stage: TaskType,
+    /// The verifier child's rendered opening.
+    pub child_input: RenderedConversation,
+}
+
+/// A verifier's verdict, the envelope every verifier binding produces and
+/// the loop reads: acceptance commits the submission, rejection returns
+/// the critique to the submitting loop, which continues.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VerdictContent {
+    /// Whether the submission is sound.
+    pub accepted: bool,
+    /// The rejection's reasoning, returned to the loop as context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub critique: Option<String>,
 }
 
 /// An accepted submission: what the caller's stage terminal commits.
@@ -511,9 +572,25 @@ pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentR
             match execute_batch(&mut conn, &deps, &mut projection, batch).await? {
                 BatchOutcome::Completed => {}
                 BatchOutcome::Submitted(accepted) => return Ok(LoopOutcome::Submitted(accepted)),
+                BatchOutcome::Suspended => return Ok(LoopOutcome::Suspended),
+                BatchOutcome::CancelIntervened => return Ok(LoopOutcome::CancelIntent),
                 BatchOutcome::Reproject => {
                     projection = read_projection(&mut conn, deps.thread).await?;
                 }
+            }
+            continue;
+        }
+
+        // A returned verifier verdict resolves before any boundary: an
+        // accepted-and-still-valid submission terminates without a
+        // further call, a rejection or post-acceptance drift continues
+        // the loop with the critique or the diagnostics already in
+        // context.
+        if let Some(resolved) = projection.resolved_submission.take() {
+            if let Some(accepted) =
+                resolve_verdict(&mut conn, &deps, &mut projection, resolved).await?
+            {
+                return Ok(LoopOutcome::Submitted(accepted));
             }
             continue;
         }
@@ -602,6 +679,102 @@ pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentR
     }
 }
 
+/// Dispositions a returned verifier verdict. `Some` terminates the stage;
+/// `None` continues the loop — a rejection's critique already rides the
+/// conversation, and a drift's diagnostics are committed as a fresh
+/// conversation-bearing input here.
+async fn resolve_verdict(
+    conn: &mut PgConnection,
+    deps: &TurnLoopDeps<'_>,
+    projection: &mut Projection,
+    resolved: ResolvedSubmission,
+) -> Result<Option<AcceptedSubmission>, AgentRuntimeError> {
+    if !resolved.verdict.accepted {
+        // The verifier rejected: its critique is already the tool result
+        // in the conversation, so the loop continues and the model
+        // re-decides against it.
+        return Ok(None);
+    }
+
+    // Acceptance is not yet a commit: the validators re-run against the
+    // current graph, since the verifier's latency opened a window for
+    // drift the optimistic re-check at submit could not foresee.
+    match deps
+        .pipeline
+        .evaluate(conn, deps.thread, &projection.corpus, &resolved.arguments)
+        .await
+    {
+        Ok(SubmissionOutcome::Accepted { payload }) => Ok(Some(AcceptedSubmission {
+            payload,
+            requesting_seq: resolved.requesting_seq,
+            tool_call_id: resolved.tool_call_id,
+        })),
+        Ok(SubmissionOutcome::Bounced { diagnostics }) => {
+            // Post-acceptance drift: the graph changed between
+            // verification and this commit. A second tool result for the
+            // same call is fenced out, so the diagnostics cross as a
+            // conversation-bearing input and the model re-decides against
+            // the changed graph rather than the thread dying on a
+            // deterministic wall.
+            commit_drift_input(conn, deps, projection, &diagnostics).await?;
+            Ok(None)
+        }
+        Err(ToolFailure::Recoverable(recoverable)) => {
+            commit_drift_input(conn, deps, projection, &recoverable.render()).await?;
+            Ok(None)
+        }
+        Err(ToolFailure::System { context }) => Err(AgentRuntimeError::ToolExecution { context }),
+    }
+}
+
+/// Commits a drift-diagnostics input record (the injected-message shape)
+/// and mirrors it into the projection, so the model's next turn reads why
+/// its verified submission could not commit.
+async fn commit_drift_input(
+    conn: &mut PgConnection,
+    deps: &TurnLoopDeps<'_>,
+    projection: &mut Projection,
+    diagnostics: &str,
+) -> Result<(), AgentRuntimeError> {
+    let message = format!(
+        "Your submission was verified, but the graph changed before it could be committed: \
+         {diagnostics} Re-examine and submit again."
+    );
+    let content = serde_json::to_value(InjectedMessage {
+        content: message.clone(),
+    })
+    .map_err(|source| serialisation(deps.thread, "the drift diagnostics", source))?;
+
+    let mut txn = begin(conn, "beginning the drift-input transaction").await?;
+    guard_claim(&mut txn, deps).await?;
+    PgAgentThreadRepository
+        .lock(&mut txn, deps.thread.id())
+        .await
+        .map_err(|source| {
+            AgentRuntimeError::database("locking the thread for the drift input", source)
+        })?;
+    let seq = next_seq(&mut txn, deps.thread).await?;
+    PgAgentThreadRecordRepository
+        .append(
+            &mut txn,
+            &NewAgentThreadRecord::builder()
+                .thread_id(deps.thread.id())
+                .seq(seq)
+                .kind(AgentThreadRecordKind::Input)
+                .content(content)
+                .trace_id(current_trace_id())
+                .span_id(current_span_id())
+                .build(),
+        )
+        .await
+        .map_err(|source| AgentRuntimeError::database("committing the drift input", source))?;
+    reset_progress(&mut txn, deps).await?;
+    commit(txn, "committing the drift-input transaction").await?;
+
+    projection.messages.push(Message::User { content: message });
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Projection
 // ---------------------------------------------------------------------------
@@ -620,6 +793,24 @@ struct Projection {
     tail: Option<PendingBatch>,
     /// The wake count carried by a trailing budget-recheck record.
     carried_rechecks: Option<u32>,
+    /// A submit-result call whose verifier verdict has just returned: the
+    /// last assistant turn's submission, answered by a non-error tool
+    /// result and not yet superseded by a later turn. The loop re-derives
+    /// its disposition from this rather than issuing fresh inference.
+    resolved_submission: Option<ResolvedSubmission>,
+}
+
+/// A returned verifier verdict awaiting the loop's disposition.
+#[derive(Debug)]
+struct ResolvedSubmission {
+    /// The submitted arguments, re-validated against the current graph.
+    arguments: serde_json::Value,
+    /// The assistant message bearing the submit call.
+    requesting_seq: AgentThreadRecordSeq,
+    /// The submit call's id, for the accepted terminal.
+    tool_call_id: String,
+    /// The verifier's verdict.
+    verdict: VerdictContent,
 }
 
 /// The last assistant message's outstanding calls.
@@ -659,9 +850,11 @@ fn project(
         assistant_turns: 0,
         tail: None,
         carried_rechecks: None,
+        resolved_submission: None,
     };
     let mut saw_rendered = false;
     let mut pending: Option<PendingBatch> = None;
+    let mut resolved: Option<ResolvedSubmission> = None;
 
     for record in records {
         projection.carried_rechecks = None;
@@ -679,6 +872,12 @@ fn project(
                         projection.corpus.push(message.content.clone());
                         projection.messages.push(recorded_to_wire(message));
                     }
+                } else if let Some(message) = injected_message(record.content()) {
+                    // A system-authored user turn the model reads (drift
+                    // diagnostics, a human resolution): conversation-
+                    // bearing, but not graph data, so it joins the
+                    // messages without entering the membership corpus.
+                    projection.messages.push(Message::User { content: message });
                 } else {
                     // A bookkeeping resolution (a timer or budget wake):
                     // never model-facing. A budget wake carries the
@@ -703,6 +902,9 @@ fn project(
                         })
                         .collect(),
                 });
+                // A new turn supersedes any verdict that has not yet been
+                // dispositioned: only the trailing submission is resolved.
+                resolved = None;
                 pending = if content.tool_calls.is_empty() {
                     None
                 } else {
@@ -723,12 +925,31 @@ fn project(
                     content: content.output.clone(),
                 });
                 if !content.is_error {
-                    projection.corpus.push(content.output);
+                    projection.corpus.push(content.output.clone());
                 }
                 if let Some(batch) = &mut pending
                     && record.requesting_seq() == Some(batch.requesting_seq)
                 {
                     batch.answered.insert(call_id.to_owned());
+                    // A non-error result answering the trailing turn's
+                    // submit call is a returned verifier verdict: the
+                    // suspension between them cleared no record, so this
+                    // is the verdict's arrival, never a bounce (a bounce
+                    // is an error result, and the loop runs on past it).
+                    if !content.is_error
+                        && let Some(submit) = batch
+                            .calls
+                            .iter()
+                            .find(|c| c.id == call_id && c.name == SUBMIT_RESULT_TOOL)
+                        && let Ok(verdict) = serde_json::from_str::<VerdictContent>(&content.output)
+                    {
+                        resolved = Some(ResolvedSubmission {
+                            arguments: submit.arguments.clone(),
+                            requesting_seq: batch.requesting_seq,
+                            tool_call_id: call_id.to_owned(),
+                            verdict,
+                        });
+                    }
                 }
             }
             // Control and terminal records are never model-facing; the
@@ -743,6 +964,7 @@ fn project(
     if !saw_rendered {
         return Err(log_fault(thread, "no rendered conversation"));
     }
+    projection.resolved_submission = resolved;
     projection.tail = pending.filter(|batch| {
         !batch
             .calls
@@ -750,6 +972,22 @@ fn project(
             .all(|call| batch.answered.contains(&call.id))
     });
     Ok(projection)
+}
+
+/// The content of an injected conversational message, when the record is
+/// one — a system-authored user turn the model reads.
+fn injected_message(content: &serde_json::Value) -> Option<String> {
+    if content
+        .get("content_kind")
+        .and_then(serde_json::Value::as_str)
+        != Some(INJECTED_MESSAGE_KIND)
+    {
+        return None;
+    }
+    content
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 impl Projection {
@@ -1102,8 +1340,14 @@ pub async fn commit_loop_terminal(
 enum BatchOutcome {
     /// Every call answered; the tail is a clean boundary.
     Completed,
-    /// `submit_result` was accepted; the loop exits to the caller.
+    /// `submit_result` was accepted with no verifier; the loop exits to
+    /// the caller's terminal.
     Submitted(AcceptedSubmission),
+    /// `submit_result` was accepted and the binding verifies it: the
+    /// thread suspended on the verifier child.
+    Suspended,
+    /// A durable cancellation intent intervened at the verifier suspend.
+    CancelIntervened,
     /// A fence conflict proved the in-memory reading stale.
     Reproject,
 }
@@ -1131,11 +1375,64 @@ async fn execute_batch(
                 .await
             {
                 Ok(SubmissionOutcome::Accepted { payload }) => {
-                    return Ok(BatchOutcome::Submitted(AcceptedSubmission {
-                        payload,
-                        requesting_seq: batch.requesting_seq,
-                        tool_call_id: call.id.clone(),
-                    }));
+                    // Validators passed; the binding decides whether a
+                    // verifier child must agree before the commit.
+                    match deps
+                        .pipeline
+                        .verifier_launch(conn, deps.thread, &payload)
+                        .await
+                    {
+                        Ok(None) => {
+                            return Ok(BatchOutcome::Submitted(AcceptedSubmission {
+                                payload,
+                                requesting_seq: batch.requesting_seq,
+                                tool_call_id: call.id.clone(),
+                            }));
+                        }
+                        Ok(Some(launch)) => {
+                            // The heartbeat stops before the suspension
+                            // clears the claim, lest a beat in flight race
+                            // a spurious ownership-lost signal.
+                            deps.pump.abort();
+                            let child = ChildLaunch {
+                                pipeline_stage: launch.pipeline_stage,
+                                binding_version_id: launch.binding_version_id,
+                                principal_id: deps.thread.principal_id(),
+                                format_version: deps.thread.format_version(),
+                            };
+                            return match suspend_with_child(
+                                conn,
+                                deps.thread,
+                                deps.task_id,
+                                deps.claim_token,
+                                batch.requesting_seq,
+                                &call.id,
+                                child,
+                                &launch.child_input,
+                            )
+                            .await?
+                            {
+                                SuspendWithChildOutcome::Launched(_) => Ok(BatchOutcome::Suspended),
+                                SuspendWithChildOutcome::CancelIntervened => {
+                                    Ok(BatchOutcome::CancelIntervened)
+                                }
+                            };
+                        }
+                        Err(ToolFailure::Recoverable(recoverable)) => {
+                            error_result(
+                                conn,
+                                deps,
+                                projection,
+                                batch.requesting_seq,
+                                call,
+                                recoverable.render(),
+                            )
+                            .await?
+                        }
+                        Err(ToolFailure::System { context }) => {
+                            return Err(AgentRuntimeError::ToolExecution { context });
+                        }
+                    }
                 }
                 Ok(SubmissionOutcome::Bounced { diagnostics }) => {
                     error_result(
@@ -1649,5 +1946,135 @@ mod tests {
         let records = vec![assistant_record(&thread, 0, "orphaned", vec![])];
         let err = project(&thread, &records).expect_err("an input-less log is a fault");
         assert!(matches!(err, AgentRuntimeError::LogProjection { .. }));
+    }
+
+    /// A non-error tool result answering the trailing turn's submit call
+    /// is a returned verifier verdict — the loop must re-derive its
+    /// disposition, not issue fresh inference.
+    #[test]
+    fn test_projection_detects_a_returned_verifier_verdict() {
+        let thread = an_agent_thread().build();
+        let records = vec![
+            rendered_input(&thread, "triage this"),
+            assistant_record(
+                &thread,
+                1,
+                "",
+                vec![a_call("call_submit", SUBMIT_RESULT_TOOL)],
+            ),
+            tool_result_record(
+                &thread,
+                2,
+                1,
+                "call_submit",
+                r#"{"accepted": false, "critique": "missed a duplicate"}"#,
+                false,
+            ),
+        ];
+
+        let projection = project(&thread, &records).expect("projects");
+        let resolved = projection
+            .resolved_submission
+            .expect("a verdict answering the submit call is a resolved submission");
+        assert!(!resolved.verdict.accepted);
+        assert_eq!(
+            resolved.verdict.critique.as_deref(),
+            Some("missed a duplicate"),
+        );
+        assert!(
+            projection.tail.is_none(),
+            "the verdict answers the only call, so the batch is no tail",
+        );
+    }
+
+    /// A bounced submission (an error result answering the submit call)
+    /// is not a verdict: the loop has already run on past it, so the
+    /// projection leaves no resolved submission to re-derive.
+    #[test]
+    fn test_projection_does_not_mistake_a_bounce_for_a_verdict() {
+        let thread = an_agent_thread().build();
+        let records = vec![
+            rendered_input(&thread, "triage this"),
+            assistant_record(
+                &thread,
+                1,
+                "",
+                vec![a_call("call_submit", SUBMIT_RESULT_TOOL)],
+            ),
+            tool_result_record(
+                &thread,
+                2,
+                1,
+                "call_submit",
+                "bounced: copy ids exactly",
+                true,
+            ),
+        ];
+
+        let projection = project(&thread, &records).expect("projects");
+        assert!(
+            projection.resolved_submission.is_none(),
+            "an error-shaped result is a bounce, not a verdict",
+        );
+    }
+
+    /// A later assistant turn supersedes a returned verdict: only the
+    /// trailing submission resolves.
+    #[test]
+    fn test_projection_supersedes_a_verdict_with_a_later_turn() {
+        let thread = an_agent_thread().build();
+        let records = vec![
+            rendered_input(&thread, "triage this"),
+            assistant_record(
+                &thread,
+                1,
+                "",
+                vec![a_call("call_submit", SUBMIT_RESULT_TOOL)],
+            ),
+            tool_result_record(&thread, 2, 1, "call_submit", r#"{"accepted": true}"#, false),
+            assistant_record(&thread, 3, "thinking again", vec![]),
+        ];
+
+        let projection = project(&thread, &records).expect("projects");
+        assert!(
+            projection.resolved_submission.is_none(),
+            "a later turn means the verdict was already dispositioned",
+        );
+    }
+
+    /// An injected message is a system-authored user turn the model
+    /// reads, not bookkeeping — it joins the conversation but not the
+    /// membership corpus.
+    #[test]
+    fn test_projection_renders_an_injected_message_as_a_user_turn() {
+        let thread = an_agent_thread().build();
+        let injected = an_agent_thread_record()
+            .thread_id(thread.id())
+            .seq(AgentThreadRecordSeq::new(1))
+            .kind(AgentThreadRecordKind::Input)
+            .content(
+                serde_json::to_value(InjectedMessage {
+                    content: "the graph changed; re-decide ki_00000000-0000-0000-0000-0000000000aa"
+                        .to_owned(),
+                })
+                .expect("serialises"),
+            )
+            .build();
+        let records = vec![rendered_input(&thread, "triage this"), injected];
+
+        let projection = project(&thread, &records).expect("projects");
+        assert!(
+            matches!(
+                projection.messages.last(),
+                Some(Message::User { content }) if content.contains("the graph changed")
+            ),
+            "the injected message reaches the model as a user turn",
+        );
+        assert!(
+            !projection
+                .corpus
+                .contains("ki_00000000-0000-0000-0000-0000000000aa"),
+            "a system-authored message is not graph data for membership",
+        );
     }
 }

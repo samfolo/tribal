@@ -178,10 +178,8 @@ impl Worker {
             });
         };
 
-        // The verdict the parent re-reads is the child's structured
-        // result; its meaning is the parent stage's to interpret.
-        let verdict = serde_json::from_str(&response.text)
-            .unwrap_or_else(|_| serde_json::Value::String(response.text.clone()));
+        // The parent re-reads the child's structured response from the
+        // hand-back tool result and interprets the verdict itself.
         let outcome = commit_child_terminal(
             &mut conn,
             &child,
@@ -190,7 +188,6 @@ impl Worker {
             clamp_to_i32(task.attempt()),
             &response,
             &parent,
-            &verdict,
         )
         .await
         .map_err(|source| driver_runtime_error("committing the child terminal", source))?;

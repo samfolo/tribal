@@ -30,7 +30,6 @@
 //! availability sweep's cancel fallback reaches a child still suspended
 //! when its parent vanished.
 
-use serde::Serialize;
 use sqlx::PgConnection;
 use tribal_db::{
     AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository, DrivingTaskRef,
@@ -48,6 +47,7 @@ use tribal_telemetry::{current_span_id, current_trace_id};
 use crate::{
     AgentRuntimeError,
     turn::{AssistantContent, RecordedUsage, RenderedConversation},
+    turn_loop::ToolResultContent,
     txn::{begin, commit},
 };
 
@@ -281,7 +281,6 @@ pub async fn commit_child_terminal(
     attempt: i32,
     child_response: &CompletionResponse,
     parent: &ParentResolution,
-    verdict: &serde_json::Value,
 ) -> Result<ChildTerminalOutcome, AgentRuntimeError> {
     let mut txn = begin(conn, "beginning the child-terminal transaction").await?;
 
@@ -293,11 +292,13 @@ pub async fn commit_child_terminal(
         AgentThreadTerminal::Completed,
     )
     .await?;
+    // The verdict is the child's raw structured response; the parent
+    // loop reads it from the tool result and interprets it.
     let outcome = hand_back(
         &mut txn,
         parent,
-        &ToolResultRecord {
-            output: verdict.clone(),
+        &ToolResultContent {
+            output: child_response.text.clone(),
             is_error: false,
         },
     )
@@ -339,8 +340,8 @@ pub async fn commit_deferred_death(
     let outcome = hand_back(
         &mut txn,
         parent,
-        &ToolResultRecord {
-            output: serde_json::json!({ "error": error_message }),
+        &ToolResultContent {
+            output: error_message.to_owned(),
             is_error: true,
         },
     )
@@ -353,14 +354,6 @@ pub async fn commit_deferred_death(
 // ---------------------------------------------------------------------------
 // Shared parts
 // ---------------------------------------------------------------------------
-
-/// A tool-result record's content, mirroring the loop's shape so a
-/// child's hand-back reads to the parent exactly as a fenced tool result.
-#[derive(Debug, Serialize)]
-struct ToolResultRecord {
-    output: serde_json::Value,
-    is_error: bool,
-}
 
 /// Completes the driver task under its claim guard; a stale token rolls
 /// the whole terminal back.
@@ -464,7 +457,7 @@ async fn finish_child_status(
 async fn hand_back(
     txn: &mut PgConnection,
     parent: &ParentResolution,
-    result: &ToolResultRecord,
+    result: &ToolResultContent,
 ) -> Result<ChildTerminalOutcome, AgentRuntimeError> {
     let Some(locked) = PgAgentThreadRepository
         .lock(txn, parent.thread_id)
