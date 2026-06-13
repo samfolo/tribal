@@ -18,12 +18,12 @@ use sqlx::PgPool;
 use tokio::{sync::oneshot, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tribal_db::{
-    AgentThreadRepository, PgAgentThreadRepository, PgTaskRepository, ReclaimOutcome,
-    TaskRepository,
+    AgentDriverTaskRepository, AgentThreadRepository, PgAgentDriverTaskRepository,
+    PgAgentThreadRepository, PgTaskRepository, ReclaimOutcome, TaskRepository,
 };
 use tribal_domain::{
-    AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState, TaskErrorKind,
-    TaskId, TurnOutcome, decide_disposition,
+    AgentDriverTaskId, AgentThreadTerminal, Disposition, DispositionCounters, JobOutcome, JobState,
+    TaskErrorKind, TaskId, TurnOutcome, decide_disposition,
 };
 
 use crate::{
@@ -536,6 +536,67 @@ pub(crate) fn spawn_heartbeat(
         task_id,
         claim_token,
         interval,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Driver-task heartbeat
+// ---------------------------------------------------------------------------
+
+/// A running driver-task heartbeat, aborted when its execution ends.
+pub(crate) struct DriverHeartbeatHandle {
+    abort_handle: tokio::task::AbortHandle,
+}
+
+impl DriverHeartbeatHandle {
+    /// Stops the heartbeat.
+    pub(crate) fn abort(&self) {
+        self.abort_handle.abort();
+    }
+}
+
+/// Spawns a background heartbeat for a claimed driver task while the
+/// driver loop executes its child.
+///
+/// A driver child is a single bounded one-shot, so this beats on the
+/// timer alone — no phase-aware suppression and no ownership-lost
+/// channel: the child-terminal's claim-guarded driver-task completion is
+/// the deterministic ownership check, and a stale beat is harmless.
+pub(crate) fn spawn_driver_heartbeat(
+    pool: PgPool,
+    driver_task_id: AgentDriverTaskId,
+    claim_token: uuid::Uuid,
+    interval: Duration,
+    cancellation_token: CancellationToken,
+) -> DriverHeartbeatHandle {
+    let handle = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        ticker.tick().await; // skip first immediate tick
+
+        loop {
+            tokio::select! {
+                () = cancellation_token.cancelled() => return,
+                _ = ticker.tick() => {}
+            }
+            let Ok(mut conn) = pool.acquire().await else {
+                continue;
+            };
+            if let Err(e) = PgAgentDriverTaskRepository
+                .heartbeat(&mut conn, driver_task_id, claim_token)
+                .await
+            {
+                tracing::warn!(
+                    driver_task_id = %driver_task_id,
+                    error = %e,
+                    "driver heartbeat update failed",
+                );
+            }
+        }
+    });
+
+    DriverHeartbeatHandle {
+        abort_handle: handle.abort_handle(),
     }
 }
 

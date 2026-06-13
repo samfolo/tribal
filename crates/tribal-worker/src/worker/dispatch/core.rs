@@ -145,6 +145,11 @@ impl Worker {
         &self.active_prompts
     }
 
+    /// Returns the shutdown cancellation token shared across the loops.
+    pub(crate) fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation_token
+    }
+
     /// Returns a reference to the telemetry metric instruments.
     pub(crate) fn metrics(&self) -> &dyn MetricsRecorder {
         &self.metrics
@@ -276,11 +281,17 @@ impl Worker {
             reindex_worker.run_reindex_loop().await;
         });
 
+        let driver_worker = Arc::clone(self);
+        let driver_handle = tokio::spawn(async move {
+            driver_worker.run_driver_loop().await;
+        });
+
         loop {
             tokio::select! {
                 () = self.cancellation_token.cancelled() => {
                     reclaim_handle.abort();
                     reindex_handle.abort();
+                    driver_handle.abort();
                     tracing::info!(instance_id = %self.instance_id, "worker cancelled, draining in-flight tasks");
                     while in_flight.join_next().await.is_some() {}
                     return Err(WorkerError::Cancelled);

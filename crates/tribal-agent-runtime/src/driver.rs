@@ -35,7 +35,8 @@ use sqlx::PgConnection;
 use tribal_db::{
     AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository, DrivingTaskRef,
     NewAgentDriverTask, NewAgentThread, NewAgentThreadRecord, PgAgentDriverTaskRepository,
-    PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository, TaskRepository,
+    PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository,
+    PgTokenUsageRepository, TaskRepository, TokenUsageRepository,
 };
 use tribal_domain::{
     AgentBindingVersionId, AgentDriverTaskId, AgentDriverTaskKind, AgentThread, AgentThreadId,
@@ -46,7 +47,7 @@ use tribal_telemetry::{current_span_id, current_trace_id};
 
 use crate::{
     AgentRuntimeError,
-    turn::{AssistantContent, RecordedUsage},
+    turn::{AssistantContent, RecordedUsage, RenderedConversation},
     txn::{begin, commit},
 };
 
@@ -102,6 +103,9 @@ pub enum SuspendWithChildOutcome {
 /// Returns [`AgentRuntimeError::LeaseLost`] when the parent's stage-task
 /// block misses (nothing committed), plus the serialisation and database
 /// errors of the parts.
+// The transition's full guard and launch context; a params struct would
+// only move the same arguments behind a name.
+#[allow(clippy::too_many_arguments)]
 pub async fn suspend_with_child(
     conn: &mut PgConnection,
     parent: &AgentThread,
@@ -110,12 +114,18 @@ pub async fn suspend_with_child(
     requesting_seq: AgentThreadRecordSeq,
     pending_tool_call_id: &str,
     launch: ChildLaunch,
+    child_input: &RenderedConversation,
 ) -> Result<SuspendWithChildOutcome, AgentRuntimeError> {
     let suspension = AgentThreadSuspension::DeferredToolResults {
         requesting_seq,
         pending_tool_call_ids: vec![pending_tool_call_id.to_owned()],
     };
     let content = serialise_suspension(parent, &suspension)?;
+    // The child is born with its conversation: the caller renders the
+    // input (a verifier's rubric and the submission), and the driver loop
+    // adopts it rather than re-rendering, the one-shot bracket's contract.
+    let child_input_content = serde_json::to_value(child_input)
+        .map_err(|source| serialisation(parent, "the child's input record", source))?;
 
     let mut txn = begin(conn, "beginning the suspend-with-child transaction").await?;
 
@@ -195,6 +205,23 @@ pub async fn suspend_with_child(
         .await
         .map_err(|source| AgentRuntimeError::database("enrolling the child driver task", source))?;
 
+    PgAgentThreadRecordRepository
+        .append(
+            &mut txn,
+            &NewAgentThreadRecord::builder()
+                .thread_id(child.id())
+                .seq(AgentThreadRecordSeq::FIRST)
+                .kind(AgentThreadRecordKind::Input)
+                .content(child_input_content)
+                .trace_id(current_trace_id())
+                .span_id(current_span_id())
+                .build(),
+        )
+        .await
+        .map_err(|source| {
+            AgentRuntimeError::database("committing the child's input record", source)
+        })?;
+
     commit(txn, "committing the suspend-with-child transaction").await?;
     Ok(SuspendWithChildOutcome::Launched(LaunchedChild {
         thread_id: child.id(),
@@ -243,11 +270,15 @@ pub struct ParentResolution {
 ///
 /// Returns [`AgentRuntimeError::LeaseLost`] when the driver claim misses,
 /// plus the serialisation and database errors of the parts.
+// The terminal's full guard and hand-back context; a params struct would
+// only move the same arguments behind a name.
+#[allow(clippy::too_many_arguments)]
 pub async fn commit_child_terminal(
     conn: &mut PgConnection,
     child: &AgentThread,
     driver_task_id: AgentDriverTaskId,
     driver_claim_token: uuid::Uuid,
+    attempt: i32,
     child_response: &CompletionResponse,
     parent: &ParentResolution,
     verdict: &serde_json::Value,
@@ -258,7 +289,7 @@ pub async fn commit_child_terminal(
     finish_child(
         &mut txn,
         child,
-        child_response,
+        Some((child_response, attempt)),
         AgentThreadTerminal::Completed,
     )
     .await?;
@@ -350,43 +381,58 @@ async fn complete_driver_task(
     Ok(())
 }
 
-/// Appends the child's assistant record and moves it to its terminal.
+/// Appends the child's assistant record (when it produced one) and moves
+/// it to its terminal, linking the child's committed spend to its record
+/// under the thread-keyed attribution.
 async fn finish_child(
     txn: &mut PgConnection,
     child: &AgentThread,
-    response: &CompletionResponse,
+    response: Option<(&CompletionResponse, i32)>,
     terminal: AgentThreadTerminal,
 ) -> Result<(), AgentRuntimeError> {
-    let content = serde_json::to_value(AssistantContent {
-        text: response.text.clone(),
-        tool_calls: vec![],
-    })
-    .map_err(|source| serialisation(child, "the child's assistant content", source))?;
-    let usage = serde_json::to_value(RecordedUsage::from(response))
-        .map_err(|source| serialisation(child, "the child's usage", source))?;
+    if let Some((response, attempt)) = response {
+        let content = serde_json::to_value(AssistantContent {
+            text: response.text.clone(),
+            tool_calls: vec![],
+        })
+        .map_err(|source| serialisation(child, "the child's assistant content", source))?;
+        let usage = serde_json::to_value(RecordedUsage::from(response))
+            .map_err(|source| serialisation(child, "the child's usage", source))?;
 
-    PgAgentThreadRepository
-        .lock(txn, child.id())
-        .await
-        .map_err(|source| AgentRuntimeError::database("locking the child for terminal", source))?;
-    let seq = next_seq(txn, child.id()).await?;
-    PgAgentThreadRecordRepository
-        .append(
-            txn,
-            &NewAgentThreadRecord::builder()
-                .thread_id(child.id())
-                .seq(seq)
-                .kind(AgentThreadRecordKind::AssistantMessage)
-                .content(content)
-                .usage(Some(usage))
-                .trace_id(current_trace_id())
-                .span_id(current_span_id())
-                .build(),
-        )
-        .await
-        .map_err(|source| {
-            AgentRuntimeError::database("committing the child's assistant record", source)
-        })?;
+        PgAgentThreadRepository
+            .lock(txn, child.id())
+            .await
+            .map_err(|source| {
+                AgentRuntimeError::database("locking the child for terminal", source)
+            })?;
+        let seq = next_seq(txn, child.id()).await?;
+        let record = PgAgentThreadRecordRepository
+            .append(
+                txn,
+                &NewAgentThreadRecord::builder()
+                    .thread_id(child.id())
+                    .seq(seq)
+                    .kind(AgentThreadRecordKind::AssistantMessage)
+                    .content(content)
+                    .usage(Some(usage))
+                    .trace_id(current_trace_id())
+                    .span_id(current_span_id())
+                    .build(),
+            )
+            .await
+            .map_err(|source| {
+                AgentRuntimeError::database("committing the child's assistant record", source)
+            })?;
+        // Thread-keyed attribution: the child has no stage task, so its
+        // committed spend links to its record through the thread, under
+        // the same single-most-recent-row constraint as the parent's.
+        PgTokenUsageRepository
+            .link_thread_completion_to_record(txn, child.id(), attempt, record.id())
+            .await
+            .map_err(|source| {
+                AgentRuntimeError::database("linking the child's spend to its record", source)
+            })?;
+    }
     finish_child_status(txn, child, terminal).await
 }
 
