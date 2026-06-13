@@ -13,11 +13,14 @@ use std::collections::HashMap;
 
 use sqlx::PgConnection;
 use tribal_common::sha256_hex;
+use tribal_config::AgentsConfig;
 use tribal_db::{DbError, NewSystemFingerprint};
 use tribal_domain::{
-    AgentDefinition, McpErrorCode, PipelineParameters, PromptVersion, PromptVersionId, TaskType,
+    McpErrorCode, PipelineParameters, PromptClass, PromptRole, PromptStage, PromptVersion,
+    PromptVersionId, TaskType,
 };
 use tribal_inference::{CompletionStageSpec, CompletionStageSpecs, ProviderIdentity};
+use tribal_worker::{DefinitionError, StagePromptHashes, derive_stage_definition};
 
 use crate::{
     error::{IntoMcpError, McpToolError},
@@ -47,6 +50,9 @@ pub(crate) struct PromptContentHashes {
     pub triage_user: String,
     pub relation_system: String,
     pub relation_user: String,
+    /// The triage loop pair's `(system, user)` hashes, when the active
+    /// set carries the agentic slots.
+    pub triage_loop: Option<(String, String)>,
 }
 
 impl PromptContentHashes {
@@ -62,6 +68,18 @@ impl PromptContentHashes {
             .iter()
             .map(|v| (v.id(), v.content_hash()))
             .collect();
+
+        let loop_ids = (
+            active.get_version(PromptStage::Triage, PromptClass::Loop, PromptRole::System),
+            active.get_version(PromptStage::Triage, PromptClass::Loop, PromptRole::User),
+        );
+        let triage_loop = match loop_ids {
+            (Some(system_id), Some(user_id)) => Some((
+                (*by_id.get(&system_id)?).to_owned(),
+                (*by_id.get(&user_id)?).to_owned(),
+            )),
+            _ => None,
+        };
 
         Some(Self {
             extraction_system: by_id
@@ -82,6 +100,7 @@ impl PromptContentHashes {
             relation_user: by_id
                 .get(&active.relation_user_prompt_version_id)?
                 .to_string(),
+            triage_loop,
         })
     }
 }
@@ -100,6 +119,8 @@ impl PromptContentHashes {
 pub(crate) struct FingerprintInputs {
     /// The three stage endpoint specs.
     pub specs: CompletionStageSpecs,
+    /// The agentic execution configuration the bindings derive from.
+    pub agents: AgentsConfig,
     /// The active embedding identity.
     pub embedding: ProviderIdentity,
     /// The active embedding dimensionality.
@@ -116,51 +137,57 @@ struct StageBindingHashes {
 }
 
 /// Derives the three stage binding hashes from the boot-time endpoint
-/// specs and the active prompt content hashes, through the same
-/// definition constructor the worker uses at claim.
+/// specs, the active prompt content hashes, and the agentic
+/// configuration, through the same derivation the worker uses at claim.
 fn stage_binding_hashes(
     specs: &CompletionStageSpecs,
     hashes: &PromptContentHashes,
-) -> Result<StageBindingHashes, serde_json::Error> {
+    agents: &AgentsConfig,
+) -> Result<StageBindingHashes, FingerprintError> {
     Ok(StageBindingHashes {
         extraction: binding_hash(
             TaskType::Extraction,
             &specs.extraction,
             &hashes.extraction_system,
             &hashes.extraction_user,
+            None,
+            agents,
         )?,
         triage: binding_hash(
             TaskType::Triage,
             &specs.triage,
             &hashes.triage_system,
             &hashes.triage_user,
+            hashes.triage_loop.clone(),
+            agents,
         )?,
         relation: binding_hash(
             TaskType::Relation,
             &specs.relation,
             &hashes.relation_system,
             &hashes.relation_user,
+            None,
+            agents,
         )?,
     })
 }
 
 /// One stage's binding hash: the content address over the canonically
-/// serialised default one-shot definition.
+/// serialised definition the shared derivation produces.
 fn binding_hash(
     stage: TaskType,
     spec: &CompletionStageSpec,
     system_prompt_hash: &str,
     user_prompt_hash: &str,
-) -> Result<String, serde_json::Error> {
-    let definition = AgentDefinition::one_shot(
-        stage,
-        spec.provider,
-        spec.model.clone(),
-        spec.base_url.clone(),
-        spec.parameters.clone(),
-        system_prompt_hash.to_owned(),
-        user_prompt_hash.to_owned(),
-    );
+    loop_pair: Option<(String, String)>,
+    agents: &AgentsConfig,
+) -> Result<String, FingerprintError> {
+    let prompts = StagePromptHashes {
+        system: system_prompt_hash.to_owned(),
+        user: user_prompt_hash.to_owned(),
+        loop_pair,
+    };
+    let definition = derive_stage_definition(stage, spec, &prompts, agents)?;
     Ok(sha256_hex(&definition.canonical_json()?))
 }
 
@@ -221,6 +248,12 @@ pub(crate) enum FingerprintError {
         #[from]
         source: serde_json::Error,
     },
+
+    #[error("deriving a stage binding for the fingerprint failed")]
+    BindingDerivation {
+        #[from]
+        source: DefinitionError,
+    },
 }
 
 impl IntoMcpError for FingerprintError {
@@ -246,6 +279,11 @@ impl IntoMcpError for FingerprintError {
                 ),
                 details: serde_json::Value::Null,
             },
+            Self::BindingDerivation { source } => McpToolError {
+                code: McpErrorCode::Internal,
+                message: format!("deriving a stage binding for the fingerprint failed: {source}"),
+                details: serde_json::Value::Null,
+            },
         }
     }
 }
@@ -264,7 +302,12 @@ pub(crate) async fn compute_and_upsert_fingerprint(
     build_version: &str,
     inputs: &FingerprintInputs,
 ) -> Result<String, FingerprintError> {
-    let version_ids = active_prompts.version_ids();
+    let mut version_ids = active_prompts.version_ids().to_vec();
+    for role in [PromptRole::System, PromptRole::User] {
+        if let Some(id) = active_prompts.get_version(PromptStage::Triage, PromptClass::Loop, role) {
+            version_ids.push(id);
+        }
+    }
 
     let prompt_versions = repositories
         .prompt_version
@@ -281,7 +324,7 @@ pub(crate) async fn compute_and_upsert_fingerprint(
         },
     )?;
 
-    let bindings = stage_binding_hashes(&inputs.specs, &content_hashes)?;
+    let bindings = stage_binding_hashes(&inputs.specs, &content_hashes, &inputs.agents)?;
     let fingerprint_hash = compute_fingerprint_hash(&bindings, build_version, inputs);
 
     let new_fingerprint = NewSystemFingerprint::builder()
@@ -323,6 +366,7 @@ mod tests {
             triage_user: "d".repeat(64),
             relation_system: "e".repeat(64),
             relation_user: "f".repeat(64),
+            triage_loop: Some(("1".repeat(64), "2".repeat(64))),
         }
     }
 
@@ -356,12 +400,13 @@ mod tests {
                 triage_search_limit: 10,
                 tag_similarity_threshold: 0.85,
             },
+            agents: AgentsConfig::default(),
         }
     }
 
     fn hash_of(inputs: &FingerprintInputs, build_version: &str) -> String {
-        let bindings =
-            stage_binding_hashes(&inputs.specs, &test_hashes()).expect("definitions serialise");
+        let bindings = stage_binding_hashes(&inputs.specs, &test_hashes(), &inputs.agents)
+            .expect("definitions serialise");
         compute_fingerprint_hash(&bindings, build_version, inputs)
     }
 
@@ -396,7 +441,8 @@ mod tests {
 
         let mut hashes = test_hashes();
         hashes.extraction_system = "0".repeat(64);
-        let bindings = stage_binding_hashes(&inputs.specs, &hashes).expect("definitions serialise");
+        let bindings = stage_binding_hashes(&inputs.specs, &hashes, &inputs.agents)
+            .expect("definitions serialise");
         let b = compute_fingerprint_hash(&bindings, "v0.1.0", &inputs);
 
         assert_ne!(a, b);
@@ -418,14 +464,14 @@ mod tests {
         // The composite changes when the binding does: a temperature edit
         // is a new binding version, and the fingerprint follows it.
         let inputs = test_inputs();
-        let bindings_before =
-            stage_binding_hashes(&inputs.specs, &test_hashes()).expect("serialises");
+        let bindings_before = stage_binding_hashes(&inputs.specs, &test_hashes(), &inputs.agents)
+            .expect("serialises");
         let a = hash_of(&inputs, "v0.1.0");
 
         let mut edited = inputs.clone();
         edited.specs.extraction.parameters.temperature = Some(0.9);
-        let bindings_after =
-            stage_binding_hashes(&edited.specs, &test_hashes()).expect("serialises");
+        let bindings_after = stage_binding_hashes(&edited.specs, &test_hashes(), &edited.agents)
+            .expect("serialises");
         let b = hash_of(&edited, "v0.1.0");
 
         assert_ne!(bindings_before.extraction, bindings_after.extraction);
@@ -441,6 +487,27 @@ mod tests {
         inputs.pipeline.triage_search_limit = 25;
         let b = hash_of(&inputs, "v0.1.0");
 
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_enabling_the_loop_executor_changes_the_triage_binding_and_the_composite() {
+        // Flipping the executor is a binding change by construction: the
+        // ingest-time composite moves with it, naming the agentic
+        // binding a claim under the same configuration will resolve.
+        let inputs = test_inputs();
+        let bindings_before =
+            stage_binding_hashes(&inputs.specs, &test_hashes(), &inputs.agents).expect("derives");
+        let a = hash_of(&inputs, "v0.1.0");
+
+        let mut flipped = inputs.clone();
+        flipped.agents.triage.executor = tribal_config::ExecutorChoice::Loop;
+        let bindings_after =
+            stage_binding_hashes(&flipped.specs, &test_hashes(), &flipped.agents).expect("derives");
+        let b = hash_of(&flipped, "v0.1.0");
+
+        assert_ne!(bindings_before.triage, bindings_after.triage);
+        assert_eq!(bindings_before.extraction, bindings_after.extraction);
         assert_ne!(a, b);
     }
 

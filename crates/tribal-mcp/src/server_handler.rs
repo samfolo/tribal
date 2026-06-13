@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use rmcp::{
     handler::server::ServerHandler,
@@ -129,6 +128,23 @@ pub struct ActivePromptVersions {
     /// named fields mirror the jobs table's prompt columns; classes the
     /// schema does not reference ride here additively.
     pub(crate) agentic: HashMap<(PromptStage, PromptClass, PromptRole), PromptVersionId>,
+}
+
+/// The worker-facing view of the shared active prompt set: the same
+/// `Arc<RwLock<…>>` the hot-reload watcher mutates, behind the worker's
+/// claim-time resolution trait, so no second prompt source exists.
+pub struct SharedActivePrompts(pub Arc<RwLock<ActivePromptVersions>>);
+
+#[async_trait::async_trait]
+impl tribal_worker::ActiveAgenticPrompts for SharedActivePrompts {
+    async fn version_id(
+        &self,
+        stage: PromptStage,
+        class: PromptClass,
+        role: PromptRole,
+    ) -> Option<PromptVersionId> {
+        self.0.read().await.get_version(stage, class, role)
+    }
 }
 
 impl ActivePromptVersions {

@@ -6,7 +6,13 @@
 //! bulk reclaim for rows with no thread, and a startup reclaim pass for
 //! crash recovery.
 
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use sqlx::PgPool;
 use tokio::{sync::oneshot, time::MissedTickBehavior};
@@ -357,11 +363,86 @@ pub(crate) struct HeartbeatHandle {
     /// Fires when heartbeat detects ownership loss (0 rows affected).
     pub(crate) ownership_lost_rx: oneshot::Receiver<()>,
     abort_handle: tokio::task::AbortHandle,
+    /// While set, the timer skips its beats: a streamed inference call's
+    /// deltas carry liveness instead.
+    suppressed: Arc<AtomicBool>,
+    pool: PgPool,
+    task_id: TaskId,
+    claim_token: uuid::Uuid,
+    interval: Duration,
 }
 
 impl HeartbeatHandle {
     /// Aborts the heartbeat background task.
     pub(crate) fn abort(&self) {
+        self.abort_handle.abort();
+    }
+
+    /// Builds the loop's phase-aware liveness seam over this heartbeat:
+    /// streamed deltas beat (debounced) with the timer suppressed, and
+    /// the pump's abort stops the timer before a suspension commits.
+    pub(crate) fn pump(&self) -> WorkerHeartbeatPump {
+        WorkerHeartbeatPump {
+            suppressed: Arc::clone(&self.suppressed),
+            pool: self.pool.clone(),
+            task_id: self.task_id,
+            claim_token: self.claim_token,
+            interval: self.interval,
+            last_delta_beat: Mutex::new(std::time::Instant::now()),
+            abort_handle: self.abort_handle.clone(),
+        }
+    }
+}
+
+/// The worker's [`HeartbeatPump`] implementation: phase-aware liveness
+/// over the per-task heartbeat row.
+pub(crate) struct WorkerHeartbeatPump {
+    suppressed: Arc<AtomicBool>,
+    pool: PgPool,
+    task_id: TaskId,
+    claim_token: uuid::Uuid,
+    interval: Duration,
+    last_delta_beat: Mutex<std::time::Instant>,
+    abort_handle: tokio::task::AbortHandle,
+}
+
+impl tribal_agent_runtime::HeartbeatPump for WorkerHeartbeatPump {
+    fn inference_started(&self) {
+        self.suppressed.store(true, Ordering::SeqCst);
+    }
+
+    fn stream_delta(&self) {
+        {
+            let mut last = self
+                .last_delta_beat
+                .lock()
+                .expect("the delta-beat clock is never poisoned");
+            if last.elapsed() < self.interval {
+                return;
+            }
+            *last = std::time::Instant::now();
+        }
+        let pool = self.pool.clone();
+        let task_id = self.task_id;
+        let claim_token = self.claim_token;
+        // Fire-and-forget: a delta beat is pure liveness. Ownership loss
+        // is not signalled from here — the next claim-guarded commit
+        // refuses deterministically, and the timer resumes after the
+        // call.
+        tokio::spawn(async move {
+            if let Ok(mut conn) = pool.acquire().await {
+                let _ = PgTaskRepository
+                    .heartbeat(&mut conn, task_id, claim_token)
+                    .await;
+            }
+        });
+    }
+
+    fn inference_finished(&self) {
+        self.suppressed.store(false, Ordering::SeqCst);
+    }
+
+    fn abort(&self) {
         self.abort_handle.abort();
     }
 }
@@ -385,7 +466,10 @@ pub(crate) fn spawn_heartbeat(
     cancellation_token: CancellationToken,
 ) -> HeartbeatHandle {
     let (ownership_lost_tx, ownership_lost_rx) = oneshot::channel();
+    let suppressed = Arc::new(AtomicBool::new(false));
 
+    let timer_suppressed = Arc::clone(&suppressed);
+    let timer_pool = pool.clone();
     let handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -401,7 +485,13 @@ pub(crate) fn spawn_heartbeat(
                 _ = ticker.tick() => {}
             }
 
-            let mut conn = match pool.acquire().await {
+            // A streamed call's deltas carry liveness; the timer stands
+            // down rather than doubling the writes.
+            if timer_suppressed.load(Ordering::SeqCst) {
+                continue;
+            }
+
+            let mut conn = match timer_pool.acquire().await {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(
@@ -441,6 +531,11 @@ pub(crate) fn spawn_heartbeat(
     HeartbeatHandle {
         ownership_lost_rx,
         abort_handle: handle.abort_handle(),
+        suppressed,
+        pool,
+        task_id,
+        claim_token,
+        interval,
     }
 }
 

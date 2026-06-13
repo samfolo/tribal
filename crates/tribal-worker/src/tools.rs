@@ -11,17 +11,35 @@
 //! serialisation faults are system failures the conversation never
 //! sees.
 
-// The inventory's production construction site is the agentic stage
-// dispatch, which lands with the loop's executor branch; until that
-// wiring exists only the tests construct these tools.
-#![allow(dead_code)]
-
 mod common;
 mod triage;
 
+pub(crate) use common::{ReadJobContextTool, ReadSiblingThreadsTool};
 use serde::{Serialize, de::DeserializeOwned};
+pub(crate) use triage::{
+    ListTagRegistryTool, ReadItemNeighbourhoodTool, ReadKnowledgeItemTool, SearchSimilarItemsTool,
+    submit_result_descriptor,
+};
 use tribal_agent_runtime::ToolOutcome;
-use tribal_domain::{RecoverableToolFailure, ToolFailure};
+use tribal_domain::{RecoverableToolFailure, ToolDescriptor, ToolFailure};
+
+/// The triage stage's declared tool surface, in the wire's order: the
+/// read inventory name-sorted (the registry's projection), then the
+/// distinguished completion tool. A binding-hash input — reorder it and
+/// every triage binding version moves.
+pub(crate) fn triage_tool_descriptors() -> Vec<ToolDescriptor> {
+    let mut reads = vec![
+        SearchSimilarItemsTool::describe(),
+        ReadKnowledgeItemTool::describe(),
+        ReadItemNeighbourhoodTool::describe(),
+        ListTagRegistryTool::describe(),
+        ReadJobContextTool::describe(),
+        ReadSiblingThreadsTool::describe(),
+    ];
+    reads.sort_by(|a, b| a.name.cmp(&b.name));
+    reads.push(submit_result_descriptor());
+    reads
+}
 
 /// Parses a tool's model-supplied arguments, treating an absent
 /// arguments object as empty and rendering the expected shape into the

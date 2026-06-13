@@ -133,6 +133,40 @@ pub(crate) fn loop_user_context(
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Renders the agentic loop's opening: the system prompt and the
+/// initial user message, under one renderer so both share the turn's
+/// pinned nonce.
+///
+/// # Errors
+///
+/// Returns [`StageError::TemplateRender`] if either template cannot be
+/// rendered.
+pub(crate) fn assemble_loop_opening(
+    system_template: &str,
+    user_template: &str,
+    candidate: &Candidate,
+    similar_items: &[LoopSimilarItemContext],
+    tag_registry: &[TagRegistryEntry],
+) -> Result<(String, String), StageError> {
+    let renderer = PromptRenderer::new();
+
+    let rendered_system = renderer.render(
+        system_template,
+        tera::Context::new(),
+        "rendering the triage loop system prompt",
+    )?;
+
+    let tags: Vec<&str> = tag_registry.iter().map(TagRegistryEntry::tag).collect();
+    let user_ctx = loop_user_context(candidate, similar_items, &tags);
+    let rendered_user = renderer.render(
+        user_template,
+        user_ctx,
+        "rendering the triage loop user prompt",
+    )?;
+
+    Ok((rendered_system, rendered_user))
+}
+
 /// Assembles a [`CompletionRequest`] for the triage stage.
 ///
 /// # Errors

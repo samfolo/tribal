@@ -25,7 +25,7 @@ use tribal_inference::{
 };
 
 use super::{db_failure, parse_arguments, serialise_outcome};
-use crate::prompt::LoopSimilarItemContext;
+use crate::{parsing::triage_submission_schema, prompt::LoopSimilarItemContext};
 
 // ---------------------------------------------------------------------------
 // Shared views
@@ -135,18 +135,11 @@ pub(crate) struct SearchSimilarItemsTool {
 }
 
 impl SearchSimilarItemsTool {
-    /// Creates the search tool for one stage execution: the project
-    /// fence, the active embedding profile the search space is keyed
-    /// to, and the attribution its embedding spend is metered under.
-    pub(crate) fn new(
-        project_id: ProjectId,
-        profile: EmbeddingProfile,
-        gateway: Arc<InferenceGateway>,
-        attribution: UsageAttribution,
-        search_limit: u32,
-        deadline: tokio::time::Instant,
-    ) -> Self {
-        let descriptor = ToolDescriptor::builder()
+    /// The tool's declared contract — the binding-hash input the
+    /// lockstep definition derivation reads without constructing the
+    /// tool.
+    pub(crate) fn describe() -> ToolDescriptor {
+        ToolDescriptor::builder()
             .name(SEARCH_NAME.to_owned())
             .description(
                 "Search this project's knowledge graph for items semantically similar to a \
@@ -169,7 +162,21 @@ impl SearchSimilarItemsTool {
             .response_size_bound(SEARCH_RESPONSE_SIZE_BOUND)
             .safety_tier(ToolSafetyTier::Pure)
             .execution_mode(ToolExecutionMode::Immediate)
-            .build();
+            .build()
+    }
+
+    /// Creates the search tool for one stage execution: the project
+    /// fence, the active embedding profile the search space is keyed
+    /// to, and the attribution its embedding spend is metered under.
+    pub(crate) fn new(
+        project_id: ProjectId,
+        profile: EmbeddingProfile,
+        gateway: Arc<InferenceGateway>,
+        attribution: UsageAttribution,
+        search_limit: u32,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        let descriptor = Self::describe();
         Self {
             descriptor,
             project_id,
@@ -279,9 +286,11 @@ pub(crate) struct ReadKnowledgeItemTool {
 }
 
 impl ReadKnowledgeItemTool {
-    /// Creates the read tool fenced to one project.
-    pub(crate) fn new(project_id: ProjectId) -> Self {
-        let descriptor = ToolDescriptor::builder()
+    /// The tool's declared contract — the binding-hash input the
+    /// lockstep definition derivation reads without constructing the
+    /// tool.
+    pub(crate) fn describe() -> ToolDescriptor {
+        ToolDescriptor::builder()
             .name(READ_ITEM_NAME.to_owned())
             .description(
                 "Read one of this project's knowledge items by id, returning its kind, \
@@ -303,7 +312,12 @@ impl ReadKnowledgeItemTool {
             .response_size_bound(READ_ITEM_RESPONSE_SIZE_BOUND)
             .safety_tier(ToolSafetyTier::Pure)
             .execution_mode(ToolExecutionMode::Immediate)
-            .build();
+            .build()
+    }
+
+    /// Creates the read tool fenced to one project.
+    pub(crate) fn new(project_id: ProjectId) -> Self {
+        let descriptor = Self::describe();
         Self {
             descriptor,
             project_id,
@@ -379,9 +393,11 @@ pub(crate) struct ReadItemNeighbourhoodTool {
 }
 
 impl ReadItemNeighbourhoodTool {
-    /// Creates the neighbourhood tool fenced to one project.
-    pub(crate) fn new(project_id: ProjectId) -> Self {
-        let descriptor = ToolDescriptor::builder()
+    /// The tool's declared contract — the binding-hash input the
+    /// lockstep definition derivation reads without constructing the
+    /// tool.
+    pub(crate) fn describe() -> ToolDescriptor {
+        ToolDescriptor::builder()
             .name(NEIGHBOURHOOD_NAME.to_owned())
             .description(
                 "Read a knowledge item's committed relations and the neighbouring items they \
@@ -403,7 +419,12 @@ impl ReadItemNeighbourhoodTool {
             .response_size_bound(NEIGHBOURHOOD_RESPONSE_SIZE_BOUND)
             .safety_tier(ToolSafetyTier::Pure)
             .execution_mode(ToolExecutionMode::Immediate)
-            .build();
+            .build()
+    }
+
+    /// Creates the neighbourhood tool fenced to one project.
+    pub(crate) fn new(project_id: ProjectId) -> Self {
+        let descriptor = Self::describe();
         Self {
             descriptor,
             project_id,
@@ -513,10 +534,11 @@ pub(crate) struct ListTagRegistryTool {
 }
 
 impl ListTagRegistryTool {
-    /// Creates the tag registry listing tool. The registry is shared
-    /// vocabulary across projects, so no fence applies.
-    pub(crate) fn new() -> Self {
-        let descriptor = ToolDescriptor::builder()
+    /// The tool's declared contract — the binding-hash input the
+    /// lockstep definition derivation reads without constructing the
+    /// tool.
+    pub(crate) fn describe() -> ToolDescriptor {
+        ToolDescriptor::builder()
             .name(TAG_REGISTRY_NAME.to_owned())
             .description(
                 "List every tag in the registry with its usage count. Consult it before \
@@ -531,7 +553,13 @@ impl ListTagRegistryTool {
             .response_size_bound(TAG_REGISTRY_RESPONSE_SIZE_BOUND)
             .safety_tier(ToolSafetyTier::Pure)
             .execution_mode(ToolExecutionMode::Immediate)
-            .build();
+            .build()
+    }
+
+    /// Creates the tag registry listing tool. The registry is shared
+    /// vocabulary across projects, so no fence applies.
+    pub(crate) fn new() -> Self {
+        let descriptor = Self::describe();
         Self { descriptor }
     }
 }
@@ -565,6 +593,30 @@ impl StageTool for ListTagRegistryTool {
         };
         serialise_outcome("serialising the tag registry", &view)
     }
+}
+
+// ---------------------------------------------------------------------------
+// submit_result
+// ---------------------------------------------------------------------------
+
+const SUBMIT_RESPONSE_SIZE_BOUND: u32 = 8_192;
+
+/// The distinguished completion tool's contract. Deliberately not a
+/// [`StageTool`]: the loop dispatches `submit_result` through the
+/// submission pipeline, and this descriptor only shapes what the model
+/// sees and what the binding hashes.
+pub(crate) fn submit_result_descriptor() -> ToolDescriptor {
+    ToolDescriptor::builder()
+        .name(tribal_agent_runtime::SUBMIT_RESULT_TOOL.to_owned())
+        .description(
+            "Submit your final triage decision. This is the only way to complete the task:              the decision, an assessment of each existing claim you examined (referenced by              the exact item ids you were shown), and optional short notes for the downstream              relation stage. A rejected submission comes back with diagnostics; correct it              and resubmit."
+                .to_owned(),
+        )
+        .input_schema(triage_submission_schema())
+        .response_size_bound(SUBMIT_RESPONSE_SIZE_BOUND)
+        .safety_tier(ToolSafetyTier::InternalTransactional)
+        .execution_mode(ToolExecutionMode::Immediate)
+        .build()
 }
 
 // ---------------------------------------------------------------------------

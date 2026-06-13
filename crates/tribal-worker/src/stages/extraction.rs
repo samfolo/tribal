@@ -9,7 +9,9 @@ use tribal_domain::{
 };
 use tribal_inference::PermitWait;
 
-use super::{StageCommit, map_gateway_error, record_prompt_version_ids, stage_attribution};
+use super::{
+    StageCommit, StageTerminal, map_gateway_error, record_prompt_version_ids, stage_attribution,
+};
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
     error::{STAGE_EXTRACTION, StageError},
@@ -76,7 +78,7 @@ impl Worker {
         task: &Task,
         deadline: tokio::time::Instant,
         stage_thread: &StageThread,
-    ) -> Result<Option<(StageCommit, Option<CompletionResponse>)>, StageError> {
+    ) -> Result<Option<(StageCommit, StageTerminal)>, StageError> {
         let span = tracing::info_span!(
             "tribal.task.extraction",
             { span_attrs::TASK_ID } = %task.id(),
@@ -202,7 +204,7 @@ impl Worker {
                     batch_size,
                     original_count,
                 },
-                Some(response),
+                StageTerminal::Completion(Some(response)),
             )))
         }
         .instrument(span)

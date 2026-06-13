@@ -53,9 +53,11 @@ pub(crate) struct ReadJobContextTool {
 }
 
 impl ReadJobContextTool {
-    /// Creates the job context tool for one stage execution.
-    pub(crate) fn new(job_id: JobId, batch_index: u32) -> Self {
-        let descriptor = ToolDescriptor::builder()
+    /// The tool's declared contract — the binding-hash input the
+    /// lockstep definition derivation reads without constructing the
+    /// tool.
+    pub(crate) fn describe() -> ToolDescriptor {
+        ToolDescriptor::builder()
             .name(JOB_CONTEXT_NAME.to_owned())
             .description(
                 "Read this ingestion job's extraction batch: every candidate it produced, \
@@ -71,7 +73,12 @@ impl ReadJobContextTool {
             .response_size_bound(JOB_CONTEXT_RESPONSE_SIZE_BOUND)
             .safety_tier(ToolSafetyTier::Pure)
             .execution_mode(ToolExecutionMode::Immediate)
-            .build();
+            .build()
+    }
+
+    /// Creates the job context tool for one stage execution.
+    pub(crate) fn new(job_id: JobId, batch_index: u32) -> Self {
+        let descriptor = Self::describe();
         Self {
             descriptor,
             job_id,
@@ -193,10 +200,11 @@ pub(crate) struct ReadSiblingThreadsTool {
 }
 
 impl ReadSiblingThreadsTool {
-    /// Creates the sibling reader for one stage execution: the job whose
-    /// roster it serves and the reading thread it excludes from it.
-    pub(crate) fn new(job_id: JobId, thread_id: AgentThreadId) -> Self {
-        let descriptor = ToolDescriptor::builder()
+    /// The tool's declared contract — the binding-hash input the
+    /// lockstep definition derivation reads without constructing the
+    /// tool.
+    pub(crate) fn describe() -> ToolDescriptor {
+        ToolDescriptor::builder()
             .name(SIBLING_THREADS_NAME.to_owned())
             .description(
                 "List this job's other agent threads, or read one thread's record log a page \
@@ -223,7 +231,13 @@ impl ReadSiblingThreadsTool {
             .response_size_bound(SIBLING_THREADS_RESPONSE_SIZE_BOUND)
             .safety_tier(ToolSafetyTier::Pure)
             .execution_mode(ToolExecutionMode::Immediate)
-            .build();
+            .build()
+    }
+
+    /// Creates the sibling reader for one stage execution: the job whose
+    /// roster it serves and the reading thread it excludes from it.
+    pub(crate) fn new(job_id: JobId, thread_id: AgentThreadId) -> Self {
+        let descriptor = Self::describe();
         Self {
             descriptor,
             job_id,
