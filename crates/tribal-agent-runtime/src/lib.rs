@@ -14,6 +14,7 @@
 //! below this crate depends back on it.
 
 mod binding;
+mod driver;
 mod error;
 mod ledger_sink;
 mod store;
@@ -24,6 +25,10 @@ mod turn_loop;
 mod txn;
 
 pub use binding::resolve_binding;
+pub use driver::{
+    ChildLaunch, ChildTerminalOutcome, LaunchedChild, ParentResolution, SuspendWithChildOutcome,
+    commit_child_terminal, commit_deferred_death, suspend_with_child,
+};
 pub use error::AgentRuntimeError;
 pub use ledger_sink::PgLedgerSink;
 pub use store::{StageThread, ensure_stage_thread};
@@ -33,8 +38,8 @@ pub use transitions::{
     suspend_stage_thread,
 };
 pub use turn::{
-    BegunTurn, OneShotOutcome, RecordedMessage, RecordedToolCall, RenderedConversation, begin_turn,
-    commit_noop_terminal, commit_one_shot_terminal,
+    BegunTurn, DrivingClaim, OneShotOutcome, RecordedMessage, RecordedToolCall,
+    RenderedConversation, begin_turn, commit_noop_terminal, commit_one_shot_terminal,
 };
 pub use turn_loop::{
     AcceptedSubmission, Admission, AdmissionDecision, BUDGET_RECHECK_CAUSE, BudgetFailure,

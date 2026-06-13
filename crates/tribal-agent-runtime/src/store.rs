@@ -150,7 +150,9 @@ async fn create_stage_thread(
 
     let mut txn = begin(conn, "beginning the thread-creation transaction").await?;
     if !holds_claim(&mut txn, task, claim_token).await? {
-        return Err(AgentRuntimeError::LeaseLost { task_id: task.id() });
+        return Err(AgentRuntimeError::LeaseLost {
+            driving_task: DrivingTaskRef::Stage(task.id()),
+        });
     }
     let inserted = PgAgentThreadRepository.insert(&mut txn, &new).await;
     match inserted {
@@ -185,7 +187,9 @@ async fn mark_running_guarded(
 ) -> Result<u64, AgentRuntimeError> {
     let mut txn = begin(conn, "beginning the mark-running transaction").await?;
     if !holds_claim(&mut txn, task, claim_token).await? {
-        return Err(AgentRuntimeError::LeaseLost { task_id: task.id() });
+        return Err(AgentRuntimeError::LeaseLost {
+            driving_task: DrivingTaskRef::Stage(task.id()),
+        });
     }
     let moved = PgAgentThreadRepository
         .mark_running(&mut txn, thread.id(), AgentThreadStatus::Queued)

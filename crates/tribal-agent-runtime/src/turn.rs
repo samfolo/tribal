@@ -15,16 +15,84 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{Connection, PgConnection};
 use tribal_db::{
-    AgentThreadRecordRepository, AgentThreadRepository, NewAgentThreadRecord,
-    PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository, TaskRepository,
+    AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository, DrivingTaskRef,
+    NewAgentThreadRecord, PgAgentDriverTaskRepository, PgAgentThreadRecordRepository,
+    PgAgentThreadRepository, PgTaskRepository, TaskRepository,
 };
 use tribal_domain::{
     AgentThread, AgentThreadRecord, AgentThreadRecordKind, AgentThreadStatus, AgentThreadTerminal,
-    CompletionResponse, ExecutionSpend, PromptVersionId, TaskId,
+    CompletionResponse, ExecutionSpend, PromptVersionId,
 };
 use tribal_telemetry::{current_span_id, current_trace_id};
 
 use crate::AgentRuntimeError;
+
+/// A driving task's lease, verified before a guarded write.
+///
+/// Pairs the driving task — a launched stage task or a driver-family
+/// row — with the claim token the holder presents. Both families verify
+/// through their repository's shared-lock check, so the turn machinery
+/// guards a stage thread and a driver-driven child through one type.
+#[derive(Debug, Clone, Copy)]
+pub struct DrivingClaim {
+    /// Which driving task holds the lease.
+    pub driving_task: DrivingTaskRef,
+    /// The token the holder presents.
+    pub claim_token: uuid::Uuid,
+}
+
+impl DrivingClaim {
+    /// A stage task's claim.
+    #[must_use]
+    pub fn stage(task_id: tribal_domain::TaskId, claim_token: uuid::Uuid) -> Self {
+        Self {
+            driving_task: DrivingTaskRef::Stage(task_id),
+            claim_token,
+        }
+    }
+
+    /// A driver-family task's claim.
+    #[must_use]
+    pub fn driver(
+        driver_task_id: tribal_domain::AgentDriverTaskId,
+        claim_token: uuid::Uuid,
+    ) -> Self {
+        Self {
+            driving_task: DrivingTaskRef::Driver(driver_task_id),
+            claim_token,
+        }
+    }
+
+    /// Verifies the lease with a shared row lock, holding it for the rest
+    /// of the enclosing transaction. The `Err` arm is a database fault;
+    /// the `Ok(false)` arm is the deterministic lost-ownership signal.
+    async fn holds(&self, conn: &mut PgConnection) -> Result<bool, AgentRuntimeError> {
+        match self.driving_task {
+            DrivingTaskRef::Stage(task_id) => PgTaskRepository
+                .holds_claim(conn, task_id, self.claim_token)
+                .await
+                .map_err(|source| AgentRuntimeError::database("verifying the stage lease", source)),
+            DrivingTaskRef::Driver(driver_task_id) => PgAgentDriverTaskRepository
+                .holds_claim(conn, driver_task_id, self.claim_token)
+                .await
+                .map_err(|source| {
+                    AgentRuntimeError::database("verifying the driver lease", source)
+                }),
+        }
+    }
+
+    /// Verifies the lease, returning [`AgentRuntimeError::LeaseLost`] on a
+    /// miss — the guarded-write helper.
+    pub(crate) async fn require(&self, conn: &mut PgConnection) -> Result<(), AgentRuntimeError> {
+        if self.holds(conn).await? {
+            Ok(())
+        } else {
+            Err(AgentRuntimeError::LeaseLost {
+                driving_task: self.driving_task,
+            })
+        }
+    }
+}
 
 /// The `content_kind` tag value identifying a rendered-conversation
 /// input record.
@@ -166,8 +234,7 @@ pub struct BegunTurn {
 pub async fn begin_turn(
     conn: &mut PgConnection,
     thread: &AgentThread,
-    task_id: TaskId,
-    claim_token: uuid::Uuid,
+    claim: DrivingClaim,
     committed_input: Option<&AgentThreadRecord>,
     rendered: RenderedConversation,
 ) -> Result<BegunTurn, AgentRuntimeError> {
@@ -199,13 +266,7 @@ pub async fn begin_turn(
 
     // Lock order: the driving task's lease first (the guard), then the
     // thread row for the seq derivation.
-    let held = PgTaskRepository
-        .holds_claim(&mut txn, task_id, claim_token)
-        .await
-        .map_err(|source| AgentRuntimeError::database("verifying the lease", source))?;
-    if !held {
-        return Err(AgentRuntimeError::LeaseLost { task_id });
-    }
+    claim.require(&mut txn).await?;
 
     PgAgentThreadRepository
         .lock(&mut txn, thread.id())

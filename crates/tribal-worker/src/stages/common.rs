@@ -1,9 +1,10 @@
 //! Shared utilities and types for pipeline stage implementations.
 
 use tribal_agent_runtime::{
-    AcceptedSubmission, AdmissionDecision, RecheckPolicy, RecordedMessage, RenderedConversation,
-    StageThread, SuspendOutcome, begin_turn, carried_rechecks, commit_loop_terminal,
-    commit_noop_terminal, commit_one_shot_terminal, decide_admission, suspend_stage_thread,
+    AcceptedSubmission, AdmissionDecision, DrivingClaim, RecheckPolicy, RecordedMessage,
+    RenderedConversation, StageThread, SuspendOutcome, begin_turn, carried_rechecks,
+    commit_loop_terminal, commit_noop_terminal, commit_one_shot_terminal, decide_admission,
+    suspend_stage_thread,
 };
 use tribal_common::clamp_to_i32;
 use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
@@ -434,8 +435,7 @@ impl Worker {
         let begun = begin_turn(
             &mut conn,
             &stage_thread.thread,
-            task.id(),
-            claim_token,
+            DrivingClaim::stage(task.id(), claim_token),
             stage_thread.input.as_ref(),
             rendered,
         )
