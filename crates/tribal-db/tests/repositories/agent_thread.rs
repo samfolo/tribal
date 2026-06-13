@@ -838,6 +838,93 @@ async fn test_dispose_unclaimed_never_touches_a_claimed_row() {
     assert!(read.completed_at().is_some());
 }
 
+#[tokio::test]
+async fn test_driver_task_insert_honours_a_client_generated_id() {
+    // The thread/driver pair writer names the driver task's id on the
+    // thread row before the task exists, under the deferred FK, so the
+    // insert must take the caller's id rather than minting its own.
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let thread = insert_thread(&mut txn, "client-id").await;
+
+    let chosen = AgentDriverTaskId::from(uuid::Uuid::new_v4());
+    let inserted = PgAgentDriverTaskRepository
+        .insert(
+            &mut txn,
+            &NewAgentDriverTask::builder()
+                .id(Some(chosen))
+                .thread_id(thread.id())
+                .kind(AgentDriverTaskKind::Drive)
+                .build(),
+        )
+        .await
+        .expect("insert with a client id");
+    assert_eq!(inserted.id(), chosen, "the row takes the caller's id");
+
+    // The absent-id path still mints a server id, so the launched callers
+    // are unaffected.
+    let minted = PgAgentDriverTaskRepository
+        .insert(
+            &mut txn,
+            &NewAgentDriverTask::builder()
+                .thread_id(thread.id())
+                .kind(AgentDriverTaskKind::Drive)
+                .build(),
+        )
+        .await
+        .expect("insert without an id");
+    assert_ne!(minted.id(), chosen);
+}
+
+#[tokio::test]
+async fn test_lock_stale_selects_only_lapsed_claimed_rows() {
+    let ctx = test_context().await;
+    let mut txn = ctx.begin_test().await.expect("begin_test");
+    let thread = insert_thread(&mut txn, "stale-driver").await;
+
+    let inserted = PgAgentDriverTaskRepository
+        .insert(
+            &mut txn,
+            &NewAgentDriverTask::builder()
+                .thread_id(thread.id())
+                .kind(AgentDriverTaskKind::Drive)
+                .build(),
+        )
+        .await
+        .expect("insert");
+    let claimed = PgAgentDriverTaskRepository
+        .claim(&mut txn, 1, "worker-test")
+        .await
+        .expect("claim");
+    let token = claimed[0].claim_token().expect("token");
+
+    // A fresh heartbeat: the scan must leave it alone.
+    let fresh = PgAgentDriverTaskRepository
+        .lock_stale(&mut txn, 60)
+        .await
+        .expect("scan with a fresh beat");
+    assert!(fresh.is_none(), "a live lease is never reclaimed");
+
+    // Backdate the heartbeat past the timeout: now it is the scan's row,
+    // returned with its claim token so the reclaimer's guarded
+    // disposition targets exactly the lease it judged stale.
+    shift_timestamp_by_id(
+        &mut txn,
+        "agent_driver_tasks",
+        "heartbeat_at",
+        inserted.id().inner().to_owned(),
+        chrono::Duration::seconds(-120),
+    )
+    .await;
+    let stale = PgAgentDriverTaskRepository
+        .lock_stale(&mut txn, 60)
+        .await
+        .expect("scan with a stale beat")
+        .expect("the lapsed row is selected");
+    assert_eq!(stale.id(), inserted.id());
+    assert_eq!(stale.claim_token(), Some(token));
+}
+
 // ---------------------------------------------------------------------------
 // Sweep scan predicates
 // ---------------------------------------------------------------------------
