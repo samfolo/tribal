@@ -4,8 +4,9 @@
 //! orphan window where a child resolves into a parent no longer waiting.
 
 use tribal_agent_runtime::{
-    ChildLaunch, ChildTerminalOutcome, ParentResolution, SuspendWithChildOutcome,
-    commit_child_terminal, commit_deferred_death, resolve_binding, suspend_with_child,
+    ChildLaunch, ChildTerminalOutcome, ParentResolution, RecordedMessage, RenderedConversation,
+    SuspendWithChildOutcome, commit_child_terminal, commit_deferred_death, resolve_binding,
+    suspend_with_child,
 };
 use tribal_db::{
     AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository,
@@ -118,6 +119,7 @@ async fn seed_suspended_parent(
             principal_id,
             format_version: AGENT_THREAD_FORMAT_VERSION,
         },
+        &a_child_input(),
     )
     .await
     .expect("suspend with child");
@@ -153,6 +155,20 @@ async fn claim_and_run_child(conn: &mut sqlx::PgConnection, sp: &SuspendedParent
         .await
         .expect("mark child running");
     token
+}
+
+/// The child's opening, as a verifier's caller would render it.
+fn a_child_input() -> RenderedConversation {
+    RenderedConversation {
+        system: Some("verify the submission".to_owned()),
+        messages: vec![RecordedMessage {
+            role: "user".to_owned(),
+            content: "the submission to verify".to_owned(),
+        }],
+        system_prompt_version_id: None,
+        user_prompt_version_id: None,
+        resolution_context: None,
+    }
 }
 
 fn a_parent_resolution(sp: &SuspendedParent) -> ParentResolution {
@@ -230,6 +246,7 @@ async fn test_child_terminal_hands_the_verdict_back_to_the_parent() {
         &child_thread,
         sp.driver_task_id,
         token,
+        0,
         &response,
         &a_parent_resolution(&sp),
         &verdict,
@@ -304,6 +321,7 @@ async fn test_a_stale_driver_token_rolls_the_whole_terminal_back() {
         &child_thread,
         sp.driver_task_id,
         uuid::Uuid::new_v4(),
+        0,
         &response,
         &a_parent_resolution(&sp),
         &serde_json::json!({"decision": "accept"}),
@@ -366,6 +384,7 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
         &child_thread,
         sp.driver_task_id,
         token,
+        0,
         &response,
         &a_parent_resolution(&sp),
         &serde_json::json!({"decision": "accept"}),
@@ -400,6 +419,220 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
             .all(|r| r.kind() != AgentThreadRecordKind::ToolResult),
         "an orphaned hand-back commits no parent record",
     );
+
+    teardown(ctx).await;
+}
+
+/// The live driver loop claims the child's `Drive` task, executes the
+/// child one-shot against the mock, and hands the verdict back — the
+/// parent wakes and its stage task re-queues, all without the main
+/// claim loop running.
+#[tokio::test]
+async fn test_the_driver_loop_drives_a_child_and_hands_back() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+    let (conn, sp) = seed_suspended_parent(ctx, "driver-loop").await;
+    drop(conn);
+
+    let inference: Arc<dyn InferenceProvider> = Arc::new(
+        MockInferenceProvider::builder()
+            .on_complete(
+                a_completion_response(r#"{"decision": "accept", "reason": "sound"}"#),
+                None,
+            )
+            .on_exhaust(ExhaustBehaviour::RepeatLast)
+            .build(),
+    );
+    let token = CancellationToken::new();
+    let worker = build_test_worker(
+        pool.clone(),
+        token.clone(),
+        test_config(),
+        Some(inference),
+        None,
+    )
+    .await;
+
+    // Only the driver loop runs: the parent's re-queued stage task then
+    // sits idle, so the hand-back is observable without the main loop
+    // re-running the parent.
+    let driver = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run_driver_loop().await })
+    };
+
+    let driver_task_id = sp.driver_task_id;
+    poll_until(
+        "the child's driver task completes",
+        POLL_INTERVAL,
+        POLL_SETTLE,
+        || {
+            let pool = pool.clone();
+            async move {
+                let mut conn = pool.acquire().await.ok()?;
+                let task = PgAgentDriverTaskRepository
+                    .find_by_id(&mut conn, driver_task_id)
+                    .await
+                    .ok()??;
+                (task.state() == AgentDriverTaskState::Completed).then_some(())
+            }
+        },
+    )
+    .await;
+    token.cancel();
+    let _ = driver.await;
+
+    let mut conn = raw_conn(ctx).await;
+    let parent = PgAgentThreadRepository
+        .find_by_id(&mut conn, sp.parent.id())
+        .await
+        .expect("find parent")
+        .expect("present");
+    assert_eq!(parent.status(), AgentThreadStatus::Running);
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, sp.parent.id())
+        .await
+        .expect("parent log");
+    let result = records
+        .iter()
+        .find(|r| r.kind() == AgentThreadRecordKind::ToolResult)
+        .expect("the loop handed a verdict back");
+    assert_eq!(result.tool_call_id(), Some(SUBMIT_CALL_ID));
+    assert_eq!(result.content()["output"]["decision"], "accept");
+
+    let child = child(&mut conn, sp.child_thread_id).await;
+    assert_eq!(child.status(), AgentThreadStatus::Completed);
+
+    teardown(ctx).await;
+}
+
+/// A `DeferredTool` driver task has no producer in this release; the
+/// driver loop matches it exhaustively and dead-letters it loudly rather
+/// than leaving it unexecuted.
+#[tokio::test]
+async fn test_the_driver_loop_dead_letters_a_deferred_tool_task() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let pool = ctx.create_pool().await.expect("create pool");
+
+    let driver_task_id = {
+        let mut conn = raw_conn(ctx).await;
+        let (principal_id, project_id, system_pv_id, user_pv_id) =
+            setup_prerequisites(ctx, "deferred-tool").await;
+        let (job_id, _) = seed_extraction_job(
+            &mut conn,
+            principal_id,
+            project_id,
+            system_pv_id,
+            user_pv_id,
+        )
+        .await;
+        let claimed = PgTaskRepository
+            .claim(&mut conn, 1, "dt-seed")
+            .await
+            .expect("claim");
+        let task = claimed.first().expect("claims").clone();
+        let job = PgJobRepository
+            .find_by_id(&mut conn, job_id)
+            .await
+            .expect("job");
+        let binding = tribal_agent_runtime::resolve_binding(
+            &mut conn,
+            &tribal_test_utils::an_agent_definition().build(),
+        )
+        .await
+        .expect("binding");
+        let stage_thread = tribal_agent_runtime::ensure_stage_thread(
+            &mut conn,
+            &job,
+            &task,
+            task.claim_token().expect("token"),
+            &binding,
+        )
+        .await
+        .expect("thread");
+        PgAgentDriverTaskRepository
+            .insert(
+                &mut conn,
+                &tribal_db::NewAgentDriverTask::builder()
+                    .thread_id(stage_thread.thread.id())
+                    .kind(tribal_domain::AgentDriverTaskKind::DeferredTool)
+                    .build(),
+            )
+            .await
+            .expect("enrol deferred-tool task")
+            .id()
+    };
+
+    let token = CancellationToken::new();
+    let worker = build_test_worker(pool.clone(), token.clone(), test_config(), None, None).await;
+    let driver = {
+        let w = Arc::clone(&worker);
+        tokio::spawn(async move { w.run_driver_loop().await })
+    };
+
+    let dead_lettered = poll_until(
+        "the deferred-tool task dead-letters",
+        POLL_INTERVAL,
+        POLL_SETTLE,
+        || {
+            let pool = pool.clone();
+            async move {
+                let mut conn = pool.acquire().await.ok()?;
+                let task = PgAgentDriverTaskRepository
+                    .find_by_id(&mut conn, driver_task_id)
+                    .await
+                    .ok()??;
+                (task.state() == AgentDriverTaskState::DeadLetter).then_some(task)
+            }
+        },
+    )
+    .await;
+    token.cancel();
+    let _ = driver.await;
+
+    assert!(
+        dead_lettered.last_error().is_some(),
+        "the dead-letter records why",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Prune refuses a terminal parent while its real `suspend_with_child`
+/// child is live.
+#[tokio::test]
+async fn test_prune_refuses_a_terminal_parent_with_a_live_real_child() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let (mut conn, sp) = seed_suspended_parent(ctx, "prune-real-pair").await;
+
+    PgAgentThreadRepository
+        .complete(
+            &mut conn,
+            sp.parent.id(),
+            AgentThreadTerminal::Cancelled,
+            AgentThreadStatus::Suspended,
+        )
+        .await
+        .expect("cancel the parent");
+
+    let criteria = tribal_db::ThreadPruneCriteria {
+        completed_before: chrono::Utc::now() + chrono::Duration::seconds(1),
+        stage: None,
+        cascade: true,
+    };
+    let refused = PgAgentThreadRepository
+        .count_refused_prune_roots(&mut conn, &criteria)
+        .await
+        .expect("count");
+    assert_eq!(refused, 1, "the live child refuses the terminal parent");
+    let pruned = PgAgentThreadRepository
+        .prune_threads(&mut conn, &criteria)
+        .await
+        .expect("prune");
+    assert_eq!(pruned, 0, "nothing deletes while the child is live");
 
     teardown(ctx).await;
 }
