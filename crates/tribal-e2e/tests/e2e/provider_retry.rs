@@ -110,6 +110,23 @@ async fn test_provider_failure_and_retry() {
         "both candidates should be created after successful retry",
     );
 
+    // The retry is genuine, not vacuous: the extraction endpoint saw two
+    // content-bearing calls, the transient 503 and the successful
+    // re-attempt. The startup probe carries the probe input rather than the
+    // ingest content, so filtering on the content isolates the real calls.
+    let extraction_calls = harness
+        .extraction_server()
+        .received_requests()
+        .await
+        .expect("recorded extraction requests")
+        .iter()
+        .filter(|r| String::from_utf8_lossy(&r.body).contains("Canopy API gateway"))
+        .count();
+    assert_eq!(
+        extraction_calls, 2,
+        "the 503 and its successful retry are two real extraction calls",
+    );
+
     // -- Cleanup --------------------------------------------------------------
 
     harness.shutdown().await;
