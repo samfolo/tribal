@@ -154,7 +154,14 @@ impl Worker {
                 pipeline: &pipeline,
                 pump,
                 rendered: opening.rendered,
-                budgets: stage_thread.binding.definition().budgets,
+                // Enforcement re-resolves from the current configuration
+                // at every claim; the binding records admission-time
+                // intent.
+                budgets: crate::definition::current_stage_budgets(
+                    TaskType::Triage,
+                    stage_thread.binding.definition().executor,
+                    self.agents(),
+                ),
                 recheck: RecheckPolicy {
                     delay_seconds: DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS,
                     bound: DEFAULT_AGENTIC_RECHECK_BOUND,

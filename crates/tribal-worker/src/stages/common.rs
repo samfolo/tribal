@@ -493,7 +493,13 @@ impl Worker {
         claim_token: uuid::Uuid,
         conn: &mut sqlx::PgConnection,
     ) -> Result<bool, StageError> {
-        let budgets = stage_thread.binding.definition().budgets;
+        // Enforcement reads the current configuration, never the recorded
+        // binding: headroom can return through a configuration change.
+        let budgets = crate::definition::current_stage_budgets(
+            task.task_type(),
+            stage_thread.binding.definition().executor,
+            self.agents(),
+        );
         if budgets.max_total_tokens.is_none() {
             return Ok(false);
         }

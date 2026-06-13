@@ -2,12 +2,15 @@
 //!
 //! The system fingerprint captures all inference-affecting configuration
 //! values as a content-addressed SHA-256 hash. Per-stage configuration
-//! (prompts, provider, model, sampling parameters) is subsumed by that
-//! stage's content-addressed binding version, derived here through the
-//! same constructor the worker uses at claim, so the recorded composite
-//! names exactly the binding versions execution resolves. The composite
-//! adds what no stage binding carries: the build version, the job-level
-//! pipeline parameters, and the embedding identity with its dimensions.
+//! (prompts, provider, model, sampling parameters, executor, budgets,
+//! tools) is subsumed by that stage's content-addressed binding version,
+//! derived here through the same derivation the worker uses at claim.
+//! The composite names ingest-time intent: a configuration or prompt
+//! flip between ingest and first claim leaves it naming a binding
+//! version no thread ran, and the thread's recorded binding — not this
+//! composite — is the truth of what executed. The composite adds what no
+//! stage binding carries: the build version, the job-level pipeline
+//! parameters, and the embedding identity with its dimensions.
 
 use std::collections::HashMap;
 

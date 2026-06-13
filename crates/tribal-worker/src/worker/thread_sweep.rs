@@ -9,10 +9,17 @@
 //! cancel-fallback this sweep performs.
 
 use tribal_agent_runtime::{BUDGET_RECHECK_CAUSE, ResolveOutcome, resolve_stage_thread};
-use tribal_db::{AgentThreadRepository, PgAgentThreadRepository};
-use tribal_domain::AgentThreadSuspension;
+use tribal_config::AgentsConfig;
+use tribal_db::{
+    AgentBindingVersionRepository, AgentThreadRepository, PgAgentBindingVersionRepository,
+    PgAgentThreadRepository,
+};
+use tribal_domain::{AgentThread, AgentThreadSuspension, StageExecutorKind};
 
-use crate::worker::{Worker, coupling};
+use crate::{
+    definition::current_stage_budgets,
+    worker::{Worker, coupling},
+};
 
 /// How many rows each predicate handles per sweep cycle.
 const SWEEP_BATCH: u32 = 32;
@@ -37,7 +44,7 @@ impl Worker {
             return stats;
         };
 
-        stats.timer_wakes = sweep_timer_wakes(&mut conn).await;
+        stats.timer_wakes = sweep_timer_wakes(self.agents(), &mut conn).await;
         stats.cancelled = sweep_cancel_fallback(self, &mut conn).await;
         stats
     }
@@ -46,7 +53,7 @@ impl Worker {
 /// The timer-wake predicate: suspended threads whose `wake_at` elapsed
 /// get the full resolve transaction — a timer-fired input record, the
 /// running status, and the driving task re-queued.
-async fn sweep_timer_wakes(conn: &mut sqlx::PgConnection) -> u32 {
+async fn sweep_timer_wakes(agents: &AgentsConfig, conn: &mut sqlx::PgConnection) -> u32 {
     let due = match PgAgentThreadRepository
         .find_due_timer_wakes(conn, SWEEP_BATCH)
         .await
@@ -61,15 +68,17 @@ async fn sweep_timer_wakes(conn: &mut sqlx::PgConnection) -> u32 {
     let mut woken = 0;
     for thread in due {
         // The resolution payload discriminates its cause: a budget wake
-        // carries the suspension's unchanged-recheck count forward, so
+        // carries the suspension's unchanged-recheck count forward (so
         // the resumed admission's accounting is durable rather than
-        // worker memory.
+        // worker memory) and the budgets current at the wake as the
+        // resumption's admission basis.
         let resolution = match thread.suspension() {
             Some(AgentThreadSuspension::BudgetExhaustion { unchanged_rechecks }) => {
                 serde_json::json!({
                     "cause": BUDGET_RECHECK_CAUSE,
                     "fired_at": chrono::Utc::now(),
                     "unchanged_rechecks": unchanged_rechecks,
+                    "budgets_basis": wake_budgets_basis(agents, conn, &thread).await,
                 })
             }
             _ => serde_json::json!({ "cause": "timer", "fired_at": chrono::Utc::now() }),
@@ -88,6 +97,26 @@ async fn sweep_timer_wakes(conn: &mut sqlx::PgConnection) -> u32 {
         tracing::info!(woken, "timer wakes resolved");
     }
     woken
+}
+
+/// The budgets a woken thread's re-admission will run against, as of
+/// this wake: re-resolved from the current configuration under the
+/// thread's recorded executor kind. Provenance for the resolution
+/// record; `null` when the binding cannot be read.
+async fn wake_budgets_basis(
+    agents: &AgentsConfig,
+    conn: &mut sqlx::PgConnection,
+    thread: &AgentThread,
+) -> serde_json::Value {
+    let executor = match PgAgentBindingVersionRepository
+        .find_by_id(conn, thread.binding_version_id())
+        .await
+    {
+        Ok(Some(binding)) => binding.definition().executor,
+        Ok(None) | Err(_) => StageExecutorKind::OneShot,
+    };
+    let budgets = current_stage_budgets(thread.pipeline_stage(), executor, agents);
+    serde_json::to_value(budgets).unwrap_or(serde_json::Value::Null)
 }
 
 /// The cancel-fallback predicate: live threads carrying a durable intent
@@ -287,7 +316,7 @@ mod tests {
         .expect("suspend");
         assert!(matches!(outcome, SuspendOutcome::Suspended));
 
-        let woken = sweep_timer_wakes(&mut conn).await;
+        let woken = sweep_timer_wakes(&AgentsConfig::default(), &mut conn).await;
         assert_eq!(woken, 2);
 
         let budget_wake = PgAgentThreadRecordRepository
