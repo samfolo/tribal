@@ -167,6 +167,7 @@ fn one_shot_validation_context(stage: PromptStage, role: PromptRole) -> tera::Co
                 candidate: &candidate,
                 outcome: "created".to_owned(),
                 item_id: Some(KnowledgeItemId::new()),
+                handoff: None,
             };
 
             let decision = SimilarItemDecisionContext {

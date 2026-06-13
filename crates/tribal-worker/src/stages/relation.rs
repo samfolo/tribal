@@ -3,16 +3,17 @@
 use std::collections::{HashMap, HashSet};
 
 use tracing::Instrument;
-use tribal_agent_runtime::StageThread;
+use tribal_agent_runtime::{StageThread, SubmissionContent};
 use tribal_common::clamp_to_u32;
+use tribal_config::ExecutorChoice;
 use tribal_db::{
-    ExtractionResultRepository, KnowledgeItemRepository, NewKnowledgeItemRelation,
-    PgExtractionResultRepository, PgKnowledgeItemRepository, PgTriageResultRepository,
-    PgTriageSimilarItemDecisionRepository, TriageResultRepository,
-    TriageSimilarItemDecisionRepository,
+    AgentThreadRecordRepository, ExtractionResultRepository, KnowledgeItemRepository,
+    NewKnowledgeItemRelation, PgAgentThreadRecordRepository, PgExtractionResultRepository,
+    PgKnowledgeItemRepository, PgTriageResultRepository, PgTriageSimilarItemDecisionRepository,
+    TriageResultRepository, TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    Candidate, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
+    Candidate, Job, JobId, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
     RelationKind, Task, TaskType, TriageOutcome, TriageResult, TriageSimilarItemDecision,
     span_attrs,
 };
@@ -24,7 +25,7 @@ use super::{
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
     error::{STAGE_RELATION, StageError},
-    parsing::{RelationEdge, RelationTarget, parse_relation_response},
+    parsing::{RelationEdge, RelationTarget, TriageSubmission, parse_relation_response},
     prompt::{
         CandidateOutcome, RelationPromptContext, SimilarItemDecisionContext, SimilarityBand,
         assemble_relation_prompt,
@@ -53,6 +54,10 @@ pub(crate) struct RelationContext<'a> {
     pub triage_results: Vec<TriageResult>,
     /// Enriched similar item decisions with matched item content.
     pub similar_item_decision_contexts: Vec<SimilarItemDecisionContext>,
+    /// The notes agentic triage handed downstream, keyed by candidate
+    /// batch index. Empty for the one-shot path, which commits no
+    /// submission records and is never even queried.
+    pub handoffs: HashMap<u32, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +113,14 @@ impl Worker {
         let similar_item_decision_contexts =
             build_similar_item_decision_contexts(&mut conn, &similar_item_decisions, batch_size)
                 .await?;
+        // Only the agentic triage path commits submission records with a
+        // handoff, so the read is gated on the configured executor and the
+        // default path issues no query at all.
+        let handoffs = if self.agents().triage.executor == ExecutorChoice::Loop {
+            load_triage_handoffs(&mut conn, job.id()).await?
+        } else {
+            HashMap::new()
+        };
 
         drop(conn);
 
@@ -118,8 +131,32 @@ impl Worker {
             relation_hints,
             triage_results,
             similar_item_decision_contexts,
+            handoffs,
         })
     }
+}
+
+/// Reads the job's agentic triage handoffs, keyed by candidate batch
+/// index. Each submission record is parsed individually and a malformed
+/// one skipped (the handoff is best-effort enrichment, never a stage
+/// failure); a submission with no handoff contributes no entry.
+async fn load_triage_handoffs(
+    conn: &mut sqlx::PgConnection,
+    job_id: JobId,
+) -> Result<HashMap<u32, String>, StageError> {
+    let submissions = PgAgentThreadRecordRepository
+        .find_triage_submissions_by_job(conn, job_id)
+        .await
+        .map_err(|source| relation_db_error("loading triage handoffs", source))?;
+
+    Ok(submissions
+        .into_iter()
+        .filter_map(|submission| {
+            let content: SubmissionContent = serde_json::from_value(submission.content).ok()?;
+            let payload: TriageSubmission = serde_json::from_value(content.payload).ok()?;
+            payload.handoff.map(|notes| (submission.batch_index, notes))
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -432,8 +469,12 @@ fn build_prompt_context<'a>(
     ctx: &'a RelationContext<'_>,
     batch_size: u32,
 ) -> Result<RelationPromptContext<'a>, StageError> {
-    let candidate_outcomes =
-        build_candidate_outcomes(&ctx.candidates, &ctx.triage_results, batch_size)?;
+    let candidate_outcomes = build_candidate_outcomes(
+        &ctx.candidates,
+        &ctx.triage_results,
+        &ctx.handoffs,
+        batch_size,
+    )?;
 
     Ok(RelationPromptContext {
         candidates: candidate_outcomes,
@@ -457,6 +498,7 @@ fn build_prompt_context<'a>(
 fn build_candidate_outcomes<'a>(
     candidates: &'a [Candidate],
     triage_results: &[TriageResult],
+    handoffs: &HashMap<u32, String>,
     batch_size: u32,
 ) -> Result<Vec<CandidateOutcome<'a>>, StageError> {
     let n_candidates = batch_size as usize;
@@ -502,6 +544,7 @@ fn build_candidate_outcomes<'a>(
                 candidate,
                 outcome,
                 item_id,
+                handoff: handoffs.get(&batch_index).cloned(),
             }
         })
         .collect())
@@ -840,6 +883,35 @@ mod tests {
         assert_eq!(normalised[0].source_id, ki_created);
         assert_eq!(normalised[0].target_id, ki_existing);
         assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn test_build_candidate_outcomes_attaches_handoffs_by_batch_index() {
+        let candidates: Vec<Candidate> = (0..2)
+            .map(|i| {
+                serde_json::from_value(serde_json::json!({
+                    "kind": "fact",
+                    "content": format!("candidate {i}"),
+                    "suggested_tags": [],
+                }))
+                .expect("candidate")
+            })
+            .collect();
+        let triage_results = vec![created(0, ki("aaaa")), created(1, ki("bbbb"))];
+        let mut handoffs = HashMap::new();
+        handoffs.insert(0, "the candidate links auth and billing".to_owned());
+
+        let outcomes = build_candidate_outcomes(&candidates, &triage_results, &handoffs, 2)
+            .expect("outcomes build");
+        assert_eq!(
+            outcomes[0].handoff.as_deref(),
+            Some("the candidate links auth and billing"),
+            "the handoff rides its candidate by batch index",
+        );
+        assert_eq!(
+            outcomes[1].handoff, None,
+            "a candidate with no handoff carries none",
+        );
     }
 
     #[test]
