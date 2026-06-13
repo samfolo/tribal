@@ -163,23 +163,33 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Trims a result to its tool's declared bound, appending the
-    /// explicit marker when anything was cut. Trimming respects UTF-8
-    /// boundaries, so the kept prefix is always valid text.
+    /// Trims a result to its tool's declared bound, appending the explicit
+    /// marker when anything was cut. The marker's room is reserved inside
+    /// the bound, so the model-facing result never exceeds the declared
+    /// ceiling; trimming respects UTF-8 boundaries, so the kept prefix is
+    /// always valid text. A bound too small to hold even the marker is
+    /// degenerate; the marker alone, clamped to the bound, is the
+    /// deterministic result there.
     #[must_use]
     pub fn trim_to_bound(descriptor: &ToolDescriptor, content: String) -> String {
         let bound = descriptor.response_size_bound as usize;
         if content.len() <= bound {
             return content;
         }
-        let mut cut = bound;
+        let marker = format!("{TRIM_MARKER_PREFIX}{bound} bytes]");
+        if marker.len() >= bound {
+            let mut end = bound;
+            while end > 0 && !marker.is_char_boundary(end) {
+                end -= 1;
+            }
+            return marker[..end].to_owned();
+        }
+        let mut cut = bound - marker.len();
         while cut > 0 && !content.is_char_boundary(cut) {
             cut -= 1;
         }
         let mut trimmed = content[..cut].to_owned();
-        trimmed.push_str(TRIM_MARKER_PREFIX);
-        trimmed.push_str(&bound.to_string());
-        trimmed.push_str(" bytes]");
+        trimmed.push_str(&marker);
         trimmed
     }
 }
@@ -305,24 +315,52 @@ mod tests {
     }
 
     #[test]
-    fn test_trim_appends_the_marker_only_when_cut() {
+    fn test_trim_appends_the_marker_within_the_bound() {
         let descriptor = a_descriptor("search", ToolExecutionMode::Immediate, ToolSafetyTier::Pure);
+        let bound = descriptor.response_size_bound as usize;
 
         let short = ToolRegistry::trim_to_bound(&descriptor, "short".to_owned());
         assert_eq!(short, "short");
 
         let long = ToolRegistry::trim_to_bound(&descriptor, "x".repeat(100));
-        assert!(long.starts_with(&"x".repeat(64)));
+        assert!(long.starts_with('x'), "the payload prefix is kept");
         assert!(long.contains("[result trimmed to 64 bytes]"));
+        assert!(
+            long.len() <= bound,
+            "the marker's room is reserved inside the bound: {} > {bound}",
+            long.len(),
+        );
     }
 
     #[test]
     fn test_trim_respects_utf8_boundaries() {
         let descriptor = a_descriptor("search", ToolExecutionMode::Immediate, ToolSafetyTier::Pure);
-        // Each '£' is two bytes; byte 64 falls mid-character, so the cut
-        // backs up to the boundary rather than splitting it.
+        // Each '£' is two bytes; the payload budget (the bound less the
+        // marker) can fall mid-character, so the cut backs up to the
+        // boundary rather than splitting it.
         let trimmed = ToolRegistry::trim_to_bound(&descriptor, "£".repeat(40));
         assert!(trimmed.contains("[result trimmed to 64 bytes]"));
         assert!(!trimmed.starts_with('\u{fffd}'));
+        assert!(trimmed.len() <= descriptor.response_size_bound as usize);
+    }
+
+    #[test]
+    fn test_trim_clamps_when_the_bound_cannot_hold_the_marker() {
+        // A bound smaller than the marker is degenerate; the result is the
+        // marker clamped to the bound, never exceeding it.
+        let descriptor = ToolDescriptor::builder()
+            .name("search".to_owned())
+            .description("a test tool".to_owned())
+            .input_schema(serde_json::json!({"type": "object"}))
+            .response_size_bound(8)
+            .safety_tier(ToolSafetyTier::Pure)
+            .execution_mode(ToolExecutionMode::Immediate)
+            .build();
+        let trimmed = ToolRegistry::trim_to_bound(&descriptor, "x".repeat(100));
+        assert!(
+            trimmed.len() <= 8,
+            "the result must not exceed the bound, got {}",
+            trimmed.len(),
+        );
     }
 }
