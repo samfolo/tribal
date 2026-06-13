@@ -60,8 +60,11 @@ async fn test_agentic_triage_loop_end_to_end() {
 
     harness
         .mount_triage(|m| {
-            // Turn one investigates with a read tool: the opening carries no
-            // tool-result message, so it matches on the stream flag alone.
+            // The loop's two streamed turns hit one endpoint and are kept in
+            // order by the single-use stubs, not by mutually exclusive
+            // matchers: turn two also carries the stream flag, so it would
+            // match here too were this stub not spent. Turn one (the opening)
+            // is the first streamed request and consumes this single use.
             m.on_content_streamed(
                 "\"stream\":true",
                 &[json!({
@@ -69,8 +72,9 @@ async fn test_agentic_triage_loop_end_to_end() {
                 })
                 .into()],
             );
-            // Turn two submits: its request carries the tool result from turn
-            // one (a `tool`-role message), which the opening never has.
+            // Turn two submits: with the stream-flag stub above spent, its
+            // request falls through here on the tool result from turn one (a
+            // `tool`-role message the opening lacks).
             m.on_content_streamed(
                 "\"role\":\"tool\"",
                 &[json!({
@@ -85,12 +89,11 @@ async fn test_agentic_triage_loop_end_to_end() {
                 })
                 .into()],
             );
-            // The startup provider probe is also a buffered request on this
-            // endpoint; it carries no rubric and ignores the response body.
-            m.on_content_repeat_last("\"stream\":false", &[json!({ "accepted": true }).into()]);
-            // The verifier child runs a buffered one-shot bearing the rubric.
-            // Its response is delayed so the parent's suspension is
-            // observable: the triage task blocks for the delay's duration.
+            // The verifier child runs a buffered one-shot bearing the rubric;
+            // it is the only buffered request to reach this stub (the startup
+            // probe is absorbed by its own probe-input matcher). Its response
+            // is delayed so the parent's suspension is observable: the triage
+            // task blocks for the delay's duration.
             m.on_content_delayed(
                 "verification agent",
                 &[json!({ "accepted": true }).into()],
@@ -229,10 +232,15 @@ async fn test_agentic_triage_loop_end_to_end() {
         second.len() > first.len(),
         "the second turn extends the conversation with the tool exchange",
     );
+    // The second turn's conversation extends the first's without rewriting
+    // it: turn one's messages are an exact prefix of turn two's. This is
+    // the append-only property the prompt-cache prefix rides on; the
+    // verbatim byte-stability of the replay itself is the runtime
+    // invariant exercised at the one-shot and inference tiers.
     assert_eq!(
         &second[..first.len()],
         &first[..],
-        "the prior turn's conversation is a byte-identical prefix of the next request",
+        "the prior turn's conversation is an exact prefix of the next request",
     );
 
     harness.shutdown().await;
