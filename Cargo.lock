@@ -5413,6 +5413,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures-util",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sqlx",

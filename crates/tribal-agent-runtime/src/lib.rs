@@ -39,12 +39,13 @@ pub use transitions::{
 };
 pub use turn::{
     BegunTurn, DrivingClaim, OneShotOutcome, RecordedMessage, RecordedToolCall,
-    RenderedConversation, begin_turn, commit_noop_terminal, commit_one_shot_terminal,
+    RenderedConversation, adopt_conversation, begin_turn, commit_noop_terminal,
+    commit_one_shot_terminal,
 };
 pub use turn_loop::{
     AcceptedSubmission, Admission, AdmissionDecision, BUDGET_RECHECK_CAUSE, BudgetFailure,
     HeartbeatPump, LoopOutcome, RecheckPolicy, SUBMIT_RESULT_TOOL, SeenCorpus, SubmissionContent,
     SubmissionOutcome, SubmissionPipeline, ToolResultContent, TurnLoopDeps, VerdictContent,
     VerifierLaunch, admit_inference, carried_rechecks, commit_loop_terminal, decide_admission,
-    run_turn_loop,
+    run_turn_loop, verdict_schema,
 };
