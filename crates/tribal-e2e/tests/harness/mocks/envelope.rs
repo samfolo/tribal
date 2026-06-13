@@ -39,6 +39,68 @@ pub fn wrap_completion(content: &Value, provider: ProviderKind) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming completion envelope
+// ---------------------------------------------------------------------------
+
+/// Frames a stage turn as the provider's native streaming wire body and
+/// its content type. The agentic loop's only inference entry is the
+/// streaming path, so a loop stage's mock must answer with the chunked
+/// body the provider's accumulator folds, not the buffered envelope.
+///
+/// A fixture carrying a `tool_calls` array (each `{name, arguments}`)
+/// frames a tool-call turn; any other fixture frames its JSON as the
+/// assistant content, exactly as the buffered envelope does.
+///
+/// # Panics
+///
+/// Panics for providers other than Ollama: the agentic E2E runs the
+/// Ollama wire (the harness default), and the SSE framing for the other
+/// providers is already exercised by the inference-tier streaming tests,
+/// so leaving it unbuilt here keeps the harness free of untested wire
+/// code.
+#[must_use]
+pub fn wrap_completion_stream(fixture: &Value, provider: ProviderKind) -> (String, &'static str) {
+    match provider {
+        ProviderKind::Ollama => (ollama_stream_body(fixture), "application/x-ndjson"),
+        ProviderKind::OpenAi | ProviderKind::Anthropic => panic!(
+            "the agentic E2E streams the Ollama wire format; streaming framing for {provider:?} \
+             is covered by the inference-tier tests and intentionally unbuilt in this harness",
+        ),
+    }
+}
+
+/// Builds the Ollama NDJSON body: one content-or-tool-call chunk, then a
+/// terminal `done` chunk carrying the usage the accumulator reads.
+fn ollama_stream_body(fixture: &Value) -> String {
+    let message = if let Some(calls) = fixture.get("tool_calls").and_then(Value::as_array) {
+        let tool_calls: Vec<Value> = calls
+            .iter()
+            .map(|call| {
+                json!({
+                    "function": {
+                        "name": call.get("name").and_then(Value::as_str).unwrap_or_default(),
+                        "arguments": call.get("arguments").cloned().unwrap_or(json!({})),
+                    }
+                })
+            })
+            .collect();
+        json!({ "role": "assistant", "content": "", "tool_calls": tool_calls })
+    } else {
+        json!({ "role": "assistant", "content": fixture.to_string() })
+    };
+    let first = json!({ "model": "test", "message": message, "done": false });
+    let done = json!({
+        "model": "test",
+        "message": { "role": "assistant", "content": "" },
+        "done": true,
+        "done_reason": "stop",
+        "prompt_eval_count": 10,
+        "eval_count": 5,
+    });
+    format!("{first}\n{done}\n")
+}
+
+// ---------------------------------------------------------------------------
 // Embedding envelope
 // ---------------------------------------------------------------------------
 

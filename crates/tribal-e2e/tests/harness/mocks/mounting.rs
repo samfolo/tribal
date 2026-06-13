@@ -5,7 +5,7 @@ use wiremock::{
     matchers::{body_string_contains, method, path},
 };
 
-use super::envelope::{chat_path, wrap_completion};
+use super::envelope::{chat_path, wrap_completion, wrap_completion_stream};
 
 // ---------------------------------------------------------------------------
 // ContentMatcher
@@ -58,6 +58,8 @@ struct MountEntry {
     matcher: ContentMatcher,
     responses: Vec<MockResponse>,
     repeat_last: bool,
+    streaming: bool,
+    delay_ms: Option<u64>,
 }
 
 /// Builder for mounting stage-specific mock responses on a wiremock server.
@@ -96,7 +98,34 @@ impl<'a> StageMountBuilder<'a> {
     /// Wiremock returns 404 for requests beyond the sequence length,
     /// which surfaces as a provider error in the worker.
     pub fn on_content(&mut self, matcher: impl Into<ContentMatcher>, responses: &[MockResponse]) {
-        self.add_entry(matcher.into(), responses, false);
+        self.add_entry(matcher.into(), responses, false, false, None);
+    }
+
+    /// Mounts a persistent buffered response that arrives only after the
+    /// given delay — a slow stage call, so a test can observe the state a
+    /// thread holds while it waits (a verifier child suspending its
+    /// parent, say).
+    pub fn on_content_delayed(
+        &mut self,
+        matcher: impl Into<ContentMatcher>,
+        responses: &[MockResponse],
+        delay_ms: u64,
+    ) {
+        self.add_entry(matcher.into(), responses, true, false, Some(delay_ms));
+    }
+
+    /// Mounts a response sequence matched by content, framed as the
+    /// provider's streaming wire body — the agentic loop's turns, whose
+    /// only inference entry is the streaming path. A verifier child, which
+    /// runs a buffered one-shot, is mounted with [`Self::on_content`]
+    /// against the same endpoint; the two are told apart by the `stream`
+    /// flag in the request body.
+    pub fn on_content_streamed(
+        &mut self,
+        matcher: impl Into<ContentMatcher>,
+        responses: &[MockResponse],
+    ) {
+        self.add_entry(matcher.into(), responses, false, true, None);
     }
 
     /// Mounts a response sequence matched by content, repeating the final
@@ -106,7 +135,7 @@ impl<'a> StageMountBuilder<'a> {
         matcher: impl Into<ContentMatcher>,
         responses: &[MockResponse],
     ) {
-        self.add_entry(matcher.into(), responses, true);
+        self.add_entry(matcher.into(), responses, true, false, None);
     }
 
     fn add_entry(
@@ -114,6 +143,8 @@ impl<'a> StageMountBuilder<'a> {
         matcher: ContentMatcher,
         responses: &[MockResponse],
         repeat_last: bool,
+        streaming: bool,
+        delay_ms: Option<u64>,
     ) {
         assert!(
             !responses.is_empty(),
@@ -155,6 +186,8 @@ impl<'a> StageMountBuilder<'a> {
             matcher,
             responses: responses.to_vec(),
             repeat_last,
+            streaming,
+            delay_ms,
         });
     }
 
@@ -176,7 +209,7 @@ impl<'a> StageMountBuilder<'a> {
             let wrapped: Vec<ResponseTemplate> = entry
                 .responses
                 .iter()
-                .map(|r| self.to_template(r))
+                .map(|r| self.to_template(r, entry.streaming, entry.delay_ms))
                 .collect();
 
             // For repeat_last, mount a persistent fallback with the last response.
@@ -207,13 +240,26 @@ impl<'a> StageMountBuilder<'a> {
         }
     }
 
-    fn to_template(&self, response: &MockResponse) -> ResponseTemplate {
-        match response {
+    fn to_template(
+        &self,
+        response: &MockResponse,
+        streaming: bool,
+        delay_ms: Option<u64>,
+    ) -> ResponseTemplate {
+        let template = match response {
+            MockResponse::Fixture(v) if streaming => {
+                let (body, content_type) = wrap_completion_stream(v, self.provider);
+                ResponseTemplate::new(200).set_body_raw(body, content_type)
+            }
             MockResponse::Fixture(v) => {
                 let wrapped = wrap_completion(v, self.provider);
                 ResponseTemplate::new(200).set_body_json(wrapped)
             }
             MockResponse::Error(status) => ResponseTemplate::new(*status),
+        };
+        match delay_ms {
+            Some(ms) => template.set_delay(std::time::Duration::from_millis(ms)),
+            None => template,
         }
     }
 
