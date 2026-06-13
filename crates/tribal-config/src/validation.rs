@@ -94,6 +94,17 @@ pub fn validate(config: &TribalConfig) -> Result<(), ConfigError> {
     }
 }
 
+/// Collects non-fatal configuration advisories.
+///
+/// Unlike [`validate`], these never block startup. They surface inert or
+/// surprising combinations that validation admits but the operator may not
+/// have intended (for example a verifier configured under the one-shot
+/// executor, where it never runs). A caller logs each as a warning.
+#[must_use]
+pub fn config_warnings(config: &TribalConfig) -> Vec<&'static str> {
+    config.agents.advisories()
+}
+
 // ---------------------------------------------------------------------------
 // Section validators
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ use tokio::signal;
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio_util::sync::CancellationToken;
 use tribal_auth::oauth::OAuthRuntimeConfig;
-use tribal_config::{TransportKind, load_config, validate};
+use tribal_config::{TransportKind, config_warnings, load_config, validate};
 use tribal_mcp::HandlerConfig;
 
 use crate::{cli::ServeArgs, error::AppError, orchestration, startup::POOL_NAME_MCP, transport};
@@ -50,6 +50,12 @@ pub(crate) fn run(config_path: &str, args: ServeArgs) -> Result<(), AppError> {
     let (telemetry_guard, metrics) = telemetry_rt.block_on(async {
         tribal_telemetry::init_subscriber(&config.logging, &config.telemetry)
     })?;
+
+    // Surfaced now that the subscriber is live: inert or surprising config
+    // that validation admits but the operator may not have intended.
+    for warning in config_warnings(&config) {
+        tracing::warn!("{warning}");
+    }
 
     let cancellation_token = CancellationToken::new();
 

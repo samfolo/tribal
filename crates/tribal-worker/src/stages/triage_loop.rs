@@ -436,7 +436,9 @@ impl Worker {
         binding: &AgentBinding,
         candidate: &Candidate,
     ) -> Result<Option<VerifierContext>, StageError> {
-        if !self.agents().triage.verifier {
+        // Unset enables the verifier: it is the loop's default safety net,
+        // disabled only by an explicit `verifier: false`.
+        if !self.agents().triage.verifier.unwrap_or(true) {
             return Ok(None);
         }
 
