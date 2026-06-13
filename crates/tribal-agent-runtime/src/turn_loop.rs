@@ -1442,10 +1442,10 @@ async fn execute_batch(
                             // The verify budget bounds how many verifier
                             // children one thread launches. Once spent, the
                             // validated submission commits on the validators
-                            // alone: they are the correctness gate, the
-                            // verifier the quality lever (§10.4), so a
-                            // spent budget degrades to a direct commit
-                            // rather than failing the thread.
+                            // alone: they are the correctness gate and the
+                            // verifier the quality lever, so a spent budget
+                            // degrades to a direct commit rather than
+                            // failing the thread.
                             if deps
                                 .budgets
                                 .max_child_launches

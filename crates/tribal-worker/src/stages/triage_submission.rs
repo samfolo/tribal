@@ -236,7 +236,7 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
                 return Ok(SubmissionOutcome::Bounced {
                     diagnostics: format!(
                         "{matched_item_id} has been superseded since you read it; a retired \
-                         claim cannot be a duplicate target — re-check and re-decide"
+                         claim cannot be a duplicate target; re-check and re-decide"
                     ),
                 });
             }
@@ -252,7 +252,7 @@ impl SubmissionPipeline for TriageSubmissionPipeline {
                 return Ok(SubmissionOutcome::Bounced {
                     diagnostics: format!(
                         "the submission marks {matched_item_id} as both the duplicated claim \
-                         and a contradiction; a candidate that contradicts a claim is novel — \
+                         and a contradiction; a candidate that contradicts a claim is novel, so \
                          re-decide"
                     ),
                 });
