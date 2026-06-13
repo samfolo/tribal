@@ -18,12 +18,13 @@ use tribal_agent_runtime::{
 };
 use tribal_common::clamp_to_i32;
 use tribal_db::{
-    AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository,
-    PgAgentDriverTaskRepository, PgAgentThreadRecordRepository, PgAgentThreadRepository,
+    AgentBindingVersionRepository, AgentDriverTaskRepository, AgentThreadRecordRepository,
+    AgentThreadRepository, DbError, PgAgentBindingVersionRepository, PgAgentDriverTaskRepository,
+    PgAgentThreadRecordRepository, PgAgentThreadRepository,
 };
 use tribal_domain::{
     AgentDriverTask, AgentDriverTaskKind, AgentThread, AgentThreadId, AgentThreadRecordKind,
-    AgentThreadStatus, AgentThreadSuspension, ErrorOutcome, UsageOwner,
+    AgentThreadStatus, AgentThreadSuspension, ErrorOutcome, StageParameters, UsageOwner,
 };
 use tribal_inference::{
     CompletionRequest, Message, PermitWait, ResponseFormat, Role, UsageAttribution,
@@ -152,7 +153,23 @@ impl Worker {
             .await
             .map_err(|source| driver_runtime_error("adopting the child's conversation", source))?;
 
-        let request = request_from(&conversation);
+        // The child runs under the sampling parameters its binding records,
+        // the same parameters-follow-binding rule the stage loop obeys, so a
+        // resumed child sends what it was admitted under, never a default.
+        let binding = PgAgentBindingVersionRepository
+            .find_by_id(&mut conn, child.binding_version_id())
+            .await
+            .map_err(|e| driver_db("loading the child's binding", e))?
+            .ok_or_else(|| {
+                driver_db(
+                    "loading the child's binding",
+                    DbError::NotFound {
+                        entity: "agent_binding_version",
+                        id: child.binding_version_id().to_string(),
+                    },
+                )
+            })?;
+        let request = request_from(&conversation, &binding.definition().parameters);
         let attribution = child_attribution(&child, task.attempt());
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let response = self
@@ -264,7 +281,7 @@ impl Worker {
         parent_id: AgentThreadId,
     ) -> Result<Option<ParentResolution>, StageError> {
         let records = PgAgentThreadRecordRepository
-            .find_by_thread(conn, parent_id)
+            .find_by_thread_id(conn, parent_id)
             .await
             .map_err(|e| driver_db("reading the parent's log", e))?;
         for record in records.iter().rev() {
@@ -429,7 +446,10 @@ impl Worker {
 
 /// The child's binding-pinned sampling rides a fresh request; the
 /// conversation is the adopted committed input.
-fn request_from(conversation: &RenderedConversation) -> CompletionRequest {
+fn request_from(
+    conversation: &RenderedConversation,
+    parameters: &StageParameters,
+) -> CompletionRequest {
     CompletionRequest {
         system: conversation.system.clone(),
         messages: conversation
@@ -449,8 +469,8 @@ fn request_from(conversation: &RenderedConversation) -> CompletionRequest {
             })
             .collect(),
         tools: vec![],
-        temperature: narrow_temperature(None),
-        max_tokens: None,
+        temperature: narrow_temperature(parameters.temperature),
+        max_tokens: parameters.max_tokens,
         // A child renders its own output contract into the record; the
         // verifier's verdict schema rides through here so the response is
         // schema-constrained without the driver loop knowing the shape.

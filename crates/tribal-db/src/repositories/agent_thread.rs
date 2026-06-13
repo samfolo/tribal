@@ -160,7 +160,7 @@ pub trait AgentThreadRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_stage_task(
+    async fn find_by_stage_task_id(
         &self,
         conn: &mut PgConnection,
         stage_task_id: TaskId,
@@ -176,7 +176,7 @@ pub trait AgentThreadRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_job(
+    async fn find_by_job_id(
         &self,
         conn: &mut PgConnection,
         job_id: JobId,
@@ -404,7 +404,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         Ok(row.as_ref().map(map_agent_thread_row))
     }
 
-    async fn find_by_stage_task(
+    async fn find_by_stage_task_id(
         &self,
         conn: &mut PgConnection,
         stage_task_id: TaskId,
@@ -422,7 +422,7 @@ impl AgentThreadRepository for PgAgentThreadRepository {
         Ok(row.as_ref().map(map_agent_thread_row))
     }
 
-    async fn find_by_job(
+    async fn find_by_job_id(
         &self,
         conn: &mut PgConnection,
         job_id: JobId,

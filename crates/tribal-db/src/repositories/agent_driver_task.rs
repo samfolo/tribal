@@ -104,7 +104,7 @@ pub trait AgentDriverTaskRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_thread(
+    async fn find_by_thread_id(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,
@@ -275,7 +275,7 @@ impl AgentDriverTaskRepository for PgAgentDriverTaskRepository {
         Ok(row.as_ref().map(map_agent_driver_task_row))
     }
 
-    async fn find_by_thread(
+    async fn find_by_thread_id(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,

@@ -279,7 +279,7 @@ impl StageTool for ReadSiblingThreadsTool {
             parse_arguments(SIBLING_THREADS_NAME, arguments, SIBLING_THREADS_EXPECTED)?;
 
         let threads = PgAgentThreadRepository
-            .find_by_job(conn, self.job_id)
+            .find_by_job_id(conn, self.job_id)
             .await
             .map_err(|source| db_failure("listing the job's threads", &source))?;
 
@@ -335,7 +335,7 @@ impl StageTool for ReadSiblingThreadsTool {
         // One extra row decides whether a further page exists without a
         // second query.
         let mut records = PgAgentThreadRecordRepository
-            .find_by_thread_from(conn, sibling_id, from_seq, SIBLING_RECORDS_PAGE_SIZE + 1)
+            .find_by_thread_id_from(conn, sibling_id, from_seq, SIBLING_RECORDS_PAGE_SIZE + 1)
             .await
             .map_err(|source| db_failure("paging a sibling thread's records", &source))?;
         let more = records.len() > SIBLING_RECORDS_PAGE_SIZE as usize;

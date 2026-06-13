@@ -555,7 +555,7 @@ async fn test_loop_completes_through_submit_with_per_turn_attribution() {
 
     // The log: opening, tool turn, its result, submit turn, submission.
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, thread.id())
+        .find_by_thread_id(&mut conn, thread.id())
         .await
         .expect("log");
     let kinds: Vec<_> = records.iter().map(|r| r.kind()).collect();
@@ -635,7 +635,7 @@ async fn test_bounced_submission_returns_in_band_and_the_loop_continues() {
 
     let mut conn = raw_conn(ctx).await;
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, harness.thread.id())
+        .find_by_thread_id(&mut conn, harness.thread.id())
         .await
         .expect("log");
     let bounce = records
@@ -699,7 +699,7 @@ async fn test_recoverable_tool_failure_returns_in_band() {
 
     let mut conn = raw_conn(ctx).await;
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, harness.thread.id())
+        .find_by_thread_id(&mut conn, harness.thread.id())
         .await
         .expect("log");
     let result = records
@@ -759,7 +759,7 @@ async fn test_system_tool_failure_routes_to_the_stage_error_path() {
 
     let mut conn = raw_conn(ctx).await;
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, harness.thread.id())
+        .find_by_thread_id(&mut conn, harness.thread.id())
         .await
         .expect("log");
     assert!(
@@ -876,7 +876,7 @@ async fn test_mid_turn_crash_resume_executes_pending_calls_only() {
 
     let mut conn = raw_conn(ctx).await;
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, harness.thread.id())
+        .find_by_thread_id(&mut conn, harness.thread.id())
         .await
         .expect("log");
     let answers: Vec<_> = records
@@ -1346,7 +1346,7 @@ async fn hand_back_verdict(conn: &mut PgConnection, parent_id: AgentThreadId, ve
 
     // The launching suspension carries the call the verdict answers.
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(conn, parent_id)
+        .find_by_thread_id(conn, parent_id)
         .await
         .expect("parent log");
     let (requesting_seq, tool_call_id) = records
@@ -1681,7 +1681,7 @@ async fn test_post_acceptance_drift_injects_diagnostics_and_continues() {
     // tool result for the answered submit call, and reached the model.
     let mut conn = raw_conn(ctx).await;
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, resumed.thread.id())
+        .find_by_thread_id(&mut conn, resumed.thread.id())
         .await
         .expect("parent log");
     let tool_results = records

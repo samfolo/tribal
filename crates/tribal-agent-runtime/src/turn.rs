@@ -329,7 +329,7 @@ pub async fn adopt_conversation(
     thread: &AgentThread,
 ) -> Result<RenderedConversation, AgentRuntimeError> {
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(conn, thread.id())
+        .find_by_thread_id(conn, thread.id())
         .await
         .map_err(|source| AgentRuntimeError::database("reading the thread's input", source))?;
     let input = records

@@ -253,6 +253,11 @@ mod tests {
             Some(DEFAULT_AGENTIC_MAX_TOTAL_TOKENS),
             "unset caps take the finite agentic defaults",
         );
+        assert_eq!(
+            derived.budgets.max_child_launches,
+            Some(DEFAULT_AGENTIC_VERIFY_ROUNDS),
+            "the loop binds the verify-round budget, the runtime's launch cap",
+        );
         assert!(
             !derived.tools.is_empty(),
             "the loop binding hashes its tool surface",

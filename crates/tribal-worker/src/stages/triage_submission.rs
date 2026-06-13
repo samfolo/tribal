@@ -102,9 +102,12 @@ impl TriageSubmissionPipeline {
         matched: Option<&str>,
     ) -> Result<Vec<VerifierConsideredItem>, ToolFailure> {
         let mut items = Vec::new();
-        let mut seen = HashSet::new();
+        // Deduplicated on the resolved item id, not the raw string, so two
+        // spellings of one id cannot render the same claim twice.
+        let mut seen: HashSet<KnowledgeItemId> = HashSet::new();
         for assessment in &submission.considered_items {
             if let Some(item) = self.verifier_item(conn, &assessment.item_id).await? {
+                seen.insert(item.id());
                 items.push(VerifierConsideredItem {
                     item_id: assessment.item_id.clone(),
                     kind: item.kind(),
@@ -115,12 +118,13 @@ impl TriageSubmissionPipeline {
                     ),
                     content: item.content().to_owned(),
                 });
-                seen.insert(assessment.item_id.clone());
             }
         }
+        // The duplicated claim is surfaced even when the submission carried
+        // no assessment for it, but never twice.
         if let Some(matched_id) = matched
-            && !seen.contains(matched_id)
             && let Some(item) = self.verifier_item(conn, matched_id).await?
+            && seen.insert(item.id())
         {
             items.push(VerifierConsideredItem {
                 item_id: matched_id.to_owned(),

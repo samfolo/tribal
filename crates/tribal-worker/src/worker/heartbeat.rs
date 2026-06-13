@@ -176,7 +176,7 @@ impl Worker {
                 break;
             };
             let Some(thread) = PgAgentThreadRepository
-                .find_by_stage_task(&mut txn, task.id())
+                .find_by_stage_task_id(&mut txn, task.id())
                 .await
                 .map_err(reclaim_db)?
             else {

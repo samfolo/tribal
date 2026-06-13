@@ -16,6 +16,9 @@ Tags: <item-tags-{{ nonce }}>{% for tag in c.candidate.suggested_tags %}{{ tag }
 <content-{{ nonce }}>
 {{ c.candidate.content }}
 </content-{{ nonce }}>
+{%- if c.handoff %}
+Notes from triage: <justification-{{ nonce }}>{{ c.handoff }}</justification-{{ nonce }}>
+{%- endif %}
 {%- endfor %}
 {%- if relation_hints | length > 0 %}
 
