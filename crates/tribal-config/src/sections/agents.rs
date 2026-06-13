@@ -34,6 +34,12 @@ pub const DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS: u32 = 300;
 /// Default bound on unchanged budget re-checks before the thread fails.
 pub const DEFAULT_AGENTIC_RECHECK_BOUND: u32 = 3;
 
+/// Advisory raised when the verifier is enabled under the one-shot
+/// executor, where there is no submission loop for it to check, so the
+/// setting is inert. Non-fatal: the stage runs one-shot regardless.
+pub const VERIFIER_INERT_ADVISORY: &str = "agents.triage.verifier is set but agents.triage.executor is one_shot; \
+     the verifier runs only under the loop executor, so this setting is inert";
+
 // ---------------------------------------------------------------------------
 // Executor choice
 // ---------------------------------------------------------------------------
@@ -70,8 +76,12 @@ pub struct StageAgentConfig {
     #[serde(default)]
     pub executor: ExecutorChoice,
     /// Whether an accepted submission is verified by a child execution.
-    #[serde(default = "default_verifier")]
-    pub verifier: bool,
+    /// Absent leaves the loop's default in force (verification on). It is
+    /// honoured only under the loop executor; setting it under one-shot,
+    /// where there is no submission loop to verify, is inert and surfaced
+    /// as a startup advisory.
+    #[serde(default)]
+    pub verifier: Option<bool>,
     /// Override for the turn cap; the named default applies when absent.
     #[serde(default)]
     pub max_turns: Option<u32>,
@@ -82,10 +92,6 @@ pub struct StageAgentConfig {
     /// applies when absent.
     #[serde(default)]
     pub execution_deadline_seconds: Option<u32>,
-}
-
-const fn default_verifier() -> bool {
-    true
 }
 
 impl AgentsConfig {
@@ -111,6 +117,17 @@ impl AgentsConfig {
             )));
         }
     }
+
+    /// Non-fatal advisories about inert or surprising combinations that
+    /// validation admits but the operator may not have intended.
+    pub(crate) fn advisories(&self) -> Vec<&'static str> {
+        let stage = &self.triage;
+        let mut advisories = Vec::new();
+        if stage.verifier == Some(true) && stage.executor == ExecutorChoice::OneShot {
+            advisories.push(VERIFIER_INERT_ADVISORY);
+        }
+        advisories
+    }
 }
 
 #[cfg(test)]
@@ -130,7 +147,7 @@ mod tests {
             serde_yaml::from_str("triage:\n  executor: loop\n  verifier: false\n  max_turns: 4\n")
                 .expect("parse");
         assert_eq!(config.triage.executor, ExecutorChoice::Loop);
-        assert!(!config.triage.verifier);
+        assert_eq!(config.triage.verifier, Some(false));
         assert_eq!(config.triage.max_turns, Some(4));
     }
 
@@ -141,5 +158,39 @@ mod tests {
         let mut diags = Diagnostics::default();
         config.validate(&mut diags);
         assert!(!diags.is_empty(), "a zero turn cap must fail validation");
+    }
+
+    #[test]
+    fn test_verifier_under_one_shot_is_an_advisory_not_an_error() {
+        // The verifier is inert under one-shot, so it warns rather than
+        // refusing to start: an explicit verifier there is surfaced as an
+        // advisory, and validation still passes.
+        let config: AgentsConfig =
+            serde_yaml::from_str("triage:\n  verifier: true\n").expect("parse");
+        let mut diags = Diagnostics::default();
+        config.validate(&mut diags);
+        assert!(
+            diags.is_empty(),
+            "an inert verifier must not fail validation"
+        );
+        assert_eq!(config.advisories(), vec![VERIFIER_INERT_ADVISORY]);
+    }
+
+    #[test]
+    fn test_verifier_under_loop_raises_no_advisory() {
+        let config: AgentsConfig =
+            serde_yaml::from_str("triage:\n  executor: loop\n  verifier: true\n").expect("parse");
+        assert!(
+            config.advisories().is_empty(),
+            "the verifier belongs to the loop"
+        );
+    }
+
+    #[test]
+    fn test_defaults_raise_no_advisory() {
+        // The verifier is left unset by default, so a pure-default config
+        // (one-shot) raises nothing: only an explicit verifier under
+        // one-shot is the inert combination worth surfacing.
+        assert!(AgentsConfig::default().advisories().is_empty());
     }
 }

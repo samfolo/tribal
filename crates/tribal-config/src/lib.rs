@@ -61,7 +61,7 @@ pub use sections::{
 };
 pub use validation::{
     ComputedFloor, ConfigPath, Diagnostics, Endpoint, FieldValue, Inclusion, NumericRange,
-    OrderRelation, PUBLIC_MCP_URL_REQUIREMENT, ProviderStage, ValidationError,
+    OrderRelation, PUBLIC_MCP_URL_REQUIREMENT, ProviderStage, ValidationError, config_warnings,
     is_valid_public_mcp_url, validate,
 };
 
