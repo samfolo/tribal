@@ -330,20 +330,47 @@ impl Worker {
             tracing::warn!("driver loop pool acquire failed for deferred death");
             return;
         };
-        let Ok(Some(child)) = PgAgentThreadRepository
+        // A missing row is a genuine orphan: dead-letter the bare driver
+        // task. A read error is transient and must not be conflated with
+        // that, lest a DB hiccup dead-letter the only retry handle and
+        // strand a suspended parent with a live child; leave the claimed
+        // task for reclaim to re-drive instead.
+        let child = match PgAgentThreadRepository
             .find_by_id(&mut conn, task.thread_id())
             .await
-        else {
-            self.dispose_driver_task(task, message).await;
-            return;
+        {
+            Ok(Some(child)) => child,
+            Ok(None) => {
+                self.dispose_driver_task(task, message).await;
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    driver_task_id = %task.id(),
+                    error = %e,
+                    "deferred death could not read the child; leaving the task for reclaim",
+                );
+                return;
+            }
         };
         let parent = match child.parent_thread_id() {
             Some(parent_id) => self.load_parent_resolution(&mut conn, parent_id).await,
             None => Ok(None),
         };
-        let Ok(Some(parent)) = parent else {
-            self.dispose_driver_task(task, message).await;
-            return;
+        let parent = match parent {
+            Ok(Some(parent)) => parent,
+            Ok(None) => {
+                self.dispose_driver_task(task, message).await;
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    driver_task_id = %task.id(),
+                    error = %e,
+                    "deferred death could not resolve the parent; leaving the task for reclaim",
+                );
+                return;
+            }
         };
         if let Err(e) =
             commit_deferred_death(&mut conn, &child, task.id(), claim_token, &parent, message).await
