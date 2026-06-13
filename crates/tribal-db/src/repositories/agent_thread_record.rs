@@ -40,7 +40,7 @@ const COLUMNS: Columns = Columns(&[
 
 const UNKNOWN_KIND_IN_DB: &str = "unrecognised record kind in database: schema mismatch";
 const NEGATIVE_COUNT: &str = "negative count in database: data corruption";
-const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database — data corruption";
+const BATCH_INDEX_OVERFLOW: &str = "negative batch_index in database: data corruption";
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -127,7 +127,7 @@ pub trait AgentThreadRecordRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_thread(
+    async fn find_by_thread_id(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,
@@ -141,7 +141,7 @@ pub trait AgentThreadRecordRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_by_thread_from(
+    async fn find_by_thread_id_from(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,
@@ -182,7 +182,7 @@ pub trait AgentThreadRecordRepository {
     /// # Errors
     ///
     /// Returns [`DbError::QueryFailed`] on database errors.
-    async fn find_triage_submissions_by_job(
+    async fn find_triage_submissions_by_job_id(
         &self,
         conn: &mut PgConnection,
         job_id: JobId,
@@ -256,7 +256,7 @@ impl AgentThreadRecordRepository for PgAgentThreadRecordRepository {
         Ok(map_agent_thread_record_row(&row))
     }
 
-    async fn find_by_thread(
+    async fn find_by_thread_id(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,
@@ -275,7 +275,7 @@ impl AgentThreadRecordRepository for PgAgentThreadRecordRepository {
         Ok(rows.iter().map(map_agent_thread_record_row).collect())
     }
 
-    async fn find_by_thread_from(
+    async fn find_by_thread_id_from(
         &self,
         conn: &mut PgConnection,
         thread_id: AgentThreadId,
@@ -345,7 +345,7 @@ impl AgentThreadRecordRepository for PgAgentThreadRecordRepository {
         Ok(u64::try_from(row.get::<i64, _>("count")).expect(NEGATIVE_COUNT))
     }
 
-    async fn find_triage_submissions_by_job(
+    async fn find_triage_submissions_by_job_id(
         &self,
         conn: &mut PgConnection,
         job_id: JobId,

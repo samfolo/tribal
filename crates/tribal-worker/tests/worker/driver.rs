@@ -259,7 +259,7 @@ async fn test_child_terminal_hands_the_verdict_back_to_the_parent() {
     let child = child(&mut conn, sp.child_thread_id).await;
     assert_eq!(child.status(), AgentThreadStatus::Completed);
     let child_records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, sp.child_thread_id)
+        .find_by_thread_id(&mut conn, sp.child_thread_id)
         .await
         .expect("child log");
     assert!(
@@ -289,7 +289,7 @@ async fn test_child_terminal_hands_the_verdict_back_to_the_parent() {
         .expect("find task");
     assert_eq!(stage_task.status(), TaskStatus::Queued);
     let parent_records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, sp.parent.id())
+        .find_by_thread_id(&mut conn, sp.parent.id())
         .await
         .expect("parent log");
     let result = parent_records
@@ -343,7 +343,7 @@ async fn test_a_stale_driver_token_rolls_the_whole_terminal_back() {
         .expect("present");
     assert_eq!(parent.status(), AgentThreadStatus::Suspended);
     let parent_records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, sp.parent.id())
+        .find_by_thread_id(&mut conn, sp.parent.id())
         .await
         .expect("parent log");
     assert!(
@@ -410,7 +410,7 @@ async fn test_child_terminal_discards_when_the_parent_is_no_longer_waiting() {
         .expect("present");
     assert_eq!(parent.status(), AgentThreadStatus::Cancelled);
     let parent_records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, sp.parent.id())
+        .find_by_thread_id(&mut conn, sp.parent.id())
         .await
         .expect("parent log");
     assert!(
@@ -492,7 +492,7 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
         .expect("present");
     assert_eq!(parent.status(), AgentThreadStatus::Running);
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, sp.parent.id())
+        .find_by_thread_id(&mut conn, sp.parent.id())
         .await
         .expect("parent log");
     let result = records
@@ -701,7 +701,7 @@ async fn test_deferred_death_crosses_the_failure_into_the_parent() {
         .expect("present");
     assert_eq!(parent.status(), AgentThreadStatus::Running);
     let parent_records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut conn, sp.parent.id())
+        .find_by_thread_id(&mut conn, sp.parent.id())
         .await
         .expect("parent log");
     let result = parent_records

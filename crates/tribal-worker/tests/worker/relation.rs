@@ -673,7 +673,7 @@ async fn test_find_triage_submissions_by_job_surfaces_agentic_handoffs() {
     // No submission yet: the read finds nothing, the same as a one-shot
     // thread that commits no submission record.
     let before = PgAgentThreadRecordRepository
-        .find_triage_submissions_by_job(&mut conn, job_id)
+        .find_triage_submissions_by_job_id(&mut conn, job_id)
         .await
         .expect("read before");
     assert!(
@@ -707,7 +707,7 @@ async fn test_find_triage_submissions_by_job_surfaces_agentic_handoffs() {
         .expect("submission record");
 
     let submissions = PgAgentThreadRecordRepository
-        .find_triage_submissions_by_job(&mut conn, job_id)
+        .find_triage_submissions_by_job_id(&mut conn, job_id)
         .await
         .expect("read after");
     assert_eq!(submissions.len(), 1, "the triage submission is found");

@@ -316,6 +316,39 @@ mod tests {
         );
     }
 
+    /// The agentic triage handoff reaches the relation model through the
+    /// launched template: a candidate that carried notes renders them in a
+    /// fenced line, and a candidate with none renders nothing — so the
+    /// one-shot path (no handoffs) is byte-identical, which the golden
+    /// snapshot pins.
+    #[test]
+    fn test_the_handoff_renders_into_the_relation_template() {
+        let data = rich_test_data();
+        let ctx = rich_context(&data);
+        let request = assemble_relation_prompt(
+            "system",
+            include_str!("../../../../prompts/relation/user.tera"),
+            &ctx,
+            &StageParameters::default(),
+        )
+        .unwrap();
+        let user_content = request.messages[0].content();
+
+        assert!(
+            user_content.contains("Notes from triage:"),
+            "the handoff is surfaced under a label: {user_content}",
+        );
+        assert!(
+            user_content.contains("the candidate links auth and billing"),
+            "the handoff text reaches the relation prompt: {user_content}",
+        );
+        assert_eq!(
+            user_content.matches("Notes from triage:").count(),
+            1,
+            "only the one candidate that carried a handoff renders the line",
+        );
+    }
+
     #[test]
     fn test_renders_relation_hints_into_user_prompt() {
         let data = rich_test_data();

@@ -76,7 +76,7 @@ pub async fn ensure_stage_thread(
     binding: &AgentBinding,
 ) -> Result<StageThread, AgentRuntimeError> {
     let existing = PgAgentThreadRepository
-        .find_by_stage_task(conn, task.id())
+        .find_by_stage_task_id(conn, task.id())
         .await
         .map_err(|source| AgentRuntimeError::database("finding the stage task's thread", source))?;
 
@@ -114,7 +114,7 @@ pub async fn ensure_stage_thread(
     };
 
     let input = PgAgentThreadRecordRepository
-        .find_by_thread(conn, thread.id())
+        .find_by_thread_id(conn, thread.id())
         .await
         .map_err(|source| AgentRuntimeError::database("reading the thread's log", source))?
         .into_iter()
@@ -165,7 +165,7 @@ async fn create_stage_thread(
             // runs on the clean connection.
             drop(txn);
             PgAgentThreadRepository
-                .find_by_stage_task(conn, task.id())
+                .find_by_stage_task_id(conn, task.id())
                 .await
                 .map_err(|source| {
                     AgentRuntimeError::database("re-reading the race winner's thread", source)

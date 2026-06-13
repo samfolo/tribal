@@ -823,11 +823,12 @@ struct Projection {
     /// result and not yet superseded by a later turn. The loop re-derives
     /// its disposition from this rather than issuing fresh inference.
     resolved_submission: Option<ResolvedSubmission>,
-    /// Verifier rounds already completed: the count of returned verdicts
-    /// in the log, the committed-record measure of child launches the
-    /// verify budget bounds. A launch always suspends and re-enters, so
-    /// this is recomputed fresh at every entry rather than maintained.
-    verifier_rounds: u32,
+    /// Child threads this thread has launched: the count of
+    /// suspend-with-child suspension records in the log, the
+    /// committed-record measure the verify budget (`max_child_launches`)
+    /// bounds. A launch always suspends and re-enters, so this is
+    /// recomputed fresh at every entry rather than maintained.
+    child_launches: u32,
 }
 
 /// A returned verifier verdict awaiting the loop's disposition.
@@ -864,7 +865,7 @@ async fn read_log(
     thread: &AgentThread,
 ) -> Result<Vec<AgentThreadRecord>, AgentRuntimeError> {
     PgAgentThreadRecordRepository
-        .find_by_thread(conn, thread.id())
+        .find_by_thread_id(conn, thread.id())
         .await
         .map_err(|source| AgentRuntimeError::database("reading the thread's log", source))
 }
@@ -881,15 +882,11 @@ fn project(
         tail: None,
         carried_rechecks: None,
         resolved_submission: None,
-        verifier_rounds: 0,
+        child_launches: 0,
     };
     let mut saw_rendered = false;
     let mut pending: Option<PendingBatch> = None;
     let mut resolved: Option<ResolvedSubmission> = None;
-    // Every submit call seen across the log, so a verdict answering one
-    // is counted as a completed round wherever it lands, not only on the
-    // trailing turn the resume path reads.
-    let mut submit_call_ids: HashSet<String> = HashSet::new();
 
     for record in records {
         projection.carried_rechecks = None;
@@ -911,8 +908,12 @@ fn project(
                     // A system-authored user turn the model reads (drift
                     // diagnostics, a human resolution): conversation-
                     // bearing, but not graph data, so it joins the
-                    // messages without entering the membership corpus.
+                    // messages without entering the membership corpus. It
+                    // also supersedes a pending verdict — the injection is
+                    // that verdict's disposition — so a crash between the
+                    // injection and the next turn never re-resolves it.
                     projection.messages.push(Message::User { content: message });
+                    resolved = None;
                 } else {
                     // A bookkeeping resolution (a timer or budget wake):
                     // never model-facing. A budget wake carries the
@@ -937,11 +938,6 @@ fn project(
                         })
                         .collect(),
                 });
-                for call in &content.tool_calls {
-                    if call.name == SUBMIT_RESULT_TOOL {
-                        submit_call_ids.insert(call.id.clone());
-                    }
-                }
                 // A new turn supersedes any verdict that has not yet been
                 // dispositioned: only the trailing submission is resolved.
                 resolved = None;
@@ -966,15 +962,6 @@ fn project(
                 });
                 if !content.is_error {
                     projection.corpus.push(content.output.clone());
-                }
-                // A non-error result answering a submit call that parses as
-                // a verdict is a completed verifier round — counted across
-                // the whole log so the verify budget bounds total launches.
-                if !content.is_error
-                    && submit_call_ids.contains(call_id)
-                    && serde_json::from_str::<VerdictContent>(&content.output).is_ok()
-                {
-                    projection.verifier_rounds += 1;
                 }
                 if let Some(batch) = &mut pending
                     && record.requesting_seq() == Some(batch.requesting_seq)
@@ -1001,10 +988,21 @@ fn project(
                     }
                 }
             }
+            // A suspension that launched a child counts against the
+            // verify budget: one suspend-with-child is one launch,
+            // counted whether its child later completed or died, so the
+            // budget bounds fan-out rather than only successful rounds. A
+            // budget-exhaustion suspension launches nothing and is skipped.
+            AgentThreadRecordKind::Suspension => {
+                if let Ok(AgentThreadSuspension::DeferredToolResults { .. }) =
+                    serde_json::from_value::<AgentThreadSuspension>(record.content().clone())
+                {
+                    projection.child_launches += 1;
+                }
+            }
             // Control and terminal records are never model-facing; the
             // observed kind belongs to the external executor.
-            AgentThreadRecordKind::Suspension
-            | AgentThreadRecordKind::Cancellation
+            AgentThreadRecordKind::Cancellation
             | AgentThreadRecordKind::Submission
             | AgentThreadRecordKind::ObservedToolEvent => {}
         }
@@ -1403,10 +1401,11 @@ enum BatchOutcome {
 
 /// Executes a batch's unanswered calls sequentially, in call order.
 ///
-/// A bounced submission commits its diagnostics and the batch
-/// continues; an accepted one stops it — the calls after an accepted
-/// submit are never executed, and no model awaits their answers,
-/// because the thread terminates.
+/// A bounced submission commits its diagnostics and the batch continues;
+/// an accepted submission stops the batch, so any calls the model issued
+/// alongside `submit_result` are left for the next entry to project. The
+/// batch returns at that point to either the stage terminal (no verifier
+/// or budget spent) or the verifier suspension.
 async fn execute_batch(
     conn: &mut PgConnection,
     deps: &TurnLoopDeps<'_>,
@@ -1449,7 +1448,7 @@ async fn execute_batch(
                             if deps
                                 .budgets
                                 .max_child_launches
-                                .is_some_and(|cap| projection.verifier_rounds >= cap)
+                                .is_some_and(|cap| projection.child_launches >= cap)
                             {
                                 return Ok(BatchOutcome::Submitted(AcceptedSubmission {
                                     payload,
@@ -2110,40 +2109,57 @@ mod tests {
         );
     }
 
-    /// Verifier rounds are counted across the whole log, not just the
-    /// trailing turn: every returned verdict is a completed round the
-    /// verify budget bounds, while a bounce and a still-pending submit are
-    /// not.
+    /// Child launches are counted from the suspend-with-child suspension
+    /// records across the whole log — the measure the verify budget
+    /// bounds. A launch counts whether its verdict accepts, rejects, or
+    /// the child dies; a budget-exhaustion suspension launches nothing and
+    /// is not counted.
     #[test]
-    fn test_projection_counts_verifier_rounds_across_the_log() {
+    fn test_projection_counts_child_launches_from_suspensions() {
         let thread = an_agent_thread().build();
+        let launch = |seq: i64, call: &str| {
+            an_agent_thread_record()
+                .thread_id(thread.id())
+                .seq(AgentThreadRecordSeq::new(seq))
+                .kind(AgentThreadRecordKind::Suspension)
+                .content(
+                    serde_json::to_value(AgentThreadSuspension::DeferredToolResults {
+                        requesting_seq: AgentThreadRecordSeq::new(seq - 1),
+                        pending_tool_call_ids: vec![call.to_owned()],
+                    })
+                    .expect("serialises"),
+                )
+                .build()
+        };
         let records = vec![
             rendered_input(&thread, "triage this"),
-            // Round one: submitted, verifier rejected.
+            // Launch one: submit, suspend on the verifier, verdict rejects.
             assistant_record(&thread, 1, "", vec![a_call("call_1", SUBMIT_RESULT_TOOL)]),
-            tool_result_record(
-                &thread,
-                2,
-                1,
-                "call_1",
-                r#"{"accepted": false, "critique": "missed a duplicate"}"#,
-                false,
-            ),
-            // A bounce on the re-submission: an error result, not a round.
-            assistant_record(&thread, 3, "", vec![a_call("call_2", SUBMIT_RESULT_TOOL)]),
-            tool_result_record(&thread, 4, 3, "call_2", "bounced: copy ids exactly", true),
-            // Round two: re-submitted, verifier accepted.
-            assistant_record(&thread, 5, "", vec![a_call("call_3", SUBMIT_RESULT_TOOL)]),
-            tool_result_record(&thread, 6, 5, "call_3", r#"{"accepted": true}"#, false),
-            // A third submission still awaiting its verdict — no round yet.
-            assistant_record(&thread, 7, "", vec![a_call("call_4", SUBMIT_RESULT_TOOL)]),
+            launch(2, "call_1"),
+            tool_result_record(&thread, 3, 1, "call_1", r#"{"accepted": false}"#, false),
+            // Launch two: re-submit, suspend, verdict accepts.
+            assistant_record(&thread, 4, "", vec![a_call("call_2", SUBMIT_RESULT_TOOL)]),
+            launch(5, "call_2"),
+            tool_result_record(&thread, 6, 4, "call_2", r#"{"accepted": true}"#, false),
+            // A budget-exhaustion suspension is not a child launch.
+            an_agent_thread_record()
+                .thread_id(thread.id())
+                .seq(AgentThreadRecordSeq::new(7))
+                .kind(AgentThreadRecordKind::Suspension)
+                .content(
+                    serde_json::to_value(AgentThreadSuspension::BudgetExhaustion {
+                        unchanged_rechecks: 0,
+                    })
+                    .expect("serialises"),
+                )
+                .build(),
         ];
 
         let projection = project(&thread, &records).expect("projects");
         assert_eq!(
-            projection.verifier_rounds, 2,
-            "two returned verdicts are two completed rounds; the bounce and the pending \
-             submit are neither",
+            projection.child_launches, 2,
+            "two suspend-with-child launches counted; the budget-exhaustion suspension is \
+             not a launch",
         );
     }
 

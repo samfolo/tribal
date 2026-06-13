@@ -7,10 +7,11 @@ use tribal_agent_runtime::{StageThread, SubmissionContent};
 use tribal_common::clamp_to_u32;
 use tribal_config::ExecutorChoice;
 use tribal_db::{
-    AgentThreadRecordRepository, ExtractionResultRepository, KnowledgeItemRepository,
-    NewKnowledgeItemRelation, PgAgentThreadRecordRepository, PgExtractionResultRepository,
-    PgKnowledgeItemRepository, PgTriageResultRepository, PgTriageSimilarItemDecisionRepository,
-    TriageResultRepository, TriageSimilarItemDecisionRepository,
+    AgentThreadRecordRepository, ExtractionResultRepository, JobTriageSubmission,
+    KnowledgeItemRepository, NewKnowledgeItemRelation, PgAgentThreadRecordRepository,
+    PgExtractionResultRepository, PgKnowledgeItemRepository, PgTriageResultRepository,
+    PgTriageSimilarItemDecisionRepository, TriageResultRepository,
+    TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
     Candidate, Job, JobId, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
@@ -145,18 +146,25 @@ async fn load_triage_handoffs(
     job_id: JobId,
 ) -> Result<HashMap<u32, String>, StageError> {
     let submissions = PgAgentThreadRecordRepository
-        .find_triage_submissions_by_job(conn, job_id)
+        .find_triage_submissions_by_job_id(conn, job_id)
         .await
         .map_err(|source| relation_db_error("loading triage handoffs", source))?;
+    Ok(handoffs_by_batch_index(submissions))
+}
 
-    Ok(submissions
+/// Extracts each submission's downstream handoff, keyed by candidate batch
+/// index. Each submission is parsed individually and a malformed one
+/// skipped (best-effort enrichment, never a stage failure); a submission
+/// that carried no handoff contributes no entry.
+fn handoffs_by_batch_index(submissions: Vec<JobTriageSubmission>) -> HashMap<u32, String> {
+    submissions
         .into_iter()
         .filter_map(|submission| {
             let content: SubmissionContent = serde_json::from_value(submission.content).ok()?;
             let payload: TriageSubmission = serde_json::from_value(content.payload).ok()?;
             payload.handoff.map(|notes| (submission.batch_index, notes))
         })
-        .collect())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +891,46 @@ mod tests {
         assert_eq!(normalised[0].source_id, ki_created);
         assert_eq!(normalised[0].target_id, ki_existing);
         assert_eq!(skipped, 0);
+    }
+
+    /// The handoff extraction reads each submission's notes by batch
+    /// index, drops a submission that carried none, and skips a malformed
+    /// one rather than failing the stage.
+    #[test]
+    fn test_handoffs_by_batch_index_extracts_skips_and_drops() {
+        let submission = |batch_index: u32, content: serde_json::Value| JobTriageSubmission {
+            batch_index,
+            content,
+        };
+        let with_handoff = submission(
+            0,
+            serde_json::json!({
+                "payload": { "decision": { "decision": "created" }, "handoff": "links auth and billing" },
+                "requesting_seq": 1,
+                "tool_call_id": "call_submit",
+            }),
+        );
+        let no_handoff = submission(
+            1,
+            serde_json::json!({
+                "payload": { "decision": { "decision": "created" } },
+                "requesting_seq": 1,
+                "tool_call_id": "call_submit",
+            }),
+        );
+        let malformed = submission(2, serde_json::json!({ "not": "a submission" }));
+
+        let handoffs = handoffs_by_batch_index(vec![with_handoff, no_handoff, malformed]);
+
+        assert_eq!(
+            handoffs.len(),
+            1,
+            "only the submission that carried a handoff contributes"
+        );
+        assert_eq!(
+            handoffs.get(&0).map(String::as_str),
+            Some("links auth and billing"),
+        );
     }
 
     #[test]

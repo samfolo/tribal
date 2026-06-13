@@ -189,7 +189,7 @@ async fn test_thread_inserts_queued_with_stage_driver() {
     assert!(thread.completed_at().is_none());
 
     let by_task = PgAgentThreadRepository
-        .find_by_stage_task(&mut txn, prerequisites.stage_task_id)
+        .find_by_stage_task_id(&mut txn, prerequisites.stage_task_id)
         .await
         .expect("find by stage task")
         .expect("present");
@@ -276,7 +276,7 @@ async fn test_find_by_job_lists_only_the_jobs_stage_threads() {
         .expect("insert thread b1");
 
     let threads = PgAgentThreadRepository
-        .find_by_job(&mut txn, prerequisites.job_id)
+        .find_by_job_id(&mut txn, prerequisites.job_id)
         .await
         .expect("find by job");
 
@@ -511,7 +511,7 @@ async fn test_record_append_advances_seq_and_lists_in_order() {
         .expect("append assistant message");
 
     let records = PgAgentThreadRecordRepository
-        .find_by_thread(&mut txn, thread.id())
+        .find_by_thread_id(&mut txn, thread.id())
         .await
         .expect("list");
     assert_eq!(records.len(), 2);
@@ -548,7 +548,7 @@ async fn test_record_pages_chain_through_the_log_without_gaps() {
     }
 
     let first = PgAgentThreadRecordRepository
-        .find_by_thread_from(&mut txn, thread.id(), AgentThreadRecordSeq::FIRST, 2)
+        .find_by_thread_id_from(&mut txn, thread.id(), AgentThreadRecordSeq::FIRST, 2)
         .await
         .expect("first page");
     let seqs: Vec<i64> = first.iter().map(|r| r.seq().inner()).collect();
@@ -558,7 +558,7 @@ async fn test_record_pages_chain_through_the_log_without_gaps() {
     // chaining this way walks the log without gaps or repeats.
     let resume = first.last().expect("non-empty page").seq().next();
     let second = PgAgentThreadRecordRepository
-        .find_by_thread_from(&mut txn, thread.id(), resume, 2)
+        .find_by_thread_id_from(&mut txn, thread.id(), resume, 2)
         .await
         .expect("second page");
     let seqs: Vec<i64> = second.iter().map(|r| r.seq().inner()).collect();
@@ -566,14 +566,14 @@ async fn test_record_pages_chain_through_the_log_without_gaps() {
 
     let resume = second.last().expect("non-empty page").seq().next();
     let tail = PgAgentThreadRecordRepository
-        .find_by_thread_from(&mut txn, thread.id(), resume, 2)
+        .find_by_thread_id_from(&mut txn, thread.id(), resume, 2)
         .await
         .expect("tail page");
     let seqs: Vec<i64> = tail.iter().map(|r| r.seq().inner()).collect();
     assert_eq!(seqs, vec![4]);
 
     let beyond = PgAgentThreadRecordRepository
-        .find_by_thread_from(&mut txn, thread.id(), AgentThreadRecordSeq::new(5), 2)
+        .find_by_thread_id_from(&mut txn, thread.id(), AgentThreadRecordSeq::new(5), 2)
         .await
         .expect("page beyond the log");
     assert!(beyond.is_empty());
@@ -1369,7 +1369,7 @@ async fn test_prune_deletes_only_aged_terminal_threads() {
     );
     assert!(
         PgAgentThreadRecordRepository
-            .find_by_thread(&mut txn, terminal.id())
+            .find_by_thread_id(&mut txn, terminal.id())
             .await
             .expect("log")
             .is_empty(),
