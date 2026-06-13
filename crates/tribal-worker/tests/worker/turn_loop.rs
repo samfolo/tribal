@@ -15,8 +15,8 @@ use tribal_agent_runtime::{
     HeartbeatPump, LoopOutcome, ParentResolution, RecheckPolicy, RecordedMessage,
     RenderedConversation, SUBMIT_RESULT_TOOL, SeenCorpus, StageTool, SubmissionOutcome,
     SubmissionPipeline, ToolOutcome, ToolRegistry, TurnLoopDeps, VerifierLaunch, admit_inference,
-    commit_child_terminal, commit_loop_terminal, resolve_stage_thread, run_turn_loop,
-    verdict_schema,
+    commit_child_terminal, commit_deferred_death, commit_loop_terminal, resolve_stage_thread,
+    run_turn_loop, verdict_schema,
 };
 use tribal_db::{
     AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository,
@@ -1388,6 +1388,71 @@ async fn hand_back_verdict(conn: &mut PgConnection, parent_id: AgentThreadId, ve
     assert_eq!(outcome, ChildTerminalOutcome::HandedBack);
 }
 
+/// Kills a suspended parent's verifier child via deferred death, exactly
+/// as the driver loop does on a child's final failure: the failure crosses
+/// back to the parent as an error tool result, and the launch the child
+/// stood on is already counted against the verify budget.
+async fn kill_child_via_deferred_death(
+    conn: &mut PgConnection,
+    parent_id: AgentThreadId,
+    message: &str,
+) {
+    let claimed = PgAgentDriverTaskRepository
+        .claim(conn, 1, "verifier-death-test")
+        .await
+        .expect("claim the child's driver task");
+    let driver = claimed.first().expect("a pending driver task").clone();
+    let child = PgAgentThreadRepository
+        .find_by_id(conn, driver.thread_id())
+        .await
+        .expect("find child")
+        .expect("present");
+    PgAgentThreadRepository
+        .mark_running(conn, child.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("mark child running");
+
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread_id(conn, parent_id)
+        .await
+        .expect("parent log");
+    let (requesting_seq, tool_call_id) = records
+        .iter()
+        .rev()
+        .find_map(|r| {
+            if r.kind() != AgentThreadRecordKind::Suspension {
+                return None;
+            }
+            match serde_json::from_value(r.content().clone()) {
+                Ok(AgentThreadSuspension::DeferredToolResults {
+                    requesting_seq,
+                    pending_tool_call_ids,
+                }) => pending_tool_call_ids
+                    .into_iter()
+                    .next()
+                    .map(|id| (requesting_seq, id)),
+                _ => None,
+            }
+        })
+        .expect("a launching suspension");
+
+    let outcome = commit_deferred_death(
+        conn,
+        &child,
+        driver.id(),
+        driver.claim_token().expect("token"),
+        &ParentResolution {
+            thread_id: parent_id,
+            requesting_seq,
+            tool_call_id,
+        },
+        message,
+    )
+    .await
+    .expect("the deferred death crosses back");
+    assert_eq!(outcome, ChildTerminalOutcome::HandedBack);
+}
+
 /// Re-claims a parent's woken stage task and re-reads its thread, the
 /// resume a fresh worker performs after the hand-back re-queues the task.
 async fn reclaim_parent(
@@ -1490,6 +1555,83 @@ async fn test_an_accepted_verdict_commits_the_submission_on_resume() {
         1,
         "the commit re-validates the recorded submission, it never re-asks the model",
     );
+
+    teardown(ctx).await;
+}
+
+/// An accepted verdict commits without running a tool call the model
+/// issued alongside `submit_result`. The verdict dispositions before the
+/// leftover tail, so a sibling call — here one that fails the loop with a
+/// system error if it runs — is dropped rather than pre-empting (or, on
+/// failure, sinking) the verified submission.
+#[tokio::test]
+async fn test_an_accepted_verdict_drops_a_sibling_call_rather_than_running_it() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let child_binding = a_child_binding(ctx).await;
+    // One assistant turn emits submit_result first, then a sibling tool;
+    // submit_result accepts and launches the verifier, leaving the sibling
+    // unanswered for the resume to project as the tail.
+    let mut harness = loop_harness(
+        ctx,
+        "verify-sibling",
+        vec![a_tool_call_response(&[
+            (
+                "call_0",
+                SUBMIT_RESULT_TOOL,
+                serde_json::json!({"claim_id": OPENING_ITEM_ID, "decision": "duplicate"}),
+            ),
+            ("call_1", "failing_lookup", serde_json::json!({})),
+        ])],
+    )
+    .await;
+    harness
+        .registry
+        .register(Arc::new(FailingTool {
+            descriptor: a_descriptor("failing_lookup"),
+            prepare_system: true,
+        }))
+        .expect("the sibling tool registers");
+    let pipeline = VerifyingPipeline { child_binding };
+
+    let attribution = harness.attribution();
+    let outcome = run_turn_loop(harness.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Suspended), "got {outcome:?}");
+
+    {
+        let mut conn = raw_conn(ctx).await;
+        hand_back_verdict(&mut conn, harness.thread.id(), r#"{"accepted": true}"#).await;
+    }
+
+    // Had the leftover sibling run first, its system failure would have
+    // errored the loop and lost the verified submission; a clean commit is
+    // the proof that the verdict dispositioned before the tail.
+    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let resumed = LoopHarness {
+        task,
+        thread,
+        ..harness
+    };
+    let attribution = resumed.attribution();
+    let outcome = run_turn_loop(resumed.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop resumes and commits without running the sibling");
+    let LoopOutcome::Submitted(accepted) = outcome else {
+        panic!("the accepted verdict commits the submission, got {outcome:?}");
+    };
+    assert_eq!(accepted.payload["claim_id"], OPENING_ITEM_ID);
 
     teardown(ctx).await;
 }
@@ -1733,6 +1875,69 @@ async fn test_the_verify_budget_bounds_launches_then_commits_directly() {
     assert!(
         matches!(outcome, LoopOutcome::Submitted(_)),
         "the spent verify budget commits on the validators alone, got {outcome:?}",
+    );
+
+    teardown(ctx).await;
+}
+
+/// A dead verifier consumes a verify round end to end: the child dies via
+/// deferred death rather than returning a verdict, yet under a budget of
+/// one the resumed loop's resubmission commits directly on the validators,
+/// proving the dead launch spent the round.
+#[tokio::test]
+async fn test_a_dead_verifier_consumes_a_round_and_the_loop_commits_directly() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let child_binding = a_child_binding(ctx).await;
+    let harness = loop_harness(
+        ctx,
+        "verify-death",
+        vec![
+            submit_response("call_0", OPENING_ITEM_ID),
+            submit_response("call_1", OPENING_ITEM_ID),
+        ],
+    )
+    .await;
+    let pipeline = VerifyingPipeline { child_binding };
+    let budget = ExecutionBudgets::builder()
+        .max_child_launches(Some(1))
+        .build();
+
+    // Round one launches the verifier under a budget of one.
+    let attribution = harness.attribution();
+    let outcome = run_turn_loop(harness.deps(an_opening(), &attribution, &pipeline, budget))
+        .await
+        .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Suspended));
+
+    // The child dies instead of returning a verdict; the failure crosses
+    // back as an error result and the launch is already counted.
+    {
+        let mut conn = raw_conn(ctx).await;
+        kill_child_via_deferred_death(
+            &mut conn,
+            harness.thread.id(),
+            "the verifier exhausted its retries",
+        )
+        .await;
+    }
+
+    // The resume re-decides against the error, but the one launch is spent
+    // even though no verdict ever returned: the resubmission commits
+    // directly rather than launching a second verifier.
+    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let resumed = LoopHarness {
+        task,
+        thread,
+        ..harness
+    };
+    let attribution = resumed.attribution();
+    let outcome = run_turn_loop(resumed.deps(an_opening(), &attribution, &pipeline, budget))
+        .await
+        .expect("the loop resumes");
+    assert!(
+        matches!(outcome, LoopOutcome::Submitted(_)),
+        "a dead verifier consumed the round; the resubmission commits directly, got {outcome:?}",
     );
 
     teardown(ctx).await;

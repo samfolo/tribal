@@ -593,6 +593,25 @@ pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentR
     let mut projection = project(deps.thread, &records)?;
 
     loop {
+        // A returned verifier verdict resolves before the unanswered tail
+        // and before any boundary: an accepted-and-still-valid submission
+        // terminates without a further call, and any call the model issued
+        // alongside `submit_result` is dropped rather than executed after
+        // acceptance. A rejection or post-acceptance drift continues the
+        // loop with the critique or the diagnostics already in context,
+        // leaving those leftover calls for the tail to answer on the way
+        // to the next turn. Dispositioning the verdict first is what keeps
+        // a sibling tool call from pre-empting (or, on failure, sinking)
+        // the verified submission.
+        if let Some(resolved) = projection.resolved_submission.take() {
+            if let Some(accepted) =
+                resolve_verdict(&mut conn, &deps, &mut projection, resolved).await?
+            {
+                return Ok(LoopOutcome::Submitted(accepted));
+            }
+            continue;
+        }
+
         if let Some(batch) = projection.tail.take() {
             match execute_batch(&mut conn, &deps, &mut projection, batch).await? {
                 BatchOutcome::Completed => {}
@@ -602,20 +621,6 @@ pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentR
                 BatchOutcome::Reproject => {
                     projection = read_projection(&mut conn, deps.thread).await?;
                 }
-            }
-            continue;
-        }
-
-        // A returned verifier verdict resolves before any boundary: an
-        // accepted-and-still-valid submission terminates without a
-        // further call, a rejection or post-acceptance drift continues
-        // the loop with the critique or the diagnostics already in
-        // context.
-        if let Some(resolved) = projection.resolved_submission.take() {
-            if let Some(accepted) =
-                resolve_verdict(&mut conn, &deps, &mut projection, resolved).await?
-            {
-                return Ok(LoopOutcome::Submitted(accepted));
             }
             continue;
         }
@@ -2106,6 +2111,51 @@ mod tests {
         assert!(
             projection.resolved_submission.is_none(),
             "a later turn means the verdict was already dispositioned",
+        );
+    }
+
+    /// A post-acceptance drift injection dispositions the pending verdict:
+    /// a log ending in an injected message after an accepted verdict
+    /// re-projects to no resolved submission, so a crash between the
+    /// injection and the next turn never re-resolves an already-handled
+    /// verdict.
+    #[test]
+    fn test_projection_clears_a_verdict_superseded_by_an_injected_message() {
+        let thread = an_agent_thread().build();
+        let injected = an_agent_thread_record()
+            .thread_id(thread.id())
+            .seq(AgentThreadRecordSeq::new(3))
+            .kind(AgentThreadRecordKind::Input)
+            .content(
+                serde_json::to_value(InjectedMessage {
+                    content: "the graph changed since acceptance; re-decide".to_owned(),
+                })
+                .expect("serialises"),
+            )
+            .build();
+        let records = vec![
+            rendered_input(&thread, "triage this"),
+            assistant_record(
+                &thread,
+                1,
+                "",
+                vec![a_call("call_submit", SUBMIT_RESULT_TOOL)],
+            ),
+            tool_result_record(&thread, 2, 1, "call_submit", r#"{"accepted": true}"#, false),
+            injected,
+        ];
+
+        let projection = project(&thread, &records).expect("projects");
+        assert!(
+            projection.resolved_submission.is_none(),
+            "an injected message after a verdict is that verdict's disposition",
+        );
+        assert!(
+            matches!(
+                projection.messages.last(),
+                Some(Message::User { content }) if content.contains("re-decide"),
+            ),
+            "the drift diagnostics reach the model as the next user turn",
         );
     }
 
