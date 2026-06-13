@@ -15,6 +15,7 @@
 mod agentic;
 mod common;
 mod coupling;
+mod driver;
 mod extraction;
 mod fixtures;
 mod lifecycle;

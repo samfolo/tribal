@@ -43,8 +43,8 @@ use tribal_telemetry::{current_span_id, current_trace_id};
 use crate::{
     AgentRuntimeError, SuspendOutcome, ToolRegistry, suspend_stage_thread,
     turn::{
-        AssistantContent, RecordedToolCall, RecordedUsage, RenderedConversation, begin_turn,
-        is_rendered_conversation,
+        AssistantContent, DrivingClaim, RecordedToolCall, RecordedUsage, RenderedConversation,
+        begin_turn, is_rendered_conversation,
     },
     txn::{begin, commit},
 };
@@ -497,8 +497,7 @@ pub async fn run_turn_loop(deps: TurnLoopDeps<'_>) -> Result<LoopOutcome, AgentR
         begin_turn(
             &mut conn,
             deps.thread,
-            deps.task_id,
-            deps.claim_token,
+            DrivingClaim::stage(deps.task_id, deps.claim_token),
             None,
             deps.rendered.clone(),
         )
@@ -1333,17 +1332,11 @@ async fn guard_claim(
     txn: &mut PgConnection,
     deps: &TurnLoopDeps<'_>,
 ) -> Result<(), AgentRuntimeError> {
-    let held = PgTaskRepository
-        .holds_claim(txn, deps.task_id, deps.claim_token)
+    // The triage loop is stage-driven; the shared guard verifies its
+    // stage lease.
+    DrivingClaim::stage(deps.task_id, deps.claim_token)
+        .require(txn)
         .await
-        .map_err(|source| AgentRuntimeError::database("verifying the lease", source))?;
-    if held {
-        Ok(())
-    } else {
-        Err(AgentRuntimeError::LeaseLost {
-            task_id: deps.task_id,
-        })
-    }
 }
 
 async fn reset_progress(

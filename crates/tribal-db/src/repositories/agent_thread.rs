@@ -71,6 +71,15 @@ pub enum DrivingTaskRef {
     Driver(AgentDriverTaskId),
 }
 
+impl std::fmt::Display for DrivingTaskRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stage(id) => write!(f, "stage task {id}"),
+            Self::Driver(id) => write!(f, "driver task {id}"),
+        }
+    }
+}
+
 /// Input for creating a thread.
 ///
 /// `id`, `status` (queued), counters, and timestamps are

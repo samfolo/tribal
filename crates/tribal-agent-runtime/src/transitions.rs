@@ -13,7 +13,7 @@
 use serde::Serialize;
 use sqlx::PgConnection;
 use tribal_db::{
-    AgentThreadRecordRepository, AgentThreadRepository, NewAgentThreadRecord,
+    AgentThreadRecordRepository, AgentThreadRepository, DrivingTaskRef, NewAgentThreadRecord,
     PgAgentThreadRecordRepository, PgAgentThreadRepository, PgTaskRepository, TaskRepository,
 };
 use tribal_domain::{
@@ -65,7 +65,9 @@ pub async fn suspend_stage_thread(
         .await
         .map_err(|source| AgentRuntimeError::database("blocking the driving task", source))?;
     if blocked == 0 {
-        return Err(AgentRuntimeError::LeaseLost { task_id });
+        return Err(AgentRuntimeError::LeaseLost {
+            driving_task: DrivingTaskRef::Stage(task_id),
+        });
     }
 
     PgAgentThreadRepository

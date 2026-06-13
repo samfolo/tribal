@@ -712,8 +712,10 @@ async fn test_mid_turn_crash_resume_executes_pending_calls_only() {
         tribal_agent_runtime::begin_turn(
             &mut conn,
             &harness.thread,
-            harness.task.id(),
-            harness.task.claim_token().expect("token"),
+            tribal_agent_runtime::DrivingClaim::stage(
+                harness.task.id(),
+                harness.task.claim_token().expect("token"),
+            ),
             None,
             an_opening(),
         )

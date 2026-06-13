@@ -655,8 +655,7 @@ async fn test_a_stale_lease_cannot_commit_an_input_record() {
     let err = tribal_agent_runtime::begin_turn(
         &mut conn,
         &stage_thread.thread,
-        task.id(),
-        uuid::Uuid::new_v4(),
+        tribal_agent_runtime::DrivingClaim::stage(task.id(), uuid::Uuid::new_v4()),
         None,
         rendered,
     )

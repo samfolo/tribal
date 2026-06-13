@@ -1,6 +1,7 @@
 //! Crate-level error type for the agent runtime.
 
 use thiserror::Error;
+use tribal_db::DrivingTaskRef;
 use tribal_domain::{AgentThreadId, AgentThreadStatus, TaskId};
 
 /// Errors from the runtime's thread-store and turn operations.
@@ -27,12 +28,14 @@ pub enum AgentRuntimeError {
         expected: AgentThreadStatus,
     },
 
-    /// The claim-guarded task write affected zero rows: the lease was
-    /// lost and the whole commit must roll back.
-    #[error("task {task_id} lease lost during a thread-runtime commit")]
+    /// The claim-guarded driving-task write affected zero rows: the
+    /// lease was lost and the whole commit must roll back. Carries the
+    /// driving task — stage or driver — so both families' guards report
+    /// the same way.
+    #[error("{driving_task} lease lost during a thread-runtime commit")]
     LeaseLost {
-        /// The task whose claim token no longer matches.
-        task_id: TaskId,
+        /// The driving task whose claim token no longer matches.
+        driving_task: DrivingTaskRef,
     },
 
     /// A stage task's thread vanished between operations — a consistency
