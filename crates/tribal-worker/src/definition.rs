@@ -97,6 +97,28 @@ pub fn derive_stage_definition(
     }
 }
 
+/// The budgets the admission check enforces for a stage right now.
+///
+/// Budgets re-resolve from the current configuration at every claim —
+/// never from the thread's recorded binding — so headroom can genuinely
+/// return through a configuration change while the binding stays the
+/// recorded truth of what ran. The executor kind is the recorded one:
+/// a loop thread keeps the finite-default discipline whatever the
+/// configuration now selects.
+pub(crate) fn current_stage_budgets(
+    stage: TaskType,
+    executor: StageExecutorKind,
+    agents: &AgentsConfig,
+) -> ExecutionBudgets {
+    match stage_agent_config(stage, agents) {
+        Some(stage_config) if executor == StageExecutorKind::BuiltInLoop => {
+            loop_budgets(stage_config)
+        }
+        Some(stage_config) => one_shot_budgets(stage_config),
+        None => ExecutionBudgets::default(),
+    }
+}
+
 /// The stage's agentic configuration, where one exists. Only triage is
 /// configurable in this release; the config section makes any other
 /// stage key an unknown-field error at load.

@@ -12,6 +12,7 @@
 //! rather than pool connections to avoid the `PoolConnection::drop`
 //! spawn issue that leaks connections across serialised tests.
 
+mod agentic;
 mod common;
 mod coupling;
 mod extraction;
