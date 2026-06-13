@@ -102,6 +102,7 @@ pub fn test_app_state(pool: sqlx::PgPool, ct: CancellationToken) -> Arc<AppState
             .build_version(Arc::from("test-build"))
             .stage_specs(test_stage_specs())
             .embedding_dimensions(768)
+            .agents_config(tribal_config::AgentsConfig::default())
             .pipeline_parameters(tribal_domain::PipelineParameters::default())
             .active_prompt_versions(Arc::new(RwLock::new(ActivePromptVersions::new(
                 PromptVersionId::new(),

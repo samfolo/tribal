@@ -217,6 +217,8 @@ pub(super) async fn build_test_worker_with_watch(
         pool,
         gateway,
         test_stage_specs(),
+        tribal_config::AgentsConfig::default(),
+        Arc::new(tribal_worker::NoAgenticPrompts),
         cancellation_token,
         config,
         false,

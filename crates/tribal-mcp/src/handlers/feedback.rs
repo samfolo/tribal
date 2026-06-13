@@ -205,6 +205,7 @@ impl TribalServerHandler {
             embedding: self.state.embedding_identity.clone(),
             embedding_dimensions: self.state.embedding_dimensions,
             pipeline: self.state.pipeline_parameters.clone(),
+            agents: self.state.agents_config.clone(),
         };
 
         let feedback_params = FeedbackParams {

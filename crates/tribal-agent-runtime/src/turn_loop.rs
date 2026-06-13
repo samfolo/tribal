@@ -127,7 +127,8 @@ pub struct SeenCorpus {
 }
 
 impl SeenCorpus {
-    fn push(&mut self, text: impl Into<String>) {
+    /// Records one piece of model-shown content.
+    pub fn push(&mut self, text: impl Into<String>) {
         self.texts.push(text.into());
     }
 

@@ -12,13 +12,15 @@ use tribal_db::{
     TriageSimilarItemDecisionRepository,
 };
 use tribal_domain::{
-    Candidate, CompletionResponse, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId,
-    RelationHint, RelationKind, Task, TaskType, TriageOutcome, TriageResult,
-    TriageSimilarItemDecision, span_attrs,
+    Candidate, Job, JobOutcome, KnowledgeItemId, PrincipalId, RelationBatchId, RelationHint,
+    RelationKind, Task, TaskType, TriageOutcome, TriageResult, TriageSimilarItemDecision,
+    span_attrs,
 };
 use tribal_inference::PermitWait;
 
-use super::{StageCommit, map_gateway_error, record_prompt_version_ids, stage_attribution};
+use super::{
+    StageCommit, StageTerminal, map_gateway_error, record_prompt_version_ids, stage_attribution,
+};
 use crate::{
     common::PARSE_PREVIEW_LENGTH,
     error::{STAGE_RELATION, StageError},
@@ -155,7 +157,7 @@ impl Worker {
         task: &Task,
         deadline: tokio::time::Instant,
         stage_thread: &StageThread,
-    ) -> Result<Option<(StageCommit, Option<CompletionResponse>)>, StageError> {
+    ) -> Result<Option<(StageCommit, StageTerminal)>, StageError> {
         let span = tracing::info_span!(
             "tribal.task.relation",
             { span_attrs::TASK_ID } = %task.id(),
@@ -172,7 +174,7 @@ impl Worker {
                     StageCommit::Relation {
                         decision: RelationCommitDecision::NoOp,
                     },
-                    None,
+                    StageTerminal::Completion(None),
                 )));
             }
 
@@ -269,7 +271,10 @@ impl Worker {
                 ctx.job.principal_id(),
             );
 
-            Ok(Some((StageCommit::Relation { decision }, Some(response))))
+            Ok(Some((
+                StageCommit::Relation { decision },
+                StageTerminal::Completion(Some(response)),
+            )))
         }
         .instrument(span)
         .await

@@ -1,9 +1,9 @@
 //! Shared utilities and types for pipeline stage implementations.
 
 use tribal_agent_runtime::{
-    AdmissionDecision, RecheckPolicy, RecordedMessage, RenderedConversation, StageThread,
-    SuspendOutcome, begin_turn, carried_rechecks, commit_noop_terminal, commit_one_shot_terminal,
-    decide_admission, suspend_stage_thread,
+    AcceptedSubmission, AdmissionDecision, RecheckPolicy, RecordedMessage, RenderedConversation,
+    StageThread, SuspendOutcome, begin_turn, carried_rechecks, commit_loop_terminal,
+    commit_noop_terminal, commit_one_shot_terminal, decide_admission, suspend_stage_thread,
 };
 use tribal_common::clamp_to_i32;
 use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
@@ -75,8 +75,8 @@ pub(crate) struct StageRun {
     pub(crate) thread: AgentThread,
     /// The domain effects to commit.
     pub(crate) commit: StageCommit,
-    /// The model response, when a turn ran.
-    pub(crate) response: Option<CompletionResponse>,
+    /// How the thread reaches its terminal in the commit transaction.
+    pub(crate) terminal: StageTerminal,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +234,19 @@ impl Worker {
 /// owner, the stage's prompt version pair, and the job's trace identity.
 pub(crate) fn stage_attribution(job: &Job, task: &Task, thread: &AgentThread) -> UsageAttribution {
     let (system_pv_id, user_pv_id) = prompt_version_ids_for_task(job, task);
+    attribution_with_prompts(job, task, thread, system_pv_id, user_pv_id)
+}
+
+/// Builds the ledger attribution with an explicit prompt version pair —
+/// the loop path attributes its calls to the binding's loop prompts,
+/// not the job's stamped one-shot pair.
+pub(crate) fn attribution_with_prompts(
+    job: &Job,
+    task: &Task,
+    thread: &AgentThread,
+    system_pv_id: PromptVersionId,
+    user_pv_id: PromptVersionId,
+) -> UsageAttribution {
     UsageAttribution {
         owner: UsageOwner::Pipeline {
             job_id: job.id(),
@@ -535,7 +548,7 @@ impl Worker {
 
     /// Re-reads the thread and runs the claim-time disposal for an
     /// intent that intervened mid-claim.
-    async fn dispose_intervened(
+    pub(crate) async fn dispose_intervened(
         &self,
         task: &Task,
         thread: &AgentThread,
@@ -579,20 +592,32 @@ pub(crate) struct BracketedTurn {
     pub resolution_context: Option<serde_json::Value>,
 }
 
+/// How a stage's thread reaches its terminal: the one-shot completion
+/// (with or without a turn) or the loop's accepted submission.
+pub(crate) enum StageTerminal {
+    /// A one-shot turn's response, `None` for an idempotency no-op.
+    Completion(Option<CompletionResponse>),
+    /// The loop's accepted submission; records and spend committed per
+    /// turn, the terminal contributes the submission record and the CAS.
+    Submission(AcceptedSubmission),
+}
+
 /// Commits a stage thread's terminal inside the caller's transaction:
-/// the assistant record and completed status when a turn ran, the bare
-/// completed status for a no-op. The completion's ledger row gains its
-/// record attribution in the same commit; zero linked rows means the
-/// sink's best-effort write never landed, which stays best-effort here.
+/// the assistant record and completed status when a one-shot turn ran,
+/// the bare completed status for a no-op, or the typed submission record
+/// and completed status for a loop. The one-shot completion's ledger row
+/// gains its record attribution in the same commit (a loop's rows were
+/// linked per turn); zero linked rows means the sink's best-effort write
+/// never landed, which stays best-effort here.
 pub(crate) async fn finish_thread(
     txn: &mut sqlx::PgConnection,
     stage: &str,
     thread: &AgentThread,
     task: &Task,
-    response: Option<&CompletionResponse>,
+    terminal: &StageTerminal,
 ) -> Result<(), StageError> {
-    match response {
-        Some(response) => {
+    match terminal {
+        StageTerminal::Completion(Some(response)) => {
             let outcome = commit_one_shot_terminal(txn, thread, response)
                 .await
                 .map_err(|source| {
@@ -614,8 +639,16 @@ pub(crate) async fn finish_thread(
                 })?;
             Ok(())
         }
-        None => commit_noop_terminal(txn, thread)
+        StageTerminal::Completion(None) => commit_noop_terminal(txn, thread)
             .await
             .map_err(|source| map_runtime_error(stage, "committing the thread terminal", source)),
+        StageTerminal::Submission(accepted) => {
+            commit_loop_terminal(txn, thread, accepted)
+                .await
+                .map_err(|source| {
+                    map_runtime_error(stage, "committing the loop terminal", source)
+                })?;
+            Ok(())
+        }
     }
 }
