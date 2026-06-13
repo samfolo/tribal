@@ -1408,6 +1408,25 @@ async fn reclaim_parent(
     (task, thread)
 }
 
+/// Counts the verifier launches the parent's log records; each suspension
+/// that deferred a tool result is one launch, the same tally the projection
+/// reads back to bound the verify budget.
+async fn count_deferred_launches(conn: &mut PgConnection, parent_id: AgentThreadId) -> usize {
+    PgAgentThreadRecordRepository
+        .find_by_thread_id(conn, parent_id)
+        .await
+        .expect("parent log")
+        .iter()
+        .filter(|r| {
+            r.kind() == AgentThreadRecordKind::Suspension
+                && matches!(
+                    serde_json::from_value::<AgentThreadSuspension>(r.content().clone()),
+                    Ok(AgentThreadSuspension::DeferredToolResults { .. }),
+                )
+        })
+        .count()
+}
+
 /// An accepted verdict commits the submission on resume without a further
 /// inference call: the loop re-validates the recorded submission against
 /// the current graph and terminates.
@@ -1552,6 +1571,110 @@ async fn test_a_rejected_verdict_continues_the_loop_with_the_critique() {
         )),
         "the verifier's critique reached the model as a tool result",
     );
+
+    teardown(ctx).await;
+}
+
+/// A full two-round cycle: round one rejects with a critique, the loop
+/// re-decides and a second verifier launches, round two accepts, and the
+/// re-validated submission commits. The two launches stand in the durable
+/// log, and the final commit re-validates without re-asking the model.
+#[tokio::test]
+async fn test_two_verifier_rounds_reject_then_accept_and_commit() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let child_binding = a_child_binding(ctx).await;
+    let harness = loop_harness(
+        ctx,
+        "verify-two-round",
+        vec![
+            submit_response("call_0", OPENING_ITEM_ID),
+            submit_response("call_1", OPENING_ITEM_ID),
+        ],
+    )
+    .await;
+    let pipeline = VerifyingPipeline { child_binding };
+
+    // Round one: the submission launches a verifier and the loop suspends.
+    let attribution = harness.attribution();
+    let outcome = run_turn_loop(harness.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Suspended), "got {outcome:?}");
+
+    {
+        let mut conn = raw_conn(ctx).await;
+        hand_back_verdict(
+            &mut conn,
+            harness.thread.id(),
+            r#"{"accepted": false, "critique": "tighten the duplicate check"}"#,
+        )
+        .await;
+    }
+
+    // Round two: the resume re-decides against the critique and a second
+    // verifier launches, suspending again.
+    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let round_two = LoopHarness {
+        task,
+        thread,
+        ..harness
+    };
+    let attribution = round_two.attribution();
+    let outcome = run_turn_loop(round_two.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop resumes");
+    assert!(
+        matches!(outcome, LoopOutcome::Suspended),
+        "the rejection launches a second verifier, got {outcome:?}",
+    );
+
+    {
+        let mut conn = raw_conn(ctx).await;
+        hand_back_verdict(&mut conn, round_two.thread.id(), r#"{"accepted": true}"#).await;
+    }
+
+    // The second round's acceptance: the resume re-validates and commits.
+    let (task, thread) = reclaim_parent(ctx, &round_two).await;
+    let committed = LoopHarness {
+        task,
+        thread,
+        ..round_two
+    };
+    let attribution = committed.attribution();
+    let outcome = run_turn_loop(committed.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop resumes");
+    let LoopOutcome::Submitted(accepted) = outcome else {
+        panic!("the second-round acceptance commits the submission, got {outcome:?}");
+    };
+    assert_eq!(accepted.payload["claim_id"], OPENING_ITEM_ID);
+    assert_eq!(
+        committed.provider.call_count(),
+        2,
+        "two submit decisions ran; the accepted commit re-validates without re-asking",
+    );
+
+    let launches = {
+        let mut conn = raw_conn(ctx).await;
+        count_deferred_launches(&mut conn, committed.thread.id()).await
+    };
+    assert_eq!(launches, 2, "reject then accept is two verifier launches");
 
     teardown(ctx).await;
 }
