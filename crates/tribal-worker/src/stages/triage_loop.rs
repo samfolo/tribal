@@ -19,8 +19,8 @@ use tribal_agent_runtime::{
 use tribal_config::{DEFAULT_AGENTIC_RECHECK_BOUND, DEFAULT_AGENTIC_RECHECK_DELAY_SECONDS};
 use tribal_db::{NewTriageSimilarItemDecision, PgPromptVersionRepository, PromptVersionRepository};
 use tribal_domain::{
-    AgentBinding, Job, JobId, KnowledgeItemId, PromptClass, PromptRole, PromptStage, PromptVersion,
-    Task, TaskType, span_attrs,
+    AgentBinding, Candidate, Job, JobId, KnowledgeItemId, PromptClass, PromptRole, PromptStage,
+    PromptVersion, Task, TaskType, span_attrs,
 };
 use tribal_inference::{EmbeddingTarget, UsageAttribution};
 
@@ -34,7 +34,7 @@ use crate::{
     error::{STAGE_TRIAGE, StageError},
     parsing::{TriageSubmission, TriageSubmissionDecision},
     prompt::{LoopSimilarItemContext, assemble_loop_opening},
-    stages::TriageSubmissionPipeline,
+    stages::{TriageSubmissionPipeline, VerifierContext},
     tag_resolution,
     tools::{
         ListTagRegistryTool, ReadItemNeighbourhoodTool, ReadJobContextTool, ReadKnowledgeItemTool,
@@ -136,7 +136,10 @@ impl Worker {
                 deadline,
                 stage_thread,
             )?;
-            let pipeline = TriageSubmissionPipeline::new(job.project_id());
+            let verifier = self
+                .verifier_context(&stage_thread.binding, &ctx.candidate)
+                .await?;
+            let pipeline = TriageSubmissionPipeline::new(job.project_id()).with_verifier(verifier);
             let submit_descriptor = submit_result_descriptor();
             let parameters = &stage_thread.binding.definition().parameters;
 
@@ -271,6 +274,7 @@ impl Worker {
                 system_prompt_version_id: Some(prompts.system.id()),
                 user_prompt_version_id: Some(prompts.user.id()),
                 resolution_context: None,
+                response_schema: None,
             },
             scores,
             embedding_vector: embedding_response.vector,
@@ -415,6 +419,91 @@ impl Worker {
         let system = resolve_loop_prompt(&mut conn, PromptRole::System, system_hash).await?;
         let user = resolve_loop_prompt(&mut conn, PromptRole::User, user_hash).await?;
         Ok(RecordedLoopPrompts { system, user })
+    }
+
+    /// Resolves the verifier the binding configures, when the toggle is
+    /// on: the active verifier templates and the one-shot verifier binding
+    /// the child runs under, on the parent's model and endpoint. `None`
+    /// when verification is disabled, leaving an accepted submission to
+    /// commit on the validators alone.
+    ///
+    /// The verifier prompts follow the active set rather than the parent's
+    /// recorded binding — they are no part of its hash (the parent binds
+    /// the loop pair only) — and each launch pins its own verifier binding
+    /// on the child it creates, so the child is resume-stable thereafter.
+    async fn verifier_context(
+        &self,
+        binding: &AgentBinding,
+        candidate: &Candidate,
+    ) -> Result<Option<VerifierContext>, StageError> {
+        if !self.agents().triage.verifier {
+            return Ok(None);
+        }
+
+        let mut conn = self
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| StageError::Database {
+                stage: STAGE_TRIAGE.into(),
+                context: "acquiring connection for the verifier binding".into(),
+                source: tribal_db::DbError::QueryFailed {
+                    context: "pool acquire".into(),
+                    source: e,
+                },
+            })?;
+
+        let system = self
+            .active_verifier_prompt(&mut conn, PromptRole::System)
+            .await?;
+        let user = self
+            .active_verifier_prompt(&mut conn, PromptRole::User)
+            .await?;
+        let definition = crate::definition::verifier_definition(
+            binding.definition(),
+            system.content_hash().to_owned(),
+            user.content_hash().to_owned(),
+        );
+        let verifier_binding = tribal_agent_runtime::resolve_binding(&mut conn, &definition)
+            .await
+            .map_err(|source| {
+                map_runtime_error(STAGE_TRIAGE, "resolving the verifier binding", source)
+            })?;
+
+        Ok(Some(VerifierContext {
+            binding_version_id: verifier_binding.id(),
+            system_template: system.content().to_owned(),
+            system_prompt_version_id: system.id(),
+            user_template: user.content().to_owned(),
+            user_prompt_version_id: user.id(),
+            candidate: candidate.clone(),
+        }))
+    }
+
+    /// Resolves the active verifier template for a role, erroring when the
+    /// verifier is on but no template is live — a wiring fault, not a
+    /// configuration the binding can run.
+    async fn active_verifier_prompt(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        role: PromptRole,
+    ) -> Result<PromptVersion, StageError> {
+        let id = self
+            .active_prompts()
+            .version_id(PromptStage::Triage, PromptClass::Verifier, role)
+            .await
+            .ok_or_else(|| StageError::BindingDerivation {
+                stage: STAGE_TRIAGE.into(),
+                context: format!("no active triage verifier {} prompt", role.as_str()),
+            })?;
+        PgPromptVersionRepository
+            .find_by_id(conn, id)
+            .await
+            .map_err(|source| StageError::Database {
+                stage: STAGE_TRIAGE.into(),
+                context: "loading an active verifier prompt".into(),
+                source,
+            })
     }
 }
 

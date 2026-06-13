@@ -13,4 +13,4 @@ pub(crate) use common::{
     record_prompt_version_ids, stage_attribution,
 };
 pub(crate) use relation::RelationCommitDecision;
-pub(crate) use triage_submission::TriageSubmissionPipeline;
+pub(crate) use triage_submission::{TriageSubmissionPipeline, VerifierContext};

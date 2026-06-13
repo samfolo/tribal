@@ -11,19 +11,21 @@ use std::sync::{
 use async_trait::async_trait;
 use sqlx::PgConnection;
 use tribal_agent_runtime::{
-    AcceptedSubmission, Admission, BUDGET_RECHECK_CAUSE, BudgetFailure, HeartbeatPump, LoopOutcome,
-    RecheckPolicy, SUBMIT_RESULT_TOOL, SeenCorpus, StageTool, SubmissionOutcome,
-    SubmissionPipeline, ToolOutcome, ToolRegistry, TurnLoopDeps, admit_inference,
-    commit_loop_terminal, resolve_stage_thread, run_turn_loop,
+    AcceptedSubmission, Admission, BUDGET_RECHECK_CAUSE, BudgetFailure, ChildTerminalOutcome,
+    HeartbeatPump, LoopOutcome, ParentResolution, RecheckPolicy, RecordedMessage,
+    RenderedConversation, SUBMIT_RESULT_TOOL, SeenCorpus, StageTool, SubmissionOutcome,
+    SubmissionPipeline, ToolOutcome, ToolRegistry, TurnLoopDeps, VerifierLaunch, admit_inference,
+    commit_child_terminal, commit_loop_terminal, resolve_stage_thread, run_turn_loop,
+    verdict_schema,
 };
 use tribal_db::{
-    AgentThreadRecordRepository, AgentThreadRepository, PgAgentThreadRecordRepository,
-    PgAgentThreadRepository,
+    AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository,
+    PgAgentDriverTaskRepository, PgAgentThreadRecordRepository, PgAgentThreadRepository,
 };
 use tribal_domain::{
-    AgentThread, AgentThreadRecordKind, AgentThreadStatus, AgentThreadSuspension, ExecutionBudgets,
-    ExecutionSpend, RecoverableToolFailure, ToolDescriptor, ToolExecutionMode, ToolFailure,
-    ToolSafetyTier, UsageOwner,
+    AgentBindingVersionId, AgentThread, AgentThreadId, AgentThreadRecordKind, AgentThreadStatus,
+    AgentThreadSuspension, ExecutionBudgets, ExecutionSpend, RecoverableToolFailure,
+    ToolDescriptor, ToolExecutionMode, ToolFailure, ToolSafetyTier, UsageOwner,
 };
 use tribal_inference::UsageAttribution;
 use tribal_test_utils::a_tool_call_response;
@@ -187,6 +189,97 @@ impl SubmissionPipeline for MembershipPipeline {
     }
 }
 
+/// The verifier child a test pipeline launches: a fresh-context opening
+/// constrained to the verdict schema, on a binding the child can bind to.
+fn a_verifier_launch(child_binding: AgentBindingVersionId) -> VerifierLaunch {
+    VerifierLaunch {
+        binding_version_id: child_binding,
+        pipeline_stage: TaskType::Extraction,
+        child_input: RenderedConversation {
+            system: Some("verify the submission".to_owned()),
+            messages: vec![RecordedMessage {
+                role: "user".to_owned(),
+                content: "is this submission sound?".to_owned(),
+            }],
+            system_prompt_version_id: None,
+            user_prompt_version_id: None,
+            resolution_context: None,
+            response_schema: Some(verdict_schema()),
+        },
+    }
+}
+
+/// Accepts every submission and always asks for a verifier child. The
+/// verdict the loop reads is decided by the hand-back, not here.
+struct VerifyingPipeline {
+    child_binding: AgentBindingVersionId,
+}
+
+#[async_trait]
+impl SubmissionPipeline for VerifyingPipeline {
+    async fn evaluate(
+        &self,
+        _conn: &mut PgConnection,
+        _thread: &AgentThread,
+        _corpus: &SeenCorpus,
+        arguments: &serde_json::Value,
+    ) -> Result<SubmissionOutcome, ToolFailure> {
+        Ok(SubmissionOutcome::Accepted {
+            payload: arguments.clone(),
+        })
+    }
+
+    async fn verifier_launch(
+        &self,
+        _conn: &mut PgConnection,
+        _thread: &AgentThread,
+        _payload: &serde_json::Value,
+    ) -> Result<Option<VerifierLaunch>, ToolFailure> {
+        Ok(Some(a_verifier_launch(self.child_binding)))
+    }
+}
+
+/// Accepts the first submission but bounces every re-validation: the
+/// graph drifted between the verifier's acceptance and the resumed
+/// commit. Always asks for a verifier child.
+struct DriftingPipeline {
+    child_binding: AgentBindingVersionId,
+    evaluations: AtomicU32,
+}
+
+#[async_trait]
+impl SubmissionPipeline for DriftingPipeline {
+    async fn evaluate(
+        &self,
+        _conn: &mut PgConnection,
+        _thread: &AgentThread,
+        _corpus: &SeenCorpus,
+        arguments: &serde_json::Value,
+    ) -> Result<SubmissionOutcome, ToolFailure> {
+        // First the initial submit accepts; the re-validation after the
+        // accepted verdict finds the graph changed; later re-decisions
+        // accept again.
+        if self.evaluations.fetch_add(1, Ordering::SeqCst) == 1 {
+            Ok(SubmissionOutcome::Bounced {
+                diagnostics: "the matched claim was superseded since you read it".to_owned(),
+            })
+        } else {
+            Ok(SubmissionOutcome::Accepted {
+                payload: arguments.clone(),
+            })
+        }
+    }
+
+    async fn verifier_launch(
+        &self,
+        _conn: &mut PgConnection,
+        _thread: &AgentThread,
+        _payload: &serde_json::Value,
+    ) -> Result<Option<VerifierLaunch>, ToolFailure> {
+        Ok(Some(a_verifier_launch(self.child_binding)))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
@@ -261,6 +354,7 @@ fn an_opening() -> tribal_agent_runtime::RenderedConversation {
         system_prompt_version_id: None,
         user_prompt_version_id: None,
         resolution_context: None,
+        response_schema: None,
     }
 }
 
@@ -1208,4 +1302,419 @@ async fn test_admission_with_empty_caps_issues_no_query() {
         err,
         tribal_agent_runtime::AgentRuntimeError::Database { .. }
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Verifier control flow
+// ---------------------------------------------------------------------------
+
+/// Resolves a binding the verifier child can bind to. Its stage matches
+/// the launch's, so the child thread satisfies the binding-stage foreign
+/// key; a distinct model keeps it a separate row from the parent's.
+async fn a_child_binding(ctx: &TestContext) -> AgentBindingVersionId {
+    let mut conn = raw_conn(ctx).await;
+    tribal_agent_runtime::resolve_binding(
+        &mut conn,
+        &tribal_test_utils::an_agent_definition()
+            .pipeline_stage(TaskType::Extraction)
+            .model("verifier-model".to_owned())
+            .build(),
+    )
+    .await
+    .expect("child binding")
+    .id()
+}
+
+/// Hands a verdict back to a suspended parent exactly as the driver loop
+/// would: claims the child's `Drive` task, runs the child, and commits the
+/// child terminal carrying the verdict the parent reads on resume.
+async fn hand_back_verdict(conn: &mut PgConnection, parent_id: AgentThreadId, verdict: &str) {
+    let claimed = PgAgentDriverTaskRepository
+        .claim(conn, 1, "verifier-test")
+        .await
+        .expect("claim the child's driver task");
+    let driver = claimed.first().expect("a pending driver task").clone();
+    let child = PgAgentThreadRepository
+        .find_by_id(conn, driver.thread_id())
+        .await
+        .expect("find child")
+        .expect("present");
+    PgAgentThreadRepository
+        .mark_running(conn, child.id(), AgentThreadStatus::Queued)
+        .await
+        .expect("mark child running");
+
+    // The launching suspension carries the call the verdict answers.
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(conn, parent_id)
+        .await
+        .expect("parent log");
+    let (requesting_seq, tool_call_id) = records
+        .iter()
+        .rev()
+        .find_map(|r| {
+            if r.kind() != AgentThreadRecordKind::Suspension {
+                return None;
+            }
+            match serde_json::from_value(r.content().clone()) {
+                Ok(AgentThreadSuspension::DeferredToolResults {
+                    requesting_seq,
+                    pending_tool_call_ids,
+                }) => pending_tool_call_ids
+                    .into_iter()
+                    .next()
+                    .map(|id| (requesting_seq, id)),
+                _ => None,
+            }
+        })
+        .expect("a launching suspension");
+
+    let response = a_completion_response(verdict);
+    let outcome = commit_child_terminal(
+        conn,
+        &child,
+        driver.id(),
+        driver.claim_token().expect("token"),
+        0,
+        &response,
+        &ParentResolution {
+            thread_id: parent_id,
+            requesting_seq,
+            tool_call_id,
+        },
+    )
+    .await
+    .expect("hand the verdict back");
+    assert_eq!(outcome, ChildTerminalOutcome::HandedBack);
+}
+
+/// Re-claims a parent's woken stage task and re-reads its thread, the
+/// resume a fresh worker performs after the hand-back re-queues the task.
+async fn reclaim_parent(
+    ctx: &TestContext,
+    harness: &LoopHarness,
+) -> (tribal_domain::Task, AgentThread) {
+    let mut conn = raw_conn(ctx).await;
+    let reclaimed = PgTaskRepository
+        .claim(&mut conn, 1, "verifier-resume")
+        .await
+        .expect("re-claim the woken task");
+    let task = reclaimed.first().expect("the woken task claims").clone();
+    let thread = PgAgentThreadRepository
+        .find_by_id(&mut conn, harness.thread.id())
+        .await
+        .expect("find")
+        .expect("present");
+    (task, thread)
+}
+
+/// An accepted verdict commits the submission on resume without a further
+/// inference call: the loop re-validates the recorded submission against
+/// the current graph and terminates.
+#[tokio::test]
+async fn test_an_accepted_verdict_commits_the_submission_on_resume() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let child_binding = a_child_binding(ctx).await;
+    let harness = loop_harness(
+        ctx,
+        "verify-accept",
+        vec![submit_response("call_0", OPENING_ITEM_ID)],
+    )
+    .await;
+    let pipeline = VerifyingPipeline { child_binding };
+
+    // The submission launches a verifier and the loop suspends.
+    let attribution = harness.attribution();
+    let outcome = run_turn_loop(harness.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Suspended), "got {outcome:?}");
+    assert_eq!(
+        harness.pump.aborts.load(Ordering::SeqCst),
+        1,
+        "the pump stops before the suspension clears the claim",
+    );
+
+    {
+        let mut conn = raw_conn(ctx).await;
+        hand_back_verdict(&mut conn, harness.thread.id(), r#"{"accepted": true}"#).await;
+    }
+
+    // The resumed parent commits without a second inference call.
+    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let resumed = LoopHarness {
+        task,
+        thread,
+        ..harness
+    };
+    let attribution = resumed.attribution();
+    let outcome = run_turn_loop(resumed.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop resumes");
+    let LoopOutcome::Submitted(accepted) = outcome else {
+        panic!("an accepted verdict commits the submission, got {outcome:?}");
+    };
+    assert_eq!(accepted.payload["claim_id"], OPENING_ITEM_ID);
+    assert_eq!(
+        resumed.provider.call_count(),
+        1,
+        "the commit re-validates the recorded submission, it never re-asks the model",
+    );
+
+    teardown(ctx).await;
+}
+
+/// A rejected verdict continues the loop: the critique rides the
+/// conversation, the model re-decides, and a fresh verifier round
+/// launches — the submission never commits on a rejection.
+#[tokio::test]
+async fn test_a_rejected_verdict_continues_the_loop_with_the_critique() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let child_binding = a_child_binding(ctx).await;
+    let harness = loop_harness(
+        ctx,
+        "verify-reject",
+        vec![
+            submit_response("call_0", OPENING_ITEM_ID),
+            submit_response("call_1", OPENING_ITEM_ID),
+        ],
+    )
+    .await;
+    let pipeline = VerifyingPipeline { child_binding };
+
+    let attribution = harness.attribution();
+    let outcome = run_turn_loop(harness.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Suspended));
+
+    {
+        let mut conn = raw_conn(ctx).await;
+        hand_back_verdict(
+            &mut conn,
+            harness.thread.id(),
+            r#"{"accepted": false, "critique": "missed a duplicate"}"#,
+        )
+        .await;
+    }
+
+    // The resume re-decides against the critique and launches a second
+    // verifier round — it does not commit the rejected submission.
+    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let resumed = LoopHarness {
+        task,
+        thread,
+        ..harness
+    };
+    let attribution = resumed.attribution();
+    let outcome = run_turn_loop(resumed.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop resumes");
+    assert!(
+        matches!(outcome, LoopOutcome::Suspended),
+        "the rejection re-decides and re-verifies, got {outcome:?}",
+    );
+
+    // The re-decision's request (the second across both runs) carried the
+    // critique as a tool result the model re-decides against.
+    let requests = resumed.provider.completion_history();
+    assert_eq!(
+        requests.len(),
+        2,
+        "the opening submit, then the resume's re-decision",
+    );
+    assert!(
+        requests[1].messages.iter().any(|m| matches!(
+            m,
+            tribal_inference::Message::Tool { content, .. } if content.contains("missed a duplicate")
+        )),
+        "the verifier's critique reached the model as a tool result",
+    );
+
+    teardown(ctx).await;
+}
+
+/// The verify budget bounds the launches: once spent, an accepted
+/// submission commits on the validators alone rather than launching
+/// another verifier or stalling.
+#[tokio::test]
+async fn test_the_verify_budget_bounds_launches_then_commits_directly() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let child_binding = a_child_binding(ctx).await;
+    let harness = loop_harness(
+        ctx,
+        "verify-budget",
+        vec![
+            submit_response("call_0", OPENING_ITEM_ID),
+            submit_response("call_1", OPENING_ITEM_ID),
+        ],
+    )
+    .await;
+    let pipeline = VerifyingPipeline { child_binding };
+    let budget = ExecutionBudgets::builder()
+        .max_child_launches(Some(1))
+        .build();
+
+    // Round one launches under the budget of one.
+    let attribution = harness.attribution();
+    let outcome = run_turn_loop(harness.deps(an_opening(), &attribution, &pipeline, budget))
+        .await
+        .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Suspended));
+
+    {
+        let mut conn = raw_conn(ctx).await;
+        hand_back_verdict(
+            &mut conn,
+            harness.thread.id(),
+            r#"{"accepted": false, "critique": "look again"}"#,
+        )
+        .await;
+    }
+
+    // The resume re-decides, but the one launch is spent: the validated
+    // submission commits directly rather than launching a second verifier.
+    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let resumed = LoopHarness {
+        task,
+        thread,
+        ..harness
+    };
+    let attribution = resumed.attribution();
+    let outcome = run_turn_loop(resumed.deps(an_opening(), &attribution, &pipeline, budget))
+        .await
+        .expect("the loop resumes");
+    assert!(
+        matches!(outcome, LoopOutcome::Submitted(_)),
+        "the spent verify budget commits on the validators alone, got {outcome:?}",
+    );
+
+    teardown(ctx).await;
+}
+
+/// Post-acceptance drift: the graph changes between the verifier's
+/// acceptance and the resumed commit. The re-validation bounces, but the
+/// fence forbids a second result for the answered call, so the
+/// diagnostics cross as a conversation-bearing input and the loop
+/// continues — never a stale commit, never a fence collision.
+#[tokio::test]
+async fn test_post_acceptance_drift_injects_diagnostics_and_continues() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let child_binding = a_child_binding(ctx).await;
+    let harness = loop_harness(
+        ctx,
+        "verify-drift",
+        vec![
+            submit_response("call_0", OPENING_ITEM_ID),
+            submit_response("call_1", OPENING_ITEM_ID),
+        ],
+    )
+    .await;
+    let pipeline = DriftingPipeline {
+        child_binding,
+        evaluations: AtomicU32::new(0),
+    };
+
+    let attribution = harness.attribution();
+    let outcome = run_turn_loop(harness.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop runs");
+    assert!(matches!(outcome, LoopOutcome::Suspended));
+
+    {
+        let mut conn = raw_conn(ctx).await;
+        hand_back_verdict(&mut conn, harness.thread.id(), r#"{"accepted": true}"#).await;
+    }
+
+    // The resume re-validates the accepted submission, finds the drift,
+    // and continues rather than committing or colliding on the fence.
+    let (task, thread) = reclaim_parent(ctx, &harness).await;
+    let resumed = LoopHarness {
+        task,
+        thread,
+        ..harness
+    };
+    let attribution = resumed.attribution();
+    let outcome = run_turn_loop(resumed.deps(
+        an_opening(),
+        &attribution,
+        &pipeline,
+        ExecutionBudgets::default(),
+    ))
+    .await
+    .expect("the loop resumes");
+    assert!(
+        !matches!(outcome, LoopOutcome::Submitted(_)),
+        "the drifted submission must not commit, got {outcome:?}",
+    );
+
+    // The drift crossed as a conversation-bearing input, not a second
+    // tool result for the answered submit call, and reached the model.
+    let mut conn = raw_conn(ctx).await;
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(&mut conn, resumed.thread.id())
+        .await
+        .expect("parent log");
+    let tool_results = records
+        .iter()
+        .filter(|r| r.kind() == AgentThreadRecordKind::ToolResult)
+        .count();
+    assert_eq!(
+        tool_results, 1,
+        "the fenced submit call keeps its single hand-back result; drift adds no second one",
+    );
+    assert!(
+        records.iter().any(|r| {
+            r.kind() == AgentThreadRecordKind::Input
+                && r.content()["content_kind"] == "injected_message"
+                && r.content()["content"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("superseded"))
+        }),
+        "the drift diagnostics are an injected input the model reads",
+    );
+    let requests = resumed.provider.completion_history();
+    assert!(
+        requests
+            .last()
+            .expect("a re-decision")
+            .messages
+            .iter()
+            .any(|m| matches!(
+                m,
+                tribal_inference::Message::User { content } if content.contains("superseded")
+            )),
+        "the drift diagnostics reach the model's re-decision as a user turn",
+    );
+
+    teardown(ctx).await;
 }

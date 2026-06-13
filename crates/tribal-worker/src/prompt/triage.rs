@@ -12,7 +12,10 @@ use crate::{
     parsing::TriageClassification,
     prompt::{
         narrow_temperature,
-        variables::{VAR_CANDIDATE, VAR_SIMILAR_ITEMS, VAR_TAGS, triage_system_context},
+        variables::{
+            VAR_CANDIDATE, VAR_CONSIDERED_ITEMS, VAR_SIMILAR_ITEMS, VAR_SUBMISSION, VAR_TAGS,
+            triage_system_context,
+        },
     },
 };
 
@@ -162,6 +165,89 @@ pub(crate) fn assemble_loop_opening(
         user_template,
         user_ctx,
         "rendering the triage loop user prompt",
+    )?;
+
+    Ok((rendered_system, rendered_user))
+}
+
+// ---------------------------------------------------------------------------
+// Verifier context
+// ---------------------------------------------------------------------------
+
+/// The submission a verifier reviews, as its prompt presents it: the
+/// classification and the references it turns on, never the submitting
+/// thread's reasoning.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct VerifierSubmissionContext {
+    /// The classification — `novel` or `duplicate`.
+    pub decision: String,
+    /// The duplicated claim's id, present only for a duplicate decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_item_id: Option<String>,
+    /// The bounded notes the submission carried for the relation stage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<String>,
+}
+
+/// One claim the submission assessed, with its content resolved so the
+/// verifier judges against the same text the submitting thread saw.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct VerifierConsideredItem {
+    /// The claim's item id.
+    pub item_id: String,
+    /// The claim's classification.
+    pub kind: KnowledgeKind,
+    /// The submission's assessment of this claim's relationship to the
+    /// candidate.
+    pub assessment: String,
+    /// The claim's content.
+    pub content: String,
+}
+
+/// Builds the verifier's user prompt context.
+///
+/// Both the production assembly and the validation tests call this, so a
+/// variable added here is reflected in both paths.
+pub(crate) fn verifier_user_context(
+    candidate: &Candidate,
+    submission: &VerifierSubmissionContext,
+    considered_items: &[VerifierConsideredItem],
+) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    ctx.insert(VAR_CANDIDATE, candidate);
+    ctx.insert(VAR_SUBMISSION, submission);
+    ctx.insert(VAR_CONSIDERED_ITEMS, considered_items);
+    ctx
+}
+
+/// Renders the verifier child's opening: the rubric system prompt and the
+/// submission-under-review user message, under one renderer so both share
+/// the turn's pinned nonce.
+///
+/// # Errors
+///
+/// Returns [`StageError::TemplateRender`] if either template cannot be
+/// rendered.
+pub(crate) fn assemble_verifier_input(
+    system_template: &str,
+    user_template: &str,
+    candidate: &Candidate,
+    submission: &VerifierSubmissionContext,
+    considered_items: &[VerifierConsideredItem],
+) -> Result<(String, String), StageError> {
+    let renderer = PromptRenderer::new();
+
+    let rendered_system = renderer.render(
+        system_template,
+        tera::Context::new(),
+        "rendering the triage verifier system prompt",
+    )?;
+
+    let user_ctx = verifier_user_context(candidate, submission, considered_items);
+    let rendered_user = renderer.render(
+        user_template,
+        user_ctx,
+        "rendering the triage verifier user prompt",
     )?;
 
     Ok((rendered_system, rendered_user))

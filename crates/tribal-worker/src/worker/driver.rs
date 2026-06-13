@@ -13,8 +13,8 @@
 //! deferred-death transaction so the child never strands its lineage.
 
 use tribal_agent_runtime::{
-    AgentRuntimeError, ChildTerminalOutcome, DrivingClaim, ParentResolution, RenderedConversation,
-    begin_turn, commit_child_terminal, commit_deferred_death,
+    AgentRuntimeError, ChildTerminalOutcome, ParentResolution, RenderedConversation,
+    adopt_conversation, commit_child_terminal, commit_deferred_death,
 };
 use tribal_common::clamp_to_i32;
 use tribal_db::{
@@ -25,7 +25,9 @@ use tribal_domain::{
     AgentDriverTask, AgentDriverTaskKind, AgentThread, AgentThreadId, AgentThreadRecordKind,
     AgentThreadStatus, AgentThreadSuspension, ErrorOutcome, UsageOwner,
 };
-use tribal_inference::{CompletionRequest, Message, PermitWait, Role, UsageAttribution};
+use tribal_inference::{
+    CompletionRequest, Message, PermitWait, ResponseFormat, Role, UsageAttribution,
+};
 
 use crate::{
     error::StageError,
@@ -142,17 +144,15 @@ impl Worker {
                 },
             })?;
 
-        let begun = begin_turn(
-            &mut conn,
-            &child,
-            DrivingClaim::driver(task.id(), claim_token),
-            None,
-            placeholder_conversation(),
-        )
-        .await
-        .map_err(|source| driver_runtime_error("committing the child input", source))?;
+        // The child is born with its input in the suspend-with-child
+        // transaction; the driver adopts that rendered conversation (the
+        // verifier's rubric, submission, and verdict schema) and re-sends
+        // it verbatim, never re-rendering.
+        let conversation = adopt_conversation(&mut conn, &child)
+            .await
+            .map_err(|source| driver_runtime_error("adopting the child's conversation", source))?;
 
-        let request = request_from(&begun.conversation);
+        let request = request_from(&conversation);
         let attribution = child_attribution(&child, task.attempt());
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let response = self
@@ -451,7 +451,13 @@ fn request_from(conversation: &RenderedConversation) -> CompletionRequest {
         tools: vec![],
         temperature: narrow_temperature(None),
         max_tokens: None,
-        response_format: None,
+        // A child renders its own output contract into the record; the
+        // verifier's verdict schema rides through here so the response is
+        // schema-constrained without the driver loop knowing the shape.
+        response_format: conversation
+            .response_schema
+            .clone()
+            .map(|schema| ResponseFormat::JsonSchema { schema }),
     }
 }
 
@@ -468,18 +474,6 @@ fn child_attribution(child: &AgentThread, attempt: u32) -> UsageAttribution {
         system_prompt_version_id: None,
         user_prompt_version_id: None,
         trace_id: tribal_telemetry::current_trace_id(),
-    }
-}
-
-/// The conversation `begin_turn` adopts on resume; a driver child always
-/// has its committed input, so this placeholder is never written.
-fn placeholder_conversation() -> RenderedConversation {
-    RenderedConversation {
-        system: None,
-        messages: vec![],
-        system_prompt_version_id: None,
-        user_prompt_version_id: None,
-        resolution_context: None,
     }
 }
 

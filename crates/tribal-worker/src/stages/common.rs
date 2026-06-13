@@ -415,6 +415,7 @@ impl Worker {
             system_prompt_version_id: Some(system_pv_id),
             user_prompt_version_id: Some(user_pv_id),
             resolution_context,
+            response_schema: None,
         };
 
         let mut conn = self

@@ -97,6 +97,29 @@ pub fn derive_stage_definition(
     }
 }
 
+/// The verifier child's binding definition: a one-shot on the parent's
+/// model and endpoint, carrying the verifier prompts.
+///
+/// Flat by construction. A one-shot has no tools and runs no submission
+/// pipeline, so it can launch no verifier of its own — the delegation
+/// chain terminates by rule, not by configuration discipline, and a
+/// verifier-of-a-verifier is unrepresentable rather than merely refused.
+pub(crate) fn verifier_definition(
+    parent: &AgentDefinition,
+    system_prompt_hash: String,
+    user_prompt_hash: String,
+) -> AgentDefinition {
+    AgentDefinition::one_shot(
+        parent.pipeline_stage,
+        parent.provider,
+        parent.model.clone(),
+        parent.base_url.clone(),
+        parent.parameters.clone(),
+        system_prompt_hash,
+        user_prompt_hash,
+    )
+}
+
 /// The budgets the admission check enforces for a stage right now.
 ///
 /// Budgets re-resolve from the current configuration at every claim —
@@ -269,6 +292,35 @@ mod tests {
         assert_eq!(
             derived.budgets.max_turns, None,
             "unset one-shot caps stay absent — never the agentic defaults",
+        );
+    }
+
+    #[test]
+    fn test_the_verifier_binding_is_flat_by_construction() {
+        let mut agents = AgentsConfig::default();
+        agents.triage.executor = ExecutorChoice::Loop;
+        let parent = derive_stage_definition(
+            TaskType::Triage,
+            &a_spec(),
+            &hashes(Some(("c".repeat(64), "d".repeat(64)))),
+            &agents,
+        )
+        .expect("derives the loop parent");
+
+        let verifier = verifier_definition(&parent, "e".repeat(64), "f".repeat(64));
+
+        // A one-shot with no tools cannot run a submission pipeline, so it
+        // launches no verifier: the chain terminates by rule.
+        assert_eq!(verifier.executor, StageExecutorKind::OneShot);
+        assert!(
+            verifier.tools.is_empty(),
+            "a verifier binding declares no tools, so it can launch no child",
+        );
+        assert_eq!(verifier.pipeline_stage, TaskType::Triage);
+        assert_eq!(verifier.prompt_hashes, vec!["e".repeat(64), "f".repeat(64)]);
+        assert_eq!(
+            verifier.model, parent.model,
+            "the verifier runs on the parent's model",
         );
     }
 

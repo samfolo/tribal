@@ -6,7 +6,7 @@
 use tribal_agent_runtime::{
     ChildLaunch, ChildTerminalOutcome, ParentResolution, RecordedMessage, RenderedConversation,
     SuspendWithChildOutcome, commit_child_terminal, commit_deferred_death, resolve_binding,
-    suspend_with_child,
+    suspend_with_child, verdict_schema,
 };
 use tribal_db::{
     AgentDriverTaskRepository, AgentThreadRecordRepository, AgentThreadRepository,
@@ -168,6 +168,7 @@ fn a_child_input() -> RenderedConversation {
         system_prompt_version_id: None,
         user_prompt_version_id: None,
         resolution_context: None,
+        response_schema: Some(verdict_schema()),
     }
 }
 
@@ -434,7 +435,7 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
     let (conn, sp) = seed_suspended_parent(ctx, "driver-loop").await;
     drop(conn);
 
-    let inference: Arc<dyn InferenceProvider> = Arc::new(
+    let provider = Arc::new(
         MockInferenceProvider::builder()
             .on_complete(
                 a_completion_response(r#"{"accepted": true, "critique": null}"#),
@@ -443,6 +444,7 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
             .on_exhaust(ExhaustBehaviour::RepeatLast)
             .build(),
     );
+    let inference: Arc<dyn InferenceProvider> = Arc::clone(&provider) as Arc<dyn InferenceProvider>;
     let token = CancellationToken::new();
     let worker = build_test_worker(
         pool.clone(),
@@ -506,6 +508,25 @@ async fn test_the_driver_loop_drives_a_child_and_hands_back() {
 
     let child = child(&mut conn, sp.child_thread_id).await;
     assert_eq!(child.status(), AgentThreadStatus::Completed);
+
+    // The driver adopted the child's committed conversation and re-sent it
+    // verbatim: the verifier's rubric reached the model and the call was
+    // constrained to the verdict schema. Without the adoption the child
+    // would call the model with an empty placeholder and no schema.
+    let requests = provider.completion_history();
+    assert_eq!(requests.len(), 1, "the child ran one inference call");
+    assert_eq!(
+        requests[0].system.as_deref(),
+        Some("verify the submission"),
+        "the child's call carries the verifier rubric, not a placeholder",
+    );
+    assert!(
+        matches!(
+            requests[0].response_format,
+            Some(tribal_inference::ResponseFormat::JsonSchema { .. })
+        ),
+        "the verdict schema constrains the child's structured output",
+    );
 
     teardown(ctx).await;
 }
