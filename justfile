@@ -25,12 +25,16 @@ db-up:
         docker start tribal-postgres
         echo "tribal-postgres started"
     else
+        # Raise the connection ceiling clear of the stock 100 so a parallel
+        # test run pointed at this container does not exhaust it. Mirrors
+        # TEST_DB_MAX_CONNECTIONS in tribal-test-utils; keep the two in step.
         docker run -d --name tribal-postgres \
             -e POSTGRES_USER=tribal \
             -e POSTGRES_PASSWORD=tribal \
             -e POSTGRES_DB=tribal \
             -p 5432:5432 \
-            pgvector/pgvector:0.8.2-pg17
+            pgvector/pgvector:0.8.2-pg17 \
+            -c max_connections=500
         echo "tribal-postgres created and started"
     fi
 

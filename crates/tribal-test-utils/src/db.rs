@@ -36,6 +36,17 @@ use testcontainers::{
 
 use crate::TestDbError;
 
+/// Postgres connection ceiling for the test container.
+///
+/// A parallel test run opens many pools against this one container at once
+/// (each server-bearing test stands up its own worker and read pools), so
+/// the stock ceiling of 100 is the source of `PoolTimedOut` flakes under
+/// load. Raising it well clear of peak demand removes that contention; the
+/// container is ephemeral, so the headroom costs nothing past the test
+/// binary's lifetime. The dev container in the `db-up` justfile recipe
+/// carries the same ceiling; keep the two in step.
+const TEST_DB_MAX_CONNECTIONS: u32 = 500;
+
 /// Shared test database context: a pgvector container and connection pool.
 ///
 /// Created once per test binary via [`test_context`]. The container is
@@ -88,6 +99,12 @@ impl TestContext {
             .with_env_var("POSTGRES_DB", "tribal_test")
             .with_env_var("POSTGRES_USER", "tribal")
             .with_env_var("POSTGRES_PASSWORD", "tribal")
+            // A leading `-c` arg makes the entrypoint launch Postgres with
+            // the raised ceiling (it prepends `postgres` to a dash-led cmd).
+            .with_cmd([
+                "-c".to_owned(),
+                format!("max_connections={TEST_DB_MAX_CONNECTIONS}"),
+            ])
             .start()
             .await
             .map_err(|source| TestDbError::ContainerStart {
