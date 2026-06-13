@@ -147,6 +147,14 @@ pub struct RenderedConversation {
     /// on read so records written before the field existed deserialise.
     #[serde(default)]
     pub resolution_context: Option<serde_json::Value>,
+    /// The JSON Schema this turn's response is constrained to, when it
+    /// is — a driver child's structured output (a verifier's verdict).
+    /// Held as the schema value, not a wire type, so the record stays
+    /// provider-independent; the executor builds the response format from
+    /// it. Defaulted on read for records written before the field
+    /// existed.
+    #[serde(default)]
+    pub response_schema: Option<serde_json::Value>,
 }
 
 /// One tool call as the assistant message requested it, in the thread's
@@ -296,6 +304,58 @@ pub async fn begin_turn(
 
     Ok(BegunTurn {
         conversation: rendered,
+    })
+}
+
+/// Reads a thread's committed rendered conversation for re-sending
+/// verbatim.
+///
+/// A driver-family child is born with its input record (a verifier's
+/// rubric and the submission, committed in the suspend-with-child
+/// transaction), so the driver adopts that conversation rather than
+/// rendering its own — the one-shot bracket's no-re-render contract. The
+/// child has not begun a turn, so the rendered conversation is the only
+/// input record; its absence is a consistency fault, never a first-claim
+/// case.
+///
+/// # Errors
+///
+/// Returns [`AgentRuntimeError::Database`] on read failure,
+/// [`AgentRuntimeError::ContentSerialisation`] when the record will not
+/// deserialise, and a database not-found fault when no rendered
+/// conversation is committed.
+pub async fn adopt_conversation(
+    conn: &mut PgConnection,
+    thread: &AgentThread,
+) -> Result<RenderedConversation, AgentRuntimeError> {
+    let records = PgAgentThreadRecordRepository
+        .find_by_thread(conn, thread.id())
+        .await
+        .map_err(|source| AgentRuntimeError::database("reading the thread's input", source))?;
+    let input = records
+        .iter()
+        .find(|record| {
+            record.kind() == AgentThreadRecordKind::Input
+                && is_rendered_conversation(record.content())
+        })
+        .ok_or_else(|| {
+            AgentRuntimeError::database(
+                "adopting the thread's conversation",
+                tribal_db::DbError::NotFound {
+                    entity: "agent_thread_record",
+                    id: format!("rendered conversation for thread {}", thread.id()),
+                },
+            )
+        })?;
+    serde_json::from_value(input.content().clone()).map_err(|source| {
+        AgentRuntimeError::ContentSerialisation {
+            context: format!(
+                "adopting the conversation of thread {} (format_version {})",
+                thread.id(),
+                thread.format_version(),
+            ),
+            source,
+        }
     })
 }
 
@@ -457,6 +517,7 @@ mod tests {
             system_prompt_version_id: None,
             user_prompt_version_id: None,
             resolution_context: None,
+            response_schema: None,
         };
         let value = serde_json::to_value(&rendered).expect("serialises");
         assert_eq!(

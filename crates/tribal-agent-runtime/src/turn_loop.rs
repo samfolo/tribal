@@ -232,13 +232,38 @@ pub struct VerifierLaunch {
 /// A verifier's verdict, the envelope every verifier binding produces and
 /// the loop reads: acceptance commits the submission, rejection returns
 /// the critique to the submitting loop, which continues.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[schemars(
+    description = "Your verdict on the submission. Accept a sound submission; reject an unsound \
+    one with a critique the submitting agent can act on."
+)]
 pub struct VerdictContent {
     /// Whether the submission is sound.
+    #[schemars(description = "Whether the submission is sound and should be committed.")]
     pub accepted: bool,
     /// The rejection's reasoning, returned to the loop as context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "When rejecting, the specific defect the submitting agent must address. \
+        Omit when accepting."
+    )]
     pub critique: Option<String>,
+}
+
+/// The JSON Schema a verifier child's structured output is constrained
+/// to — a [`VerdictContent`]. A binding-hash input for a verifier
+/// definition, and the response-format schema the child's call carries.
+///
+/// # Panics
+///
+/// Panics only if the derived schema cannot serialise to JSON, which the
+/// `schemars` derive makes impossible.
+#[must_use]
+pub fn verdict_schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(VerdictContent))
+        .expect("schema_for! produces serialisable output")
 }
 
 /// An accepted submission: what the caller's stage terminal commits.
@@ -798,6 +823,11 @@ struct Projection {
     /// result and not yet superseded by a later turn. The loop re-derives
     /// its disposition from this rather than issuing fresh inference.
     resolved_submission: Option<ResolvedSubmission>,
+    /// Verifier rounds already completed: the count of returned verdicts
+    /// in the log, the committed-record measure of child launches the
+    /// verify budget bounds. A launch always suspends and re-enters, so
+    /// this is recomputed fresh at every entry rather than maintained.
+    verifier_rounds: u32,
 }
 
 /// A returned verifier verdict awaiting the loop's disposition.
@@ -851,10 +881,15 @@ fn project(
         tail: None,
         carried_rechecks: None,
         resolved_submission: None,
+        verifier_rounds: 0,
     };
     let mut saw_rendered = false;
     let mut pending: Option<PendingBatch> = None;
     let mut resolved: Option<ResolvedSubmission> = None;
+    // Every submit call seen across the log, so a verdict answering one
+    // is counted as a completed round wherever it lands, not only on the
+    // trailing turn the resume path reads.
+    let mut submit_call_ids: HashSet<String> = HashSet::new();
 
     for record in records {
         projection.carried_rechecks = None;
@@ -902,6 +937,11 @@ fn project(
                         })
                         .collect(),
                 });
+                for call in &content.tool_calls {
+                    if call.name == SUBMIT_RESULT_TOOL {
+                        submit_call_ids.insert(call.id.clone());
+                    }
+                }
                 // A new turn supersedes any verdict that has not yet been
                 // dispositioned: only the trailing submission is resolved.
                 resolved = None;
@@ -926,6 +966,15 @@ fn project(
                 });
                 if !content.is_error {
                     projection.corpus.push(content.output.clone());
+                }
+                // A non-error result answering a submit call that parses as
+                // a verdict is a completed verifier round — counted across
+                // the whole log so the verify budget bounds total launches.
+                if !content.is_error
+                    && submit_call_ids.contains(call_id)
+                    && serde_json::from_str::<VerdictContent>(&content.output).is_ok()
+                {
+                    projection.verifier_rounds += 1;
                 }
                 if let Some(batch) = &mut pending
                     && record.requesting_seq() == Some(batch.requesting_seq)
@@ -1390,6 +1439,24 @@ async fn execute_batch(
                             }));
                         }
                         Ok(Some(launch)) => {
+                            // The verify budget bounds how many verifier
+                            // children one thread launches. Once spent, the
+                            // validated submission commits on the validators
+                            // alone: they are the correctness gate, the
+                            // verifier the quality lever (§10.4), so a
+                            // spent budget degrades to a direct commit
+                            // rather than failing the thread.
+                            if deps
+                                .budgets
+                                .max_child_launches
+                                .is_some_and(|cap| projection.verifier_rounds >= cap)
+                            {
+                                return Ok(BatchOutcome::Submitted(AcceptedSubmission {
+                                    payload,
+                                    requesting_seq: batch.requesting_seq,
+                                    tool_call_id: call.id.clone(),
+                                }));
+                            }
                             // The heartbeat stops before the suspension
                             // clears the claim, lest a beat in flight race
                             // a spurious ownership-lost signal.
@@ -1709,6 +1776,7 @@ mod tests {
             system_prompt_version_id: None,
             user_prompt_version_id: None,
             resolution_context: None,
+            response_schema: None,
         };
         an_agent_thread_record()
             .thread_id(thread.id())
@@ -2039,6 +2107,43 @@ mod tests {
         assert!(
             projection.resolved_submission.is_none(),
             "a later turn means the verdict was already dispositioned",
+        );
+    }
+
+    /// Verifier rounds are counted across the whole log, not just the
+    /// trailing turn: every returned verdict is a completed round the
+    /// verify budget bounds, while a bounce and a still-pending submit are
+    /// not.
+    #[test]
+    fn test_projection_counts_verifier_rounds_across_the_log() {
+        let thread = an_agent_thread().build();
+        let records = vec![
+            rendered_input(&thread, "triage this"),
+            // Round one: submitted, verifier rejected.
+            assistant_record(&thread, 1, "", vec![a_call("call_1", SUBMIT_RESULT_TOOL)]),
+            tool_result_record(
+                &thread,
+                2,
+                1,
+                "call_1",
+                r#"{"accepted": false, "critique": "missed a duplicate"}"#,
+                false,
+            ),
+            // A bounce on the re-submission: an error result, not a round.
+            assistant_record(&thread, 3, "", vec![a_call("call_2", SUBMIT_RESULT_TOOL)]),
+            tool_result_record(&thread, 4, 3, "call_2", "bounced: copy ids exactly", true),
+            // Round two: re-submitted, verifier accepted.
+            assistant_record(&thread, 5, "", vec![a_call("call_3", SUBMIT_RESULT_TOOL)]),
+            tool_result_record(&thread, 6, 5, "call_3", r#"{"accepted": true}"#, false),
+            // A third submission still awaiting its verdict — no round yet.
+            assistant_record(&thread, 7, "", vec![a_call("call_4", SUBMIT_RESULT_TOOL)]),
+        ];
+
+        let projection = project(&thread, &records).expect("projects");
+        assert_eq!(
+            projection.verifier_rounds, 2,
+            "two returned verdicts are two completed rounds; the bounce and the pending \
+             submit are neither",
         );
     }
 
