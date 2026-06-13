@@ -1,3 +1,8 @@
+use tribal_agent_runtime::{ensure_stage_thread, resolve_binding};
+use tribal_db::{AgentThreadRecordRepository, NewAgentThreadRecord, PgAgentThreadRecordRepository};
+use tribal_domain::AgentThreadRecordKind;
+use tribal_test_utils::an_agent_definition;
+
 use super::{common::*, fixtures::context_index_relation_response_json};
 
 /// Verifies the happy path: the relation stage calls the LLM, parses
@@ -602,6 +607,117 @@ async fn test_relation_stage_all_edges_dropped() {
     assert!(
         outbound.is_empty(),
         "no relations should be committed when all edges are dropped",
+    );
+
+    teardown(ctx).await;
+}
+
+/// The relation stage's handoff read: an agentic triage thread's
+/// submission record surfaces its handoff keyed by the candidate's batch
+/// index, and a thread with no submission record contributes nothing — so
+/// the one-shot path (which commits none) reaches today's context exactly.
+#[tokio::test]
+async fn test_find_triage_submissions_by_job_surfaces_agentic_handoffs() {
+    let _guard = serial_lock().await;
+    let ctx = test_context().await;
+    let (principal_id, project_id, system_pv_id, user_pv_id) =
+        setup_prerequisites(ctx, "relation-handoff-read").await;
+    let mut conn = raw_conn(ctx).await;
+
+    let candidates = vec![
+        a_candidate()
+            .content("tokens expire after an hour".to_owned())
+            .build(),
+    ];
+    let (job_id, triage_task_id) = seed_triage_job(
+        &mut conn,
+        principal_id,
+        project_id,
+        system_pv_id,
+        user_pv_id,
+        &candidates,
+    )
+    .await;
+
+    // An agentic triage thread for the seeded task.
+    let job = PgJobRepository
+        .find_by_id(&mut conn, job_id)
+        .await
+        .expect("find job");
+    let claimed = PgTaskRepository
+        .claim(&mut conn, 1, "handoff-read")
+        .await
+        .expect("claim");
+    let task = claimed
+        .into_iter()
+        .find(|t| t.id() == triage_task_id)
+        .expect("the triage task claims");
+    let binding = resolve_binding(
+        &mut conn,
+        &an_agent_definition()
+            .pipeline_stage(TaskType::Triage)
+            .build(),
+    )
+    .await
+    .expect("triage binding");
+    let stage_thread = ensure_stage_thread(
+        &mut conn,
+        &job,
+        &task,
+        task.claim_token().expect("token"),
+        &binding,
+    )
+    .await
+    .expect("triage thread");
+
+    // No submission yet: the read finds nothing, the same as a one-shot
+    // thread that commits no submission record.
+    let before = PgAgentThreadRecordRepository
+        .find_triage_submissions_by_job(&mut conn, job_id)
+        .await
+        .expect("read before");
+    assert!(
+        before.is_empty(),
+        "a thread with no submission record yields no handoff",
+    );
+
+    // The agentic terminal's submission record carries the handoff.
+    let seq = PgAgentThreadRecordRepository
+        .next_seq(&mut conn, stage_thread.thread.id())
+        .await
+        .expect("seq");
+    PgAgentThreadRecordRepository
+        .append(
+            &mut conn,
+            &NewAgentThreadRecord::builder()
+                .thread_id(stage_thread.thread.id())
+                .seq(seq)
+                .kind(AgentThreadRecordKind::Submission)
+                .content(serde_json::json!({
+                    "payload": {
+                        "decision": {"decision": "created"},
+                        "handoff": "links auth expiry and caching",
+                    },
+                    "requesting_seq": 1,
+                    "tool_call_id": "call_submit",
+                }))
+                .build(),
+        )
+        .await
+        .expect("submission record");
+
+    let submissions = PgAgentThreadRecordRepository
+        .find_triage_submissions_by_job(&mut conn, job_id)
+        .await
+        .expect("read after");
+    assert_eq!(submissions.len(), 1, "the triage submission is found");
+    assert_eq!(
+        submissions[0].batch_index, 0,
+        "the handoff is keyed by the candidate's batch index",
+    );
+    assert_eq!(
+        submissions[0].content["payload"]["handoff"],
+        "links auth expiry and caching",
     );
 
     teardown(ctx).await;

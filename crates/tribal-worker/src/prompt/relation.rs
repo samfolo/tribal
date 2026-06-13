@@ -52,6 +52,11 @@ pub(crate) struct CandidateOutcome<'a> {
     /// The resolved `KnowledgeItemId` for created or duplicate
     /// outcomes. `None` for failed.
     pub item_id: Option<KnowledgeItemId>,
+    /// The notes the candidate's agentic triage handed downstream, when
+    /// it ran the loop and left any. Absent for the one-shot path, so the
+    /// rendered context stays byte-identical there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<String>,
 }
 
 /// A triage similar item decision for prompt inclusion.
@@ -216,18 +221,21 @@ mod tests {
                     candidate: &data.candidates[0],
                     outcome: "created".into(),
                     item_id: Some(data.ki_a),
+                    handoff: None,
                 },
                 CandidateOutcome {
                     batch_index: 1,
                     candidate: &data.candidates[1],
                     outcome: "duplicate".into(),
                     item_id: Some(data.ki_b),
+                    handoff: Some("the candidate links auth and billing".to_owned()),
                 },
                 CandidateOutcome {
                     batch_index: 2,
                     candidate: &data.candidates[2],
                     outcome: "failed".into(),
                     item_id: None,
+                    handoff: None,
                 },
             ],
             relation_hints: &data.relation_hints,
