@@ -108,7 +108,9 @@ pub struct ToolDescriptor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TypedBuilder)]
 pub struct ExecutionBudgets {
     /// Cap on a thread's token spend: input, output, and cache-write
-    /// tokens (cache-read is a subset of input, so it is not counted again).
+    /// tokens. Cache-read is not counted; it is zero across providers today,
+    /// so the exclusion is a no-op pending a provider-independent
+    /// cache-accounting reconciliation.
     #[builder(default)]
     pub max_total_tokens: Option<u64>,
     /// Cap on the number of turns.

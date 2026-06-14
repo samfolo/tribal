@@ -19,9 +19,11 @@ use crate::validation::{ConfigPath, Diagnostics, ValidationError};
 pub const DEFAULT_AGENTIC_MAX_TURNS: u32 = 8;
 
 /// Default cap on an agentic thread's token spend: input, output, and
-/// cache-write tokens. Cache-read is excluded because the ledger schema
-/// enforces it as a subset of the input count, so it is already accounted
-/// for there.
+/// cache-write tokens. Cache-read is not counted. No provider populates
+/// cache-read today, so the exclusion is currently a no-op; before
+/// provider prompt caching is enabled, the cap, the ledger's cache-read
+/// subset check, and the per-provider usage mappings must be reconciled to
+/// one provider-independent cache-accounting model.
 pub const DEFAULT_AGENTIC_MAX_TOTAL_TOKENS: u64 = 200_000;
 
 /// Default cap on verifier rounds per submission, doubling as the
