@@ -243,12 +243,16 @@ async fn test_agentic_triage_loop_end_to_end() {
         "the prior turn's conversation is an exact prefix of the next request",
     );
 
-    // -- The opening is built once, not rebuilt on the verifier resume -------
+    // -- The resume re-embeds the candidate, but does not re-search ----------
     //
-    // The candidate is embedded on the fresh claim; the verifier resume
-    // replays the recorded commit context rather than re-embedding and
-    // re-searching, so the embedding endpoint sees exactly one request
-    // carrying the candidate content.
+    // The verifier resume re-derives the candidate embedding against the
+    // current active profile, so the committed vector and its profile id
+    // stay consistent rather than a recorded vector being replayed under a
+    // profile it was not built under. It does not re-run the opening
+    // search: those scores are replayed from the recorded opening. So the
+    // embedding endpoint sees the candidate exactly twice, the fresh claim
+    // and the resume, not the search-driven work the old path re-ran on
+    // every resume.
     let candidate_embeds = harness
         .embedding_server()
         .received_requests()
@@ -258,8 +262,9 @@ async fn test_agentic_triage_loop_end_to_end() {
         .filter(|r| String::from_utf8_lossy(&r.body).contains("retries a failed canary deploy"))
         .count();
     assert_eq!(
-        candidate_embeds, 1,
-        "the candidate is embedded once on the fresh claim, not again on the verifier resume",
+        candidate_embeds, 2,
+        "the candidate is embedded on the fresh claim and re-embedded on the resume, \
+         never replayed from a recorded vector",
     );
 
     harness.shutdown().await;
