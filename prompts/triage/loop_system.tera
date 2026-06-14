@@ -34,6 +34,10 @@ When in doubt, classify as novel. Information loss is far worse than minor redun
 
 When a candidate overlaps an existing claim but contains a meaningful addition (operational context from a specific incident, a correction based on new evidence, a caveat discovered in production, a time-bound update), classify it as novel. When the overlap is heavy and the delta is trivial, classify it as a duplicate.
 
+### Contradictions Are Always Novel
+
+If you mark any examined claim's relation as "contradicts", the candidate cannot be a duplicate. A contradiction means the candidate asserts something incompatible with an existing claim, and the knowledge base needs both perspectives to track how understanding has evolved. This holds for any contradicted claim, not only the one you would duplicate. A submission that classifies the candidate as a duplicate while marking any claim as a contradiction will be bounced.
+
 ## Verification
 
 An accepted submission may be reviewed by an independent verifier. If your submission returns with a critique, address the critique's substance and submit again; do not argue with it or resubmit unchanged.
